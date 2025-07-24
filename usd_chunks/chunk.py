@@ -1,4 +1,5 @@
-from PySide6 import QtWidgets, QtCore
+import os
+from PySide6 import QtWidgets, QtCore, QtGui
 import inspect
 from functools import partial
 from typing import Sequence, Tuple, List, Union, Callable, Dict, Any, Optional
@@ -117,10 +118,28 @@ class Chunk(QtWidgets.QWidget):
             self.content_layout.addWidget(widget)
         self.update_anim()
 
+    def _set_tooltip(self, widget, kwargs):
+        tooltip = kwargs.get("tooltip", None)
+        if tooltip:
+            widget.setToolTip(tooltip)
+
     def create_button(self, text="", callback=None, *args, **kwargs):
         """Create a button with the specified text and callback."""
-        button = QtWidgets.QPushButton(text, self)
-        
+        button = QtWidgets.QPushButton(text, parent=self)
+        width = kwargs.get("width", None)
+        height = kwargs.get("height", None)
+        self._set_tooltip(button, kwargs)
+        if width and height:
+            button.setFixedSize(QtCore.QSize(width, height))
+
+        icon = kwargs.get("icon", None)
+        if icon and os.path.exists(icon):
+            qicon = QtGui.QIcon(icon)
+            icon_size = QtCore.QSize( 40, 40 )
+            button.setIcon(qicon)
+            button.setIconSize(icon_size)
+
+        button.adjustSize()
         call_args = self._find_args_by_name(callback, args, kwargs)
         button.clicked.connect(partial(callback, *call_args))
         self.registered_widgets.append(button)
