@@ -153,6 +153,20 @@ class Chunk(QtWidgets.QWidget):
         self._add_widget(label, layout)
         return label
 
+    def create_filebrowser(self, layout=None):
+        """Create a label with the specified text."""
+        layout = self.create_layout()
+        line_edit = self.create_line_edit("", layout=layout)
+        button = self.create_button("Browse",self._open_file_dialog, line_edit, layout=layout)
+        return line_edit
+
+    def _open_file_dialog(self, line_edit):
+         dialog = QtWidgets.QFileDialog(self)
+         if dialog.exec():
+            filenames = dialog.selectedFiles()
+            if filenames:
+                line_edit.setText(filenames[0])
+
     def create_layout(self, layout_type=None, layout=None):
         """Create a layout of the specified type."""
         if layout_type is None:
