@@ -4,11 +4,10 @@ from abc import abstractmethod
 import copy
 import uuid
 
-from functools import partial
 from itertools import chain
 
-from pxr import Tf
-from . import chunk_notice
+from pxr import Tf, Usdviewq, Usd
+from . import chunk_notice, chunk_registry
 
 
 class ChunkLayoutFlags(IntFlag):
@@ -64,6 +63,10 @@ class ChunkParamBase:
         """Base class for Chunk parameters and groups"""
         self.name: str = None
         self.tooltip: str = None
+        self.icon: str = None  # Path to icon
+
+        # Hold custom data which is not used directly by the chunk
+        self.user_data: dict[str, Any] = {}
 
         # Orientation of the widget, if relevant
         self.layout_flags: ChunkLayoutFlags = ChunkLayoutFlags.VERTICAL
@@ -125,6 +128,12 @@ class ChunkParamBase:
             new_conn = chunk_notice.NoticeConnection(conn.method, conn.notice_type, sender, conn.globally, result)
             result.add_connection(new_conn)
         return result
+
+    def get_usdview_api(self) -> Usdviewq.usdviewApi:
+        return chunk_registry.ChunkRegistry().usdview_api
+
+    def get_stage(self) -> Usd.Stage:
+        return self.get_usdview_api().stage
 
     def get_parent(self) -> "ChunkParamGroup":
         """Get parent. A ChunkParam might be added to a group, this would return the group holding this param
@@ -254,6 +263,9 @@ class ChunkParam(ChunkParamBase):
     @property
     def value(self):
         # Value of this parameter - type depends on self.param_type
+        if self._value is None:
+            val = self.default_value
+            self._value = val
         return self._value
 
     @value.setter
@@ -544,7 +556,7 @@ class ChunkParamGroup(ChunkParamBase):
         for group in self._groups:
             yield from group.iter_all_params()
 
-    def get_group(self, group: TChunkParamGroup | str) -> TChunkParamGroup:
+    def get_group(self, group: TChunkParamGroup | str) -> "ChunkParamGroup":
         """Get a group inside of this group
 
         Args:
@@ -719,7 +731,6 @@ class Chunk(ChunkParamGroup):
         super().__init__()
 
         self.category: str = "General"
-        self.icon: str = None  # Path to icon
         self.animation_duration: float = 300
 
         # Overriding this will change the default widget factory when creating widgets from this chunk.

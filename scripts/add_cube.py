@@ -1,7 +1,7 @@
-from usd_chunks.chunk import Chunk
+from usd_chunks import chunk
 
-def apply(api):
-    stage = api.stage
+def addCube(chunkItem: chunk.ChunkParam, notice, sender):
+    stage = chunkItem.get_stage()
     count = 0
     while True:
         prim = stage.GetPrimAtPath(f"/cube{count}")
@@ -11,9 +11,15 @@ def apply(api):
         count = count + 1
 
 def main(api, parent=None):
-    chunk_api = Chunk(api, parent=parent)
+    button = chunk.ChunkParam()
+    button.param_type = chunk.ChunkParamType.BUTTON
+    button.name = "add_cube"
+    button.label = "Add Cube"
+    button.add_callback(addCube)
+
+    chunk_api = chunk.Chunk()
     chunk_api.name = "Add Cubes"
     chunk_api.category = "Examples"
-    layout = chunk_api.new_layout()
-    chunk_api.create_button("Add cube!", apply, layout=layout)
+
+    chunk_api.add_params([button])
     return chunk_api

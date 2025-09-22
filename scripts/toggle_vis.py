@@ -1,29 +1,44 @@
-from usd_chunks.chunk import Chunk
+from usd_chunks import chunk, chunk_notice
 
-def toggle_vis(api):
+
+def toggle_vis(chunkItem: chunk.ChunkParam, notice, sender: chunk.ChunkParam):
     """Toggle visibility of the selected prim in the USD stage."""
-    stage = api.stage
-    selected_prim = api.prim
-    if not selected_prim.IsValid() or selected_prim == api.stage.GetPseudoRoot():
+    api = chunkItem.get_usdview_api()
+    prim = api.prim
+    if not prim.IsValid() or prim == api.stage.GetPseudoRoot():
         return
+
     # Set visibility
-    visibility = selected_prim.GetAttribute("visibility")
+    visibility = prim.GetAttribute("visibility")
     if visibility.Get() == "inherited":
         visibility.Set("invisible")
     else:
         visibility.Set("inherited")
-    
-def clear_vis(api):
-    """Clear the visibility set in the stage"""
-    stage = api.stage
-    for prim in stage.Traverse():
-        visibility = prim.GetAttribute("visibility").Clear()
 
-def main(api, parent=None):
-    chunk_api = Chunk(api, parent=parent)
-    chunk_api.name = "Vis/Invis"
-    chunk_api.category = "Utility"
-    layout = chunk_api.new_layout()
-    chunk_api.create_button("Toggle visiblity!", toggle_vis, layout=layout)
-    chunk_api.create_button("Clear visiblity!", clear_vis)
-    return chunk_api
+
+def clear_vis(chunkItem: chunk.ChunkParam, notice, sender: chunk.ChunkParam):
+    """Clear the visibility set in the stage"""
+    stage = chunkItem.get_stage()
+    # stage = api.stage
+    for prim in stage.Traverse():
+        prim.GetAttribute("visibility").Clear()
+
+
+def main(api):
+    tglVis = chunk.ChunkParam()
+    tglVis.param_type = chunk.ChunkParamType.BUTTON
+    tglVis.name = "tgl_vis"
+    tglVis.label = "Toggle Visility"
+    tglVis.add_callback(toggle_vis)
+
+    clearVis = chunk.ChunkParam()
+    clearVis.param_type = chunk.ChunkParamType.BUTTON
+    clearVis.name = "clr_vis"
+    clearVis.label = "Clear Visility"
+    clearVis.add_callback(clear_vis)
+
+    myChunk = chunk.Chunk()
+    myChunk.name = "myChunk"
+    myChunk.category = "Utility"
+    myChunk.add_params([tglVis, clearVis])
+    return myChunk

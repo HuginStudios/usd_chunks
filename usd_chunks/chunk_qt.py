@@ -1,4 +1,4 @@
-from PySide6 import QtWidgets, QtCore
+from PySide6 import QtWidgets, QtCore, QtGui
 from typing import List, Callable, Any, Type
 
 from abc import abstractmethod
@@ -31,6 +31,10 @@ class ChunkParamWidget:
 
         self.set_value(value)
         self.set_label(label)
+
+        if self.param.icon:
+            self.set_icon(self.param.icon)
+        
         self.set_param_layout(param.layout_flags)
 
         self._connection = chunk_notice.NoticeConnection(
@@ -47,6 +51,10 @@ class ChunkParamWidget:
 
     @abstractmethod
     def set_label(self, text: str):
+        pass
+
+    @abstractmethod
+    def set_icon(self, icon: str):
         pass
 
     @abstractmethod
@@ -185,6 +193,10 @@ class ChunkPushButtonWidget(QtWidgets.QPushButton, ChunkParamWidget):
 
     def set_label(self, text):
         self.setText(text)
+
+    def set_icon(self, path:str):
+        icon = QtGui.QIcon(path)
+        self.setIcon(icon)
 
     def value_changed(self, value):
         # Just emit the ParamChangeNotice since a button does not have a value
