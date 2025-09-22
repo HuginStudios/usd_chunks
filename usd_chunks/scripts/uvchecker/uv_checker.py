@@ -88,7 +88,7 @@ def main(api, parent=None):
     chunk_api = Chunk(api, parent=parent)
     chunk_api.name = "UV Checker"
     chunk_api.category = "Utility"
-    layout = chunk_api.create_layout()
+    layout = chunk_api.new_layout()
     x_scale = chunk_api.create_float_spinbox(value=1.0, layout=layout)
     y_scale = chunk_api.create_float_spinbox(value=1.0, layout=layout)
     filebrowser = chunk_api.create_filebrowser()

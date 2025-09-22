@@ -23,7 +23,7 @@ def main(api, parent=None):
     chunk_api = Chunk(api, parent=parent)
     chunk_api.name = "Vis/Invis"
     chunk_api.category = "Utility"
-    layout = chunk_api.create_layout()
+    layout = chunk_api.new_layout()
     chunk_api.create_button("Toggle visiblity!", toggle_vis, layout=layout)
     chunk_api.create_button("Clear visiblity!", clear_vis)
     return chunk_api

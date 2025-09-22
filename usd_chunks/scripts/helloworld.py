@@ -16,7 +16,7 @@ def main(api, parent=None):
     # Creating a layout is optional. By default it is vertical layout.
     # If you create a layout, like below, the default
     # layout will be a horizontal layout.
-    layout = chunk_api.create_layout()
+    layout = chunk_api.new_layout()
     # Creat a button and attach the callback function directly.
     chunk_api.create_button("Hello world!", greeting, layout=layout)
     return chunk_api

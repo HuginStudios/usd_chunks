@@ -14,6 +14,6 @@ def main(api, parent=None):
     chunk_api = Chunk(api, parent=parent)
     chunk_api.name = "Add Cubes"
     chunk_api.category = "Examples"
-    layout = chunk_api.create_layout()
+    layout = chunk_api.new_layout()
     chunk_api.create_button("Add cube!", apply, layout=layout)
     return chunk_api
