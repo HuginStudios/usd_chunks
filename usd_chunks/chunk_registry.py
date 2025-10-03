@@ -175,6 +175,9 @@ class ChunkRegistry(metaclass=Singleton):
                 except Exception as e:
                     print(f"Failed to load module {module_name}: {e}")
                     registered_modules.add(ChunkModule(module=module, module_name=file_name, failed=True))
+                else:
+                    print(f"Loaded chunk module {module_name}")
+
         self.registered_modules |= registered_modules
 
     def get_chunk_module(self, name: str) -> ChunkModule | None:

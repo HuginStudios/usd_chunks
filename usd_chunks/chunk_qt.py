@@ -5,7 +5,7 @@ from abc import abstractmethod
 
 from pxr import Tf
 
-from . import chunk_notice, chunk_registry, chunk
+from . import chunk_notice, chunk_registry, chunk_templates, chunk
 
 
 class ChunkParamWidget:
@@ -20,7 +20,7 @@ class ChunkParamWidget:
     def __init__(self):
         self.param: chunk.ChunkParam = None
 
-    def param_changed_callback(self, chunkItem:chunk.ChunkParamBase, notice, param: chunk.ChunkParam):
+    def param_changed_callback(self, chunkItem: chunk.ChunkParamBase, notice, param: chunk.ChunkParam):
         if param.value is not None:
             self.set_value(param.value)
 
@@ -34,7 +34,7 @@ class ChunkParamWidget:
 
         if self.param.icon:
             self.set_icon(self.param.icon)
-        
+
         self.set_param_layout(param.layout_flags)
 
         self._connection = chunk_notice.NoticeConnection(
@@ -71,15 +71,18 @@ class ChunkSliderWidget(QtWidgets.QSlider, ChunkParamWidget):
 
         self.valueChanged.connect(self.value_changed)
 
-        self._step = 1000 if chunk.ChunkParamType.FLOAT in param.param_type else 1
+        self._step = 1000 if chunk_templates.ChunkParamType.FLOAT in param.get_type() else 1
 
-        if param.min_value is not None:
-            self.setMinimum(param.min_value * self._step)
+        min_val = param.template.min_value
+        max_val = param.template.max_value
+
+        if min_val is not None:
+            self.setMinimum(min_val * self._step)
         else:
             self.setMinimum(0)
 
-        if param.max_value is not None:
-            self.setMaximum(param.max_value * self._step)
+        if max_val is not None:
+            self.setMaximum(max_val * self._step)
         else:
             self.setMaximum(10 * self._step)
 
@@ -111,11 +114,14 @@ class ChunkSpinboxWidget(QtWidgets.QDoubleSpinBox, ChunkParamWidget):
 
         self._step = 1
 
-        if param.min_value is not None:
-            self.setMinimum(param.min_value * self._step)
+        min_val = param.template.min_value
+        max_val = param.template.max_value
 
-        if param.max_value is not None:
-            self.setMaximum(param.max_value * self._step)
+        if min_val is not None:
+            self.setMinimum(min_val * self._step)
+
+        if max_val is not None:
+            self.setMaximum(max_val * self._step)
 
         self.setup_chunk_widget(param)
 
@@ -162,8 +168,9 @@ class ChunkComboBoxWidget(QtWidgets.QComboBox, ChunkParamWidget):
         self.currentTextChanged.connect(self.value_changed)
         self.setup_chunk_widget(param)
 
-        if self.param.menu_items:
-            self.addItems(self.param.menu_items)
+        menu_items = self.param.get_template().menu_items
+        if menu_items:
+            self.addItems(menu_items)
 
     def get_value(self):
         return self.currentText()
@@ -194,7 +201,7 @@ class ChunkPushButtonWidget(QtWidgets.QPushButton, ChunkParamWidget):
     def set_label(self, text):
         self.setText(text)
 
-    def set_icon(self, path:str):
+    def set_icon(self, path: str):
         icon = QtGui.QIcon(path)
         self.setIcon(icon)
 
@@ -217,30 +224,30 @@ class ChunkSeparatorWidget(QtWidgets.QFrame, ChunkParamWidget):
 class ChunkParamWidgetFactory:
     def __init__(self):
         self.widget_map: dict = {
-            chunk.ChunkParamType.FLOAT_SLIDER: ChunkSliderWidget,
-            chunk.ChunkParamType.INT_SLIDER: ChunkSliderWidget,
-            chunk.ChunkParamType.FLOAT_SPINBOX: ChunkSpinboxWidget,
-            chunk.ChunkParamType.INT_SPINBOX: ChunkSpinboxWidget,
-            chunk.ChunkParamType.LABEL: ChunkLabelWidget,
-            chunk.ChunkParamType.LINEEDIT: ChunkLineEditWidget,
-            chunk.ChunkParamType.FILE: ChunkLineEditWidget,
-            chunk.ChunkParamType.STRING_MENU: ChunkComboBoxWidget,
-            chunk.ChunkParamType.CHECKBOX: ChunkCheckBoxWidget,
-            chunk.ChunkParamType.BUTTON: ChunkPushButtonWidget,
-            chunk.ChunkParamType.SEPARATOR: ChunkSeparatorWidget,
+            chunk_templates.ChunkParamType.FLOAT_SLIDER: ChunkSliderWidget,
+            chunk_templates.ChunkParamType.INT_SLIDER: ChunkSliderWidget,
+            chunk_templates.ChunkParamType.FLOAT_SPINBOX: ChunkSpinboxWidget,
+            chunk_templates.ChunkParamType.INT_SPINBOX: ChunkSpinboxWidget,
+            chunk_templates.ChunkParamType.LABEL: ChunkLabelWidget,
+            chunk_templates.ChunkParamType.LINEEDIT: ChunkLineEditWidget,
+            chunk_templates.ChunkParamType.FILE: ChunkLineEditWidget,
+            chunk_templates.ChunkParamType.STRING_MENU: ChunkComboBoxWidget,
+            chunk_templates.ChunkParamType.CHECKBOX: ChunkCheckBoxWidget,
+            chunk_templates.ChunkParamType.BUTTON: ChunkPushButtonWidget,
+            chunk_templates.ChunkParamType.SEPARATOR: ChunkSeparatorWidget,
         }
 
     def get_map(self) -> dict:
         return self.widget_map
 
-    def add_mapping(self, key: chunk.ChunkParamType, widget_type: Type[ChunkParamWidget]):
+    def add_mapping(self, key: chunk_templates.ChunkParamType, widget_type: Type[ChunkParamWidget]):
         self.widget_map[key] = widget_type
 
-    def has_mapping(self, key: chunk.ChunkParamType):
+    def has_mapping(self, key: chunk_templates.ChunkParamType):
         return key in self.get_map()
 
     def create_widget(self, param: chunk.ChunkParam) -> ChunkParamWidget:
-        """Create a Qt widget based on the ChunkParam object. the info.param_type should determine the type of Qt Widget to create
+        """Create a Qt widget based on the ChunkParam object. the info.get_type() should determine the type of Qt Widget to create
 
         Args:
             info (ChunkParam): The information about the parameter. The widget will update info.value when widget value is changed
@@ -249,7 +256,7 @@ class ChunkParamWidgetFactory:
             QtWidgets.QWidget: The QtWidget created
             # None: If failed to create a widget
         """
-        key = param.param_type
+        key = param.get_type()
         widget_class = self.get_map().get(key, None)
         if not widget_class:
             print("Could not create widget for param: ", param.name)
@@ -388,7 +395,7 @@ class ChunkWidget(QtWidgets.QWidget):
             info (chunk.ChunkParam): The ChunkParam to represent as a widget
             group (chunk.ChunkParamGroup, optional): A group that contains the param. If specified, will add the param widget to the group layout. Defaults to None.
         """
-        if info.param_type == chunk.ChunkParamType.NONE:
+        if info.get_type() == chunk_templates.ChunkParamType.NONE:
             return
 
         # TODO: info is mutable, so duplicate entries will mutate. Should we force a copy of the info before adding?
@@ -397,14 +404,14 @@ class ChunkWidget(QtWidgets.QWidget):
         widget = None
 
         # Custom widget is created and managed externally
-        if info.param_type == chunk.ChunkParamType.CUSTOM:
+        if info.get_type() == chunk_templates.ChunkParamType.CUSTOM:
             widget = info.custom_widget
         else:
-            if not self.factory.has_mapping(info.param_type):
+            if not self.factory.has_mapping(info.get_type()):
                 print("Missing rules for creating param", info.name)
                 return
 
-            # Create a widget from the factory based on the info.param_type
+            # Create a widget from the factory based on the info.get_type()
             widget = self.factory.create_widget(info)
 
         if not widget:

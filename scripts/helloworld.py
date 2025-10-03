@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_qt, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_qt, chunk_notice, chunk_registry, chunk_templates
 
 
 def groupChanged(chunkItem: chunk.ChunkParamGroup, notice, sender):
@@ -92,65 +92,50 @@ A callback function registered to a ChunkParamBase object (Chunk, ChunkParam, Ch
 
 def main(api):
     # A simple checkbox
-    checkbox = chunk.ChunkParam()
-    checkbox.param_type = chunk.ChunkParamType.CHECKBOX
-    checkbox.layout_flags = chunk.ChunkLayoutFlags.HORIZONTAL
-    checkbox.name = "enable"
+    checkbox = chunk.ChunkParam(chunk_templates.CheckboxTemplate(), "enable")
 
     # A slider
-    slider = chunk.ChunkParam()
-    slider.param_type = chunk.ChunkParamType.FLOAT_SLIDER
-    slider.layout_flags = chunk.ChunkLayoutFlags.HORIZONTAL
-    slider.name = "slider"
+    slider = chunk.ChunkParam(
+        chunk_templates.SliderTemplate(), "slider", layout_flags=chunk.ChunkLayoutFlags.HORIZONTAL
+    )
     # Example of adding a callback to a param. By default, the callback will be emitted when the value of the parameter changes
     # Contrary to adding the callback to the chunk, this will automatically connect to the param and only call mathod when this param changes
     slider.add_callback(sliderChanged)
 
     # A ChunkParamGroup is a container of ChunkParams or other ChunkParamGroups
-    sliderGroup = chunk.ChunkParamGroup()
+    sliderGroup = chunk.ChunkParamGroup(params=[slider, slider, slider])
     # It should be safe to add the same param multiple times. The group will create copies, rename duplicates and rewire the connections.
-    # When modifying the original slider, only the first instance of the slider will be modified. In order to retrive the copies, you'll need to 
+    # When modifying the original slider, only the first instance of the slider will be modified. In order to retrive the copies, you'll need to
     # retrive it from the group as such:
     #   sliderGroup.getParam("slider1")
-    sliderGroup.add_params([slider, slider, slider])
-    # Adding a callback on a group will by default call method when anything on the group changes, i.e any child params updated
+    # # Adding a callback on a group will by default call method when anything on the group changes, i.e any child params updated
     sliderGroup.add_callback(groupChanged)
 
     # A button will call the callback just like any other param, but does not care about its value
-    button = chunk.ChunkParam()
-    button.param_type = chunk.ChunkParamType.BUTTON
-    button.name = "button"
-    # A callback for this button
+    button = chunk.ChunkParam(chunk_templates.ButtonTemplate(), "button")
+    # # A callback for this button
     button.add_callback(clickedButton)
 
     # A label - Not directly modifyable in the UI
-    label = chunk.ChunkParam()
-    label.param_type = chunk.ChunkParamType.LABEL
-    label.name = "label"
+    label = chunk.ChunkParam(chunk_templates.LabelTemplate(), "label")
     # Add the updateLabel as a callback - this will be called whenever the selection changes in UsdView. We should listen_globally here as the notice is sent from object other than the param
     label.add_callback(updateLabel, listen_globally=True, notice_type=chunk_notice.NoticeType.PRIM_SELECTION_CHANGED)
 
     # A text edit is a parameter for editing strings
-    textEdit = chunk.ChunkParam()
-    textEdit.param_type = chunk.ChunkParamType.LINEEDIT
-    textEdit.name = "line_edit"
+    textEdit = chunk.ChunkParam(chunk_templates.LineEditTemplate(), "line_edit")
 
     # A simple menu
-    menu = chunk.ChunkParam()
-    menu.param_type = chunk.ChunkParamType.STRING_MENU
-    menu.name = "menu"
-    menu.menu_items = ["hello0", "hello2"]
+    menu = chunk.ChunkParam(chunk_templates.MenuTemplate(menu_items=["hello0", "hello1"]), "menu")
 
     # A seperator holds no value, is just there for the UI
-    sep = chunk.ChunkParam()
-    sep.param_type = chunk.ChunkParamType.SEPARATOR
-    sep.layout_flags = chunk.ChunkLayoutFlags.HORIZONTAL
+    sep = chunk.ChunkParam(chunk_templates.SeparatorTemplate(), layout_flags=chunk.ChunkLayoutFlags.HORIZONTAL)
 
     # Create the actual chunk - this is in practice just a ChunkParamGroup with some addiditional behaviour
-    myChunk = chunk.Chunk()
-    myChunk.name = "Hello World"  # Name sets the label of the chunk
-    myChunk.category = "Examples"  # Category sets the category this chunk should be desplayed in
-    myChunk.add_params([label, checkbox, sliderGroup, button, sep, textEdit, menu])  # Add parameters to this chunk
+    myChunk = chunk.Chunk(
+        "Hello World", category="Examples", params=[label, checkbox, sliderGroup, button, sep, textEdit, menu]
+    )
+    # Parameters can also be added after construction
+    # myChunk.add_params([label, checkbox, sliderGroup, button, sep, textEdit, menu])
 
     # Add a callback. With no arguments, the callback will be called whenever anything on the chunk is changed
     myChunk.add_callback(chunkChanged)

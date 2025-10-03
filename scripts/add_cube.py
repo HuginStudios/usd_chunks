@@ -22,4 +22,4 @@ def main(api, parent=None):
     chunk_api.category = "Examples"
 
     chunk_api.add_params([button])
-    return chunk_api
+    # return chunk_api

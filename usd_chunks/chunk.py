@@ -1,5 +1,5 @@
 from enum import IntFlag, auto
-from typing import List, Any, Callable, Tuple, TypeVar, Generator
+from typing import List, Any, Callable, Tuple, TypeVar, Generator, Dict
 from abc import abstractmethod
 import copy
 import uuid
@@ -7,7 +7,7 @@ import uuid
 from itertools import chain
 
 from pxr import Tf, Usdviewq, Usd
-from . import chunk_notice, chunk_registry
+from . import chunk_notice, chunk_registry, chunk_templates
 
 
 class ChunkLayoutFlags(IntFlag):
@@ -15,41 +15,7 @@ class ChunkLayoutFlags(IntFlag):
     VERTICAL = auto()
 
 
-class ChunkParamType(IntFlag):
-    # Flags for ChunkParam for describing the type of parameter
-
-    # Use 8 bit padding for types. This leaves room for 8 widget variants per type
-    NONE = 1 << 3
-    FLOAT = auto()
-    STRING = auto()
-    INT = auto()
-    BOOL = auto()
-    CUSTOM = auto()  # use self.custom_widget as widget
-
-    # Flags for standard widgets
-    # A separator line. Cant be combined and will not have a value
-    SEPARATOR = NONE | 1 << 0
-
-    # Real
-    FLOAT_SLIDER = FLOAT | (1 << 0)
-    FLOAT_SPINBOX = FLOAT | (1 << 1)
-
-    # Int
-    INT_SLIDER = INT | (1 << 0)
-    INT_SPINBOX = INT | (1 << 1)
-    INT_MENU = INT | (1 << 2)
-
-    # String
-    LABEL = STRING | (1 << 0)
-    LINEEDIT = STRING | (1 << 1)
-    FILE = STRING | (1 << 2)
-    STRING_MENU = STRING | (1 << 3)
-
-    # Bool
-    CHECKBOX = BOOL | (1 << 0)
-    BUTTON = BOOL | (1 << 1)
-
-
+# These are not yet implemented. TODO
 class ChunkGroupFlags(IntFlag):
     NONE = 0
     FILLED = auto()  # Fill the background of the group
@@ -59,17 +25,24 @@ class ChunkGroupFlags(IntFlag):
 
 
 class ChunkParamBase:
-    def __init__(self):
+    def __init__(
+        self,
+        name: str = None,
+        tooltip: str = None,
+        icon: str = None,
+        user_data: Dict[Any, Any] = None,
+        layout_flags: ChunkLayoutFlags = ChunkLayoutFlags.VERTICAL,
+    ):
         """Base class for Chunk parameters and groups"""
-        self.name: str = None
-        self.tooltip: str = None
-        self.icon: str = None  # Path to icon
+        self.name: str = name
+        self.tooltip: str = tooltip
+        self.icon: str = icon  # Path to icon
 
         # Hold custom data which is not used directly by the chunk
-        self.user_data: dict[str, Any] = {}
+        self.user_data: dict[str, Any] = {} if user_data is None else user_data
 
         # Orientation of the widget, if relevant
-        self.layout_flags: ChunkLayoutFlags = ChunkLayoutFlags.VERTICAL
+        self.layout_flags: ChunkLayoutFlags = layout_flags
 
         # Store NoticeConnection objects, these hold information about a connection to a callback function.
         self._connections: List[chunk_notice.NoticeConnection] = []
@@ -81,11 +54,13 @@ class ChunkParamBase:
         self._parent: "ChunkParamGroup" = None
 
     def __hash__(self):
-        return hash((self.name, self._uuid))
+        # return hash((self._uuid, self.uuid))
+        return hash(self._uuid)
 
-    def __eq__(self, value):
-        if isinstance(value, ChunkParamBase):
-            return self.name == value.name and self._uuid == value._uuid
+    def __eq__(self, other):
+        if isinstance(other, ChunkParamBase):
+            # return self._uuid == other._uuid and self.name == oth
+            return self._uuid == other._uuid
         return False
 
     def _ignore_copy_attr(self, name: str) -> Tuple[bool, Any]:
@@ -103,8 +78,13 @@ class ChunkParamBase:
             return True, []
         return False, None
 
-    def __copy__(self):
-        # Copy all data except members specified in _ignore_copy_attr
+    def __copy__(self) -> "ChunkParamBase":
+        """Copy all data except members specified in _ignore_copy_attr.
+        Update uuid and rewire connections on the copy
+
+        Returns:
+            ChunkParamBase: Return a copy of self, with updated uuid and rewired connections
+        """
         data = {}
         for k, v in self.__dict__.items():
             ignore, val = self._ignore_copy_attr(k)
@@ -130,10 +110,22 @@ class ChunkParamBase:
         return result
 
     def get_usdview_api(self) -> Usdviewq.usdviewApi:
+        """Rettrieve the usdviewAPI handle of the current session
+
+        Returns:
+            Usdviewq.usdviewApi: The usdviewAPI instance
+        """
         return chunk_registry.ChunkRegistry().usdview_api
 
     def get_stage(self) -> Usd.Stage:
-        return self.get_usdview_api().stage
+        """Easy access to the current UsdStage. Retrieves
+        Currently retrieves it from the usdviewAPI. Return None if the usdviewAPI is not available
+
+        Returns:
+            Usd.Stage: The found stage, or None if not available
+        """
+        api = self.get_usdview_api()
+        return None if not api else api.stage
 
     def get_parent(self) -> "ChunkParamGroup":
         """Get parent. A ChunkParam might be added to a group, this would return the group holding this param
@@ -232,70 +224,77 @@ class ChunkParamBase:
         return chunk_notice.NoticeType.NONE
 
     def _update_uuid(self):
+        """Update uuid on self. Should only be used internally"""
         self._uuid: str = uuid.uuid4().hex
 
 
 class ChunkParam(ChunkParamBase):
-    def __init__(self):
-        super().__init__()
+    def __init__(
+        self,
+        template: chunk_templates.ChunkParamTemplate,
+        name: str = "param",
+        label: str = None,
+        tooltip: str = None,
+        icon: str = None,
+        user_data: Dict[Any, Any] = None,
+        layout_flags: ChunkLayoutFlags = ChunkLayoutFlags.VERTICAL,
+    ):
+        super().__init__(name, tooltip, icon, user_data, layout_flags)
 
-        # Flags describing the type of this parameter or group
-        self.param_type: ChunkParamType = ChunkParamType.NONE
-        self.name: str = "param"
+        # Hold the template for this parameter for checking the ChunkParamType, and type specific attributes
+        self.template: chunk_templates.ChunkParamTemplate = template
 
         # Explicit label (nice name). Will be derived from name if not set
-        self.label: str = None
-
-        # Used by COMBOBOX for setting menu items
-        self.menu_items: List[str] = []
-
-        # For numerical values
-        self.min_value = None
-        self.max_value = None
+        self.label: str = label
 
         # Custom QtWidgets.QWidget instance for when using CUSTOM type
         self.custom_widget = None
 
         # Private members. Value is should be accessed through self.value rather than self._value. Same for default_value
         self._value: Any = None
-        self._default_value: Any = None
+
+    def get_template(self) -> chunk_templates.ChunkParamTemplate:
+        return self.template
+
+    def get_type(self) -> chunk_templates.ChunkParamType:
+        return self.template.param_type
 
     @property
-    def value(self):
+    def value(self) -> Any:
+        """Retrive the value on this parameter. The type depends on the templated of this param.
+        If no value is set, will retrive the default value from the template and update self._value
+        to this default value
+
+        Returns:
+            Any: The value of this parameter.
+        """
         # Value of this parameter - type depends on self.param_type
         if self._value is None:
-            val = self.default_value
-            self._value = val
+            self._value = self.default_value
         return self._value
 
     @value.setter
     def value(self, val: Any):
-        # Setter for value. Will send the ParamChangeNotice if value was updated
-        if self.value != val:
-            self._value = val
-            chunk_notice.ParamChangeNotice().Send(self)
+        """Set the value of this parameter. Will check against the template if the parameter
+        is supported. If it is, and the val is different from old value, update value on self
+        and emut ParamChangeNotice
+
+        Args:
+            val (Any): A value to try to set on this parameter
+        """
+        if self.value == val or not self.template.supports_value(val):
+            return
+        self._value = val
+        chunk_notice.ParamChangeNotice().Send(self)
 
     @property
-    def default_value(self):
-        if self._default_value is None:
-            if ChunkParamType.STRING_MENU | ChunkParamType.INT_MENU in self.param_type:
-                return self.menu_items[0]
+    def default_value(self) -> Any:
+        """Get the default value of this parameter from the template
 
-            if ChunkParamType.INT in self.param_type:
-                self._default_value = 0
-            elif ChunkParamType.FLOAT in self.param_type:
-                self._default_value = 0
-            elif ChunkParamType.STRING in self.param_type:
-                self._default_value = ""
-            elif ChunkParamType.BOOL in self.param_type:
-                self._default_value = False
-            else:
-                self.default_value = 0
-        return self._default_value
-
-    @default_value.setter
-    def default_value(self, val):
-        self._default_value = val
+        Returns:
+            Any: THe default value from the template
+        """
+        return self.template.default_value
 
     def get_defualt_notice_type(self):
         return chunk_notice.NoticeType.PARAM_CHANGED
@@ -305,13 +304,22 @@ TChunkParamGroup = TypeVar("TChunkParamGroup", bound="ChunkParamGroup")
 
 
 class ChunkParamGroup(ChunkParamBase):
-    def __init__(self):
+    def __init__(
+        self,
+        name: str = "group",
+        label: str = None,
+        tooltip: str = None,
+        icon: str = None,
+        user_data: Dict[Any, Any] = None,
+        layout_flags: ChunkLayoutFlags = ChunkLayoutFlags.VERTICAL,
+        flags: ChunkGroupFlags = ChunkGroupFlags.NONE,
+        params: List[ChunkParamBase] = None,
+    ):
         """ChunkParamGroup is a container of ChunkParam and other ChunkParamGroup objects"""
-        super().__init__()
+        super().__init__(name, tooltip, icon, user_data, layout_flags)
 
-        self.label: str = None
-        self.name: str = "group"
-        self.group_flags: ChunkGroupFlags = ChunkGroupFlags.NONE
+        self.label: str = label
+        self.group_flags: ChunkGroupFlags = flags
 
         self._last_notice: Tf.Notice = None
         self._last_sender: ChunkParamBase = None
@@ -319,6 +327,9 @@ class ChunkParamGroup(ChunkParamBase):
         # Parameters and nested groups
         self._params: List[ChunkParam] = []
         self._groups: List[ChunkParamGroup] = []
+
+        if params:
+            self.add_params(params)
 
     def _ignore_copy_attr(self, name) -> Tuple[str, Any]:
         if name == "_params" or name == "_groups":
@@ -354,11 +365,15 @@ class ChunkParamGroup(ChunkParamBase):
 
         conn = None
         if isinstance(new_param, ChunkParamGroup):
-            conn = chunk_notice.NoticeConnection(self._group_changed, chunk_notice.NoticeType.GROUP_CHANGED, new_param, chunk_item=self)
+            conn = chunk_notice.NoticeConnection(
+                self._group_changed, chunk_notice.NoticeType.GROUP_CHANGED, new_param, chunk_item=self
+            )
             self._groups.append(new_param)
 
         elif isinstance(new_param, ChunkParam):
-            conn = chunk_notice.NoticeConnection(self._group_changed, chunk_notice.NoticeType.PARAM_CHANGED, new_param, chunk_item=self)
+            conn = chunk_notice.NoticeConnection(
+                self._group_changed, chunk_notice.NoticeType.PARAM_CHANGED, new_param, chunk_item=self
+            )
             self._params.append(new_param)
 
         if param.get_parent() is None:
@@ -697,7 +712,18 @@ class ChunkParamGroup(ChunkParamBase):
 
 
 class Chunk(ChunkParamGroup):
-    def __init__(self):
+    def __init__(
+        self,
+        name: str = "chunk",
+        label: str = None,
+        tooltip: str = None,
+        category: str = "default",
+        icon: str = None,
+        user_data: Dict[Any, Any] = None,
+        layout_flags: ChunkLayoutFlags = ChunkLayoutFlags.VERTICAL,
+        flags: ChunkGroupFlags = ChunkGroupFlags.NONE,
+        params: List[ChunkParamBase] = None,
+    ):
         """A Chunk is a container for parameters and callbacks. Chunk, ChunkParam and ChunkParamGroup can all be used together
         to create a parameter interface that is frontend agnostic. Bindings to Qt can be found in chunk_qt.py.
 
@@ -728,13 +754,15 @@ class Chunk(ChunkParamGroup):
         Any changes to a Chunk (any ChunkParam or ChunkParamGroup children changes) will emit the chunk_notice.ChunkChangeNotice (chunk_notice.NoticeType.CHUNK_CHANGED)
         and can be used to listen to any changes on a Chunk.
         """
-        super().__init__()
+        super().__init__(name, label, tooltip, icon, user_data, layout_flags, flags, params)
 
-        self.category: str = "General"
+        self.category: str = category
+
+        # Keeping this from the constructor args as the anim duration would rarely be changed, imo
         self.animation_duration: float = 300
 
         # Overriding this will change the default widget factory when creating widgets from this chunk.
-        # Leaving it as None will use the default chunk_widgets.ChunkParamWidgetFactory
+        # Leaving it as None will use the default ChunkParamWidgetFactory in chunk_qt.
         self.widget_factory = None
 
         # Connect the GROUP_CHANGED notice to also emit CHUNK_CHANGED. GROUP_CHANGED is handled in the ChunkParamGroup baseclass
