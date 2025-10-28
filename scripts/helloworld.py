@@ -1,85 +1,100 @@
-from usd_chunks import chunk, chunk_qt, chunk_notice, chunk_registry, chunk_templates
+from usd_chunks import chunk, chunk_interface, chunk_qt, chunk_notice, chunk_registry
+
+# from typing import reveal_type
+
+from functools import wraps
 
 
-def groupChanged(chunkItem: chunk.ChunkParamGroup, notice, sender):
-    """When a group changes, the chunkItem and sender will be the group object.
-    The ChunkParamGroup holds the changes to the last changes parameters, we can use this to find what was changed on the group
+def nice_print(func):
+    @wraps(func)
+    def _wrapper(*args, **kwargs):
+        begin = f"{'-' * 10}* {func.__qualname__} *{'-' * 10}"
+        end = '-' * len(begin)
 
-    Args:
-        chunkItem (chunk.ChunkParamGroup): The changed group
-        notice (Tf.Notice): The notice that was sent
-        sender (Any): The sender object. Will be the same as chunkItem in most cases
-    """
-    msg = f"Group Changed: {chunkItem.name}: "
-    lNotice, lSender = chunkItem.get_last_change()
+        print(begin)
+        res = func(*args, **kwargs)
+        print(end,"\n")
 
-    step = 4
-    indent = step
-    while chunk_notice.is_notice_type(lNotice, chunk_notice.NoticeType.GROUP_CHANGED):
-        msg += "\n" + " " * indent + f"Group: {lSender.name}"
-        indent += step
-        lNotice, lSender = lSender.get_last_change()
+        return res
 
-    if chunk_notice.is_notice_type(lNotice, chunk_notice.NoticeType.PARAM_CHANGED):
-        msg += "\n" + " " * indent + f"Param: {lSender.name}. Value: {lSender.value}"
-
-    print(msg)
+    return _wrapper
 
 
+@nice_print
 def chunkChanged(chunkItem: chunk.Chunk, notice, sender):
     # This works just as groupChanged, but is registered on a Chunk, so will only be sent on Chunk changes
-    msg = f"Chunk Changed: {chunkItem.name}: "
-    lNotice, lSender = chunkItem.get_last_change()
+    def get_chunk_str(s):
+        if isinstance(s, chunk.Chunk):
+            return "Chunk"
+
+        if isinstance(s, chunk.Group):
+            return "Group"
+
+        if isinstance(s, chunk.Vector):
+            return "Vector"
+
+        if isinstance(s, chunk_interface.ChunkParamBase):
+            return s.evaluate_type().name
+
+        if isinstance(s, chunk_interface.AttributeSender):
+            return "Attribute"
+
+    msg = f"Chunk Changed: {chunkItem.name} -> {notice.__class__.__name__}"
 
     step = 4
     indent = step
-    while chunk_notice.is_notice_type(lNotice, chunk_notice.NoticeType.GROUP_CHANGED):
-        msg += "\n" + " " * indent + f"Group: {lSender.name}"
+
+    for n, s in chunkItem.iter_changes():
+        msg += "\n" + " " * indent + f"{get_chunk_str(s)}: {s.name} -> {n.__class__.__name__}"
+
+        if isinstance(s, chunk_interface.AttributeSender):
+            msg += f": [New Value] = {s.value}"
         indent += step
-        lNotice, lSender = lSender.get_last_change()
-
-    if chunk_notice.is_notice_type(lNotice, chunk_notice.NoticeType.PARAM_CHANGED):
-        msg += "\n" + " " * indent + f"Param: {lSender.name}. Value: {lSender.value}"
-
     print(msg)
 
 
-def sliderChanged(chunkItem: chunk.ChunkParam, notice, sender):
-    print("Slider changed: ", chunkItem.name)
+@nice_print
+def checkboxChanged(chunkItem: chunk.ChunkParamBase, notice, sender):
+    print(chunkItem.name, hash(chunkItem))
 
 
-def clickedButton(chunkItem: chunk.ChunkParam, notice, sender):
-    print("Button clicked: ", chunkItem.name)
+@nice_print
+def sliderChanged(chunkItem: chunk.ChunkParamBase, notice, sender):
+    print(chunkItem.name, chunkItem.value, hash(chunkItem))
 
 
-def primSelectionChanged(
-    chunkItem, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.UsdviewNotice
-):
-    print("Prim selection changed: ", sender.selectedPrims)
+# def clickedButton(chunkItem: chunk.ChunkParamBase, notice, sender):
+#     print("Button clicked: ", chunkItem.name)
 
 
-def propSelectionChanged(
-    chunkItem, notice: chunk_notice.PropSelectionChangedNotice, sender: chunk_notice.UsdviewNotice
-):
-    print("Prop selection changed: ", sender.selectedProp)
+# def primSelectionChanged(
+#     chunkItem, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.UsdviewNotice
+# ):
+#     print("Prim selection changed: ", sender.selectedPrims)
 
 
-def updateLabel(
-    chunkItem: chunk.ChunkParam, notice: chunk_notice.PropSelectionChangedNotice, sender: chunk_notice.UsdviewNotice
-):
-    """An example callback function that updates the value of the chunkItem to the selected prim path when a new selection occurs
+# def propSelectionChanged(
+#     chunkItem, notice: chunk_notice.PropSelectionChangedNotice, sender: chunk_notice.UsdviewNotice
+# ):
+#     print("Prop selection changed: ", sender.selectedProp)
 
-    Args:
-        chunkItem (chunk.ChunkParam): The ChunkParamaBase object that was used to to add this callback
-        notice (chunk_notice.PropSelectionChangedNotice): The notice object. This is just an identifier for the type of notice sent
-        sender (chunk_notice.UsdviewSelectionNotice): The actual sender
-    """
-    if not sender.selectedPrims:
-        return
-    path = sender.selectedPrims[0].GetPath()
-    if path.isEmpty:
-        return
-    chunkItem.value = str(path)
+
+# def updateLabel(
+#     chunkItem: chunk.ChunkParamBase, notice: chunk_notice.PropSelectionChangedNotice, sender: chunk_notice.UsdviewNotice
+# ):
+#     """An example callback function that updates the value of the chunkItem to the selected prim path when a new selection occurs
+
+#     Args:
+#         chunkItem (chunk.ChunkParam): The ChunkParamaBase object that was used to to add this callback
+#         notice (chunk_notice.PropSelectionChangedNotice): The notice object. This is just an identifier for the type of notice sent
+#         sender (chunk_notice.UsdviewSelectionNotice): The actual sender
+#     """
+#     if not sender.selectedPrims:
+#         return
+#     path = sender.selectedPrims[0].GetPath()
+#     if path.isEmpty:
+#         return
+#     chunkItem.value = str(path)
 
 
 """
@@ -92,11 +107,11 @@ A callback function registered to a ChunkParamBase object (Chunk, ChunkParam, Ch
 
 def main(api):
     # A simple checkbox
-    checkbox = chunk.ChunkParam(chunk_templates.CheckboxTemplate(), "enable")
+    checkbox = chunk.ChunkParam(chunk_interface.CheckboxTemplate(), "enable")
 
     # A slider
     slider = chunk.ChunkParam(
-        chunk_templates.SliderTemplate(), "slider", layout_flags=chunk.ChunkLayoutFlags.HORIZONTAL
+        chunk_interface.SliderTemplate(), "slider", layout_flags=chunk.Flags.ChunkLayoutFlags.HORIZONTAL
     )
     # Example of adding a callback to a param. By default, the callback will be emitted when the value of the parameter changes
     # Contrary to adding the callback to the chunk, this will automatically connect to the param and only call mathod when this param changes
@@ -112,23 +127,23 @@ def main(api):
     sliderGroup.add_callback(groupChanged)
 
     # A button will call the callback just like any other param, but does not care about its value
-    button = chunk.ChunkParam(chunk_templates.ButtonTemplate(), "button")
+    button = chunk.ChunkParam(chunk_interface.ButtonTemplate(), "button")
     # # A callback for this button
     button.add_callback(clickedButton)
 
     # A label - Not directly modifyable in the UI
-    label = chunk.ChunkParam(chunk_templates.LabelTemplate(), "label")
+    label = chunk.ChunkParam(chunk_interface.LabelTemplate(), "label")
     # Add the updateLabel as a callback - this will be called whenever the selection changes in UsdView. We should listen_globally here as the notice is sent from object other than the param
     label.add_callback(updateLabel, listen_globally=True, notice_type=chunk_notice.NoticeType.PRIM_SELECTION_CHANGED)
 
     # A text edit is a parameter for editing strings
-    textEdit = chunk.ChunkParam(chunk_templates.LineEditTemplate(), "line_edit")
+    textEdit = chunk.ChunkParam(chunk_interface.LineEditTemplate(), "line_edit")
 
     # A simple menu
-    menu = chunk.ChunkParam(chunk_templates.MenuTemplate(menu_items=["hello0", "hello1"]), "menu")
+    menu = chunk.ChunkParam(chunk_interface.MenuTemplate(menu_items=["hello0", "hello1"]), "menu")
 
     # A seperator holds no value, is just there for the UI
-    sep = chunk.ChunkParam(chunk_templates.SeparatorTemplate(), layout_flags=chunk.ChunkLayoutFlags.HORIZONTAL)
+    sep = chunk.ChunkParam(chunk_interface.SeparatorTemplate(), layout_flags=chunk.ChunkLayoutFlags.HORIZONTAL)
 
     # Create the actual chunk - this is in practice just a ChunkParamGroup with some addiditional behaviour
     myChunk = chunk.Chunk(
@@ -153,3 +168,4 @@ def main(api):
 
     # Return the chunk
     return myChunk
+

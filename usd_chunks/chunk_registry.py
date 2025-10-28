@@ -6,24 +6,30 @@ specified directory, register them as modules,
 and create dockable widgets in the Usdview main window.
 """
 
-from typing import List, Callable, Optional, Set, Any
-from pxr.Usdviewq import usdviewApi as UsdviewModule
+from types import ModuleType
+from typing import Iterable, Optional, Set, Any, Dict
 from importlib import util
 from dataclasses import dataclass
+
+# from pxr import Usdviewq
+from pxr.Usdviewq import usdviewApi as UsdviewModule
 
 # import inspect
 import glob
 import os
+import traceback
 import sys
 
-from . import chunk, chunk_notice
+from . import chunk
+from .chunk_notice import ChunkNoticeAlias, RegistrySingleton, UsdviewNotice, send_notice
 
 
 @dataclass
 class ChunkModule:
-    module: Optional[Callable] = None
+    module: Optional[ModuleType] = None
     failed: bool = False
     module_name: str = ""
+    module_file: str = ""
     loaded_chunk: Optional[chunk.Chunk] = None
 
     def __hash__(self):
@@ -37,7 +43,7 @@ class ChunkModule:
         Assumes the function returns a chunk.Chunk object
 
         Args:
-            func_name (str, optional): Name of the function insude the module to call. Defaults to "main".
+            func_name (str, optional): Name of the function inside the module to call. Defaults to "main".
 
         Returns:
             None: If failed to call the function
@@ -49,31 +55,22 @@ class ChunkModule:
         retval: Any = func(*args, **kwargs)
 
         if not (isinstance(retval, chunk.Chunk)):
-            print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk")
+            print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
             return
 
         self.loaded_chunk = retval
         return retval
 
 
-class Singleton(type):
-    _instances = {}
-
-    def __call__(cls, *args, **kwargs):
-        if cls not in cls._instances:
-            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
-        return cls._instances[cls]
-
-
-class ChunkRegistry(metaclass=Singleton):
+class ChunkRegistry(metaclass=RegistrySingleton):
     """A singeton class to read and register Python Chunk files in specified directories. Will send notices when a new chunk was added.
     Can be accessed at runtime to handle chunks
     """
 
     registered_directories: Set[str] = set()
-    registered_modules: Set[ChunkModule] = set()
-    usdview_api: UsdviewModule.UsdviewApi = None
-    stage_sender: chunk_notice.UsdviewNotice = None
+    registered_modules: Dict[str, ChunkModule] = {}
+    usdview_api: UsdviewModule.UsdviewApi
+    stage_sender: UsdviewNotice
 
     def initialize(self, usdview_api: UsdviewModule.UsdviewApi) -> None:
         """Initialize the FileReader with the working directory."""
@@ -81,16 +78,10 @@ class ChunkRegistry(metaclass=Singleton):
         self.usdview_api = usdview_api
 
         # Holds the UsdviewNotice object here to keep it alive
-        self.stage_sender = chunk_notice.UsdviewNotice(self.usdview_api)
+        self.stage_sender = UsdviewNotice(self.usdview_api)
 
         self.register_chunk_environ_directories()
         self.register_chunk_modules(self.registered_directories)
-
-    def _primSelectionChanged(self, *args, **kwargs):
-        chunk_notice.PrimSelectionChangedNotice().Send()
-
-    def _propSelectionChanged(self, *args, **kwargs):
-        chunk_notice.PropSelectionChangedNotice().Send(self)
 
     def __repr__(self):
         """Return a string representation of the FileReader."""
@@ -111,6 +102,7 @@ class ChunkRegistry(metaclass=Singleton):
         )
 
         for chunk_dir in environ_dirs:
+            print(chunk_dir)
             self.register_directory(chunk_dir)
 
     def register_directory(self, chunk_dir: str):
@@ -130,7 +122,7 @@ class ChunkRegistry(metaclass=Singleton):
         sys.path.append(chunk_dir)
         self.registered_directories.add(chunk_dir)
 
-    def register_chunk_modules(self, working_dirs: List[str]):
+    def register_chunk_modules(self, working_dirs: Iterable[str]):
         """Read and register Python files in the working directory.
 
         Args:
@@ -141,7 +133,7 @@ class ChunkRegistry(metaclass=Singleton):
                 the loaded modules and their file names.
         """
 
-        registered_modules: Set[ChunkModule] = set()
+        new_modules: Dict[str, ChunkModule] = {}
 
         for working_dir in working_dirs:
             # Loop over all directories of the working_dirs directory
@@ -153,35 +145,71 @@ class ChunkRegistry(metaclass=Singleton):
                     continue
 
                 module_name = os.path.relpath(module_path, working_dir).replace(os.path.sep, ".").replace(".py", "")
-                file_name = os.path.basename(module_path)
-                spec = util.spec_from_file_location(module_name, module_path)
-                module = util.module_from_spec(spec)
+                if module_name != "test_params":
+                    continue
 
-                try:
-                    sys.modules[module_name] = module
-                    spec.loader.exec_module(module)
-                    module_attributes = dir(module)
-                    if "main" not in module_attributes:
-                        # Only python files with a main functions are valid chunk entrypoints.
-                        continue
+                mod = ChunkModule(module_name=module_name, module_file=module_path, failed=True)
+                self.load_module(mod)
 
-                    mod = ChunkModule(module=module, module_name=module_name)
-                    mod.run("main", self.usdview_api)
-                    registered_modules.add(mod)
+                new_modules[mod.module_name] = mod
 
-                    # Send the notice of a new chunk being added
-                    chunk_notice.ChunkLoadedNotice().Send(mod.loaded_chunk)
+        self.registered_modules |= new_modules
 
-                except Exception as e:
-                    print(f"Failed to load module {module_name}: {e}")
-                    registered_modules.add(ChunkModule(module=module, module_name=file_name, failed=True))
-                else:
-                    print(f"Loaded chunk module {module_name}")
+    def load_module(self, mod: ChunkModule):
+        spec = util.spec_from_file_location(mod.module_name, mod.module_file)
+        if not spec or not spec.loader:
+            return
 
-        self.registered_modules |= registered_modules
+        module = util.module_from_spec(spec)
+        try:
+            sys.modules[mod.module_name] = module
+            spec.loader.exec_module(module)
+            module_attributes = dir(module)
+        except Exception:
+            # This module failed to load. Set to file_name so we can try loading it again later§
+            print(f"Failed to load module {mod.module_name}:", traceback.format_exc())
+            mod.failed = True
+            return
+        else:
+            mod.failed = False
+            mod.module = module
 
-    def get_chunk_module(self, name: str) -> ChunkModule | None:
-        """Get the ChunkModule object in the registry with module_name == name. module_name is the name of the python script
+        if "main" not in module_attributes:
+            # Only python files with a main functions are valid chunk entrypoints.
+            mod.failed = True
+            return
+
+        try:
+            mod.run("main", self.usdview_api)
+        except Exception:
+            # This module failed to load. Set to file_name so we can try loading it again later§
+            print(f"Failed to run module {mod.module_name}:", traceback.format_exc())
+            mod.failed = True
+        else:
+            mod.failed = False
+            print(f"Loaded chunk module {mod.module_name}")
+            send_notice(ChunkNoticeAlias.CHUNK_LOADED, mod.loaded_chunk)
+
+    def unload_chunk_module(self, module_name: str):
+        c = self.get_chunk_module(module_name)
+        if not c:
+            return
+        if c.failed or not c.loaded_chunk:
+            return
+
+        c.loaded_chunk.request_delete()
+        c.failed = True
+
+    def unload_chunk(self, chunk_name: str):
+        for mod in self.registered_modules.values():
+            if mod.loaded_chunk and mod.loaded_chunk.name == chunk_name:
+                mod.loaded_chunk.request_delete()
+                mod.failed = True
+
+    def get_chunk_module(self, module_name: str) -> ChunkModule | None:
+        """Get the ChunkModule object in the registry where module_name matches the stored name of the module. The module_name should typically be the name of the python script.
+        If the module failed to load, the module name is stored as the path to the python script. To find a failed module, the module_name argument should be
+        /full/path/to/module.py
 
         Args:
             name (str): The name of the module to find
@@ -189,9 +217,9 @@ class ChunkRegistry(metaclass=Singleton):
         Returns:
             ChunkModule | None: A found ChunkModule object with name, or None if not found
         """
-        if name not in self.registered_modules:
+        if module_name not in self.registered_modules:
             return None
-        return self.registered_modules[name]
+        return self.registered_modules[module_name]
 
     def get_chunk(self, name: str) -> chunk.Chunk | None:
         """Get a loaded chunk object in the regirstry based on the name of the chunk
@@ -202,10 +230,8 @@ class ChunkRegistry(metaclass=Singleton):
         Returns:
             chunk.Chunk | None: The chunk object with name, or None if not found
         """
-        for c in self.registered_modules:
-            if c.failed:
-                continue
-            if c.loaded_chunk and c.loaded_chunk.name == name:
-                return c.loaded_chunk
 
+        for mod in self.registered_modules.values():
+            if mod.loaded_chunk and mod.loaded_chunk.name == name:
+                return mod.loaded_chunk
         return None

@@ -1,92 +1,37 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import List, Callable, Any, Type
+from typing import List, Callable, Any, Type, TypeAlias, TypeVar, Dict, Optional
 
 from abc import abstractmethod
 
-from pxr import Tf
+from pxr import Tf, Usdviewq
 
-from . import chunk_notice, chunk_registry, chunk_templates, chunk
-
-
-class ChunkParamWidget:
-    """Base class for a chunk param widget. Creating a custom widget should subclass
-    the relevant Qt widget as well as this class, such as:
-    ```
-        class myWidget(QtWidgets.QPushButton, ChunkParamWidget)
-    ```
-    The subclass should override the relevant methods from this class
-    """
-
-    def __init__(self):
-        self.param: chunk.ChunkParam = None
-
-    def param_changed_callback(self, chunkItem: chunk.ChunkParamBase, notice, param: chunk.ChunkParam):
-        if param.value is not None:
-            self.set_value(param.value)
-
-    def setup_chunk_widget(self, param: chunk.ChunkParam):
-        self.param = param
-        value = self.param.value if self.param.value is not None else self.param.default_value
-        label = self.param.label if self.param.label else self.param.name
-
-        self.set_value(value)
-        self.set_label(label)
-
-        if self.param.icon:
-            self.set_icon(self.param.icon)
-
-        self.set_param_layout(param.layout_flags)
-
-        self._connection = chunk_notice.NoticeConnection(
-            self.param_changed_callback, chunk_notice.NoticeType.PARAM_CHANGED, param, chunk_item=param
-        )
-
-    @abstractmethod
-    def get_value(self):
-        return None
-
-    @abstractmethod
-    def set_value(self, value: Any):
-        pass
-
-    @abstractmethod
-    def set_label(self, text: str):
-        pass
-
-    @abstractmethod
-    def set_icon(self, icon: str):
-        pass
-
-    @abstractmethod
-    def set_param_layout(self, layout_flags: chunk.ChunkLayoutFlags):
-        pass
-
-    def value_changed(self, value: Any):
-        self.param.value = value
+from . import chunk, chunk_notice, chunk_registry
+from .chunk_interface import ChunkFlags, ChunkParamWidget, ParamT
+from usd_chunks import chunk_interface
 
 
-class ChunkSliderWidget(QtWidgets.QSlider, ChunkParamWidget):
-    def __init__(self, param: chunk.ChunkParam, parent=None):
-        super().__init__(parent)
+class ChunkSliderWidget(ChunkParamWidget[ParamT], QtWidgets.QSlider):
+    def __init__(self, param: chunk.Slider):
+        super().__init__(param)
 
         self.valueChanged.connect(self.value_changed)
 
-        self._step = 1000 if chunk_templates.ChunkParamType.FLOAT in param.get_type() else 1
+        self._step = 1000 if chunk.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
 
-        min_val = param.template.min_value
-        max_val = param.template.max_value
+        min_val = param.min_value
+        max_val = param.max_value
 
         if min_val is not None:
-            self.setMinimum(min_val * self._step)
+            self.setMinimum(int(min_val * self._step))
         else:
             self.setMinimum(0)
 
         if max_val is not None:
-            self.setMaximum(max_val * self._step)
+            self.setMaximum(int(max_val * self._step))
         else:
             self.setMaximum(10 * self._step)
 
-        self.setup_chunk_widget(param)
+        self.setup_chunk_widget()
 
     def get_value(self):
         return self.value() / self._step
@@ -94,28 +39,28 @@ class ChunkSliderWidget(QtWidgets.QSlider, ChunkParamWidget):
     def set_value(self, value):
         return self.setValue(value * self._step)
 
-    def set_param_layout(self, layout_flags: chunk.ChunkLayoutFlags):
-        is_horizontal = chunk.ChunkLayoutFlags.HORIZONTAL in layout_flags
+    def set_param_layout(self, layout_flags: chunk.ChunkFlags.LayoutFlags):
+        is_horizontal = chunk.ChunkFlags.LayoutFlags.HORIZONTAL in layout_flags
 
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
         self.setOrientation(orient)
 
-    def value_changed(self, value):
+    def value_changed(self, value: int | float):
         self.param.value = value / self._step
 
 
 # TODO: Make this widget nice
-class ChunkSpinboxWidget(QtWidgets.QDoubleSpinBox, ChunkParamWidget):
-    def __init__(self, param: chunk.ChunkParam, parent=None):
-        super().__init__(parent)
+class ChunkSpinboxWidget(ChunkParamWidget, QtWidgets.QDoubleSpinBox):
+    def __init__(self, param: chunk.Spinbox):
+        super().__init__(param)
 
         self.valueChanged.connect(self.value_changed)
 
         self._step = 1
 
-        min_val = param.template.min_value
-        max_val = param.template.max_value
+        min_val = param.min_value
+        max_val = param.max_value
 
         if min_val is not None:
             self.setMinimum(min_val * self._step)
@@ -123,7 +68,7 @@ class ChunkSpinboxWidget(QtWidgets.QDoubleSpinBox, ChunkParamWidget):
         if max_val is not None:
             self.setMaximum(max_val * self._step)
 
-        self.setup_chunk_widget(param)
+        self.setup_chunk_widget()
 
     def get_value(self):
         return self.value()
@@ -131,11 +76,15 @@ class ChunkSpinboxWidget(QtWidgets.QDoubleSpinBox, ChunkParamWidget):
     def set_value(self, value):
         return self.setValue(value)
 
+    def wheelEvent(self, event: QtGui.QWheelEvent):
+        event.ignore()
 
-class ChunkLabelWidget(QtWidgets.QLabel, ChunkParamWidget):
-    def __init__(self, param: chunk.ChunkParam, parent=None):
-        super().__init__(parent)
-        self.setup_chunk_widget(param)
+
+class ChunkLabelWidget(ChunkParamWidget, QtWidgets.QLabel):
+    def __init__(self, param: chunk.Label):
+        super().__init__(param)
+
+        self.setup_chunk_widget()
 
     def get_value(self):
         return self.text()
@@ -147,12 +96,12 @@ class ChunkLabelWidget(QtWidgets.QLabel, ChunkParamWidget):
         return self.setText(value)
 
 
-class ChunkLineEditWidget(QtWidgets.QLineEdit, ChunkParamWidget):
-    def __init__(self, param: chunk.ChunkParam, parent=None):
-        super().__init__(parent)
+class ChunkLineEditWidget(ChunkParamWidget, QtWidgets.QLineEdit):
+    def __init__(self, param: chunk.LineEdit):
+        super().__init__(param)
 
         self.textChanged.connect(self.value_changed)
-        self.setup_chunk_widget(param)
+        self.setup_chunk_widget()
 
     def get_value(self):
         return self.text()
@@ -161,14 +110,15 @@ class ChunkLineEditWidget(QtWidgets.QLineEdit, ChunkParamWidget):
         return self.setText(value)
 
 
-class ChunkComboBoxWidget(QtWidgets.QComboBox, ChunkParamWidget):
-    def __init__(self, param: chunk.ChunkParam, parent=None):
-        super().__init__(parent)
+class ChunkComboBoxWidget(ChunkParamWidget, QtWidgets.QComboBox):
+    def __init__(self, param: chunk.Menu):
+        super().__init__(param)
 
         self.currentTextChanged.connect(self.value_changed)
-        self.setup_chunk_widget(param)
+        self.setup_chunk_widget()
 
-        menu_items = self.param.get_template().menu_items
+        menu_items = param.menu_items
+
         if menu_items:
             self.addItems(menu_items)
 
@@ -178,25 +128,30 @@ class ChunkComboBoxWidget(QtWidgets.QComboBox, ChunkParamWidget):
     def set_value(self, value):
         return self.setCurrentText(value)
 
+    def wheelEvent(self, event: QtGui.QWheelEvent):
+        event.ignore()
 
-class ChunkCheckBoxWidget(QtWidgets.QCheckBox, ChunkParamWidget):
-    def __init__(self, param: chunk.ChunkParam, parent=None):
-        super().__init__(parent)
+
+class ChunkCheckBoxWidget(ChunkParamWidget, QtWidgets.QCheckBox):
+    def __init__(self, param: chunk.Checkbox):
+        super().__init__(param)
+
         self.toggled.connect(self.value_changed)
-        self.setup_chunk_widget(param)
+        self.setup_chunk_widget()
 
     def get_value(self):
         return self.isChecked()
 
-    def set_value(self, value):
+    def set_value(self, value: bool):
         return self.setChecked(value)
 
 
-class ChunkPushButtonWidget(QtWidgets.QPushButton, ChunkParamWidget):
-    def __init__(self, param: chunk.ChunkParam, parent=None):
-        super().__init__(parent)
+class ChunkPushButtonWidget(ChunkParamWidget[ParamT], QtWidgets.QPushButton):
+    def __init__(self, param: chunk.Button):
+        super().__init__(param)
         self.clicked.connect(self.value_changed)
-        self.setup_chunk_widget(param)
+
+        self.setup_chunk_widget()
 
     def set_label(self, text):
         self.setText(text)
@@ -205,48 +160,43 @@ class ChunkPushButtonWidget(QtWidgets.QPushButton, ChunkParamWidget):
         icon = QtGui.QIcon(path)
         self.setIcon(icon)
 
-    def value_changed(self, value):
-        # Just emit the ParamChangeNotice since a button does not have a value
-        chunk_notice.ParamChangeNotice().Send(self.param)
+    def value_changed(self, _: Any):
+        """Override for buttons as the param do not have a value. Better to just send the param notice directly
+
+        Args:
+            _ (Any): Ignored
+        """
+        self.param.send_self()
 
 
-class ChunkSeparatorWidget(QtWidgets.QFrame, ChunkParamWidget):
-    def __init__(self, param: chunk.ChunkParam, parent=None):
-        super().__init__(parent)
+class ChunkSeparatorWidget(ChunkParamWidget, QtWidgets.QFrame):
+    def __init__(self, param: chunk.Separator):
+        super().__init__(param)
 
-        is_horizontal = chunk.ChunkLayoutFlags.HORIZONTAL in param.layout_flags
+        is_horizontal = chunk.ChunkFlags.LayoutFlags.HORIZONTAL in param.layout
         shape = QtWidgets.QFrame.Shape.HLine if is_horizontal else QtWidgets.QFrame.Shape.VLine
         self.setFrameShape(shape)
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
-        self.setup_chunk_widget(param)
+
+        self.setup_chunk_widget()
 
 
-class ChunkParamWidgetFactory:
-    def __init__(self):
-        self.widget_map: dict = {
-            chunk_templates.ChunkParamType.FLOAT_SLIDER: ChunkSliderWidget,
-            chunk_templates.ChunkParamType.INT_SLIDER: ChunkSliderWidget,
-            chunk_templates.ChunkParamType.FLOAT_SPINBOX: ChunkSpinboxWidget,
-            chunk_templates.ChunkParamType.INT_SPINBOX: ChunkSpinboxWidget,
-            chunk_templates.ChunkParamType.LABEL: ChunkLabelWidget,
-            chunk_templates.ChunkParamType.LINEEDIT: ChunkLineEditWidget,
-            chunk_templates.ChunkParamType.FILE: ChunkLineEditWidget,
-            chunk_templates.ChunkParamType.STRING_MENU: ChunkComboBoxWidget,
-            chunk_templates.ChunkParamType.CHECKBOX: ChunkCheckBoxWidget,
-            chunk_templates.ChunkParamType.BUTTON: ChunkPushButtonWidget,
-            chunk_templates.ChunkParamType.SEPARATOR: ChunkSeparatorWidget,
-        }
+class ChunkQTWidgetFactory(chunk_interface.ChunkWidgetFactoryBase):
+    widget_map: Dict[ChunkFlags.ParamType, type[QtWidgets.QWidget]] = {
+        ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
+        ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
+        ChunkFlags.ParamType.FLOAT_SPINBOX: ChunkSpinboxWidget,
+        ChunkFlags.ParamType.INT_SPINBOX: ChunkSpinboxWidget,
+        ChunkFlags.ParamType.LABEL: ChunkLabelWidget,
+        ChunkFlags.ParamType.LINEEDIT: ChunkLineEditWidget,
+        ChunkFlags.ParamType.FILE: ChunkLineEditWidget,
+        ChunkFlags.ParamType.STRING_MENU: ChunkComboBoxWidget,
+        ChunkFlags.ParamType.CHECKBOX: ChunkCheckBoxWidget,
+        ChunkFlags.ParamType.BUTTON: ChunkPushButtonWidget,
+        ChunkFlags.ParamType.SEPARATOR: ChunkSeparatorWidget,
+    }
 
-    def get_map(self) -> dict:
-        return self.widget_map
-
-    def add_mapping(self, key: chunk_templates.ChunkParamType, widget_type: Type[ChunkParamWidget]):
-        self.widget_map[key] = widget_type
-
-    def has_mapping(self, key: chunk_templates.ChunkParamType):
-        return key in self.get_map()
-
-    def create_widget(self, param: chunk.ChunkParam) -> ChunkParamWidget:
+    def create_widget(self, param: chunk.ChunkParamBase) -> ChunkParamWidget | None:
         """Create a Qt widget based on the ChunkParam object. the info.get_type() should determine the type of Qt Widget to create
 
         Args:
@@ -256,159 +206,214 @@ class ChunkParamWidgetFactory:
             QtWidgets.QWidget: The QtWidget created
             # None: If failed to create a widget
         """
-        key = param.get_type()
+        key = param.evaluate_type()
         widget_class = self.get_map().get(key, None)
+
         if not widget_class:
-            print("Could not create widget for param: ", param.name)
+            print("Could not create widget for param: ", param.name, "Missing mapping in Qt factory")
             return None
 
         widget: ChunkParamWidget = widget_class(param)
 
-        if param.tooltip:
+        if param.tooltip and isinstance(widget, QtWidgets.QWidget):
             widget.setToolTip(param.tooltip)
 
         return widget
 
 
-class ChunkWidget(QtWidgets.QWidget):
+# LayoutTypes: TypeAlias = QtWidgets.QVBoxLayout | QtWidgets.QHBoxLayout | "ContainerWidget"
+
+
+class ContainerWidget(QtWidgets.QWidget):
     """
     Chunk is a base class for creating UI components.
     It provides a structure for initializing the API and creating UI Chunks.
     """
 
+    group_height_changed = QtCore.Signal(float)
+
     def __init__(
         self,
-        chunk_info: chunk.Chunk = chunk.Chunk(),
+        group: chunk_interface.ChunkContainerBase,
         parent=None,
     ):
         super().__init__(parent)
 
+        self.group = group
+        self.animation_duration = 300
+        self._animation_value = 0
+
+        self._state_listener = chunk_notice.NoticeConnection(
+            self.state_changed, chunk_notice.ChunkNoticeAlias.STATE_CHANGED, self.group.get_attribute_sender("state")
+        )
+
+        self._delete_listener = chunk_notice.NoticeConnection(
+            self.group_deleted, chunk_notice.ChunkNoticeAlias.CHUNK_DELETE, self.group
+        )
+
         # Associate ChunkParamGroup objects with Qt Layouts
-        self.param_groups: dict[chunk.ChunkParamGroup, QtWidgets.QLayout] = {}
+        self.param_groups: dict[chunk_interface.ChunkContainerBase, ContainerWidget] = {}
 
-        # Container for all widgets in this chunk. Dict will map between ChunkParam -> [QtWidgets.QWidget,]
-        # for each widget created from the same ChunkParam instance
-        self.param_widgets: dict[chunk.ChunkParam, QtWidgets.QWidget] = {}
-
-        # Hold the Chunk instance
-        self.chunk = chunk_info
+        # # Container for all widgets in this chunk. Dict will map between ChunkParam -> [QtWidgets.QWidget,]
+        # # for each widget created from the same ChunkParam instance
+        self.param_widgets: dict[chunk.ChunkParamBase, Any] = {}
 
         # Factory for creating the widgets
-        if self.chunk.widget_factory:
-            self.factory: ChunkParamWidgetFactory = self.chunk.widget_factory
+        if self.group.widget_factory:
+            self.factory: chunk_interface.ChunkWidgetFactoryBase = self.group.widget_factory
         else:
-            self.factory: ChunkParamWidgetFactory = ChunkParamWidgetFactory()
+            self.factory: chunk_interface.ChunkWidgetFactoryBase = ChunkQTWidgetFactory()
 
-        # Holds a temporary layout for nesting groups
-        self._groupParentLayout = None
+        self.build_collapsable()
+        self.build_param_widgets(self.group)
+        self.update_from_flags()
+        self.update_from_state()
 
-        self.build_chunk()
-        self.build_param_widgets(self.chunk)
+    def group_deleted(self, notice, sender):
 
-    def build_chunk(self):
-        # Setup chunk content area
+        if not chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.CHUNK_DELETE):
+            return
+
+        if sender is not  self.group:
+            return
+
+        self._state_listener.disconnect()
+        self._delete_listener.disconnect()
+
+        self.setParent(None)
+        self.deleteLater()
+
+    def state_changed(self, notice, sender):
+        self.update_from_state()
+
+    @QtCore.Property(float)
+    def animation_value(self):  # type: ignore
+        return self._animation_value
+
+    @animation_value.setter
+    def animation_value(self, val):
+        self._animation_value = val
+        scale = max(self._animation_value / self.animation_duration, 0)
+
+        h = self.content_layout.sizeHint().height()
+        self.content.setFixedHeight(h * scale)
+
+    def is_collapsed(self) -> bool:
+        val = self.group.has_state(ChunkFlags.State.COLLAPSED)
+        parent = self.group.get_owner()
+        if parent and isinstance(parent, chunk_interface.ChunkContainerBase):
+            val |= parent.has_state(ChunkFlags.State.COLLAPSED)
+        return val
+
+    def build_collapsable(self):
         self.content = QtWidgets.QScrollArea()
-        self.content.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.content.setMaximumHeight(0)
-        self.content.setMinimumHeight(0)
-        self.content_layout = QtWidgets.QVBoxLayout()
-        self.content.setLayout(self.content_layout)
+        self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Ignored)
 
-        # Setup toggle minimize/maximize animation.
-        self.toggle_anim = QtCore.QParallelAnimationGroup()
-        self.toggle_anim.addAnimation(QtCore.QPropertyAnimation(self, b"minimumHeight"))
-        self.toggle_anim.addAnimation(QtCore.QPropertyAnimation(self, b"maximumHeight"))
-        self.toggle_anim.addAnimation(QtCore.QPropertyAnimation(self.content, b"maximumHeight"))
+        if chunk.ChunkFlags.LayoutFlags.HORIZONTAL in self.group.layout:
+            self.content_layout = QtWidgets.QHBoxLayout()
+        else:
+            self.content_layout = QtWidgets.QVBoxLayout()
+
+        self.content.setLayout(self.content_layout)
+        self.content_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.content_layout.setContentsMargins(2, 2, 2, 2)
 
         # Setup minimize/maximize button
         self.minimize_button = QtWidgets.QToolButton()
-        self.minimize_button.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-        self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum)
+        self.minimize_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
 
-        self.minimize_button.setArrowType(QtCore.Qt.RightArrow)
-        self.minimize_button.setText(self.chunk.name)
-        self.minimize_button.setCheckable(True)
-        self.minimize_button.setChecked(False)
-        self.minimize_button.clicked.connect(self._animate)
+        # Used when collapsable
+        self.toggle_anim = QtCore.QPropertyAnimation(self, b"animation_value")
+        self.toggle_anim.setStartValue(0)
+        self.toggle_anim.setEndValue(self.animation_duration)
 
         self.__layout__ = QtWidgets.QVBoxLayout()
+        self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.__layout__.setContentsMargins(10, 3, 0, 0)
+
         self.__layout__.addWidget(self.minimize_button)
         self.__layout__.addWidget(self.content)
+
         self.setLayout(self.__layout__)
-        self.setMinimumSize(300, 10)
 
-        if self.chunk.tooltip:
-            self.setToolTip(self.chunk.tooltip)
+    def animation_finished(self):
+        """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
+        if self.is_collapsed():
+            self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
+        else:
+            self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
 
-    def _animate(self, checked):
-        arrow_type = QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow
-        direction = QtCore.QAbstractAnimation.Forward if checked else QtCore.QAbstractAnimation.Backward
+    def update_from_flags(self):
+        if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
+            # Enables animatiable collapsing of the group
+
+            self.minimize_button.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+            self.minimize_button.setCheckable(True)
+            self.toggle_anim.finished.connect(self.animation_finished)
+            self.minimize_button.toggled.connect(self.set_expanded)
+        else:
+            # The layout should update min and max size. When Collapsable, this is handled in animation_finished, as collapsed groups should set NoConstraint
+            self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
+
+        if chunk.ChunkFlags.GroupFlags.LABELED in self.group.flags:
+            self.minimize_button.setText(self.group.get_label())
+        else:
+            self.minimize_button.setText("")
+
+        self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.content.setLineWidth(2)
+
+        if chunk.ChunkFlags.GroupFlags.FRAME_SUNKEN in self.group.flags:
+            self.content.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        elif chunk.ChunkFlags.GroupFlags.FRAME_RAISED in self.group.flags:
+            self.content.setFrameShadow(QtWidgets.QFrame.Shadow.Raised)
+        else:
+            self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+
+    def update_from_state(self):
+        self.setHidden(self.group.has_state(ChunkFlags.State.HIDDEN))
+        self.setEnabled(not self.group.has_state(ChunkFlags.State.DISABLED))
+
+        if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
+            self.minimize_button.setChecked(not self.group.has_state(ChunkFlags.State.COLLAPSED))
+
+    def set_expanded(self, checked):
+        arrow_type = QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
+        direction = (
+            QtCore.QAbstractAnimation.Direction.Forward if checked else QtCore.QAbstractAnimation.Direction.Backward
+        )
+        if checked:
+            self.group.unset_state(ChunkFlags.State.COLLAPSED)
+        else:
+            self.group.set_state(ChunkFlags.State.COLLAPSED)
+
         self.minimize_button.setArrowType(arrow_type)
         self.toggle_anim.setDirection(direction)
         self.toggle_anim.start()
 
-    def update_anim(self):
-        self.minimize_button.setText(self.chunk.name)
-        collapsed_height = self.sizeHint().height() - self.content.maximumHeight()
-        content_height = self.content_layout.sizeHint().height()
-        for i in range(self.toggle_anim.animationCount() - 1):
-            animation = self.toggle_anim.animationAt(i)
-            animation.setDuration(self.chunk.animation_duration)
-            animation.setStartValue(collapsed_height)
-            animation.setEndValue(collapsed_height + content_height)
-        content_animation = self.toggle_anim.animationAt(self.toggle_anim.animationCount() - 1)
-        content_animation.setDuration(self.chunk.animation_duration)
-        content_animation.setStartValue(0)
-        content_animation.setEndValue(content_height)
+    def addWidget(self, widget):
+        self.content_layout.addWidget(widget)
 
-    def _get_or_create_layout(self, group: chunk.ChunkParamGroup):
-        """Create a a layout from group"""
-
-        parent_layout = self._groupParentLayout
-
-        # Use content_layout for groups without specified parent
-        if not parent_layout:
-            parent_layout = self.content_layout
-
-        layout = self.param_groups.get(group, None)
-        if not layout:
-            if group.layout_flags is chunk.ChunkLayoutFlags.HORIZONTAL:
-                layout = QtWidgets.QHBoxLayout()
-            elif group.layout_flags is chunk.ChunkLayoutFlags.VERTICAL:
-                layout = QtWidgets.QVBoxLayout()
-
-            if not layout:
-                return parent_layout
-
-            if group.label:
-                layout.addWidget(QtWidgets.QLabel(group.label))
-
-            parent_layout.addLayout(layout)
-            self.param_groups[group] = layout
-
-        return layout
-
-    def add_param_widget(self, info: chunk.ChunkParam, group: chunk.ChunkParamGroup = None):
+    def add_param_widget(self, info: chunk.ChunkParamBase, group: Optional[chunk_interface.ChunkContainerBase] = None):
         """Add a ChunkParamWidget from a ChunkParam object. If a ChunkParamGroup is specified, the created widget will be added to the group layout
 
         Args:
             info (chunk.ChunkParam): The ChunkParam to represent as a widget
             group (chunk.ChunkParamGroup, optional): A group that contains the param. If specified, will add the param widget to the group layout. Defaults to None.
         """
-        if info.get_type() == chunk_templates.ChunkParamType.NONE:
+
+        t = info.evaluate_type()
+        if t == ChunkFlags.ParamType.NONE:
             return
 
-        # TODO: info is mutable, so duplicate entries will mutate. Should we force a copy of the info before adding?
-        # info.name = self.get_unique_param_name(info.name)
-
-        widget = None
-
+        widget: Optional[QtWidgets.QWidget] = None
         # Custom widget is created and managed externally
-        if info.get_type() == chunk_templates.ChunkParamType.CUSTOM:
+        if t == ChunkFlags.ParamType.CUSTOM and info.custom_widget:
             widget = info.custom_widget
         else:
-            if not self.factory.has_mapping(info.get_type()):
-                print("Missing rules for creating param", info.name)
+            if not self.factory.has_mapping(t):
+                print("Missing mapping in factory for creating widget", info.name)
                 return
 
             # Create a widget from the factory based on the info.get_type()
@@ -418,28 +423,29 @@ class ChunkWidget(QtWidgets.QWidget):
             return
 
         if group is not None:
-            layout = self._get_or_create_layout(group)
+            layout = self.add_group_layout(group)
         else:
-            layout = self.content_layout
+            layout = self
 
-        self.param_widgets[info.name] = widget
+        self.param_widgets[info] = widget
         layout.addWidget(widget)
 
-    def add_group_layout(self, group: chunk.ChunkParamGroup):
+    def add_group_layout(self, group: chunk_interface.ChunkContainerBase):
         """Adds a group of parameters to a shared layout
 
         Args:
             info (ChunkGroupInfo): The group containing the parameters
         """
-        for param in group.get_params():
-            self.add_param_widget(param, group)
 
-        for nested in group.get_groups():
-            # Enanbles nested groups
-            self._groupParentLayout = self._get_or_create_layout(nested)
-            self.add_group_layout(nested)
+        container = self.param_groups.get(group, None)
+        if not container:
+            container = ContainerWidget(group, self)
+            self.addWidget(container)
+            self.param_groups[group] = container
 
-    def build_param_widgets(self, info: chunk.Chunk):
+        return container
+
+    def build_param_widgets(self, info: chunk_interface.ChunkContainerBase):
         """Build params from a ChunkInfo or ChunkGroupInfo. Will generate the parameter widgets and display them in the Chunk
 
         Args:
@@ -451,17 +457,7 @@ class ChunkWidget(QtWidgets.QWidget):
         for group in info.get_groups():
             self.add_group_layout(group)
 
-        self.update_anim()
-
-    def get_category(self) -> str:
-        """Get the category of this Chunk
-
-        Returns:
-            str: Category of this Chunk
-        """
-        return self.chunk.category
-
-    def has_param_widget(self, param: chunk.ChunkParam | str) -> bool:
+    def has_param_widget(self, param: chunk.ChunkParamBase | str) -> bool:
         """Check to see if param exists in this Chunk widget
 
         Args:
@@ -472,7 +468,7 @@ class ChunkWidget(QtWidgets.QWidget):
         """
         return self.get_param_widget(param) is not None
 
-    def get_param_widget(self, param: chunk.ChunkParam | str) -> ChunkParamWidget | None:
+    def get_param_widget(self, param: chunk.ChunkParamBase | str) -> ChunkParamWidget | None:
         """Get the ChunkParamWidget for a ChunkParam. If a string is passed as param, then look for the associated name
 
         Args:
@@ -481,14 +477,14 @@ class ChunkWidget(QtWidgets.QWidget):
         Returns:
             ChunkParamWidget | None: The found ChunkParamWidget if found, otherwise None
         """
-        if isinstance(param, chunk.ChunkParam):
+        if isinstance(param, chunk.ChunkParamBase):
             return self.param_widgets.get(param, None)
 
         for bound_param, widget in self.param_widgets.items():
             if bound_param.name == param:
                 return widget
 
-    def has_group_layout(self, group: chunk.ChunkParamGroup | str) -> bool:
+    def has_group_layout(self, group: chunk.ChunkGroupBase | str) -> bool:
         """Check to see if group exists in this Chunk widget
 
         Args:
@@ -499,7 +495,7 @@ class ChunkWidget(QtWidgets.QWidget):
         """
         return self.get_group_layout(group) is not None
 
-    def get_group_layout(self, group: chunk.ChunkParamGroup | str) -> QtWidgets.QLayout | None:
+    def get_group_layout(self, group: chunk.ChunkGroupBase | str) -> Optional["ContainerWidget"]:
         """Get the QLayout object for a ChunkParamGroup. If a string is passed as param, then look for the associated name
 
         Args:
@@ -508,7 +504,7 @@ class ChunkWidget(QtWidgets.QWidget):
         Returns:
             QLayout | None: The found QLayout associated with group. If not found, returns None
         """
-        if isinstance(group, chunk.ChunkParamGroup):
+        if isinstance(group, chunk.ChunkGroupBase):
             return self.param_groups.get(group, None)
 
         for bound_group, layout in self.param_groups.items():
@@ -516,18 +512,45 @@ class ChunkWidget(QtWidgets.QWidget):
                 return layout
 
 
+class ChunkWidget(ContainerWidget):
+    """
+    Chunk is a base class for creating UI components.
+    It provides a structure for initializing the API and creating UI Chunks.
+    """
+
+    group: chunk.Chunk
+
+    def __init__(
+        self,
+        group: chunk.Chunk,
+        parent=None,
+    ):
+        super().__init__(group, parent)
+
+    def get_category(self) -> str:
+        """Get the category of this Chunk
+
+        Returns:
+            str: Category of this Chunk
+        """
+        return self.group.category
+
+
 class ChunkArea(QtWidgets.QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
 
         self.flow = QtWidgets.QVBoxLayout()
-        self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
+        # self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self.widget_holder = QtWidgets.QWidget(self)
         self.widget_holder.setLayout(self.flow)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
 
-        self.setWidgetResizable(True)
         self.setWidget(self.widget_holder)
+        self.setWidgetResizable(True)
 
 
 class ChunkWidgetDocker(QtWidgets.QWidget):
@@ -535,11 +558,17 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         super().__init__(parent)
         self.build()
 
-        self._chunk_loaded_listener: chunk_notice.NoticeConnection = chunk_notice.NoticeConnection(
-            self._loaded_module_callback, chunk_notice.NoticeType.CHUNK_LOADED, globally=True
+        self._chunk_loaded_listener = chunk_notice.NoticeConnection(
+            self._loaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
+        )
+        self._chunk_unloaded_listener = chunk_notice.NoticeConnection(
+            self._unloaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
         )
 
-    def _loaded_module_callback(self, notice: chunk_notice.ChunkLoadedNotice, sender: chunk.Chunk):
+    def _unloaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
+        pass
+
+    def _loaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
         """Called whenever CHUNK_LOADED notice was recieved - will in turn add a new chunk widget
 
         Args:
@@ -552,19 +581,18 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: QtWidgets.QTabWidget = QtWidgets.QTabWidget(self)
 
-        self.tab_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
-
         registry = chunk_registry.ChunkRegistry()
-        for chunk_module in registry.registered_modules:
-            loaded_chunk = chunk_module.loaded_chunk
-            if not loaded_chunk:
+
+        for module_name, mod in registry.registered_modules.items():
+            loaded_chunk = mod.loaded_chunk
+            if not loaded_chunk or mod.failed:
                 continue
 
             if not self.add_chunk_widget(loaded_chunk):
                 continue
 
         self.main_layout = QtWidgets.QVBoxLayout()
+
         self.main_layout.addWidget(self.tab_widget)
 
         self.setLayout(self.main_layout)
@@ -580,6 +608,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             ChunkWidget: The new ChunkWidget created for the loaded_chunk
         """
         widget = None
+
         if isinstance(loaded_chunk, chunk.Chunk):
             # If the returned value is a Chunk, we need to create the widget here as well
             widget = ChunkWidget(loaded_chunk, self)
@@ -594,17 +623,22 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             self.chunk_tabs[category] = ChunkArea(self)
             self.tab_widget.addTab(self.chunk_tabs[category], category)
 
-        widget.minimize_button.setChecked(True)
-        widget._animate(True)
         self.chunk_tabs[category].flow.addWidget(widget)
-
         return widget
 
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
     # Create an empty dock widget to hold the modules
+    module_dock = parent_window.findChild(QtWidgets.QDockWidget, "Chunks")
+    if module_dock:
+        return
+
     module_dock = QtWidgets.QDockWidget("Chunks", parent_window)
+
     widget_docker = ChunkWidgetDocker(parent=parent_window)
     module_dock.setWidget(widget_docker)
-    parent_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, module_dock)
-    return widget_docker
+    parent_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, module_dock)
+
+
+# def modify_chunks_dial(parent_window: QtWidgets.QMainWindow):
+#     dial = QtWidgets.QDialog(parent=parent_window)

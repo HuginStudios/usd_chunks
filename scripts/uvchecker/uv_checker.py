@@ -1,5 +1,5 @@
 import os
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_interface
 from pxr import Sdf, Usd, UsdGeom, UsdShade
 from PySide6 import QtWidgets
 
@@ -93,10 +93,11 @@ def clear(chunkItem: chunk.Chunk, notice, sender):
     stage.GetSessionLayer().subLayerPaths = sublayer_paths
 
 
-def scale(chunkItem: chunk.ChunkParamGroup, notice, sender):
+def scale(chunkItem: chunk.ChunkGroup, notice, sender):
     _, param = chunkItem.get_last_param_change()
+    print(param.get_last_change())
+    
     stage = chunkItem.get_stage()
-
     layer_id = None
     sublayer_paths = list(stage.GetSessionLayer().subLayerPaths)
     for sublayer in sublayer_paths:
@@ -119,40 +120,27 @@ def scale(chunkItem: chunk.ChunkParamGroup, notice, sender):
 
         scale_attr = prim.GetAttribute("inputs:scale")
         scale_val = scale_attr.Get()
-    
+
         idx = 1 if param.name == "scale1" else 0
         scale_val[idx] = param.value
         scale_attr.Set(scale_val)
 
 
 def main(api):
-    chunk_api = chunk.Chunk()
-    chunk_api.name = "UV Checker"
-    chunk_api.category = "Utility"
+    chunk_api = chunk.Chunk("UV Checker", category="Utility")
 
-    spinbox = chunk.ChunkParam()
-    spinbox.param_type = chunk.ChunkParamType.FLOAT_SPINBOX
-    spinbox.name = "scale"
-    spinbox.default_value = 1
+    spinbox = chunk.ChunkParamBase(chunk_interface.SpinboxTemplate(default_value=1), "scale")
 
-    group = chunk.ChunkParamGroup()
-    group.name = "scale_group"
-    group.add_params([spinbox, spinbox])
+    group = chunk.ChunkGroup("sccale_group", params=[spinbox, spinbox])
 
     # Adds a callback that runs when any of the spinboxes changes
     group.add_callback(scale)
 
-    filebrowser = chunk.ChunkParam()
-    filebrowser.param_type = chunk.ChunkParamType.FILE
-    filebrowser.name = "browse"
+    filebrowser = chunk.ChunkParamBase(chunk_interface.FileBrowserTemplate(), "browse")
 
-    visUVsButton = chunk.ChunkParam()
-    visUVsButton.name = "visualize"
-    visUVsButton.param_type = chunk.ChunkParamType.BUTTON
+    visUVsButton = chunk.ChunkParamBase(chunk_interface.ButtonTemplate(), "visualize")
 
-    clearUVsButton = chunk.ChunkParam()
-    clearUVsButton.name = "Clear Vis"
-    clearUVsButton.param_type = chunk.ChunkParamType.BUTTON
+    clearUVsButton = chunk.ChunkParamBase(chunk_interface.ButtonTemplate(), "Clear Vis")
 
     chunk_api.add_params([group, filebrowser, visUVsButton, clearUVsButton])
 

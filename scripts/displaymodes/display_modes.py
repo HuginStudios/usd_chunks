@@ -1,8 +1,8 @@
 import os
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_interface
 
 
-def set_shademode(chunkItem : chunk.ChunkParam, notice, sender):
+def set_shademode(chunkItem: chunk.ChunkParamBase, notice, sender):
     shade_action = chunkItem.user_data["action"]
     shade_action.setChecked(True)
     appController = chunkItem.get_usdview_api()._UsdviewApi__appController
@@ -11,13 +11,13 @@ def set_shademode(chunkItem : chunk.ChunkParam, notice, sender):
 
 
 def main(api):
-    chunk_api = chunk.Chunk()
+    chunk_api = chunk.Chunk("Display Modes", category="Utility")
     chunk_api.name = "Display Modes"
     chunk_api.category = "Utility"
     # layout = chunk_api.new_layout()
     appController = api._UsdviewApi__appController
- 
-    icons_dir =  os.path.join(os.path.dirname(__file__),"icons")
+
+    icons_dir = os.path.join(os.path.dirname(__file__), "icons")
     shade_modes = [
         (appController._ui.actionSmooth_Shaded, "Smoothshaded"),
         (appController._ui.actionWireframeOnSurface, "WireframeOnSurface"),
@@ -31,12 +31,13 @@ def main(api):
         icon_name = shade_info[1]
         shade_icon = os.path.join(icons_dir, icon_name) + ".png"
 
-        button = chunk.ChunkParam()
-        button.param_type = chunk.ChunkParamType.BUTTON
-        button.name = icon_name
-        button.tooltip = shade_action.text()
-        button.user_data["action"] = shade_action
-        button.icon = shade_icon
+        button = chunk.ChunkParamBase(
+            chunk_interface.ButtonTemplate(),
+            icon_name,
+            tooltip=shade_action.text(),
+            user_data={"action": shade_action},
+            icon=shade_icon
+        )
         button.add_callback(set_shademode)
 
         chunk_api.add_param(button)

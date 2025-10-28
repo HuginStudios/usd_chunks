@@ -1,6 +1,7 @@
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_interface
 
-def addCube(chunkItem: chunk.ChunkParam, notice, sender):
+
+def addCube(chunkItem: chunk.ChunkParamBase, notice, sender):
     stage = chunkItem.get_stage()
     count = 0
     while True:
@@ -10,16 +11,9 @@ def addCube(chunkItem: chunk.ChunkParam, notice, sender):
             break
         count = count + 1
 
+
 def main(api, parent=None):
-    button = chunk.ChunkParam()
-    button.param_type = chunk.ChunkParamType.BUTTON
-    button.name = "add_cube"
-    button.label = "Add Cube"
+    button = chunk.ChunkParamBase(chunk_interface.ButtonTemplate(), "add_cube", "Add Cube")
     button.add_callback(addCube)
-
-    chunk_api = chunk.Chunk()
-    chunk_api.name = "Add Cubes"
-    chunk_api.category = "Examples"
-
-    chunk_api.add_params([button])
-    # return chunk_api
+    chunk_api = chunk.Chunk("Add Cubes", category="Examples", params=[button])
+    return chunk_api
