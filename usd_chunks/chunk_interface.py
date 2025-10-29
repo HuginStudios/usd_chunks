@@ -16,7 +16,6 @@ from typing import (
     Generic,
     TypedDict,
     get_origin,
-    overload,
 )
 
 from typing_extensions import dataclass_transform
@@ -792,11 +791,13 @@ class ChunkCommon(CommonAttributes):
         """Sends a notice for owners to delete this Chunk object. It's the owners responsibility to remove their reference to this object.
         If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument
         """
+
         owner = self.get_owner()
-        if owner and isinstance(owner, ChunkContainerBase):
-            owner.delete_param_or_group(self)
-        else:
-            chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_DELETE, self)
+        print("DELETE: ", self.name, owner.name if owner else None)
+        # if owner and isinstance(owner, ChunkContainerBase):
+        #     owner.delete_param_or_group(self)
+        # else:
+        #     chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_DELETE, self)
 
 
 class ChunkParamBase(ParamAttributes[ValueT], ChunkCommon):
@@ -923,9 +924,7 @@ class ChunkContainerBase(GroupAttributes, ChunkCommon):
 
         for g in self.get_groups():
             yield g
-
-        for group in self._groups:
-            yield from group.iter_all_groups()
+            yield from g.iter_all_groups()
 
     def get_last_param_change(self) -> Tuple[Tf.Notice | None, ChunkParamBase | None]:
         """Retreive the last changed parameter in this group. Will look inside nested groups as well to find parameter changes
@@ -952,7 +951,7 @@ class ChunkContainerBase(GroupAttributes, ChunkCommon):
         Returns:
             List[str]: The reserved group names on this group
         """
-        return [x.name for x in self.iter_all_groups()] + [self.name]
+        return [self.name] + [x.name for x in self.iter_all_groups()]
 
     def get_reserved_names(self):
         """A combination of reserved param and group names
@@ -961,6 +960,76 @@ class ChunkContainerBase(GroupAttributes, ChunkCommon):
             List[str]: A list of reserved group and parameter names which new parameters should not be named
         """
         return list(chain(self.get_reserved_group_names(), self.get_reserved_param_names()))
+
+    def check_hierarchy(self):
+        failed_msg = f"check_hierarchy for {self.name} failed! \n"
+        failed_msg += " Reason: {}"
+
+        _, hierarchy = list(zip(*self.iter_hierarchy()))
+
+        found_params: set[ChunkCommon] = set()
+        found_names: set[str] = set()
+
+        for p in hierarchy:
+            if isinstance(p, ChunkAttributes):
+                # Chunks (inherit from ChunkAttributes) do not need owners
+                continue
+
+            owner = p.get_owner()
+            if not owner:
+                raise TypeError(
+                    failed_msg.format(f"{p.name} does not have an owner. All params except Chunks should have an owner")
+                )
+
+            if not isinstance(owner, ChunkContainerBase):
+                raise TypeError(failed_msg.format(f"{p.name}'s owner is not a ChunkContainerBase object"))
+
+            owner_has_child = p in chain(owner.get_params(), owner.get_groups())
+            if not owner_has_child:
+                raise ValueError(failed_msg.format(f"{p.name} has owner: {owner.name}. Owner does not hold this param"))
+
+            if p in found_params:
+                raise ValueError(failed_msg.format(f"{p.name} is duplicated in the hierarchy"))
+            found_params.add(p)
+
+            if p.name in found_names:
+                raise ValueError(failed_msg.format(f"param name: {p.name} is not unique in the hierarchy"))
+            found_names.add(p.name)
+
+        print(f"Hierarchy for Chunk {self.name} checked successfully")
+
+    def print_hierarchy(self):
+        def inset(i):
+            return "." * i * 4
+
+        max_inset = 15
+
+        msg = f"\n{'-' * max_inset}* {self.name} hierarchy *{'-' * max_inset}\n\n"
+        for indent, p in self.iter_hierarchy():
+            cls_name = f"[{p.__class__.__name__}]"
+            if len(cls_name) > max_inset:
+                cls_name = f"[{p.__class__.__name__[0 : max_inset - 1]}]"
+
+            offset = "." * (max_inset - len(cls_name))
+
+            msg += f"{cls_name}{offset}{inset(indent)}{p.name}"
+            if isinstance(p, ChunkParamBase):
+                msg += f" -> {p.evaluate_type().name}"
+
+            owner = p.get_owner()
+            if owner and isinstance(owner, ChunkContainerBase):
+                msg += f". Owner = ({owner.name})"
+            msg += "\n"
+
+        print(msg)
+
+    def iter_hierarchy(self, indent=0):
+        yield indent, self
+        for p in self.get_params():
+            yield indent + 1, p
+
+        for g in self.get_groups():
+            yield from g.iter_hierarchy(indent + 1)
 
 
 class ChunkGroupBase(ChunkContainerBase):
@@ -992,7 +1061,8 @@ class ChunkGroupBase(ChunkContainerBase):
         new_param = None
         if force_unique:
             # Check and resolve duplicate params
-            new_param = self._resolve_new_param_or_group(param)
+            # new_param = self._resolve_new_param_or_group(param)
+            new_param = self.copy_group_or_param(param)
 
         if new_param is None or new_param is param:
             # Param was not a duplicate, so can use the one passed by caller.
@@ -1007,75 +1077,78 @@ class ChunkGroupBase(ChunkContainerBase):
         else:
             raise NotImplementedError("Chunks only support params of type ChunkContainer or ChunkParam")
 
-        # Set the owner on the new_param in order to propagate the child notices
         new_param.set_owner(self)
-
         return new_param
 
-    def _resolve_new_param_or_group(self, param: ChunkT) -> ChunkT:
-        """Before adding a new param or group, need to validate that the same instance of the param is not already
-        added to this group. We also need to make sure there are no duplicate names.
-        If a duplicate instance is found, this function will copy or swap the paramaeter/group with
-        a valid instance. The valid instance will hava a new name and uuid
+    # def _resolve_new_param_or_group(self, param: ChunkT) -> ChunkT:
+    #     """Before adding a new param or group, need to validate that the same instance of the param is not already
+    #     added to this group. We also need to make sure there are no duplicate names.
+    #     If a duplicate instance is found, this function will copy or swap the paramaeter/group with
+    #     a valid instance. The valid instance will hava a new name and uuid
 
-        Args:
-            param (ChunkParamBase): A parameter or group that should be added to this group
+    #     Args:
+    #         param (ChunkParamBase): A parameter or group that should be added to this group
 
-        Returns:
-            ChunkParamBase: The originally passed param if no duplication was found, otherwise an altered param
-        """
+    #     Returns:
+    #         ChunkParamBase: The originally passed param if no duplication was found, otherwise an altered param
+    #     """
 
-        # TODO: Currently kinda nasty lookups to achieve this - consider caching in the future, or
-        # rethink some of this...
+    #     # TODO: Currently kinda nasty lookups to achieve this - consider caching in the future, or
+    #     # rethink some of this... A parameter could technically only care for sibling parameters with same name
+    #     # and thus simply always just copy the new parameter, as the group holds the list of params.
+    #     # But in order to solve conflicts accross the entire hierarchy, we also need to resolve nested
+    #     # parameters on this and any new group
 
-        reserved_names = self.get_reserved_names()
-        all_params = list(self.iter_all_params())
+    #     # old_owner = param.get_owner()
+    #     # if old_owner:
+    #     return self.copy_group_or_param(param)
 
-        # Need to resolve duplicate params and groups differently, since a group will likely have nested params,
-        # We need to search for those as well when adding a group
-        if isinstance(param, ChunkParamBase):
-            if param in all_params:
-                # Param exists on this group already, return a copy of the new param
-                return self.copy_group_or_param(param)
+    #     # reserved_names = self.get_reserved_names()
+    #     # all_params = list(self.iter_all_params())
 
-        elif isinstance(param, ChunkContainerBase):
-            all_groups = list(self.iter_all_groups())
+    #     # # Need to resolve duplicate params and groups differently, since a group will likely have nested params,
+    #     # # We need to search for those as well when adding a group
+    #     # if isinstance(param, ChunkParamBase):
+    #     #     if param in all_params:
+    #     #         # Param exists on this group already, return a copy of the new param
+    #     #         return self.copy_group_or_param(param)
 
-            if param in all_groups:
-                # This is a duplicate group. Copy the entire group to resolve conflicts
-                return self.copy_group_or_param(param)
+    #     # elif isinstance(param, ChunkContainerBase):
+    #     #     all_groups = set(self.iter_all_groups())
 
-            # Need to resolve any nested parameters inside the new group
-            for p in param.iter_all_params():
-                if p in all_params:
-                    parent = p.get_owner()
-                    if parent and isinstance(parent, ChunkGroupBase):
-                        new_p = self.copy_group_or_param(p)
-                        reserved_names.append(new_p.name)
-                        parent.replace_param(p, new_p)
+    #     #     if param in all_groups:
+    #     #         # This is a duplicate group. Copy the entire group to resolve conflicts
+    #     #         return self.copy_group_or_param(param)
 
-                elif p.name in reserved_names:
-                    # Did not find param with the same uuid, but duplicate names. Only resolve the name
-                    p.name = self.get_valid_child_name(p, reserved_names)
+    #     #     # Need to resolve any nested parameters inside the new group
+    #     #     for p in param.iter_all_params():
+    #     #         if p in all_params:
+    #     #             parent = p.get_owner()
+    #     #             if parent and isinstance(parent, ChunkGroupBase):
+    #     #                 new_p = self.copy_group_or_param(p, reserved_names)
+    #     #                 parent.replace_param(p, new_p)
 
-            # Also resolve nested groups
-            for g in param.iter_all_groups():
-                if g in all_groups:
-                    parent = g.get_owner()
-                    if parent and isinstance(parent, ChunkGroupBase):
-                        new_g = self.copy_group_or_param(g)
-                        reserved_names.append(new_g.name)
-                        parent.replace_group(g, new_g)
+    #     #         elif p.name in reserved_names:
+    #     #             # Did not find param with the same hash, but duplicate names. Only resolve the name
+    #     #             p.name = self.get_valid_child_name(p, reserved_names)
 
-                elif g.name in reserved_names:
-                    # Did not find param with the same uuid, but duplicate names. Only resolve the name
-                    g.name = self.get_valid_child_name(g, reserved_names)
+    #     #     # Also resolve nested groups
+    #     #     for g in param.iter_all_groups():
+    #     #         if g in all_groups:
+    #     #             parent = g.get_owner()
+    #     #             if parent and isinstance(parent, ChunkGroupBase):
+    #     #                 new_g = self.copy_group_or_param(g, reserved_names)
+    #     #                 parent.replace_group(g, new_g)
 
-        if param.name in reserved_names:
-            # The new group is not a duplicate but shares name with an already added group
-            param.name = self.get_valid_child_name(param, reserved_names)
+    #     #         elif g.name in reserved_names:
+    #     #             # Did not find param with the same hash, but duplicate names. Only resolve the name
+    #     #             g.name = self.get_valid_child_name(g, reserved_names)
 
-        return param
+    #     # if param.name in reserved_names:
+    #     #     # The new group is not a duplicate but shares name with an already added group
+    #     #     param.name = self.get_valid_child_name(param, reserved_names)
+
+    #     # return param
 
     def copy_group_or_param(self, param: ChunkT, reserved_names: Optional[List[str]] = None) -> ChunkT:
         """Return a copy of a param or group that does not conflict with other parameters or groups on this group
@@ -1158,7 +1231,7 @@ class ChunkGroupBase(ChunkContainerBase):
 
         Args:
             param (ChunkParam): a name that might not be unique
-            reserved_names (List[str]): A list of reserved names. This paramater can't have a name which exist in this list. Used when trying
+            reserved_names (List[str]): A list of reserved names. This paramater can't have a name which exist in this list. The new, valid name will be appended to this list
             to nest a group inside an already created group
 
         Returns:
@@ -1184,10 +1257,13 @@ class ChunkGroupBase(ChunkContainerBase):
             if idx > max_iter:
                 raise RuntimeError(f"Failed to resolve name, loop exceeded {max_iter} iterations")
 
+        reserved_names.append(name)
         return name
 
 
 class ChunkVectorBase(ChunkContainerBase, VectorAttributes):
+    """Base for vector style parameters. Function similar to a group but with fixed number of params"""
+
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         for i in range(self.length):
@@ -1202,6 +1278,17 @@ class ChunkVectorBase(ChunkContainerBase, VectorAttributes):
                 self._params.append(np)
 
     def __getitem__(self, key: str | int) -> Optional[ChunkCommon]:
+        """Allows for Vector[0] or Vector['paramName'] access to the vector values
+
+        Args:
+            key (str | int): name or index of the requested value parameter
+
+        Raises:
+            KeyError: if key is not accessible
+
+        Returns:
+            Optional[ChunkCommon]: Param if found
+        """
         if isinstance(self.param, ChunkContainerBase):
             if isinstance(key, str):
                 param = self.get_group(key)

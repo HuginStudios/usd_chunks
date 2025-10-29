@@ -69,30 +69,37 @@ def main(api):
         chunk.Spinbox("Spinbox"),
         chunk.Menu("Menu", menu_items=["Item1", "Item2"]),
         chunk.Button("Button"),
+        chunk.Label("Label"),
         chunk.Checkbox("CheckBox"),
         chunk.LineEdit("LineEdit"),
         chunk.FileBrowser("FileBrowser"),
-        chunk.Label("Label"),
-        chunk.Separator(),
+        chunk.Separator("Separator"),
     ]
 
     groupA = chunk.Group("GroupA")
-    groupB = chunk.Group("GroupC")
-
-    groupB.add_params(params[0:2])
-    groupB.set_state(chunk.ChunkFlags.State.DISABLED)
-
     groupA.add_params(params)
+
     groupA.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
+
+    groupB = chunk.Group("GroupB")
+    groupB.add_params(params)
+    groupB.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
+
+    groupC = chunk.Group("GroupC")
+
+    groupC.add_params([groupB, groupA])
 
     # Create the actual chunk - this is in practice just a ChunkParamGroup with some addiditional behaviour
     myChunk = chunk.Chunk("TestParams", category="Tests", state=chunk.ChunkFlags.State.COLLAPSED)
-
-    myChunk.add_params([groupA, groupB])
     myChunk.add_params(params)
+    myChunk.add_params([groupB, groupA, groupC])
 
     myChunk.add_callback(chunkChanged)
-
     myChunk.add_callback(request_delete, None, True, chunk_notice.ChunkNoticeAlias.CHUNK_DELETE)
+
+    myChunk.print_hierarchy()
+    # s = groupA.get_param("Slider")
+    # if s:
+    #     s.request_delete()
 
     return myChunk

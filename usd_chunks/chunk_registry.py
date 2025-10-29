@@ -56,6 +56,15 @@ class ChunkModule:
 
         if not (isinstance(retval, chunk.Chunk)):
             print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
+            self.failed = True
+            return
+
+        try:
+            retval.check_hierarchy()
+        except Exception as e:
+            print(e)
+            self.failed = True
+            # retval.print_hierarchy()
             return
 
         self.loaded_chunk = retval

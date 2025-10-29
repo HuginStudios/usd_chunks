@@ -19,6 +19,7 @@ except ImportError:
 
 from . import chunk_registry, chunk_qt
 
+
 def launch_chunks(usdviewApi) -> None:
     """Launch the UI Creator plugin.
 
@@ -42,11 +43,9 @@ class ChunksPlugin(PluginContainer):
         for name, mod in reg.registered_modules.items():
             if mod.loaded_chunk and not mod.failed:
                 mod.loaded_chunk.request_delete()
-            
-            reg.load_module(mod)
 
-
-
+            if mod.failed:
+                reg.load_module(mod)
 
     def registerPlugins(self, plugRegistry, usdviewApi) -> None:
         """Register the UI Creator plugin with the plugin registry.
@@ -64,7 +63,7 @@ class ChunksPlugin(PluginContainer):
 
     def configureView(self, _, plugUIBuilder) -> None:
         menu = plugUIBuilder.findOrCreateMenu("Chunks")
-        menu.addItem(self._reloadChunksCommand)
+        menu.addItem(self._reloadChunksCommand, "R")
         pass
 
 

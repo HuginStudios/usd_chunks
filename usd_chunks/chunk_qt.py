@@ -270,11 +270,10 @@ class ContainerWidget(QtWidgets.QWidget):
         self.update_from_state()
 
     def group_deleted(self, notice, sender):
-
         if not chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.CHUNK_DELETE):
             return
 
-        if sender is not  self.group:
+        if sender is not self.group:
             return
 
         self._state_listener.disconnect()
@@ -409,7 +408,7 @@ class ContainerWidget(QtWidgets.QWidget):
 
         widget: Optional[QtWidgets.QWidget] = None
         # Custom widget is created and managed externally
-        if t == ChunkFlags.ParamType.CUSTOM and info.custom_widget:
+        if t == ChunkFlags.ParamType.CUSTOM and info.custom_widget and isinstance(widget, QtWidgets.QWidget):
             widget = info.custom_widget
         else:
             if not self.factory.has_mapping(t):
@@ -541,6 +540,7 @@ class ChunkArea(QtWidgets.QScrollArea):
         super().__init__(parent)
 
         self.flow = QtWidgets.QVBoxLayout()
+        self.flow.setContentsMargins(0, 5, 0, 0)
 
         # self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -562,7 +562,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             self._loaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
         )
         self._chunk_unloaded_listener = chunk_notice.NoticeConnection(
-            self._unloaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
+            self._unloaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_UNLOADED, globally=True
         )
 
     def _unloaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
@@ -580,7 +580,6 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
     def build(self):
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: QtWidgets.QTabWidget = QtWidgets.QTabWidget(self)
-
         registry = chunk_registry.ChunkRegistry()
 
         for module_name, mod in registry.registered_modules.items():
@@ -592,7 +591,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                 continue
 
         self.main_layout = QtWidgets.QVBoxLayout()
-
+        self.main_layout.setContentsMargins(0,0,0,0)
         self.main_layout.addWidget(self.tab_widget)
 
         self.setLayout(self.main_layout)
@@ -638,7 +637,3 @@ def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
     widget_docker = ChunkWidgetDocker(parent=parent_window)
     module_dock.setWidget(widget_docker)
     parent_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, module_dock)
-
-
-# def modify_chunks_dial(parent_window: QtWidgets.QMainWindow):
-#     dial = QtWidgets.QDialog(parent=parent_window)
