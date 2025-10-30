@@ -4,7 +4,6 @@ from usd_chunks import chunk, chunk_interface, chunk_qt, chunk_notice, chunk_reg
 
 from functools import wraps
 
-
 def nice_print(func):
     @wraps(func)
     def _wrapper(*args, **kwargs):
@@ -21,7 +20,7 @@ def nice_print(func):
 
 
 @nice_print
-def chunkChanged(chunkItem: chunk.Chunk, notice, sender):
+def chunkChanged(notice, sender):
     # This works just as groupChanged, but is registered on a Chunk, so will only be sent on Chunk changes
     def get_chunk_str(s):
         if isinstance(s, chunk.Chunk):
@@ -39,12 +38,12 @@ def chunkChanged(chunkItem: chunk.Chunk, notice, sender):
         if isinstance(s, chunk_interface.AttributeSender):
             return "Attribute"
 
-    msg = f"Chunk Changed: {chunkItem.name} -> {notice.__class__.__name__}"
+    msg = f"Chunk Changed: {sender.name} -> {notice.__class__.__name__}"
 
     step = 4
     indent = step
 
-    for n, s in chunkItem.iter_changes():
+    for n, s in sender.iter_changes():
         msg += "\n" + " " * indent + f"{get_chunk_str(s)}: {s.name} -> {n.__class__.__name__}"
 
         if isinstance(s, chunk_interface.AttributeSender):
@@ -75,6 +74,8 @@ def main(api):
         chunk.FileBrowser("FileBrowser"),
         chunk.Separator("Separator"),
     ]
+    
+    s = chunk.Slider("Slider")
 
     groupA = chunk.Group("GroupA")
     groupA.add_params(params)
@@ -90,16 +91,28 @@ def main(api):
     groupC.add_params([groupB, groupA])
 
     # Create the actual chunk - this is in practice just a ChunkParamGroup with some addiditional behaviour
-    myChunk = chunk.Chunk("TestParams", category="Tests", state=chunk.ChunkFlags.State.COLLAPSED)
+    myChunk = chunk.Chunk("TestParams", category="Tests")
     myChunk.add_params(params)
-    myChunk.add_params([groupB, groupA, groupC])
+
+    
+    for i in range(20):
+        myChunk.add_params([groupA, groupC, groupB])
+
 
     myChunk.add_callback(chunkChanged)
     myChunk.add_callback(request_delete, None, True, chunk_notice.ChunkNoticeAlias.CHUNK_DELETE)
 
     myChunk.print_hierarchy()
-    # s = groupA.get_param("Slider")
-    # if s:
-    #     s.request_delete()
+
+    if s := myChunk.get_param("Slider"):
+        s.name = "newName"
+
+    if s:= myChunk.get_param("newName"):
+        print("FOUND NEWNAME", s.name)
+    else:
+        print("NOT FOUND")
+
+
+
 
     return myChunk

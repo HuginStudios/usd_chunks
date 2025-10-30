@@ -451,10 +451,13 @@ class ContainerWidget(QtWidgets.QWidget):
             info (ChunkGroupInfo | ChunkInfo): The info class for the Chunk or ChunkGroup. Will create parameters from each ChunkParamInfo in the parameters member list
             layout (QtWidgets.QLayout, optional): A layout to add the parameters to. Usually not needed but used by recursion when adding groups. Defaults to None.
         """
-        for param in info.get_params():
-            self.add_param_widget(param)
-        for group in info.get_groups():
-            self.add_group_layout(group)
+        for param in info.get_my_children():
+            if isinstance(param, chunk_interface.ChunkContainerBase):
+                self.add_group_layout(param)
+            elif isinstance(param, chunk_interface.ChunkParamBase):
+                self.add_param_widget(param)
+        # for group in info.get_groups():
+        #     self.add_group_layout(group)
 
     def has_param_widget(self, param: chunk.ChunkParamBase | str) -> bool:
         """Check to see if param exists in this Chunk widget
@@ -584,7 +587,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
         for module_name, mod in registry.registered_modules.items():
             loaded_chunk = mod.loaded_chunk
-            if not loaded_chunk or mod.failed:
+            if not loaded_chunk or mod.loaded:
                 continue
 
             if not self.add_chunk_widget(loaded_chunk):

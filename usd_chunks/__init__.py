@@ -41,10 +41,8 @@ class ChunksPlugin(PluginContainer):
         reg = chunk_registry.ChunkRegistry()
 
         for name, mod in reg.registered_modules.items():
-            if mod.loaded_chunk and not mod.failed:
-                mod.loaded_chunk.request_delete()
-
-            if mod.failed:
+            reg.unload_chunk_module(mod)
+            if not mod.loaded:
                 reg.load_module(mod)
 
     def registerPlugins(self, plugRegistry, usdviewApi) -> None:

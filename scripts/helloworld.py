@@ -147,7 +147,7 @@ def main(api):
 
     # Create the actual chunk - this is in practice just a ChunkParamGroup with some addiditional behaviour
     myChunk = chunk.Chunk(
-        "Hello World", category="Examples", params=[label, checkbox, sliderGroup, button, sep, textEdit, menu]
+        "Hello World", category="Examples", children=[label, checkbox, sliderGroup, button, sep, textEdit, menu]
     )
     # Parameters can also be added after construction
     # myChunk.add_params([label, checkbox, sliderGroup, button, sep, textEdit, menu])

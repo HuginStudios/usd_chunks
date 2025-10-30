@@ -23,11 +23,12 @@ import sys
 from . import chunk
 from .chunk_notice import ChunkNoticeAlias, RegistrySingleton, UsdviewNotice, send_notice
 
+from timeit import default_timer as timer
 
 @dataclass
 class ChunkModule:
     module: Optional[ModuleType] = None
-    failed: bool = False
+    loaded: bool = False
     module_name: str = ""
     module_file: str = ""
     loaded_chunk: Optional[chunk.Chunk] = None
@@ -52,22 +53,26 @@ class ChunkModule:
         """
 
         func = getattr(self.module, func_name)
+
+        start = timer()
         retval: Any = func(*args, **kwargs)
+        end = timer()
 
         if not (isinstance(retval, chunk.Chunk)):
             print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
-            self.failed = True
+            self.loaded = False
             return
 
         try:
             retval.check_hierarchy()
         except Exception as e:
             print(e)
-            self.failed = True
-            # retval.print_hierarchy()
-            return
+            # self.loaded = False
+            # return
 
         self.loaded_chunk = retval
+    
+        print(f"Chunk {self.loaded_chunk.name} load took {end-start} seconds")
         return retval
 
 
@@ -157,7 +162,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 if module_name != "test_params":
                     continue
 
-                mod = ChunkModule(module_name=module_name, module_file=module_path, failed=True)
+                mod = ChunkModule(module_name=module_name, module_file=module_path, loaded=False)
                 self.load_module(mod)
 
                 new_modules[mod.module_name] = mod
@@ -177,15 +182,14 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later§
             print(f"Failed to load module {mod.module_name}:", traceback.format_exc())
-            mod.failed = True
+            mod.loaded = False
             return
         else:
-            mod.failed = False
             mod.module = module
 
         if "main" not in module_attributes:
             # Only python files with a main functions are valid chunk entrypoints.
-            mod.failed = True
+            mod.loaded = False
             return
 
         try:
@@ -193,27 +197,25 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later§
             print(f"Failed to run module {mod.module_name}:", traceback.format_exc())
-            mod.failed = True
+            mod.loaded = False
         else:
-            mod.failed = False
+            mod.loaded = True
             print(f"Loaded chunk module {mod.module_name}")
             send_notice(ChunkNoticeAlias.CHUNK_LOADED, mod.loaded_chunk)
 
-    def unload_chunk_module(self, module_name: str):
-        c = self.get_chunk_module(module_name)
-        if not c:
+    def unload_chunk_module(self, mod: ChunkModule):
+        if not mod:
             return
-        if c.failed or not c.loaded_chunk:
+        if not mod.loaded or not mod.loaded_chunk:
             return
 
-        c.loaded_chunk.request_delete()
-        c.failed = True
+        mod.loaded_chunk.request_delete()
+        mod.loaded = False
 
     def unload_chunk(self, chunk_name: str):
         for mod in self.registered_modules.values():
             if mod.loaded_chunk and mod.loaded_chunk.name == chunk_name:
-                mod.loaded_chunk.request_delete()
-                mod.failed = True
+                self.unload_chunk_module(mod)
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
         """Get the ChunkModule object in the registry where module_name matches the stored name of the module. The module_name should typically be the name of the python script.

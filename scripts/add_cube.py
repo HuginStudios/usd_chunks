@@ -15,5 +15,5 @@ def addCube(chunkItem: chunk.ChunkParamBase, notice, sender):
 def main(api, parent=None):
     button = chunk.ChunkParamBase(chunk_interface.ButtonTemplate(), "add_cube", "Add Cube")
     button.add_callback(addCube)
-    chunk_api = chunk.Chunk("Add Cubes", category="Examples", params=[button])
+    chunk_api = chunk.Chunk("Add Cubes", category="Examples", children=[button])
     return chunk_api

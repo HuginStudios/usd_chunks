@@ -22,6 +22,6 @@ def main(api):
     custom.custom_widget = MyWidget(custom)
     custom.add_callback(customButtonCLicked)
 
-    myChunk = chunk.Chunk("Custom Widget", category="Examples", params=[custom])
+    myChunk = chunk.Chunk("Custom Widget", category="Examples", children=[custom])
 
     return myChunk

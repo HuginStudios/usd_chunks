@@ -204,7 +204,7 @@ class ChunkNoticePropagator:
         # Rewire the connection to the copy if conn.sender is the source of the copy (self)
         sender = self if conn.sender == src else conn.sender
 
-        new_conn = NoticeConnection(conn.method, conn.alias, sender, conn.globally, self)
+        new_conn = NoticeConnection(conn.method, conn.alias, sender, conn.globally)
         self.add_connection(new_conn)
 
     @abstractmethod
@@ -216,7 +216,7 @@ class ChunkNoticePropagator:
         """
         raise NotImplementedError
 
-    def iter_changes(self) -> Generator[Tuple[Tf.Notice | None, "ChunkNoticePropagator"], None, None]:
+    def iter_changes(self) -> Generator[Tuple[Tf.Notice | None, Optional["ChunkNoticePropagator"]], None, None]:
         ln, ls = self.get_last_change()
 
         if not ls or ls is self:
@@ -246,13 +246,15 @@ class ChunkNoticePropagator:
         """
         self._owner = owner
 
-    def data_changed(self, chunk_item: Any, notice: Tf.Notice, sender: Any) -> Tf.Notice:
+    def data_changed(
+        self, notice: Tf.Notice, sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
+    ) -> Tf.Notice:
         """A callback which, by default, is only called when attributes or children are modified. Subclasses can connect custom
         notices to this function in order to propagate the signals to listeners of this instance, f.e. ChunkParam changes inside a
         ChunkParamGroup will also call this function on the group
 
         Args:
-            chunk_item (ChunkParamBase): The chunk_item of the connection. Usually the same as sender
+            propagated (ChunkParamBase): The propagated sender. The sender that triggered the change
             notice (chunk_notice.InterfaceChangeNotice): The notice object which was sent
             sender (Any): The python object which was used as sender for the notice
         """
@@ -264,7 +266,7 @@ class ChunkNoticePropagator:
 
         # Set owner data_changed if available
         if self._owner:
-            self._owner.data_changed(self, my_notice, self)
+            self._owner.data_changed(my_notice, self, propagated if propagated else sender)
 
         return my_notice
 
@@ -348,7 +350,7 @@ class ChunkNoticePropagator:
         if isinstance(sender, ChunkNoticePropagator) and notice_type is ChunkNoticeAlias.NONE:
             notice_type = sender.get_notice_alias()
 
-        conn = NoticeConnection(method, notice_type, sender, listen_globally, self)
+        conn = NoticeConnection(method, notice_type, sender, listen_globally)
         self.add_connection(conn)
 
 
@@ -359,21 +361,14 @@ class NoticeConnection:
         alias: ChunkNoticeAlias,
         sender: Optional[Any] = None,
         globally: bool = False,
-        chunk_item=None,
     ):
         self.sender: Any = sender
-        self.chunk_item: Any = chunk_item
         self.alias: ChunkNoticeAlias = alias
 
         self.listener: Optional[Tf.Notice.Listener] = None
 
         self.globally: bool = globally
         self.method: Callable = method
-
-        if chunk_item is None:
-            self.__method = self.method
-        else:
-            self.__method = partial(self.method, self.chunk_item)
 
         self.connect()
 
@@ -390,9 +385,9 @@ class NoticeConnection:
             self.sender = sender
 
         if self.sender is None or self.globally:
-            self.listener = Tf.Notice.RegisterGlobally(type(notice), self.__method)
+            self.listener = Tf.Notice.RegisterGlobally(type(notice), self.method)
         elif self.sender:
-            self.listener = Tf.Notice.Register(type(notice), self.__method, self.sender)
+            self.listener = Tf.Notice.Register(type(notice), self.method, self.sender)
 
     def disconnect(self):
         if self.listener is not None:

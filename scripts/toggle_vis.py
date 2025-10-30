@@ -30,5 +30,5 @@ def main(api):
     clearVis = chunk.ChunkParamBase(chunk_interface.ButtonTemplate(), "clr_vis", "Clear Visibility")
     clearVis.add_callback(clear_vis)
 
-    myChunk = chunk.Chunk("Visibility", category="Utility", params=[tglVis, clearVis])
+    myChunk = chunk.Chunk("Visibility", category="Utility", children=[tglVis, clearVis])
     return myChunk
