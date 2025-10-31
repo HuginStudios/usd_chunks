@@ -11,6 +11,7 @@ from typing import (
     Tuple,
     Type,
     TypeVar,
+    TypeAlias,
     Optional,
     Union,
     Iterable,
@@ -377,7 +378,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             raise copy.Error(
                 f"Failed to copy {type(self).__name__}, the source and copy has mismatch in number of attributes"
             )
-        copied.set_owner(self.get_owner())
+        # copied.set_owner(self.get_owner())
 
         # Copy any connections to self over to the copy
         copied._copy_connections(self)
@@ -604,49 +605,95 @@ class CommonAttributes(AttributesBase):
         return state in self.state
 
 
-class NameSyncedContainer:
+class ChunkHash(Protocol):
+    def __hash__(self) -> int:
+        ...
+    def __eq__(self, value: object) -> bool:
+        ...
+
+class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
+    """Container for holding ChunkCommon objects. The container holds two maps: params & names
+
+    params maps from a uuid to a ChunkCommon object. ChunkCommon objects hash by their uuid, so accessing a param
+    can be done either by the ChunkCommon object as params[obj], or the uuid: params[obj._hashable]. Where a typehint
+    suggests a HashVal argument for lookup (get_param(), get_my_param()), passing a ChunkCommon obj should 
+    return same as passing obj._hashable.
+    TODO: This is a bit un-intuituve, and should perhaps be reconsidered.
+
+    names map betweeen the current (mutable) name of a param and the uuid. This exists in order to quicker acccess
+    params by their name. This container need to be maintained and updated whenever a param name is changed, which is currently
+    achieved by subclassing ChunkNoticePropagator, in order to insert itself in hierarchy of objects. 
+    
+    Any objects added though 
+        NameSyncedContainer.add()
+    will have the NameSyncedContainer as owner. Any concrete chunk object who holds an instance of this class should therefore not
+    manage ownership of params, instead, it should own the NameSyncedContainer only. This class will not send any notices though, only propagate
+    notices from children.
+    """
+
     def __init__(self):
         super().__init__()
 
-        self.params = ChainMap()
-        self.names = ChainMap()
+        self.params: ChainMap[ChunkHash, ChunkCommon] = ChainMap()
+        self.names: ChainMap[str, ChunkHash] = ChainMap()
 
     def add(self, obj: "ChunkCommon"):
-        for i, mapping in enumerate(self.params.maps):
-            if obj._hashable in mapping:
-                old_obj = mapping[obj._hashable]
-                if old_obj.name != obj.name:
-                    del self.names.maps[i][old_obj.name]
+        """Add a chunk object to this container. This will make the container the owner of the param, and store the
+        object in self.params, and obj.name in self.names. Access to the object can thus be done through
+            self.get_param(), self.get_by_name()
+        or
+            self.params.maps[0].get(self.names.maps[0].get("some_name"))
+        since the container manages the name<->obj relationship, some care need to be taken in order for this relationship to be maintained.
+        For example, do not add params to self.params or self.names excplicitly, instead, use this function to get proper behaviour.
 
-                mapping[obj._hashable] = obj
-                self.names.maps[i][obj.name] = obj._hashable
-                return
+        If the added param is an instance of ChunkContainerBase, the children of the new param will be appended to the self.params and self.names
+        ChainMaps, which allows for fast access of nested params.
 
-        # Append child mapping
+        Args:
+            obj (ChunkCommon): The param to add. Nothing is done to avoid duplication across layers.
+        """
+
+        # Append child the object + name to the first layer of the ChainMaps
         self.params.maps[0][obj._hashable] = obj
         self.names.maps[0][obj.name] = obj._hashable
 
+        # Mark self as the owner of the added obj as we need to be notified when the object changes
+        obj.set_owner(self)
+
         if isinstance(obj, ChunkContainerBase):
+            # Also append the children of the group, as this allows for fast lookups accross the layers
             self.params.maps.append(obj.children.params)
             self.names.maps.append(obj.children.names)
 
-    def get(self, key: "ChunkCommon", default: Any = None):
-        return self.params.get(key, default)
+    def data_changed(
+        self, notice: Tf.Notice, sender: Any, propagated: Optional[chunk_notice.ChunkNoticePropagator] = None
+    ) -> Optional[Tf.Notice]:
+        # Override to reflect any changes on the children in this ds. Used to update the names when a name changes
 
-    def get_by_name(self, name: str, default: Any = None):
-        key = self.names.get(name, default)
-        obj = self.get(key, default)
+        if (
+            propagated
+            and isinstance(propagated, AttributeSender)
+            and propagated.name == "name"
+            and propagated.old_value in self.names.maps[0]
+        ):
+            self.name_changed(propagated.old_value)
 
-        return obj
+        return super().data_changed(notice, sender, propagated)
+
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        # We are only interested in hijacking data_changed, and should not send any signals.
+        return chunk_notice.ChunkNoticeAlias.NONE
 
     def update_names(self):
+        """Update the names ChainMap for all layers to reflect the names of the params. Can be used as brute-force
+        to get correct mapping
+        """
         invalid = []
-
         for i, mapping in enumerate(self.names.maps):
             for name, idx in mapping.items():
-                obj = self.get(idx)
+                obj = self.get_param(idx)
 
-                if obj.name != name:
+                if obj and obj.name != name:
                     invalid.append((i, name, obj.name))
 
         for i, old_name, new_name in invalid:
@@ -654,37 +701,100 @@ class NameSyncedContainer:
             self.names.maps[i][new_name] = idx
 
     def name_changed(self, old_name: str):
-        for mapping in self.names.maps:
-        # mapping = self.names.maps[0]
-            if old_name in mapping:
-                idx = mapping.pop(old_name)
-                obj = self.get(idx)
+        """Marks the old_name as changed, and update the names dict for this layer only, to reflect the change.
+        old_name will be replaced with whatever the new name of the corresponding object is. This allows for:
+
+            c = Chunk.Slider("A")
+            g = Chunk.Group("group")
+            g.add_param(c)
+
+            p = g.get_param("A")
+            asset(p != None)
+
+            p.name = "B"
+            p = g.get_param("B")
+            asset(p != None && g.get_param("A") == None)
+
+        Args:
+            old_name (str): The old name mapped to the changed object. This will be removed from the first layer of the ChainMap if found
+
+        Raises:
+            ValueError: The old_name was not found
+        """
+
+        # Only look for names on the first layer. Groups are responsible for their respective layers
+        mapping = self.names.maps[0]
+        if old_name in mapping:
+            idx = mapping.pop(old_name)
+            if obj := self.get_param(idx):
                 mapping[obj.name] = idx
-        # else:
-        #     raise ValueError(f"Failed to update old name {old_name} in container")
+        else:
+            raise ValueError(f"Failed to update old name {old_name} in container")
 
-    def get_names(self):
-        return self.names.keys()
+    def get_param(self, key: Union[ChunkHash, str], default: Any = None) -> Optional["ChunkCommon"]:
+        """Retrieve a param from this datastructure. Key can be either a ChunkCommon (It hashes to the HashVal), an explicit HashVal (ChunkObject._hashable) or a name.
 
-    def get_my_names(self):
-        return self.names.maps[0].keys()
+        Returns:
+            ChunkCommon | None: The found Chunk object if found
+        """
+        if isinstance(key, str):
+            return self.get_by_name(key, default)
+        return self.params.get(key, default)
 
-    def get_params(self):
-        return self.params.values()
+    def get_by_name(self, name: str, default: Any = None) -> Optional["ChunkCommon"]:
+        """Excplicitly retrieve a param by its name
 
-    def get_my_params(self):
-        return self.params.maps[0].values()
+        Returns:
+            ChunkCommon | None: The found Chunk object if found
+        """
+        if key := self.names.get(name, default):
+            return self.get_param(key, default)
 
-    def __delitem__(self, key):
-        if obj := self.get(key):
+    def get_names(self) -> Tuple[str, ...]:
+        """Get all names of this layer and all child layers
+
+        Returns:
+            tuple[str, ...]: All param names on this layer and under
+        """
+        return tuple(self.names.keys())
+
+    def get_my_names(self) -> Tuple[str, ...]:
+        """Get all names on this layer only
+
+        Returns:
+            tuple[str, ...]: The param names of the first layer
+        """
+        return tuple(self.names.maps[0].keys())
+
+    def get_params(self) -> Tuple["ChunkCommon", ...]:
+        """Get all params on this layer and under
+
+        Returns:
+            Tuple[ChunkCommon, ...]: The params
+        """
+        return tuple(self.params.values())
+
+    def get_my_params(self) -> Tuple["ChunkCommon", ...]:
+        """Get all params on this layer only
+
+        Returns:
+            Tuple[ChunkCommon, ...]: The params
+        """
+        return tuple(self.params.maps[0].values())
+
+    def __delitem__(self, key: ChunkHash):
+        if obj := self.get_param(key):
             del self.names.maps[0][obj.name]
             del self.params.maps[0][key]
 
-    def pop(self, key):
-        obj = self.get(key, None)
+    def pop(self, key: ChunkHash):
+        obj = self.get_param(key, None)
         if obj:
             del self.names.maps[0][obj.name]
             del self.params.maps[0][key]
+
+            if obj.get_owner() == self:
+                obj.set_owner(None)
 
         return obj
 
@@ -693,7 +803,9 @@ class GroupAttributes(AttributesBase):
     """Holds attributes specific to groups"""
 
     children: NameSyncedContainer = attrs.field(
-        init=False, factory=NameSyncedContainer, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND, copy_mode=CopyMode.NO_COPY)
+        init=False,
+        factory=NameSyncedContainer,
+        metadata=AttributeMetadata(send_mode=SendMode.NO_SEND, copy_mode=CopyMode.NO_COPY),
     )
 
     widget_factory: Optional[ChunkWidgetFactoryBase] = attrs.field(
@@ -702,16 +814,20 @@ class GroupAttributes(AttributesBase):
         metadata=AttributeMetadata(copy_mode=CopyMode.SHARE),
     )
 
-    def data_changed(
-        self, notice: Tf.Notice, sender: Any, propagated: Optional[chunk_notice.ChunkNoticePropagator] = None
-    ) -> Tf.Notice:
-        if propagated and isinstance(propagated, AttributeSender) and propagated.name == "name":
-            try:
-                self.children.name_changed(propagated.old_value)
-            except ValueError:
-                pass
+    def __attrs_post_init__(self):
+        self.children.set_owner(self)
+        return super().__attrs_post_init__()
 
-        return super().data_changed(notice, sender, propagated)
+    # def data_changed(
+    #     self, notice: Tf.Notice, sender: Any, propagated: Optional[chunk_notice.ChunkNoticePropagator] = None
+    # ) -> Tf.Notice:
+    #     if propagated and isinstance(propagated, AttributeSender) and propagated.name == "name":
+    #         try:
+    #             self.children.name_changed(propagated.old_value)
+    #         except ValueError:
+    #             pass
+
+    #     return super().data_changed(notice, sender, propagated)
 
 
 class VectorAttributes(AttributesBase):
@@ -839,6 +955,9 @@ class HashVal:
     def __hash__(self) -> int:
         return hash(self._uuid)
 
+    def __eq__(self, value: object) -> bool:
+        return hash(self) == hash(value)
+
     def __copy__(self):
         # Should never be called, but just in case...
         # Copying this class should result in a new key
@@ -860,7 +979,7 @@ class ChunkCommon(CommonAttributes):
         return hash(self._hashable)
 
     def __eq__(self, value: object) -> bool:
-        return hash(self) == hash(value)
+        return self._hashable == value
 
     @staticmethod
     def get_usdview_api() -> Usdviewq.usdviewApi.UsdviewApi:
@@ -921,73 +1040,11 @@ class ChunkContainerBase(GroupAttributes, ChunkCommon):
         """
 
         if isinstance(param, ChunkCommon):
-            return self.children.get(param)
+            return self.children.get_param(param)
         elif isinstance(param, str):
             return self.children.get_by_name(param)
-        # return res
 
-        # if isinstance(param, ChunkCommon):
-        #     try:
-        #         idx = self.params.index(param)
-        #     except ValueError:
-        #         return
-        #     return self.params[idx]
-
-        # elif isinstance(param, str):
-        #     return next((i for i in self.params if i.name == param), None)
-
-    # def replace_param(self, old_param: ChunkParamBase, new_param: ChunkParamBase):
-    #     """Replace a parameter on this group with another parameter
-
-    #     Args:
-    #         old_param (ChunkParam): The old param to replace
-    #         new_param (ChunkParam): The new param to replace old_param with
-    #     """
-
-    #     # Set self as parent
-    #     # self.params[old_param.name]
-    #     if not self.get_param(old_param):
-    #         raise NameError(f"Replace Param failed. {old_param.name} is not a child of {self.name}")
-
-    #     # Do the swap
-    #     # self.params[old_param.name] = new_param
-    #     # try:
-    #     #     idx = self.params.index(old_param)
-    #     # except ValueError:
-    #     #     return
-
-    #     # self.params[idx] = new_param
-    #     self.params.pop(old_param)
-
-    #     new_param.set_owner(self)
-    #     # Need to update connections
-    #     conns = self.find_connections(sender=old_param)
-    #     for conn in conns:
-    #         conn.connect(sender=self.params[idx])
-
-    # def find_param(self, param: ChunkCommon | str) -> Optional[ChunkCommon]:
-    #     """Similar to get_param, but searches in nested groups
-
-    #     Args:
-    #         param (ChunkParam | str): A parameter or group to find. If string is passed, look for params with name
-
-    #     Returns:
-    #         ChunkParam: The found parameter or None if not found
-    #     """
-    #     key = param.name if isinstance(param, ChunkCommon) else param
-
-    #     p = self.get_param(key)
-
-    #     # if not p:
-    #     #     for g in self.get_groups():
-    #     #         gp = g.find_param()
-
-    #     # if isinstance(param, ChunkCommon):
-    #     #     return next((i for i in self.iter_all_params() if i == param), None)
-    #     # if isinstance(param, str):
-    #     #     return next((i for i in self.iter_all_params() if i.name == param), None)
-
-    def get_children(self) -> Sequence[ChunkCommon]:
+    def get_params(self) -> Sequence[ChunkCommon]:
         """Get all parameters in this group
 
         Returns:
@@ -995,7 +1052,7 @@ class ChunkContainerBase(GroupAttributes, ChunkCommon):
         """
         return list(self.children.get_params())
 
-    def get_my_children(self) -> Sequence[ChunkCommon]:
+    def get_my_params(self) -> Sequence[ChunkCommon]:
         """Get all parameters in this group
 
         Returns:
@@ -1026,17 +1083,24 @@ class ChunkContainerBase(GroupAttributes, ChunkCommon):
                 continue
 
             owner = p.get_owner()
+            if isinstance(owner, NameSyncedContainer):
+                owner = owner.get_owner()
+
             if not owner:
                 raise TypeError(
                     failed_msg.format(f"{p.name} does not have an owner. All params except Chunks should have an owner")
                 )
 
-            if not isinstance(owner, ChunkContainerBase):
-                raise TypeError(failed_msg.format(f"{p.name}'s owner is not a ChunkContainerBase object"))
+            if not isinstance(owner, chunk_notice.ChunkNoticePropagator):
+                raise TypeError(failed_msg.format(f"{p.name}'s owner is not a ChunkNoticePropagator object"))
 
-            owner_has_child = p in owner.get_my_children()
-            if not owner_has_child:
-                raise ValueError(failed_msg.format(f"{p.name} has owner: {owner.name}. Owner does not hold this param"))
+            if isinstance(owner, ChunkContainerBase):
+                owner_has_child = p in owner.get_my_params()
+                if not owner_has_child:
+
+                    raise ValueError(
+                        failed_msg.format(f"{p.name} has owner: {owner.name}. Owner does not hold this param")
+                    )
 
             if p in found_params:
                 raise ValueError(failed_msg.format(f"{p.name} is duplicated in the hierarchy"))
@@ -1128,7 +1192,7 @@ class ChunkGroupBase(ChunkContainerBase):
         else:
             raise ValueError("Chunks only support params inherited from ChunkCommon")
 
-        new_param.set_owner(self)
+        # new_param.set_owner(self)
         return new_param
 
     def copy_group_or_param(self, param: ChunkT, reserved_names: Optional[set[str]] = None) -> ChunkT:
@@ -1209,7 +1273,7 @@ class ChunkVectorBase(ChunkContainerBase, VectorAttributes):
         super().__attrs_post_init__()
         for i in range(self.length):
             np = copy.copy(self.param)
-            np.set_owner(self)
+            # np.set_owner(self)
             if self.suffixes:
                 np.name = self.suffixes[i]
 

@@ -451,7 +451,7 @@ class ContainerWidget(QtWidgets.QWidget):
             info (ChunkGroupInfo | ChunkInfo): The info class for the Chunk or ChunkGroup. Will create parameters from each ChunkParamInfo in the parameters member list
             layout (QtWidgets.QLayout, optional): A layout to add the parameters to. Usually not needed but used by recursion when adding groups. Defaults to None.
         """
-        for param in info.get_my_children():
+        for param in info.get_my_params():
             if isinstance(param, chunk_interface.ChunkContainerBase):
                 self.add_group_layout(param)
             elif isinstance(param, chunk_interface.ChunkParamBase):

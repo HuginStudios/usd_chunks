@@ -247,8 +247,8 @@ class ChunkNoticePropagator:
         self._owner = owner
 
     def data_changed(
-        self, notice: Tf.Notice, sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
-    ) -> Tf.Notice:
+        self, notice: Optional[Tf.Notice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
+    ) -> Optional[Tf.Notice]:
         """A callback which, by default, is only called when attributes or children are modified. Subclasses can connect custom
         notices to this function in order to propagate the signals to listeners of this instance, f.e. ChunkParam changes inside a
         ChunkParamGroup will also call this function on the group
@@ -264,15 +264,24 @@ class ChunkNoticePropagator:
 
         my_notice = self.send_self()
 
+        if self._owner and my_notice is None:
+            return self._owner.data_changed(notice, sender, propagated if propagated else sender)
+            
+
         # Set owner data_changed if available
         if self._owner:
             self._owner.data_changed(my_notice, self, propagated if propagated else sender)
 
         return my_notice
 
-    def send_self(self) -> Tf.Notice:
+    def send_self(self) -> Optional[Tf.Notice]:
         """Send a Tf.Notice of type default_notice_type, with self as sender"""
-        notice = get_notice(self.get_notice_alias())
+        alias = self.get_notice_alias()
+
+        if not alias:
+            return None
+
+        notice = get_notice(alias)
         notice.Send(self)
         return notice
 

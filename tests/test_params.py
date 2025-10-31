@@ -1,7 +1,5 @@
 from usd_chunks import chunk, chunk_interface, chunk_qt, chunk_notice, chunk_registry
 
-# from typing import reveal_type
-
 from functools import wraps
 
 def nice_print(func):
@@ -94,10 +92,8 @@ def main(api):
     myChunk = chunk.Chunk("TestParams", category="Tests")
     myChunk.add_params(params)
 
-    
-    for i in range(20):
+    for i in range(1):
         myChunk.add_params([groupA, groupC, groupB])
-
 
     myChunk.add_callback(chunkChanged)
     myChunk.add_callback(request_delete, None, True, chunk_notice.ChunkNoticeAlias.CHUNK_DELETE)
