@@ -21,7 +21,7 @@ import traceback
 import sys
 
 from . import chunk
-from .chunk_notice import ChunkNoticeAlias, RegistrySingleton, UsdviewNotice, send_notice
+from .chunk_notice import ChunkNoticeAlias, RegistrySingleton, UsdviewSender, send_notice
 
 from timeit import default_timer as timer
 
@@ -72,7 +72,7 @@ class ChunkModule:
 
         self.loaded_chunk = retval
     
-        print(f"Chunk {self.loaded_chunk.name} load took {end-start} seconds")
+        print(f"Loaded Chunk {self.loaded_chunk.name}. Load took {end-start} seconds")
         return retval
 
 
@@ -84,15 +84,15 @@ class ChunkRegistry(metaclass=RegistrySingleton):
     registered_directories: Set[str] = set()
     registered_modules: Dict[str, ChunkModule] = {}
     usdview_api: UsdviewModule.UsdviewApi
-    stage_sender: UsdviewNotice
+    usdview_sender: UsdviewSender
 
     def initialize(self, usdview_api: UsdviewModule.UsdviewApi) -> None:
         """Initialize the FileReader with the working directory."""
 
         self.usdview_api = usdview_api
 
-        # Holds the UsdviewNotice object here to keep it alive
-        self.stage_sender = UsdviewNotice(self.usdview_api)
+        # Holds the UsdviewSender object here to keep it alive
+        self.usdview_sender = UsdviewSender(self.usdview_api)
 
         self.register_chunk_environ_directories()
         self.register_chunk_modules(self.registered_directories)
@@ -159,8 +159,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                     continue
 
                 module_name = os.path.relpath(module_path, working_dir).replace(os.path.sep, ".").replace(".py", "")
-                if module_name != "test_params":
-                    continue
 
                 mod = ChunkModule(module_name=module_name, module_file=module_path, loaded=False)
                 self.load_module(mod)
@@ -200,7 +198,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             mod.loaded = False
         else:
             mod.loaded = True
-            print(f"Loaded chunk module {mod.module_name}")
             send_notice(ChunkNoticeAlias.CHUNK_LOADED, mod.loaded_chunk)
 
     def unload_chunk_module(self, mod: ChunkModule):

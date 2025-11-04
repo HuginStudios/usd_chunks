@@ -5,10 +5,9 @@ from PySide6 import QtWidgets
 
 
 def apply(chunkItem: chunk.Chunk, notice, sender):
-    # Access the parameter inside the group. chunkItem.get_param() will return None since "scale" param is in a nested group
-    x_scale_param = chunkItem.get_group("scale_group").get_param("scale")
-    # Alternatively, use find_param() to look inside nested groups. The copy of slider will have an incremented suffix
-    y_scale_param = chunkItem.find_param("scale1")
+    # Access the parameter inside the group
+    x_scale_param = chunkItem.get_param("uvscale")[0]
+    y_scale_param = chunkItem.get_param("uvscale")[1]
 
     x_scale = x_scale_param.value
     y_scale = y_scale_param.value
@@ -93,11 +92,11 @@ def clear(chunkItem: chunk.Chunk, notice, sender):
     stage.GetSessionLayer().subLayerPaths = sublayer_paths
 
 
-def scale(chunkItem: chunk.ChunkGroup, notice, sender):
-    _, param = chunkItem.get_last_param_change()
-    print(param.get_last_change())
+def scale(notice, sender):
+    # _, param = chunkItem.get_last_param_change()
+    # print(param.get_last_change())
     
-    stage = chunkItem.get_stage()
+    stage = sender.get_stage()
     layer_id = None
     sublayer_paths = list(stage.GetSessionLayer().subLayerPaths)
     for sublayer in sublayer_paths:
@@ -121,34 +120,34 @@ def scale(chunkItem: chunk.ChunkGroup, notice, sender):
         scale_attr = prim.GetAttribute("inputs:scale")
         scale_val = scale_attr.Get()
 
-        idx = 1 if param.name == "scale1" else 0
-        scale_val[idx] = param.value
+        # idx = 1 if param.name == "scale1" else 0
+        scale_val[0] = sender[0].value
+        scale_val[1] = sender[1].value
         scale_attr.Set(scale_val)
 
 
 def main(api):
     chunk_api = chunk.Chunk("UV Checker", category="Utility")
 
-    spinbox = chunk.ChunkParamBase(chunk_interface.SpinboxTemplate(default_value=1), "scale")
-
-    group = chunk.ChunkGroup("sccale_group", params=[spinbox, spinbox])
+    spinbox = chunk.Spinbox(default_value=1)
+    vec = chunk.Vector("uvscale", "UV Scale", param=spinbox, length=2, suffixes="UV")
 
     # Adds a callback that runs when any of the spinboxes changes
-    group.add_callback(scale)
+    vec.add_callback(scale)
 
-    filebrowser = chunk.ChunkParamBase(chunk_interface.FileBrowserTemplate(), "browse")
+    filebrowser = chunk.FileBrowser("browse")
 
-    visUVsButton = chunk.ChunkParamBase(chunk_interface.ButtonTemplate(), "visualize")
+    visUVsButton = chunk.Button("visualize")
 
-    clearUVsButton = chunk.ChunkParamBase(chunk_interface.ButtonTemplate(), "Clear Vis")
+    clearUVsButton = chunk.Button("Clear Vis")
 
-    chunk_api.add_params([group, filebrowser, visUVsButton, clearUVsButton])
+    chunk_api.add_params([vec, filebrowser, visUVsButton, clearUVsButton])
 
     # Setting the sender explicitly. The callback will then get params as such:
     # 1 - chunk_api (the chunk)
     # 2 - Tf.Notice (the notice)
     # 3 - ChunkParam (the button)
-    chunk_api.add_callback(apply, visUVsButton)
-    chunk_api.add_callback(clear, clearUVsButton)
+    chunk_api.add_callback(apply, visUVsButton, send_self=True)
+    chunk_api.add_callback(clear, clearUVsButton, send_self=True)
 
     return chunk_api

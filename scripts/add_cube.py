@@ -1,8 +1,8 @@
 from usd_chunks import chunk, chunk_interface
 
 
-def addCube(chunkItem: chunk.ChunkParamBase, notice, sender):
-    stage = chunkItem.get_stage()
+def addCube(notice, sender):
+    stage = sender.get_stage()
     count = 0
     while True:
         prim = stage.GetPrimAtPath(f"/cube{count}")
@@ -13,7 +13,10 @@ def addCube(chunkItem: chunk.ChunkParamBase, notice, sender):
 
 
 def main(api, parent=None):
-    button = chunk.ChunkParamBase(chunk_interface.ButtonTemplate(), "add_cube", "Add Cube")
+    button = chunk.Button("add_cube", "Add Cube")
     button.add_callback(addCube)
-    chunk_api = chunk.Chunk("Add Cubes", category="Examples", children=[button])
+
+    chunk_api = chunk.Chunk("Add Cubes", category="Examples")
+    chunk_api.add_param(button)
+
     return chunk_api

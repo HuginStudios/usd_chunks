@@ -2,6 +2,7 @@ from usd_chunks import chunk, chunk_interface, chunk_qt, chunk_notice, chunk_reg
 
 from functools import wraps
 
+
 def nice_print(func):
     @wraps(func)
     def _wrapper(*args, **kwargs):
@@ -72,8 +73,23 @@ def main(api):
         chunk.FileBrowser("FileBrowser"),
         chunk.Separator("Separator"),
     ]
-    
-    s = chunk.Slider("Slider")
+
+    import inspect
+    print(inspect.signature(chunk.Menu.__init__))
+
+    m = chunk.Menu(
+        "name",
+        "label",
+        "tooltip",
+        "C:/Users/Viktor/Desktop/render/sparsit.exr",
+        {"user": "data"},
+        chunk.ChunkFlags.LayoutFlags.VERTICAL,
+        chunk.ChunkFlags.State.NONE,
+        chunk.ChunkFlags.ParamFlags.LABELED,
+        "default_value",
+        None,
+        ["item1", "item2"],
+    )
 
     groupA = chunk.Group("GroupA")
     groupA.add_params(params)
@@ -81,16 +97,15 @@ def main(api):
     groupA.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
 
     groupB = chunk.Group("GroupB")
-    groupB.add_params(params)
+    groupB.add_params(params, clone=True)
     groupB.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
 
     groupC = chunk.Group("GroupC")
-
-    groupC.add_params([groupB, groupA])
+    groupC.add_params([groupB.clone(), groupA.clone()])
 
     # Create the actual chunk - this is in practice just a ChunkParamGroup with some addiditional behaviour
     myChunk = chunk.Chunk("TestParams", category="Tests")
-    myChunk.add_params(params)
+    myChunk.add_params(params, clone=True)
 
     for i in range(1):
         myChunk.add_params([groupA, groupC, groupB])
@@ -103,12 +118,9 @@ def main(api):
     if s := myChunk.get_param("Slider"):
         s.name = "newName"
 
-    if s:= myChunk.get_param("newName"):
+    if s := myChunk.get_param("newName"):
         print("FOUND NEWNAME", s.name)
     else:
         print("NOT FOUND")
-
-
-
 
     return myChunk

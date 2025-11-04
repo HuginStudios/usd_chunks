@@ -2,11 +2,11 @@ from pxr import Tf
 
 # from enum import IntEnum, auto
 from enum import IntEnum, auto
-from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator, TypeVar, Generic, overload
+from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr import Usd
 from functools import partial
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 
 
 class ChunkNoticeAlias(IntEnum):
@@ -74,11 +74,13 @@ def chunk_notice(alias: ChunkNoticeAlias):
         alias (ChunkNoticeAlias): The alias which maps to the new Tf.Notice class
     """
 
-    def decorator(cls: Type["Tf.Notice"]):
+    def _wrapper(cls: Type["Tf.Notice"]):
         ChunkNoticeRegistry().register(alias, cls)
         Tf.Type.Define(cls)
 
-    return decorator
+        return cls
+
+    return _wrapper
 
 
 @chunk_notice(ChunkNoticeAlias.PARAM_CHANGED)
@@ -204,7 +206,7 @@ class ChunkNoticePropagator:
         # Rewire the connection to the copy if conn.sender is the source of the copy (self)
         sender = self if conn.sender == src else conn.sender
 
-        new_conn = NoticeConnection(conn.method, conn.alias, sender, conn.globally)
+        new_conn = NoticeConnection(conn.method, conn.alias, sender, conn.globally, conn.send_owner, self)
         self.add_connection(new_conn)
 
     @abstractmethod
@@ -265,8 +267,8 @@ class ChunkNoticePropagator:
         my_notice = self.send_self()
 
         if self._owner and my_notice is None:
+            # if my_notice is None, then ignore any notices from self and just propagate
             return self._owner.data_changed(notice, sender, propagated if propagated else sender)
-            
 
         # Set owner data_changed if available
         if self._owner:
@@ -334,7 +336,8 @@ class ChunkNoticePropagator:
         method: Callable,
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
-        notice_type: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
+        notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
+        send_self: bool = False,
     ):
         """Subscribe to a notice. When the notice is sent, the suplpied method will be called with two arguments:
         (notice(Tf.Notice), sender(Any))
@@ -347,8 +350,8 @@ class ChunkNoticePropagator:
         Args:
             method (Callable): The method to call when the notice is sent
             sender (Any, optional): A sender which to subscribe to. If None, will use self as sender if listen_globally=False, else None. Defaults to None.
-            listen_globally (bool, optional): Whether to subscribe to all events of type notice_type. Defaults to False.
-            notice_type (NoticeType, optional): A specific type of notice to subscribe to. If left as None, will use the get_default_notice_type(). Defaults to None
+            listen_globally (bool, optional): Whether to subscribe to all events of type notice_alias. Defaults to False.
+            notice_alias (NoticeType, optional): A specific type of notice to subscribe to. If left at NONE, will use the get_notice_alias(). Defaults to ChunkNoticeAlias.NONE
         """
 
         # If sender is not set and we should not listen for global notices, the sender will be self
@@ -356,10 +359,15 @@ class ChunkNoticePropagator:
             sender = self
 
         # If sender is specified, only subscribe to changes from it.
-        if isinstance(sender, ChunkNoticePropagator) and notice_type is ChunkNoticeAlias.NONE:
-            notice_type = sender.get_notice_alias()
+        if isinstance(sender, ChunkNoticePropagator) and notice_alias is ChunkNoticeAlias.NONE:
+            notice_alias = sender.get_notice_alias()
 
-        conn = NoticeConnection(method, notice_type, sender, listen_globally)
+        conn = NoticeConnection(method, notice_alias, sender, listen_globally, send_self, self)
+
+        # if isinstance(sender, ChunkNoticePropagator) and sender is not self:
+        #     print("ADDING TWO WAY CONN", self.name, sender.name)
+        #     sender.add_connection(conn)
+
         self.add_connection(conn)
 
 
@@ -370,6 +378,8 @@ class NoticeConnection:
         alias: ChunkNoticeAlias,
         sender: Optional[Any] = None,
         globally: bool = False,
+        send_owner: bool = False,
+        owner: Optional[ChunkNoticePropagator] = None
     ):
         self.sender: Any = sender
         self.alias: ChunkNoticeAlias = alias
@@ -378,6 +388,11 @@ class NoticeConnection:
 
         self.globally: bool = globally
         self.method: Callable = method
+        self.send_owner: bool = send_owner
+
+        self.owner = owner
+
+        self.__method = None
 
         self.connect()
 
@@ -393,10 +408,16 @@ class NoticeConnection:
         if sender is not None:
             self.sender = sender
 
+        self.__method = None
+        if self.send_owner and self.owner:
+            self.__method = partial(self.method, self.owner)
+        else:
+            self.__method = self.method
+
         if self.sender is None or self.globally:
-            self.listener = Tf.Notice.RegisterGlobally(type(notice), self.method)
+            self.listener = Tf.Notice.RegisterGlobally(type(notice), self.__method)
         elif self.sender:
-            self.listener = Tf.Notice.Register(type(notice), self.method, self.sender)
+            self.listener = Tf.Notice.Register(type(notice), self.__method, self.sender)
 
     def disconnect(self):
         if self.listener is not None:
@@ -404,7 +425,7 @@ class NoticeConnection:
             self.listener = None
 
 
-class UsdviewNotice:
+class UsdviewSender(ChunkNoticePropagator):
     def __init__(self, usdviewAPI: UsdviewModule.UsdviewApi):
         self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
 
@@ -428,3 +449,6 @@ class UsdviewNotice:
 
     def _propSelectionChanged(self, *args, **kwargs):
         send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, self)
+
+    def get_notice_alias(self) -> ChunkNoticeAlias:
+        return ChunkNoticeAlias.NONE

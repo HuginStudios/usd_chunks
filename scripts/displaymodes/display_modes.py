@@ -1,20 +1,17 @@
 import os
-from usd_chunks import chunk, chunk_interface
+from usd_chunks import chunk
 
 
-def set_shademode(chunkItem: chunk.ChunkParamBase, notice, sender):
-    shade_action = chunkItem.user_data["action"]
+def set_shademode(notice, sender: chunk.Button):
+    shade_action = sender.user_data["action"]
     shade_action.setChecked(True)
-    appController = chunkItem.get_usdview_api()._UsdviewApi__appController
+    appController = sender.get_usdview_api()._UsdviewApi__appController
     appController._changeRenderMode(shade_action)
     appController._stageView.updateGL()
 
 
 def main(api):
     chunk_api = chunk.Chunk("Display Modes", category="Utility")
-    chunk_api.name = "Display Modes"
-    chunk_api.category = "Utility"
-    # layout = chunk_api.new_layout()
     appController = api._UsdviewApi__appController
 
     icons_dir = os.path.join(os.path.dirname(__file__), "icons")
@@ -31,8 +28,7 @@ def main(api):
         icon_name = shade_info[1]
         shade_icon = os.path.join(icons_dir, icon_name) + ".png"
 
-        button = chunk.ChunkParamBase(
-            chunk_interface.ButtonTemplate(),
+        button = chunk.Button(
             icon_name,
             tooltip=shade_action.text(),
             user_data={"action": shade_action},

@@ -6,9 +6,6 @@ from typing import Any, List, Optional, Sequence
 
 from . import chunk_notice
 
-# if TYPE_CHECKING:
-#     from pxr import Tf, Usd, Usdviewq
-
 
 class ChunkFlags:
     """Hold common flags for chunks"""
@@ -33,13 +30,16 @@ class ChunkFlags:
         LABELED = 1  # Add a label on the top of the group based on group.label if available, otherwise group.name
         COLLAPSABLE = auto()  # The group should be collapsable
 
-        FRAME_SUNKEN = auto()  # The group frame should appear sunken
-        FRAME_RAISED = auto()  # The group frame should appear raised
+        FRAMED = auto()  # The group should be framed
+        # FRAME_RAISED = auto()  # The group frame should appear raised
 
     class ParamFlags(IntFlag):
         """Flags for chunk param types"""
 
         LABELED = 1  # Add a label on thnext to the param. Use param.label if available, otherwise param.name
+
+        # These are only valid for FILE type param
+        FILE_EXISTING = auto()  # File param must point to an existing path
 
     class ParamType(IntFlag):
         """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
@@ -103,7 +103,7 @@ class ChunkFlags:
 
 
 from .chunk_interface import (  # noqa: E402
-    ChunkAttributes,
+    ChunkBase,
     ChunkParamBase,
     ChunkGroupBase,
     ChunkVectorBase,
@@ -114,38 +114,36 @@ from .chunk_interface import (  # noqa: E402
 ##############################################
 
 
-class Chunk(ChunkAttributes, ChunkGroupBase):
+class Chunk(ChunkBase):
     """Chunk is the top level container, holding params and groups which in turn make up the chunk"""
 
+    # Override defaults
     flags: ChunkFlags.GroupFlags = field(
-        default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAME_RAISED
+        default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
 
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
-    
-    def reset(self):
-        self.unset_state(ChunkFlags.State.DISABLED | ChunkFlags.State.HIDDEN)
 
 
 class Group(ChunkGroupBase):
     """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
 
-    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAME_SUNKEN)
+    # Override defaults
+    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
 
-class Vector(ChunkVectorBase):
-    """A Vector is basically a group which holds a set number of parameters. Need to supply a parameter instance to the init:
-        Vector(param=Slider(), name="my_vector", length=3)
-    Vector also support suffixes:
-        Vector(param=Slider(), name="my_vector", length=3, suffixes="RGB")
-    Args:
-        ChunkVectorBase (_type_): _description_
-    """
 
-    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAME_SUNKEN)
+class Vector(ChunkVectorBase):
+    """A Vector is basically a group which holds a set number of parameters"""
+
+    # Override defaults
+    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return chunk_notice.ChunkNoticeAlias.PARAM_CHANGED
 
 
 class Slider(ChunkParamBase[int | float]):
@@ -178,57 +176,77 @@ class Spinbox(ChunkParamBase[float | int]):
 
 class Menu(ChunkParamBase[str]):
     menu_items: Sequence[str] = field(factory=list)
-    default_value: str = field(default="", init=False)
-    value: str = field(default="")
 
-    def get_type(self) -> ChunkFlags.ParamType:
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.STRING_MENU
 
-    def _convert(self, attr: Attribute, val: Any) -> Any:
+    def convert_attr(self, attr: Attribute, val: Any) -> Any:
         if attr.name == "value" and val not in self.menu_items:
             try:
                 return self.value
             except AttributeError:
                 return self.default_value
-        if attr.name == "default_value" and val not in self.menu_items:
-            return next(iter(self.menu_items), None)
-        return super()._convert(attr, val)
+
+        elif attr.name == "default_value":
+            if self.menu_items and val not in self.menu_items:
+                return self.menu_items[0]
+
+        return super().convert_attr(attr, val)
 
 
 class Button(ChunkParamBase):
-    def get_type(self) -> ChunkFlags.ParamType:
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.BUTTON
 
 
 class Checkbox(ChunkParamBase[bool]):
-    def get_type(self) -> ChunkFlags.ParamType:
+    # Type specific flags, can be used for setting custom flags.
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.CHECKBOX
 
 
 class LineEdit(ChunkParamBase[str]):
-    def get_type(self) -> ChunkFlags.ParamType:
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.LINEEDIT
 
 
 class FileBrowser(ChunkParamBase[str]):
-    def get_type(self) -> ChunkFlags.ParamType:
+    extensions: List[str] = field(factory=list)
+    pattern: str = field(default="*")
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.FILE
+
+    def validate_attr(self, attr: Attribute, val: Any) -> bool:
+        if attr.name in ["value", "default_value"] and val:
+            if self.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING):
+                self._validate_existing_path(attr, val)
+            else:
+                self._validate_path(attr, val)
+
+        return super().validate_attr(attr, val)
 
 
 class Label(ChunkParamBase[str]):
-    def get_type(self) -> ChunkFlags.ParamType:
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.LABEL
 
 
 class Separator(ChunkParamBase):
-    def get_type(self) -> ChunkFlags.ParamType:
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.SEPARATOR
 
 
-# class CustomInterface(ChunkParam):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__()
-
-#         return ChunkFlags.ParamType.CUSTOM
-#         self.args = args
-#         self.kwargs = kwargs
+class Custom(ChunkParamBase):
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.CUSTOM
