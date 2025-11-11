@@ -86,6 +86,7 @@ def updateLabel(chunkItem, notice: chunk_notice.PrimSelectionChangedNotice, send
         sender (chunk_notice.UsdviewSelectionNotice): The actual sender
     """
 
+    print("UPDATE LABEL")
     if not sender.selectedPrims:
         return
     path = sender.selectedPrims[0].GetPath()
@@ -209,7 +210,5 @@ def main(api):
 
     # Prints the hierarchy of the chunk. Useful for debugging chunks
     #   myChunk.print_hierarchy()
-
-    x = myChunk.get_param("SliderVec.sliderX")
 
     return myChunk

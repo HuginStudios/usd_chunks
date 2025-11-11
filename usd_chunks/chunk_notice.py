@@ -8,6 +8,8 @@ from pxr import Usd
 from functools import partial
 from abc import abstractmethod
 
+import weakref
+
 
 class ChunkNoticeAlias(IntEnum):
     # Chunk parameters and value notices
@@ -16,7 +18,13 @@ class ChunkNoticeAlias(IntEnum):
     GROUP_CHANGED = auto()  # Sent when a group changes. This includes nested groups and param changes
     CHUNK_CHANGED = auto()  # Similar to GROUP_CHANGED but only for chunks
 
-    CHUNK_DELETE = auto()  # A chunk object was deleted
+    PARAM_ADDED = auto()  # Sent when a param was added as a child to a group or chunk
+    PARAM_REMOVED = auto()  # Sent when a param was removed as a child from a group or chunk. Not necessarily deleted
+
+    # A chunk object was deleted. Use instead of PARAM_REMOVED for most applications, as PARAM_REMOVED only sends when
+    # a param was added as a child to a NamedSyncedContainer (group / chunk / vector). CHUNK_DELETED on the other hand, sends whenever
+    # ANY chunk object was deleted
+    CHUNK_DELETED = auto()
 
     # Notice sent whenever the value of a valued parameter changes
     ATTRIBUTE_VALUE_CHANGED = auto()
@@ -98,7 +106,17 @@ class ChunkChangeNotice(Tf.Notice):
     pass
 
 
-@chunk_notice(ChunkNoticeAlias.CHUNK_DELETE)
+@chunk_notice(ChunkNoticeAlias.PARAM_ADDED)
+class ParamAddedNotice(Tf.Notice):
+    pass
+
+
+@chunk_notice(ChunkNoticeAlias.PARAM_REMOVED)
+class ParamRemovedNotice(Tf.Notice):
+    pass
+
+
+@chunk_notice(ChunkNoticeAlias.CHUNK_DELETED)
 class ChunkDeletedNotice(Tf.Notice):
     pass
 
@@ -186,9 +204,9 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None):
 
 class ChunkNoticePropagator:
     _last_notice: Optional[Tf.Notice]
-    _last_sender: Optional[Any]
+    _last_sender: Optional[weakref.ReferenceType]
     _connections: List["NoticeConnection"]
-    _owner: Optional["ChunkNoticePropagator"]
+    _owner: Optional[weakref.ReferenceType["ChunkNoticePropagator"]]
 
     def __init__(self) -> None:
         self._last_notice = None
@@ -234,7 +252,10 @@ class ChunkNoticePropagator:
         Returns:
             ChunkContainer: The parent ChunkContainer, or None
         """
-        return self._owner
+
+        if self._owner is None:
+            return None
+        return self._owner()
 
     def set_owner(self, owner: Optional["ChunkNoticePropagator"]):
         """Set the owner of this object. The owner is represents a "parent" in a parent-child relationship. This function
@@ -246,7 +267,7 @@ class ChunkNoticePropagator:
         Args:
             owner (ChunkNoticePropagator | None): The owning (parent) object that should recieve notices when this instance is modified
         """
-        self._owner = owner
+        self._owner = weakref.ref(owner) if owner is not None else None
 
     def data_changed(
         self, notice: Optional[Tf.Notice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
@@ -262,17 +283,18 @@ class ChunkNoticePropagator:
         """
 
         self._last_notice = notice
-        self._last_sender = sender
+        self._last_sender = None if sender is None else weakref.ref(sender)
 
         my_notice = self.send_self()
+        owner = self.get_owner()
 
-        if self._owner and my_notice is None:
+        if owner and my_notice is None:
             # if my_notice is None, then ignore any notices from self and just propagate
-            return self._owner.data_changed(notice, sender, propagated if propagated else sender)
+            return owner.data_changed(notice, sender, propagated if propagated else sender)
 
         # Set owner data_changed if available
-        if self._owner:
-            self._owner.data_changed(my_notice, self, propagated if propagated else sender)
+        if owner:
+            owner.data_changed(my_notice, self, propagated if propagated else sender)
 
         return my_notice
 
@@ -294,7 +316,7 @@ class ChunkNoticePropagator:
             Tuple[Tf.Notice, ChunkParamBase]: Last changed ChunkParam or ChunkParamGroup and the notice associated with the change
         """
 
-        return self._last_notice, self._last_sender
+        return self._last_notice, None if self._last_sender is None else self._last_sender()
 
     def add_connection(self, conn: "NoticeConnection"):
         """Adds a NoticeConnection to the self._connections list to store it for the lifetime of this object
@@ -364,10 +386,6 @@ class ChunkNoticePropagator:
 
         conn = NoticeConnection(method, notice_alias, sender, listen_globally, send_self, self)
 
-        # if isinstance(sender, ChunkNoticePropagator) and sender is not self:
-        #     print("ADDING TWO WAY CONN", self.name, sender.name)
-        #     sender.add_connection(conn)
-
         self.add_connection(conn)
 
 
@@ -379,9 +397,8 @@ class NoticeConnection:
         sender: Optional[Any] = None,
         globally: bool = False,
         send_owner: bool = False,
-        owner: Optional[ChunkNoticePropagator] = None
+        owner: Optional[ChunkNoticePropagator] = None,
     ):
-        self.sender: Any = sender
         self.alias: ChunkNoticeAlias = alias
 
         self.listener: Optional[Tf.Notice.Listener] = None
@@ -390,11 +407,32 @@ class NoticeConnection:
         self.method: Callable = method
         self.send_owner: bool = send_owner
 
-        self.owner = owner
-
+        # self.sender = sender
+        # self.owner = owner
+        self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender) if sender else None
+        self._owner: Optional[weakref.ProxyType] = weakref.proxy(owner) if owner else None
         self.__method = None
 
         self.connect()
+
+    @property
+    def owner(self):
+        return None if self._owner is None else self._owner
+
+    @owner.setter
+    def owner(self, obj: Optional[ChunkNoticePropagator]):
+        self._owner = weakref.proxy(obj) if obj else None
+
+    @property
+    def sender(self):
+        return None if self._sender is None else self._sender()
+
+    @sender.setter
+    def sender(self, obj):
+        self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
+    
+    def __del__(self):
+        self.disconnect()
 
     def connect(self, sender=None):
         notice = get_notice(self.alias)
@@ -419,10 +457,14 @@ class NoticeConnection:
         elif self.sender:
             self.listener = Tf.Notice.Register(type(notice), self.__method, self.sender)
 
+    def _sender_died(self, ref):
+        self.disconnect()
+
     def disconnect(self):
         if self.listener is not None:
             self.listener.Revoke()
             self.listener = None
+        self.__method = None
 
 
 class UsdviewSender(ChunkNoticePropagator):

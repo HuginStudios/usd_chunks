@@ -61,7 +61,7 @@ class ChunksPlugin(PluginContainer):
 
     def configureView(self, _, plugUIBuilder) -> None:
         menu = plugUIBuilder.findOrCreateMenu("Chunks")
-        menu.addItem(self._reloadChunksCommand, "R")
+        menu.addItem(self._reloadChunksCommand, "SHIFT+R")
         pass
 
 

@@ -25,6 +25,7 @@ from enum import IntEnum, IntFlag
 
 import re
 import uuid
+import weakref
 
 from . import chunk_notice, chunk_registry
 from .chunk import ChunkFlags
@@ -51,33 +52,54 @@ class ChunkParamWidget(Generic[ParamT]):
     The subclass should override the relevant methods from this class
     """
 
-    def __init__(self, param, *args, **kwargs):
+    def __init__(self, param: ParamT, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.param: ParamT = param
+        self._param: weakref.ReferenceType[ParamT] = weakref.ref(param)
 
-        self._value_connection = chunk_notice.NoticeConnection(
-            self.param_changed_callback,
-            chunk_notice.ChunkNoticeAlias.ATTRIBUTE_VALUE_CHANGED,
-            self.param.get_attribute_sender("value"),
+        self._connnections: List[chunk_notice.NoticeConnection] = []
+
+        self._connnections.append(
+            chunk_notice.NoticeConnection(
+                self.param_changed_callback,
+                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_VALUE_CHANGED,
+                self.param.get_attribute_sender("value"),
+            )
         )
 
-        self._name_connection = chunk_notice.NoticeConnection(
-            self.label_changed_callback,
-            chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-            self.param.get_attribute_sender("name"),
+        self._connnections.append(
+            chunk_notice.NoticeConnection(
+                self.label_changed_callback,
+                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                self.param.get_attribute_sender("name"),
+            )
         )
 
-        self._label_connection = chunk_notice.NoticeConnection(
-            self.label_changed_callback,
-            chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-            self.param.get_attribute_sender("label"),
+        self._connnections.append(
+            chunk_notice.NoticeConnection(
+                self.label_changed_callback,
+                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                self.param.get_attribute_sender("label"),
+            )
         )
 
-        self._icon_connection = chunk_notice.NoticeConnection(
-            self._icon_changed_callback,
-            chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-            self.param.get_attribute_sender("icon"),
+        self._connnections.append(
+            chunk_notice.NoticeConnection(
+                self._icon_changed_callback,
+                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                self.param.get_attribute_sender("icon"),
+            )
         )
+
+    @property
+    def param(self):
+        p = self._param()
+        if not p:
+            raise ReferenceError("Param is dead!")
+        return p
+
+    @param.setter
+    def param(self, value: ParamT):
+        self._param = weakref.ref(value)
 
     def param_changed_callback(self, notice: Tf.Notice, param: ParamT):
         if param.value is not None:
@@ -85,12 +107,15 @@ class ChunkParamWidget(Generic[ParamT]):
 
     def label_changed_callback(self, notice: Tf.Notice, param: ParamT):
         self.set_label(self.param.get_label())
-    
+
     def _icon_changed_callback(self, notice: Tf.Notice, param: ParamT):
         if self.param.icon:
             self.set_icon(self.param.icon)
 
     def setup_chunk_widget(self):
+        if not self.param:
+            return
+
         value = self.param.value
         label = self.param.get_label()
 
@@ -307,9 +332,6 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
         # Add connections to the copy by creating new NoticeConnection objects
         # Rewire the connection to the copy if conn.sender is the source of the copy (self)
         sender = self if conn.sender == src else conn.sender
-
-        print("COPU ATTRIB SENDER", self.name)
-
         new_conn = chunk_notice.NoticeConnection(conn.method, conn.alias, sender, conn.globally, conn.send_owner, self)
         self.add_connection(new_conn)
 
@@ -645,6 +667,9 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
     def __init__(self):
         super().__init__()
 
+        self.last_added: Optional[HashVal] = None
+        self.last_removed: Optional[HashVal] = None
+
         self.params: ChainMap[ChunkHash, ChunkCommon] = ChainMap()
         self.names: ChainMap[str, ChunkHash] = ChainMap()
 
@@ -659,6 +684,10 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
         copied._copy_connections(self)
         return copied
+
+    def clear(self):
+        self.names.clear()
+        self.params.clear()
 
     def add(self, obj: "ChunkCommon"):
         """Add a chunk object to this container. This will make the container the owner of the param, and store the
@@ -689,6 +718,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             # the vector itself, and not as children
             self.params.maps.append(obj.children.params)
             self.names.maps.append(obj.children.names)
+
+        self.send_added(obj)
 
     def data_changed(
         self,
@@ -831,21 +862,29 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
         return tuple(self.params.maps[0].values())
 
+    def send_added(self, obj: "ChunkCommon"):
+        self.last_added = obj._hashable
+        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.PARAM_ADDED, self.get_owner())
+
+    def send_removed(self, obj: "ChunkCommon"):
+        self.last_removed = obj._hashable
+        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, self.get_owner())
+
     def __delitem__(self, key: ChunkHash):
         if obj := self.get_param(key):
-            del self.names.maps[0][obj.name]
-            del self.params.maps[0][key]
-
-    def pop(self, key: ChunkHash):
-        obj = self.get_param(key, None)
-        if obj:
             del self.names.maps[0][obj.name]
             del self.params.maps[0][key]
 
             if obj.get_owner() == self:
                 obj.set_owner(None)
 
-        return obj
+            self.send_removed(obj)
+
+    def pop(self, key: ChunkHash):
+        obj = self.get_param(key, None)
+        if obj:
+            del self[obj]
+            return obj
 
 
 ######################
@@ -1049,11 +1088,22 @@ class ChunkCommon(AttributesBase):
         """Sends a notice for owners to delete this Chunk object. It's the owners responsibility to remove their reference to this object.
         If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument
         """
-
         owner = self.get_owner()
         if owner and isinstance(owner, ChunkContainerBase):
+            # Owner is a group, so delete this param from the group
             owner.remove_param_or_group(self)
-        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_DELETE, self)
+        elif owner and isinstance(owner, NameSyncedContainer):
+            # Owner is a NameSyncedContainer, pop it from the contiainer. When successfully removed,
+            # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
+            owner.pop(self)
+
+        self.set_owner(None)
+        for i in self._connections:
+            i.disconnect()
+        self._connections.clear()
+
+        # Send the CHUNK_DELETED notice for this object
+        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, self)
 
 
 class ChunkParamBase(Generic[ValueT], ChunkCommon):
@@ -1161,14 +1211,20 @@ class ChunkContainerBase(ChunkCommon):
         Args:
             param (ChunkCommon): The child to remove
         """
-        own_p = self.children.pop(param)
 
+        own_p = self.children.pop(param)
         if not own_p:
             return
 
         own_p.set_owner(None)
 
-    def get_param(self, param: ChunkCommon | str) -> Optional[ChunkCommon]:
+    def request_delete(self):
+        self.children.clear()
+        self.children.set_owner(None)
+
+        super().request_delete()
+
+    def get_param(self, param: ChunkCommon | str | HashVal) -> Optional[ChunkCommon]:
         """Get a parameter or group inside of this group
 
         Args:
@@ -1178,7 +1234,7 @@ class ChunkContainerBase(ChunkCommon):
             ChunkParam: The found parameter or None if not found
         """
 
-        if isinstance(param, ChunkCommon):
+        if isinstance(param, (ChunkCommon, HashVal)):
             return self.children.get_param(param)
         elif isinstance(param, str):
             return self.children.get_by_name(param)

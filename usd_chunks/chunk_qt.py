@@ -1,5 +1,5 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 
 from pxr import Tf
@@ -7,6 +7,7 @@ from pxr import Tf
 from . import chunk, chunk_notice, chunk_registry
 from .chunk_interface import ChunkFlags, ChunkParamWidget
 from usd_chunks import chunk_interface
+import weakref
 
 
 class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
@@ -46,6 +47,8 @@ class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
         self.setOrientation(orient)
 
     def value_changed(self, value: int | float):
+        if not self.param:
+            return
         self.param.value = value / self._step
 
 
@@ -92,6 +95,7 @@ class ChunkLabelWidget(ChunkParamWidget[chunk.Label], QtWidgets.QLabel):
         return self.set_label(value)
 
     def set_label(self, value):
+        print("set label", value)
         return self.setText(value)
 
 
@@ -125,6 +129,9 @@ class ChunkFileWidget(ChunkParamWidget[chunk.FileBrowser], QtWidgets.QWidget):
         self.text.editingFinished.connect(self.value_changed)
 
     def open_file_dial(self):
+        if not self.param:
+            return
+
         dial = QtWidgets.QFileDialog()
 
         pattern = ""
@@ -228,7 +235,8 @@ class ChunkPushButtonWidget(ChunkParamWidget[chunk.Button], QtWidgets.QPushButto
         Args:
             _ (Any): Ignored
         """
-        self.param.send_self()
+        if self.param:
+            self.param.send_self()
 
 
 class ChunkSeparatorWidget(ChunkParamWidget, QtWidgets.QFrame):
@@ -307,19 +315,30 @@ class ContainerWidget(QtWidgets.QWidget):
     ):
         super().__init__(parent)
 
-        self.group = group
+        self._group: weakref.ReferenceType = weakref.ref(group)
+
         self.animation_duration = 300
         self._animation_value = 0
 
-        self._state_listener = chunk_notice.NoticeConnection(
-            self.state_changed, chunk_notice.ChunkNoticeAlias.STATE_CHANGED, self.group.get_attribute_sender("state")
+        self._callbacks: List[chunk_notice.NoticeConnection] = []
+
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(self.delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, group)
         )
 
-        self._delete_listener = chunk_notice.NoticeConnection(
-            self.group_deleted, chunk_notice.ChunkNoticeAlias.CHUNK_DELETE, self.group
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(self.param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
         )
-
-        self._callbacks = []
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(
+                self.param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, group
+            )
+        )
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(
+                self.state_changed, chunk_notice.ChunkNoticeAlias.STATE_CHANGED, group.get_attribute_sender("state")
+            )
+        )
 
         # Associate ChunkParamGroup objects with Qt Layouts
         self.param_groups: dict[chunk_interface.ChunkContainerBase, ContainerWidget] = {}
@@ -339,18 +358,74 @@ class ContainerWidget(QtWidgets.QWidget):
         self.update_from_flags()
         self.update_from_state()
 
-    def group_deleted(self, notice, sender):
-        if not chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.CHUNK_DELETE):
+    @property
+    def group(self) -> chunk_interface.ChunkContainerBase:
+        g = self._group()
+        if not g:
+            raise ReferenceError("Group is deleted!")
+        return g
+
+    def delete_self(self, notice, sender):
+        """
+        The group should be deleted, so call deleteLater on self
+
+        Args:
+            notice (_type_): _description_
+            sender (_type_): _description_
+        """
+        if not chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED):
             return
 
         if sender is not self.group:
             return
 
-        self._state_listener.disconnect()
-        self._delete_listener.disconnect()
+        self.param_groups.clear()
+        self.param_widgets.clear()
 
         self.setParent(None)
         self.deleteLater()
+
+
+    def remove_param(self, param: chunk_interface.ChunkParamBase):
+        if param not in self.param_widgets:
+            return
+        wid = None
+
+        if isinstance(param, chunk_interface.ChunkParamBase):
+            wid = self.param_widgets.get(param)
+
+        if not wid:
+            return
+
+        self.content_layout.removeRow(wid)
+        del self.param_widgets[param]
+
+    def param_added_callback(self, notice, sender: chunk_interface.ChunkContainerBase):
+        h = sender.children.last_added
+        if not h:
+            return
+        param = sender.get_param(h)
+        if not param:
+            return
+
+        self.add_param(param)
+
+    def param_removed_callback(self, notice, sender: chunk_interface.ChunkContainerBase):
+        h = sender.children.last_removed
+        if not h:
+            return
+
+        param = None
+
+        for p in self.param_widgets.keys():
+            if p == h:
+                param = p
+                break
+
+        if not param:
+            return
+
+        self.remove_param(param)
 
     def state_changed(self, notice, sender):
         self.update_from_state()
@@ -563,12 +638,12 @@ class ContainerWidget(QtWidgets.QWidget):
             layout = self
 
         self.param_widgets[info] = widget
-        
-        if info.has_flag(ChunkFlags.ParamFlags.LABELED):
-            layout.addWidget(widget, FormLabelWidget(info.get_label(), widget))
-        else:
-            layout.addWidget(widget)
+        layout.addWidget(widget)
 
+        # if info.has_flag(ChunkFlags.ParamFlags.LABELED):
+        #     layout.addWidget(widget, FormLabelWidget(info.get_label(), widget))
+        # else:
+        #     layout.addWidget(widget)
 
     def add_group_layout(self, group: chunk_interface.ChunkContainerBase):
         """Adds a group of parameters to a shared layout
@@ -593,10 +668,13 @@ class ContainerWidget(QtWidgets.QWidget):
             layout (QtWidgets.QLayout, optional): A layout to add the parameters to. Usually not needed but used by recursion when adding groups. Defaults to None.
         """
         for param in info.get_my_params():
-            if isinstance(param, chunk_interface.ChunkContainerBase):
-                self.add_group_layout(param)
-            elif isinstance(param, chunk_interface.ChunkParamBase):
-                self.add_param_widget(param)
+            self.add_param(param)
+
+    def add_param(self, param: chunk_interface.ChunkCommon):
+        if isinstance(param, chunk_interface.ChunkContainerBase):
+            self.add_group_layout(param)
+        elif isinstance(param, chunk_interface.ChunkParamBase):
+            self.add_param_widget(param)
 
     def has_param_widget(self, param: chunk.ChunkParamBase | str) -> bool:
         """Check to see if param exists in this Chunk widget

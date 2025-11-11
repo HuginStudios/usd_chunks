@@ -159,7 +159,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                     continue
 
                 module_name = os.path.relpath(module_path, working_dir).replace(os.path.sep, ".").replace(".py", "")
-
                 mod = ChunkModule(module_name=module_name, module_file=module_path, loaded=False)
                 self.load_module(mod)
 
@@ -207,6 +206,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             return
 
         mod.loaded_chunk.request_delete()
+        mod.loaded_chunk = None
         mod.loaded = False
 
     def unload_chunk(self, chunk_name: str):

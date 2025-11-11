@@ -111,7 +111,7 @@ def main(api):
         myChunk.add_params([groupA, groupC, groupB])
 
     myChunk.add_callback(chunkChanged)
-    myChunk.add_callback(request_delete, None, True, chunk_notice.ChunkNoticeAlias.CHUNK_DELETE)
+    myChunk.add_callback(request_delete, None, True, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
     myChunk.print_hierarchy()
 
