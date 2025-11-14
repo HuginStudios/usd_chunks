@@ -54,7 +54,8 @@ class ChunkParamWidget(Generic[ParamT]):
 
     def __init__(self, param: ParamT, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._param: weakref.ReferenceType[ParamT] = weakref.ref(param)
+        # self._param: weakref.ReferenceType[ParamT] = weakref.ref(param)
+        self.param: ParamT = param
 
         self._connnections: List[chunk_notice.NoticeConnection] = []
 
@@ -90,16 +91,16 @@ class ChunkParamWidget(Generic[ParamT]):
             )
         )
 
-    @property
-    def param(self):
-        p = self._param()
-        if not p:
-            raise ReferenceError("Param is dead!")
-        return p
+    # @property
+    # def param(self):
+    #     p = self._param()
+    #     if not p:
+    #         raise ReferenceError("Param is dead!")
+    #     return p
 
-    @param.setter
-    def param(self, value: ParamT):
-        self._param = weakref.ref(value)
+    # @param.setter
+    # def param(self, value: ParamT):
+    #     self._param = weakref.ref(value)
 
     def param_changed_callback(self, notice: Tf.Notice, param: ParamT):
         if param.value is not None:
@@ -530,6 +531,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             attrname (str): The name of the attribute that was changed
             value (Any): The new value
         """
+
         if old_value == value or attrname.startswith("_"):
             # No change was made, we should not send the notice
             return
@@ -965,7 +967,7 @@ class ChunkCommon(AttributesBase):
 
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "name":
-            return re.sub(r"\W+", "", str(val))
+            return re.sub(r"\W+", "", str(val))[0:100]
 
         return super().convert_attr(attr, val)
 
@@ -986,9 +988,6 @@ class ChunkCommon(AttributesBase):
 
         if " " in value:
             raise ValueError(f"{value} contains spaces")
-
-        if len(value) > 20:
-            raise ValueError(f"name is too long: {value}. Capped at 20")
 
         if value:
             expr = r"[_a-zA-Z0-9]+"
@@ -1536,3 +1535,23 @@ class ChunkVectorBase(ChunkContainerBase):
             raise ValueError("ChunkContainers does not support value assignment")
 
         param.value = val
+
+    @property
+    def value(self):
+        return tuple(x.value for x in self.get_my_params() if isinstance(x, ChunkParamBase))
+
+    @value.setter
+    def value(self, val: Tuple[Any, ...]):
+        if not len(val) == self.length:
+            raise ValueError(
+                f"Trying to set value {val} on vector param {self.name} with wring size. Size should be {self.length}"
+            )
+
+        for i in range(self.length):
+            self[i] = val[i]
+
+    def get_type(self):
+        return self.param.get_type()
+
+    def evaluate_type(self):
+        return self.param.evaluate_type()

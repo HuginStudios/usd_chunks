@@ -7,8 +7,6 @@ from pxr import Tf
 from . import chunk, chunk_notice, chunk_registry
 from .chunk_interface import ChunkFlags, ChunkParamWidget
 from usd_chunks import chunk_interface
-import weakref
-
 
 class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
     def __init__(self, param: chunk.Slider):
@@ -95,7 +93,6 @@ class ChunkLabelWidget(ChunkParamWidget[chunk.Label], QtWidgets.QLabel):
         return self.set_label(value)
 
     def set_label(self, value):
-        print("set label", value)
         return self.setText(value)
 
 
@@ -103,7 +100,7 @@ class ChunkLineEditWidget(ChunkParamWidget[chunk.LineEdit], QtWidgets.QLineEdit)
     def __init__(self, param: chunk.LineEdit):
         super().__init__(param)
 
-        self.textChanged.connect(self.value_changed)
+        self.editingFinished.connect(self.value_changed)
         self.setup_chunk_widget()
 
     def get_value(self):
@@ -182,13 +179,15 @@ class ChunkComboBoxWidget(ChunkParamWidget[chunk.Menu], QtWidgets.QComboBox):
     def __init__(self, param: chunk.Menu):
         super().__init__(param)
 
-        self.currentTextChanged.connect(self.value_changed)
         self.setup_chunk_widget()
 
         menu_items = param.menu_items
-
         if menu_items:
             self.addItems(menu_items)
+            val = param.value if param.value is not None else param.default_value
+            if val:
+                self.set_value(val)
+        self.currentTextChanged.connect(self.value_changed)
 
     def get_value(self):
         return self.currentText()
@@ -315,7 +314,8 @@ class ContainerWidget(QtWidgets.QWidget):
     ):
         super().__init__(parent)
 
-        self._group: weakref.ReferenceType = weakref.ref(group)
+        # self._group: weakref.ReferenceType = weakref.ref(group)
+        self.group = group
 
         self.animation_duration = 300
         self._animation_value = 0
@@ -358,12 +358,12 @@ class ContainerWidget(QtWidgets.QWidget):
         self.update_from_flags()
         self.update_from_state()
 
-    @property
-    def group(self) -> chunk_interface.ChunkContainerBase:
-        g = self._group()
-        if not g:
-            raise ReferenceError("Group is deleted!")
-        return g
+    # @property
+    # def group(self) -> chunk_interface.ChunkContainerBase:
+    #     g = self._group()
+    #     if not g:
+    #         raise ReferenceError("Group is deleted!")
+    #     return g
 
     def delete_self(self, notice, sender):
         """
@@ -384,7 +384,6 @@ class ContainerWidget(QtWidgets.QWidget):
 
         self.setParent(None)
         self.deleteLater()
-
 
     def remove_param(self, param: chunk_interface.ChunkParamBase):
         if param not in self.param_widgets:
@@ -638,12 +637,11 @@ class ContainerWidget(QtWidgets.QWidget):
             layout = self
 
         self.param_widgets[info] = widget
-        layout.addWidget(widget)
 
-        # if info.has_flag(ChunkFlags.ParamFlags.LABELED):
-        #     layout.addWidget(widget, FormLabelWidget(info.get_label(), widget))
-        # else:
-        #     layout.addWidget(widget)
+        if info.has_flag(ChunkFlags.ParamFlags.LABELED):
+            layout.addWidget(widget, FormLabelWidget(info.get_label(), widget))
+        else:
+            layout.addWidget(widget)
 
     def add_group_layout(self, group: chunk_interface.ChunkContainerBase):
         """Adds a group of parameters to a shared layout
