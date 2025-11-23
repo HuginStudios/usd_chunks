@@ -189,6 +189,9 @@ class ChunkComboBoxWidget(ChunkParamWidget[chunk.Menu], QtWidgets.QComboBox):
                 self.set_value(val)
         self.currentTextChanged.connect(self.value_changed)
 
+        if param.default_value:
+            self.setCurrentIndex(menu_items.index(param.default_value))
+
     def get_value(self):
         return self.currentText()
 
@@ -323,22 +326,19 @@ class ContainerWidget(QtWidgets.QWidget):
         self._callbacks: List[chunk_notice.NoticeConnection] = []
 
         self._callbacks.append(
-            chunk_notice.NoticeConnection(self.delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, group)
+            chunk_notice.NoticeConnection(
+                self.delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, group)
         )
 
         self._callbacks.append(
-            chunk_notice.NoticeConnection(self.param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
+            chunk_notice.NoticeConnection(
+                self.param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
         )
         self._callbacks.append(
             chunk_notice.NoticeConnection(
-                self.param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, group
-            )
+                self.param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, group)
         )
-        self._callbacks.append(
-            chunk_notice.NoticeConnection(
-                self.state_changed, chunk_notice.ChunkNoticeAlias.STATE_CHANGED, group.get_attribute_sender("state")
-            )
-        )
+
 
         # Associate ChunkParamGroup objects with Qt Layouts
         self.param_groups: dict[chunk_interface.ChunkContainerBase, ContainerWidget] = {}
@@ -428,6 +428,7 @@ class ContainerWidget(QtWidgets.QWidget):
 
     def state_changed(self, notice, sender):
         self.update_from_state()
+
 
     @QtCore.Property(float)
     def animation_value(self):  # type: ignore
@@ -535,6 +536,7 @@ class ContainerWidget(QtWidgets.QWidget):
         else:
             self.content_layout.addRow(label, widget)
 
+
     def update_label(self, param: chunk_interface.ChunkCommon, notice, sender: chunk_interface.AttributeSender):
         """
         When a param name, label or flag is changed, this will correct the label in the FormLayout.
@@ -614,6 +616,13 @@ class ContainerWidget(QtWidgets.QWidget):
                 ),
                 chunk_notice.NoticeConnection(
                     self.update_label,
+                    chunk_notice.ChunkNoticeAlias.GROUP_CHANGED,
+                    info.get_attribute_sender("name"),
+                    send_owner=True,
+                    owner=info,
+                ),
+                chunk_notice.NoticeConnection(
+                    self.update_label,
                     chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
                     info.get_attribute_sender("label"),
                     send_owner=True,
@@ -642,6 +651,7 @@ class ContainerWidget(QtWidgets.QWidget):
             layout.addWidget(widget, FormLabelWidget(info.get_label(), widget))
         else:
             layout.addWidget(widget)
+
 
     def add_group_layout(self, group: chunk_interface.ChunkContainerBase):
         """Adds a group of parameters to a shared layout
