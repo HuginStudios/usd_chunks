@@ -8,11 +8,10 @@ from . import chunk, chunk_notice, chunk_registry
 from .chunk_interface import ChunkFlags, ChunkParamWidget
 from usd_chunks import chunk_interface
 
+
 class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
     def __init__(self, param: chunk.Slider):
         super().__init__(param)
-
-        self.valueChanged.connect(self.value_changed)
 
         self._step = 1000 if chunk.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
 
@@ -30,6 +29,7 @@ class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
             self.setMaximum(10 * self._step)
 
         self.setup_chunk_widget()
+        self.valueChanged.connect(self.value_changed)
 
     def get_value(self):
         return self.value() / self._step
@@ -50,12 +50,9 @@ class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
         self.param.value = value / self._step
 
 
-# TODO: Make this widget nice
-class ChunkSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
+class ChunkFloatSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
     def __init__(self, param: chunk.Spinbox):
         super().__init__(param)
-
-        self.valueChanged.connect(self.value_changed)
 
         self._step = 1
 
@@ -69,6 +66,35 @@ class ChunkSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDoubleSpinB
             self.setMaximum(max_val * self._step)
 
         self.setup_chunk_widget()
+        self.valueChanged.connect(self.value_changed)
+
+    def get_value(self):
+        return self.value()
+
+    def set_value(self, value):
+        return self.setValue(value)
+
+    def wheelEvent(self, event: QtGui.QWheelEvent):
+        event.ignore()
+
+
+class ChunkIntSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QSpinBox):
+    def __init__(self, param: chunk.Spinbox):
+        super().__init__(param)
+
+        self._step = 1
+
+        min_val = param.min_value
+        max_val = param.max_value
+
+        if min_val is not None:
+            self.setMinimum(int(min_val * self._step))
+
+        if max_val is not None:
+            self.setMaximum(int(max_val * self._step))
+
+        self.setup_chunk_widget()
+        self.valueChanged.connect(self.value_changed)
 
     def get_value(self):
         return self.value()
@@ -83,7 +109,6 @@ class ChunkSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDoubleSpinB
 class ChunkLabelWidget(ChunkParamWidget[chunk.Label], QtWidgets.QLabel):
     def __init__(self, param: chunk.Label):
         super().__init__(param)
-
         self.setup_chunk_widget()
 
     def get_value(self):
@@ -99,9 +124,9 @@ class ChunkLabelWidget(ChunkParamWidget[chunk.Label], QtWidgets.QLabel):
 class ChunkLineEditWidget(ChunkParamWidget[chunk.LineEdit], QtWidgets.QLineEdit):
     def __init__(self, param: chunk.LineEdit):
         super().__init__(param)
+        self.setup_chunk_widget()
 
         self.editingFinished.connect(self.value_changed)
-        self.setup_chunk_widget()
 
     def get_value(self):
         return self.text()
@@ -118,11 +143,9 @@ class ChunkFileWidget(ChunkParamWidget[chunk.FileBrowser], QtWidgets.QWidget):
         self.button.setStyleSheet("border: 0px; padding: 0px;")
         self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
         self.button.clicked.connect(self.open_file_dial)
-
         self.text = QtWidgets.QLineEdit(self)
 
         self.setup_chunk_widget()
-
         self.text.editingFinished.connect(self.value_changed)
 
     def open_file_dial(self):
@@ -179,18 +202,18 @@ class ChunkComboBoxWidget(ChunkParamWidget[chunk.Menu], QtWidgets.QComboBox):
     def __init__(self, param: chunk.Menu):
         super().__init__(param)
 
-        self.setup_chunk_widget()
-
         menu_items = param.menu_items
         if menu_items:
             self.addItems(menu_items)
             val = param.value if param.value is not None else param.default_value
             if val:
                 self.set_value(val)
-        self.currentTextChanged.connect(self.value_changed)
 
         if param.default_value:
             self.setCurrentIndex(menu_items.index(param.default_value))
+
+        self.setup_chunk_widget()
+        self.currentTextChanged.connect(self.value_changed)
 
     def get_value(self):
         return self.currentText()
@@ -205,10 +228,9 @@ class ChunkComboBoxWidget(ChunkParamWidget[chunk.Menu], QtWidgets.QComboBox):
 class ChunkCheckBoxWidget(ChunkParamWidget[chunk.Checkbox], QtWidgets.QCheckBox):
     def __init__(self, param: chunk.Checkbox):
         super().__init__(param)
+        self.setup_chunk_widget()
 
         self.toggled.connect(self.value_changed)
-
-        self.setup_chunk_widget()
 
     def get_value(self):
         return self.isChecked()
@@ -220,9 +242,9 @@ class ChunkCheckBoxWidget(ChunkParamWidget[chunk.Checkbox], QtWidgets.QCheckBox)
 class ChunkPushButtonWidget(ChunkParamWidget[chunk.Button], QtWidgets.QPushButton):
     def __init__(self, param: chunk.Button):
         super().__init__(param)
-        self.clicked.connect(self.value_changed)
-
         self.setup_chunk_widget()
+
+        self.clicked.connect(self.value_changed)
 
     def set_label(self, text):
         self.setText(text)
@@ -257,8 +279,8 @@ class ChunkQTWidgetFactory(chunk_interface.ChunkWidgetFactoryBase):
     widget_map: Dict[ChunkFlags.ParamType, type[QtWidgets.QWidget]] = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
-        ChunkFlags.ParamType.FLOAT_SPINBOX: ChunkSpinboxWidget,
-        ChunkFlags.ParamType.INT_SPINBOX: ChunkSpinboxWidget,
+        ChunkFlags.ParamType.FLOAT_SPINBOX: ChunkFloatSpinboxWidget,
+        ChunkFlags.ParamType.INT_SPINBOX: ChunkIntSpinboxWidget,
         ChunkFlags.ParamType.LABEL: ChunkLabelWidget,
         ChunkFlags.ParamType.LINEEDIT: ChunkLineEditWidget,
         ChunkFlags.ParamType.FILE: ChunkFileWidget,
@@ -299,6 +321,9 @@ class FormLabelWidget(QtWidgets.QLabel):
 
         self.setText(text)
 
+        self.setMaximumWidth(100)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Minimum)
+
         self.setMargin(3)
 
 
@@ -326,19 +351,17 @@ class ContainerWidget(QtWidgets.QWidget):
         self._callbacks: List[chunk_notice.NoticeConnection] = []
 
         self._callbacks.append(
-            chunk_notice.NoticeConnection(
-                self.delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, group)
+            chunk_notice.NoticeConnection(self.delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, group)
         )
 
         self._callbacks.append(
-            chunk_notice.NoticeConnection(
-                self.param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
+            chunk_notice.NoticeConnection(self.param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
         )
         self._callbacks.append(
             chunk_notice.NoticeConnection(
-                self.param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, group)
+                self.param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, group
+            )
         )
-
 
         # Associate ChunkParamGroup objects with Qt Layouts
         self.param_groups: dict[chunk_interface.ChunkContainerBase, ContainerWidget] = {}
@@ -429,7 +452,6 @@ class ContainerWidget(QtWidgets.QWidget):
     def state_changed(self, notice, sender):
         self.update_from_state()
 
-
     @QtCore.Property(float)
     def animation_value(self):  # type: ignore
         return self._animation_value
@@ -450,14 +472,13 @@ class ContainerWidget(QtWidgets.QWidget):
         return val
 
     def build_collapsable(self):
-        self.content = QtWidgets.QScrollArea()
-        self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Ignored)
+        self.content = QtWidgets.QFrame()
+        self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
 
         self.content_layout = QtWidgets.QFormLayout()
         self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
         self.content_layout.setContentsMargins(2, 2, 2, 2)
         self.content_layout.setHorizontalSpacing(0)
-
         self.content.setLayout(self.content_layout)
 
         # Setup minimize/maximize button
@@ -471,7 +492,7 @@ class ContainerWidget(QtWidgets.QWidget):
         self.toggle_anim.setEndValue(self.animation_duration)
 
         self.__layout__ = QtWidgets.QVBoxLayout()
-        self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
         self.__layout__.setContentsMargins(10, 3, 0, 0)
 
         self.__layout__.addWidget(self.minimize_button)
@@ -535,7 +556,6 @@ class ContainerWidget(QtWidgets.QWidget):
             self.content_layout.addRow(widget)
         else:
             self.content_layout.addRow(label, widget)
-
 
     def update_label(self, param: chunk_interface.ChunkCommon, notice, sender: chunk_interface.AttributeSender):
         """
@@ -638,7 +658,7 @@ class ContainerWidget(QtWidgets.QWidget):
             ]
         )
 
-        widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Minimum)
+        widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
         if group is not None:
             layout = self.add_group_layout(group)
@@ -651,7 +671,6 @@ class ContainerWidget(QtWidgets.QWidget):
             layout.addWidget(widget, FormLabelWidget(info.get_label(), widget))
         else:
             layout.addWidget(widget)
-
 
     def add_group_layout(self, group: chunk_interface.ChunkContainerBase):
         """Adds a group of parameters to a shared layout
@@ -775,7 +794,6 @@ class ChunkArea(QtWidgets.QScrollArea):
 
         self.widget_holder = QtWidgets.QWidget(self)
         self.widget_holder.setLayout(self.flow)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
 
         self.setWidget(self.widget_holder)
         self.setWidgetResizable(True)
@@ -806,6 +824,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.add_chunk_widget(sender)
 
     def build(self):
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.MinimumExpanding)
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: QtWidgets.QTabWidget = QtWidgets.QTabWidget(self)
         registry = chunk_registry.ChunkRegistry()

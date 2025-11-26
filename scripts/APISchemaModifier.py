@@ -6,6 +6,7 @@ from typing import Dict
 
 _type_map = {
     "float": chunk.Slider,
+    "int": (chunk.Spinbox, {"is_int": True}),
     "token": chunk.Menu,
     "bool": chunk.Checkbox,
     "string": chunk.LineEdit,
@@ -137,6 +138,7 @@ def update_chunk(myChunk: chunk.Chunk, notice, sender: chunk_notice.UsdviewSende
 
             group = chunk.Group(api)
             group.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
+            group.set_state(chunk.ChunkFlags.State.COLLAPSED)
 
             for prop_name in api_def.GetPropertyNames():
                 if attr_def := api_def.GetAttributeDefinition(prop_name):
