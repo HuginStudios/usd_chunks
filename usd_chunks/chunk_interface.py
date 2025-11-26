@@ -941,6 +941,9 @@ class ChunkCommon(AttributesBase):
     tooltip: Optional[str] = attrs.field(default="")
     icon: Optional[str] = attrs.field(default="")  # Path to icon
 
+    # link to UsdAttribute if needed
+    usd_attr: Optional[Usd.Attribute] = attrs.field(default=None)
+
     # Hold custom data which is not used directly by the chunk
     user_data: Dict[str, Any] = attrs.field(factory=dict)
 
@@ -1039,6 +1042,12 @@ class ChunkCommon(AttributesBase):
 
     def get_label(self) -> str:
         return self.name if not self.label else self.label
+    
+    def get_usd_attr(self) -> Usd.Attribute:
+        return self.usd_attr
+
+    def set_usd_attr(self, attr) -> None:
+        self.usd_attr = attr
 
     def set_flag(self, flag: IntFlag):
         self.flags |= flag
