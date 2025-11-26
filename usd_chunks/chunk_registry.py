@@ -112,7 +112,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
     def register_chunk_environ_directories(self):
         """Register the USD_CHUNK_DIR directories to find Python modules."""
         environ_dirs = set(
-            os.environ.get("USD_CHUNK_DIR", os.path.sep.join([os.path.dirname(__file__), "scripts"])).split(os.pathsep)
+            os.environ.get("USD_CHUNK_DIR", os.path.sep.join([os.path.dirname(os.path.dirname(__file__)), "scripts"])).split(os.pathsep)
         )
 
         for chunk_dir in environ_dirs:

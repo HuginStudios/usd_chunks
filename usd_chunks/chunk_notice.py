@@ -66,10 +66,10 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
         notice = cls.registered.get(alias.value)
         if notice is None:
             raise Tf.ErrorException(f"No notice found for alias {alias}")
-        return notice()
+        return notice
 
     @classmethod
-    def register(cls, alias: ChunkNoticeAlias, notice_class: Type[Tf.Notice]):
+    def register(cls, alias: ChunkNoticeAlias, notice_class):
         if alias not in cls.registered:
             cls.registered[alias.value] = notice_class
 
@@ -187,8 +187,7 @@ def is_notice_type(notice: Tf.Notice, alias: ChunkNoticeAlias) -> bool:
     Returns:
         bool: True if get_notice(alias) returns the same type as notice
     """
-    # return isinstance(notice, typ(get_notice(alias))
-    return type(notice) is type(get_notice(alias))
+    return type(notice) is get_notice(alias)
 
 
 def send_notice(alias: ChunkNoticeAlias, sender: Any = None):
@@ -197,9 +196,9 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None):
         return
 
     if sender is None:
-        notice_class.SendGlobally()
+        notice_class().SendGlobally()
     else:
-        notice_class.Send(sender)
+        notice_class().Send(sender)
 
 
 class ChunkNoticePropagator:
@@ -306,7 +305,7 @@ class ChunkNoticePropagator:
             return None
 
         notice = get_notice(alias)
-        notice.Send(self)
+        notice().Send(self)
         return notice
 
     def get_last_change(self) -> Tuple[Tf.Notice | None, Any | None]:
@@ -407,8 +406,6 @@ class NoticeConnection:
         self.method: Callable = method
         self.send_owner: bool = send_owner
 
-        # self.sender = sender
-        # self.owner = owner
         self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender) if sender else None
         self._owner: Optional[weakref.ProxyType] = weakref.proxy(owner) if owner else None
         self.__method = None
@@ -453,9 +450,9 @@ class NoticeConnection:
             self.__method = self.method
 
         if self.sender is None or self.globally:
-            self.listener = Tf.Notice.RegisterGlobally(type(notice), self.__method)
+            self.listener = Tf.Notice.RegisterGlobally(notice, self.__method)
         elif self.sender:
-            self.listener = Tf.Notice.Register(type(notice), self.__method, self.sender)
+            self.listener = Tf.Notice.Register(notice, self.__method, self.sender)
 
     def _sender_died(self, ref):
         self.disconnect()
