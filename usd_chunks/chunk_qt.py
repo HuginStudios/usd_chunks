@@ -8,11 +8,10 @@ from . import chunk, chunk_notice, chunk_registry
 from .chunk_interface import ChunkFlags, ChunkParamWidget
 from usd_chunks import chunk_interface
 
+
 class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
     def __init__(self, param: chunk.Slider):
         super().__init__(param)
-
-        self.valueChanged.connect(self.value_changed)
 
         self._step = 1000 if chunk.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
 
@@ -30,6 +29,7 @@ class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
             self.setMaximum(10 * self._step)
 
         self.setup_chunk_widget()
+        self.valueChanged.connect(self.value_changed)
 
     def get_value(self):
         return self.value() / self._step
@@ -54,8 +54,6 @@ class ChunkFloatSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDouble
     def __init__(self, param: chunk.Spinbox):
         super().__init__(param)
 
-        self.valueChanged.connect(self.value_changed)
-
         self._step = 1
 
         min_val = param.min_value
@@ -68,6 +66,7 @@ class ChunkFloatSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDouble
             self.setMaximum(max_val * self._step)
 
         self.setup_chunk_widget()
+        self.valueChanged.connect(self.value_changed)
 
     def get_value(self):
         return self.value()
@@ -78,11 +77,10 @@ class ChunkFloatSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDouble
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+
 class ChunkIntSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QSpinBox):
     def __init__(self, param: chunk.Spinbox):
         super().__init__(param)
-
-        self.valueChanged.connect(self.value_changed)
 
         self._step = 1
 
@@ -96,6 +94,7 @@ class ChunkIntSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QSpinBox)
             self.setMaximum(int(max_val * self._step))
 
         self.setup_chunk_widget()
+        self.valueChanged.connect(self.value_changed)
 
     def get_value(self):
         return self.value()
@@ -110,7 +109,6 @@ class ChunkIntSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QSpinBox)
 class ChunkLabelWidget(ChunkParamWidget[chunk.Label], QtWidgets.QLabel):
     def __init__(self, param: chunk.Label):
         super().__init__(param)
-
         self.setup_chunk_widget()
 
     def get_value(self):
@@ -126,9 +124,9 @@ class ChunkLabelWidget(ChunkParamWidget[chunk.Label], QtWidgets.QLabel):
 class ChunkLineEditWidget(ChunkParamWidget[chunk.LineEdit], QtWidgets.QLineEdit):
     def __init__(self, param: chunk.LineEdit):
         super().__init__(param)
+        self.setup_chunk_widget()
 
         self.editingFinished.connect(self.value_changed)
-        self.setup_chunk_widget()
 
     def get_value(self):
         return self.text()
@@ -145,11 +143,9 @@ class ChunkFileWidget(ChunkParamWidget[chunk.FileBrowser], QtWidgets.QWidget):
         self.button.setStyleSheet("border: 0px; padding: 0px;")
         self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
         self.button.clicked.connect(self.open_file_dial)
-
         self.text = QtWidgets.QLineEdit(self)
 
         self.setup_chunk_widget()
-
         self.text.editingFinished.connect(self.value_changed)
 
     def open_file_dial(self):
@@ -206,18 +202,18 @@ class ChunkComboBoxWidget(ChunkParamWidget[chunk.Menu], QtWidgets.QComboBox):
     def __init__(self, param: chunk.Menu):
         super().__init__(param)
 
-        self.setup_chunk_widget()
-
         menu_items = param.menu_items
         if menu_items:
             self.addItems(menu_items)
             val = param.value if param.value is not None else param.default_value
             if val:
                 self.set_value(val)
-        self.currentTextChanged.connect(self.value_changed)
 
         if param.default_value:
             self.setCurrentIndex(menu_items.index(param.default_value))
+
+        self.setup_chunk_widget()
+        self.currentTextChanged.connect(self.value_changed)
 
     def get_value(self):
         return self.currentText()
@@ -232,10 +228,9 @@ class ChunkComboBoxWidget(ChunkParamWidget[chunk.Menu], QtWidgets.QComboBox):
 class ChunkCheckBoxWidget(ChunkParamWidget[chunk.Checkbox], QtWidgets.QCheckBox):
     def __init__(self, param: chunk.Checkbox):
         super().__init__(param)
+        self.setup_chunk_widget()
 
         self.toggled.connect(self.value_changed)
-
-        self.setup_chunk_widget()
 
     def get_value(self):
         return self.isChecked()
@@ -247,9 +242,9 @@ class ChunkCheckBoxWidget(ChunkParamWidget[chunk.Checkbox], QtWidgets.QCheckBox)
 class ChunkPushButtonWidget(ChunkParamWidget[chunk.Button], QtWidgets.QPushButton):
     def __init__(self, param: chunk.Button):
         super().__init__(param)
-        self.clicked.connect(self.value_changed)
-
         self.setup_chunk_widget()
+
+        self.clicked.connect(self.value_changed)
 
     def set_label(self, text):
         self.setText(text)
@@ -325,7 +320,7 @@ class FormLabelWidget(QtWidgets.QLabel):
         super().__init__(parent)
 
         self.setText(text)
-        
+
         self.setMaximumWidth(100)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Minimum)
 
@@ -356,19 +351,17 @@ class ContainerWidget(QtWidgets.QWidget):
         self._callbacks: List[chunk_notice.NoticeConnection] = []
 
         self._callbacks.append(
-            chunk_notice.NoticeConnection(
-                self.delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, group)
+            chunk_notice.NoticeConnection(self.delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, group)
         )
 
         self._callbacks.append(
-            chunk_notice.NoticeConnection(
-                self.param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
+            chunk_notice.NoticeConnection(self.param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
         )
         self._callbacks.append(
             chunk_notice.NoticeConnection(
-                self.param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, group)
+                self.param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, group
+            )
         )
-
 
         # Associate ChunkParamGroup objects with Qt Layouts
         self.param_groups: dict[chunk_interface.ChunkContainerBase, ContainerWidget] = {}
@@ -458,7 +451,6 @@ class ContainerWidget(QtWidgets.QWidget):
 
     def state_changed(self, notice, sender):
         self.update_from_state()
-
 
     @QtCore.Property(float)
     def animation_value(self):  # type: ignore
@@ -679,7 +671,6 @@ class ContainerWidget(QtWidgets.QWidget):
             layout.addWidget(widget, FormLabelWidget(info.get_label(), widget))
         else:
             layout.addWidget(widget)
-
 
     def add_group_layout(self, group: chunk_interface.ChunkContainerBase):
         """Adds a group of parameters to a shared layout
