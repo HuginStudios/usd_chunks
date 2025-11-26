@@ -480,14 +480,13 @@ class ContainerWidget(QtWidgets.QWidget):
         return val
 
     def build_collapsable(self):
-        self.content = QtWidgets.QScrollArea()
-        self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Ignored)
+        self.content = QtWidgets.QFrame()
+        self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
 
         self.content_layout = QtWidgets.QFormLayout()
         self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
         self.content_layout.setContentsMargins(2, 2, 2, 2)
         self.content_layout.setHorizontalSpacing(0)
-
         self.content.setLayout(self.content_layout)
 
         # Setup minimize/maximize button
@@ -565,7 +564,6 @@ class ContainerWidget(QtWidgets.QWidget):
             self.content_layout.addRow(widget)
         else:
             self.content_layout.addRow(label, widget)
-
 
     def update_label(self, param: chunk_interface.ChunkCommon, notice, sender: chunk_interface.AttributeSender):
         """
@@ -668,7 +666,7 @@ class ContainerWidget(QtWidgets.QWidget):
             ]
         )
 
-        widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Minimum)
+        widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
         if group is not None:
             layout = self.add_group_layout(group)
@@ -805,7 +803,6 @@ class ChunkArea(QtWidgets.QScrollArea):
 
         self.widget_holder = QtWidgets.QWidget(self)
         self.widget_holder.setLayout(self.flow)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
 
         self.setWidget(self.widget_holder)
         self.setWidgetResizable(True)
@@ -836,6 +833,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.add_chunk_widget(sender)
 
     def build(self):
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.MinimumExpanding)
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: QtWidgets.QTabWidget = QtWidgets.QTabWidget(self)
         registry = chunk_registry.ChunkRegistry()
