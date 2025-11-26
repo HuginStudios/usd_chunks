@@ -50,8 +50,7 @@ class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
         self.param.value = value / self._step
 
 
-# TODO: Make this widget nice
-class ChunkSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
+class ChunkFloatSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
     def __init__(self, param: chunk.Spinbox):
         super().__init__(param)
 
@@ -67,6 +66,34 @@ class ChunkSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDoubleSpinB
 
         if max_val is not None:
             self.setMaximum(max_val * self._step)
+
+        self.setup_chunk_widget()
+
+    def get_value(self):
+        return self.value()
+
+    def set_value(self, value):
+        return self.setValue(value)
+
+    def wheelEvent(self, event: QtGui.QWheelEvent):
+        event.ignore()
+
+class ChunkIntSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QSpinBox):
+    def __init__(self, param: chunk.Spinbox):
+        super().__init__(param)
+
+        self.valueChanged.connect(self.value_changed)
+
+        self._step = 1
+
+        min_val = param.min_value
+        max_val = param.max_value
+
+        if min_val is not None:
+            self.setMinimum(int(min_val * self._step))
+
+        if max_val is not None:
+            self.setMaximum(int(max_val * self._step))
 
         self.setup_chunk_widget()
 
@@ -254,8 +281,8 @@ class ChunkQTWidgetFactory(chunk_interface.ChunkWidgetFactoryBase):
     widget_map: Dict[ChunkFlags.ParamType, type[QtWidgets.QWidget]] = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
-        ChunkFlags.ParamType.FLOAT_SPINBOX: ChunkSpinboxWidget,
-        ChunkFlags.ParamType.INT_SPINBOX: ChunkSpinboxWidget,
+        ChunkFlags.ParamType.FLOAT_SPINBOX: ChunkFloatSpinboxWidget,
+        ChunkFlags.ParamType.INT_SPINBOX: ChunkIntSpinboxWidget,
         ChunkFlags.ParamType.LABEL: ChunkLabelWidget,
         ChunkFlags.ParamType.LINEEDIT: ChunkLineEditWidget,
         ChunkFlags.ParamType.FILE: ChunkFileWidget,
@@ -295,6 +322,9 @@ class FormLabelWidget(QtWidgets.QLabel):
         super().__init__(parent)
 
         self.setText(text)
+        
+        self.setMaximumWidth(100)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Minimum)
 
         self.setMargin(3)
 
@@ -470,7 +500,7 @@ class ContainerWidget(QtWidgets.QWidget):
         self.toggle_anim.setEndValue(self.animation_duration)
 
         self.__layout__ = QtWidgets.QVBoxLayout()
-        self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
         self.__layout__.setContentsMargins(10, 3, 0, 0)
 
         self.__layout__.addWidget(self.minimize_button)
