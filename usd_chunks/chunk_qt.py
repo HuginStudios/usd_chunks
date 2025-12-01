@@ -351,15 +351,25 @@ class ContainerWidget(QtWidgets.QWidget):
         self._callbacks: List[chunk_notice.NoticeConnection] = []
 
         self._callbacks.append(
-            chunk_notice.NoticeConnection(self.delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, group)
+            chunk_notice.NoticeConnection(self.delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, self.group)
         )
 
         self._callbacks.append(
-            chunk_notice.NoticeConnection(self.param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
+            chunk_notice.NoticeConnection(
+                self.param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, self.group
+            )
         )
         self._callbacks.append(
             chunk_notice.NoticeConnection(
-                self.param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, group
+                self.param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, self.group
+            )
+        )
+
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(
+                self.state_changed,
+                chunk_notice.ChunkNoticeAlias.STATE_CHANGED,
+                self.group.get_attribute_sender("state"),
             )
         )
 
@@ -380,13 +390,6 @@ class ContainerWidget(QtWidgets.QWidget):
         self.build_param_widgets(self.group)
         self.update_from_flags()
         self.update_from_state()
-
-    # @property
-    # def group(self) -> chunk_interface.ChunkContainerBase:
-    #     g = self._group()
-    #     if not g:
-    #         raise ReferenceError("Group is deleted!")
-    #     return g
 
     def delete_self(self, notice, sender):
         """
@@ -450,6 +453,7 @@ class ContainerWidget(QtWidgets.QWidget):
         self.remove_param(param)
 
     def state_changed(self, notice, sender):
+        print("HELLOOO")
         self.update_from_state()
 
     @QtCore.Property(float)
