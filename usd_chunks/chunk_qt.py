@@ -453,7 +453,6 @@ class ContainerWidget(QtWidgets.QWidget):
         self.remove_param(param)
 
     def state_changed(self, notice, sender):
-        print("HELLOOO")
         self.update_from_state()
 
     @QtCore.Property(float)
