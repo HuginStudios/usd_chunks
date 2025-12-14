@@ -153,7 +153,9 @@ class ChunkUnLoadedNotice(Tf.Notice):
 
 @chunk_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED)
 class PrimSelectionChangedNotice(Tf.Notice):
-    pass
+    def __init__(self, selected_prims=[]):
+        super().__init__()
+        self.selected_prims = selected_prims
 
 
 @chunk_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED)
@@ -190,15 +192,17 @@ def is_notice_type(notice: Tf.Notice, alias: ChunkNoticeAlias) -> bool:
     return type(notice) is get_notice(alias)
 
 
-def send_notice(alias: ChunkNoticeAlias, sender: Any = None):
-    notice_class = get_notice(alias)
-    if not notice_class:
-        return
+def send_notice(alias: ChunkNoticeAlias, sender: Any = None, notice: Tf.Notice = None):
+    if not notice:
+        notice_class = get_notice(alias)
+        if not notice_class:
+            return
+        notice = notice_class()
 
     if sender is None:
-        notice_class().SendGlobally()
+        notice.SendGlobally()
     else:
-        notice_class().Send(sender)
+        notice.Send(sender)
 
 
 class ChunkNoticePropagator:
@@ -484,7 +488,11 @@ class UsdviewSender(ChunkNoticePropagator):
         return self.usdviewAPI.property  # type: ignore
 
     def _primSelectionChanged(self, *args, **kwargs):
-        send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, self)
+        selected_prims = [self.usdviewAPI.stage.GetPrimAtPath(prim_path) for prim_path in args[0]]
+        notice = PrimSelectionChangedNotice(
+            selected_prims=selected_prims
+        )
+        send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, self, notice)
 
     def _propSelectionChanged(self, *args, **kwargs):
         send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, self)
