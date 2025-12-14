@@ -1,15 +1,21 @@
 import os
-from usd_chunks.chunk import Chunk
+from usd_chunks import chunk, chunk_interface
 from pxr import Sdf, Usd, UsdGeom, UsdShade
 from PySide6 import QtWidgets
 
 
+def apply(chunkItem: chunk.Chunk, notice, sender):
+    # Access the parameter inside the group
+    x_scale_param = chunkItem.get_param("uvscale")[0]
+    y_scale_param = chunkItem.get_param("uvscale")[1]
 
-def apply(api, filebrowser, x_scale, y_scale):
+    x_scale = x_scale_param.value
+    y_scale = y_scale_param.value
 
-    x_scale = x_scale.value()
-    y_scale = y_scale.value()
-    checker_file = filebrowser.text()
+    filebrowser = chunkItem.get_param("browse")
+
+    api = chunkItem.get_usdview_api()
+    checker_file = filebrowser.value
     selected_prim = api.prim
 
     if not selected_prim or selected_prim == api.stage.GetPseudoRoot():
@@ -19,9 +25,9 @@ def apply(api, filebrowser, x_scale, y_scale):
         error_dlg = QtWidgets.QMessageBox()
         error_dlg.setWindowTitle("Error")
         error_dlg.setText(msg)
-        button = error_dlg.exec_()
+        error_dlg.exec_()
         return
-   
+
     # Create an group to hold the UV checker matirial
     stage = api.stage
 
@@ -38,18 +44,18 @@ def apply(api, filebrowser, x_scale, y_scale):
         # Create the material, shaders and its id
         stage.DefinePrim(base_material_grp, "Scope")
         material = UsdShade.Material.Define(stage, material_path)
-        
+
         preview = UsdShade.Shader.Define(stage, surface_path)
-        stage.GetPrimAtPath(surface_path).GetAttribute('info:id').Set("UsdPreviewSurface")
+        stage.GetPrimAtPath(surface_path).GetAttribute("info:id").Set("UsdPreviewSurface")
 
         texture = UsdShade.Shader.Define(stage, texture_path)
-        stage.GetPrimAtPath(texture_path).GetAttribute('info:id').Set("UsdUVTexture")
+        stage.GetPrimAtPath(texture_path).GetAttribute("info:id").Set("UsdUVTexture")
 
         transform2d = UsdShade.Shader.Define(stage, transform2d_path)
-        stage.GetPrimAtPath(transform2d_path).GetAttribute('info:id').Set("UsdTransform2d")
+        stage.GetPrimAtPath(transform2d_path).GetAttribute("info:id").Set("UsdTransform2d")
 
         reader = UsdShade.Shader.Define(stage, reader_path)
-        stage.GetPrimAtPath(reader_path).GetAttribute('info:id').Set("UsdPrimvarReader_float2")
+        stage.GetPrimAtPath(reader_path).GetAttribute("info:id").Set("UsdPrimvarReader_float2")
 
         # Create the inputs and outputs for the shaders
         preview_output_surface = preview.CreateOutput("surface", Sdf.ValueTypeNames.Token)
@@ -60,7 +66,8 @@ def apply(api, filebrowser, x_scale, y_scale):
         preview_in_diff.ConnectToSource(texture_out_rgb)
         path_to_uv = checker_file
         if not path_to_uv:
-            path_to_uv = os.path.sep.join([os.path.dirname(__file__),"CustomUVChecker_byValle_2K.png"])
+            path_to_uv = os.path.sep.join([os.path.dirname(__file__), "CustomUVChecker_byValle_2K.png"])
+
         texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(path_to_uv)
         transform2d_out_result = transform2d.CreateOutput("result", Sdf.ValueTypeNames.Float2)
         texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(transform2d_out_result)
@@ -75,29 +82,72 @@ def apply(api, filebrowser, x_scale, y_scale):
         UsdShade.MaterialBindingAPI(selected_prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
 
 
-def clear(api):
+def clear(chunkItem: chunk.Chunk, notice, sender):
     """Remove the assign checker edits"""
-    stage = api.stage
+    stage = chunkItem.get_stage()
     sublayer_paths = list(stage.GetSessionLayer().subLayerPaths).copy()
     for i, sublayer in enumerate(sublayer_paths):
         if "uv_checker" in sublayer:
             sublayer_paths.pop(i)
     stage.GetSessionLayer().subLayerPaths = sublayer_paths
 
-def main(api, parent=None):
-    chunk_api = Chunk(api, parent=parent)
-    chunk_api.name = "UV Checker"
-    chunk_api.category = "Utility"
-    layout = chunk_api.create_layout()
-    x_scale = chunk_api.create_float_spinbox(value=1.0, layout=layout)
-    y_scale = chunk_api.create_float_spinbox(value=1.0, layout=layout)
-    filebrowser = chunk_api.create_filebrowser()
-    chunk_api.create_button("Check UVs on selection!", apply, filebrowser, x_scale, y_scale)
-    chunk_api.create_button("Clear!", clear)
+
+def scale(notice, sender):
+    # _, param = chunkItem.get_last_param_change()
+    # print(param.get_last_change())
+    
+    stage = sender.get_stage()
+    layer_id = None
+    sublayer_paths = list(stage.GetSessionLayer().subLayerPaths)
+    for sublayer in sublayer_paths:
+        if "uv_checker" in sublayer:
+            layer_id = sublayer
+            break
+    if layer_id is None:
+        return
+
+    layer = Sdf.Layer.FindOrOpen(layer_id)
+
+    with Usd.EditContext(stage, layer):
+        base_material_grp = "/materials"
+        material_path = f"{base_material_grp}/UVCheckerMaterial"
+        transform2d_path = f"{material_path}/transform2d"
+
+        prim = stage.GetPrimAtPath(transform2d_path)
+        if not prim:
+            return
+
+        scale_attr = prim.GetAttribute("inputs:scale")
+        scale_val = scale_attr.Get()
+
+        # idx = 1 if param.name == "scale1" else 0
+        scale_val[0] = sender[0].value
+        scale_val[1] = sender[1].value
+        scale_attr.Set(scale_val)
+
+
+def main(api):
+    chunk_api = chunk.Chunk("UV Checker", category="Utility")
+
+    spinbox = chunk.Spinbox(default_value=1)
+    vec = chunk.Vector("uvscale", "UV Scale", param=spinbox, length=2, suffixes="UV")
+
+    # Adds a callback that runs when any of the spinboxes changes
+    vec.add_callback(scale)
+
+    filebrowser = chunk.FileBrowser("browse")
+
+    visUVsButton = chunk.Button("visualize")
+
+    clearUVsButton = chunk.Button("Clear Vis")
+
+    chunk_api.add_params([vec, filebrowser, visUVsButton, clearUVsButton])
+
+    # Setting the sender explicitly. The callback will then get params as such:
+    # 1 - chunk_api (the chunk)
+    # 2 - Tf.Notice (the notice)
+    # 3 - ChunkParam (the button)
+    chunk_api.add_callback(apply, visUVsButton, send_self=True)
+    chunk_api.add_callback(clear, clearUVsButton, send_self=True)
 
     return chunk_api
-
-
-
-
-

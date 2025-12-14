@@ -1,0 +1,5 @@
+PySide6
+PyOpenGL
+types-usd
+attrs
+typing-extensions

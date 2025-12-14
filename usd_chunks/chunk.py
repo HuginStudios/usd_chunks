@@ -1,242 +1,252 @@
-import os
-from PySide6 import QtWidgets, QtCore, QtGui
-import inspect
-from functools import partial
-from typing import Sequence, Tuple, List, Union, Callable, Dict, Any, Optional
+from attr import Attribute
+from attrs import field
+
+from enum import IntFlag, auto
+from typing import Any, List, Optional, Sequence
+
+from . import chunk_notice
 
 
-class Chunk(QtWidgets.QWidget):
-    """
-    Chunk is a base class for creating UI components.
-    It provides a structure for initializing the API and creating UI Chunks.
-    """
-    
+class ChunkFlags:
+    """Hold common flags for chunks"""
 
-    def __init__(self, api=None, name="Unknown Widget", parent=None):
-        if parent is None:
-            parent = api.qMainWindow
-        super().__init__(parent)
-        self.api = api
-        self.name = name
-        self.category = "General"
-        self.animation_duration = 300
-        self.registered_widgets = []
+    class LayoutFlags(IntFlag):
+        """Flags for layout hinting parameters and groups"""
 
-        self.build()
+        HORIZONTAL = 1
+        VERTICAL = auto()
 
-    def build(self):
-        # Setup chunk content area
-        self.content = QtWidgets.QScrollArea()
-        self.content.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.content.setMaximumHeight(0)
-        self.content.setMinimumHeight(0)
-        self.content_layout = QtWidgets.QVBoxLayout()
-        self.content.setLayout(self.content_layout)
-        
-        # Setup toggle minimize/maximize animation.
-        self.toggle_anim = QtCore.QParallelAnimationGroup()
-        self.toggle_anim.addAnimation(QtCore.QPropertyAnimation(self, b"minimumHeight"))
-        self.toggle_anim.addAnimation(QtCore.QPropertyAnimation(self, b"maximumHeight"))
-        self.toggle_anim.addAnimation(QtCore.QPropertyAnimation(self.content, b"maximumHeight"))
-        
-        # Setup minimize/maximize button
-        self.minimize_button = QtWidgets.QToolButton()
-        self.minimize_button.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-        self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum)
-        self.minimize_button.setArrowType(QtCore.Qt.RightArrow)
-        self.minimize_button.setText(self.name)
-        self.minimize_button.setCheckable(True)
-        self.minimize_button.setChecked(False)
-        self.minimize_button.clicked.connect(self._animate)
+    class State(IntFlag):
+        """Store current state of parameters and containers"""
 
-        self.__layout__ = QtWidgets.QVBoxLayout()
-        self.__layout__.addWidget(self.minimize_button)
-        self.__layout__.addWidget(self.content)
-        self.setLayout(self.__layout__)
-        self.setMinimumSize(300,10)
+        NONE = 0  # Default
+        HIDDEN = auto()  # The param/group is currently hidden
+        DISABLED = auto()  # The param/group is currently disabled
+        COLLAPSED = auto()  # The group is collapsed. Only works on groups with COLLAPSABE flag set
 
-    def _animate(self, checked):
-        arrow_type = QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow
-        direction = QtCore.QAbstractAnimation.Forward if checked else QtCore.QAbstractAnimation.Backward
-        self.minimize_button.setArrowType(arrow_type)
-        self.toggle_anim.setDirection(direction)
-        self.toggle_anim.start()
+    class GroupFlags(IntFlag):
+        """Flags for chunk constainer type objects (Chunk, Group)"""
 
-    def update_anim(self):
-        self.minimize_button.setText(self.name)
-        collapsed_height = self.sizeHint().height() - self.content.maximumHeight()
-        content_height = self.content_layout.sizeHint().height()
-        for i in range(self.toggle_anim.animationCount()-1):
-            animation = self.toggle_anim.animationAt(i)
-            animation.setDuration(self.animation_duration)
-            animation.setStartValue(collapsed_height)
-            animation.setEndValue(collapsed_height + content_height)
-        content_animation = self.toggle_anim.animationAt(self.toggle_anim.animationCount() - 1)
-        content_animation.setDuration(self.animation_duration)
-        content_animation.setStartValue(0)
-        content_animation.setEndValue(content_height)
-        
+        LABELED = 1  # Add a label on the top of the group based on group.label if available, otherwise group.name
+        COLLAPSABLE = auto()  # The group should be collapsable
 
-    def _find_args_by_name(
-        self, callback: Callable, args: Sequence = (), kwargs: dict = {}
-    ) -> List:
-        """Finds the arguments for a callback function.
+        FRAMED = auto()  # The group should be framed
+        # FRAME_RAISED = auto()  # The group frame should appear raised
 
-        This method inspects the callback function to determine its parameters
-        and matches them with the provided args and kwargs. It returns a list of
-        arguments that can be passed to the callback.
+    class ParamFlags(IntFlag):
+        """Flags for chunk param types"""
+
+        LABELED = 1  # Add a label on thnext to the param. Use param.label if available, otherwise param.name
+
+        # These are only valid for FILE type param
+        FILE_EXISTING = auto()  # File param must point to an existing path
+
+    class ParamType(IntFlag):
+        """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
+        implement the UI based on these
+        """
+
+        # Use 8 bit padding for types. This leaves room for 8 widget variants per type
+        NONE = 1 << 3
+        EMPTY = auto()
+        FLOAT = auto()
+        STRING = auto()
+        INT = auto()
+        BOOL = auto()
+        CUSTOM = auto()  # use self.custom_widget as widget
+
+        # Flags for standard widgets
+        # A separator line. Cant be combined and will not have a value
+        SEPARATOR = EMPTY | (1 << 0)
+        BUTTON = EMPTY | (1 << 1)
+
+        # Real
+        FLOAT_SLIDER = FLOAT | (1 << 0)
+        FLOAT_SPINBOX = FLOAT | (1 << 1)
+
+        # Int
+        INT_SLIDER = INT | (1 << 0)
+        INT_SPINBOX = INT | (1 << 1)
+
+        # String
+        LABEL = STRING | (1 << 0)
+        LINEEDIT = STRING | (1 << 1)
+        FILE = STRING | (1 << 2)
+        STRING_MENU = STRING | (1 << 3)
+
+        # Bool
+        CHECKBOX = BOOL | (1 << 0)
+
+    @staticmethod
+    def ParamTypeToTypes(t: ParamType) -> List[type]:
+        """Provides default values for ParamType enums. If t is a combination of multiple ParamTypes, returns all supported values
 
         Args:
-            callback (callable): The callback function to inspect.
-            args (Sequence): Positional arguments to match with the callback.
-            kwargs (dict): Keyword arguments to match with the callback.
+            t (ParamType): Input ParamType which to request value for
+
         Returns:
-            List: A list of arguments that can be passed to the callback.
+            Any: A default value for t
         """
-        spec = inspect.getfullargspec(callback)
-        # Only skip 'self' if callback is a method
-        arg_names = spec.args[1:] if inspect.ismethod(callback) else spec.args
-        call_args = []
-        idx = 0
-        for name in arg_names:
-            if hasattr(self, name):
-                call_args.append(getattr(self, name))
-                continue
-            k_value =  kwargs.get(name, None)
-            if k_value is not None:
-                call_args.append(k_value)
+        result = []
+
+        if t in (ChunkFlags.ParamType.EMPTY | ChunkFlags.ParamType.NONE):
+            result.append(None)
+        if ChunkFlags.ParamType.INT in t:
+            result.append(int)
+        if ChunkFlags.ParamType.FLOAT in t:
+            result.append(float)
+        if ChunkFlags.ParamType.BOOL in t:
+            result.append(bool)
+        if ChunkFlags.ParamType.STRING in t:
+            result.append(str)
+        return result
+
+
+from .chunk_interface import (  # noqa: E402
+    ChunkBase,
+    ChunkParamBase,
+    ChunkGroupBase,
+    ChunkVectorBase,
+)
+
+##############################################
+# CONCRETE IMPLEMENTATIONS FOR CHUNK OBJECTS #
+##############################################
+
+
+class Chunk(ChunkBase):
+    """Chunk is the top level container, holding params and groups which in turn make up the chunk"""
+
+    # Override defaults
+    flags: ChunkFlags.GroupFlags = field(
+        default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
+    )
+
+    def get_notice_alias(self):
+        return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
+
+
+class Group(ChunkGroupBase):
+    """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
+
+    # Override defaults
+    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+
+    def get_notice_alias(self):
+        return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
+
+
+class Vector(ChunkVectorBase):
+    """A Vector is basically a group which holds a set number of parameters"""
+
+    # Override defaults
+    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return chunk_notice.ChunkNoticeAlias.PARAM_CHANGED
+
+
+class Slider(ChunkParamBase[int | float]):
+    min_value: Optional[float | int] = field(default=None)
+    max_value: Optional[float | int] = field(default=None)
+    is_int: bool = field(default=False)
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.INT_SLIDER | ChunkFlags.ParamType.FLOAT_SLIDER
+
+    def evaluate_type(self) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.INT_SLIDER if self.is_int else ChunkFlags.ParamType.FLOAT_SLIDER
+
+
+class Spinbox(ChunkParamBase[float | int]):
+    min_value: Optional[float | int] = field(default=None)
+    max_value: Optional[float | int] = field(default=None)
+    is_int: bool = field(default=False)
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.INT_SPINBOX | ChunkFlags.ParamType.FLOAT_SPINBOX
+
+    def evaluate_type(self) -> ChunkFlags.ParamType:
+        if self.is_int:
+            return ChunkFlags.ParamType.INT_SPINBOX
+        return ChunkFlags.ParamType.FLOAT_SPINBOX
+
+
+class Menu(ChunkParamBase[str]):
+    menu_items: Sequence[str] = field(factory=list)
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.STRING_MENU
+
+    def convert_attr(self, attr: Attribute, val: Any) -> Any:
+        if attr.name == "value" and val not in self.menu_items:
+            try:
+                return self.value
+            except AttributeError:
+                return self.default_value
+
+        elif attr.name == "default_value":
+            if self.menu_items and val not in self.menu_items:
+                return self.menu_items[0]
+
+        return super().convert_attr(attr, val)
+
+
+class Button(ChunkParamBase):
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.BUTTON
+
+
+class Checkbox(ChunkParamBase[bool]):
+    # Type specific flags, can be used for setting custom flags.
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.CHECKBOX
+
+
+class LineEdit(ChunkParamBase[str]):
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.LINEEDIT
+
+
+class FileBrowser(ChunkParamBase[str]):
+    extensions: List[str] = field(factory=list)
+    pattern: str = field(default="*")
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.FILE
+
+    def validate_attr(self, attr: Attribute, val: Any) -> bool:
+        if attr.name in ["value", "default_value"] and val:
+            if self.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING):
+                self._validate_existing_path(attr, val)
             else:
-                call_args.append(args[idx])
-                idx += 1
-        return call_args
+                self._validate_path(attr, val)
 
-    def _add_widget(self, widget, layout=None):
-        self.registered_widgets.append(widget)
-        if layout is not None:
-            layout.addWidget(widget)
-        else:
-            self.content_layout.addWidget(widget)
-        self.update_anim()
+        return super().validate_attr(attr, val)
 
-    def _set_tooltip(self, widget, kwargs):
-        tooltip = kwargs.get("tooltip", None)
-        if tooltip:
-            widget.setToolTip(tooltip)
 
-    def create_button(self, text="", callback=None, *args, **kwargs):
-        """Create a button with the specified text and callback."""
-        button = QtWidgets.QPushButton(text, parent=self)
-        width = kwargs.get("width", None)
-        height = kwargs.get("height", None)
-        self._set_tooltip(button, kwargs)
-        if width and height:
-            button.setFixedSize(QtCore.QSize(width, height))
+class Label(ChunkParamBase[str]):
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.LABEL
 
-        icon = kwargs.get("icon", None)
-        if icon and os.path.exists(icon):
-            qicon = QtGui.QIcon(icon)
-            icon_size = QtCore.QSize( 40, 40 )
-            button.setIcon(qicon)
-            button.setIconSize(icon_size)
 
-        button.adjustSize()
-        call_args = self._find_args_by_name(callback, args, kwargs)
-        button.clicked.connect(partial(callback, *call_args))
-        self.registered_widgets.append(button)
-        layout = kwargs.get("layout", None)
-        self._add_widget(button, layout)
-        return button
+class Separator(ChunkParamBase):
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.SEPARATOR
 
-    def create_label(self, text, layout=None):
-        """Create a label with the specified text."""
-        label = QtWidgets.QLabel(text, self)
-        self._add_widget(label, layout)
-        return label
 
-    def create_filebrowser(self, layout=None):
-        """Create a label with the specified text."""
-        layout = self.create_layout()
-        line_edit = self.create_line_edit("", layout=layout)
-        button = self.create_button("Browse",self._open_file_dialog, line_edit, layout=layout)
-        return line_edit
-
-    def _open_file_dialog(self, line_edit):
-         dialog = QtWidgets.QFileDialog(self)
-         if dialog.exec():
-            filenames = dialog.selectedFiles()
-            if filenames:
-                line_edit.setText(filenames[0])
-
-    def create_layout(self, layout_type=None, layout=None):
-        """Create a layout of the specified type."""
-        if layout_type is None:
-            layout_type = QtWidgets.QHBoxLayout
-        new_layout = layout_type()
-        self.registered_widgets.append(new_layout)
-        if layout is not None:
-            layout.addLayout(new_layout)
-        else:
-            self.content_layout.addLayout(new_layout)
-        return new_layout
-
-    def create_checkbox(self, text, checked=False, layout=None):
-        """Create a checkbox with the specified text and initial state."""
-        checkbox = QtWidgets.QCheckBox(text, self)
-        checkbox.setChecked(checked)
-        self._add_widget(checkbox, layout)
-        return checkbox
-
-    def create_slider(self, min_value=0, max_value=100, value=50, layout=None):
-        """Create a slider with the specified range and initial value."""
-        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, self)
-        slider.setMinimum(min_value)
-        slider.setMaximum(max_value)
-        slider.setValue(value)
-        self._add_widget(slider, layout)
-        return slider
-
-    def create_line_edit(self, placeholder_text="", layout=None):
-        """Create a line edit with the specified placeholder text."""
-        line_edit = QtWidgets.QLineEdit(self)
-        line_edit.setPlaceholderText(placeholder_text)
-        self._add_widget(line_edit, layout)
-        return line_edit
-
-    def create_combobox(self, items=None, default_index=0, layout=None):
-        """Create a combobox with the specified items."""
-        combobox = QtWidgets.QComboBox(self)
-        if items:
-            combobox.addItems(items)
-        if default_index < combobox.count():
-            combobox.setCurrentIndex(default_index)
-        else:
-            combobox.setCurrentIndex(0)
-        self._add_widget(combobox, layout)
-        return combobox
-
-    def create_text_edit(self, placeholder_text="", layout=None):
-        """Create a text edit with the specified placeholder text."""
-        text_edit = QtWidgets.QTextEdit(self)
-        text_edit.setPlaceholderText(placeholder_text)
-        self._add_widget(text_edit, layout)
-        return text_edit
-
-    def create_spinbox(self, min_value=0, max_value=100, value=0, layout=None):
-        """Create a spinbox with the specified range and initial value."""
-        spinbox = QtWidgets.QSpinBox(self)
-        spinbox.setMinimum(min_value)
-        spinbox.setMaximum(max_value)
-        spinbox.setValue(value)
-        self._add_widget(spinbox, layout)
-        return spinbox
-
-    def create_float_spinbox(self, min_value=None, max_value=None, value=0.0, layout=None):
-        """Create a float spinbox with the specified range and initial value."""
-        float_spinbox = QtWidgets.QDoubleSpinBox(self)
-        if min_value is not None:
-            float_spinbox.setMinimum(min_value)
-        if max_value is not None:
-            float_spinbox.setMaximum(max_value)
-        float_spinbox.setValue(value)
-        self._add_widget(float_spinbox, layout)
-        return float_spinbox
+class Custom(ChunkParamBase):
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.CUSTOM
