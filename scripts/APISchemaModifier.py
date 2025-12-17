@@ -75,7 +75,6 @@ def create_rel_param(attr_def, prop_name, prim):
     param.set_flag(chunk.ChunkFlags.ParamFlags.LABELED)
     param.user_data = {"primpath": str(prim.GetPath()), "relname": prop_name}
 
-
     param.value = ",".join([str(x) for x in rel.GetForwardedTargets()])
     return param
 
@@ -105,7 +104,10 @@ def param_changed(notice, sender: chunk.ChunkParamBase):
         if new_val is None or new_val == old_val:
             return
 
-        attr.SetTargets(new_val.split(","))
+        try:
+            attr.SetTargets(new_val.split(","))
+        except Exception:
+            pass
         return
 
     prim = stage.GetPrimAtPath(primpath)
@@ -136,16 +138,22 @@ def update_chunk(myChunk: chunk.Chunk, notice, sender: chunk_notice.UsdviewSende
         for api in schemas:
             api_def = registry.FindAppliedAPIPrimDefinition(api)
 
+            if not api_def:
+                continue
+
             group = chunk.Group(api)
             group.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
             group.set_state(chunk.ChunkFlags.State.COLLAPSED)
 
             for prop_name in api_def.GetPropertyNames():
-                if attr_def := api_def.GetAttributeDefinition(prop_name):
-                    param = create_attr_param(attr_def, prop_name, prim)
-                elif rel_def := api_def.GetRelationshipDefinition(prop_name):
-                    param = create_rel_param(rel_def, prop_name, prim)
-                else:
+                try:
+                    if attr_def := api_def.GetAttributeDefinition(prop_name):
+                        param = create_attr_param(attr_def, prop_name, prim)
+                    elif rel_def := api_def.GetRelationshipDefinition(prop_name):
+                        param = create_rel_param(rel_def, prop_name, prim)
+                    else:
+                        continue
+                except Tf.ErrorException:
                     continue
 
                 if not param:
