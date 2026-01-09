@@ -9,45 +9,59 @@ from .chunk_interface import ChunkFlags, ChunkParamWidget
 from usd_chunks import chunk_interface
 
 
-class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
+class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QWidget):
     def __init__(self, param: chunk.Slider):
         super().__init__(param)
 
+        self.vlayout = QtWidgets.QVBoxLayout()
+        self.vlayout.setContentsMargins(0, 5, 0, 0)
+
+        self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
+        self.slider = QtWidgets.QSlider()
+        self.label = QtWidgets.QLabel(param.name)
+
+        self.vlayout.addWidget(self.label)
+        self.vlayout.addWidget(self.slider)
+        self.setLayout(self.vlayout)
+        
         self._step = 1000 if chunk.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
 
         min_val = param.min_value
         max_val = param.max_value
 
         if min_val is not None:
-            self.setMinimum(int(min_val * self._step))
+            self.slider.setMinimum(int(min_val * self._step))
         else:
-            self.setMinimum(0)
+            self.slider.setMinimum(0)
 
         if max_val is not None:
-            self.setMaximum(int(max_val * self._step))
+            self.slider.setMaximum(int(max_val * self._step))
         else:
-            self.setMaximum(10 * self._step)
+            self.slider.setMaximum(10 * self._step)
 
         self.setup_chunk_widget()
-        self.valueChanged.connect(self.value_changed)
+        self.slider.valueChanged.connect(self.value_changed)
 
     def get_value(self):
-        return self.value() / self._step
+        return self.slider.value() / self._step
 
     def set_value(self, value):
-        return self.setValue(value * self._step)
+        return self.slider.setValue(value * self._step)
 
     def set_param_layout(self, layout_flags: chunk.ChunkFlags.LayoutFlags):
         is_horizontal = chunk.ChunkFlags.LayoutFlags.HORIZONTAL in layout_flags
 
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
-        self.setOrientation(orient)
+        self.slider.setOrientation(orient)
 
     def value_changed(self, value: int | float):
-        if not self.param:
+        if not self.param or not value:
             return
-        self.param.value = value / self._step
+        print(value, "00000000000000000000")
+        print(self._step)
+        self.param.value = value / float(self._step)
 
 
 class ChunkFloatSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
@@ -201,7 +215,6 @@ class ChunkFileWidget(ChunkParamWidget[chunk.FileBrowser], QtWidgets.QWidget):
 class ChunkComboBoxWidget(ChunkParamWidget[chunk.Menu], QtWidgets.QComboBox):
     def __init__(self, param: chunk.Menu):
         super().__init__(param)
-
         menu_items = param.menu_items
         if menu_items:
             self.addItems(menu_items)
@@ -243,7 +256,6 @@ class ChunkPushButtonWidget(ChunkParamWidget[chunk.Button], QtWidgets.QPushButto
     def __init__(self, param: chunk.Button):
         super().__init__(param)
         self.setup_chunk_widget()
-
         self.clicked.connect(self.value_changed)
 
     def set_label(self, text):
@@ -342,7 +354,6 @@ class ContainerWidget(QtWidgets.QWidget):
     ):
         super().__init__(parent)
 
-        # self._group: weakref.ReferenceType = weakref.ref(group)
         self.group = group
 
         self.animation_duration = 300
@@ -480,13 +491,14 @@ class ContainerWidget(QtWidgets.QWidget):
 
         self.content_layout = QtWidgets.QFormLayout()
         self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
-        self.content_layout.setContentsMargins(2, 2, 2, 2)
+        self.content_layout.setContentsMargins(10, 10, 10, 10)
         self.content_layout.setHorizontalSpacing(0)
         self.content.setLayout(self.content_layout)
 
         # Setup minimize/maximize button
         self.minimize_button = QtWidgets.QToolButton()
         self.minimize_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.minimize_button.setIconSize(QtCore.QSize(6, 6))
         self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
 
         # Used when collapsable
@@ -496,8 +508,9 @@ class ContainerWidget(QtWidgets.QWidget):
 
         self.__layout__ = QtWidgets.QVBoxLayout()
         self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.__layout__.setContentsMargins(10, 3, 0, 0)
-
+        self.__layout__.setContentsMargins(2, 2, 10, 10)
+        self.__layout__.setSpacing(0)
+        
         self.__layout__.addWidget(self.minimize_button)
         self.__layout__.addWidget(self.content)
 
@@ -526,9 +539,8 @@ class ContainerWidget(QtWidgets.QWidget):
             self.minimize_button.setText(self.group.get_label())
         else:
             self.minimize_button.setText("")
-
         if chunk.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
-            self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+            #self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
             self.content.setLineWidth(2)
         else:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
@@ -831,7 +843,82 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: QtWidgets.QTabWidget = QtWidgets.QTabWidget(self)
         registry = chunk_registry.ChunkRegistry()
+        self.setStyleSheet("""
+        QFrame{
+            background-color: #333333;
+        }
+        QComboBox{
+            background-color: #202020;
+        }
+        QToolButton{
+            text-align: center;border: 0px;
+            border-radius: 0px;
+            padding: 4px;
+            background-color: #333333;
+            color: #EEEEEE;
+        }
+        QPushButton{border: 1px solid;
+            border-color: rgb(115, 115, 115);
+            border-radius: 3px;
+            background-color: #333333;
+            }
+            QPushButton:hover {
+            border: 1px solid;
+            border-radius: 3px;
+            border-color: rgb(156, 156, 156); 
+        }
+        QPushButton:focus {
+            outline-color: transparent;
+            border: 2px solid;
+            border-color: rgb(243, 243, 243);
+        }
+        QPushButton:pressed{
+            background-color: rgb(80, 80, 80);
+        }
+        QPushButton:disabled {
+            color: rgb(40, 40, 40);
+            border-color: rgb(40, 40, 40);
+            background-color: rgb(40, 40, 40);
+        }
+        QSlider {
+            min-height: 8px;
+            background: transparent; 
+            height: 20px; }
+        }       
 
+        QSlider::groove:horizontal {
+            border: 0px;
+            background: #202020;
+            height: 5px;
+            border-radius: 10px;
+        }
+
+        QSlider::handle {
+            background: #808080;
+            height: 10px;
+            width: 10px;
+            border-radius: 5px;
+            margin: -3px 0px;
+        }
+        QSlider::handle:hover {
+            background: #999999;
+            height: 10px;
+            width: 10px;
+            border-radius: 5px;
+            margin: -3px 0px;
+        }
+
+        QSlider::sub-page:horizontal {
+            background: #404040;
+            border-top-left-radius: 10px;
+            border-bottom-left-radius: 10px;
+        }
+
+        QRangeSlider {
+            qproperty-barColor: #202020;
+        }
+        """
+        )
         for module_name, mod in registry.registered_modules.items():
             loaded_chunk = mod.loaded_chunk
             if not loaded_chunk or mod.loaded:

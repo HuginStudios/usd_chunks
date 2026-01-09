@@ -1,8 +1,5 @@
-from functools import partial
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_interface
+from usd_chunks import chunk, chunk_notice, chunk_registry
 
-from functools import wraps
-from pxr import Tf, Usd
 
 
 def variant_selection_callback(notice, sender):
@@ -47,7 +44,6 @@ def update(mychunk, selected_prim):
         mychunk.add_params([label])
 
     vsets = selected_prim.GetVariantSets()
-    vs_group = chunk.Group("Variants")
     for vset_name in vsets.GetNames():
         vset = vsets.GetVariantSet(vset_name)
         variants = vset.GetVariantNames()
@@ -59,18 +55,18 @@ def update(mychunk, selected_prim):
         menu.default_value = vset.GetVariantSelection()
         menu.set_flag(chunk.ChunkFlags.ParamFlags.LABELED)
         menu.user_data = {"prim_path": str(selected_prim.GetPath())}
-        vs_group.add_params([menu])
+        mychunk.add_params([menu])
         menu.add_callback(variant_selection_callback)
 
-    mychunk.add_params([vs_group])
     mychunk.print_hierarchy()
     chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED, mychunk.get_owner())
 
 
 def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.UsdviewSender):
-    selected_prims = sender.selectedPrims
-    for selected_prim in selected_prims:
-        print("Selected prim", selected_prim.GetPath())
+    if not notice:
+        return
+    selected_prim = None
+    for selected_prim in notice.selected_prims:
         break
     if not selected_prim:
         return

@@ -87,9 +87,9 @@ def updateLabel(chunkItem, notice: chunk_notice.PrimSelectionChangedNotice, send
     """
 
     print("UPDATE LABEL")
-    if not sender.selectedPrims:
+    if not notice.selected_prims:
         return
-    path = sender.selectedPrims[0].GetPath()
+    path = notice.selected_prims[0].GetPath()
     if path.isEmpty:
         return
     chunkItem.value = str(path)

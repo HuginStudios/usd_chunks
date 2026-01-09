@@ -56,6 +56,8 @@ class ChunkParamWidget(Generic[ParamT]):
         super().__init__(*args, **kwargs)
         # self._param: weakref.ReferenceType[ParamT] = weakref.ref(param)
         self.param: ParamT = param
+        # if inside a vector the vector index needs to be set.
+        self.index =  0
 
         self._connnections: List[chunk_notice.NoticeConnection] = []
 
@@ -1161,7 +1163,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon):
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "value" and val is not None:
             if type(val) not in ChunkFlags.ParamTypeToTypes(self.get_type()):
-                raise ValueError(f"Value of {val} is not supported for attribute {attr.name}")
+                raise ValueError(f"Value of {val} is not supported for attribute {attr.name}, type is {type(val)}")
             return True
 
         if attr.name == "custom_widget":
@@ -1509,6 +1511,12 @@ class ChunkVectorBase(ChunkContainerBase):
         for i in range(self.length):
             # Clone the self.param length times, and add the clones to the clildren container
             np = self.param.clone()
+            if not np.name:
+                np.name = self.name
+            if self.usd_attr:
+                print("-------------------")
+                print(self.usd_attr.Get(0)[i])
+                print(self.value)
 
             if self.suffixes:
                 np.name += self.suffixes[i]
