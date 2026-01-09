@@ -65,6 +65,7 @@ def update(mychunk, selected_prim):
 def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.UsdviewSender):
     if not notice:
         return
+    selected_prim = None
     for selected_prim in notice.selected_prims:
         break
     if not selected_prim:

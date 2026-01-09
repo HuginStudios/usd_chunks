@@ -9,44 +9,59 @@ from .chunk_interface import ChunkFlags, ChunkParamWidget
 from usd_chunks import chunk_interface
 
 
-class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QSlider):
+class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QWidget):
     def __init__(self, param: chunk.Slider):
         super().__init__(param)
+
+        self.vlayout = QtWidgets.QVBoxLayout()
+        self.vlayout.setContentsMargins(0, 5, 0, 0)
+
+        self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
+        self.slider = QtWidgets.QSlider()
+        self.label = QtWidgets.QLabel(param.name)
+
+        self.vlayout.addWidget(self.label)
+        self.vlayout.addWidget(self.slider)
+        self.setLayout(self.vlayout)
+        
         self._step = 1000 if chunk.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
 
         min_val = param.min_value
         max_val = param.max_value
 
         if min_val is not None:
-            self.setMinimum(int(min_val * self._step))
+            self.slider.setMinimum(int(min_val * self._step))
         else:
-            self.setMinimum(0)
+            self.slider.setMinimum(0)
 
         if max_val is not None:
-            self.setMaximum(int(max_val * self._step))
+            self.slider.setMaximum(int(max_val * self._step))
         else:
-            self.setMaximum(10 * self._step)
+            self.slider.setMaximum(10 * self._step)
 
         self.setup_chunk_widget()
-        self.valueChanged.connect(self.value_changed)
+        self.slider.valueChanged.connect(self.value_changed)
 
     def get_value(self):
-        return self.value() / self._step
+        return self.slider.value() / self._step
 
     def set_value(self, value):
-        return self.setValue(value * self._step)
+        return self.slider.setValue(value * self._step)
 
     def set_param_layout(self, layout_flags: chunk.ChunkFlags.LayoutFlags):
         is_horizontal = chunk.ChunkFlags.LayoutFlags.HORIZONTAL in layout_flags
 
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
-        self.setOrientation(orient)
+        self.slider.setOrientation(orient)
 
     def value_changed(self, value: int | float):
-        if not self.param:
+        if not self.param or not value:
             return
-        self.param.value = value / self._step
+        print(value, "00000000000000000000")
+        print(self._step)
+        self.param.value = value / float(self._step)
 
 
 class ChunkFloatSpinboxWidget(ChunkParamWidget[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
@@ -880,6 +895,13 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
         QSlider::handle {
             background: #808080;
+            height: 10px;
+            width: 10px;
+            border-radius: 5px;
+            margin: -3px 0px;
+        }
+        QSlider::handle:hover {
+            background: #999999;
             height: 10px;
             width: 10px;
             border-radius: 5px;
