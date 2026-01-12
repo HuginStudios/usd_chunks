@@ -6,7 +6,7 @@ A Chunk is simply a python object with some information attached, and these are 
 
 A simple example for creating a button with a callback
 
-```python
+``` py
 
 def clickedButton(notice, sender):
     print("Button clicked: ", sender.name)

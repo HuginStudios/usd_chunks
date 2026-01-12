@@ -57,9 +57,14 @@ def paramChanged(notice, sender):
 
 
 @nice_print
-def paramValueChanged(notice, sender):
-    owner = sender.get_owner()
-    print(sender.name, sender.value, "owner: ", owner.name if owner else None)
+def paramValueChanged(notice, sender: chunk_notice.ChunkNoticePropagator):
+    print(notice, sender)
+    # print(cs.get_last_change())
+
+    # print(sender.get_last_change())
+    # owner = sender.get_owner()
+    # owner_str = f"owner: {owner.name}" if owner else ""
+    # print(sender.name, sender.value, owner_str)
 
 
 @nice_print
@@ -69,15 +74,15 @@ def clickedButton(notice, sender):
 
 @nice_print
 def primSelectionChanged(notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.UsdviewSender):
-    print("Prim selection changed: ", sender.selectedPrims)
+    print("Prim selection changed: ", notice.data.value)
 
 
 @nice_print
 def propSelectionChanged(notice: chunk_notice.PropSelectionChangedNotice, sender: chunk_notice.UsdviewSender):
-    print("Prop selection changed: ", sender.selectedProp)
+    print("Prop selection changed: ", notice.data.value)
 
 
-def updateLabel(chunkItem, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.UsdviewSender):
+def updateLabel(notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk.ChunkParamBase):
     """An example callback function that updates the value of the chunkItem to the selected prim path when a new selection occurs
 
     Args:
@@ -86,13 +91,15 @@ def updateLabel(chunkItem, notice: chunk_notice.PrimSelectionChangedNotice, send
         sender (chunk_notice.UsdviewSelectionNotice): The actual sender
     """
 
-    print("UPDATE LABEL")
-    if not notice.selected_prims:
+    if not notice.data:
         return
-    path = notice.selected_prims[0].GetPath()
+    path = notice.data[0].GetPath()
     if path.isEmpty:
         return
-    chunkItem.value = str(path)
+
+    print(notice, sender)
+    # param = 
+    sender.value = str(path)
 
 
 def main(api):
@@ -100,10 +107,10 @@ def main(api):
     checkbox = chunk.Checkbox("enable")
 
     # A simple callback. This is called whenever anything on the checkbox is changed
-    checkbox.add_callback(paramChanged)
+    # checkbox.add_callback(paramChanged)
 
     # A more excplicit callback. Only triggers paramChanged when checkbox.value changes
-    checkbox.add_callback(paramValueChanged, sender=checkbox.get_attribute_sender("value"))
+    # checkbox.add_callback(paramValueChanged, sender=checkbox.get_attribute_sender("value"))
 
     # A slider with horizontal layout
     slider = chunk.Slider("slider")
@@ -169,12 +176,9 @@ def main(api):
     #   method(chunkObject: chunk.Label, notice: Tf.Notice, sender: chunk_notice.UsdViewNotice)
     # without it, modifying the param would be more complicated.
     # By default, send_self is False, and thus the chunk object is not included in the arguments. Usually though, the sender and chunk object are the same so send_self can be ignored.
-    label.add_callback(
-        updateLabel,
-        sender=reg.usdview_sender,
-        notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED,
-        send_self=True,
-    )
+
+    label.add_callback(updateLabel, sender=reg.usdview_sender, notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED)
+
     # Without access to the usdview_sender, one can enable listen_globally, which will trigger updateLabel for all PRIM_SELECTION_CHANGED notices, regardless of the sender.
     # In this case, the results would be the same, as there should not be more than 1 instance of the usdview_sender, i.e. only the one sender throughout the lifetime of the registry
     # label.add_callback(
@@ -206,7 +210,9 @@ def main(api):
     myChunk.add_params([label, checkbox, button, sep, textEdit, menu, fileBrowse, sliderGroup, sliderVec])
 
     # Add a callback. With no arguments, the callback will be called whenever any of tthe children on the chunk is changed
-    myChunk.add_callback(chunkChanged)
+    # myChunk.add_callback(chunkChanged)
+
+    # myChunk.add_callback(paramValueChanged, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
 
     # Prints the hierarchy of the chunk. Useful for debugging chunks
     #   myChunk.print_hierarchy()

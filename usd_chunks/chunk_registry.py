@@ -25,6 +25,7 @@ from .chunk_notice import ChunkNoticeAlias, RegistrySingleton, UsdviewSender, se
 
 from timeit import default_timer as timer
 
+
 @dataclass
 class ChunkModule:
     module: Optional[ModuleType] = None
@@ -71,8 +72,8 @@ class ChunkModule:
             return
 
         self.loaded_chunk = retval
-    
-        print(f"Loaded Chunk {self.loaded_chunk.name}. Load took {end-start} seconds")
+
+        print(f"Loaded Chunk {self.loaded_chunk.name}. Load took {end - start} seconds")
         return retval
 
 
@@ -112,7 +113,9 @@ class ChunkRegistry(metaclass=RegistrySingleton):
     def register_chunk_environ_directories(self):
         """Register the USD_CHUNK_DIR directories to find Python modules."""
         environ_dirs = set(
-            os.environ.get("USD_CHUNK_DIR", os.path.sep.join([os.path.dirname(os.path.dirname(__file__)), "scripts"])).split(os.pathsep)
+            os.environ.get(
+                "USD_CHUNK_DIR", os.path.sep.join([os.path.dirname(os.path.dirname(__file__)), "scripts"])
+            ).split(os.pathsep)
         )
 
         for chunk_dir in environ_dirs:
@@ -197,7 +200,11 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             mod.loaded = False
         else:
             mod.loaded = True
-            send_notice(ChunkNoticeAlias.CHUNK_LOADED, mod.loaded_chunk)
+            send_notice(
+                ChunkNoticeAlias.CHUNK_LOADED,
+                mod.loaded_chunk,
+                data=(mod.loaded_chunk),
+            )
 
     def unload_chunk_module(self, mod: ChunkModule):
         if not mod:

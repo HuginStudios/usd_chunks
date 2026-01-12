@@ -66,7 +66,7 @@ def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, 
     if not notice:
         return
     selected_prim = None
-    for selected_prim in notice.selected_prims:
+    for selected_prim in notice.data:
         break
     if not selected_prim:
         return

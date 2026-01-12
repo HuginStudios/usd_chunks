@@ -1,5 +1,5 @@
 from pxr import Usd, UsdGeom, Sdf, UsdShade
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_notice
 import itertools
 import numpy as np
 import os
@@ -271,9 +271,14 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1, height=2, caps=
     return mesh
 
 
-def menu_changed(menu, notice, my_chunk: chunk.Chunk):
+def menu_changed(notice, my_chunk: chunk.Chunk):
+    param = notice.data
+
+    if notice.data is not my_chunk.get_param("mesh_type"):
+        return
+
     groups = [x for x in my_chunk.get_my_params() if isinstance(x, chunk.Group)]
-    selected = menu.value
+    selected = param.value
 
     for g in groups:
         if g.name == selected:
@@ -503,6 +508,7 @@ def main(api, parent=None):
     chunk_api = chunk.Chunk("Add Mesh", category="Modelling")
     chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
 
-    menu.add_callback(menu_changed, chunk_api, send_self=True)
+    chunk_api.add_callback(menu_changed, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
+
 
     return chunk_api

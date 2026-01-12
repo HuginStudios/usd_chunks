@@ -43,8 +43,11 @@ ChunkT = TypeVar("ChunkT", bound="ChunkCommon")
 
 
 class ChunkParamWidget(Generic[ParamT]):
-    """Base class for a chunk param widget. Creating a custom widget should subclass
-    the relevant Qt widget as well as this class, such as:
+    """Base class for a chunk param widget. Any ui element associated to a chunk or parameter should subclass from this.
+    This class acts as an bridge between this toolkit and the UI library.
+
+    Creating a custom widget should subclass
+    the relevant UI widget as well as this class, such as:
     ```
         class myWidget(QtWidgets.QPushButton, ChunkParamWidget)
     ```
@@ -63,7 +66,7 @@ class ChunkParamWidget(Generic[ParamT]):
         self._connnections.append(
             chunk_notice.NoticeConnection(
                 self.param_changed_callback,
-                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_VALUE_CHANGED,
+                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
                 self.param.get_attribute_sender("value"),
             )
         )
@@ -93,10 +96,24 @@ class ChunkParamWidget(Generic[ParamT]):
         )
 
     def param_changed_callback(self, notice: Tf.Notice, param: ParamT):
+        """
+        Called when the parameter on the chunk changed, and thus this widget may need to update
+
+        Args:
+            notice (Tf.Notice): The notice sent by the change
+            param (ParamT): The param that changed
+        """
         if param.value is not None:
             self.set_value(param.value)
 
     def label_changed_callback(self, notice: Tf.Notice, param: ParamT):
+        """
+        The label of the param changed, and thus this widget may need to update
+
+        Args:
+            notice (Tf.Notice): The notice sent by the change
+            param (ParamT): The changed param
+        """
         self.set_label(self.param.get_label())
 
     def _icon_changed_callback(self, notice: Tf.Notice, param: ParamT):
@@ -104,6 +121,9 @@ class ChunkParamWidget(Generic[ParamT]):
             self.set_icon(self.param.icon)
 
     def setup_chunk_widget(self):
+        """
+        Called when initializing the widget. Sets the value and label on this object to represent the values of the chunk object
+        """
         if not self.param:
             return
 
@@ -120,22 +140,55 @@ class ChunkParamWidget(Generic[ParamT]):
 
     @abstractmethod
     def get_value(self):
+        """
+        Need to be implemented in a subcclass and return the value of the widget.
+
+        Returns:
+            _type_: The value of the widget
+        """
         return None
 
     @abstractmethod
     def set_value(self, value: Any):
+        """
+        Need to be implemented in a subclass. This should only set the value of the widget,
+        not modify the chunk object as that would result in an infinite loop
+
+        Args:
+            value (Any): The new value of the widget
+        """
         pass
 
     @abstractmethod
     def set_label(self, text: str):
+        """
+        Need to be implemented in a subclass. This should only set the label of the widget,
+        not modify the chunk object as that would result in an infinite loop
+
+        Args:
+            text (str): The new label of the widget
+        """
         pass
 
     @abstractmethod
     def set_icon(self, icon: str):
+        """
+        Need to be implemented in a subclass. This should only set the icon of the widget,
+        not modify the chunk object as that would result in an infinite loop
+
+        Args:
+            icon (str): A path to an image file which should be used as icon for this widget
+        """
         pass
 
     @abstractmethod
     def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
+        """
+        Implement the different LayoutFlags here. This can be ignored if the widget does not support the layout flags
+
+        Args:
+            layout_flags (ChunkFlags.LayoutFlags): The LayoutFlags of the parameter which the widget should respect
+        """
         pass
 
     def value_changed(self, value: Optional[Any] = None):
@@ -149,6 +202,17 @@ class ChunkParamWidget(Generic[ParamT]):
 
 
 class ChunkWidgetFactoryBase(Protocol):
+    """
+    A ChunkWidgetFactory exists to handle the creation of widgets from chunk objects. This is
+    implemented for any specific UI library and should map between chunk objects and ChunkParamWidget's.
+    This can also be used to create a custom mapping for custom widget, extending the base library.
+    See chunk_qt.ChunkQTWidgetFactory for an implementation.
+
+    Attributes:
+        widget_map (dict[ChunkFlags.ParamType, type[ChunkParamWidget]]): This attribute holds the mapping between chunk
+            object types and its corresponding widget.
+    """
+
     widget_map: Dict[ChunkFlags.ParamType, type[ChunkParamWidget]]
 
     def get_map(self):
@@ -162,6 +226,18 @@ class ChunkWidgetFactoryBase(Protocol):
 
     @abstractmethod
     def create_widget(self, param: "ChunkParamBase") -> Any:
+        """
+        A subclass should implement this and create a new widget from the param
+
+        Args:
+            param (ChunkParamBase): The param we want to represent in the UI
+
+        Raises:
+            NotImplementedError: Base implementation throw, as to make sure this is properly implemented in a subclass
+
+        Returns:
+            Any: The UI library widget. I.e QtWidget for Qt
+        """
         raise NotImplementedError
 
 
@@ -239,8 +315,8 @@ class AttributesMetaclass(type):
     """Metaclass used to wrap Chunk attributes classes around attrs. Using it through metaclass instead of decorating all
     classes with @attrs.define order to have proper default behaviour of all chunk classes
 
-    Additionally:
-    calls value_changed() on subclasses after __setattr__
+    This metaclass also injects some functions in to the defaul attrs __setattr__ in order to use out custom validation and conversion functions:
+    calls value_changed() on subclasses after __setattr__, and adds
     add _validate() and _convert() as default validator and conversion functions to all attrs.fields where applicable
     """
 
@@ -263,8 +339,8 @@ class AttributesMetaclass(type):
         Will look for value_changed functions on the cls, and if it exists, add a call to it after the attrs __setattr__ function was called
 
         Args:
-            name (str): _description_
-            value (Any): _description_
+            name (str): The name of the attribute
+            value (Any): The new value of the attribute
         """
 
         if name == "__setattr__" and hasattr(cls, "value_changed"):
@@ -290,10 +366,12 @@ class AttributesMetaclass(type):
 
 class AttributeSender(chunk_notice.ChunkNoticePropagator):
     """An AttributeSender gets sent when an attribute changes on a AttributesBase instance, as attrs.Attribute
-    is not able to send through the Tf.Notice system. The sender holds:
-    name: The name of the attribute that was sent
-    owner: The owning objcet of the attribute
-    alias: The ChunkNoticeAlias that is sent when the attribute changed
+    is not able to send through the Tf.Notice system.
+
+    Args:
+        owner (AttributesBase): The owning objcet of the attribute
+        name (str): The name of the attribute
+        alias (chunk_notice.ChunkNoticeAlias): The ChunkNoticeAlias that is sent when the attribute changed
 
     """
 
@@ -309,6 +387,18 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
         self.old_value: Any = None
 
         self.set_owner(owner)
+
+    def __repr__(self) -> str:
+        return f"AttributeSender({self.name} = {self.value})"
+
+    def get_notice_data(self) -> Tuple[Any, Any]:
+        """
+        The notice data for AttributeSender's are the old_value and the new_value
+
+        Returns:
+            Tuple[Any, Any]: A tuple of new and old values
+        """
+        return (self.old_value, self.value)
 
     @property
     def value(self) -> Any:
@@ -328,6 +418,12 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
 
 
 class CopyMode(IntEnum):
+    """
+    This enum is used for deciding how the parameters should be created when copied from another
+    parameter. The defsault is to create a copy, but if the parameters should be references (share recources),
+    SHARE may be better
+    """
+
     COPY = 0  # copy.copy() attribute. This is default if nothing else is specified
     DEEPCOPY = 1  # copy.copy() attribute. This is default if nothing else is specified
     NO_COPY = 2  # Does not copy attribute, sets default instead
@@ -335,6 +431,11 @@ class CopyMode(IntEnum):
 
 
 class SendMode(IntEnum):
+    """
+    Setting for whether an attribute should send a notice when changed
+
+    """
+
     NO_SEND = 0
     SEND = 1
 
@@ -342,13 +443,14 @@ class SendMode(IntEnum):
 class AttributeMetadata(TypedDict, total=False):
     """Use in field(metadata=AttributeMetadata(...)).
 
-    - copy_mode
-    Decides how the attribute should be treated when copying. If not set, use a COPY
-    - send_mode
-    Decides if the attribute should send a notice when modified. If not set, use SEND
-    - sender_alias
-    What ChunkNoticeAlias to use when sending. If not set, will use ATTRIBUTE_CHANGED
 
+    Attributes:
+    copy_mode (CopyMode): Decides how the attribute should be treated when copying. If not set, use a COPY
+    send_mode (SendMode): Decides if the attribute should send a notice when modified. If not set, use SEND
+    sender_alias (chunk_notice.ChunkNoticeAlias): What ChunkNoticeAlias to use when sending. If not set, will use ATTRIBUTE_CHANGED
+    validate (bool): Whether to validate this attribute's value when changed
+    convert (bool): whether to convert this attribute's value to a valid value when changed
+    documentation (str): The documentation for this parameter, which will be added to the parameter's description through MkDocs
     """
 
     copy_mode: CopyMode
@@ -534,6 +636,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         attr_sender = self._attr_senders.get(attrname)
         if attr_sender:
             attr_sender.old_value = old_value
+            # attr_sender.data_changed(chunk_notice.get_notice(attr_sender.get_notice_alias()), attr_sender)
             attr_sender.data_changed(None, None)
         else:
             self.send_self()
@@ -567,7 +670,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         attributes again. This resolves because attributes are added to _failed_converters when convert_attr raises
         AttributeError (some referenced dependency attribute did not exist when the original convert_attr was called)
         An example of this is the chunk.Menu class; the value should convert to a value in the menu_items list, but
-        the 'value' and 'default_value' attributes are initialized prior to the menu_items,
+        the 'value' and 'default_value' attributes are initialized prior to the menu_items
         """
         max_count = 1000
         count = 0
@@ -677,6 +780,9 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
         copied._copy_connections(self)
         return copied
+
+    def get_notice_data(self) -> Tuple[Optional["HashVal"], Optional["HashVal"]]:
+        return (self.last_removed, self.last_added)
 
     def clear(self):
         self.names.clear()
@@ -857,11 +963,11 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
     def send_added(self, obj: "ChunkCommon"):
         self.last_added = obj._hashable
-        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.PARAM_ADDED, self.get_owner())
+        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.PARAM_ADDED, self.get_owner(), self.get_notice_data())
 
     def send_removed(self, obj: "ChunkCommon"):
         self.last_removed = obj._hashable
-        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, self.get_owner())
+        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, self.get_owner(), self.get_notice_data())
 
     def __delitem__(self, key: ChunkHash):
         if obj := self.get_param(key):
@@ -1103,7 +1209,7 @@ class ChunkCommon(AttributesBase):
         self._connections.clear()
 
         # Send the CHUNK_DELETED notice for this object
-        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, self)
+        self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
 
 class ChunkParamBase(Generic[ValueT], ChunkCommon):
@@ -1112,11 +1218,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon):
     default_value: Optional[ValueT] = attrs.field(default=None)
 
     # Value is not an argument to __init__. Will set to default_value
-    value: Optional[ValueT] = attrs.field(
-        default=None,
-        init=False,
-        metadata=AttributeMetadata(sender_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_VALUE_CHANGED),
-    )
+    value: Optional[ValueT] = attrs.field(default=None, init=False)
 
     # If possible, will use this custom widget in the ui.
     # TODO: Currently, this only works with ChunkParamBase objects with type == CUSTOM

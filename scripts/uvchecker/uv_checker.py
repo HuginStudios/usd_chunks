@@ -1,20 +1,23 @@
 import os
-from usd_chunks import chunk, chunk_interface
+from usd_chunks import chunk, chunk_notice
 from pxr import Sdf, Usd, UsdGeom, UsdShade
 from PySide6 import QtWidgets
 
 
-def apply(chunkItem: chunk.Chunk, notice, sender):
+def apply(notice, sender: chunk.Chunk):
+    if notice.data is not sender.get_param("apply"):
+        return
+
     # Access the parameter inside the group
-    x_scale_param = chunkItem.get_param("uvscale")[0]
-    y_scale_param = chunkItem.get_param("uvscale")[1]
+    x_scale_param = sender.get_param("uvscale")[0]
+    y_scale_param = sender.get_param("uvscale")[1]
 
     x_scale = x_scale_param.value
     y_scale = y_scale_param.value
 
-    filebrowser = chunkItem.get_param("browse")
+    filebrowser = sender.get_param("browse")
 
-    api = chunkItem.get_usdview_api()
+    api = sender.get_usdview_api()
     checker_file = filebrowser.value
     selected_prim = api.prim
 
@@ -82,9 +85,12 @@ def apply(chunkItem: chunk.Chunk, notice, sender):
         UsdShade.MaterialBindingAPI(selected_prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
 
 
-def clear(chunkItem: chunk.Chunk, notice, sender):
+def clear(notice, sender: chunk.Chunk):
+    if notice.data is not sender.get_param("clear"):
+        return
+
     """Remove the assign checker edits"""
-    stage = chunkItem.get_stage()
+    stage = sender.get_stage()
     sublayer_paths = list(stage.GetSessionLayer().subLayerPaths).copy()
     for i, sublayer in enumerate(sublayer_paths):
         if "uv_checker" in sublayer:
@@ -137,9 +143,9 @@ def main(api):
 
     filebrowser = chunk.FileBrowser("browse")
 
-    visUVsButton = chunk.Button("visualize")
+    visUVsButton = chunk.Button("apply", "Visualize")
 
-    clearUVsButton = chunk.Button("Clear Vis")
+    clearUVsButton = chunk.Button("clear", "Clear Vis")
 
     chunk_api.add_params([vec, filebrowser, visUVsButton, clearUVsButton])
 
@@ -147,7 +153,8 @@ def main(api):
     # 1 - chunk_api (the chunk)
     # 2 - Tf.Notice (the notice)
     # 3 - ChunkParam (the button)
-    chunk_api.add_callback(apply, visUVsButton, send_self=True)
-    chunk_api.add_callback(clear, clearUVsButton, send_self=True)
+
+    chunk_api.add_callback(apply, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
+    chunk_api.add_callback(clear, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
 
     return chunk_api

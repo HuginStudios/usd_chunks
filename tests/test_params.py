@@ -62,65 +62,67 @@ def request_delete(chunkItem: chunk.ChunkParamBase, notice, sender):
 
 
 def main(api):
-    params = [
-        chunk.Slider("Slider"),
-        chunk.Spinbox("Spinbox"),
-        chunk.Menu("Menu", menu_items=["Item1", "Item2"]),
-        chunk.Button("Button"),
-        chunk.Label("Label"),
-        chunk.Checkbox("CheckBox"),
-        chunk.LineEdit("LineEdit"),
-        chunk.FileBrowser("FileBrowser"),
-        chunk.Separator("Separator"),
-    ]
+    # params = [
+    #     chunk.Slider("Slider"),
+    #     chunk.Spinbox("Spinbox"),
+    #     chunk.Menu("Menu", menu_items=["Item1", "Item2"]),
+    #     chunk.Button("Button"),
+    #     chunk.Label("Label"),
+    #     chunk.Checkbox("CheckBox"),
+    #     chunk.LineEdit("LineEdit"),
+    #     chunk.FileBrowser("FileBrowser"),
+    #     chunk.Separator("Separator"),
+    # ]
 
-    import inspect
-    print(inspect.signature(chunk.Menu.__init__))
+    # import inspect
+    # print(inspect.signature(chunk.Menu.__init__))
 
-    m = chunk.Menu(
-        "name",
-        "label",
-        "tooltip",
-        "C:/Users/Viktor/Desktop/render/sparsit.exr",
-        {"user": "data"},
-        chunk.ChunkFlags.LayoutFlags.VERTICAL,
-        chunk.ChunkFlags.State.NONE,
-        chunk.ChunkFlags.ParamFlags.LABELED,
-        "default_value",
-        None,
-        ["item1", "item2"],
-    )
+    # m = chunk.Menu(
+    #     "name",
+    #     "label",
+    #     "tooltip",
+    #     "C:/Users/Viktor/Desktop/render/sparsit.exr",
+    #     None,
+    #     {"user": "data"},
+    #     chunk.ChunkFlags.LayoutFlags.VERTICAL,
+    #     chunk.ChunkFlags.State.NONE,
+    #     chunk.ChunkFlags.ParamFlags.LABELED,
+    #     "default_value",
+    #     None,
+    #     ["item1", "item2"],
+    # )
 
-    groupA = chunk.Group("GroupA")
-    groupA.add_params(params)
+    # groupA = chunk.Group("GroupA")
+    # groupA.add_params(params)
 
-    groupA.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
+    # groupA.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
 
-    groupB = chunk.Group("GroupB")
-    groupB.add_params(params, clone=True)
-    groupB.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
+    # groupB = chunk.Group("GroupB")
+    # groupB.add_params(params, clone=True)
+    # groupB.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
 
-    groupC = chunk.Group("GroupC")
-    groupC.add_params([groupB.clone(), groupA.clone()])
+    # groupC = chunk.Group("GroupC")
+    # groupC.add_params([groupB.clone(), groupA.clone()])
 
-    # Create the actual chunk - this is in practice just a ChunkParamGroup with some addiditional behaviour
-    myChunk = chunk.Chunk("TestParams", category="Tests")
-    myChunk.add_params(params, clone=True)
+    # # Create the actual chunk - this is in practice just a ChunkParamGroup with some addiditional behaviour
+    # myChunk = chunk.Chunk("TestParams", category="Tests")
+    # myChunk.add_params(params, clone=True)
 
-    for i in range(1):
-        myChunk.add_params([groupA, groupC, groupB])
+    # for i in range(1):
+    #     myChunk.add_params([groupA, groupC, groupB])
 
-    myChunk.add_callback(chunkChanged)
-    myChunk.add_callback(request_delete, None, True, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
+    # myChunk.add_callback(chunkChanged)
+    # myChunk.add_callback(request_delete, None, True, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
-    myChunk.print_hierarchy()
+    # myChunk.print_hierarchy()
 
-    if s := myChunk.get_param("Slider"):
-        s.name = "newName"
+    # if s := myChunk.get_param("Slider"):
+    #     s.name = "newName"
 
-    if s := myChunk.get_param("newName"):
-        print("FOUND NEWNAME", s.name)
-    else:
-        print("NOT FOUND")
+    # if s := myChunk.get_param("newName"):
+    #     print("FOUND NEWNAME", s.name)
+    # else:
+    #     print("NOT FOUND")
 
-    return myChunk
+    # return myChunk
+    return None

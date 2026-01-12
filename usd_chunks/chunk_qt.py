@@ -59,8 +59,6 @@ class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QWidget):
     def value_changed(self, value: int | float):
         if not self.param or not value:
             return
-        print(value, "00000000000000000000")
-        print(self._step)
         self.param.value = value / float(self._step)
 
 

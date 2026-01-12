@@ -133,7 +133,7 @@ def update_chunk(myChunk: chunk.Chunk, notice, sender: chunk_notice.UsdviewSende
     if not stage:
         return
 
-    for prim in notice.selected_prims:
+    for prim in notice.data:
         schemas = prim.GetAppliedSchemas()
         for api in schemas:
             api_def = registry.FindAppliedAPIPrimDefinition(api)

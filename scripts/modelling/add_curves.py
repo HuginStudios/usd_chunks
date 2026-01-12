@@ -1,5 +1,5 @@
 from pxr import Usd, UsdGeom, Sdf
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk, chunk_registry, chunk_notice
 
 import numpy as np
 
@@ -113,9 +113,14 @@ def curl_hair(curves: UsdGeom.BasisCurves, freq: float, amp: float):
     curves.GetPointsAttr().Set(curve_pts)
 
 
-def menu_changed(menu, notice, my_chunk: chunk.Chunk):
+def menu_changed(notice, my_chunk: chunk.Chunk):
+    param = notice.data
+
+    if notice.data is not my_chunk.get_param("mesh_type"):
+        return
+
     groups = [x for x in my_chunk.get_my_params() if isinstance(x, chunk.Group)]
-    selected = menu.value
+    selected = param.value
 
     for g in groups:
         if g.name == selected:
@@ -175,9 +180,8 @@ def hair_changed(notice, tube_grp: chunk.Group):
         return
 
     with Usd.EditContext(stage, layer):
-        build_hair(
-            tube_grp.get_stage(), mesh, count.value, segs.value, len.value
-        )
+        build_hair(tube_grp.get_stage(), mesh, count.value, segs.value, len.value)
+
 
 def main(api, parent=None):
     menu = chunk.Menu("mesh_type", "Mesh Type", menu_items=["none", "curly"], default_value="none")
@@ -188,7 +192,7 @@ def main(api, parent=None):
             # chunk.LineEdit("target", "Target Prim", default_value="/"),
             chunk.Spinbox("count", min_value=1, default_value=10, is_int=True),
             chunk.Spinbox("segments", min_value=2, default_value=3, is_int=True),
-            chunk.Slider("length", default_value=1)
+            chunk.Slider("length", default_value=1),
         ]
     )
     curly_group.set_state(chunk.ChunkFlags.State.HIDDEN)
@@ -197,6 +201,6 @@ def main(api, parent=None):
     chunk_api = chunk.Chunk("Add Hair", category="Modelling")
     chunk_api.add_params([menu, curly_group])
 
-    menu.add_callback(menu_changed, chunk_api, send_self=True)
+    chunk_api.add_callback(menu_changed, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
 
     return chunk_api

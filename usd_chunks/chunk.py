@@ -143,7 +143,7 @@ class Vector(ChunkVectorBase):
     flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
-        return chunk_notice.ChunkNoticeAlias.PARAM_CHANGED
+        return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
 
 
 class Slider(ChunkParamBase[int | float]):

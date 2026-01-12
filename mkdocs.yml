@@ -13,17 +13,6 @@ theme:
     - content.tabs.link
     - content.code.annotation
     - content.code.copy
-
-    # - search.highlight
-    # - search.suggest
-    # - content.code.copy
-    # - content.code.annotate
-    # - navigation.indexes
-    # - navigation.footer
-    # - navigation.sections
-    # - navigation.expand
-    # - toc.follow
-
   language: en
   palette:
     - scheme: default
@@ -73,4 +62,12 @@ markdown_extensions:
   - admonition
   - toc:
       permalink: ⚓︎
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+
 watch: [mkdocs.yml, README.md, testdoc]
