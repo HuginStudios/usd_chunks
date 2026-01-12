@@ -3,3 +3,9 @@ PyOpenGL
 types-usd
 attrs
 typing-extensions
+
+mkdocs-material
+mkdocstrings-python
+markdown-include
+griffe-fieldz
+mkdocs_gen_files

@@ -3,3 +3,5 @@ __pycache__
 .venv
 scripts/user
 .mypy*
+
+./testdoc/

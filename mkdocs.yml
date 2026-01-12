@@ -1,0 +1,76 @@
+site_name: My Docs
+theme: 
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.top
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.annotation
+    - content.code.copy
+
+    # - search.highlight
+    # - search.suggest
+    # - content.code.copy
+    # - content.code.annotate
+    # - navigation.indexes
+    # - navigation.footer
+    # - navigation.sections
+    # - navigation.expand
+    # - toc.follow
+
+  language: en
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/toggle-switch-off-outline 
+        name: Switch to dark mode
+      primary: teal
+      accent: purple 
+    - scheme: slate 
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to light mode    
+      primary: teal
+      accent: lime
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        # See: https://mkdocstrings.github.io/python/usage/
+        python:
+          inventories:
+            - https://docs.python.org/3/objects.inv
+            - https://docs.pydantic.dev/latest/objects.inv
+            - https://jcristharif.com/msgspec//objects.inv
+
+          options:
+            extensions:
+              - griffe_fieldz:
+                  include_inherited: true
+              - ./griffe_chunks.py:GriffleChunks:
+                  paths: [usd_chunks.chunk.Chunk]
+                  # paths: [testdoc.afile.AClass]
+  
+            merge_init_into_class: true
+            docstring_style: "google"
+            allow_inspection: true
+            show_signature: true
+            show_signature_annotations: true
+            separate_signature: true
+
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+
+markdown_extensions:
+  - markdown_include.include:
+      base_path: .
+  - admonition
+  - toc:
+      permalink: ⚓︎
+watch: [mkdocs.yml, README.md, testdoc]

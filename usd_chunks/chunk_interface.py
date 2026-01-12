@@ -25,7 +25,6 @@ from enum import IntEnum, IntFlag
 
 import re
 import uuid
-import weakref
 
 from . import chunk_notice, chunk_registry
 from .chunk import ChunkFlags
@@ -57,7 +56,7 @@ class ChunkParamWidget(Generic[ParamT]):
         # self._param: weakref.ReferenceType[ParamT] = weakref.ref(param)
         self.param: ParamT = param
         # if inside a vector the vector index needs to be set.
-        self.index =  0
+        self.index = 0
 
         self._connnections: List[chunk_notice.NoticeConnection] = []
 
@@ -92,17 +91,6 @@ class ChunkParamWidget(Generic[ParamT]):
                 self.param.get_attribute_sender("icon"),
             )
         )
-
-    # @property
-    # def param(self):
-    #     p = self._param()
-    #     if not p:
-    #         raise ReferenceError("Param is dead!")
-    #     return p
-
-    # @param.setter
-    # def param(self, value: ParamT):
-    #     self._param = weakref.ref(value)
 
     def param_changed_callback(self, notice: Tf.Notice, param: ParamT):
         if param.value is not None:
@@ -251,7 +239,7 @@ class AttributesMetaclass(type):
     """Metaclass used to wrap Chunk attributes classes around attrs. Using it through metaclass instead of decorating all
     classes with @attrs.define order to have proper default behaviour of all chunk classes
 
-    Provides:
+    Additionally:
     calls value_changed() on subclasses after __setattr__
     add _validate() and _convert() as default validator and conversion functions to all attrs.fields where applicable
     """
@@ -368,6 +356,7 @@ class AttributeMetadata(TypedDict, total=False):
     sender_alias: chunk_notice.ChunkNoticeAlias
     validate: bool
     convert: bool
+    documentation: str
 
 
 class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMetaclass):
@@ -926,7 +915,8 @@ class HashVal:
 
 class ChunkCommon(AttributesBase):
     """Base class for all Chunk objects. Should not be instantiated directly, but inherited by concrete classes.
-    Holds attributes that all chunk objects are excpected to support"""
+    Holds attributes that all chunk objects are excpected to support
+    """
 
     # Please do not mutate!
     _hashable: HashVal = attrs.field(
@@ -1044,7 +1034,7 @@ class ChunkCommon(AttributesBase):
 
     def get_label(self) -> str:
         return self.name if not self.label else self.label
-    
+
     def get_usd_attr(self) -> Usd.Attribute:
         return self.usd_attr
 

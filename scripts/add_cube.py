@@ -13,6 +13,7 @@ def addCube(notice, sender):
 
 
 def main(api, parent=None):
+
     button = chunk.Button("add_cube", "Add Cube")
     button.add_callback(addCube)
 
