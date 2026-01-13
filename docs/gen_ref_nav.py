@@ -6,7 +6,6 @@ mod_symbol = '<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code>'
 
 ROOT = Path(__file__).parent.parent
 SRC = ROOT / "usd_chunks"
-# SRC = ROOT / "testdoc"
 
 for path in sorted(SRC.rglob("*.py")):
     module_path = path.relative_to(ROOT).with_suffix("")

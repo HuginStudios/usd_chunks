@@ -2,18 +2,18 @@ from usd_chunks import chunk, chunk_notice, chunk_registry
 
 
 
-def variant_selection_callback(notice, sender):
-    stage = sender.get_stage()
+def variant_selection_callback(owner: chunk.ChunkParamBase, notice, sender):
+    stage = owner.get_stage()
     if not stage:
         return
-    primpath = sender.user_data.get("prim_path")
+    primpath = owner.user_data.get("prim_path")
     if not primpath:
         return
     selected_prim = stage.GetPrimAtPath(primpath)
     if not selected_prim.IsValid():
         return
-    vset = selected_prim.GetVariantSet(sender.label)
-    vset.SetVariantSelection(sender.value)
+    vset = selected_prim.GetVariantSet(owner.label)
+    vset.SetVariantSelection(owner.value)
 
 
 def update_variant_selection(mychunk, notice, sender):
@@ -62,7 +62,7 @@ def update(mychunk, selected_prim):
     chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED, mychunk.get_owner())
 
 
-def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.UsdviewSender):
+def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.SceneSender):
     if not notice:
         return
     selected_prim = None
@@ -73,25 +73,25 @@ def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, 
     update(mychunk, selected_prim)
 
 
-def main(api, parent=None):
+def main():
     vSwitcherChunk = chunk.Chunk("Variant Switcher", category="Utility")
     reg = chunk_registry.ChunkRegistry()
 
-    vSwitcherChunk.add_callback(
-        selection_changed,
-        sender=reg.usdview_sender,
-        notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED,
-        send_self=True,
-    )
+    # vSwitcherChunk.add_callback(
+    #     selection_changed,
+    #     sender=reg.usdview_sender,
+    #     notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED,
+    #     send_self=True,
+    # )
 
-    conn = chunk_notice.NoticeConnection(
-        update_variant_selection,
-        chunk_notice.ChunkNoticeAlias.OBJECT_CHANGED,
-        reg.usdview_sender,
-        True,
-        True,
-        vSwitcherChunk,
-    )
-    vSwitcherChunk.add_connection(conn)
+    # conn = chunk_notice.NoticeConnection(
+    #     update_variant_selection,
+    #     chunk_notice.ChunkNoticeAlias.OBJECT_CHANGED,
+    #     reg.usdview_sender,
+    #     True,
+    #     True,
+    #     vSwitcherChunk,
+    # )
+    # vSwitcherChunk.add_connection(conn)
 
     return vSwitcherChunk

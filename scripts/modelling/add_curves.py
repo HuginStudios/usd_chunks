@@ -113,13 +113,13 @@ def curl_hair(curves: UsdGeom.BasisCurves, freq: float, amp: float):
     curves.GetPointsAttr().Set(curve_pts)
 
 
-def menu_changed(notice, my_chunk: chunk.Chunk):
+def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
     param = notice.data
 
-    if notice.data is not my_chunk.get_param("mesh_type"):
+    if sender is not owner.get_param("mesh_type"):
         return
 
-    groups = [x for x in my_chunk.get_my_params() if isinstance(x, chunk.Group)]
+    groups = [x for x in owner.get_my_params() if isinstance(x, chunk.Group)]
     selected = param.value
 
     for g in groups:
@@ -152,8 +152,8 @@ def get_layer(stage, layer_id):
     return layer
 
 
-def hair_changed(notice, tube_grp: chunk.Group):
-    stage = tube_grp.get_stage()
+def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
+    stage = owner.get_stage()
 
     if not stage:
         return
@@ -161,15 +161,15 @@ def hair_changed(notice, tube_grp: chunk.Group):
     layer_id = "add_hair_layer"
     layer: Sdf.Layer = get_layer(stage, layer_id)
 
-    if tube_grp.has_state(chunk.ChunkFlags.State.HIDDEN):
+    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
         clear_layer(stage, layer.identifier)
         return
 
-    count = tube_grp.get_param("count")
-    segs = tube_grp.get_param("segments")
-    len = tube_grp.get_param("length")
+    count = owner.get_param("count")
+    segs = owner.get_param("segments")
+    len = owner.get_param("length")
 
-    tgt = chunk_registry.ChunkRegistry().usdview_sender.selectedPrims
+    tgt = chunk_registry.ChunkRegistry().scene.get_selected_prims()
 
     if not tgt:
         return
@@ -180,10 +180,10 @@ def hair_changed(notice, tube_grp: chunk.Group):
         return
 
     with Usd.EditContext(stage, layer):
-        build_hair(tube_grp.get_stage(), mesh, count.value, segs.value, len.value)
+        build_hair(owner.get_stage(), mesh, count.value, segs.value, len.value)
 
 
-def main(api, parent=None):
+def main():
     menu = chunk.Menu("mesh_type", "Mesh Type", menu_items=["none", "curly"], default_value="none")
 
     curly_group = chunk.Group("curly", "curly")
@@ -201,6 +201,6 @@ def main(api, parent=None):
     chunk_api = chunk.Chunk("Add Hair", category="Modelling")
     chunk_api.add_params([menu, curly_group])
 
-    chunk_api.add_callback(menu_changed, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
+    chunk_api.add_callback(menu_changed, sender=menu)
 
     return chunk_api

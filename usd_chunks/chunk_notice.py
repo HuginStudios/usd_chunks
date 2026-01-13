@@ -1,9 +1,31 @@
+"""
+The chunk_notice module defines the base classes for all TfNotice and hierarchical logic.
+TfNotice is the USD built-in callback system, similar to Qt's signals. This module uses
+TfNotices extensively, but hides most of the Tf.Notice API behind our own logic. The
+goal is for end-users to easily be up and running with the callbacks, without having to
+manage the lifetime of the listeners.
+
+We promote the ChunkNoticeAlias as an alias for the supported TfNotice classes, which
+makes it easy to find the notice type you're interested in without having to care about
+its implementation.
+
+All the custom TfNotices are subclassed from ChunkNotice, which provide some additional data,
+that may vary in type depending on the notice and how sends it.
+
+The easiest way of sending a notice would be to do it explicitly, using send_notice:
+``` py
+send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
+```
+
+"""
+
 from pxr import Tf
 
 # from enum import IntEnum, auto
 from enum import IntEnum, auto
 from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator
-from pxr.Usdviewq import usdviewApi as UsdviewModule
+
+# from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr import Usd
 from functools import partial
 from abc import abstractmethod
@@ -14,7 +36,7 @@ import weakref
 class ChunkNoticeAlias(IntEnum):
     """
     An alias is essentially just the name of a supported Tf.Notice implmentation. We're using aliases as a client-facing interface for
-    working with the notices, without having to know about the actual Tf.Notice implementation.
+    working with the notices.
 
     Any supported notice should be reflected with an alias in this enum class
 
@@ -119,7 +141,7 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
 
 
 def chunk_notice(alias: ChunkNoticeAlias):
-    """Used as decorator for Tf.Notice object who should be registered by the ChunkNoticeRegistry. This maps the alias to the decorated class,
+    """Used as decorator for new Tf.Notice classes that should be registered by the ChunkNoticeRegistry. This maps the alias to the decorated class,
     so a user can do get_notice(alias).Send()
 
     Args:
@@ -142,6 +164,7 @@ class ChunkNotice(Tf.Notice):
 
     Args:
         data(ChunkNoticeData): The data to send with the notice. This may vary between
+        alias(ChunkNoticeAlias): The alias assiciated with this notice. This may vary between
     """
 
     data: Any = None
@@ -262,11 +285,26 @@ def is_notice_type(notice: Tf.Notice, alias: ChunkNoticeAlias) -> bool:
 
 
 def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None):
+    """
+    Sends a notice of type alias, triggering subscribed callback functions to run
+
+    Args:
+        alias (ChunkNoticeAlias): The type of the notice to send
+        sender (Any, optional): The object to pass as sender. If None, the notice will be sent globally. Defaults to None.
+        data (Any, optional): Any additional data to attach to the notice object. Defaults to None.
+    """
     notice_class = get_notice(alias)
     if not notice_class:
         return
 
-    notice = notice_class(data)
+    if issubclass(notice_class, ChunkNotice):
+        notice = notice_class(data)
+    else:
+        if data is not None:
+            print(
+                f"Attempting to send notice {alias} with custom data which is not supported. Consider sending a ChunkNotice instead"
+            )
+        notice = notice_class()
 
     if sender is None:
         notice.SendGlobally()
@@ -302,13 +340,24 @@ class ChunkNoticePropagator:
         self._owner = None
 
     def _copy_connections(self, src: "ChunkNoticePropagator"):
-        # Add connections to the copy by creating new NoticeConnection objects
+        """
+        Copy connections to this object from src
+
+        Args:
+            src (ChunkNoticePropagator): The source object to copy connections from
+        """
         for conn in src._connections:
             self._copy_connection(conn, src)
 
     def _copy_connection(self, conn: "NoticeConnection", src: "ChunkNoticePropagator"):
-        # Add connections to the copy by creating new NoticeConnection objects
-        # Rewire the connection to the copy if conn.sender is the source of the copy (self)
+        """
+        Copy a connection from src to this object.
+        Rewire the connection if conn.sender is the source of the copy (self)
+
+        Args:
+            conn (NoticeConnection): The connection to copy
+            src (ChunkNoticePropagator): The source ChunkNoticePropagator to copy from
+        """
         sender = self if conn.sender == src else conn.sender
 
         new_conn = NoticeConnection(conn.method, conn.alias, sender, conn.globally, conn.send_owner, self)
@@ -400,18 +449,10 @@ class ChunkNoticePropagator:
         if owner:
             owner.data_changed(my_notice, self, propagated if propagated else sender)
 
-        # Iterate over all owners and have them send this notice as well.
-        # iter_owner = self.get_owner()
-        # while iter_owner is not None:
-        #     send_notice(self.get_notice_alias(), iter_owner, iter_owner.get_notice_data())
-        #     print("Send: ", self.get_notice_alias(), self.get_notice_data())
-
-        #     iter_owner = iter_owner.get_owner()
-
         return my_notice
 
     def send_self(self, alias: Optional[ChunkNoticeAlias] = None) -> Optional[Tf.Notice]:
-        """Sends a Tf.Notice, with self as sender. The type of notice is determined by get_notice_alias(), or optionally the alias argument, with self as sender
+        """Sends a Tf.Notice, with self as sender. The type of notice is determined by get_notice_alias(), or optionally the alias argument.
 
         Args:
             alias (Optional[ChunkNoticeAlias]): An optional alias to send. If alias is not None, it will be used instead of the default from get_notice_alias()
@@ -430,7 +471,9 @@ class ChunkNoticePropagator:
             notice = notice_class()
         notice.Send(self)
 
-        # Iterate over all owners and have them send this notice as well.
+        # Iterate over all owners and have them send this notice as well. This is a bit nasty as the owners will themselves become senders,
+        # so accessing the original sender may only be done through notice.data in the subscribing functions
+        # TODO: Rethink this
         iter_owner = self.get_owner()
         while iter_owner is not None:
             send_notice(alias, iter_owner, self.get_notice_data())
@@ -488,13 +531,18 @@ class ChunkNoticePropagator:
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
-        send_self: bool = False,
+        send_self: bool = True,
     ):
-        """Subscribe to a notice. When the notice is sent, the suplpied method will be called with two arguments:
+        """Subscribe to a notice. When the notice is sent, the supplied method will be called, by default, with three arguments:
+        (owner(self), notice(Tf.Notice), sender(Any))
+        if `send_self==True`
+        then the notice will expect 2 parameters:
         (notice(Tf.Notice), sender(Any))
 
-        If the sender argument is specified, the method will be called only when said sender sends a notice. If not, and listen_globally is False, then assume the sender is self
-
+        If `sender==None`, then we assume self to be the sender of the notice. This enables some nice and simple syntax:
+        ``` py
+        myParam.add_callback(myCallback)
+        ```
         If listen_globally is True, subscribe to all notices of the same type regardless of the sender.
 
         Args:
@@ -502,6 +550,7 @@ class ChunkNoticePropagator:
             sender (Any, optional): A sender which to subscribe to. If None, will use self as sender if listen_globally=False, else None. Defaults to None.
             listen_globally (bool, optional): Whether to subscribe to all events of type notice_alias. Defaults to False.
             notice_alias (NoticeType, optional): A specific type of notice to subscribe to. If left at NONE, will use the get_notice_alias(). Defaults to ChunkNoticeAlias.NONE
+            send_self (bool): Whether to include self as the first argument when method is invoked. Defaults to True.
         """
 
         # If sender is not set and we should not listen for global notices, the sender will be self
@@ -512,15 +561,16 @@ class ChunkNoticePropagator:
         if isinstance(sender, ChunkNoticePropagator) and notice_alias is ChunkNoticeAlias.NONE:
             notice_alias = sender.get_notice_alias()
 
-        if notice_alias in (ChunkNoticeAlias.PRIM_SELECTION_CHANGED, ChunkNoticeAlias.PROP_SELECTION_CHANGED):
-            self.add_connection(NoticeConnection(self.data_changed, notice_alias, sender=sender, globally=listen_globally))
-    
-        conn = NoticeConnection(method, notice_alias, sender, listen_globally, send_self, self)
-
-        self.add_connection(conn)
+        self.add_connection(NoticeConnection(method, notice_alias, sender, listen_globally, send_self, self))
 
 
 class NoticeConnection:
+    """
+    A storage for a TfListener object. This class provides a simple client-facing interface for
+    creating callbacks for the TfNotice system, with some additional functionality. This exists also
+    to store the information for the callbacks held by ChunkNoticePropagators
+    """
+
     def __init__(
         self,
         method: Callable,
@@ -564,10 +614,16 @@ class NoticeConnection:
         self.disconnect()
 
     def connect(self, sender=None):
+        """
+        Builds the Tf.Listener from the member variables
+
+        Args:
+            sender (Any, optional): Override the sender. Defaults to None.
+        """
         notice = get_notice(self.alias)
         if not notice:
             print("Could not find appropriate notice to connect")
-            return None
+            return
 
         if self.listener is not None:
             self.disconnect()
@@ -575,6 +631,8 @@ class NoticeConnection:
         if sender is not None:
             self.sender = sender
 
+        # If we should include the owner as the first argument of the method,
+        # we add it using partial
         self.__method = None
         if self.send_owner and self.owner:
             self.__method = partial(self.method, self.owner)
@@ -590,37 +648,48 @@ class NoticeConnection:
         self.disconnect()
 
     def disconnect(self):
+        """
+        Calls Revoke() on the stored TfListener
+        """
         if self.listener is not None:
             self.listener.Revoke()
             self.listener = None
         self.__method = None
 
 
-class UsdviewSender(ChunkNoticePropagator):
-    def __init__(self, usdviewAPI: UsdviewModule.UsdviewApi):
-        self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
+class SceneSender(ChunkNoticePropagator):
+    """
+    Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
+    See implementation in plugins/usdview/__init__.py
+    """
 
-        # Usdview stubs are not up to date, so need to ignore typing
-        data_model = self.usdviewAPI.dataModel
+    @abstractmethod
+    def get_stage(self):
+        raise NotImplementedError
 
-        selection_model = data_model.selection  # type: ignore
-        selection_model.signalPrimSelectionChanged.connect(self._primSelectionChanged)
-        selection_model.signalPropSelectionChanged.connect(self._propSelectionChanged)
+    def get_selected_prims(self) -> List[Usd.Prim]:
+        """
+        Get the selected prims in the scene
 
-    @property
-    def selectedPrims(self) -> List[Usd.Prim]:
-        return self.usdviewAPI.selectedPrims  # type: ignore
+        Returns:
+            List[Usd.Prim]: Selected prims
+        """
+        raise NotImplementedError
 
-    @property
-    def selectedProp(self) -> Usd.Property:
-        return self.usdviewAPI.property  # type: ignore
+    def get_selected_property(self) -> Usd.Property:
+        """
+        Get the selected property in the scene
 
-    def _primSelectionChanged(self, *args, **kwargs):
-        # selected_prims = [self.usdviewAPI.stage.GetPrimAtPath(prim_path) for prim_path in args[0]]
-        send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.selectedPrims)
+        Returns:
+            Usd.Property: Selected property
+        """
+        raise NotImplementedError
 
-    def _propSelectionChanged(self, *args, **kwargs):
-        send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.selectedProp)
+    def primSelectionChangedCallback(self, *args, **kwargs):
+        send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.get_selected_prims())
+
+    def propSelectionChangedCallback(self, *args, **kwargs):
+        send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property())
 
     def get_notice_alias(self) -> ChunkNoticeAlias:
         return ChunkNoticeAlias.NONE

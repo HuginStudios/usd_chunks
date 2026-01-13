@@ -1,9 +1,9 @@
 from usd_chunks import chunk
 
 
-def toggle_vis(notice, sender: chunk.ChunkParamBase):
+def toggle_vis(owner: chunk.ChunkParamBase, notice, sender):
     """Toggle visibility of the selected prim in the USD stage."""
-    api = sender.get_usdview_api()
+    api = owner.get_usdview_api()
     prim = api.prim
     if not prim.IsValid() or prim == api.stage.GetPseudoRoot():
         return
@@ -16,14 +16,14 @@ def toggle_vis(notice, sender: chunk.ChunkParamBase):
         visibility.Set("inherited")
 
 
-def clear_vis(notice, sender: chunk.ChunkParamBase):
+def clear_vis(owner: chunk.ChunkParamBase, notice, sender):
     """Clear the visibility set in the stage"""
-    stage = sender.get_stage()
+    stage = owner.get_stage()
     for prim in stage.Traverse():
         prim.GetAttribute("visibility").Clear()
 
 
-def main(api):
+def main():
     tglVis = chunk.Button("tgl_vis", "Toggle Visibility")
     tglVis.add_callback(toggle_vis)
 

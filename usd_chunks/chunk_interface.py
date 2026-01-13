@@ -1,3 +1,21 @@
+"""
+Defines all base classes which the chunks and associated classes should derive from. These classes should not
+be instatiated, instead use the implementations from usd_chunks.chunk.
+
+We use the attrs library behind the scenes to get dataclass-like behaviour for all the Chunk classes in order to
+easily create and manage attributes. The attributes and function definitions from attrs are inherited through the mro
+so we don't need to define __init__ for each and every subclass, we can instead just define some fields and trust attrs
+with building the right functions for us. Instead of using @attrs.define, we use AttributesMetaclass as metaclass for
+all chunk objects. AttributesMetaclass wraps the classes around attrs.define with the correct settings, removing the need
+of further interfering with attrs. AttributesMetaclass also add some custom validation and conversion behaviour.
+
+All chunk objects inherits from ChunkCommon, which declare some fields that all chunk objects should have; name, f.e.
+
+Every modifyable field are themselves instances of AttributeSender. As AttributeSender also inherits from ChunkNoticePropagator,
+we can propagate the attribute changes up the hierarchy in order to send notices and similar when any attribute is modified.
+
+"""
+
 import copy
 from typing import (
     Callable,
@@ -30,7 +48,7 @@ from . import chunk_notice, chunk_registry
 from .chunk import ChunkFlags
 
 import os
-from pxr import Tf, Usd, Usdviewq
+from pxr import Tf, Usd
 
 ################################
 # BASE CLASSES FOR UI ELEMENTS #
@@ -464,7 +482,7 @@ class AttributeMetadata(TypedDict, total=False):
 class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMetaclass):
     """This class is used as base for Chunk dataclasses. Sends modification notices and validates/converts attribute values
 
-    Any modifications to an attribute with metadata["send_mode"]==SendMode.SEND, will send a notice of type metadata["sender_alias"] when modified.
+    Any modifications to an attribute with `metadata["send_mode"]==SendMode.SEND`, will send a notice of type metadata["sender_alias"] when modified.
     This is achieved by using the AttributeSender class, which holds a handle to the owner (AttributesBase), name of the attribute it represents,
     and the alias for which notice to send. It also holds the old_value (the value of the attribute prior to the change) when available.
 
@@ -980,6 +998,15 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             self.send_removed(obj)
 
     def pop(self, key: ChunkHash):
+        """
+        Pop the object at key without calling send_remove
+
+        Args:
+            key (ChunkHash): The chunk object to remove
+
+        Returns:
+            ChunkCommon | None: The pop'ed object, or None if the object is unavailable
+        """
         obj = self.get_param(key, None)
         if obj:
             del self[obj]
@@ -993,9 +1020,13 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
 @attrs.frozen
 class HashVal:
+    """
+    A hash value used by Chunk objects. The actual hash is a created from a uuid4
+    """
+
     @staticmethod
     def generate_key() -> int:
-        """Generate a new uuid value used for hasing. Should only be used internally"""
+        """Generate a new uuid value used for hashing. Should only be used internally"""
         return uuid.uuid4().int  # type: ignore
 
     _uuid: int = attrs.field(
@@ -1022,6 +1053,18 @@ class HashVal:
 class ChunkCommon(AttributesBase):
     """Base class for all Chunk objects. Should not be instantiated directly, but inherited by concrete classes.
     Holds attributes that all chunk objects are excpected to support
+
+    Attributes:
+        name: The name of the chunk object
+        label: An optional label to display in the ui
+        tooltip: A description of the chunk object
+        icon: A path to an image which to use as icon
+        usd_attr: 
+        user_data: A dict of arbitrary data to store on the param
+        layout: Flags for setting the layout of the chunk object in the UI
+        state: The current state
+        flags: Some implementation specific flags. Unused by default
+
     """
 
     # Please do not mutate!
@@ -1139,30 +1182,72 @@ class ChunkCommon(AttributesBase):
         return True
 
     def get_label(self) -> str:
+        """
+        Get the label of this chunk object. If no label is set, returns the name
+
+        Returns:
+            str: The label
+        """
         return self.name if not self.label else self.label
 
-    def get_usd_attr(self) -> Usd.Attribute:
-        return self.usd_attr
-
-    def set_usd_attr(self, attr) -> None:
-        self.usd_attr = attr
-
     def set_flag(self, flag: IntFlag):
+        """
+        Enables a flag
+
+        Args:
+            flag (IntFlag): The flag to enable
+        """
         self.flags |= flag
 
     def unset_flag(self, flag: IntFlag):
+        """
+        Disable a flag
+
+        Args:
+            flag (IntFlag): The flag to disable
+        """
         self.flags &= ~flag
 
     def has_flag(self, flag: IntFlag) -> bool:
+        """
+        Check if a flag is enabled
+
+        Args:
+            flag (IntFlag): The flag to check
+
+        Returns:
+            bool: If the flag is enabled or not
+        """
         return flag in self.flags
 
     def set_state(self, state: ChunkFlags.State):
+        """
+        Set a state
+
+        Args:
+            state (ChunkFlags.State): The state to set
+        """
         self.state |= state
 
     def unset_state(self, state: ChunkFlags.State):
+        """
+        Unset a state
+
+        Args:
+            state (ChunkFlags.State): The state to unset
+        """
         self.state &= ~state
 
     def has_state(self, state: ChunkFlags.State) -> bool:
+        """
+        Check if state is set
+
+        Args:
+            state (ChunkFlags.State): The state to check
+
+        Returns:
+            bool: True if the state is set, otherwise False
+        """
         return state in self.state
 
     def __hash__(self) -> int:
@@ -1171,24 +1256,12 @@ class ChunkCommon(AttributesBase):
     def __eq__(self, value: object) -> bool:
         return self._hashable == value
 
-    @staticmethod
-    def get_usdview_api() -> Usdviewq.usdviewApi.UsdviewApi:
-        """Rettrieve the usdviewAPI handle of the current session
-
-        Returns:
-            Usdviewq.usdviewApi: The usdviewAPI instance
-        """
-        return chunk_registry.ChunkRegistry().usdview_api
-
     def get_stage(self) -> Usd.Stage | None:
         """Easy access to the current UsdStage.
-        Currently retrieves it from the usdviewAPI. Return None if the usdviewAPI is not available
-
         Returns:
-            Usd.Stage: The found stage, or None if not available
+            Usd.Stage: The stage held by the SceneSender of ChunkRegistry
         """
-        api = self.get_usdview_api()
-        return None if not api else api.stage  # type: ignore
+        return chunk_registry.ChunkRegistry().scene.get_stage()
 
     def request_delete(self):
         """Sends a notice for owners to delete this Chunk object. It's the owners responsibility to remove their reference to this object.
@@ -1207,12 +1280,20 @@ class ChunkCommon(AttributesBase):
         for i in self._connections:
             i.disconnect()
         self._connections.clear()
-
-        # Send the CHUNK_DELETED notice for this object
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
 
 class ChunkParamBase(Generic[ValueT], ChunkCommon):
+    """
+    Base class for valued parameters
+
+    Args:
+        layout (ChunkFlags.LayoutFlags): The layout of this parameter. Defaults to HORIZONTAL
+        default_value (Optional[ValueT]): The default value of this parameter
+        value (Optional[ValueT]): The value of this parameter
+        custom_widget (Optional[ChunkParamWidget]): An optional custom widget. get_type() must resolve to ParamType.CUSTOM in order to use this
+    """
+
     layout: ChunkFlags.LayoutFlags = attrs.field(default=ChunkFlags.LayoutFlags.HORIZONTAL)
 
     default_value: Optional[ValueT] = attrs.field(default=None)

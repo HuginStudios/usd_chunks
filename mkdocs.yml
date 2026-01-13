@@ -13,6 +13,7 @@ theme:
     - content.tabs.link
     - content.code.annotation
     - content.code.copy
+
   language: en
   palette:
     - scheme: default
@@ -43,16 +44,17 @@ plugins:
               - griffe_fieldz:
                   include_inherited: true
               - ./griffe_chunks.py:GriffleChunks:
-                  paths: [usd_chunks.chunk.Chunk]
+                  modules: [chunk, chunk_interface]
                   # paths: [testdoc.afile.AClass]
   
             merge_init_into_class: true
             docstring_style: "google"
             allow_inspection: true
             show_signature: true
-            show_signature_annotations: true
+            show_signature_annotations: false
             separate_signature: true
 
+            modernize_annotations: true
             show_symbol_type_heading: true
             show_symbol_type_toc: true
 
@@ -69,5 +71,3 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.snippets
   - pymdownx.superfences
-
-watch: [mkdocs.yml, README.md, testdoc]

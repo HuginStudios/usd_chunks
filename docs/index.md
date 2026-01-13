@@ -8,8 +8,8 @@ A simple example for creating a button with a callback
 
 ``` py
 
-def clickedButton(notice, sender):
-    print("Button clicked: ", sender.name)
+def clickedButton(owner, notice, sender):
+    print("Button clicked: ", owner.name)
 
 
 def main(api):

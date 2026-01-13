@@ -132,7 +132,7 @@ def scale(notice, sender):
         scale_attr.Set(scale_val)
 
 
-def main(api):
+def main():
     chunk_api = chunk.Chunk("UV Checker", category="Utility")
 
     spinbox = chunk.Spinbox(default_value=1)

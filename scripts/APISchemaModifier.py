@@ -79,27 +79,27 @@ def create_rel_param(attr_def, prop_name, prim):
     return param
 
 
-def param_changed(notice, sender: chunk.ChunkParamBase):
-    stage = sender.get_stage()
+def param_changed(owner: chunk.ChunkParamBase, notice, sender):
+    stage = owner.get_stage()
     if not stage:
         return
 
-    primpath = sender.user_data.get("primpath")
+    primpath = owner.user_data.get("primpath")
     if not primpath:
         return
 
-    attrname = sender.user_data.get("attrname")
+    attrname = owner.user_data.get("attrname")
 
     if not attrname:
-        relname = sender.user_data.get("relname")
+        relname = owner.user_data.get("relname")
         if not relname:
             return
-        
+
         prim = stage.GetPrimAtPath(primpath)
         attr = prim.GetRelationship(relname)
 
         old_val = attr.GetForwardedTargets()
-        new_val = sender.value
+        new_val = owner.value
 
         if new_val is None or new_val == old_val:
             return
@@ -114,7 +114,7 @@ def param_changed(notice, sender: chunk.ChunkParamBase):
     attr = prim.GetAttribute(attrname)
 
     old_val = attr.Get(0)
-    new_val = sender.value
+    new_val = owner.value
 
     if new_val == old_val:
         return
@@ -122,7 +122,7 @@ def param_changed(notice, sender: chunk.ChunkParamBase):
     attr.Set(new_val)
 
 
-def update_chunk(myChunk: chunk.Chunk, notice, sender: chunk_notice.UsdviewSender):
+def update_chunk(myChunk: chunk.Chunk, notice, sender: chunk_notice.SceneSender):
     stage = myChunk.get_stage()
 
     registry = Usd.SchemaRegistry()
@@ -165,13 +165,13 @@ def update_chunk(myChunk: chunk.Chunk, notice, sender: chunk_notice.UsdviewSende
             myChunk.add_param(group)
 
 
-def main(api, parent=None):
+def main():
     myChunk = chunk.Chunk("APISchema", category="Attributes")
 
     reg = chunk_registry.ChunkRegistry()
 
     conn = chunk_notice.NoticeConnection(
-        update_chunk, chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED, reg.usdview_sender, True, True, myChunk
+        update_chunk, chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED, reg.scene, True, True, myChunk
     )
     myChunk.add_connection(conn)
 

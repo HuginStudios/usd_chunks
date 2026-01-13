@@ -1,7 +1,7 @@
 from attr import Attribute
 from attrs import field
 
-from enum import IntFlag, auto
+from enum import IntFlag, IntEnum, auto
 from typing import Any, List, Optional, Sequence
 
 from . import chunk_notice
@@ -10,10 +10,10 @@ from . import chunk_notice
 class ChunkFlags:
     """Hold common flags for chunks"""
 
-    class LayoutFlags(IntFlag):
+    class LayoutFlags(IntEnum):
         """Flags for layout hinting parameters and groups"""
 
-        HORIZONTAL = 1
+        HORIZONTAL = 0
         VERTICAL = auto()
 
     class State(IntFlag):
@@ -115,7 +115,7 @@ from .chunk_interface import (  # noqa: E402
 
 
 class Chunk(ChunkBase):
-    """Chunk is the top level container, holding params and groups which in turn make up the chunk"""
+    """Chunk is the top level container, holding params and groups which in turn make up the final, displayed chunk"""
 
     # Override defaults
     flags: ChunkFlags.GroupFlags = field(
@@ -147,6 +147,15 @@ class Vector(ChunkVectorBase):
 
 
 class Slider(ChunkParamBase[int | float]):
+    """
+    A slider parameter holding a float or int value
+
+    Attributes:
+        min_value: A minimum value which the value should not subseed
+        max_value: A maximum value which the value should not exceed
+        is_int: Set whether this parameter sould be an integer
+    """
+
     min_value: Optional[float | int] = field(default=None)
     max_value: Optional[float | int] = field(default=None)
     is_int: bool = field(default=False)
@@ -160,6 +169,15 @@ class Slider(ChunkParamBase[int | float]):
 
 
 class Spinbox(ChunkParamBase[float | int]):
+    """
+    A spinbox parameter holding a float or int value
+
+    Attributes:
+        min_value: A minimum value which the value should not subseed
+        max_value: A maximum value which the value should not exceed
+        is_int: Set whether this parameter sould be an integer
+    """
+
     min_value: Optional[float | int] = field(default=None)
     max_value: Optional[float | int] = field(default=None)
     is_int: bool = field(default=False)
@@ -175,6 +193,13 @@ class Spinbox(ChunkParamBase[float | int]):
 
 
 class Menu(ChunkParamBase[str]):
+    """
+    A menu parameter with menu_items
+
+    Attributes:
+        menu_items: A list of items to display in the menu
+    """
+
     menu_items: Sequence[str] = field(factory=list)
 
     @classmethod
@@ -196,13 +221,20 @@ class Menu(ChunkParamBase[str]):
 
 
 class Button(ChunkParamBase):
+    """
+    A button parameter. Does not store any usable value. Should be used with callbacks only
+    """
+
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.BUTTON
 
 
 class Checkbox(ChunkParamBase[bool]):
-    # Type specific flags, can be used for setting custom flags.
+    """
+    A checkbox parameter. Stores a boolean value
+    """
+
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     @classmethod
@@ -211,12 +243,24 @@ class Checkbox(ChunkParamBase[bool]):
 
 
 class LineEdit(ChunkParamBase[str]):
+    """
+    An editable string parameter
+    """
+
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.LINEEDIT
 
 
 class FileBrowser(ChunkParamBase[str]):
+    """
+    A string parameter with the addition of a button for opening a file browser
+
+    Attributes:
+        extensions: A list of supported file extensions
+        pattern: A regex pattern for filtering file names. Defaults to "\\*"
+    """
+
     extensions: List[str] = field(factory=list)
     pattern: str = field(default="*")
 
@@ -235,18 +279,30 @@ class FileBrowser(ChunkParamBase[str]):
 
 
 class Label(ChunkParamBase[str]):
+    """
+    A label parameter. Should not be editable
+    """
+
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.LABEL
 
 
 class Separator(ChunkParamBase):
+    """
+    An organizatorial parameter. Does not store a value
+    """
+
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.SEPARATOR
 
 
 class Custom(ChunkParamBase):
+    """
+    A customizable parameter for holding custom widgets
+    """
+
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.CUSTOM

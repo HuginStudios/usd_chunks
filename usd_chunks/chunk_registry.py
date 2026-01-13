@@ -21,7 +21,7 @@ import traceback
 import sys
 
 from . import chunk
-from .chunk_notice import ChunkNoticeAlias, RegistrySingleton, UsdviewSender, send_notice
+from .chunk_notice import ChunkNoticeAlias, RegistrySingleton, SceneSender, send_notice
 
 from timeit import default_timer as timer
 
@@ -84,16 +84,13 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     registered_directories: Set[str] = set()
     registered_modules: Dict[str, ChunkModule] = {}
-    usdview_api: UsdviewModule.UsdviewApi
-    usdview_sender: UsdviewSender
+    scene: SceneSender
 
-    def initialize(self, usdview_api: UsdviewModule.UsdviewApi) -> None:
+    def initialize(self, scene_sender: SceneSender) -> None:
         """Initialize the FileReader with the working directory."""
-
-        self.usdview_api = usdview_api
-
+        
         # Holds the UsdviewSender object here to keep it alive
-        self.usdview_sender = UsdviewSender(self.usdview_api)
+        self.scene = scene_sender
 
         self.register_chunk_environ_directories()
         self.register_chunk_modules(self.registered_directories)
@@ -193,7 +190,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             return
 
         try:
-            mod.run("main", self.usdview_api)
+            mod.run("main")
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later§
             print(f"Failed to run module {mod.module_name}:", traceback.format_exc())
