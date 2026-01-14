@@ -1,7 +1,7 @@
-site_name: My Docs
-site_url: https://sitename.example
+site_name: USD Chunks
 theme: 
   name: material
+  logo: assets/icon.png
   features:
     - navigation.tabs
     - navigation.top
@@ -51,7 +51,7 @@ plugins:
               - griffe_fieldz:
                   include_inherited: true
               - ./griffe_chunks.py:GriffleChunks:
-                  modules: [chunk, chunk_interface]
+                  modules: [chunk, chunk_core]
   
             merge_init_into_class: true
             docstring_style: "google"

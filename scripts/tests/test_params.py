@@ -1,24 +1,6 @@
-from usd_chunks import chunk, chunk_interface, chunk_qt, chunk_notice, chunk_registry
-
-from functools import wraps
+from usd_chunks import chunk, chunk_core, chunk_notice
 
 
-def nice_print(func):
-    @wraps(func)
-    def _wrapper(*args, **kwargs):
-        begin = f"{'-' * 10}* {func.__qualname__} *{'-' * 10}"
-        end = "-" * len(begin)
-
-        print(begin)
-        res = func(*args, **kwargs)
-        print(end, "\n")
-
-        return res
-
-    return _wrapper
-
-
-@nice_print
 def chunkChanged(owner, notice, sender):
     # This works just as groupChanged, but is registered on a Chunk, so will only be sent on Chunk changes
     def get_chunk_str(s):
@@ -31,10 +13,10 @@ def chunkChanged(owner, notice, sender):
         if isinstance(s, chunk.Vector):
             return "Vector"
 
-        if isinstance(s, chunk_interface.ChunkParamBase):
+        if isinstance(s, chunk_core.ChunkParamBase):
             return s.evaluate_type().name
 
-        if isinstance(s, chunk_interface.AttributeSender):
+        if isinstance(s, chunk_core.AttributeSender):
             return "Attribute"
 
     msg = f"Chunk Changed: {owner.name} -> {notice.__class__.__name__}"
@@ -45,20 +27,24 @@ def chunkChanged(owner, notice, sender):
     for n, s in owner.iter_changes():
         msg += "\n" + " " * indent + f"{get_chunk_str(s)}: {s.name} -> {n.__class__.__name__}"
 
-        if isinstance(s, chunk_interface.AttributeSender):
+        if isinstance(s, chunk_core.AttributeSender):
             msg += f": [New Value] = {s.value}"
         indent += step
-    print(msg)
+
+    expected = """Chunk Changed: TestParams -> ChunkChangeNotice
+    FLOAT_SLIDER: newName -> ParamChangeNotice
+        Attribute: name -> AttributeChangeNotice: [New Value] = newName"""
+
+    if msg != expected:
+        raise ValueError("Something went wrong")
 
 
-@nice_print
 def paramChanged(chunkItem: chunk.ChunkParamBase, notice, sender):
-    print(chunkItem.name)
+    pass
 
 
-@nice_print
 def request_delete(chunkItem: chunk.ChunkParamBase, notice, sender):
-    print("TRY DELETE", sender.name)
+    pass
 
 
 def main():
@@ -75,7 +61,12 @@ def main():
     ]
 
     import inspect
-    print(inspect.signature(chunk.Menu.__init__))
+
+    expected = "<Signature (self, name='', label='', tooltip='', icon='', usd_attr=None, user_data=NOTHING, layout=<LayoutFlags.HORIZONTAL: 0>, state=<State.NONE: 0>, flags=<IntFlag.0: 0>, default_value=None, custom_widget=None, menu_items=NOTHING) -> None>"
+    signature = inspect.signature(chunk.Menu.__init__).__repr__()
+
+    if signature != expected:
+        raise ValueError("__init__ signature failed", signature)
 
     m = chunk.Menu(
         "name",
@@ -114,14 +105,11 @@ def main():
     myChunk.add_callback(chunkChanged)
     myChunk.add_callback(request_delete, None, True, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
-    myChunk.print_hierarchy()
+    # myChunk.print_hierarchy()
 
     if s := myChunk.get_param("Slider"):
         s.name = "newName"
 
-    if s := myChunk.get_param("newName"):
-        print("FOUND NEWNAME", s.name)
-    else:
-        print("NOT FOUND")
-
+    if not myChunk.get_param("newName"):
+        raise NameError("Failed to rename")
     return myChunk

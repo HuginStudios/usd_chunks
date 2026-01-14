@@ -2,10 +2,10 @@
     "Plugins": [
         {
             "Type": "python",
-            "Name": "usdview_chunks",
+            "Name": "plugins.chunk_usdview",
             "Info": {
                 "Types": {
-                    "usdview_chunks.ChunksPluginContainer": {
+                    "plugins.chunk_usdview.ChunksPluginContainer": {
                         "bases": ["pxr.Usdviewq.plugin.PluginContainer"],
                         "displayName": "Usd Chunks"
                     }

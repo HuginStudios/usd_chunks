@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_interface, chunk_registry, chunk_notice
+from usd_chunks import chunk, chunk_core, chunk_registry, chunk_notice
 
 from pxr import Sdf, Usd, Tf
 

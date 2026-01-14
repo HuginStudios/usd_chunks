@@ -1,6 +1,5 @@
 * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> usd_chunks](index.md)
     * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk](chunk.md)
-    * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk_interface](chunk_interface.md)
+    * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk_core](chunk_core.md)
     * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk_notice](chunk_notice.md)
-    * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk_qt](chunk_qt.md)
     * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk_registry](chunk_registry.md)

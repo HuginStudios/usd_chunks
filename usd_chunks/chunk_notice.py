@@ -39,7 +39,7 @@ class ChunkNoticeAlias(IntEnum):
     Any supported notice should be reflected with an alias in this enum class
 
     Attributes:
-        NONE
+        NONE : A default, empty alias
         PARAM_CHANGED : Sent when a param changes
         GROUP_CHANGED : Sent when a group changes. This includes nested groups and param changes
         CHUNK_CHANGED : Similar to GROUP_CHANGED but only for chunks
@@ -109,6 +109,24 @@ class RegistrySingleton(type):
         return cls._instances[cls]
 
 
+class ChunkNotice(Tf.Notice):
+    """
+    A Chunk notice is a wrapper around TfNotice but with some additional data. This interface is meant for recievers of the notice to easily
+    find what has been changed. It also enables globally registered listeners to know what data was changed.
+
+    Attributes:
+        data(ChunkNoticeData): The data to send with the notice. This may vary between
+        alias(ChunkNoticeAlias): The alias assiciated with this notice. This may vary between
+    """
+
+    data: Any = None
+    alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE
+
+    def __init__(self, data: Any = None):
+        super().__init__()
+        self.data = data
+
+
 class ChunkNoticeRegistry(metaclass=RegistrySingleton):
     """
     Register a new notice. Easiest way to register a new notice is to wrap a class declaration with @chunk_notice, as:
@@ -135,6 +153,8 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
     def register(cls, alias: ChunkNoticeAlias, notice_class):
         if alias not in cls.registered:
             notice_class.alias = alias
+            if not hasattr(notice_class, "data"):
+                notice_class.data = None
             cls.registered[alias.value] = notice_class
 
 
@@ -146,31 +166,13 @@ def chunk_notice(alias: ChunkNoticeAlias):
         alias (ChunkNoticeAlias): The alias which maps to the new Tf.Notice class
     """
 
-    def _wrapper(cls: Type["Tf.Notice"]):
+    def _wrapper(cls: Type[ChunkNotice]):
         ChunkNoticeRegistry().register(alias, cls)
         Tf.Type.Define(cls)
 
         return cls
 
     return _wrapper
-
-
-class ChunkNotice(Tf.Notice):
-    """
-    A Chunk notice is a wrapper around TfNotice but with some additional data. This interface is meant for recievers of the notice to easily
-    find what has been changed. It also enables globally registered listeners to know what data was changed.
-
-    Args:
-        data(ChunkNoticeData): The data to send with the notice. This may vary between
-        alias(ChunkNoticeAlias): The alias assiciated with this notice. This may vary between
-    """
-
-    data: Any = None
-    alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE
-
-    def __init__(self, data: Any = None):
-        super().__init__()
-        self.data = data
 
 
 ### Chunk / Group / Param changed notices
@@ -261,7 +263,7 @@ def get_notice(alias: ChunkNoticeAlias) -> Type[Tf.Notice]:
     """Return a class of type Tf.Notice for the specified ChunkNoticeAlias
 
     Args:
-        notice_type (ChunkNoticeAlias): The ChunkNoticeAlias enum to get a Tf.Notice class from
+        alias (ChunkNoticeAlias): The ChunkNoticeAlias enum to get a Tf.Notice class from
 
     Returns:
         Tf.Notice | None: None if the mapping to notice_type does not exist. Else, a Tf.Notice class representing the ChunkNoticeAlias

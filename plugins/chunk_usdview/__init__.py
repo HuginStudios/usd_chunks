@@ -7,7 +7,8 @@ from pxr import Tf
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 
-from usd_chunks import chunk_registry, chunk_qt, chunk_notice
+from usd_chunks import chunk_registry, chunk_notice
+from plugins import chunk_qt
 
 
 class UsdviewScene(chunk_notice.SceneSender):
@@ -44,7 +45,6 @@ def launch_chunks(usdviewApi) -> None:
     """
     # The order of these does not matter. We can initialize the QT widgets before the ChunkRegistry since
     # the QT widget subscribes to the CHUNK_LOADED notice, and will add chunks when that notice is recieved.
-
     chunk_qt.build_chunk_docker(usdviewApi.qMainWindow)
     chunk_registry.ChunkRegistry().initialize(UsdviewScene(usdviewApi))
 

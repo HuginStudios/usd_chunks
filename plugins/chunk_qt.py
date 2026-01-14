@@ -1,12 +1,11 @@
 from PySide6 import QtWidgets, QtCore, QtGui
 from typing import Any, Dict, Optional, List
 
-
 from pxr import Tf
 
-from . import chunk, chunk_notice, chunk_registry
-from .chunk_interface import ChunkFlags, ChunkParamWidget
-from usd_chunks import chunk_interface
+from usd_chunks import chunk, chunk_notice, chunk_registry
+from usd_chunks.chunk_core import ChunkFlags, ChunkParamWidget
+from usd_chunks import chunk_core
 
 
 class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QWidget):
@@ -285,7 +284,7 @@ class ChunkSeparatorWidget(ChunkParamWidget, QtWidgets.QFrame):
         self.setup_chunk_widget()
 
 
-class ChunkQTWidgetFactory(chunk_interface.ChunkWidgetFactoryBase):
+class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
     widget_map: Dict[ChunkFlags.ParamType, type[QtWidgets.QWidget]] = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
@@ -301,14 +300,14 @@ class ChunkQTWidgetFactory(chunk_interface.ChunkWidgetFactoryBase):
     }
 
     def create_widget(self, param: chunk.ChunkParamBase) -> ChunkParamWidget | None:
-        """Create a Qt widget based on the ChunkParam object. the info.get_type() should determine the type of Qt Widget to create
+        """Create a Qt widget based on the ChunkParam object. The param.get_type() should determine the type of Qt Widget to create
 
         Args:
-            info (ChunkParam): The information about the parameter. The widget will update info.value when widget value is changed
+            param (chunk.ChunkParamBase): The parameter. The widget will update param.value when widget value is changed
 
         Returns:
             QtWidgets.QWidget: The QtWidget created
-            # None: If failed to create a widget
+            None: If failed to create a widget
         """
         key = param.evaluate_type()
         widget_class = self.get_map().get(key, None)
@@ -347,7 +346,7 @@ class ContainerWidget(QtWidgets.QWidget):
 
     def __init__(
         self,
-        group: chunk_interface.ChunkContainerBase,
+        group: chunk_core.ChunkContainerBase,
         parent=None,
     ):
         super().__init__(parent)
@@ -383,7 +382,7 @@ class ContainerWidget(QtWidgets.QWidget):
         )
 
         # Associate ChunkParamGroup objects with Qt Layouts
-        self.param_groups: dict[chunk_interface.ChunkContainerBase, ContainerWidget] = {}
+        self.param_groups: dict[chunk_core.ChunkContainerBase, ContainerWidget] = {}
 
         # # Container for all widgets in this chunk. Dict will map between ChunkParam -> [QtWidgets.QWidget,]
         # # for each widget created from the same ChunkParam instance
@@ -391,9 +390,9 @@ class ContainerWidget(QtWidgets.QWidget):
 
         # Factory for creating the widgets
         if self.group.widget_factory:
-            self.factory: chunk_interface.ChunkWidgetFactoryBase = self.group.widget_factory
+            self.factory: chunk_core.ChunkWidgetFactoryBase = self.group.widget_factory
         else:
-            self.factory: chunk_interface.ChunkWidgetFactoryBase = ChunkQTWidgetFactory()
+            self.factory: chunk_core.ChunkWidgetFactoryBase = ChunkQTWidgetFactory()
 
         self.build_collapsable()
         self.build_param_widgets(self.group)
@@ -420,12 +419,12 @@ class ContainerWidget(QtWidgets.QWidget):
         self.setParent(None)
         self.deleteLater()
 
-    def remove_param(self, param: chunk_interface.ChunkParamBase):
+    def remove_param(self, param: chunk_core.ChunkParamBase):
         if param not in self.param_widgets:
             return
         wid = None
 
-        if isinstance(param, chunk_interface.ChunkParamBase):
+        if isinstance(param, chunk_core.ChunkParamBase):
             wid = self.param_widgets.get(param)
 
         if not wid:
@@ -434,7 +433,7 @@ class ContainerWidget(QtWidgets.QWidget):
         self.content_layout.removeRow(wid)
         del self.param_widgets[param]
 
-    def param_added_callback(self, notice, sender: chunk_interface.ChunkContainerBase):
+    def param_added_callback(self, notice, sender: chunk_core.ChunkContainerBase):
         h = sender.children.last_added
         if not h:
             return
@@ -444,7 +443,7 @@ class ContainerWidget(QtWidgets.QWidget):
 
         self.add_param(param)
 
-    def param_removed_callback(self, notice, sender: chunk_interface.ChunkContainerBase):
+    def param_removed_callback(self, notice, sender: chunk_core.ChunkContainerBase):
         h = sender.children.last_removed
         if not h:
             return
@@ -479,7 +478,7 @@ class ContainerWidget(QtWidgets.QWidget):
     def is_collapsed(self) -> bool:
         val = self.group.has_state(ChunkFlags.State.COLLAPSED)
         parent = self.group.get_owner()
-        if parent and isinstance(parent, chunk_interface.ChunkContainerBase):
+        if parent and isinstance(parent, chunk_core.ChunkContainerBase):
             val |= parent.has_state(ChunkFlags.State.COLLAPSED)
         return val
 
@@ -570,7 +569,7 @@ class ContainerWidget(QtWidgets.QWidget):
         else:
             self.content_layout.addRow(label, widget)
 
-    def update_label(self, param: chunk_interface.ChunkCommon, notice, sender: chunk_interface.AttributeSender):
+    def update_label(self, param: chunk_core.ChunkCommon, notice, sender: chunk_core.AttributeSender):
         """
         When a param name, label or flag is changed, this will correct the label in the FormLayout.
         If LABELED was unset, then remove the label and set the widget role to SpanningRole
@@ -578,9 +577,9 @@ class ContainerWidget(QtWidgets.QWidget):
         otherwise, just update the label text if name or label changed
 
         Args:
-            param (chunk_interface.ChunkCommon): The param that was changed
+            param (chunk_core.ChunkCommon): The param that was changed
             notice (Tf.Notice): The notice that was sent
-            sender (chunk_interface.AttributeSender): The attribute that changed
+            sender (chunk_core.AttributeSender): The attribute that changed
         """
         labeled = param.has_flag(ChunkFlags.ParamFlags.LABELED)
 
@@ -607,15 +606,15 @@ class ContainerWidget(QtWidgets.QWidget):
                     )
                     self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, w)
 
-    def add_param_widget(self, info: chunk.ChunkParamBase, group: Optional[chunk_interface.ChunkContainerBase] = None):
+    def add_param_widget(self, param: chunk.ChunkParamBase, group: Optional[chunk_core.ChunkContainerBase] = None):
         """Add a ChunkParamWidget from a ChunkParam object. If a ChunkParamGroup is specified, the created widget will be added to the group layout
 
         Args:
-            info (chunk.ChunkParam): The ChunkParam to represent as a widget
+            param (chunk.ChunkParam): The ChunkParam to represent as a widget
             group (chunk.ChunkParamGroup, optional): A group that contains the param. If specified, will add the param widget to the group layout. Defaults to None.
         """
 
-        t = info.evaluate_type()
+        t = param.evaluate_type()
         if t == ChunkFlags.ParamType.NONE:
             return
 
@@ -623,17 +622,17 @@ class ContainerWidget(QtWidgets.QWidget):
         # Custom widget is created and managed externally
         if (
             t == ChunkFlags.ParamType.CUSTOM
-            and info.custom_widget
-            and isinstance(info.custom_widget, QtWidgets.QWidget)
+            and param.custom_widget
+            and isinstance(param.custom_widget, QtWidgets.QWidget)
         ):
-            widget = info.custom_widget
+            widget = param.custom_widget
         else:
             if not self.factory.has_mapping(t):
-                print("Missing mapping in factory for creating widget", info.name)
+                print("Missing mapping in factory for creating widget", param.name)
                 return
 
-            # Create a widget from the factory based on the info.get_type()
-            widget = self.factory.create_widget(info)
+            # Create a widget from the factory based on the param.get_type()
+            widget = self.factory.create_widget(param)
 
         if not widget:
             return
@@ -643,30 +642,27 @@ class ContainerWidget(QtWidgets.QWidget):
                 chunk_notice.NoticeConnection(
                     self.update_label,
                     chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-                    info.get_attribute_sender("name"),
+                    param.get_attribute_sender("name"),
                     send_owner=True,
-                    owner=info,
+                    owner=param,
                 ),
                 chunk_notice.NoticeConnection(
                     self.update_label,
                     chunk_notice.ChunkNoticeAlias.GROUP_CHANGED,
-                    info.get_attribute_sender("name"),
-                    send_owner=True,
-                    owner=info,
+                    param.get_attribute_sender("name"),
+                    owner=param,
                 ),
                 chunk_notice.NoticeConnection(
                     self.update_label,
                     chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-                    info.get_attribute_sender("label"),
-                    send_owner=True,
-                    owner=info,
+                    param.get_attribute_sender("label"),
+                    owner=param,
                 ),
                 chunk_notice.NoticeConnection(
                     self.update_label,
                     chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED,
-                    info.get_attribute_sender("flags"),
-                    send_owner=True,
-                    owner=info,
+                    param.get_attribute_sender("flags"),
+                    owner=param,
                 ),
             ]
         )
@@ -678,18 +674,18 @@ class ContainerWidget(QtWidgets.QWidget):
         else:
             layout = self
 
-        self.param_widgets[info] = widget
+        self.param_widgets[param] = widget
 
-        if info.has_flag(ChunkFlags.ParamFlags.LABELED):
-            layout.addWidget(widget, FormLabelWidget(info.get_label(), widget))
+        if param.has_flag(ChunkFlags.ParamFlags.LABELED):
+            layout.addWidget(widget, FormLabelWidget(param.get_label(), widget))
         else:
             layout.addWidget(widget)
 
-    def add_group_layout(self, group: chunk_interface.ChunkContainerBase):
+    def add_group_layout(self, group: chunk_core.ChunkContainerBase):
         """Adds a group of parameters to a shared layout
 
         Args:
-            info (ChunkGroupInfo): The group containing the parameters
+            group (chunk_core.ChunkContainerBase): The group containing the parameters
         """
 
         container = self.param_groups.get(group, None)
@@ -700,27 +696,26 @@ class ContainerWidget(QtWidgets.QWidget):
 
         return container
 
-    def build_param_widgets(self, info: chunk_interface.ChunkContainerBase):
-        """Build params from a ChunkInfo or ChunkGroupInfo. Will generate the parameter widgets and display them in the Chunk
+    def build_param_widgets(self, group: chunk_core.ChunkContainerBase):
+        """Build params from a ChunkContainerBase object. Will create Qt widgets for the parameters on the group.
 
         Args:
-            info (ChunkGroupInfo | ChunkInfo): The info class for the Chunk or ChunkGroup. Will create parameters from each ChunkParamInfo in the parameters member list
-            layout (QtWidgets.QLayout, optional): A layout to add the parameters to. Usually not needed but used by recursion when adding groups. Defaults to None.
+            param (chunk_core.ChunkContainerBase): The Chunk or ChunkGroup which to create params from
         """
-        for param in info.get_my_params():
+        for param in group.get_my_params():
             self.add_param(param)
 
-    def add_param(self, param: chunk_interface.ChunkCommon):
-        if isinstance(param, chunk_interface.ChunkContainerBase):
+    def add_param(self, param: chunk_core.ChunkCommon):
+        if isinstance(param, chunk_core.ChunkContainerBase):
             self.add_group_layout(param)
-        elif isinstance(param, chunk_interface.ChunkParamBase):
+        elif isinstance(param, chunk_core.ChunkParamBase):
             self.add_param_widget(param)
 
     def has_param_widget(self, param: chunk.ChunkParamBase | str) -> bool:
         """Check to see if param exists in this Chunk widget
 
         Args:
-            param (chunk.ChunkParam | str): The parameter to look for. Either name of param, or ChunkParam object
+            param (chunk.ChunkParamBase | str): The parameter to look for. Either name of param, or ChunkParam object
 
         Returns:
             bool: True if found, otherwise False
@@ -731,7 +726,7 @@ class ContainerWidget(QtWidgets.QWidget):
         """Get the ChunkParamWidget for a ChunkParam. If a string is passed as param, then look for the associated name
 
         Args:
-            param (ChunkParam | str): The name of the param, or ChunkParam object, to find
+            param (ChunkChunkParamBaseParam | str): The name of the param, or ChunkParam object, to find
 
         Returns:
             ChunkParamWidget | None: The found ChunkParamWidget if found, otherwise None
@@ -747,7 +742,7 @@ class ContainerWidget(QtWidgets.QWidget):
         """Check to see if group exists in this Chunk widget
 
         Args:
-            group (chunk.ChunkParamGroup | str): The group to look for. Either name of group, or ChunkParamGroup object
+            group (chunk.ChunkGroupBase | str): The group to look for. Either name of group, or ChunkParamGroup object
 
         Returns:
             bool: True if found, otherwise False
@@ -758,7 +753,7 @@ class ContainerWidget(QtWidgets.QWidget):
         """Get the QLayout object for a ChunkParamGroup. If a string is passed as param, then look for the associated name
 
         Args:
-            group (ChunkParamGroup | str): The name of the group, or ChunkParamGroup object, to find
+            group (ChunkGroupBase | str): The name of the group, or ChunkParamGroup object, to find
 
         Returns:
             QLayout | None: The found QLayout associated with group. If not found, returns None

@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_interface
+from usd_chunks import chunk, chunk_core
 
 
 def addCube(owner, notice, sender):

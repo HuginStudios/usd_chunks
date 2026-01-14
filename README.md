@@ -14,7 +14,7 @@ With this chunk framework you can copy and share chunks very easily by dropping 
 ## Setup
 To set this up you need to set two environment variables after having cloned or downloaded this repo. The environment variables to be set are:
 
-PXR_PLUGINPATH_NAME -  Add this repo location path to this envar.
+PXR_PLUGINPATH_NAME -  Add the path to the usd plugin. for UsdView, this is **plugins/chunk_usdview**.
 
 PYTHONPATH - Add this repo location path to this envar.
 
@@ -53,7 +53,8 @@ def main(api, parent=None):
 ## Build documentation
 In order to build the documentation, your environment must be set to run the usd_chunks modules.
 PXR_PLUGINPATH_NAME and PYTHONPATH mut be properly initialized as we do some dynamic code checking using
-griffe. When all is setup and the virtual env is active, calling `mkdocs serve` should generate the docs 
+griffe. When all is setup and the virtual env is active, make sure to install the requirements in docs/requirements.txt
+`pip install -r docs/requirements.txt`. Now calling `mkdocs serve` should generate the docs 
 and be viewable in the browser.
 
 Run docs/gen_ref_nav.py to generate the docs/reference markdown files

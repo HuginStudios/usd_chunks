@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_interface, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_core, chunk_notice, chunk_registry
 
 from functools import wraps
 
@@ -31,10 +31,10 @@ def chunkChanged(owner, notice, sender):
         if isinstance(s, chunk.Vector):
             return "Vector"
 
-        if isinstance(s, chunk_interface.ChunkParamBase):
+        if isinstance(s, chunk_core.ChunkParamBase):
             return s.evaluate_type().name
 
-        if isinstance(s, chunk_interface.AttributeSender):
+        if isinstance(s, chunk_core.AttributeSender):
             return "Attribute"
 
     msg = f"Chunk Changed: {sender.name} -> {notice.__class__.__name__}"
@@ -45,7 +45,7 @@ def chunkChanged(owner, notice, sender):
     for n, s in sender.iter_changes():
         msg += "\n" + " " * indent + f"{get_chunk_str(s)}: {s.name} -> {n.__class__.__name__}"
 
-        if isinstance(s, chunk_interface.AttributeSender):
+        if isinstance(s, chunk_core.AttributeSender):
             msg += f": [New Value] = {s.value}"
         indent += step
     print(msg)
@@ -92,7 +92,6 @@ def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: 
         return
 
     owner.value = str(path)
-
 
 def main():
     # A simple checkbox
@@ -164,7 +163,7 @@ def main():
     # chunk was loaded. It also stores the SceneSender, which sends UI related notices such as PRIM_SELECTION_CHANGED and PROP_SELECTION_CHANGED
     #   reg = chunk_registry.ChunkRegistry()
     # Accessing the scene in this function may result in some errors as the stage is not properly loaded at the time this function
-    # runs. So access in to the reg.scene should be reserved to callbacks 
+    # runs. So access in to the reg.scene should be reserved to callbacks
 
     # A label - Not directly modifyable in the UI
     label = chunk.Label("label")
@@ -196,13 +195,13 @@ def main():
     sep = chunk.Separator(layout=chunk.ChunkFlags.LayoutFlags.HORIZONTAL)
 
     # Create the actual chunk - this is in practice just a chunk.Group with some addiditional behaviour
-    myChunk = chunk.Chunk("Hello World", category="Examples")
+    myChunk = chunk.Chunk("Hello World", category="Examples", state=chunk.ChunkFlags.State.LOADED)
     myChunk.add_params([label, checkbox, button, sep, textEdit, menu, fileBrowse, sliderGroup, sliderVec])
 
     # Add a callback. With no arguments, the callback will be called whenever any of tthe children on the chunk is changed
     myChunk.add_callback(chunkChanged)
 
     # Prints the hierarchy of the chunk. Useful for debugging chunks
-    myChunk.print_hierarchy()
+    # myChunk.print_hierarchy()
 
     return myChunk

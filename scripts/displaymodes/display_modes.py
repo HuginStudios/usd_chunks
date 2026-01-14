@@ -1,6 +1,6 @@
 import os
 from usd_chunks import chunk, chunk_registry
-from plugins import usdview_chunks
+from plugins import chunk_usdview
 
 def set_shademode(owner: chunk.ChunkParamBase, notice, sender: chunk.Button):
     shade_action = owner.user_data["action"]
@@ -14,7 +14,7 @@ def main():
     chunk_api = chunk.Chunk("Display Modes", category="Utility")
     scene = chunk_registry.ChunkRegistry().scene
 
-    if not isinstance(scene, usdview_chunks.UsdviewScene):
+    if not isinstance(scene, chunk_usdview.UsdviewScene):
         return
 
 

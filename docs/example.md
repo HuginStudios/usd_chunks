@@ -3,7 +3,7 @@ adding our callbacks.
 
 
 ``` py linenums="1"
-from usd_chunks import chunk, chunk_interface, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_core, chunk_notice, chunk_registry
 from functools import wraps
 
 
@@ -32,10 +32,10 @@ def chunkChanged(owner, notice, sender):
         if isinstance(s, chunk.Vector):
             return "Vector"
 
-        if isinstance(s, chunk_interface.ChunkParamBase):
+        if isinstance(s, chunk_core.ChunkParamBase):
             return s.evaluate_type().name
 
-        if isinstance(s, chunk_interface.AttributeSender):
+        if isinstance(s, chunk_core.AttributeSender):
             return "Attribute"
 
     msg = f"Chunk Changed: {sender.name} -> {notice.__class__.__name__}"
@@ -46,7 +46,7 @@ def chunkChanged(owner, notice, sender):
     for n, s in sender.iter_changes():
         msg += "\n" + " " * indent + f"{get_chunk_str(s)}: {s.name} -> {n.__class__.__name__}"
 
-        if isinstance(s, chunk_interface.AttributeSender):
+        if isinstance(s, chunk_core.AttributeSender):
             msg += f": [New Value] = {s.value}"
         indent += step
     print(msg)

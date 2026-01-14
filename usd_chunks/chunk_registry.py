@@ -15,14 +15,13 @@ from typing import Iterable, Optional, Set, Any, Dict
 from importlib import util
 from dataclasses import dataclass
 
-# import inspect
 import glob
 import os
 import traceback
 import sys
 
-from . import chunk
-from .chunk_notice import ChunkNoticeAlias, RegistrySingleton, SceneSender, send_notice
+from usd_chunks import chunk
+from usd_chunks.chunk_notice import ChunkNoticeAlias, RegistrySingleton, SceneSender, send_notice
 
 from timeit import default_timer as timer
 
@@ -32,7 +31,7 @@ class ChunkModule:
     """
     A dataclass for storing information about chunk modules. Used by ChunkRegistry
 
-    Args:
+    Attributes:
         module (ModuleType | None): The loaded chunk module
         loaded (bool): If the module loaded successfully
         module_name (str): The name of the module
@@ -62,7 +61,6 @@ class ChunkModule:
         Returns:
             None: If failed to call the function
             chunk.Chunk: If the main function returned a Chunk object
-            chunk_qt.ChunkWidget: If the function returned a custom widget
         """
 
         func = getattr(self.module, func_name)
@@ -80,6 +78,10 @@ class ChunkModule:
             retval.check_hierarchy()
         except Exception as e:
             print(e)
+            self.loaded = False
+            return
+
+        if not retval.has_state(chunk.ChunkFlags.State.LOADED):
             self.loaded = False
             return
 
@@ -162,11 +164,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         """Read and register Python files in the working directory.
 
         Args:
-            working_dir: The directories containing the Python chunk files to register.
-
-        Returns:
-            List[ModuleInfo]: A list of ModuleInfo objects containing
-                the loaded modules and their file names.
+            working_dirs (Iterable[str]): The directories containing the Python chunk files to register.
         """
 
         new_modules: Dict[str, ChunkModule] = {}
@@ -267,7 +265,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         should be /full/path/to/module.py
 
         Args:
-            name (str): The name of the module to find
+            module_name (str): The name of the module to find
 
         Returns:
             ChunkModule | None: A found ChunkModule object with name, or None if not found

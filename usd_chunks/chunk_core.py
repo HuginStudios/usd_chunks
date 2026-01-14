@@ -20,6 +20,7 @@ import copy
 from typing import (
     Callable,
     List,
+    Set,
     Any,
     Dict,
     Protocol,
@@ -44,8 +45,8 @@ from enum import IntEnum, IntFlag
 import re
 import uuid
 
-from . import chunk_notice, chunk_registry
-from .chunk import ChunkFlags
+from usd_chunks import chunk_notice, chunk_registry
+from usd_chunks.chunk import ChunkFlags
 
 import os
 from pxr import Tf, Usd
@@ -157,12 +158,12 @@ class ChunkParamWidget(Generic[ParamT]):
         self.set_param_layout(self.param.layout)
 
     @abstractmethod
-    def get_value(self):
+    def get_value(self) -> Any:
         """
         Need to be implemented in a subcclass and return the value of the widget.
 
         Returns:
-            _type_: The value of the widget
+            Any: The value of the widget
         """
         return None
 
@@ -997,7 +998,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
             self.send_removed(obj)
 
-    def pop(self, key: ChunkHash):
+    def pop(self, key: ChunkHash) -> Optional["ChunkCommon"]:
         """
         Pop the object at key without calling send_remove
 
@@ -1059,7 +1060,7 @@ class ChunkCommon(AttributesBase):
         label: An optional label to display in the ui
         tooltip: A description of the chunk object
         icon: A path to an image which to use as icon
-        usd_attr: 
+        usd_attr:
         user_data: A dict of arbitrary data to store on the param
         layout: Flags for setting the layout of the chunk object in the UI
         state: The current state
@@ -1287,7 +1288,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon):
     """
     Base class for valued parameters
 
-    Args:
+    Attributes:
         layout (ChunkFlags.LayoutFlags): The layout of this parameter. Defaults to HORIZONTAL
         default_value (Optional[ValueT]): The default value of this parameter
         value (Optional[ValueT]): The value of this parameter
@@ -1615,13 +1616,13 @@ class ChunkGroupBase(ChunkContainerBase):
         """
         return set(self.children.get_names()) | set([self.name])
 
-    def get_valid_child_name(self, param: ChunkCommon, reserved_names: set[str]) -> str:
+    def get_valid_child_name(self, param: ChunkCommon, reserved_names: Set[str]) -> str:
         """Get a unique name for param or group to be added on this group
 
         Args:
             param (ChunkParam): a name that might not be unique
-            reserved_names (List[str]): A list of reserved names. This paramater can't have a name which exist in this list. The new, valid name will be appended to this list
-            to nest a group inside an already created group
+            reserved_names (Set[str]): A list of reserved names. This paramater can't have a name 
+                which exist in this list. The new, valid name will be appended to this list to nest a group inside an already created group
 
         Returns:
             str: a unique name

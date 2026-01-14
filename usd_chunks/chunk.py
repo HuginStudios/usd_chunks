@@ -5,7 +5,7 @@ classes can be used by themselves, but they also describe common
 UI related information, making them easy to implement in any UI
 framework.
 
-As all chunk classes inherit from chunk_interface.AttributesMetaclass,
+As all chunk classes inherit from chunk_core.AttributesMetaclass,
 all these classes are in fact attrs classes (dataclass). So creating a new
 Chunk Parameter class, one must only declare the class and inherit
 from ChunkParamBase or related base class. As the class will, behind
@@ -39,6 +39,7 @@ a simple chunk with a button is as simple as:
 ``` py
 from usd_chunks import chunk
 
+
 def main():
     myChunk = chunk.Chunk("myChunk", category="example")
     btnParam = chunk.Button("myButton")
@@ -47,55 +48,100 @@ def main():
     return myChunk
 ```
 
+See [example](../example.md) for a more extensive example.
 
 """
 
 from attr import Attribute
 from attrs import field
 
-from enum import IntFlag, IntEnum, auto
+from enum import IntFlag, auto
 from typing import Any, List, Optional, Sequence
-
-from . import chunk_notice
+from usd_chunks import chunk_notice
 
 
 class ChunkFlags:
     """Hold common flags for chunks"""
 
-    class LayoutFlags(IntEnum):
-        """Flags for layout hinting parameters and groups"""
+    class LayoutFlags(IntFlag):
+        """Flags for layout hinting parameters and groups
+
+        Attributes:
+            HORIZONTAL: Hint the ui to display this parameter or group horizontally
+            VERTICAL: Hint the ui to display this parameter or group vertically
+        """
 
         HORIZONTAL = 0
         VERTICAL = auto()
 
     class State(IntFlag):
-        """Store current state of parameters and containers"""
+        """Store current state of parameters and containers
 
-        NONE = 0  # Default
-        HIDDEN = auto()  # The param/group is currently hidden
-        DISABLED = auto()  # The param/group is currently disabled
-        COLLAPSED = auto()  # The group is collapsed. Only works on groups with COLLAPSABE flag set
+        Attributes:
+            NONE: No specified state
+            HIDDEN: Hint the ui to not draw this param or group
+            DISABLED: Hint the ui to disable this param or group
+            COLLAPSED: For COLLAPSABLE groups, this should collapse the group if set
+            LOADED: Used by chunks only. Set whether the chunk should be loaded or unloaded
+        """
+
+        NONE = 0
+        HIDDEN = auto()
+        DISABLED = auto()
+        COLLAPSED = auto()
+        LOADED = auto()
 
     class GroupFlags(IntFlag):
-        """Flags for chunk constainer type objects (Chunk, Group)"""
+        """Flags for chunk constainer type objects (Chunk, Group)
 
-        LABELED = 1  # Add a label on the top of the group based on group.label if available, otherwise group.name
-        COLLAPSABLE = auto()  # The group should be collapsable
+        Attributes:
+            LABELED: If the group should have a label in the ui
+            COLLAPSABLE: If the group should be able to collapse
+            FRAMED: A simple style flag
+        """
 
-        FRAMED = auto()  # The group should be framed
-        # FRAME_RAISED = auto()  # The group frame should appear raised
+        LABELED = 1
+        COLLAPSABLE = auto()
+        FRAMED = auto()
 
     class ParamFlags(IntFlag):
-        """Flags for chunk param types"""
+        """Flags for chunk params
 
-        LABELED = 1  # Add a label on thnext to the param. Use param.label if available, otherwise param.name
+        Attributes:
+            LABELED: If the param should have a label in the ui
+            FILE_EXISTING: For FILE type params, this rule hints to the file browser that we can not create new files
+        """
 
-        # These are only valid for FILE type param
-        FILE_EXISTING = auto()  # File param must point to an existing path
+        LABELED = 1
+        FILE_EXISTING = auto()
 
     class ParamType(IntFlag):
         """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
-        implement the UI based on these
+        implement the UI based on these.
+
+        The concrete types are combinations of any of NONE, EMPTY, FLOAT, STRING, INT, BOOL.
+        As these are flags, they can be combined using bitwise operators to create more complex
+        parameters. It's up the the ui impelementation to handle these.
+
+        Attributes:
+            NONE : A default param type. Nothing will be drawn in the ui
+            EMPTY : The param does not manage a value. used for separators and similar
+            FLOAT : The parameter can hold a float value
+            STRING : The parameter can hold a string value
+            INT : The parameter can hold a int value
+            BOOL : The parameter can hold a bool value
+            CUSTOM : The parameter is custom, will use param.custom_widget when creating the widget
+            SEPARATOR : The parameter is a separator
+            BUTTON : The parameter is a button
+            FLOAT_SLIDER : The parameter is a float valued slider
+            FLOAT_SPINBOX : The parameter is a float valued spinbox
+            INT_SLIDER : The parameter is an int valued slider
+            INT_SPINBOX : The parameter is an int valued spinbox
+            LABEL : The parameter is a string valued label
+            LINEEDIT : The parameter is an editable stiring
+            FILE : The parameter is a string value referring to a file
+            STRING_MENU : The parameter is a string valued menu with multiple choices
+            CHECKBOX : The parameter is a bool valued checkbox
         """
 
         # Use 8 bit padding for types. This leaves room for 8 widget variants per type
@@ -154,7 +200,7 @@ class ChunkFlags:
         return result
 
 
-from .chunk_interface import (  # noqa: E402
+from .chunk_core import (  # noqa: E402
     ChunkBase,
     ChunkParamBase,
     ChunkGroupBase,
@@ -173,6 +219,8 @@ class Chunk(ChunkBase):
     flags: ChunkFlags.GroupFlags = field(
         default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
+
+    # state: ChunkFlags.State = field(default=ChunkFlags.State.LOADED)
 
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
