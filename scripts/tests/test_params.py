@@ -96,7 +96,7 @@ def main():
     groupC.add_params([groupB.clone(), groupA.clone()])
 
     # Create the actual chunk - this is in practice just a ChunkParamGroup with some addiditional behaviour
-    myChunk = chunk.Chunk("TestParams", category="Tests")
+    myChunk = chunk.Chunk("TestParams", category="Examples")
     myChunk.add_params(params, clone=True)
 
     for i in range(1):
@@ -113,3 +113,6 @@ def main():
     if not myChunk.get_param("newName"):
         raise NameError("Failed to rename")
     return myChunk
+
+def config():
+    return chunk.DefaulConfig(load=False)

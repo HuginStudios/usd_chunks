@@ -21,3 +21,6 @@ def main():
     chunk_api.add_param(button)
 
     return chunk_api
+
+def config():
+    return chunk.DefaulConfig(load=False)

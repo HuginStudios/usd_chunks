@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_core, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_core, chunk_notice
 
 from functools import wraps
 
@@ -49,7 +49,6 @@ def chunkChanged(owner, notice, sender):
             msg += f": [New Value] = {s.value}"
         indent += step
     print(msg)
-
 
 @nice_print
 def paramChanged(owner, notice, sender):
@@ -195,7 +194,7 @@ def main():
     sep = chunk.Separator(layout=chunk.ChunkFlags.LayoutFlags.HORIZONTAL)
 
     # Create the actual chunk - this is in practice just a chunk.Group with some addiditional behaviour
-    myChunk = chunk.Chunk("Hello World", category="Examples", state=chunk.ChunkFlags.State.LOADED)
+    myChunk = chunk.Chunk("Hello World", category="Examples")
     myChunk.add_params([label, checkbox, button, sep, textEdit, menu, fileBrowse, sliderGroup, sliderVec])
 
     # Add a callback. With no arguments, the callback will be called whenever any of tthe children on the chunk is changed
@@ -205,3 +204,7 @@ def main():
     # myChunk.print_hierarchy()
 
     return myChunk
+
+
+def config():
+    return chunk.DefaulConfig(load=False)

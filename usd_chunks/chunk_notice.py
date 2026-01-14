@@ -97,6 +97,8 @@ class ChunkNoticeAlias(IntEnum):
     CHUNK_LOADED = auto()  # Sent when a new chunk has beed added to the registry
     CHUNK_UNLOADED = auto()  # Sent when a chunk was unloaded
 
+    CHUNK_CONFIG_CHANGED = auto()  # Sent when a chunk config was changed
+
     CUSTOM = auto()  # Custom notices should be registered with aliases > CUSTOM
 
 
@@ -239,6 +241,10 @@ class ChunkLoadedNotice(ChunkNotice):
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_UNLOADED)
 class ChunkUnLoadedNotice(ChunkNotice):
+    pass
+
+@chunk_notice(ChunkNoticeAlias.CHUNK_CONFIG_CHANGED)
+class ChunkConfigChanged(ChunkNotice):
     pass
 
 

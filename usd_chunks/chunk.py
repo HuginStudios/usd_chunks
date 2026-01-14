@@ -53,7 +53,7 @@ See [example](../example.md) for a more extensive example.
 """
 
 from attr import Attribute
-from attrs import field
+from attrs import field, define
 
 from enum import IntFlag, auto
 from typing import Any, List, Optional, Sequence
@@ -82,14 +82,12 @@ class ChunkFlags:
             HIDDEN: Hint the ui to not draw this param or group
             DISABLED: Hint the ui to disable this param or group
             COLLAPSED: For COLLAPSABLE groups, this should collapse the group if set
-            LOADED: Used by chunks only. Set whether the chunk should be loaded or unloaded
         """
 
         NONE = 0
         HIDDEN = auto()
         DISABLED = auto()
         COLLAPSED = auto()
-        LOADED = auto()
 
     class GroupFlags(IntFlag):
         """Flags for chunk constainer type objects (Chunk, Group)
@@ -202,10 +200,20 @@ class ChunkFlags:
 
 from .chunk_core import (  # noqa: E402
     ChunkBase,
+    ChunkConfig,
     ChunkParamBase,
     ChunkGroupBase,
     ChunkVectorBase,
 )
+
+###########
+# CONFIGS #
+###########
+
+
+class DefaulConfig(ChunkConfig):
+    pass
+
 
 ##############################################
 # CONCRETE IMPLEMENTATIONS FOR CHUNK OBJECTS #
@@ -219,8 +227,6 @@ class Chunk(ChunkBase):
     flags: ChunkFlags.GroupFlags = field(
         default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
-
-    # state: ChunkFlags.State = field(default=ChunkFlags.State.LOADED)
 
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED

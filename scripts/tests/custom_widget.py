@@ -1,5 +1,5 @@
-from usd_chunks import chunk, chunk_core, chunk_notice, chunk_registry
-from PySide6 import QtWidgets, QtCore, QtGui
+from usd_chunks import chunk, chunk_core
+from PySide6 import QtWidgets
 
 
 def customButtonClicked(owner, notice, sender):
@@ -51,3 +51,6 @@ def main():
     myChunk.add_param(custom)
 
     return myChunk
+
+def config():
+    return chunk.DefaulConfig(load=False)

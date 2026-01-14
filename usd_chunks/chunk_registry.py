@@ -21,35 +21,49 @@ import traceback
 import sys
 
 from usd_chunks import chunk
-from usd_chunks.chunk_notice import ChunkNoticeAlias, RegistrySingleton, SceneSender, send_notice
+from usd_chunks.chunk_notice import ChunkNoticeAlias, RegistrySingleton, SceneSender, send_notice, NoticeConnection
+from usd_chunks.chunk_core import ChunkConfig
 
 from timeit import default_timer as timer
 
 
-@dataclass
 class ChunkModule:
     """
-    A dataclass for storing information about chunk modules. Used by ChunkRegistry
+    A class used by ChunkRegistry for managing chunk modules
 
-    Attributes:
+    Args:
         module (ModuleType | None): The loaded chunk module
-        loaded (bool): If the module loaded successfully
         module_name (str): The name of the module
         module_file (str): The original, absolute, path to the python module
+
+    Attributes:
         loaded_chunk (chunk.Chunk | None): The loaded chunk retrieved from running module.main()
+        loaded (bool): If the module loaded successfully
     """
 
-    module: Optional[ModuleType] = None
-    loaded: bool = False
-    module_name: str = ""
-    module_file: str = ""
-    loaded_chunk: Optional[chunk.Chunk] = None
+    def __init__(
+        self,
+        module: Optional[ModuleType] = None,
+        module_name: str = "",
+        module_file: str = "",
+    ):
+        self.module = module
+        self.module_name = module_name
+        self.module_file = module_file
+
+        self.loaded = False
+        self.loaded_chunk: Optional[chunk.Chunk] = None
+        self.config: ChunkConfig = chunk.DefaulConfig()
+        self.config_listener: Optional[NoticeConnection] = None
 
     def __hash__(self):
         return hash(self.module_name)
 
     def __eq__(self, other):
         return self.module_name == other.module_name
+
+    def config_changed(self, notice, sender):
+        print("CONFIG CHANGED: ", notice, sender)
 
     def run(self, func_name: str = "main", *args, **kwargs) -> None | chunk.Chunk:
         """Call function func_name in the loaded module and set self.loaded_chunk to the returned value.
@@ -63,10 +77,39 @@ class ChunkModule:
             chunk.Chunk: If the main function returned a Chunk object
         """
 
+        if hasattr(self.module, "config"):
+            func = getattr(self.module, "config")
+            self.config = func()
+
+        if self.config_listener:
+            self.config_listener.disconnect()
+
+        self.config_listener = NoticeConnection(self.config_changed, ChunkNoticeAlias.CHUNK_CONFIG_CHANGED, self.config)
+
+        if not self.config.load:
+            self.loaded = False
+            return
+
+        return self.load(func_name)
+
+    def unload(self):
+        if not self.loaded or not self.loaded_chunk:
+            return
+
+        self.loaded_chunk.request_delete()
+        self.loaded_chunk = None
+        self.loaded = False
+
+    def load(self, func_name="main"):
+        if not hasattr(self.module, func_name):
+            print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
+            self.loaded = False
+            return
+
         func = getattr(self.module, func_name)
 
         start = timer()
-        retval: Any = func(*args, **kwargs)
+        retval: Any = func()
         end = timer()
 
         if not (isinstance(retval, chunk.Chunk)):
@@ -81,11 +124,14 @@ class ChunkModule:
             self.loaded = False
             return
 
-        if not retval.has_state(chunk.ChunkFlags.State.LOADED):
-            self.loaded = False
-            return
-
         self.loaded_chunk = retval
+        self.loaded = True
+
+        send_notice(
+            ChunkNoticeAlias.CHUNK_LOADED,
+            self.loaded_chunk,
+            data=self.loaded_chunk,
+        )
 
         print(f"Loaded Chunk {self.loaded_chunk.name}. Load took {end - start} seconds")
         return retval
@@ -117,7 +163,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         self.register_chunk_environ_directories()
         self.register_chunk_modules(self.registered_directories)
-        print(f"Number of Registered Chunks {len(self.registered_modules)}")
+
+        c = 0
+        for mod in self.registered_modules.values():
+            c += 1 if mod.loaded else 0
+
+        print(f"Found {len(self.registered_modules)} chunks. Loaded {c}")
 
     def __repr__(self):
         """Return a string representation of the FileReader."""
@@ -179,7 +230,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                     continue
 
                 module_name = os.path.relpath(module_path, working_dir).replace(os.path.sep, ".").replace(".py", "")
-                mod = ChunkModule(module_name=module_name, module_file=module_path, loaded=False)
+                mod = ChunkModule(module_name=module_name, module_file=module_path)
                 self.load_module(mod)
 
                 new_modules[mod.module_name] = mod
@@ -217,17 +268,11 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         try:
             mod.run("main")
+
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later§
             print(f"Failed to run module {mod.module_name}:", traceback.format_exc())
             mod.loaded = False
-        else:
-            mod.loaded = True
-            send_notice(
-                ChunkNoticeAlias.CHUNK_LOADED,
-                mod.loaded_chunk,
-                data=(mod.loaded_chunk),
-            )
 
     def unload_chunk_module(self, mod: ChunkModule):
         """
@@ -238,12 +283,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         """
         if not mod:
             return
-        if not mod.loaded or not mod.loaded_chunk:
-            return
-
-        mod.loaded_chunk.request_delete()
-        mod.loaded_chunk = None
-        mod.loaded = False
+        mod.unload()
 
     def unload_chunk(self, chunk_name: str):
         """

@@ -23,7 +23,7 @@ class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QWidget):
         self.vlayout.addWidget(self.label)
         self.vlayout.addWidget(self.slider)
         self.setLayout(self.vlayout)
-        
+
         self._step = 1000 if chunk.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
 
         min_val = param.min_value
@@ -507,7 +507,7 @@ class ContainerWidget(QtWidgets.QWidget):
         self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
         self.__layout__.setContentsMargins(2, 2, 10, 10)
         self.__layout__.setSpacing(0)
-        
+
         self.__layout__.addWidget(self.minimize_button)
         self.__layout__.addWidget(self.content)
 
@@ -537,7 +537,7 @@ class ContainerWidget(QtWidgets.QWidget):
         else:
             self.minimize_button.setText("")
         if chunk.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
-            #self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+            # self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
             self.content.setLineWidth(2)
         else:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
@@ -829,6 +829,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             notice (chunk_notice.ChunkLoadedNotice): The notice sent from the registry
             sender (chunk.Chunk): The new chunk that was added
         """
+
         self.add_chunk_widget(sender)
 
     def build(self):
@@ -910,8 +911,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         QRangeSlider {
             qproperty-barColor: #202020;
         }
-        """
-        )
+        """)
         for module_name, mod in registry.registered_modules.items():
             loaded_chunk = mod.loaded_chunk
             if not loaded_chunk or mod.loaded:
@@ -954,6 +954,94 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
         self.chunk_tabs[category].flow.addWidget(widget)
         return widget
+
+
+class ChunkModuleLoader(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.content = QtWidgets.QTableWidget(rowCount=0, columnCount=4)
+
+        self.content.setSelectionMode(QtWidgets.QTableWidget.SelectionMode.ExtendedSelection)
+        self.content.setSelectionBehavior(QtWidgets.QTableWidget.SelectionBehavior.SelectRows)
+
+        self.main_layout = QtWidgets.QVBoxLayout()
+        self.main_layout.addWidget(self.content)
+
+        self.setLayout(self.main_layout)
+        self.load_chunks()
+
+        self.content.model().dataChanged.connect(self.handle_data_change)
+
+    def get_check_state(self, loaded):
+        return QtCore.Qt.CheckState.Checked if loaded else QtCore.Qt.CheckState.Unchecked
+
+    def new_row(self, row, mod: chunk_registry.ChunkModule):
+        self.content.insertRow(row)
+
+        c0 = QtWidgets.QTableWidgetItem()
+        c0.setCheckState(self.get_check_state(mod.loaded))
+
+        c1 = QtWidgets.QTableWidgetItem(mod.module_name)
+
+        self.content.setItem(row, 0, c0)
+        self.content.setItem(row, 1, c1)
+        if mod.loaded_chunk:
+            c2 = QtWidgets.QTableWidgetItem(mod.loaded_chunk.name)
+            c3 = QtWidgets.QTableWidgetItem(mod.loaded_chunk.category)
+            self.content.setItem(row, 2, c2)
+            self.content.setItem(row, 3, c3)
+
+    def load_chunks(self):
+        reg = chunk_registry.ChunkRegistry()
+        mods = list(reg.registered_modules.values())
+        for row, c in enumerate(mods):
+            self.new_row(row, c)
+
+    def load_unload(self, mod: chunk_registry.ChunkModule, check):
+        if check and not mod.loaded:
+            mod.load()
+        elif not check and mod.loaded:
+            mod.unload()
+
+    def handle_data_change(self, first: QtCore.QModelIndex, last: QtCore.QModelIndex, roles):
+        if QtCore.Qt.ItemDataRole.CheckStateRole not in roles:
+            return
+
+        reg = chunk_registry.ChunkRegistry()
+        check = None
+
+        for r in range(first.row(), last.row() + 1):
+            check_idx = self.content.model().index(r, 0)
+            mod_idx = self.content.model().index(r, 1)
+
+            mod = reg.get_chunk_module(mod_idx.data())
+            if not mod:
+                raise ModuleNotFoundError(f"Could not find module {mod_idx.data()}")
+
+            check = check_idx.data(QtCore.Qt.ItemDataRole.CheckStateRole)
+            self.load_unload(mod, check)
+
+        if check is None:
+            return
+
+        for srange in self.content.selectedRanges():
+            for row in range(srange.topRow(), srange.bottomRow() + 1):
+                check_idx = self.content.model().index(row, 0)
+                mod_idx = self.content.model().index(row, 1)
+
+                if row >= first.row() and row < last.row() + 1:
+                    continue
+
+                mod = reg.get_chunk_module(mod_idx.data())
+
+                if not mod:
+                    raise ModuleNotFoundError(f"Could not find module {mod_idx.data()}")
+                check_item = self.content.item(check_idx.row(), 0)
+
+                if check_item:
+                    check_item.setCheckState(self.get_check_state(check))
+                    self.load_unload(mod, check)
 
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):

@@ -57,6 +57,10 @@ class ChunksPluginContainer(PluginContainer):
             if not mod.loaded:
                 reg.load_module(mod)
 
+    def openModuleSettings(self, usdviewApi):
+        dial = chunk_qt.ChunkModuleLoader()
+        dial.exec()
+
     def registerPlugins(self, plugRegistry, usdviewApi) -> None:
         """Register the UI Creator plugin with the plugin registry.
 
@@ -68,12 +72,16 @@ class ChunksPluginContainer(PluginContainer):
         self._reloadChunksCommand = plugRegistry.registerCommandPlugin(
             "ChunksPlugin.reloadChunks", "Reload Chunks", self.reloadChunks
         )
+        self._openModuleSettingsCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.openModuleSettings", "Modules", self.openModuleSettings
+        )
 
         launch_chunks(usdviewApi)
 
     def configureView(self, _, plugUIBuilder) -> None:
         menu = plugUIBuilder.findOrCreateMenu("Chunks")
         menu.addItem(self._reloadChunksCommand, "SHIFT+R")
+        menu.addItem(self._openModuleSettingsCommand)
 
 
 Tf.Type.Define(ChunksPluginContainer)

@@ -1621,7 +1621,7 @@ class ChunkGroupBase(ChunkContainerBase):
 
         Args:
             param (ChunkParam): a name that might not be unique
-            reserved_names (Set[str]): A list of reserved names. This paramater can't have a name 
+            reserved_names (Set[str]): A list of reserved names. This paramater can't have a name
                 which exist in this list. The new, valid name will be appended to this list to nest a group inside an already created group
 
         Returns:
@@ -1649,7 +1649,21 @@ class ChunkGroupBase(ChunkContainerBase):
         return name
 
 
+class ChunkConfig(AttributesBase):
+    load: bool = attrs.field(default=True)
+
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
+
+
 class ChunkBase(ChunkGroupBase):
+    """
+    Base class for Chunks. Similar to groups, but with additional config and category
+
+    Attributes:
+        category: A category to sort this chunk by
+    """
+
     category: str = attrs.field(default="Chunks")
 
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
