@@ -19,14 +19,12 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 
 """
 
-from pxr import Tf
+from pxr import Tf, Usd
 
 # from enum import IntEnum, auto
 from enum import IntEnum, auto
 from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator
 
-# from pxr.Usdviewq import usdviewApi as UsdviewModule
-from pxr import Usd
 from functools import partial
 from abc import abstractmethod
 

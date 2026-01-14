@@ -48,10 +48,6 @@ def launch_chunks(usdviewApi) -> None:
     chunk_qt.build_chunk_docker(usdviewApi.qMainWindow)
     chunk_registry.ChunkRegistry().initialize(UsdviewScene(usdviewApi))
 
-    print(f"Number of Registered Chunks {len(chunk_registry.ChunkRegistry().registered_modules)}")
-    print("LAUNCH")
-
-
 class ChunksPluginContainer(PluginContainer):
     def reloadChunks(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()

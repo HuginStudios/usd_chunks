@@ -50,4 +50,10 @@ def main(api, parent=None):
     return chunk_api
 ```
 
+## Build documentation
+In order to build the documentation, your environment must be set to run the usd_chunks modules.
+PXR_PLUGINPATH_NAME and PYTHONPATH mut be properly initialized as we do some dynamic code checking using
+griffe. When all is setup and the virtual env is active, calling `mkdocs serve` should generate the docs 
+and be viewable in the browser.
 
+Run docs/gen_ref_nav.py to generate the docs/reference markdown files

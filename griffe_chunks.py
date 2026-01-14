@@ -1,16 +1,18 @@
+"""
+This script is a griffe extension for adding __init__ function signatures to our attrs classes
+"""
+
 import griffe
 from pathlib import Path
 from inspect import isclass
 from attr import _make as attrMake
 
-from typing import get_type_hints, get_args, get_origin
-from typing_extensions import reveal_type
-# import importlib.util
 
-from attrs import fields_dict, resolve_types
+from attrs import fields_dict
 import attr.exceptions
 
 logger = griffe.get_logger("griffle_chunks")
+
 
 class GriffleChunks(griffe.Extension):
     """An extension to inspect just a few specific objects."""
@@ -55,12 +57,11 @@ class GriffleChunks(griffe.Extension):
         for field_name, field in fields:
             if not field.init:
                 continue
-            
+
             field_type = field.type if field.type else None
 
             if isclass(field_type):
                 field_type = field_type.__name__
-            
 
             default = field.default
             if isinstance(default, attrMake.Factory):
@@ -72,9 +73,4 @@ class GriffleChunks(griffe.Extension):
             param = griffe.Parameter(field_name, annotation=str(field_type), default=default)
             params.append(param)
 
-            # # if doc := field.metadata.get("documentation"):
-
-            # member_docstring = griffe.Docstring("helloooo")
-            # obj.set_member(field_name, griffe.Attribute(field_name, docstring=member_docstring))
-
-        obj.set_member("__init__", griffe.Function("__init__", parameters=griffe.Parameters(*params)))    
+        obj.set_member("__init__", griffe.Function("__init__", parameters=griffe.Parameters(*params)))

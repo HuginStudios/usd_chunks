@@ -1,3 +1,55 @@
+"""
+This module is the client-facing interface for working with chunks,
+containing concrete implementations of the chunk objects. These
+classes can be used by themselves, but they also describe common
+UI related information, making them easy to implement in any UI
+framework.
+
+As all chunk classes inherit from chunk_interface.AttributesMetaclass,
+all these classes are in fact attrs classes (dataclass). So creating a new
+Chunk Parameter class, one must only declare the class and inherit
+from ChunkParamBase or related base class. As the class will, behind
+the scenes, be wrapped in attrs.define() we get some method definitions
+for free; most notably \\_\\_init\\_\\_(). The \\_\\_init\\_\\_ will
+be created from all the fields of the class, including inherited, so
+we don't have to define the \\_\\_init\\_\\_ function for each chunk class.
+
+For this reason, any attributes of a chunk class should be defined
+using attrs.field().
+
+A class which inherits from ChunkParamBase need to implement get_type(),
+and possibly evaluate_type() if the type may change during runtime. This
+is to ensure an easy mapping between chunks and whatever UI framework is used
+
+!!! example
+
+    ``` py
+    class CustomStrParam(ChunkParamBase[str]):
+        some_attrib: str = attrs.field(default="hello")
+
+        @classmethod
+        def get_type(cls) -> ChunkFlags.ParamType:
+            return ChunkFlags.ParamType.LINEEDIT
+    ```
+
+When creating a chunk module, the chunk.Chunk() class is the top level
+container for which all parameters and groups should be added to. Creating
+a simple chunk with a button is as simple as:
+
+``` py
+from usd_chunks import chunk
+
+def main():
+    myChunk = chunk.Chunk("myChunk", category="example")
+    btnParam = chunk.Button("myButton")
+
+    myChunk.add_param(btnParam)
+    return myChunk
+```
+
+
+"""
+
 from attr import Attribute
 from attrs import field
 
@@ -115,7 +167,7 @@ from .chunk_interface import (  # noqa: E402
 
 
 class Chunk(ChunkBase):
-    """Chunk is the top level container, holding params and groups which in turn make up the final, displayed chunk"""
+    """Chunk is the top level container, holding params and groups which in turn make up the final, displayed chunk."""
 
     # Override defaults
     flags: ChunkFlags.GroupFlags = field(
