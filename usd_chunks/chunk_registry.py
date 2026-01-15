@@ -191,7 +191,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         )
 
         for chunk_dir in environ_dirs:
-            print(chunk_dir)
             self.register_directory(chunk_dir)
 
     def register_directory(self, chunk_dir: str):
@@ -230,9 +229,11 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                     continue
 
                 module_name = os.path.relpath(module_path, working_dir).replace(os.path.sep, ".").replace(".py", "")
-                mod = ChunkModule(module_name=module_name, module_file=module_path)
-                self.load_module(mod)
 
+                mod = ChunkModule(module_name=module_name, module_file=module_path)
+
+                self.load_module(mod)
+    
                 new_modules[mod.module_name] = mod
 
         self.registered_modules |= new_modules
@@ -265,6 +266,11 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             # Only python files with a main functions are valid chunk entrypoints.
             mod.loaded = False
             return
+
+        if module_filter := os.environ.get("USD_CHUNK_FILTER"):
+            if mod.module_name not in module_filter:
+                mod.loaded = False
+                return
 
         try:
             mod.run("main")

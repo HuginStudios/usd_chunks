@@ -243,6 +243,7 @@ class ChunkLoadedNotice(ChunkNotice):
 class ChunkUnLoadedNotice(ChunkNotice):
     pass
 
+
 @chunk_notice(ChunkNoticeAlias.CHUNK_CONFIG_CHANGED)
 class ChunkConfigChanged(ChunkNotice):
     pass
@@ -405,6 +406,10 @@ class ChunkNoticePropagator:
         if isinstance(ls, ChunkNoticePropagator):
             yield from ls.iter_changes()
 
+    @abstractmethod
+    def get_usd_attr(self) -> Optional[Usd.Attribute]:
+        return None
+
     def get_owner(self) -> Optional["ChunkNoticePropagator"]:
         """Get the owning ChunkNoticePropagator of this object
 
@@ -454,6 +459,9 @@ class ChunkNoticePropagator:
         # Set owner data_changed if available
         if owner:
             owner.data_changed(my_notice, self, propagated if propagated else sender)
+
+        # if usd_attr := self.get_usd_attr():
+            # send_notice(self.get_notice_alias(), self, usd_attr)
 
         return my_notice
 
@@ -692,10 +700,16 @@ class SceneSender(ChunkNoticePropagator):
         raise NotImplementedError
 
     def primSelectionChangedCallback(self, *args, **kwargs):
-        send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.get_selected_prims())
+        try:
+            send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.get_selected_prims())
+        except Tf.ErrorException:
+            pass
 
     def propSelectionChangedCallback(self, *args, **kwargs):
-        send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property())
+        try:
+            send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property())
+        except Tf.ErrorException:
+            pass
 
     def get_notice_alias(self) -> ChunkNoticeAlias:
         return ChunkNoticeAlias.NONE

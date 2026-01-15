@@ -56,8 +56,10 @@ from attr import Attribute
 from attrs import field, define
 
 from enum import IntFlag, auto
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Dict, Optional, Sequence, Type, Tuple
 from usd_chunks import chunk_notice
+
+from pxr import Usd, Sdf
 
 
 class ChunkFlags:
@@ -149,6 +151,7 @@ class ChunkFlags:
         STRING = auto()
         INT = auto()
         BOOL = auto()
+        VECTOR = auto()
         CUSTOM = auto()  # use self.custom_widget as widget
 
         # Flags for standard widgets
@@ -195,6 +198,8 @@ class ChunkFlags:
             result.append(bool)
         if ChunkFlags.ParamType.STRING in t:
             result.append(str)
+            result.append(Sdf.AssetPath)
+        # if ChunkFlags.ParamType.FILE in t:
         return result
 
 
@@ -204,6 +209,8 @@ from .chunk_core import (  # noqa: E402
     ChunkParamBase,
     ChunkGroupBase,
     ChunkVectorBase,
+    ChunkUsdAttributeSupport,
+    ChunkCommon,
 )
 
 ###########
@@ -273,6 +280,21 @@ class Slider(ChunkParamBase[int | float]):
     def evaluate_type(self) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.INT_SLIDER if self.is_int else ChunkFlags.ParamType.FLOAT_SLIDER
 
+    @classmethod
+    def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
+        param = super().from_usd_attr(attr, *args, **kwargs)
+
+        if limits := attr.GetLimits():  # type: ignore
+            if hard := limits.get("hard"):
+                limit_min = hard.get("minimum", None)
+                limit_max = hard.get("maximum", None)
+
+                if hasattr(param, "min_value"):
+                    param.min_value = limit_min  # type: ignore
+                if hasattr(param, "max_value"):
+                    param.max_value = limit_max  # type: ignore
+        return param
+
 
 class Spinbox(ChunkParamBase[float | int]):
     """
@@ -297,6 +319,21 @@ class Spinbox(ChunkParamBase[float | int]):
             return ChunkFlags.ParamType.INT_SPINBOX
         return ChunkFlags.ParamType.FLOAT_SPINBOX
 
+    @classmethod
+    def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
+        param = super().from_usd_attr(attr, *args, **kwargs)
+
+        if limits := attr.GetLimits():  # type: ignore
+            if hard := limits.get("hard"):
+                limit_min = hard.get("minimum", None)
+                limit_max = hard.get("maximum", None)
+
+                if hasattr(param, "min_value"):
+                    param.min_value = limit_min  # type: ignore
+                if hasattr(param, "max_value"):
+                    param.max_value = limit_max  # type: ignore
+        return param
+
 
 class Menu(ChunkParamBase[str]):
     """
@@ -309,17 +346,22 @@ class Menu(ChunkParamBase[str]):
     menu_items: Sequence[str] = field(factory=list)
 
     @classmethod
+    def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs):
+        param = super().from_usd_attr(attr, *args, **kwargs)
+
+        menu_items = set((param.default_value,))  # type: ignore
+        if tokens := attr.GetMetadata("allowedTokens"):
+            menu_items.update(tokens)
+
+        param.menu_items = [str(x) for x in menu_items]  # type: ignore
+        return param
+
+    @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.STRING_MENU
 
     def convert_attr(self, attr: Attribute, val: Any) -> Any:
-        if attr.name == "value" and val not in self.menu_items:
-            try:
-                return self.value
-            except AttributeError:
-                return self.default_value
-
-        elif attr.name == "default_value":
+        if attr.name == "default_value":
             if self.menu_items and val not in self.menu_items:
                 return self.menu_items[0]
 
@@ -358,7 +400,7 @@ class LineEdit(ChunkParamBase[str]):
         return ChunkFlags.ParamType.LINEEDIT
 
 
-class FileBrowser(ChunkParamBase[str]):
+class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
     """
     A string parameter with the addition of a button for opening a file browser
 
@@ -412,3 +454,39 @@ class Custom(ChunkParamBase):
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.CUSTOM
+
+
+_type_map = {
+    "float": Slider,
+    "int": (Spinbox, {"is_int": True}),
+    "token": Menu,
+    "bool": Checkbox,
+    "string": LineEdit,
+    "asset": FileBrowser,
+    "path": FileBrowser,
+    "float2": (Vector, {"param": Slider("0"), "length": 2}),
+    "float3": (Vector, {"param": Slider("0"), "length": 3}),
+    "float4": (Vector, {"param": Slider("0"), "length": 4}),
+    "vector3f": (Vector, {"param": Slider("0"), "length": 3}),
+    "color3f": (Vector, {"param": Slider("0"), "length": 3}),
+    "int2": (Vector, {"param": Slider("0"), "length": 2}),
+    "int3": (Vector, {"param": Slider("0"), "length": 3}),
+    "int4": (Vector, {"param": Slider("0"), "length": 4}),
+    "double2": (Vector, {"param": Slider("0"), "length": 2}),
+    "double3": (Vector, {"param": Slider("0"), "length": 3}),
+    "double4": (Vector, {"param": Slider("0"), "length": 4}),
+}
+
+
+def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
+    type_name = attr.GetTypeName()
+
+    t = _type_map.get(str(type_name))
+    if not t:
+        return None
+
+    if isinstance(t, tuple):
+        kwargs.update(t[1])
+        return t[0].from_usd_attr(attr, *args, **kwargs)
+    else:
+        return t.from_usd_attr(attr, *args, **kwargs)

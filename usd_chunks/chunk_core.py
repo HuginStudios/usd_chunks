@@ -290,8 +290,8 @@ def get_attr_index(cls, data):
 
 def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Attribute]):
     """Used as attrs.field_transformer for chunk attributes.
-    Adds cls._validate as a validation function to all attrs.fields if hasattr(cls, "_validate").
-    Adds cls._convert to the conversion pipe of all attrs.fields if hasattr(cls, "_convert")"""
+    Adds cls.validate_attr as a validation function to all attrs.fields if hasattr(cls, "validate_attr").
+    Adds cls._safe_convert to the conversion pipe of all attrs.fields if hasattr(cls, "_safe_convert")"""
 
     sort_keys = {}
     results = []
@@ -425,8 +425,22 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
             return None
         return getattr(self.get_owner(), self.name)
 
+    @value.setter
+    def value(self, val: Any):
+        if not self.get_owner():
+            return
+        if not hasattr(self.get_owner(), self.name):
+            print(f"Failed to set attribute {self.name} from AttributeSender")
+            return
+
+        setattr(self.get_owner(), self.name, val)
+
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return self.alias
+
+    def get_usd_attr(self) -> Usd.Attribute | None:
+        if owner := self.get_owner():
+            return owner.get_usd_attr()
 
     def _copy_connection(self, conn: chunk_notice.NoticeConnection, src: chunk_notice.ChunkNoticePropagator):
         # Add connections to the copy by creating new NoticeConnection objects
@@ -512,6 +526,44 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False
         ),
     )
+
+    # # link to UsdAttribute if needed. Hidden in __init__ as the field would be added as the first argument
+    # # by the concrete classes
+    # _usd_attr: Optional[Usd.Attribute] = attrs.field(default=None, init=False)
+
+    # # Hold a connection to the Usd.Attribute of usd_attr.
+    # _usd_attr_connection: Optional[chunk_notice.NoticeConnection] = attrs.field(
+    #     default=None, init=False, metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND)
+    # )
+
+    # @abstractmethod
+    # def update_usd_attrib(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
+    #     if not isinstance(notice.data, Usd.Attribute):
+    #         return
+    #     notice.data.Set(sender.value)
+
+    # @abstractmethod
+    # def usd_attrib_changed(self, attr: Usd.Attribute):
+    #     if not self._usd_attr_connection:
+    #         return
+    #     if not isinstance(self._usd_attr_connection.sender, AttributeSender):
+    #         return
+
+    #     self._usd_attr_connection.sender.value = attr.Get(0)
+
+    # def set_usd_attr(self, attr: Usd.Attribute, sender: AttributeSender):
+    #     self._usd_attr = attr
+
+    #     if self._usd_attr_connection:
+    #         self._usd_attr_connection.disconnect()
+
+    #     self._usd_attr_connection = chunk_notice.NoticeConnection(
+    #         self.update_usd_attrib, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender
+    #     )
+    #     self.usd_attrib_changed(attr)
+
+    # def get_usd_attr(self) -> Usd.Attribute | None:
+    #     return self._usd_attr
 
     def __attrs_post_init__(self):
         # Loop over all fields and add an AttributeSender for the attribute, which will be sent in value_changed. Doing this instead of
@@ -1083,9 +1135,6 @@ class ChunkCommon(AttributesBase):
     tooltip: Optional[str] = attrs.field(default="")
     icon: Optional[str] = attrs.field(default="")  # Path to icon
 
-    # link to UsdAttribute if needed
-    usd_attr: Optional[Usd.Attribute] = attrs.field(default=None)
-
     # Hold custom data which is not used directly by the chunk
     user_data: Dict[str, Any] = attrs.field(factory=dict)
 
@@ -1144,19 +1193,18 @@ class ChunkCommon(AttributesBase):
 
     def _validate_path(self, attr: attrs.Attribute, value) -> bool:
         """Check if the given value is a valid os path to be used as an attribute.
-        Can be called in _validate or _convert of subclasses when checking a path attribute. Returns True if the
-        value is a valid path. Currently, this just mirrors _validate_string. Use _validate_existing_path to check for existing paths
+        Can be called in _validate or _convert of subclasses when checking a path attribute. 
+        Use _validate_existing_path to check for existing paths. Currently this does nothing.
+        Holding off with this as some string parameter may support Sdf.AssetPath or pathlib.Path
+        TODO: implement
 
         Args:
             attr (Attrs.Attribute): _description_
             value (_type_): _description_
 
         Returns:
-            bool: _description_
+            bool: True if the value is a valid path
         """
-        if not self._validate_string(attr, value):
-            return False
-
         return True
 
     def _validate_existing_path(self, attr: attrs.Attribute, value) -> bool:
@@ -1266,7 +1314,7 @@ class ChunkCommon(AttributesBase):
 
     def request_delete(self):
         """Sends a notice for owners to delete this Chunk object. It's the owners responsibility to remove their reference to this object.
-        If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument
+        If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.
         """
         owner = self.get_owner()
         if owner and isinstance(owner, ChunkContainerBase):
@@ -1284,7 +1332,88 @@ class ChunkCommon(AttributesBase):
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
 
-class ChunkParamBase(Generic[ValueT], ChunkCommon):
+class ChunkUsdAttributeSupport(AttributesBase):
+    """
+    This inteface class can be subclassed for valued parameter classes in order to support connections
+    to UsdAttribute objects. This enables a parameter to be generated from a UsdAttribute, and creating
+    the NoticeConnections for managaging the value setting and getting between the param and the
+    UsdAttribute.
+    """
+
+    # link to UsdAttribute if needed. Hidden in __init__ as the field would be added as the first argument
+    # by the concrete classes
+    _usd_attr: Optional[Usd.Attribute] = attrs.field(default=None, init=False)
+
+    # Hold a connection to the Usd.Attribute of usd_attr.
+    _usd_attr_connection: Optional[chunk_notice.NoticeConnection] = attrs.field(
+        default=None, init=False, metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND)
+    )
+
+    def data_changed(
+        self, notice: Tf.Notice | None, sender: Any, propagated: chunk_notice.ChunkNoticePropagator | None = None
+    ) -> Tf.Notice | None:
+
+        my_notice = super().data_changed(notice, sender, propagated)
+        
+        if usd_attr := self.get_usd_attr():
+            # Sender should be the AttributeSender which _usd_attr_connection listen for 
+            chunk_notice.send_notice(sender.get_notice_alias(), sender, usd_attr)
+        return my_notice
+
+    @abstractmethod
+    def update_usd_attrib(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
+        if not isinstance(notice.data, Usd.Attribute):
+            return
+        notice.data.Set(sender.value)
+
+    @abstractmethod
+    def usd_attrib_changed(self, attr: Usd.Attribute):
+        if not self._usd_attr_connection:
+            return
+        if not isinstance(self._usd_attr_connection.sender, AttributeSender):
+            return
+
+        self._usd_attr_connection.sender.value = attr.Get(0)
+
+    def set_usd_attr(self, attr: Usd.Attribute, sender: AttributeSender):
+        self._usd_attr = attr
+
+        if self._usd_attr_connection:
+            self._usd_attr_connection.disconnect()
+
+        self._usd_attr_connection = chunk_notice.NoticeConnection(
+            self.update_usd_attrib, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender
+        )
+        self.usd_attrib_changed(attr)
+
+    def get_usd_attr(self) -> Usd.Attribute | None:
+        return self._usd_attr
+
+    @classmethod
+    def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> "ChunkUsdAttributeSupport":
+        attr_name = attr.GetName()
+
+        if (args and isinstance(args[0], str)) or kwargs.get("name"):
+            param = cls(*args, **kwargs)
+        else:
+            kwargs["name"] = attr_name.split(":")[-1]
+            param = cls(*args, **kwargs)
+
+        if hasattr(param, "default_value"):
+            if attr.HasFallbackValue():
+                default_value = attr.GetMetadata("default")
+            else:
+                default_value = attr.Get(0)
+
+            param.default_value = default_value  # type: ignore
+
+        if sender := param.get_attribute_sender("value"):
+            param.set_usd_attr(attr, sender)
+
+        return param
+
+
+class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     """
     Base class for valued parameters
 
@@ -1336,8 +1465,11 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon):
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "value" and val is not None:
-            if type(val) not in ChunkFlags.ParamTypeToTypes(self.get_type()):
-                raise ValueError(f"Value of {val} is not supported for attribute {attr.name}, type is {type(val)}")
+            expected_type = ChunkFlags.ParamTypeToTypes(self.get_type())
+            if type(val) not in expected_type:
+                raise ValueError(
+                    f"Value of {val} is not supported for attribute {attr.name}, type is {type(val)}. Expects {expected_type}"
+                )
             return True
 
         if attr.name == "custom_widget":
@@ -1423,21 +1555,21 @@ class ChunkContainerBase(ChunkCommon):
         elif isinstance(param, str):
             return self.children.get_by_name(param)
 
-    def get_params(self) -> List[ChunkCommon]:
+    def get_params(self) -> Tuple[ChunkCommon, ...]:
         """Get all parameters in this group
 
         Returns:
-            List[ChunkParamBase]: All parameters in this group
+            Tuple[ChunkParamBase]: All parameters in this group
         """
-        return list(self.children.get_params())
+        return self.children.get_params()
 
-    def get_my_params(self) -> List[ChunkCommon]:
+    def get_my_params(self) -> Tuple[ChunkCommon, ...]:
         """Get all parameters in this group
 
         Returns:
-            List[ChunkParamBase]: All parameters in this group
+            Tuple[ChunkParamBase]: All parameters in this group
         """
-        return list(self.children.get_my_params())
+        return self.children.get_my_params()
 
     def get_last_param_change(
         self,
@@ -1588,7 +1720,6 @@ class ChunkGroupBase(ChunkContainerBase):
         """
 
         if param in self.get_params():
-            print("DUPLICATE ", param.name)
             return None
 
         if not reserved_names:
@@ -1673,7 +1804,7 @@ class ChunkBase(ChunkGroupBase):
         return super().convert_attr(attr, val)
 
 
-class ChunkVectorBase(ChunkContainerBase):
+class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
     """Base for vector style parameters. Function similar to a group but with fixed number of params"""
 
     param: ChunkParamBase = attrs.field(default=None)
@@ -1701,9 +1832,9 @@ class ChunkVectorBase(ChunkContainerBase):
             np = self.param.clone()
             if not np.name:
                 np.name = self.name
-            if self.usd_attr:
+            if usd_attr := self.get_usd_attr():
                 print("-------------------")
-                print(self.usd_attr.Get(0)[i])
+                print(usd_attr.Get(0)[i])
                 print(self.value)
 
             if self.suffixes:
@@ -1755,8 +1886,25 @@ class ChunkVectorBase(ChunkContainerBase):
         for i in range(self.length):
             self[i] = val[i]
 
+    @property
+    def default_value(self):
+        return tuple(x.default_value for x in self.get_my_params() if isinstance(x, ChunkParamBase))
+
+    @default_value.setter
+    def default_value(self, val: Tuple[Any, ...]):
+        if val is None:
+            return
+
+        if not len(val) == self.length:
+            raise ValueError(
+                f"Trying to set value {val} on vector param {self.name} with wring size. Size should be {self.length}"
+            )
+
+        for i in range(self.length):
+            self[i].default_value = val[i]
+
     def get_type(self):
-        return self.param.get_type()
+        return ChunkFlags.ParamType.VECTOR | self.param.get_type()
 
     def evaluate_type(self):
-        return self.param.evaluate_type()
+        return ChunkFlags.ParamType.VECTOR | self.param.evaluate_type()

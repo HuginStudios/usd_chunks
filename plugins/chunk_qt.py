@@ -143,7 +143,7 @@ class ChunkLineEditWidget(ChunkParamWidget[chunk.LineEdit], QtWidgets.QLineEdit)
         return self.text()
 
     def set_value(self, value):
-        return self.setText(value)
+        return self.setText(str(value))
 
 
 class ChunkFileWidget(ChunkParamWidget[chunk.FileBrowser], QtWidgets.QWidget):
@@ -191,7 +191,7 @@ class ChunkFileWidget(ChunkParamWidget[chunk.FileBrowser], QtWidgets.QWidget):
         return self.text.text()
 
     def set_value(self, value):
-        return self.text.setText(value)
+        return self.text.setText(str(value))
 
     def set_icon(self, icon: str):
         self.button.setIcon(QtGui.QIcon(icon))

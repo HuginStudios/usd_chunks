@@ -87,8 +87,8 @@ def param_changed(owner: chunk.ChunkParamBase, notice, sender):
     primpath = owner.user_data.get("primpath")
     if not primpath:
         return
-
     attrname = owner.user_data.get("attrname")
+
 
     if not attrname:
         relname = owner.user_data.get("relname")
