@@ -13,16 +13,17 @@ myChunk = reg.get_chunk("my_chunk")
 from types import ModuleType
 from typing import Iterable, Optional, Set, Any, Dict
 from importlib import util
-from dataclasses import dataclass
 
 import glob
 import os
 import traceback
 import sys
 
+from pxr import Sdf, Usd
+
 from usd_chunks import chunk
 from usd_chunks.chunk_notice import ChunkNoticeAlias, RegistrySingleton, SceneSender, send_notice, NoticeConnection
-from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_core import ChunkConfig, ChunkHash
 
 from timeit import default_timer as timer
 
@@ -97,8 +98,15 @@ class ChunkModule:
             return
 
         self.loaded_chunk.request_delete()
-        self.loaded_chunk = None
         self.loaded = False
+
+        send_notice(
+            ChunkNoticeAlias.CHUNK_UNLOADED,
+            self.loaded_chunk,
+            data=self.loaded_chunk,
+        )
+
+        self.loaded_chunk = None
 
     def load(self, func_name="main"):
         if not hasattr(self.module, func_name):
@@ -233,7 +241,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 mod = ChunkModule(module_name=module_name, module_file=module_path)
 
                 self.load_module(mod)
-    
+
                 new_modules[mod.module_name] = mod
 
         self.registered_modules |= new_modules
@@ -269,7 +277,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         if module_filter := os.environ.get("USD_CHUNK_FILTER"):
             if mod.module_name not in module_filter:
-                mod.loaded = False
+                mod.loaded = False  
                 return
 
         try:
@@ -334,3 +342,83 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             if mod.loaded_chunk and mod.loaded_chunk.name == name:
                 return mod.loaded_chunk
         return None
+
+
+class ChunkLayerManager(metaclass=RegistrySingleton):
+    chunk_layers: Dict[ChunkHash, str]
+    scene: SceneSender
+
+    def initialize(self, scene: SceneSender):
+        self._edit_target_listener = NoticeConnection(
+            self._edit_target_changed, ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED, globally=True
+        )
+        self._load_listener = NoticeConnection(self._chunk_loaded, ChunkNoticeAlias.CHUNK_LOADED, globally=True)
+        self._unload_listener = NoticeConnection(self._chunk_unloaded, ChunkNoticeAlias.CHUNK_UNLOADED, globally=True)
+        self._delete_listener = NoticeConnection(self._chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True)
+
+        self.chunk_layers = {}
+        self.scene = scene
+
+    def add_layer(self, target_layer: Sdf.Layer, c: chunk.Chunk) -> Sdf.Layer:
+        layer_id = c.get_layer_identifier()
+        layer = Sdf.Layer.CreateAnonymous(layer_id)
+
+        self.chunk_layers[c._hashable] = layer.identifier
+
+        target_layer.subLayerPaths.append(layer.identifier)
+
+        print("Add layer: ", layer.identifier)
+
+        return layer
+
+    def reload_all(self, stage: Optional[Usd.Stage] = None):
+        stage = stage if stage else self.scene.get_stage()
+        if not stage:
+            return
+
+        sublayer_paths = stage.GetSessionLayer().subLayerPaths.copy()
+
+        for i, sublayer in reversed(list(enumerate(sublayer_paths))):
+            if sublayer in self.chunk_layers.values():
+                sublayer_paths.pop(i)
+
+        stage.GetSessionLayer().subLayerPaths = sublayer_paths  # type: ignore
+        self.chunk_layers.clear()
+
+        for mod in filter(lambda x: x.loaded, ChunkRegistry().registered_modules.values()):
+            c = mod.loaded_chunk
+            if not c:
+                continue
+
+            self.add_layer(stage.GetSessionLayer(), c)
+
+    def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
+        stage = notice.GetStage()
+        self.reload_all(stage)
+
+    def _chunk_loaded(self, notice, sender: chunk.Chunk):
+        stage = self.scene.get_stage()
+
+        if not stage:
+            return
+
+        self.add_layer(stage.GetSessionLayer(), sender)
+
+    def _chunk_unloaded(self, notice, sender: chunk.Chunk):
+        stage = self.scene.get_stage()
+
+        if not stage:
+            return
+
+        if layer := self.chunk_layers.get(sender._hashable):
+            sublayer_paths = stage.GetSessionLayer().subLayerPaths.copy()
+
+            for i, sublayer in reversed(list(enumerate(sublayer_paths))):
+                if sublayer == layer:
+                    sublayer_paths.pop(i)
+    
+            stage.GetSessionLayer().subLayerPaths = sublayer_paths  # type: ignore
+
+
+    def _chunk_deleted(self, notice, sender):
+        pass

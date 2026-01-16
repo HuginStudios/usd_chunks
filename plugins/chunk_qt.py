@@ -829,7 +829,6 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             notice (chunk_notice.ChunkLoadedNotice): The notice sent from the registry
             sender (chunk.Chunk): The new chunk that was added
         """
-
         self.add_chunk_widget(sender)
 
     def build(self):
@@ -912,6 +911,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             qproperty-barColor: #202020;
         }
         """)
+
         for module_name, mod in registry.registered_modules.items():
             loaded_chunk = mod.loaded_chunk
             if not loaded_chunk or mod.loaded:
@@ -1052,6 +1052,5 @@ def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
 
     module_dock = QtWidgets.QDockWidget("Chunks", parent_window)
 
-    widget_docker = ChunkWidgetDocker(parent=parent_window)
-    module_dock.setWidget(widget_docker)
+    module_dock.setWidget(ChunkWidgetDocker(parent=module_dock))
     parent_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, module_dock)

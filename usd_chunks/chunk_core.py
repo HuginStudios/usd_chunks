@@ -44,9 +44,11 @@ from enum import IntEnum, IntFlag
 
 import re
 import uuid
+import inspect
 
 from usd_chunks import chunk_notice, chunk_registry
 from usd_chunks.chunk import ChunkFlags
+import weakref
 
 import os
 from pxr import Tf, Usd
@@ -61,7 +63,7 @@ GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
 ChunkT = TypeVar("ChunkT", bound="ChunkCommon")
 
 
-class ChunkParamWidget(Generic[ParamT]):
+class ChunkParamWidget(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
     """Base class for a chunk param widget. Any ui element associated to a chunk or parameter should subclass from this.
     This class acts as an bridge between this toolkit and the UI library.
 
@@ -75,76 +77,39 @@ class ChunkParamWidget(Generic[ParamT]):
 
     def __init__(self, param: ParamT, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # self._param: weakref.ReferenceType[ParamT] = weakref.ref(param)
-        self.param: ParamT = param
-        # if inside a vector the vector index needs to be set.
+
+        # Store a weakref to the parameter in order to not take ownership. The param should be managed by
+        # the chunks
+        self._param: weakref.ReferenceType = weakref.ref(param)
+
+        # If the param is inside a vector group, the vector index corresponding to the param needs to be set.
         self.index = 0
 
-        self._connnections: List[chunk_notice.NoticeConnection] = []
-
-        self._connnections.append(
-            chunk_notice.NoticeConnection(
-                self.param_changed_callback,
-                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-                self.param.get_attribute_sender("value"),
-            )
+        self.add_callback(
+            self.handle_param_changed, param, notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED
         )
 
-        self._connnections.append(
-            chunk_notice.NoticeConnection(
-                self.label_changed_callback,
-                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-                self.param.get_attribute_sender("name"),
-            )
-        )
+    @property
+    def param(self) -> ParamT:
+        if param := self._param():
+            return param
+        raise ReferenceError("reference to param is dead! :'(")
 
-        self._connnections.append(
-            chunk_notice.NoticeConnection(
-                self.label_changed_callback,
-                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-                self.param.get_attribute_sender("label"),
-            )
-        )
+    def handle_param_changed(self, notice, sender):
+        attrname = notice.data.name
+        if attrname == "value" and notice.data.value is not None:
+            self.set_value(notice.data.value)
 
-        self._connnections.append(
-            chunk_notice.NoticeConnection(
-                self._icon_changed_callback,
-                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-                self.param.get_attribute_sender("icon"),
-            )
-        )
+        elif attrname in ["name", "label"]:
+            self.param.get_label()
 
-    def param_changed_callback(self, notice: Tf.Notice, param: ParamT):
-        """
-        Called when the parameter on the chunk changed, and thus this widget may need to update
-
-        Args:
-            notice (Tf.Notice): The notice sent by the change
-            param (ParamT): The param that changed
-        """
-        if param.value is not None:
-            self.set_value(param.value)
-
-    def label_changed_callback(self, notice: Tf.Notice, param: ParamT):
-        """
-        The label of the param changed, and thus this widget may need to update
-
-        Args:
-            notice (Tf.Notice): The notice sent by the change
-            param (ParamT): The changed param
-        """
-        self.set_label(self.param.get_label())
-
-    def _icon_changed_callback(self, notice: Tf.Notice, param: ParamT):
-        if self.param.icon:
-            self.set_icon(self.param.icon)
+        elif attrname == "icon" and sender.icon:  #
+            self.set_icon(sender.icon)
 
     def setup_chunk_widget(self):
         """
         Called when initializing the widget. Sets the value and label on this object to represent the values of the chunk object
         """
-        if not self.param:
-            return
 
         value = self.param.value
         label = self.param.get_label()
@@ -410,14 +375,14 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
     def __repr__(self) -> str:
         return f"AttributeSender({self.name} = {self.value})"
 
-    def get_notice_data(self) -> Tuple[Any, Any]:
+    def get_notice_data(self) -> "AttributeSender":
         """
         The notice data for AttributeSender's are the old_value and the new_value
 
         Returns:
             Tuple[Any, Any]: A tuple of new and old values
         """
-        return (self.old_value, self.value)
+        return self
 
     @property
     def value(self) -> Any:
@@ -445,9 +410,10 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
     def _copy_connection(self, conn: chunk_notice.NoticeConnection, src: chunk_notice.ChunkNoticePropagator):
         # Add connections to the copy by creating new NoticeConnection objects
         # Rewire the connection to the copy if conn.sender is the source of the copy (self)
-        sender = self if conn.sender == src else conn.sender
-        new_conn = chunk_notice.NoticeConnection(conn.method, conn.alias, sender, conn.globally, conn.send_owner, self)
-        self.add_connection(new_conn)
+        if meth := conn.get_method():
+            sender = self if conn.sender == src else conn.sender
+            new_conn = chunk_notice.NoticeConnection(meth, conn.alias, sender, conn.globally, conn.send_owner, self)
+            self.add_connection(new_conn)
 
 
 class CopyMode(IntEnum):
@@ -527,43 +493,14 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         ),
     )
 
-    # # link to UsdAttribute if needed. Hidden in __init__ as the field would be added as the first argument
-    # # by the concrete classes
-    # _usd_attr: Optional[Usd.Attribute] = attrs.field(default=None, init=False)
-
-    # # Hold a connection to the Usd.Attribute of usd_attr.
-    # _usd_attr_connection: Optional[chunk_notice.NoticeConnection] = attrs.field(
-    #     default=None, init=False, metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND)
-    # )
-
-    # @abstractmethod
-    # def update_usd_attrib(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
-    #     if not isinstance(notice.data, Usd.Attribute):
-    #         return
-    #     notice.data.Set(sender.value)
-
-    # @abstractmethod
-    # def usd_attrib_changed(self, attr: Usd.Attribute):
-    #     if not self._usd_attr_connection:
-    #         return
-    #     if not isinstance(self._usd_attr_connection.sender, AttributeSender):
-    #         return
-
-    #     self._usd_attr_connection.sender.value = attr.Get(0)
-
-    # def set_usd_attr(self, attr: Usd.Attribute, sender: AttributeSender):
-    #     self._usd_attr = attr
-
-    #     if self._usd_attr_connection:
-    #         self._usd_attr_connection.disconnect()
-
-    #     self._usd_attr_connection = chunk_notice.NoticeConnection(
-    #         self.update_usd_attrib, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender
-    #     )
-    #     self.usd_attrib_changed(attr)
-
-    # def get_usd_attr(self) -> Usd.Attribute | None:
-    #     return self._usd_attr
+    @classmethod
+    def print_init_signature(cls):
+        signature = inspect.signature(cls.__init__)
+        msg = "__init__("
+        for param in signature.parameters.keys():
+            msg += "\n    " + param + ","
+        msg += "\n)"
+        print(f"{cls.__name__} __init__ signature: \n", msg)
 
     def __attrs_post_init__(self):
         # Loop over all fields and add an AttributeSender for the attribute, which will be sent in value_changed. Doing this instead of
@@ -662,7 +599,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         """
         return attrs.inspect(cls)
 
-    def get_attribute_sender(self, attribname: str) -> AttributeSender | None:
+    def get_attribute_sender(self, attribname: str) -> AttributeSender:
         """Get a sender for an attribute on this instance. The AttributeSender can be used to
         subscribe to specific attribute changes in callbacks, either by:
             attributeSender.add_callback(some_method)
@@ -679,9 +616,15 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             attribname (str): Name of the attribute
 
         Returns:
-            AttributeSender | None: The AttributeSender mapped by attribname, if found
+            AttributeSender: The AttributeSender mapped by attribname, if found
+
+        Raises:
+            AttributeError: If the attribute sender was not found
         """
-        return self._attr_senders.get(attribname, None)
+
+        if sender := self._attr_senders.get(attribname):
+            return sender
+        raise AttributeError(f"Attribute sender not found {attribname}")
 
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         """
@@ -856,6 +799,9 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         return (self.last_removed, self.last_added)
 
     def clear(self):
+        """
+        Clear all children from this container
+        """
         self.names.clear()
         self.params.clear()
 
@@ -1034,21 +980,23 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
     def send_added(self, obj: "ChunkCommon"):
         self.last_added = obj._hashable
-        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.PARAM_ADDED, self.get_owner(), self.get_notice_data())
+        obj.send_self(chunk_notice.ChunkNoticeAlias.PARAM_ADDED)
 
     def send_removed(self, obj: "ChunkCommon"):
         self.last_removed = obj._hashable
-        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, self.get_owner(), self.get_notice_data())
+        obj.send_self(chunk_notice.ChunkNoticeAlias.PARAM_REMOVED)
 
     def __delitem__(self, key: ChunkHash):
         if obj := self.get_param(key):
             del self.names.maps[0][obj.name]
             del self.params.maps[0][key]
 
+            # send_removed uses obj.send_self(). For this reason, we need to call send_remove before set_owner(None), 
+            # as send_self() will propagate the notice to the owners
+            self.send_removed(obj)
+
             if obj.get_owner() == self:
                 obj.set_owner(None)
-
-            self.send_removed(obj)
 
     def pop(self, key: ChunkHash) -> Optional["ChunkCommon"]:
         """
@@ -1153,6 +1101,9 @@ class ChunkCommon(AttributesBase):
         metadata=AttributeMetadata(sender_alias=chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED),
     )  # type: ignore
 
+    def get_layer_identifier(self) -> str:
+        return f"{self.name}:{str(hash(self))}"
+
     def reset_state(self):
         """
         Clears DISABLED and HIDDEN states
@@ -1193,7 +1144,7 @@ class ChunkCommon(AttributesBase):
 
     def _validate_path(self, attr: attrs.Attribute, value) -> bool:
         """Check if the given value is a valid os path to be used as an attribute.
-        Can be called in _validate or _convert of subclasses when checking a path attribute. 
+        Can be called in _validate or _convert of subclasses when checking a path attribute.
         Use _validate_existing_path to check for existing paths. Currently this does nothing.
         Holding off with this as some string parameter may support Sdf.AssetPath or pathlib.Path
         TODO: implement
@@ -1328,6 +1279,7 @@ class ChunkCommon(AttributesBase):
         self.set_owner(None)
         for i in self._connections:
             i.disconnect()
+
         self._connections.clear()
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
@@ -1352,11 +1304,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
     def data_changed(
         self, notice: Tf.Notice | None, sender: Any, propagated: chunk_notice.ChunkNoticePropagator | None = None
     ) -> Tf.Notice | None:
-
         my_notice = super().data_changed(notice, sender, propagated)
-        
+
         if usd_attr := self.get_usd_attr():
-            # Sender should be the AttributeSender which _usd_attr_connection listen for 
+            # Sender should be the AttributeSender which _usd_attr_connection listen for
             chunk_notice.send_notice(sender.get_notice_alias(), sender, usd_attr)
         return my_notice
 
@@ -1498,6 +1449,10 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             ChunkFlags.ParamType: The runtime type of this parameter. Uses get_type() by default
         """
         return self.get_type()
+
+    def request_delete(self):
+        print("request delete: ", self.name)
+        return super().request_delete()
 
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.PARAM_CHANGED

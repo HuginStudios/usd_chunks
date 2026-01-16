@@ -1,6 +1,6 @@
 from usd_chunks import chunk, chunk_notice
 from typing import List
-from pxr import Sdf, Usd, Tf
+from pxr import Usd
 
 
 def build(myChunk: chunk.Chunk, signal, sender):
@@ -43,7 +43,7 @@ def build(myChunk: chunk.Chunk, signal, sender):
 
 
 def main():
-    myChunk = chunk.Chunk("Dynamic", category="Example")
+    myChunk = chunk.Chunk("Dynamic", category="Attributes")
     myChunk.add_callback(build, listen_globally=True, notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED)
 
     return myChunk

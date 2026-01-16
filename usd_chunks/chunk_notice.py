@@ -29,6 +29,7 @@ from functools import partial
 from abc import abstractmethod
 
 import weakref
+import inspect
 
 
 class ChunkNoticeAlias(IntEnum):
@@ -58,6 +59,9 @@ class ChunkNoticeAlias(IntEnum):
         PRIM_SELECTION_CHANGED : Sent whenever the prim selection changed in UsdView
         PROP_SELECTION_CHANGED : Sent whenever the prop selection changed in UsdView
         OBJECT_CHANGED : Sent whenever anything was changed on the stage
+        STAGE_CHANGED : Sent when the stage is changed
+        STAGE_CONTENTS_CHANGED : Sent when stage contents changed
+        STAGE_EDIT_TARGET_CHANGED : Sent when the edit target on the stage changed
 
         CHUNK_LOADED : Sent when a new chunk has beed added to the registry
         CHUNK_UNLOADED : Sent when a chunk was unloaded
@@ -92,6 +96,9 @@ class ChunkNoticeAlias(IntEnum):
     PRIM_SELECTION_CHANGED = auto()
     PROP_SELECTION_CHANGED = auto()
     OBJECT_CHANGED = auto()  # Something was changed on the stage
+    STAGE_CHANGED = auto()
+    STAGE_CONTENTS_CHANGED = auto()
+    STAGE_EDIT_TARGET_CHANGED = auto()
 
     # Registry notices
     CHUNK_LOADED = auto()  # Sent when a new chunk has beed added to the registry
@@ -240,7 +247,7 @@ class ChunkLoadedNotice(ChunkNotice):
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_UNLOADED)
-class ChunkUnLoadedNotice(ChunkNotice):
+class ChunkUnloadedNotice(ChunkNotice):
     pass
 
 
@@ -264,6 +271,9 @@ class PropSelectionChangedNotice(ChunkNotice):
 
 # Register externally manages notice just to map to the custom enum
 ChunkNoticeRegistry().register(ChunkNoticeAlias.OBJECT_CHANGED, Usd.Notice.ObjectsChanged)
+ChunkNoticeRegistry().register(ChunkNoticeAlias.STAGE_CHANGED, Usd.Notice.StageNotice)
+ChunkNoticeRegistry().register(ChunkNoticeAlias.STAGE_CONTENTS_CHANGED, Usd.Notice.StageContentsChanged)
+ChunkNoticeRegistry().register(ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED, Usd.Notice.StageEditTargetChanged)
 
 
 def get_notice(alias: ChunkNoticeAlias) -> Type[Tf.Notice]:
@@ -340,11 +350,21 @@ class ChunkNoticePropagator:
     _connections: List["NoticeConnection"]
     _owner: Optional[weakref.ReferenceType["ChunkNoticePropagator"]]
 
-    def __init__(self) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         self._last_notice = None
         self._last_sender = None
         self._connections = []
         self._owner = None
+
+        super().__init__(*args, **kwargs)
+
+    # def __del__(self):
+    #     for conn in self._connections:
+    #         conn.disconnect()
+
+    @abstractmethod
+    def request_delete(self):
+        raise NotImplementedError
 
     def _copy_connections(self, src: "ChunkNoticePropagator"):
         """
@@ -365,10 +385,10 @@ class ChunkNoticePropagator:
             conn (NoticeConnection): The connection to copy
             src (ChunkNoticePropagator): The source ChunkNoticePropagator to copy from
         """
-        sender = self if conn.sender == src else conn.sender
-
-        new_conn = NoticeConnection(conn.method, conn.alias, sender, conn.globally, conn.send_owner, self)
-        self.add_connection(new_conn)
+        if meth := conn.get_method():
+            sender = self if conn.sender == src else conn.sender
+            new_conn = NoticeConnection(meth, conn.alias, sender, conn.globally, conn.send_owner, self)
+            self.add_connection(new_conn)
 
     def get_notice_data(self) -> Any:
         """
@@ -461,7 +481,7 @@ class ChunkNoticePropagator:
             owner.data_changed(my_notice, self, propagated if propagated else sender)
 
         # if usd_attr := self.get_usd_attr():
-            # send_notice(self.get_notice_alias(), self, usd_attr)
+        # send_notice(self.get_notice_alias(), self, usd_attr)
 
         return my_notice
 
@@ -595,22 +615,30 @@ class NoticeConnection:
         owner: Optional[ChunkNoticePropagator] = None,
     ):
         self.alias: ChunkNoticeAlias = alias
-
         self.listener: Optional[Tf.Notice.Listener] = None
 
         self.globally: bool = globally
-        self.method: Callable = method
+
+        if inspect.ismethod(method):
+            self._method: Callable = weakref.WeakMethod(method, self._method_died)
+        else:
+            self._method: Callable = weakref.ref(method, self._method_died)
+
         self.send_owner: bool = send_owner
 
-        self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender) if sender else None
-        self._owner: Optional[weakref.ProxyType] = weakref.proxy(owner) if owner else None
-        self.__method = None
+        self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender, self._sender_died) if sender else None
+        self._owner: Optional[weakref.ProxyType] = weakref.proxy(owner, self._owner_died) if owner else None
 
         self.connect()
 
+    def get_method(self) -> Callable | None:
+        if not isinstance(self._method, weakref.ReferenceType):
+            return self._method
+        return self._method()
+
     @property
     def owner(self):
-        return None if self._owner is None else self._owner
+        return None if not self._owner else self._owner
 
     @owner.setter
     def owner(self, obj: Optional[ChunkNoticePropagator]):
@@ -623,6 +651,16 @@ class NoticeConnection:
     @sender.setter
     def sender(self, obj):
         self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
+
+    def handle_callback(self, notice, sender=None):
+        meth = self.get_method()
+        if not meth:
+            return
+
+        if self.owner and self.send_owner and not inspect.ismethod(meth):
+            partial(meth, self.owner)(notice, sender)
+        else:
+            meth(notice, sender)
 
     def __del__(self):
         self.disconnect()
@@ -643,22 +681,22 @@ class NoticeConnection:
             self.disconnect()
 
         if sender is not None:
-            self.sender = sender
+            self._sender = weakref.ref(sender)
 
         # If we should include the owner as the first argument of the method,
         # we add it using partial
-        self.__method = None
-        if self.send_owner and self.owner:
-            self.__method = partial(self.method, self.owner)
-        else:
-            self.__method = self.method
-
         if self.sender is None or self.globally:
-            self.listener = Tf.Notice.RegisterGlobally(notice, self.__method)
+            self.listener = Tf.Notice.RegisterGlobally(notice, self.handle_callback)
         elif self.sender:
-            self.listener = Tf.Notice.Register(notice, self.__method, self.sender)
+            self.listener = Tf.Notice.Register(notice, self.handle_callback, self.sender)
 
     def _sender_died(self, ref):
+        self.disconnect()
+
+    def _owner_died(self, ref):
+        self.disconnect()
+
+    def _method_died(self, ref):
         self.disconnect()
 
     def disconnect(self):
@@ -668,7 +706,6 @@ class NoticeConnection:
         if self.listener is not None:
             self.listener.Revoke()
             self.listener = None
-        self.__method = None
 
 
 class SceneSender(ChunkNoticePropagator):
@@ -678,7 +715,7 @@ class SceneSender(ChunkNoticePropagator):
     """
 
     @abstractmethod
-    def get_stage(self):
+    def get_stage(self) -> Usd.Stage:
         raise NotImplementedError
 
     def get_selected_prims(self) -> List[Usd.Prim]:

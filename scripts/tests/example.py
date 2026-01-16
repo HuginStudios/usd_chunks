@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_core, chunk_notice
+from usd_chunks import chunk, chunk_core, chunk_notice, chunk_registry
 
 from functools import wraps
 
@@ -50,6 +50,7 @@ def chunkChanged(owner, notice, sender):
         indent += step
     print(msg)
 
+
 @nice_print
 def paramChanged(owner, notice, sender):
     print(sender.name, sender.value)
@@ -83,7 +84,6 @@ def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: 
         notice (chunk_notice.PropSelectionChangedNotice): The notice object. This is just an identifier for the type of notice sent
         sender (chunk_notice.UsdviewSelectionNotice): The actual sender
     """
-
     if not notice.data:
         return
     path = notice.data[0].GetPath()
@@ -91,6 +91,7 @@ def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: 
         return
 
     owner.value = str(path)
+
 
 def main():
     # A simple checkbox
@@ -154,7 +155,7 @@ def main():
     sliderVec = chunk.Vector("SliderVec", param=chunk.Slider(), length=3, suffixes="XYZ")
     sliderVec[0] = 10
 
-    # A button will call the callback just like any other param, but does not care about its value
+    # # A button will call the callback just like any other param, but does not care about its value
     button = chunk.Button("button")
     button.add_callback(clickedButton)
 
@@ -170,9 +171,15 @@ def main():
     # Add the updateLabel as a callback - this will be called whenever the prim selection changes in UsdView. Any UsdView notices will be sent from
     # the chunk_notice.SceneSender. As the label does not emit send the PRIM_SELECTION_CHANGED itself, we need to either specify a sender (the SceneSender in this cas),
     # or listen globally for the notice.
+    # label.add_callback(
+    #     updateLabel, listen_globally=True, notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED
+    # )
     label.add_callback(
         updateLabel, listen_globally=True, notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED
     )
+
+    label_grp = chunk.Group("Group")
+    label_grp.add_param(label)
 
     # A text edit is a parameter for editing strings
     textEdit = chunk.LineEdit("line_edit")

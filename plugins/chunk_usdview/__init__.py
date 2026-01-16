@@ -45,8 +45,13 @@ def launch_chunks(usdviewApi) -> None:
     """
     # The order of these does not matter. We can initialize the QT widgets before the ChunkRegistry since
     # the QT widget subscribes to the CHUNK_LOADED notice, and will add chunks when that notice is recieved.
+
+    scene = UsdviewScene(usdviewApi)
+
     chunk_qt.build_chunk_docker(usdviewApi.qMainWindow)
-    chunk_registry.ChunkRegistry().initialize(UsdviewScene(usdviewApi))
+    chunk_registry.ChunkLayerManager().initialize(scene)
+    chunk_registry.ChunkRegistry().initialize(scene)
+
 
 class ChunksPluginContainer(PluginContainer):
     def reloadChunks(self, usdviewApi):
@@ -58,8 +63,8 @@ class ChunksPluginContainer(PluginContainer):
                 reg.load_module(mod)
 
     def openModuleSettings(self, usdviewApi):
-        dial = chunk_qt.ChunkModuleLoader()
-        dial.exec()
+        dial = chunk_qt.ChunkModuleLoader(usdviewApi.qMainWindow)
+        dial.show()
 
     def registerPlugins(self, plugRegistry, usdviewApi) -> None:
         """Register the UI Creator plugin with the plugin registry.
@@ -68,7 +73,6 @@ class ChunksPluginContainer(PluginContainer):
             plugRegistry: The plugin registry to register the UI Creator plugin with.
             usdviewApi: The Usdview API instance to use for module creation.
         """
-
         self._reloadChunksCommand = plugRegistry.registerCommandPlugin(
             "ChunksPlugin.reloadChunks", "Reload Chunks", self.reloadChunks
         )

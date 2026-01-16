@@ -36,10 +36,10 @@ def update_variant_selection(mychunk, notice, sender):
     update(mychunk, selected_prim)
 
 
-def update(mychunk, selected_prim):
+def update(mychunk: chunk.Chunk, selected_prim):
     # remove current params.
-    for p in mychunk.get_my_params():
-        p.request_delete()
+    for p in mychunk.get_params():
+        mychunk.remove_param_or_group(p)
 
     if not selected_prim.HasVariantSets():
         label = chunk.Label("No variant exists.")
