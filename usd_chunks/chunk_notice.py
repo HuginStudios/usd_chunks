@@ -153,13 +153,32 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
 
     @classmethod
     def get_from_alias(cls, alias: ChunkNoticeAlias) -> Type[Tf.Notice]:
+        """
+        Get a registered notice from a ChunkNoticeAlias
+
+        Args:
+            alias (ChunkNoticeAlias): The alias to look up
+
+        Raises:
+            Tf.ErrorException: If the alias has not been registered
+
+        Returns:
+            Type[Tf.Notice]: The class of the registered notice
+        """
         notice = cls.registered.get(alias.value)
         if notice is None:
             raise Tf.ErrorException(f"No notice found for alias {alias}")
         return notice
 
     @classmethod
-    def register(cls, alias: ChunkNoticeAlias, notice_class):
+    def register(cls, alias: ChunkNoticeAlias, notice_class: Type[Any]):
+        """
+        Register a new notice and associate it with an alias
+
+        Args:
+            alias (ChunkNoticeAlias): The alias which to associate with the notice
+            notice_class (Type[Any]): The class that should be registered
+        """
         if alias not in cls.registered:
             notice_class.alias = alias
             if not hasattr(notice_class, "data"):
@@ -358,10 +377,6 @@ class ChunkNoticePropagator:
 
         super().__init__(*args, **kwargs)
 
-    # def __del__(self):
-    #     for conn in self._connections:
-    #         conn.disconnect()
-
     @abstractmethod
     def request_delete(self):
         raise NotImplementedError
@@ -428,6 +443,13 @@ class ChunkNoticePropagator:
 
     @abstractmethod
     def get_usd_attr(self) -> Optional[Usd.Attribute]:
+        """
+        Unused by default, but placeholder
+
+        Returns:
+            Optional[Usd.Attribute]: None by default. If usd attribute support is added to a subclass, this should return
+                the UsdSAttribute the object modifies
+        """
         return None
 
     def get_owner(self) -> Optional["ChunkNoticePropagator"]:
@@ -479,9 +501,6 @@ class ChunkNoticePropagator:
         # Set owner data_changed if available
         if owner:
             owner.data_changed(my_notice, self, propagated if propagated else sender)
-
-        # if usd_attr := self.get_usd_attr():
-        # send_notice(self.get_notice_alias(), self, usd_attr)
 
         return my_notice
 
@@ -602,7 +621,42 @@ class NoticeConnection:
     """
     A storage for a TfListener object. This class provides a simple client-facing interface for
     creating callbacks for the TfNotice system, with some additional functionality. This exists also
-    to store the information for the callbacks held by ChunkNoticePropagators
+    to store the information for the callbacks held by ChunkNoticePropagators.
+
+    All references to external objects, i.e, method, sender and owner, are stored as weakrefs as to not
+    take ownership. Properties are implemented to access them. Because of this, notice.method,
+    notice.owner or notice.sender may be None if the method has gone out of scope elsewhere.
+
+    The owner can be used to pass an additional object as an argument to the function call, enabling
+    ``` py
+    def func(obj: AClass, notice, sender):
+        pass
+
+
+    class AClass:
+        def __init__(self):
+            NoticeConnection(func)
+    ```
+    as well as:
+
+    ``` py
+    class AnotherClass:
+        def func(self):
+            pass
+
+
+    def bind(obj: AnotherClass):
+        return NoticeConnection(obj.func)
+    ```
+
+    Attributes:
+        alias: A ChunkNoticeAlias associated to the notice we want to send
+        sender: The sender of the notice. When globally is True, this has not effect
+        globally: If we dont care about the sender but listening for all notices
+            of the same alias.
+        send_owner: If the owner is set, we can decide to send the owner as an argument 
+            to the function. This adds owner to the beginning of the arguments
+        owner: An optional owner object. Usually 'self', when adding callbacks on a class
     """
 
     def __init__(

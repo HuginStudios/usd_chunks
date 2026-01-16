@@ -64,7 +64,7 @@ class ChunkModule:
         return self.module_name == other.module_name
 
     def config_changed(self, notice, sender):
-        print("CONFIG CHANGED: ", notice, sender)
+        pass
 
     def run(self, func_name: str = "main", *args, **kwargs) -> None | chunk.Chunk:
         """Call function func_name in the loaded module and set self.loaded_chunk to the returned value.
@@ -94,6 +94,9 @@ class ChunkModule:
         return self.load(func_name)
 
     def unload(self):
+        """
+        Unload this module by deleting the associated chunk object
+        """
         if not self.loaded or not self.loaded_chunk:
             return
 
@@ -108,7 +111,16 @@ class ChunkModule:
 
         self.loaded_chunk = None
 
-    def load(self, func_name="main"):
+    def load(self, func_name="main") -> chunk.Chunk | None:
+        """
+        Load the module by calling func_name from self.module. Can be used instead of run to bypass the config checks
+
+        Args:
+            func_name (str, optional): A name of the function to execute from the module. Defaults to "main".
+
+        Returns:
+            chunk.Chunk | None: The loaded chunk object of successful. None otherwise
+        """
         if not hasattr(self.module, func_name):
             print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
             self.loaded = False
@@ -277,7 +289,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         if module_filter := os.environ.get("USD_CHUNK_FILTER"):
             if mod.module_name not in module_filter:
-                mod.loaded = False  
+                mod.loaded = False
                 return
 
         try:
@@ -345,10 +357,28 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):
+    """
+    A singleton class for managing the chunk layers. All chunks will be associated with a layer, on to
+    which the edits of the Chunks parameters are applied. This singleton is responsible for creating and
+    deleting these layers on creation / deletion of the chunks.
+
+    Attributes:
+        chunk_layers (Dict[ChunkHash, str]) : A mapping from a Chunk to a layer identifier
+        scene (SceneSender) : A handle to the scene for stage access
+    """
+
     chunk_layers: Dict[ChunkHash, str]
     scene: SceneSender
 
     def initialize(self, scene: SceneSender):
+        """
+        Called to initialize the singleton. This should be called at least once in order to setup
+        the manager
+
+        Args:
+            scene (SceneSender): A SceneSender object with access to the stage
+        """
+
         self._edit_target_listener = NoticeConnection(
             self._edit_target_changed, ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED, globally=True
         )
@@ -360,18 +390,32 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.scene = scene
 
     def add_layer(self, target_layer: Sdf.Layer, c: chunk.Chunk) -> Sdf.Layer:
+        """
+        Add a layer to the stage and add a mapping from chunk c to the new layer.
+
+        Args:
+            target_layer (Sdf.Layer): The target layer onto which we append the new layer
+            c (chunk.Chunk): The chunk that can modify the new layer. The new layer's identifier
+                will be created from the chunks get_layer_identifier()
+
+        Returns:
+            Sdf.Layer: A new layer
+        """
         layer_id = c.get_layer_identifier()
         layer = Sdf.Layer.CreateAnonymous(layer_id)
 
         self.chunk_layers[c._hashable] = layer.identifier
-
         target_layer.subLayerPaths.append(layer.identifier)
-
-        print("Add layer: ", layer.identifier)
 
         return layer
 
     def reload_all(self, stage: Optional[Usd.Stage] = None):
+        """
+        clear the chunk layer stack and recreate them
+
+        Args:
+            stage (Optional[Usd.Stage], optional): An optional stage. This is used when the stage is just loaded and the scene does not yet have access to it. Defaults to None.
+        """
         stage = stage if stage else self.scene.get_stage()
         if not stage:
             return
@@ -416,9 +460,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             for i, sublayer in reversed(list(enumerate(sublayer_paths))):
                 if sublayer == layer:
                     sublayer_paths.pop(i)
-    
-            stage.GetSessionLayer().subLayerPaths = sublayer_paths  # type: ignore
 
+            stage.GetSessionLayer().subLayerPaths = sublayer_paths  # type: ignore
 
     def _chunk_deleted(self, notice, sender):
         pass

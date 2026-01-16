@@ -199,7 +199,6 @@ class ChunkFlags:
         if ChunkFlags.ParamType.STRING in t:
             result.append(str)
             result.append(Sdf.AssetPath)
-        # if ChunkFlags.ParamType.FILE in t:
         return result
 
 
@@ -479,6 +478,18 @@ _type_map = {
 
 
 def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
+    """
+    Create a new paramaeter from a Usd.Attribute if the attribute type is supported. Will use
+    the from_usd_attr class method of the found param type. It will connect the ATTRIBUTE_CHANGED
+    notice to control the usd attribute. We return a ChunkCommon object rather than a ChunkParamBase as
+    as some parameters may actually be groups (Vectors f.e.)
+
+    Args:
+        attr (Usd.Attribute): The Usd.Attribute which to create a parameter for
+
+    Returns:
+        ChunkCommon | None: If a mapping exists for the attr type, then returns a ChunkCommon object. Else None.
+    """
     type_name = attr.GetTypeName()
 
     t = _type_map.get(str(type_name))

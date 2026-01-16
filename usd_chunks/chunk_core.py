@@ -1358,8 +1358,11 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
             param.default_value = default_value  # type: ignore
 
-        if sender := param.get_attribute_sender("value"):
-            param.set_usd_attr(attr, sender)
+        try:
+            if sender := param.get_attribute_sender("value"):
+                param.set_usd_attr(attr, sender)
+        except AttributeError:
+            pass
 
         return param
 
