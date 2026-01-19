@@ -5,7 +5,11 @@ from plugins import chunk_usdview
 def set_shademode(owner: chunk.ChunkParamBase, notice, sender: chunk.Button):
     shade_action = owner.user_data["action"]
     shade_action.setChecked(True)
-    appController = owner.get_usdview_api()._UsdviewApi__appController
+
+    scene = chunk_registry.ChunkRegistry().scene
+    # For chunk_usdview plugin, the SceneSender is subclassed to to also provide
+    # access to the usdviewAPI
+    appController = scene.usdviewAPI._UsdviewApi__appController
     appController._changeRenderMode(shade_action)
     appController._stageView.updateGL()
 
@@ -42,3 +46,6 @@ def main():
         chunk_api.add_param(button)
 
     return chunk_api
+
+def config():
+    return chunk.DefaulConfig(load_for_plugin="chunk_usdview")

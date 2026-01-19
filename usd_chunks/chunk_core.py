@@ -51,7 +51,7 @@ from usd_chunks.chunk import ChunkFlags
 import weakref
 
 import os
-from pxr import Tf, Usd
+from pxr import Tf, Usd, Sdf
 
 ################################
 # BASE CLASSES FOR UI ELEMENTS #
@@ -991,7 +991,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             del self.names.maps[0][obj.name]
             del self.params.maps[0][key]
 
-            # send_removed uses obj.send_self(). For this reason, we need to call send_remove before set_owner(None), 
+            # send_removed uses obj.send_self(). For this reason, we need to call send_remove before set_owner(None),
             # as send_self() will propagate the notice to the owners
             self.send_removed(obj)
 
@@ -1103,6 +1103,19 @@ class ChunkCommon(AttributesBase):
 
     def get_layer_identifier(self) -> str:
         return f"{self.name}:{str(hash(self))}"
+
+    def get_hash(self) -> ChunkHash:
+        return self._hashable
+
+    def get_edit_context(self) -> Sdf.Layer:
+        owner = self.get_owner()
+        while owner and not isinstance(owner, ChunkBase):
+            owner = owner.get_owner()
+
+        if not owner:
+            return chunk_registry.ChunkLayerManager().get_or_create_layer(self)
+
+        return chunk_registry.ChunkLayerManager().get_or_create_layer(owner)
 
     def reset_state(self):
         """
@@ -1284,6 +1297,14 @@ class ChunkCommon(AttributesBase):
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
 
+class ChunkUsdLayerSupport(Protocol):
+    def get_edit_context(self) -> Sdf.Layer: ...
+
+    def get_layer_identifier(self) -> str: ...
+
+    def get_hash(self) -> ChunkHash: ...
+
+
 class ChunkUsdAttributeSupport(AttributesBase):
     """
     This inteface class can be subclassed for valued parameter classes in order to support connections
@@ -1311,14 +1332,44 @@ class ChunkUsdAttributeSupport(AttributesBase):
             chunk_notice.send_notice(sender.get_notice_alias(), sender, usd_attr)
         return my_notice
 
+    def get_layer_identifier(self) -> str:
+        raise NotImplementedError
+
+    def get_hash(self) -> ChunkHash:
+        raise NotImplementedError
+
+    def get_edit_context(self) -> Sdf.Layer:
+        raise NotImplementedError
+
     @abstractmethod
     def update_usd_attrib(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
+        """
+        A callback for setting the UsdAttribute on changes to the sender. Used by parameters when
+        modifying the 'value' attribute, then this will be invoked with sender build the 'value'
+        AttributeSender object, and the notice.data will be the UsdAttribute
+
+        Args:
+            notice (chunk_notice.AttributeChangeNotice): The notice holding the UsdAttribute
+            sender (AttributeSender): The sender of the notice
+        """
         if not isinstance(notice.data, Usd.Attribute):
             return
-        notice.data.Set(sender.value)
+
+        if notice.data.Get(0) == sender.value:
+            return
+
+        with Usd.EditContext(notice.data.GetStage(), self.get_edit_context()):
+            notice.data.Set(sender.value)
 
     @abstractmethod
     def usd_attrib_changed(self, attr: Usd.Attribute):
+        """
+        A callback for when the UsdAttribute member was changed. This will update the value of
+        the AttributeSender passed to set_usd_attr().
+
+        Args:
+            attr (Usd.Attribute): The updated UsdAttribute.
+        """
         if not self._usd_attr_connection:
             return
         if not isinstance(self._usd_attr_connection.sender, AttributeSender):
@@ -1327,6 +1378,16 @@ class ChunkUsdAttributeSupport(AttributesBase):
         self._usd_attr_connection.sender.value = attr.Get(0)
 
     def set_usd_attr(self, attr: Usd.Attribute, sender: AttributeSender):
+        """
+        Set the references UsdAttribute object. Any changes to the param will
+        update the attribute
+
+        Args:
+            attr (Usd.Attribute): The UsdAttribute to refrence
+            sender (AttributeSender): A sender object that should connect to the UsdAttribute.
+                When a signal with sender and ATTRIBUTE_CHANGED notice is sent, the method
+                update_usd_attrib() of this class is called
+        """
         self._usd_attr = attr
 
         if self._usd_attr_connection:
@@ -1338,10 +1399,26 @@ class ChunkUsdAttributeSupport(AttributesBase):
         self.usd_attrib_changed(attr)
 
     def get_usd_attr(self) -> Usd.Attribute | None:
+        """
+        Get the usd attribute references by this object
+
+        Returns:
+            Usd.Attribute | None: The referenced usd attribute
+        """
         return self._usd_attr
 
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> "ChunkUsdAttributeSupport":
+        """
+        Create a new parameter from a UsdAttribute and set up the connection for setting
+        the attribute upon value changed on the param.
+
+        Args:
+            attr (Usd.Attribute): The attribute to represent as a param
+
+        Returns:
+            ChunkUsdAttributeSupport: A parameter that implements the ChunkUsdAttributeSupport interface
+        """
         attr_name = attr.GetName()
 
         if (args and isinstance(args[0], str)) or kwargs.get("name"):
@@ -1454,7 +1531,6 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         return self.get_type()
 
     def request_delete(self):
-        print("request delete: ", self.name)
         return super().request_delete()
 
     def get_notice_alias(self):
@@ -1740,6 +1816,7 @@ class ChunkGroupBase(ChunkContainerBase):
 
 class ChunkConfig(AttributesBase):
     load: bool = attrs.field(default=True)
+    load_for_plugin: Optional[str] = attrs.field(default=None)
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED

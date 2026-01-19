@@ -49,8 +49,8 @@ def launch_chunks(usdviewApi) -> None:
     scene = UsdviewScene(usdviewApi)
 
     chunk_qt.build_chunk_docker(usdviewApi.qMainWindow)
-    chunk_registry.ChunkLayerManager().initialize(scene)
-    chunk_registry.ChunkRegistry().initialize(scene)
+    chunk_registry.ChunkLayerManager().initialize(usdviewApi.stage)
+    chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
 
 
 class ChunksPluginContainer(PluginContainer):

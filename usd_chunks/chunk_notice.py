@@ -681,7 +681,7 @@ class NoticeConnection:
         self.send_owner: bool = send_owner
 
         self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender, self._sender_died) if sender else None
-        self._owner: Optional[weakref.ProxyType] = weakref.proxy(owner, self._owner_died) if owner else None
+        self._owner: Optional[weakref.ReferenceType] = weakref.ref(owner, self._owner_died) if owner else None
 
         self.connect()
 
@@ -692,11 +692,11 @@ class NoticeConnection:
 
     @property
     def owner(self):
-        return None if not self._owner else self._owner
+        return None if not self._owner else self._owner()
 
     @owner.setter
     def owner(self, obj: Optional[ChunkNoticePropagator]):
-        self._owner = weakref.proxy(obj) if obj else None
+        self._owner = weakref.ref(obj, self._owner_died) if obj else None
 
     @property
     def sender(self):

@@ -1,10 +1,10 @@
 import os
-from usd_chunks import chunk, chunk_notice
-from pxr import Sdf, Usd, UsdGeom, UsdShade
+from usd_chunks import chunk, chunk_notice, chunk_registry
+from pxr import Sdf, Usd, UsdShade
 from PySide6 import QtWidgets
 
 
-def apply(notice, sender: chunk.Chunk):
+def apply(owner: chunk.Chunk, notice, sender: chunk.Chunk):
     if notice.data is not sender.get_param("apply"):
         return
 
@@ -16,14 +16,16 @@ def apply(notice, sender: chunk.Chunk):
     y_scale = y_scale_param.value
 
     filebrowser = sender.get_param("browse")
-
-    api = sender.get_usdview_api()
     checker_file = filebrowser.value
-    selected_prim = api.prim
 
-    if not selected_prim or selected_prim == api.stage.GetPseudoRoot():
+    # api = sender.get_usdview_api()
+    scene = chunk_registry.ChunkRegistry().scene
+    stage = scene.get_stage()
+    selected_prims = scene.get_selected_prims()
+
+    if not selected_prims or selected_prims == stage.GetPseudoRoot():
         msg = "Prim not selected."
-        if selected_prim:
+        if selected_prims:
             msg = "Cannot apply material on the top PseudoRoot!"
         error_dlg = QtWidgets.QMessageBox()
         error_dlg.setWindowTitle("Error")
@@ -31,12 +33,7 @@ def apply(notice, sender: chunk.Chunk):
         error_dlg.exec_()
         return
 
-    # Create an group to hold the UV checker matirial
-    stage = api.stage
-
-    uv_checker_layer = Sdf.Layer.CreateAnonymous("uv_checker")
-    stage.GetSessionLayer().subLayerPaths.append(uv_checker_layer.identifier)
-    with Usd.EditContext(stage, uv_checker_layer):
+    with Usd.EditContext(stage, owner.get_edit_context()):
         base_material_grp = "/materials"
         material_path = f"{base_material_grp}/UVCheckerMaterial"
         surface_path = f"{material_path}/previewSurface"
@@ -81,38 +78,25 @@ def apply(notice, sender: chunk.Chunk):
         transform2d_in_uv.ConnectToSource(reader_out)
         reader.CreateInput("varname", Sdf.ValueTypeNames.String).Set("st")
 
-        selected_prim.ApplyAPI(UsdShade.MaterialBindingAPI)
-        UsdShade.MaterialBindingAPI(selected_prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+        for prim in selected_prims:
+            api = UsdShade.MaterialBindingAPI.Apply(prim)
+            api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
 
 
-def clear(notice, sender: chunk.Chunk):
+def clear(owner: chunk.Chunk, notice, sender: chunk.Chunk):
+    """Remove the assign checker edits"""
     if notice.data is not sender.get_param("clear"):
         return
 
-    """Remove the assign checker edits"""
-    stage = sender.get_stage()
-    sublayer_paths = list(stage.GetSessionLayer().subLayerPaths).copy()
-    for i, sublayer in enumerate(sublayer_paths):
-        if "uv_checker" in sublayer:
-            sublayer_paths.pop(i)
-    stage.GetSessionLayer().subLayerPaths = sublayer_paths
+    chunk_registry.ChunkLayerManager().clear_layer(owner.get_layer_identifier())
 
 
-def scale(notice, sender):
-    # _, param = chunkItem.get_last_param_change()
-    # print(param.get_last_change())
-    
-    stage = sender.get_stage()
-    layer_id = None
-    sublayer_paths = list(stage.GetSessionLayer().subLayerPaths)
-    for sublayer in sublayer_paths:
-        if "uv_checker" in sublayer:
-            layer_id = sublayer
-            break
-    if layer_id is None:
-        return
+def scale(owner: chunk.Vector, notice, sender):
+    stage = owner.get_stage()
+    if not stage:
+        return None
 
-    layer = Sdf.Layer.FindOrOpen(layer_id)
+    layer = owner.get_edit_context()
 
     with Usd.EditContext(stage, layer):
         base_material_grp = "/materials"

@@ -1,5 +1,5 @@
 from pxr import Usd, UsdGeom, Sdf, UsdShade
-from usd_chunks import chunk, chunk_notice
+from usd_chunks import chunk, chunk_registry
 import itertools
 import numpy as np
 import os
@@ -272,7 +272,6 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1, height=2, caps=
 
 
 def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
-
     if sender is not owner.get_param("mesh_type"):
         return
 
@@ -284,29 +283,6 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
             g.unset_state(chunk.ChunkFlags.State.HIDDEN)
         else:
             g.set_state(chunk.ChunkFlags.State.HIDDEN)
-
-
-def clear_layer(stage, layer_id):
-    sublayer_paths = list(stage.GetSessionLayer().subLayerPaths).copy()
-    for i, sublayer in enumerate(sublayer_paths):
-        if layer_id in sublayer:
-            sublayer_paths.pop(i)
-    stage.GetSessionLayer().subLayerPaths = sublayer_paths
-
-
-def get_layer(stage, layer_id):
-    found = False
-    for lpath in stage.GetSessionLayer().subLayerPaths:
-        lay = stage.GetSessionLayer().Find(lpath)
-        if lay.GetDisplayNameFromIdentifier(lay.identifier) == layer_id:
-            layer = lay
-            found = True
-            break
-
-    if not found:
-        layer = Sdf.Layer.CreateAnonymous(layer_id)
-        stage.GetSessionLayer().subLayerPaths.append(layer.identifier)
-    return layer
 
 
 def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
@@ -363,8 +339,8 @@ def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
     transform2d_in_uv.ConnectToSource(reader_out)
     reader.CreateInput("varname", Sdf.ValueTypeNames.String).Set("st")
 
-    prim.ApplyAPI(UsdShade.MaterialBindingAPI)
-    UsdShade.MaterialBindingAPI(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+    api = UsdShade.MaterialBindingAPI.Apply(prim)
+    api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
 
 
 def cube_changed(owner: chunk.Group, notice, sender):
@@ -373,11 +349,13 @@ def cube_changed(owner: chunk.Group, notice, sender):
     if not stage:
         return
 
-    layer_id = "add_cube_layer"
-    layer: Sdf.Layer = get_layer(stage, layer_id)
+    layer = owner.get_edit_context()
+    if not layer:
+        return None
 
     if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        clear_layer(stage, layer.identifier)
+        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
+
         return
 
     xseg = owner.get_param("dimx")
@@ -406,11 +384,12 @@ def tube_changed(owner: chunk.Group, notice, sender):
     if not stage:
         return
 
-    layer_id = "add_tube_layer"
-    layer: Sdf.Layer = get_layer(stage, layer_id)
+    layer = owner.get_edit_context()
+    if not layer:
+        return None
 
     if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        clear_layer(stage, layer.identifier)
+        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
         return
 
     rows = owner.get_param("rows")
@@ -430,11 +409,11 @@ def grid_changed(owner: chunk.Group, notice, sender):
     if not stage:
         return
 
-    layer_id = "add_grid_layer"
-    layer: Sdf.Layer = get_layer(stage, layer_id)
+    layer = owner.get_edit_context()
 
     if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        clear_layer(stage, layer.identifier)
+        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
+
         return
 
     dimx = owner.get_param("dimx1")
@@ -506,8 +485,6 @@ def main():
 
     chunk_api = chunk.Chunk("Add Mesh", category="Modelling")
     chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
-
     chunk_api.add_callback(menu_changed, sender=menu)
-
 
     return chunk_api

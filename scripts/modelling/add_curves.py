@@ -129,40 +129,16 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
             g.set_state(chunk.ChunkFlags.State.HIDDEN)
 
 
-def clear_layer(stage, layer_id):
-    sublayer_paths = list(stage.GetSessionLayer().subLayerPaths).copy()
-    for i, sublayer in enumerate(sublayer_paths):
-        if layer_id in sublayer:
-            sublayer_paths.pop(i)
-    stage.GetSessionLayer().subLayerPaths = sublayer_paths
-
-
-def get_layer(stage, layer_id):
-    found = False
-    for lpath in stage.GetSessionLayer().subLayerPaths:
-        lay = stage.GetSessionLayer().Find(lpath)
-        if lay.GetDisplayNameFromIdentifier(lay.identifier) == layer_id:
-            layer = lay
-            found = True
-            break
-
-    if not found:
-        layer = Sdf.Layer.CreateAnonymous(layer_id)
-        stage.GetSessionLayer().subLayerPaths.append(layer.identifier)
-    return layer
-
-
 def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
     stage = owner.get_stage()
 
     if not stage:
         return
 
-    layer_id = "add_hair_layer"
-    layer: Sdf.Layer = get_layer(stage, layer_id)
+    layer = owner.get_edit_context()
 
     if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        clear_layer(stage, layer.identifier)
+        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
         return
 
     count = owner.get_param("count")
