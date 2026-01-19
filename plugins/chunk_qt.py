@@ -212,18 +212,30 @@ class ChunkFileWidget(ChunkParamWidget[chunk.FileBrowser], QtWidgets.QWidget):
 class ChunkComboBoxWidget(ChunkParamWidget[chunk.Menu], QtWidgets.QComboBox):
     def __init__(self, param: chunk.Menu):
         super().__init__(param)
-        menu_items = param.menu_items
-        if menu_items:
-            self.addItems(menu_items)
-            val = param.value if param.value is not None else param.default_value
-            if val:
-                self.set_value(val)
 
-        if param.default_value:
-            self.setCurrentIndex(menu_items.index(param.default_value))
+        self.add_callback(self.menu_items_changed, param.get_attribute_sender("menu_items"))
+        self.update_menu_items(param)
 
         self.setup_chunk_widget()
         self.currentTextChanged.connect(self.value_changed)
+
+    def menu_items_changed(self, notice, sender):
+        self.update_menu_items(self.param)
+
+    def update_menu_items(self, param: chunk.Menu):
+        menu_items = self.param.menu_items
+        self.clear()
+
+        if menu_items:
+            self.addItems(menu_items)
+            val = self.param.value if self.param.value is not None else self.param.default_value
+            if val:
+                self.set_value(val)
+
+        if self.param.default_value:
+            self.setCurrentIndex(menu_items.index(self.param.default_value))
+        
+
 
     def get_value(self):
         return self.currentText()
