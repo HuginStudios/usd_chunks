@@ -155,8 +155,7 @@ def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
     if not mesh:
         return
 
-    with Usd.EditContext(stage, layer):
-        build_hair(owner.get_stage(), mesh, count.value, segs.value, len.value)
+    build_hair(owner.get_stage(), mesh, count.value, segs.value, len.value)
 
 
 def main():

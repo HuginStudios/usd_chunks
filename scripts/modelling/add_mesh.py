@@ -372,10 +372,10 @@ def cube_changed(owner: chunk.Group, notice, sender):
     if not width or not height or not depth:
         return
 
-    with Usd.EditContext(stage, layer):
-        build_cube(
-            owner.get_stage(), "/cube", xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value
-        )
+    # with Usd.EditContext(stage, layer):
+    build_cube(
+        owner.get_stage(), "/cube", xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value
+    )
 
 
 def tube_changed(owner: chunk.Group, notice, sender):
@@ -399,8 +399,8 @@ def tube_changed(owner: chunk.Group, notice, sender):
     height = owner.get_param("height1")
     caps = owner.get_param("caps")
 
-    with Usd.EditContext(stage, layer):
-        build_tube(owner.get_stage(), "/tube", rows.value, cols.value, radius.value, height.value, caps.value)
+    # with Usd.EditContext(stage, layer):
+    build_tube(owner.get_stage(), "/tube", rows.value, cols.value, radius.value, height.value, caps.value)
 
 
 def grid_changed(owner: chunk.Group, notice, sender):
@@ -428,12 +428,11 @@ def grid_changed(owner: chunk.Group, notice, sender):
     if topo and topo.value == "tris":
         topo_val = Topo.TRIS
 
-    with Usd.EditContext(stage, layer):
-        grid = build_plane(
-            owner.get_stage(), "/plane", dimx.value, dimy.value, width.value, height.value, topo=topo_val
-        )
-        if grid:
-            add_texture(grid.GetPrim())
+    grid = build_plane(
+        owner.get_stage(), "/plane", dimx.value, dimy.value, width.value, height.value, topo=topo_val
+    )
+    if grid:
+        add_texture(grid.GetPrim())
 
 
 def main():

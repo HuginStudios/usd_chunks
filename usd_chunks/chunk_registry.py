@@ -23,7 +23,7 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk
 from usd_chunks.chunk_notice import ChunkNoticeAlias, RegistrySingleton, SceneSender, send_notice, NoticeConnection
-from usd_chunks.chunk_core import ChunkConfig, ChunkHash, ChunkUsdLayerSupport
+from usd_chunks.chunk_core import ChunkConfig, ChunkCommon, ChunkHash
 
 from timeit import default_timer as timer
 
@@ -383,23 +383,24 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
         self.stage = stage
 
-    def get_layer(self, chunk: ChunkUsdLayerSupport) -> Sdf.Layer | None:
+    def get_layer(self, c: ChunkHash) -> Sdf.Layer | None:
         """
         Get a layer associated with the a chunk
 
         Args:
-            chunk (ChunkUsdLayerSupport): A chunk object implementing the ChunkUsdLayerSupport protocol
+            c (ChunkUsdLayerSupport): A chunk object implementing the ChunkUsdLayerSupport protocol
 
         Returns:
             Sdf.Layer: The layer associated with the ChunkCommon object
             None: If the layer does not exist
         """
-        layer_id = self.chunk_layers.get(chunk.get_hash())
+        layer_id = self.chunk_layers.get(c)
+            
         if not layer_id or not Sdf.Layer.FindOrOpen(layer_id):
             return None
         return Sdf.Layer.FindOrOpen(layer_id)
 
-    def get_or_create_layer(self, c: ChunkUsdLayerSupport) -> Sdf.Layer:
+    def get_or_create_layer(self, c: ChunkCommon) -> Sdf.Layer:
         """
         Get a layer similarly to get_layer(). Will create a new one if the layer does
         not already exists
@@ -421,16 +422,15 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         layer = self.get_layer(c)
         if not layer:
             layer = self.add_layer(self.stage.GetSessionLayer(), c)
-            self.chunk_layers[c.get_hash()] = layer.identifier
         return layer
 
-    def add_layer(self, target_layer: Sdf.Layer, c: ChunkUsdLayerSupport) -> Sdf.Layer:
+    def add_layer(self, target_layer: Sdf.Layer, c: ChunkCommon) -> Sdf.Layer:
         """
         Add a layer to the stage and add a mapping from chunk c to the new layer.
 
         Args:
             target_layer (Sdf.Layer): The target layer onto which we append the new layer
-            c (chunk.ChunkCommon): The chunk that can modify the new layer. The new layer's identifier
+            c (ChunkUsdLayerSupport): The chunk that can modify the new layer. The new layer's identifier
                 will be created from the chunks get_layer_identifier()
 
         Returns:
@@ -439,7 +439,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         layer_id = c.get_layer_identifier()
         layer = Sdf.Layer.CreateAnonymous(layer_id)
 
-        self.chunk_layers[c.get_hash()] = layer.identifier
+        print("CREATING LAYER", layer_id)
+        # layer = Sdf.Layer.CreateNew(layer_id)
+
+        self.chunk_layers[c._hashable] = layer.identifier
         target_layer.subLayerPaths.insert(0, layer.identifier)
 
         return layer
@@ -496,16 +499,12 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.stage = stage
 
     def _chunk_loaded(self, notice, sender: chunk.Chunk):
-        # stage = self.stage.get_stage()
-
         if not self.stage:
             return
 
         self.add_layer(self.stage.GetSessionLayer(), sender)
 
     def _chunk_unloaded(self, notice, sender: chunk.Chunk):
-        # stage = self.scene.get_stage()
-
         if not self.stage:
             return
 

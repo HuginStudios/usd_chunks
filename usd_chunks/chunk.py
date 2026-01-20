@@ -218,6 +218,18 @@ from .chunk_core import (  # noqa: E402
 
 
 class DefaulConfig(ChunkConfig):
+    """
+    This class is used as a default config. 
+    
+    To use, in the chunk module, add an additional function besides main():
+
+    ``` py
+    def config():
+        return chunk.DefaultConfig(
+            load=True, load_for_plugin="chunk_usdview"
+        )
+    ```
+    """
     pass
 
 

@@ -44,6 +44,7 @@ def update(mychunk: chunk.Chunk, selected_prim):
     if not selected_prim.HasVariantSets():
         label = chunk.Label("No variant exists.")
         mychunk.add_params([label])
+        return
 
     vsets = selected_prim.GetVariantSets()
     for vset_name in vsets.GetNames():

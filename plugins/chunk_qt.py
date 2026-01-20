@@ -655,7 +655,6 @@ class ContainerWidget(QtWidgets.QWidget):
                     self.update_label,
                     chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
                     param.get_attribute_sender("name"),
-                    send_owner=True,
                     owner=param,
                 ),
                 chunk_notice.NoticeConnection(

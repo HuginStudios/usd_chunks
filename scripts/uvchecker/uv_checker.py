@@ -33,54 +33,53 @@ def apply(owner: chunk.Chunk, notice, sender: chunk.Chunk):
         error_dlg.exec_()
         return
 
-    with Usd.EditContext(stage, owner.get_edit_context()):
-        base_material_grp = "/materials"
-        material_path = f"{base_material_grp}/UVCheckerMaterial"
-        surface_path = f"{material_path}/previewSurface"
-        texture_path = f"{material_path}/texture"
-        transform2d_path = f"{material_path}/transform2d"
-        reader_path = f"{material_path}/reader"
+    base_material_grp = "/materials"
+    material_path = f"{base_material_grp}/UVCheckerMaterial"
+    surface_path = f"{material_path}/previewSurface"
+    texture_path = f"{material_path}/texture"
+    transform2d_path = f"{material_path}/transform2d"
+    reader_path = f"{material_path}/reader"
 
-        # Create the material, shaders and its id
-        stage.DefinePrim(base_material_grp, "Scope")
-        material = UsdShade.Material.Define(stage, material_path)
+    # Create the material, shaders and its id
+    stage.DefinePrim(base_material_grp, "Scope")
+    material = UsdShade.Material.Define(stage, material_path)
 
-        preview = UsdShade.Shader.Define(stage, surface_path)
-        stage.GetPrimAtPath(surface_path).GetAttribute("info:id").Set("UsdPreviewSurface")
+    preview = UsdShade.Shader.Define(stage, surface_path)
+    stage.GetPrimAtPath(surface_path).GetAttribute("info:id").Set("UsdPreviewSurface")
 
-        texture = UsdShade.Shader.Define(stage, texture_path)
-        stage.GetPrimAtPath(texture_path).GetAttribute("info:id").Set("UsdUVTexture")
+    texture = UsdShade.Shader.Define(stage, texture_path)
+    stage.GetPrimAtPath(texture_path).GetAttribute("info:id").Set("UsdUVTexture")
 
-        transform2d = UsdShade.Shader.Define(stage, transform2d_path)
-        stage.GetPrimAtPath(transform2d_path).GetAttribute("info:id").Set("UsdTransform2d")
+    transform2d = UsdShade.Shader.Define(stage, transform2d_path)
+    stage.GetPrimAtPath(transform2d_path).GetAttribute("info:id").Set("UsdTransform2d")
 
-        reader = UsdShade.Shader.Define(stage, reader_path)
-        stage.GetPrimAtPath(reader_path).GetAttribute("info:id").Set("UsdPrimvarReader_float2")
+    reader = UsdShade.Shader.Define(stage, reader_path)
+    stage.GetPrimAtPath(reader_path).GetAttribute("info:id").Set("UsdPrimvarReader_float2")
 
-        # Create the inputs and outputs for the shaders
-        preview_output_surface = preview.CreateOutput("surface", Sdf.ValueTypeNames.Token)
-        material.GetOutput("surface").ConnectToSource(preview_output_surface)
+    # Create the inputs and outputs for the shaders
+    preview_output_surface = preview.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+    material.GetOutput("surface").ConnectToSource(preview_output_surface)
 
-        preview_in_diff = preview.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
-        texture_out_rgb = texture.CreateOutput("rgb", Sdf.ValueTypeNames.Color3f)
-        preview_in_diff.ConnectToSource(texture_out_rgb)
-        path_to_uv = checker_file
-        if not path_to_uv:
-            path_to_uv = os.path.sep.join([os.path.dirname(__file__), "CustomUVChecker_byValle_2K.png"])
+    preview_in_diff = preview.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+    texture_out_rgb = texture.CreateOutput("rgb", Sdf.ValueTypeNames.Color3f)
+    preview_in_diff.ConnectToSource(texture_out_rgb)
+    path_to_uv = checker_file
+    if not path_to_uv:
+        path_to_uv = os.path.sep.join([os.path.dirname(__file__), "CustomUVChecker_byValle_2K.png"])
 
-        texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(path_to_uv)
-        transform2d_out_result = transform2d.CreateOutput("result", Sdf.ValueTypeNames.Float2)
-        texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(transform2d_out_result)
+    texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(path_to_uv)
+    transform2d_out_result = transform2d.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+    texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(transform2d_out_result)
 
-        transform2d.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set((x_scale, y_scale))
-        transform2d_in_uv = transform2d.CreateInput("in", Sdf.ValueTypeNames.Float2)
-        reader_out = reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
-        transform2d_in_uv.ConnectToSource(reader_out)
-        reader.CreateInput("varname", Sdf.ValueTypeNames.String).Set("st")
+    transform2d.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set((x_scale, y_scale))
+    transform2d_in_uv = transform2d.CreateInput("in", Sdf.ValueTypeNames.Float2)
+    reader_out = reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+    transform2d_in_uv.ConnectToSource(reader_out)
+    reader.CreateInput("varname", Sdf.ValueTypeNames.String).Set("st")
 
-        for prim in selected_prims:
-            api = UsdShade.MaterialBindingAPI.Apply(prim)
-            api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
+    for prim in selected_prims:
+        api = UsdShade.MaterialBindingAPI.Apply(prim)
+        api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
 
 
 def clear(owner: chunk.Chunk, notice, sender: chunk.Chunk):
@@ -96,24 +95,21 @@ def scale(owner: chunk.Vector, notice, sender):
     if not stage:
         return None
 
-    layer = owner.get_edit_context()
+    base_material_grp = "/materials"
+    material_path = f"{base_material_grp}/UVCheckerMaterial"
+    transform2d_path = f"{material_path}/transform2d"
 
-    with Usd.EditContext(stage, layer):
-        base_material_grp = "/materials"
-        material_path = f"{base_material_grp}/UVCheckerMaterial"
-        transform2d_path = f"{material_path}/transform2d"
+    prim = stage.GetPrimAtPath(transform2d_path)
+    if not prim:
+        return
 
-        prim = stage.GetPrimAtPath(transform2d_path)
-        if not prim:
-            return
+    scale_attr = prim.GetAttribute("inputs:scale")
+    scale_val = scale_attr.Get()
 
-        scale_attr = prim.GetAttribute("inputs:scale")
-        scale_val = scale_attr.Get()
-
-        # idx = 1 if param.name == "scale1" else 0
-        scale_val[0] = sender[0].value
-        scale_val[1] = sender[1].value
-        scale_attr.Set(scale_val)
+    # idx = 1 if param.name == "scale1" else 0
+    scale_val[0] = sender[0].value
+    scale_val[1] = sender[1].value
+    scale_attr.Set(scale_val)
 
 
 def main():

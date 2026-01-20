@@ -10,17 +10,16 @@ def toggle_vis(owner: chunk.ChunkParamBase, notice, sender):
 
     prims = chunk_registry.ChunkRegistry().scene.get_selected_prims()
 
-    with Usd.EditContext(stage, owner.get_edit_context()):
-        for prim in prims:
-            if not prim.IsValid() or prim == stage.GetPseudoRoot():
-                return
+    for prim in prims:
+        if not prim.IsValid() or prim == stage.GetPseudoRoot():
+            return
 
-            # Set visibility
-            visibility = prim.GetAttribute("visibility")
-            if visibility.Get() == "inherited":
-                visibility.Set("invisible")
-            else:
-                visibility.Set("inherited")
+        # Set visibility
+        visibility = prim.GetAttribute("visibility")
+        if visibility.Get() == "inherited":
+            visibility.Set("invisible")
+        else:
+            visibility.Set("inherited")
 
 
 def clear_vis(owner: chunk.ChunkParamBase, notice, sender):
@@ -30,9 +29,8 @@ def clear_vis(owner: chunk.ChunkParamBase, notice, sender):
     if not stage:
         return
 
-    with Usd.EditContext(stage, owner.get_edit_context()):
-        for prim in stage.Traverse():
-            prim.GetAttribute("visibility").Clear()
+    for prim in stage.Traverse():
+        prim.GetAttribute("visibility").Clear()
 
 
 def main():

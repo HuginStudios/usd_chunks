@@ -65,6 +65,20 @@ class ChunksPluginContainer(PluginContainer):
     def openModuleSettings(self, usdviewApi):
         dial = chunk_qt.ChunkModuleLoader(usdviewApi.qMainWindow)
         dial.show()
+    
+    def saveLayers(self, usdviewApi):
+        reg = chunk_registry.ChunkLayerManager()
+        for i in reg.chunk_layers.keys():
+            layer = reg.get_layer(i)
+            if not layer:
+                continue
+        
+            name = layer.GetDisplayName().split("_")[0]
+            path = f"C:/Users/Viktor/chunk_layers/{name}.usda"
+
+            print("save layer: ", path)
+            layer.Export(path)
+
 
     def registerPlugins(self, plugRegistry, usdviewApi) -> None:
         """Register the UI Creator plugin with the plugin registry.
@@ -79,6 +93,9 @@ class ChunksPluginContainer(PluginContainer):
         self._openModuleSettingsCommand = plugRegistry.registerCommandPlugin(
             "ChunksPlugin.openModuleSettings", "Modules", self.openModuleSettings
         )
+        self._saveLayersCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.saveLayers", "Save Layers", self.saveLayers
+        )
 
         launch_chunks(usdviewApi)
 
@@ -86,6 +103,7 @@ class ChunksPluginContainer(PluginContainer):
         menu = plugUIBuilder.findOrCreateMenu("Chunks")
         menu.addItem(self._reloadChunksCommand, "SHIFT+R")
         menu.addItem(self._openModuleSettingsCommand)
+        menu.addItem(self._saveLayersCommand)
 
 
 Tf.Type.Define(ChunksPluginContainer)

@@ -19,7 +19,7 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 
 """
 
-from pxr import Tf, Usd
+from pxr import Tf, Usd, Sdf
 
 # from enum import IntEnum, auto
 from enum import IntEnum, auto
@@ -320,7 +320,7 @@ def is_notice_type(notice: Tf.Notice, alias: ChunkNoticeAlias) -> bool:
     return type(notice) is get_notice(alias)
 
 
-def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None):
+def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None, context: Optional[Sdf.Layer] = None):
     """
     Sends a notice of type alias, triggering subscribed callback functions to run
 
@@ -355,13 +355,18 @@ class ChunkNoticePropagator:
     the logic to propagate the notices to the owning chunk objects.
 
     Instead of having owners registering listeners for the changes of its children, it's much simpler to work the other
-    way araound, and have the children reference the owning object, and call data_changed() on the owner, when the child has been
+    way araound, and have the children reference the owning object, and call data_changed() on the owner when the child has been
     modified.
 
     By default, the send_self() is called whenever an attribute or child attribute has been modified. The notice that is sent is
     determined by the return value of get_notice_alias(). This notice is then also propagated up the owner hierarchy
 
     The majority of the logic is implemented in send_self() and data_changed().
+
+    get_edit_context(), get_layer_identifier() and get_stage() can be implemented to support layer contexts when modifying the stage.
+    Any NoticeConnection will intercept the connected notices and set the edit context to the context (Sdf.Layer) returned by get_edit_context()
+    before running the actual callback function. This is to safely run callbacks and contain them to the layers managed by ChunkLayerManager.
+    See NoticeConnection.handle_callback for more info
     """
 
     _last_notice: Optional[Tf.Notice]
@@ -402,7 +407,9 @@ class ChunkNoticePropagator:
         """
         if meth := conn.get_method():
             sender = self if conn.sender == src else conn.sender
-            new_conn = NoticeConnection(meth, conn.alias, sender, conn.globally, conn.send_owner, self)
+            new_conn = NoticeConnection(
+                meth, conn.alias, sender, conn.globally, self if conn.owner is not None else None
+            )
             self.add_connection(new_conn)
 
     def get_notice_data(self) -> Any:
@@ -440,17 +447,6 @@ class ChunkNoticePropagator:
         yield (ln, ls)
         if isinstance(ls, ChunkNoticePropagator):
             yield from ls.iter_changes()
-
-    @abstractmethod
-    def get_usd_attr(self) -> Optional[Usd.Attribute]:
-        """
-        Unused by default, but placeholder
-
-        Returns:
-            Optional[Usd.Attribute]: None by default. If usd attribute support is added to a subclass, this should return
-                the UsdSAttribute the object modifies
-        """
-        return None
 
     def get_owner(self) -> Optional["ChunkNoticePropagator"]:
         """Get the owning ChunkNoticePropagator of this object
@@ -501,7 +497,6 @@ class ChunkNoticePropagator:
         # Set owner data_changed if available
         if owner:
             owner.data_changed(my_notice, self, propagated if propagated else sender)
-
         return my_notice
 
     def send_self(self, alias: Optional[ChunkNoticeAlias] = None) -> Optional[Tf.Notice]:
@@ -584,7 +579,6 @@ class ChunkNoticePropagator:
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
-        send_self: bool = True,
     ):
         """Subscribe to a notice. When the notice is sent, the supplied method will be called, by default, with three arguments:
         (owner(self), notice(Tf.Notice), sender(Any))
@@ -603,7 +597,6 @@ class ChunkNoticePropagator:
             sender (Any, optional): A sender which to subscribe to. If None, will use self as sender if listen_globally=False, else None. Defaults to None.
             listen_globally (bool, optional): Whether to subscribe to all events of type notice_alias. Defaults to False.
             notice_alias (NoticeType, optional): A specific type of notice to subscribe to. If left at NONE, will use the get_notice_alias(). Defaults to ChunkNoticeAlias.NONE
-            send_self (bool): Whether to include self as the first argument when method is invoked. Defaults to True.
         """
 
         # If sender is not set and we should not listen for global notices, the sender will be self
@@ -614,7 +607,37 @@ class ChunkNoticePropagator:
         if isinstance(sender, ChunkNoticePropagator) and notice_alias is ChunkNoticeAlias.NONE:
             notice_alias = sender.get_notice_alias()
 
-        self.add_connection(NoticeConnection(method, notice_alias, sender, listen_globally, send_self, self))
+        self.add_connection(NoticeConnection(method, notice_alias, sender, listen_globally, self))
+
+    @abstractmethod
+    def get_edit_context(self) -> Sdf.Layer | None:
+        """
+        Get a Sdf.Layer for which the chunk object can safely add changes to the stage
+
+        Returns:
+            Sdf.Layer: The layer that can be modified
+        """
+        pass
+
+    @abstractmethod
+    def get_layer_identifier(self) -> str:
+        """
+        Get a unique layer identifier for creation / access of layers
+
+        Returns:
+            str: The unique layer identifier
+        """
+        pass
+
+    @abstractmethod
+    def get_stage(self) -> Usd.Stage | None:
+        """
+        Get a handle to the stage
+
+        Returns:
+            Usd.Stage | None: A Usd.Stage if available
+        """
+        pass
 
 
 class NoticeConnection:
@@ -625,7 +648,8 @@ class NoticeConnection:
 
     All references to external objects, i.e, method, sender and owner, are stored as weakrefs as to not
     take ownership. Properties are implemented to access them. Because of this, notice.method,
-    notice.owner or notice.sender may be None if the method has gone out of scope elsewhere.
+    notice.owner or notice.sender may be None if they have been garbage collected. If any of the weakrefs
+    dies, the connection is broken.
 
     The owner can be used to pass an additional object as an argument to the function call, enabling
     ``` py
@@ -635,27 +659,28 @@ class NoticeConnection:
 
     class AClass:
         def __init__(self):
-            NoticeConnection(func)
+            NoticeConnection(func, owner=self)
     ```
     as well as:
 
     ``` py
     class AnotherClass:
-        def func(self):
+        def func(self, notice, sender):
             pass
 
 
     def bind(obj: AnotherClass):
-        return NoticeConnection(obj.func)
+        return NoticeConnection(obj.func, owner=obj)
     ```
+
+    If the owner implements get_stage() and get_edit_context(), the method will be called with the
+    edit context as to contain all edits from the method to the edit context layer.
 
     Attributes:
         alias: A ChunkNoticeAlias associated to the notice we want to send
         sender: The sender of the notice. When globally is True, this has not effect
         globally: If we dont care about the sender but listening for all notices
             of the same alias.
-        send_owner: If the owner is set, we can decide to send the owner as an argument 
-            to the function. This adds owner to the beginning of the arguments
         owner: An optional owner object. Usually 'self', when adding callbacks on a class
     """
 
@@ -665,7 +690,6 @@ class NoticeConnection:
         alias: ChunkNoticeAlias,
         sender: Optional[Any] = None,
         globally: bool = False,
-        send_owner: bool = False,
         owner: Optional[ChunkNoticePropagator] = None,
     ):
         self.alias: ChunkNoticeAlias = alias
@@ -678,20 +702,24 @@ class NoticeConnection:
         else:
             self._method: Callable = weakref.ref(method, self._method_died)
 
-        self.send_owner: bool = send_owner
-
         self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender, self._sender_died) if sender else None
         self._owner: Optional[weakref.ReferenceType] = weakref.ref(owner, self._owner_died) if owner else None
 
         self.connect()
 
     def get_method(self) -> Callable | None:
+        """
+        Get the referenced method or function
+
+        Returns:
+            Callable | None: A callable function or method if it's still alive. Otherwise None
+        """
         if not isinstance(self._method, weakref.ReferenceType):
             return self._method
         return self._method()
 
     @property
-    def owner(self):
+    def owner(self) -> Optional[ChunkNoticePropagator]:
         return None if not self._owner else self._owner()
 
     @owner.setter
@@ -699,7 +727,7 @@ class NoticeConnection:
         self._owner = weakref.ref(obj, self._owner_died) if obj else None
 
     @property
-    def sender(self):
+    def sender(self) -> Optional[Any]:
         return None if self._sender is None else self._sender()
 
     @sender.setter
@@ -707,11 +735,33 @@ class NoticeConnection:
         self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
 
     def handle_callback(self, notice, sender=None):
+        """
+        Forwards the notice after checking that the method, sender and owner are still alive and valid.
+        If the owner is valid and implements get_stage() and get_edit_context(), the method is called
+        with the respective edit context as to contain any stage edits to the correct layer.
+
+        Args:
+            notice (Tf.Notice): The notice to forward
+            sender (ChunkNoticePropagator, optional): The sender of the original notice. Defaults to None.
+        """
         meth = self.get_method()
         if not meth:
             return
 
-        if self.owner and self.send_owner and not inspect.ismethod(meth):
+        if self.owner:
+            # Try running the callback function with the edit context to safely add any changes to the stage
+            # to the correct layer
+            stage = self.owner.get_stage()
+            ctx = self.owner.get_edit_context()
+            if stage and ctx:
+                with Usd.EditContext(stage, ctx):
+                    if not inspect.ismethod(meth):
+                        partial(meth, self.owner)(notice, sender)
+                    else:
+                        meth(notice, sender)
+                return
+
+        if self.owner and not inspect.ismethod(meth):
             partial(meth, self.owner)(notice, sender)
         else:
             meth(notice, sender)
@@ -737,8 +787,6 @@ class NoticeConnection:
         if sender is not None:
             self._sender = weakref.ref(sender)
 
-        # If we should include the owner as the first argument of the method,
-        # we add it using partial
         if self.sender is None or self.globally:
             self.listener = Tf.Notice.RegisterGlobally(notice, self.handle_callback)
         elif self.sender:

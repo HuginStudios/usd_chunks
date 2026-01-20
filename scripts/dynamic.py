@@ -6,6 +6,7 @@ from pxr import Usd
 def build(myChunk: chunk.Chunk, signal, sender):
     for grp in myChunk.get_my_params():
         grp.request_delete()
+        # myChunk.remove_param_or_group(grp)
 
     prims: List[Usd.Prim] = signal.data
     if not prims:

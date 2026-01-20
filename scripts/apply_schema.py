@@ -19,10 +19,9 @@ def apply(owner: chunk.Chunk, notice, sender):
     schema_reg = Usd.SchemaRegistry()
     schema = schema_reg.GetTypeFromName(schema_str)
 
-    if stage := owner.get_stage():
-        with Usd.EditContext(stage, owner.get_edit_context()):
-            for prim in prims:
-                prim.ApplyAPI(schema)
+
+    for prim in prims:
+        prim.ApplyAPI(schema)
 
 def update(owner: chunk.Chunk, notice, sender):
     prims = notice.data

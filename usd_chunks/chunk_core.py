@@ -24,6 +24,7 @@ from typing import (
     Any,
     Dict,
     Protocol,
+    runtime_checkable,
     Tuple,
     TypeVar,
     Optional,
@@ -31,10 +32,11 @@ from typing import (
     Iterable,
     Generic,
     TypedDict,
+    Generator,
     get_origin,
 )
 
-from typing_extensions import dataclass_transform
+from typing_extensions import dataclass_transform, Self
 
 from abc import abstractmethod
 import attrs
@@ -95,7 +97,15 @@ class ChunkParamWidget(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
             return param
         raise ReferenceError("reference to param is dead! :'(")
 
-    def handle_param_changed(self, notice, sender):
+    def handle_param_changed(self, notice: chunk_notice.ChunkNotice, sender: "ChunkParamBase"):
+        """
+        callback for handling changes to the parameter. Currently implements changes to
+        value, name, label and icon attributes
+
+        Args:
+            notice (chunk_notice.ChunkNotice): The notice sent for the change
+            sender (ChunkParamBase): The sender
+        """
         attrname = notice.data.name
         if attrname == "value" and notice.data.value is not None:
             self.set_value(notice.data.value)
@@ -190,7 +200,7 @@ class ChunkWidgetFactoryBase(Protocol):
     A ChunkWidgetFactory exists to handle the creation of widgets from chunk objects. This is
     implemented for any specific UI library and should map between chunk objects and ChunkParamWidget's.
     This can also be used to create a custom mapping for custom widget, extending the base library.
-    See chunk_qt.ChunkQTWidgetFactory for an implementation.
+    See chunk_qt.ChunkQTWidgetFactory in plugins/ for an implementation.
 
     Attributes:
         widget_map (dict[ChunkFlags.ParamType, type[ChunkParamWidget]]): This attribute holds the mapping between chunk
@@ -200,12 +210,34 @@ class ChunkWidgetFactoryBase(Protocol):
     widget_map: Dict[ChunkFlags.ParamType, type[ChunkParamWidget]]
 
     def get_map(self):
+        """
+        Return the widget_map of the factory
+
+        Returns:
+            ict[ChunkFlags.ParamType, type[ChunkParamWidget]]: The widget_map
+        """
         return self.widget_map
 
     def add_mapping(self, key: ChunkFlags.ParamType, widget_type: type[ChunkParamWidget]):
+        """
+        Add a mapping from key to widget_type
+
+        Args:
+            key (ChunkFlags.ParamType): The ParamType to map from
+            widget_type (type[ChunkParamWidget]): The widget class to map to
+        """
         self.widget_map[key] = widget_type
 
-    def has_mapping(self, key: ChunkFlags.ParamType):
+    def has_mapping(self, key: ChunkFlags.ParamType) -> bool:
+        """
+        Check if a mapping for key exists
+
+        Args:
+            key (ChunkFlags.ParamType): The key to check for
+
+        Returns:
+            bool: True if a mapping from key exists, else False
+        """
         return key in self.get_map()
 
     @abstractmethod
@@ -350,12 +382,22 @@ class AttributesMetaclass(type):
 
 class AttributeSender(chunk_notice.ChunkNoticePropagator):
     """An AttributeSender gets sent when an attribute changes on a AttributesBase instance, as attrs.Attribute
-    is not able to send through the Tf.Notice system.
+    is not able to send through the Tf.Notice system. Instances of this class can be added to a propagator hierarchy
+    as it subclass from chunk_notice.ChunkNoticePropagator. This enables us to automatically send the
+    ATTRIBUTE_CHANGED notice whenever the value is modified.
+
+    A valued parameter stores the value of the attributes itself, this class is a handle to thos attributes but with the
+    ability to use with the Tf.Notice system. See value_changed function of AttributesBase for more info
 
     Args:
         owner (AttributesBase): The owning objcet of the attribute
         name (str): The name of the attribute
         alias (chunk_notice.ChunkNoticeAlias): The ChunkNoticeAlias that is sent when the attribute changed
+
+    Attributes:
+        name (str): The name of the attribute
+        value (Any): A property looking up the value of the owner
+        old_value (Any): A copy of the old value. This may be not-None after the value has been changed
 
     """
 
@@ -377,7 +419,15 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
 
     def get_notice_data(self) -> "AttributeSender":
         """
-        The notice data for AttributeSender's are the old_value and the new_value
+        The notice data for AttributeSender's is simply self. A reciever of a notice may use this
+        to get any data available on the AttributeSender. This is possible if the original sender
+        of the notice is an AttributeSender, as the notice.data is retrieved from get_notice_data()
+
+        ``` py
+        def callback(owner, notice, sender):
+            val = notice.data.value
+            old_val = notice.data.old_value
+        ```
 
         Returns:
             Tuple[Any, Any]: A tuple of new and old values
@@ -405,6 +455,8 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
 
     def get_usd_attr(self) -> Usd.Attribute | None:
         if owner := self.get_owner():
+            if not isinstance(owner, ChunkUsdAttributeSupport):
+                return
             return owner.get_usd_attr()
 
     def _copy_connection(self, conn: chunk_notice.NoticeConnection, src: chunk_notice.ChunkNoticePropagator):
@@ -412,7 +464,9 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
         # Rewire the connection to the copy if conn.sender is the source of the copy (self)
         if meth := conn.get_method():
             sender = self if conn.sender == src else conn.sender
-            new_conn = chunk_notice.NoticeConnection(meth, conn.alias, sender, conn.globally, conn.send_owner, self)
+            new_conn = chunk_notice.NoticeConnection(
+                meth, conn.alias, sender, conn.globally, self if conn.owner is not None else None
+            )
             self.add_connection(new_conn)
 
 
@@ -476,7 +530,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
     """
 
-    # Store NoticeConnection objects, these hold information about a connection to a callback function.
     _failed_converters: Dict[str, Any] = attrs.field(
         factory=dict,
         init=False,
@@ -495,6 +548,9 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
     @classmethod
     def print_init_signature(cls):
+        """
+        A debug function for printing the generated __init__ function signature
+        """
         signature = inspect.signature(cls.__init__)
         msg = "__init__("
         for param in signature.parameters.keys():
@@ -522,10 +578,26 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
         super().__init__()  # initialise ChunkNoticePropagator
 
-    def clone(self):
+    def clone(self) -> Self:
+        """
+        Create and return a copy of self. Most attributes are copied, but depending on the fields metadata copy_mode (CopyMode),
+        the attribute may behave differently. NoticeConnections are not copied, so in the following example, only the first param ("slider1")
+        will trigger the callback to myFunc:
+
+        ``` py
+        param = chunk.Slider("slider1")
+        param.add_callback(myFunc)
+
+        myChunk = chunk.Chunk("myCHunk")
+        myChunk.add_params([param, param.clone()])
+        ```
+
+        Returns:
+            Self: a copy of self
+        """
         return copy.copy(self)
 
-    def __copy__(self) -> "AttributesBase":
+    def __copy__(self) -> Self:
         """Create a new instance of self.__class__ and set member variabled appropriately. A fields metadata["copy_mode"] sets how the field should transfer to the copy.
         If a non-attrs class exists in the hierarchy, its members will be ignored. The exception being ChunkNoticePropagator, which is initialized in AttributesBase.__attrs_post_init__().
 
@@ -535,7 +607,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         Any instantiation of base classes should be done inside either of these functions. For example, ChunkNoticePropagaor is initialized inside of AttributesBase.__attrs_post_init__()
 
         Returns:
-            ChunkParamBase: Return a copy of self, with updated uuid and rewired connections
+            Self: Return a copy of self, with updated uuid and rewired connections
         """
         copied = type(self).__new__(self.__class__)
 
@@ -592,7 +664,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
     @classmethod
     def inspect_class(cls) -> attrs.ClassProps:
-        """Wrapper around attrs.inspect
+        """Wrapper around attrs.inspect. Can be used to debug the class attributes
 
         Returns:
             attrs.ClassProps: ClassProps of this class
@@ -629,7 +701,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         """
         Called after any attr __setattr__ was called.
-        This function should not mutate self as to avoid infitite recursion. The purpose is instead to only send Notices of changed attributes when applicable.
+        This function should not mutate self to avoid infitite recursion. The purpose is instead to only send Notices of changed attributes when applicable.
         If an attribute exists in self._attr_senders (added in __attrs_post_init__), the mapped AttributeSender is used as sender for the notice. Otherwise, use self as sender
 
         This method is explicitly injected to __setattr__ by AttributesMetaclass
@@ -650,7 +722,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         attr_sender = self._attr_senders.get(attrname)
         if attr_sender:
             attr_sender.old_value = old_value
-            # attr_sender.data_changed(chunk_notice.get_notice(attr_sender.get_notice_alias()), attr_sender)
             attr_sender.data_changed(None, None)
         else:
             self.send_self()
@@ -755,7 +826,12 @@ class ChunkHash(Protocol):
 
 
 class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
-    """Container for holding ChunkCommon objects. The container holds two maps: params & names
+    """Container for holding ChunkCommon objects. The container holds two maps: params & names. The maps
+    are ChainMaps, meaning they provide access to all nested NameSyncedContainer param and names as well.
+    In practice, this means we can quickly lookup nested children of chunks or groups, without having to
+    manually iterate the hierarchy. For this reason, this class provide get_* as well as get_my_* functions,
+    where get_my_* functions will only return objects directly owned by this container, and not any nested
+    objects.
 
     params maps from a uuid to a ChunkCommon object. ChunkCommon objects hash by their uuid, so accessing a param
     can be done either by the ChunkCommon object as params[obj], or the uuid: params[obj._hashable]. Where a typehint
@@ -765,13 +841,24 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
     names map betweeen the current (mutable) name of a param and the uuid. This exists in order to quicker acccess
     params by their name. This container need to be maintained and updated whenever a param name is changed, which is currently
-    achieved by subclassing ChunkNoticePropagator, in order to insert itself in hierarchy of objects.
+    achieved by subclassing ChunkNoticePropagator, in order to insert itself in hierarchy of objects and modifying the mapping
+    whenever a name changes.
 
     Any objects added though
-        NameSyncedContainer.add()
+    ``` py
+    NameSyncedContainer.add()
+    ```
     will have the NameSyncedContainer as owner. Any concrete chunk object who holds an instance of this class should therefore not
     manage ownership of params, instead, it should own the NameSyncedContainer only. This class will not send any notices though, only propagate
     notices from children.
+
+    Attributes:
+        last_added: The last item that was added to the container
+        las_removed: The last item that was removed from the container
+
+        params (ChainMap[ChunkHash, ChunkCommon]): A mapping with access to nested children
+        names (ChainMap[str, ChunkHash]): A mapping from parameter names to the params map. A param with
+            name "myParam" may be accessed as params[names["myParam"]]
     """
 
     def __init__(self):
@@ -795,12 +882,14 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         copied._copy_connections(self)
         return copied
 
-    def get_notice_data(self) -> Tuple[Optional["HashVal"], Optional["HashVal"]]:
-        return (self.last_removed, self.last_added)
+    def get_notice_data(self) -> Self:
+        return self
 
     def clear(self):
         """
-        Clear all children from this container
+        Clear all children from this container. This will not delete the children explicitly as references to the children may
+        be held elsewhere. However, it can be expected that the children are implicitly deleted when calling this function, as
+        other objects should preferably only store weakrefs to the params
         """
         self.names.clear()
         self.params.clear()
@@ -812,7 +901,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         or
             self.params.maps[0].get(self.names.maps[0].get("some_name"))
         since the container manages the name<->obj relationship, some care need to be taken in order for this relationship to be maintained.
-        For example, do not add params to self.params or self.names excplicitly, instead, use this function to get proper behaviour.
+        For example, do not add params to self.params or self.names directly, instead, use this function to get proper behaviour.
 
         If the added param is an instance of ChunkContainerBase, the children of the new param will be appended to the self.params and self.names
         ChainMaps, which allows for fast access of nested params.
@@ -878,7 +967,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
     def name_changed(self, old_name: str):
         """Marks the old_name as changed, and update the names dict for this layer only, to reflect the change.
         old_name will be replaced with whatever the new name of the corresponding object is. This allows for:
-
+        ``` py
             c = Chunk.Slider("A")
             g = Chunk.Group("group")
             g.add_param(c)
@@ -889,7 +978,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             p.name = "B"
             p = g.get_param("B")
             asset(p != None && g.get_param("A") == None)
-
+        ```
         Args:
             old_name (str): The old name mapped to the changed object. This will be removed from the first layer of the ChainMap if found
 
@@ -907,7 +996,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             raise ValueError(f"Failed to update old name {old_name} in container")
 
     def get_param(self, key: Union[ChunkHash, str], default: Any = None) -> Optional["ChunkCommon"]:
-        """Retrieve a param from this datastructure. Key can be either a ChunkCommon (It hashes to the HashVal), an explicit HashVal (ChunkObject._hashable) or a name.
+        """Retrieve a param from this datastructure. Key can be either a ChunkCommon (It hashes to the HashVal),
+        an explicit HashVal (ChunkObject._hashable) or a name.
 
         Returns:
             ChunkCommon | None: The found Chunk object if found
@@ -917,7 +1007,13 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         return self.params.get(key, default)
 
     def get_by_name(self, name: str, default: Any = None) -> Optional["ChunkCommon"]:
-        """Excplicitly retrieve a param by its name
+        """
+        Excplicitly retrieve a param by its name. In order to find nested children, one can
+        pass the hierarchy to the 'name' argument by adding a dot (.) for each level in the hierarchy:
+
+        ``` py
+        myChunk.get_param("groupA.groupB.slider")
+        ```
 
         Returns:
             ChunkCommon | None: The found Chunk object if found
@@ -1022,7 +1118,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 @attrs.frozen
 class HashVal:
     """
-    A hash value used by Chunk objects. The actual hash is a created from a uuid4
+    A hash value used by Chunk objects. The actual hash is a created from a uuid4. This
+    is held by ChunkCommon, and thus provides a unique id for all chunk objects
     """
 
     @staticmethod
@@ -1060,7 +1157,6 @@ class ChunkCommon(AttributesBase):
         label: An optional label to display in the ui
         tooltip: A description of the chunk object
         icon: A path to an image which to use as icon
-        usd_attr:
         user_data: A dict of arbitrary data to store on the param
         layout: Flags for setting the layout of the chunk object in the UI
         state: The current state
@@ -1101,21 +1197,76 @@ class ChunkCommon(AttributesBase):
         metadata=AttributeMetadata(sender_alias=chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED),
     )  # type: ignore
 
+    # Hold a weakref to the owning chunk for faster access to it, without having to traverse the
+    # hierarchy
+    _chunk_parent: Optional[weakref.ReferenceType] = attrs.field(
+        default=None, init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
+    )
+
+    def get_chunk(self) -> Optional["ChunkBase"]:
+        """
+        Get the owning Chunk if it exists.
+
+        Returns:
+            ChunkBase | None: The chunk that owns this object
+        """
+        if self._chunk_parent is None or self._chunk_parent() is None:
+            owner = self.get_owner()
+            while owner and not isinstance(owner, ChunkBase):
+                owner = owner.get_owner()
+
+            if not owner:
+                return None
+            self._chunk_parent = weakref.ref(owner)
+
+        return self._chunk_parent()
+
     def get_layer_identifier(self) -> str:
-        return f"{self.name}:{str(hash(self))}"
+        """
+        Implements the ChunkUsdLayerSupport protocol
+
+        Returns:
+            str: the layer identifier for this param
+        """
+
+        if c := self.get_chunk():
+            name = c.name
+            val = str(hash(c))
+        else:
+            name = self.name
+            val = str(hash(self))
+
+        return f"{name}_{val}"
 
     def get_hash(self) -> ChunkHash:
+        """
+        Implements the ChunkUsdLayerSupport protocol
+
+        Returns:
+            ChunkHash: The hashval of this object
+        """
         return self._hashable
 
-    def get_edit_context(self) -> Sdf.Layer:
-        owner = self.get_owner()
-        while owner and not isinstance(owner, ChunkBase):
-            owner = owner.get_owner()
+    def get_edit_context(self) -> Sdf.Layer | None:
+        """
+        Implements the ChunkUsdLayerSupport protocol.
 
-        if not owner:
-            return chunk_registry.ChunkLayerManager().get_or_create_layer(self)
+        Use when modifying the stage and the changes should be added to the local
+        Sdf.Layer corresponding to this chunk object. Will traverse up the hierarchy
+        to find the nearest ChunkBase parent and use the layer from it, instead of having
+        seperate layers for every parameter
 
-        return chunk_registry.ChunkLayerManager().get_or_create_layer(owner)
+        ``` py
+        with Usd.EditContext(stage, param.get_edit_context()):
+            # modify the stage
+        ```
+
+        Returns:
+            Sdf.Layer: A layer for this object
+        """
+
+        if c := self.get_chunk():
+            return chunk_registry.ChunkLayerManager().get_or_create_layer(c)
 
     def reset_state(self):
         """
@@ -1297,20 +1448,12 @@ class ChunkCommon(AttributesBase):
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
 
-class ChunkUsdLayerSupport(Protocol):
-    def get_edit_context(self) -> Sdf.Layer: ...
-
-    def get_layer_identifier(self) -> str: ...
-
-    def get_hash(self) -> ChunkHash: ...
-
-
 class ChunkUsdAttributeSupport(AttributesBase):
     """
     This inteface class can be subclassed for valued parameter classes in order to support connections
     to UsdAttribute objects. This enables a parameter to be generated from a UsdAttribute, and creating
     the NoticeConnections for managaging the value setting and getting between the param and the
-    UsdAttribute.
+    UsdAttribute. A subclass will need to implement the ChunkUsdLayerSupport protocol
     """
 
     # link to UsdAttribute if needed. Hidden in __init__ as the field would be added as the first argument
@@ -1325,12 +1468,18 @@ class ChunkUsdAttributeSupport(AttributesBase):
     def data_changed(
         self, notice: Tf.Notice | None, sender: Any, propagated: chunk_notice.ChunkNoticePropagator | None = None
     ) -> Tf.Notice | None:
-        my_notice = super().data_changed(notice, sender, propagated)
+        stage = chunk_registry.ChunkLayerManager().stage
+        if not stage:
+            return
 
+        my_notice = super().data_changed(notice, sender, propagated)
         if usd_attr := self.get_usd_attr():
-            # Sender should be the AttributeSender which _usd_attr_connection listen for
             chunk_notice.send_notice(sender.get_notice_alias(), sender, usd_attr)
+
         return my_notice
+
+    def get_stage(self) -> Usd.Stage | None:
+        raise NotImplementedError
 
     def get_layer_identifier(self) -> str:
         raise NotImplementedError
@@ -1338,7 +1487,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
     def get_hash(self) -> ChunkHash:
         raise NotImplementedError
 
-    def get_edit_context(self) -> Sdf.Layer:
+    def get_edit_context(self) -> Sdf.Layer | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -1358,8 +1507,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if notice.data.Get(0) == sender.value:
             return
 
-        with Usd.EditContext(notice.data.GetStage(), self.get_edit_context()):
-            notice.data.Set(sender.value)
+        notice.data.Set(sender.value)
 
     @abstractmethod
     def usd_attrib_changed(self, attr: Usd.Attribute):
@@ -1394,7 +1542,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             self._usd_attr_connection.disconnect()
 
         self._usd_attr_connection = chunk_notice.NoticeConnection(
-            self.update_usd_attrib, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender
+            self.update_usd_attrib, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender, owner=self
         )
         self.usd_attrib_changed(attr)
 
@@ -1530,14 +1678,21 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         """
         return self.get_type()
 
-    def request_delete(self):
-        return super().request_delete()
-
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.PARAM_CHANGED
 
 
 class ChunkContainerBase(ChunkCommon):
+    """
+    A base class for container type parameters such as Vectors, Groups and Chunks. The container can hold
+    parameters (ChunkParamBase) or other ChunkContainerBase objects.
+
+    Attributes:
+        children (NameSyncedContainer): The underlying container owning the child parameters
+        widget_factory (Optional[ChunkWidgetFactoryBase]): A factory that the ui implementation can use for
+            changing the default ui implementation of the container and its children
+    """
+
     children: NameSyncedContainer = attrs.field(
         init=False,
         factory=NameSyncedContainer,
@@ -1569,13 +1724,22 @@ class ChunkContainerBase(ChunkCommon):
         own_p.set_owner(None)
 
     def request_delete(self):
+        """
+        Request delete this container, and subsequently clear its children
+        """
         self.children.clear()
         self.children.set_owner(None)
 
         super().request_delete()
 
     def get_param(self, param: ChunkCommon | str | HashVal) -> Optional[ChunkCommon]:
-        """Get a parameter or group inside of this group
+        """
+        Get a parameter or group inside of this group. A string can be passed to get a parameter by name.
+        The string can also be the explicit hierarchy of a param by spacing the hiearchy levels with a dot
+
+        ``` py
+        myChunk.get_param("groupA.groupB.param")
+        ```
 
         Args:
             param (ChunkParamBase | str): A parameter to find. If string is passed, look for param with name
@@ -1590,7 +1754,7 @@ class ChunkContainerBase(ChunkCommon):
             return self.children.get_by_name(param)
 
     def get_params(self) -> Tuple[ChunkCommon, ...]:
-        """Get all parameters in this group
+        """Get all parameters in this group including nested
 
         Returns:
             Tuple[ChunkParamBase]: All parameters in this group
@@ -1598,10 +1762,10 @@ class ChunkContainerBase(ChunkCommon):
         return self.children.get_params()
 
     def get_my_params(self) -> Tuple[ChunkCommon, ...]:
-        """Get all parameters in this group
+        """Get all parameters added directly to this group
 
         Returns:
-            Tuple[ChunkParamBase]: All parameters in this group
+            Tuple[ChunkParamBase]: All parameters owned by this group
         """
         return self.children.get_my_params()
 
@@ -1616,6 +1780,16 @@ class ChunkContainerBase(ChunkCommon):
         return list(self.iter_changes())[-1]
 
     def check_hierarchy(self):
+        """
+        A debug function for checking the hierarchy structure of a group.
+
+        Raises:
+            TypeError: An owner is not set to a child of this group
+            TypeError: The owner of a child is not a ChunkNoticePropagator
+            ValueError: The owner of a child does not itself hold the child
+            NameError: Duplicate chunk in the hierarchy
+            NameError: Duplicate name in the hierarchy
+        """
         failed_msg = f"check_hierarchy for {self.name} failed! \n"
         failed_msg += " Reason: {}"
 
@@ -1656,6 +1830,10 @@ class ChunkContainerBase(ChunkCommon):
             found_names.add(p.name)
 
     def print_hierarchy(self):
+        """
+        A debug function printing the hierarchy of the group and its children
+        """
+
         def inset(i):
             return "." * i * 4
 
@@ -1684,16 +1862,33 @@ class ChunkContainerBase(ChunkCommon):
 
         print(msg)
 
-    def iter_hierarchy(self, indent=0):
-        yield indent, self
+    def iter_hierarchy(self, level=0) -> Generator[Tuple[int, ChunkCommon], None, None]:
+        """
+        Provides a generator for iterating over the hierarchy, starting from self,
+        going to all children and recursively through nested groups.
+
+        Args:
+            level (int, optional): A value saying what level of the hierarchy the yielded value come from, starting at 0. Defaults to 0.
+
+        Yields:
+            Tuple[int, ChunkCommon]: _description_
+        """
+        yield level, self
         for p in self.children.get_my_params():
             if isinstance(p, ChunkGroupBase):
-                yield from p.iter_hierarchy(indent + 1)
+                yield from p.iter_hierarchy(level + 1)
             else:
-                yield indent + 1, p
+                yield level + 1, p
 
 
 class ChunkGroupBase(ChunkContainerBase):
+    """
+    A base class for dynamic group objects. Chunk and Groups are dynamic in the sense that they can add an arbitrarily number of
+    children of direfent types. Vectors on the other hand should not subclass from this class as they are not dynamic in the
+    same sense.
+
+    """
+
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
 
@@ -1718,20 +1913,39 @@ class ChunkGroupBase(ChunkContainerBase):
         return new_params
 
     def add_param(self, param: ChunkT, force_unique: bool = True) -> ChunkT:
-        """Adds a parameter to this group. Connects the parameter change notices to also emit this group changed notice
+        """
+        Adds a parameter to this group. The new param will be added to the 'children' NameSyncedContainer attribute.
+        Any modifications of the param will propagate to this group as they will share the same hierarchy. See the
+        ChunkNoticePropagator for more information on how this is implemented. Adding mupliples of the same param,
+        consider using:
+
+        ``` py
+        group.add_param(param.clone())
+        ```
+        or, for multiple params at once:
+        ``` py
+        group.add_params([param, param.clone(), param.clone()])
+        ```
 
         Args:
-            param (ChunkParamBase): A parameter to add. Can also be another ChunkContainer, which will nest the group
+            param (ChunkT): A parameter to add. May also be another ChunkContainer, which will nest the group
+            force_unique (bool): If a param already exists in the hierarchy, we most often do not want a direct duplicate.
+                This enables the check, and if a duplicate exists, raises a ValueError. However, if the hash is unique but
+                the name is a duplicate, this will resolve the name conflict by incrementing a numerical suffix. If set to False,
+                this check is never performed, instead any duplicate will simply replace the old parameter. Defaults to True
+
+        Returns:
+            ChunkT: The param
+
+        Raises:
+            ValueError: If the param is a direct duplicate (hash exists already)
         """
 
         new_param = None
         if force_unique:
-            # This copied the input param in order to avoid any duplicate params in the hiearchy
-            new_param = self.copy_group_or_param(param)
+            new_param = self.resolve_new_param(param)
 
         if new_param is None or new_param is param:
-            # Param was not a duplicate, so can use the one passed by caller.
-            # If the param was duplicated, callbacks are copied and resolved during resolve_new_param_or_group
             new_param = param
 
         if isinstance(new_param, ChunkCommon):
@@ -1742,19 +1956,24 @@ class ChunkGroupBase(ChunkContainerBase):
             raise ValueError("Chunks only support params inherited from ChunkCommon")
         return new_param
 
-    def copy_group_or_param(self, param: ChunkT, reserved_names: Optional[set[str]] = None) -> Optional[ChunkT]:
-        """Return a copy of a param or group that does not conflict with other child on this group
+    def resolve_new_param(self, param: ChunkT, reserved_names: Optional[set[str]] = None) -> Optional[ChunkT]:
+        """
+        Return a copy of a param or group that does not conflict with other child on this group. Raises an error
+        if a param with the same hash already exists
 
         Args:
             param (ChunkParamBase): A ChunkParam or ChunkContainer object to copy
             reserved_names (List[str], optional): A list of reserved names which the copy will respect. Defaults to None.
 
         Returns:
-            ChunkParamBase: The copy of param with new name and updated connections
+            ChunkT: If the parameter was valid, return the parameter but with posibly a new name as to not fix name conflicts
+
+        Raises:
+            ValueError: If a duplicate was found
         """
 
         if param in self.get_params():
-            return None
+            raise ValueError(f"A duplicate for param {param.name} was found on container {self.name}")
 
         if not reserved_names:
             reserved_names = self.get_reserved_names()
@@ -1773,16 +1992,16 @@ class ChunkGroupBase(ChunkContainerBase):
 
         return new_param
 
-    def get_reserved_names(self) -> set[str]:
+    def get_reserved_names(self) -> Set[str]:
         """A combination of reserved param and group names
 
         Returns:
-            List[str]: A list of reserved group and parameter names which new parameters should not be named
+            Set[str]: A set of reserved group and parameter names which new parameters should not be named
         """
         return set(self.children.get_names()) | set([self.name])
 
     def get_valid_child_name(self, param: ChunkCommon, reserved_names: Set[str]) -> str:
-        """Get a unique name for param or group to be added on this group
+        """Get a unique name for param or group to be added on this group by adding a numerical suffix to duplicate names
 
         Args:
             param (ChunkParam): a name that might not be unique
@@ -1815,6 +2034,10 @@ class ChunkGroupBase(ChunkContainerBase):
 
 
 class ChunkConfig(AttributesBase):
+    """
+    Base class for Configs. A config sets some load time configurations for a chunk.
+    """
+
     load: bool = attrs.field(default=True)
     load_for_plugin: Optional[str] = attrs.field(default=None)
 
@@ -1824,13 +2047,16 @@ class ChunkConfig(AttributesBase):
 
 class ChunkBase(ChunkGroupBase):
     """
-    Base class for Chunks. Similar to groups, but with additional config and category
+    Base class for Chunks. Similar to groups, but with a category
 
     Attributes:
-        category: A category to sort this chunk by
+        category (str): A category to sort this chunk by
     """
 
     category: str = attrs.field(default="Chunks")
+
+    def get_chunk(self) -> Optional["ChunkBase"]:
+        return self
 
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "category" and not isinstance(val, str):
@@ -1840,7 +2066,27 @@ class ChunkBase(ChunkGroupBase):
 
 
 class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
-    """Base for vector style parameters. Function similar to a group but with fixed number of params"""
+    """
+    Base for vector style parameters. Function similar to a group but with fixed number of params. Interfacing
+    with a Vector is similar to a regular valued parameter, where the 'value' attribute reference child params.
+    These ops can be used:
+
+    ``` py
+    vec = chunk.Vector(
+        "myVec", param=chunk.Slider(), length=3, suffix="xyz"
+    )
+
+    vec[0] = 10
+    vec.x = 10
+    vec.value = (0, 1, 2)
+    ```
+
+    Attributes:
+        param (ChunkParamBase): The parameter to use as for the vector. Will clone it lenght times
+        length (int): How many elements in the vector
+        suffixes (Optional[Tuple[str, ...] | str]): A string or tuple of strings where len(suffixes) == length. These decide how the
+            parameters should be nammed. If the param has a name already, the suffixes will be appended to the name
+    """
 
     param: ChunkParamBase = attrs.field(default=None)
     length: int = attrs.field(default=3)
@@ -1867,10 +2113,6 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             np = self.param.clone()
             if not np.name:
                 np.name = self.name
-            if usd_attr := self.get_usd_attr():
-                print("-------------------")
-                print(usd_attr.Get(0)[i])
-                print(self.value)
 
             if self.suffixes:
                 np.name += self.suffixes[i]

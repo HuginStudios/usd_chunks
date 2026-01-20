@@ -5,13 +5,12 @@ from pxr import Usd
 def addCube(owner, notice, sender):
     stage = owner.get_stage()
     count = 0
-    with Usd.EditContext(stage, owner.get_edit_context()):
-        while True:
-            prim = stage.GetPrimAtPath(f"/cube{count}")
-            if not prim.IsValid():
-                prim = stage.DefinePrim(f"/cube{count}", "Cube")
-                break
-            count = count + 1
+    while True:
+        prim = stage.GetPrimAtPath(f"/cube{count}")
+        if not prim.IsValid():
+            prim = stage.DefinePrim(f"/cube{count}", "Cube")
+            break
+        count = count + 1
 
 
 def main():
