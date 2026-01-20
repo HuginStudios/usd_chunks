@@ -1,5 +1,5 @@
 from pxr import Usd, UsdGeom, Sdf
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk, chunk_registry, chunk_notice
 
 import numpy as np
 
@@ -113,9 +113,14 @@ def curl_hair(curves: UsdGeom.BasisCurves, freq: float, amp: float):
     curves.GetPointsAttr().Set(curve_pts)
 
 
-def menu_changed(menu, notice, my_chunk: chunk.Chunk):
-    groups = [x for x in my_chunk.get_my_params() if isinstance(x, chunk.Group)]
-    selected = menu.value
+def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
+    param = notice.data
+
+    if sender is not owner.get_param("mesh_type"):
+        return
+
+    groups = [x for x in owner.get_my_params() if isinstance(x, chunk.Group)]
+    selected = param.value
 
     for g in groups:
         if g.name == selected:
@@ -124,47 +129,23 @@ def menu_changed(menu, notice, my_chunk: chunk.Chunk):
             g.set_state(chunk.ChunkFlags.State.HIDDEN)
 
 
-def clear_layer(stage, layer_id):
-    sublayer_paths = list(stage.GetSessionLayer().subLayerPaths).copy()
-    for i, sublayer in enumerate(sublayer_paths):
-        if layer_id in sublayer:
-            sublayer_paths.pop(i)
-    stage.GetSessionLayer().subLayerPaths = sublayer_paths
-
-
-def get_layer(stage, layer_id):
-    found = False
-    for lpath in stage.GetSessionLayer().subLayerPaths:
-        lay = stage.GetSessionLayer().Find(lpath)
-        if lay.GetDisplayNameFromIdentifier(lay.identifier) == layer_id:
-            layer = lay
-            found = True
-            break
-
-    if not found:
-        layer = Sdf.Layer.CreateAnonymous(layer_id)
-        stage.GetSessionLayer().subLayerPaths.append(layer.identifier)
-    return layer
-
-
-def hair_changed(notice, tube_grp: chunk.Group):
-    stage = tube_grp.get_stage()
+def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
+    stage = owner.get_stage()
 
     if not stage:
         return
 
-    layer_id = "add_hair_layer"
-    layer: Sdf.Layer = get_layer(stage, layer_id)
+    layer = owner.get_edit_context()
 
-    if tube_grp.has_state(chunk.ChunkFlags.State.HIDDEN):
-        clear_layer(stage, layer.identifier)
+    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
         return
 
-    count = tube_grp.get_param("count")
-    segs = tube_grp.get_param("segments")
-    len = tube_grp.get_param("length")
+    count = owner.get_param("count")
+    segs = owner.get_param("segments")
+    len = owner.get_param("length")
 
-    tgt = chunk_registry.ChunkRegistry().usdview_sender.selectedPrims
+    tgt = chunk_registry.ChunkRegistry().scene.get_selected_prims()
 
     if not tgt:
         return
@@ -174,12 +155,10 @@ def hair_changed(notice, tube_grp: chunk.Group):
     if not mesh:
         return
 
-    with Usd.EditContext(stage, layer):
-        build_hair(
-            tube_grp.get_stage(), mesh, count.value, segs.value, len.value
-        )
+    build_hair(owner.get_stage(), mesh, count.value, segs.value, len.value)
 
-def main(api, parent=None):
+
+def main():
     menu = chunk.Menu("mesh_type", "Mesh Type", menu_items=["none", "curly"], default_value="none")
 
     curly_group = chunk.Group("curly", "curly")
@@ -188,7 +167,7 @@ def main(api, parent=None):
             # chunk.LineEdit("target", "Target Prim", default_value="/"),
             chunk.Spinbox("count", min_value=1, default_value=10, is_int=True),
             chunk.Spinbox("segments", min_value=2, default_value=3, is_int=True),
-            chunk.Slider("length", default_value=1)
+            chunk.Slider("length", default_value=1),
         ]
     )
     curly_group.set_state(chunk.ChunkFlags.State.HIDDEN)
@@ -197,6 +176,6 @@ def main(api, parent=None):
     chunk_api = chunk.Chunk("Add Hair", category="Modelling")
     chunk_api.add_params([menu, curly_group])
 
-    menu.add_callback(menu_changed, chunk_api, send_self=True)
+    chunk_api.add_callback(menu_changed, sender=menu)
 
     return chunk_api

@@ -1,5 +1,5 @@
 from pxr import Usd, UsdGeom, Sdf, UsdShade
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_registry
 import itertools
 import numpy as np
 import os
@@ -271,38 +271,18 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1, height=2, caps=
     return mesh
 
 
-def menu_changed(menu, notice, my_chunk: chunk.Chunk):
-    groups = [x for x in my_chunk.get_my_params() if isinstance(x, chunk.Group)]
-    selected = menu.value
+def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
+    if sender is not owner.get_param("mesh_type"):
+        return
+
+    groups = [x for x in owner.get_my_params() if isinstance(x, chunk.Group)]
+    selected = sender.value
 
     for g in groups:
         if g.name == selected:
             g.unset_state(chunk.ChunkFlags.State.HIDDEN)
         else:
             g.set_state(chunk.ChunkFlags.State.HIDDEN)
-
-
-def clear_layer(stage, layer_id):
-    sublayer_paths = list(stage.GetSessionLayer().subLayerPaths).copy()
-    for i, sublayer in enumerate(sublayer_paths):
-        if layer_id in sublayer:
-            sublayer_paths.pop(i)
-    stage.GetSessionLayer().subLayerPaths = sublayer_paths
-
-
-def get_layer(stage, layer_id):
-    found = False
-    for lpath in stage.GetSessionLayer().subLayerPaths:
-        lay = stage.GetSessionLayer().Find(lpath)
-        if lay.GetDisplayNameFromIdentifier(lay.identifier) == layer_id:
-            layer = lay
-            found = True
-            break
-
-    if not found:
-        layer = Sdf.Layer.CreateAnonymous(layer_id)
-        stage.GetSessionLayer().subLayerPaths.append(layer.identifier)
-    return layer
 
 
 def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
@@ -359,101 +339,103 @@ def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
     transform2d_in_uv.ConnectToSource(reader_out)
     reader.CreateInput("varname", Sdf.ValueTypeNames.String).Set("st")
 
-    prim.ApplyAPI(UsdShade.MaterialBindingAPI)
-    UsdShade.MaterialBindingAPI(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+    api = UsdShade.MaterialBindingAPI.Apply(prim)
+    api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
 
 
-def cube_changed(notice, cube_grp: chunk.Group):
-    stage = cube_grp.get_stage()
+def cube_changed(owner: chunk.Group, notice, sender):
+    stage = owner.get_stage()
 
     if not stage:
         return
 
-    layer_id = "add_cube_layer"
-    layer: Sdf.Layer = get_layer(stage, layer_id)
+    layer = owner.get_edit_context()
+    if not layer:
+        return None
 
-    if cube_grp.has_state(chunk.ChunkFlags.State.HIDDEN):
-        clear_layer(stage, layer.identifier)
+    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
+
         return
 
-    xseg = cube_grp.get_param("dimx")
-    yseg = cube_grp.get_param("dimy")
-    zseg = cube_grp.get_param("dimz")
+    xseg = owner.get_param("dimx")
+    yseg = owner.get_param("dimy")
+    zseg = owner.get_param("dimz")
 
     if not xseg or not yseg or not zseg:
         return
 
-    width = cube_grp.get_param("width")
-    height = cube_grp.get_param("height")
-    depth = cube_grp.get_param("depth")
+    width = owner.get_param("width")
+    height = owner.get_param("height")
+    depth = owner.get_param("depth")
 
     if not width or not height or not depth:
         return
 
-    with Usd.EditContext(stage, layer):
-        build_cube(
-            cube_grp.get_stage(), "/cube", xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value
-        )
+    # with Usd.EditContext(stage, layer):
+    build_cube(
+        owner.get_stage(), "/cube", xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value
+    )
 
 
-def tube_changed(notice, tube_grp: chunk.Group):
-    stage = tube_grp.get_stage()
-
-    if not stage:
-        return
-
-    layer_id = "add_tube_layer"
-    layer: Sdf.Layer = get_layer(stage, layer_id)
-
-    if tube_grp.has_state(chunk.ChunkFlags.State.HIDDEN):
-        clear_layer(stage, layer.identifier)
-        return
-
-    rows = tube_grp.get_param("rows")
-    cols = tube_grp.get_param("cols")
-
-    radius = tube_grp.get_param("radius")
-    height = tube_grp.get_param("height1")
-    caps = tube_grp.get_param("caps")
-
-    with Usd.EditContext(stage, layer):
-        build_tube(tube_grp.get_stage(), "/tube", rows.value, cols.value, radius.value, height.value, caps.value)
-
-
-def grid_changed(notice, tube_grp: chunk.Group):
-    stage = tube_grp.get_stage()
+def tube_changed(owner: chunk.Group, notice, sender):
+    stage = owner.get_stage()
 
     if not stage:
         return
 
-    layer_id = "add_grid_layer"
-    layer: Sdf.Layer = get_layer(stage, layer_id)
+    layer = owner.get_edit_context()
+    if not layer:
+        return None
 
-    if tube_grp.has_state(chunk.ChunkFlags.State.HIDDEN):
-        clear_layer(stage, layer.identifier)
+    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
         return
 
-    dimx = tube_grp.get_param("dimx1")
-    dimy = tube_grp.get_param("dimy1")
+    rows = owner.get_param("rows")
+    cols = owner.get_param("cols")
 
-    width = tube_grp.get_param("width1")
-    height = tube_grp.get_param("height2")
-    topo = tube_grp.get_param("topo")
+    radius = owner.get_param("radius")
+    height = owner.get_param("height1")
+    caps = owner.get_param("caps")
+
+    # with Usd.EditContext(stage, layer):
+    build_tube(owner.get_stage(), "/tube", rows.value, cols.value, radius.value, height.value, caps.value)
+
+
+def grid_changed(owner: chunk.Group, notice, sender):
+    stage = owner.get_stage()
+
+    if not stage:
+        return
+
+    layer = owner.get_edit_context()
+
+    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
+
+        return
+
+    dimx = owner.get_param("dimx1")
+    dimy = owner.get_param("dimy1")
+
+    width = owner.get_param("width1")
+    height = owner.get_param("height2")
+    topo = owner.get_param("topo")
 
     topo_val = Topo.QUAD
 
-    if topo.value == "tris":
+    if topo and topo.value == "tris":
         topo_val = Topo.TRIS
 
-    with Usd.EditContext(stage, layer):
-        grid = build_plane(
-            tube_grp.get_stage(), "/plane", dimx.value, dimy.value, width.value, height.value, topo=topo_val
-        )
-        if grid:
-            add_texture(grid.GetPrim())
+    grid = build_plane(
+        owner.get_stage(), "/plane", dimx.value, dimy.value, width.value, height.value, topo=topo_val
+    )
+    if grid:
+        add_texture(grid.GetPrim())
 
 
-def main(api, parent=None):
+def main():
     path = chunk.LineEdit("prim_path", "Prim Patm", default_value="/mesh")
 
     menu = chunk.Menu(
@@ -502,7 +484,6 @@ def main(api, parent=None):
 
     chunk_api = chunk.Chunk("Add Mesh", category="Modelling")
     chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
-
-    menu.add_callback(menu_changed, chunk_api, send_self=True)
+    chunk_api.add_callback(menu_changed, sender=menu)
 
     return chunk_api

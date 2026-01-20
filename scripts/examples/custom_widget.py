@@ -1,12 +1,12 @@
-from usd_chunks import chunk, chunk_interface, chunk_notice, chunk_registry
-from PySide6 import QtWidgets, QtCore, QtGui
+from usd_chunks import chunk, chunk_core
+from PySide6 import QtWidgets
 
 
-def customButtonClicked(notice, sender):
-    print(sender.user_data["customValue"])
+def customButtonClicked(owner, notice, sender):
+    print(owner.user_data["customValue"])
 
 
-class MyWidget(chunk_interface.ChunkParamWidget, QtWidgets.QPushButton):
+class MyWidget(chunk_core.ChunkParamWidget, QtWidgets.QPushButton):
     def __init__(self, param: chunk.ChunkParamBase):
         super().__init__(param)
 
@@ -37,7 +37,7 @@ class MyWidget(chunk_interface.ChunkParamWidget, QtWidgets.QPushButton):
     #     pass
 
 
-def main(api):
+def main():
     # An example of using a custom widget
     custom = chunk.Custom("Custom", user_data={"customValue": "Hello from Custom Widget!"})
     # Set the custom_widget member to the custom Qt widget
@@ -51,3 +51,6 @@ def main(api):
     myChunk.add_param(custom)
 
     return myChunk
+
+def config():
+    return chunk.DefaulConfig(load=False)

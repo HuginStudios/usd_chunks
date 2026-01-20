@@ -1,8 +1,9 @@
-from usd_chunks import chunk, chunk_interface
+from usd_chunks import chunk
+from pxr import Usd
 
 
-def addCube(notice, sender):
-    stage = sender.get_stage()
+def addCube(owner, notice, sender):
+    stage = owner.get_stage()
     count = 0
     while True:
         prim = stage.GetPrimAtPath(f"/cube{count}")
@@ -12,7 +13,7 @@ def addCube(notice, sender):
         count = count + 1
 
 
-def main(api, parent=None):
+def main():
     button = chunk.Button("add_cube", "Add Cube")
     button.add_callback(addCube)
 
@@ -20,3 +21,7 @@ def main(api, parent=None):
     chunk_api.add_param(button)
 
     return chunk_api
+
+
+def config():
+    return chunk.DefaulConfig(load=False)

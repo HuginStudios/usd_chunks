@@ -1,0 +1,82 @@
+site_name: USD Chunks
+theme: 
+  name: material
+  logo: assets/icon.png
+  features:
+    - navigation.tabs
+    - navigation.top
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.annotation
+    - content.code.copy
+
+  language: en
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/toggle-switch-off-outline 
+        name: Switch to dark mode
+      primary: teal
+      accent: purple 
+    - scheme: slate 
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to light mode    
+      primary: teal
+      accent: lime
+plugins:
+  - search
+  - git-revision-date-localized:
+      type: date
+      fallback_to_build_date: false
+      enable_creation_date: true
+      enabled: true
+
+  - mkdocstrings:
+      handlers:
+        # See: https://mkdocstrings.github.io/python/usage/
+        python:
+          inventories:
+            - https://docs.python.org/3/objects.inv
+            - https://docs.pydantic.dev/latest/objects.inv
+            - https://jcristharif.com/msgspec//objects.inv
+
+          options:
+            extensions:
+              - griffe_fieldz:
+                  include_inherited: true
+              - ./griffe_chunks.py:GriffleChunks:
+                  modules: [chunk, chunk_core]
+  
+            merge_init_into_class: true
+            docstring_style: "google"
+            allow_inspection: true
+            show_signature: true
+            show_signature_annotations: false
+            separate_signature: true
+
+            modernize_annotations: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+
+markdown_extensions:
+  - markdown_include.include:
+      base_path: .
+  - admonition
+  - toc:
+      permalink: ⚓︎
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+
+watch:
+  - docs

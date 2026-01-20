@@ -3,3 +3,4 @@ PyOpenGL
 types-usd
 attrs
 typing-extensions
+

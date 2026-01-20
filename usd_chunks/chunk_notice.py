@@ -1,17 +1,75 @@
-from pxr import Tf
+"""
+The chunk_notice module defines the base classes for all TfNotice and hierarchical logic.
+TfNotice is the USD built-in callback system, similar to Qt's signals. This module uses
+TfNotices extensively, but hides most of the Tf.Notice API behind our own logic. The
+goal is for end-users to easily be up and running with the callbacks, without having to
+manage the lifetime of the listeners.
+
+We promote the ChunkNoticeAlias as an alias for the supported TfNotice classes, which
+makes it easy to find the notice type you're interested in without having to care about
+its implementation.
+
+All the custom TfNotices are subclassed from ChunkNotice, which provide some additional data,
+that may vary in type depending on the notice and how sends it.
+
+The easiest way of sending a notice would be to do it explicitly, using send_notice:
+``` py
+send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
+```
+
+"""
+
+from pxr import Tf, Usd, Sdf
 
 # from enum import IntEnum, auto
 from enum import IntEnum, auto
 from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator
-from pxr.Usdviewq import usdviewApi as UsdviewModule
-from pxr import Usd
+
 from functools import partial
 from abc import abstractmethod
 
 import weakref
+import inspect
 
 
 class ChunkNoticeAlias(IntEnum):
+    """
+    An alias is essentially just the name of a supported Tf.Notice implmentation. We're using aliases as a client-facing interface for
+    working with the notices.
+
+    Any supported notice should be reflected with an alias in this enum class
+
+    Attributes:
+        NONE : A default, empty alias
+        PARAM_CHANGED : Sent when a param changes
+        GROUP_CHANGED : Sent when a group changes. This includes nested groups and param changes
+        CHUNK_CHANGED : Similar to GROUP_CHANGED but only for chunks
+
+        PARAM_ADDED : Sent when a param was added as a child to a group or chunk
+        PARAM_REMOVED : Sent when a param was removed as a child from a group or chunk. Not necessarily deleted
+
+        CHUNK_DELETED : A chunk object was deleted. Use instead of PARAM_REMOVED for most applications, as PARAM_REMOVED only sends when
+                        a param was added as a child to a NamedSyncedContainer (group / chunk / vector). CHUNK_DELETED on the other hand,
+                        sends wheneverANY chunk object was deleted
+
+        ATTRIBUTE_CHANGED : Default notice for attributes that does not set an alias excplicitly
+        FLAGS_CHANGED : Sent when the flags attribute changes
+        STATE_CHANGED : Sent when the state attribute changes
+
+        PRIM_SELECTION_CHANGED : Sent whenever the prim selection changed in UsdView
+        PROP_SELECTION_CHANGED : Sent whenever the prop selection changed in UsdView
+        OBJECT_CHANGED : Sent whenever anything was changed on the stage
+        STAGE_CHANGED : Sent when the stage is changed
+        STAGE_CONTENTS_CHANGED : Sent when stage contents changed
+        STAGE_EDIT_TARGET_CHANGED : Sent when the edit target on the stage changed
+
+        CHUNK_LOADED : Sent when a new chunk has beed added to the registry
+        CHUNK_UNLOADED : Sent when a chunk was unloaded
+
+        CUSTOM : Custom notices should be registered with aliases > CUSTOM
+
+    """
+
     # Chunk parameters and value notices
     NONE = 0
     PARAM_CHANGED = auto()  # Sent when a param changes
@@ -26,9 +84,6 @@ class ChunkNoticeAlias(IntEnum):
     # ANY chunk object was deleted
     CHUNK_DELETED = auto()
 
-    # Notice sent whenever the value of a valued parameter changes
-    ATTRIBUTE_VALUE_CHANGED = auto()
-
     # Default notice for attributes that does not set an alias excplicitly
     ATTRIBUTE_CHANGED = auto()
 
@@ -41,12 +96,17 @@ class ChunkNoticeAlias(IntEnum):
     PRIM_SELECTION_CHANGED = auto()
     PROP_SELECTION_CHANGED = auto()
     OBJECT_CHANGED = auto()  # Something was changed on the stage
+    STAGE_CHANGED = auto()
+    STAGE_CONTENTS_CHANGED = auto()
+    STAGE_EDIT_TARGET_CHANGED = auto()
 
     # Registry notices
     CHUNK_LOADED = auto()  # Sent when a new chunk has beed added to the registry
     CHUNK_UNLOADED = auto()  # Sent when a chunk was unloaded
 
-    CUSTOM = 200  # Custom notices should be registered with aliases > CUSTOM
+    CHUNK_CONFIG_CHANGED = auto()  # Sent when a chunk config was changed
+
+    CUSTOM = auto()  # Custom notices should be registered with aliases > CUSTOM
 
 
 class RegistrySingleton(type):
@@ -58,31 +118,83 @@ class RegistrySingleton(type):
         return cls._instances[cls]
 
 
+class ChunkNotice(Tf.Notice):
+    """
+    A Chunk notice is a wrapper around TfNotice but with some additional data. This interface is meant for recievers of the notice to easily
+    find what has been changed. It also enables globally registered listeners to know what data was changed.
+
+    Attributes:
+        data(ChunkNoticeData): The data to send with the notice. This may vary between
+        alias(ChunkNoticeAlias): The alias assiciated with this notice. This may vary between
+    """
+
+    data: Any = None
+    alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE
+
+    def __init__(self, data: Any = None):
+        super().__init__()
+        self.data = data
+
+
 class ChunkNoticeRegistry(metaclass=RegistrySingleton):
+    """
+    Register a new notice. Easiest way to register a new notice is to wrap a class declaration with @chunk_notice, as:
+    ``` py
+    @chunk_notice(ChunkNoticeAlias.PARAM_CHANGED)
+    class ParamChangeNotice(ChunkNotice):
+        pass
+    ```
+
+    Attributes:
+        registered (Dict[int, Type[Tf.Notice]]): A dictionary mapping between a ChunkNoticeAlias and a registered TfNotice
+    """
+
     registered: Dict[int, type[Tf.Notice]] = {}
 
     @classmethod
-    def get_from_alias(cls, alias: ChunkNoticeAlias) -> Tf.Notice:
+    def get_from_alias(cls, alias: ChunkNoticeAlias) -> Type[Tf.Notice]:
+        """
+        Get a registered notice from a ChunkNoticeAlias
+
+        Args:
+            alias (ChunkNoticeAlias): The alias to look up
+
+        Raises:
+            Tf.ErrorException: If the alias has not been registered
+
+        Returns:
+            Type[Tf.Notice]: The class of the registered notice
+        """
         notice = cls.registered.get(alias.value)
         if notice is None:
             raise Tf.ErrorException(f"No notice found for alias {alias}")
         return notice
 
     @classmethod
-    def register(cls, alias: ChunkNoticeAlias, notice_class):
+    def register(cls, alias: ChunkNoticeAlias, notice_class: Type[Any]):
+        """
+        Register a new notice and associate it with an alias
+
+        Args:
+            alias (ChunkNoticeAlias): The alias which to associate with the notice
+            notice_class (Type[Any]): The class that should be registered
+        """
         if alias not in cls.registered:
+            notice_class.alias = alias
+            if not hasattr(notice_class, "data"):
+                notice_class.data = None
             cls.registered[alias.value] = notice_class
 
 
 def chunk_notice(alias: ChunkNoticeAlias):
-    """Used as decorator for Tf.Notice object who should be registered by the ChunkNoticeRegistry. This maps the alias to the decorated class,
+    """Used as decorator for new Tf.Notice classes that should be registered by the ChunkNoticeRegistry. This maps the alias to the decorated class,
     so a user can do get_notice(alias).Send()
 
     Args:
         alias (ChunkNoticeAlias): The alias which maps to the new Tf.Notice class
     """
 
-    def _wrapper(cls: Type["Tf.Notice"]):
+    def _wrapper(cls: Type[ChunkNotice]):
         ChunkNoticeRegistry().register(alias, cls)
         Tf.Type.Define(cls)
 
@@ -91,87 +203,103 @@ def chunk_notice(alias: ChunkNoticeAlias):
     return _wrapper
 
 
+### Chunk / Group / Param changed notices
+
+
 @chunk_notice(ChunkNoticeAlias.PARAM_CHANGED)
-class ParamChangeNotice(Tf.Notice):
+class ParamChangeNotice(ChunkNotice):
     pass
 
 
 @chunk_notice(ChunkNoticeAlias.GROUP_CHANGED)
-class GroupChangeNotice(Tf.Notice):
+class GroupChangeNotice(ChunkNotice):
     pass
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_CHANGED)
-class ChunkChangeNotice(Tf.Notice):
+class ChunkChangeNotice(ChunkNotice):
     pass
 
 
+### Create / Delete notices
+
+
 @chunk_notice(ChunkNoticeAlias.PARAM_ADDED)
-class ParamAddedNotice(Tf.Notice):
+class ParamAddedNotice(ChunkNotice):
     pass
 
 
 @chunk_notice(ChunkNoticeAlias.PARAM_REMOVED)
-class ParamRemovedNotice(Tf.Notice):
+class ParamRemovedNotice(ChunkNotice):
     pass
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_DELETED)
-class ChunkDeletedNotice(Tf.Notice):
+class ChunkDeletedNotice(ChunkNotice):
     pass
 
 
-@chunk_notice(ChunkNoticeAlias.ATTRIBUTE_VALUE_CHANGED)
-class AttributeValueChangeNotice(Tf.Notice):
-    pass
+### Attribute notices
 
 
 @chunk_notice(ChunkNoticeAlias.ATTRIBUTE_CHANGED)
-class AttributeChangeNotice(Tf.Notice):
+class AttributeChangeNotice(ChunkNotice):
     pass
 
 
 @chunk_notice(ChunkNoticeAlias.FLAGS_CHANGED)
-class AttributeFlagsChangeNotice(Tf.Notice):
+class AttributeFlagsChangeNotice(ChunkNotice):
     pass
 
 
 @chunk_notice(ChunkNoticeAlias.STATE_CHANGED)
-class AttributeStateChangeNotice(Tf.Notice):
+class AttributeStateChangeNotice(ChunkNotice):
     pass
 
 
+### Chunk registry load / unload notices
+
+
 @chunk_notice(ChunkNoticeAlias.CHUNK_LOADED)
-class ChunkLoadedNotice(Tf.Notice):
+class ChunkLoadedNotice(ChunkNotice):
     pass
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_UNLOADED)
-class ChunkUnLoadedNotice(Tf.Notice):
+class ChunkUnloadedNotice(ChunkNotice):
     pass
 
 
+@chunk_notice(ChunkNoticeAlias.CHUNK_CONFIG_CHANGED)
+class ChunkConfigChanged(ChunkNotice):
+    pass
+
+
+### UsdView selection notices
+
+
 @chunk_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED)
-class PrimSelectionChangedNotice(Tf.Notice):
-    def __init__(self, selected_prims=[]):
-        super().__init__()
-        self.selected_prims = selected_prims
+class PrimSelectionChangedNotice(ChunkNotice):
+    pass
 
 
 @chunk_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED)
-class PropSelectionChangedNotice(Tf.Notice):
+class PropSelectionChangedNotice(ChunkNotice):
     pass
 
 
 # Register externally manages notice just to map to the custom enum
 ChunkNoticeRegistry().register(ChunkNoticeAlias.OBJECT_CHANGED, Usd.Notice.ObjectsChanged)
+ChunkNoticeRegistry().register(ChunkNoticeAlias.STAGE_CHANGED, Usd.Notice.StageNotice)
+ChunkNoticeRegistry().register(ChunkNoticeAlias.STAGE_CONTENTS_CHANGED, Usd.Notice.StageContentsChanged)
+ChunkNoticeRegistry().register(ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED, Usd.Notice.StageEditTargetChanged)
 
 
-def get_notice(alias: ChunkNoticeAlias) -> Tf.Notice:
+def get_notice(alias: ChunkNoticeAlias) -> Type[Tf.Notice]:
     """Return a class of type Tf.Notice for the specified ChunkNoticeAlias
 
     Args:
-        notice_type (ChunkNoticeAlias): The ChunkNoticeAlias enum to get a Tf.Notice class from
+        alias (ChunkNoticeAlias): The ChunkNoticeAlias enum to get a Tf.Notice class from
 
     Returns:
         Tf.Notice | None: None if the mapping to notice_type does not exist. Else, a Tf.Notice class representing the ChunkNoticeAlias
@@ -192,11 +320,26 @@ def is_notice_type(notice: Tf.Notice, alias: ChunkNoticeAlias) -> bool:
     return type(notice) is get_notice(alias)
 
 
-def send_notice(alias: ChunkNoticeAlias, sender: Any = None, notice: Tf.Notice = None):
-    if not notice:
-        notice_class = get_notice(alias)
-        if not notice_class:
-            return
+def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None, context: Optional[Sdf.Layer] = None):
+    """
+    Sends a notice of type alias, triggering subscribed callback functions to run
+
+    Args:
+        alias (ChunkNoticeAlias): The type of the notice to send
+        sender (Any, optional): The object to pass as sender. If None, the notice will be sent globally. Defaults to None.
+        data (Any, optional): Any additional data to attach to the notice object. Defaults to None.
+    """
+    notice_class = get_notice(alias)
+    if not notice_class:
+        return
+
+    if issubclass(notice_class, ChunkNotice):
+        notice = notice_class(data)
+    else:
+        if data is not None:
+            print(
+                f"Attempting to send notice {alias} with custom data which is not supported. Consider sending a ChunkNotice instead"
+            )
         notice = notice_class()
 
     if sender is None:
@@ -206,40 +349,96 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, notice: Tf.Notice =
 
 
 class ChunkNoticePropagator:
+    """
+    The base class for managing chunk hierarchies as well as implementing the notice system used by chunks.
+    A ChunkNoticePropagator stores the connections created with add_connection or add_callback, and implements
+    the logic to propagate the notices to the owning chunk objects.
+
+    Instead of having owners registering listeners for the changes of its children, it's much simpler to work the other
+    way araound, and have the children reference the owning object, and call data_changed() on the owner when the child has been
+    modified.
+
+    By default, the send_self() is called whenever an attribute or child attribute has been modified. The notice that is sent is
+    determined by the return value of get_notice_alias(). This notice is then also propagated up the owner hierarchy
+
+    The majority of the logic is implemented in send_self() and data_changed().
+
+    get_edit_context(), get_layer_identifier() and get_stage() can be implemented to support layer contexts when modifying the stage.
+    Any NoticeConnection will intercept the connected notices and set the edit context to the context (Sdf.Layer) returned by get_edit_context()
+    before running the actual callback function. This is to safely run callbacks and contain them to the layers managed by ChunkLayerManager.
+    See NoticeConnection.handle_callback for more info
+    """
+
     _last_notice: Optional[Tf.Notice]
     _last_sender: Optional[weakref.ReferenceType]
     _connections: List["NoticeConnection"]
     _owner: Optional[weakref.ReferenceType["ChunkNoticePropagator"]]
 
-    def __init__(self) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         self._last_notice = None
         self._last_sender = None
         self._connections = []
         self._owner = None
 
+        super().__init__(*args, **kwargs)
+
+    @abstractmethod
+    def request_delete(self):
+        raise NotImplementedError
+
     def _copy_connections(self, src: "ChunkNoticePropagator"):
-        # Add connections to the copy by creating new NoticeConnection objects
+        """
+        Copy connections to this object from src
+
+        Args:
+            src (ChunkNoticePropagator): The source object to copy connections from
+        """
         for conn in src._connections:
             self._copy_connection(conn, src)
 
     def _copy_connection(self, conn: "NoticeConnection", src: "ChunkNoticePropagator"):
-        # Add connections to the copy by creating new NoticeConnection objects
-        # Rewire the connection to the copy if conn.sender is the source of the copy (self)
-        sender = self if conn.sender == src else conn.sender
+        """
+        Copy a connection from src to this object.
+        Rewire the connection if conn.sender is the source of the copy (self)
 
-        new_conn = NoticeConnection(conn.method, conn.alias, sender, conn.globally, conn.send_owner, self)
-        self.add_connection(new_conn)
+        Args:
+            conn (NoticeConnection): The connection to copy
+            src (ChunkNoticePropagator): The source ChunkNoticePropagator to copy from
+        """
+        if meth := conn.get_method():
+            sender = self if conn.sender == src else conn.sender
+            new_conn = NoticeConnection(
+                meth, conn.alias, sender, conn.globally, self if conn.owner is not None else None
+            )
+            self.add_connection(new_conn)
+
+    def get_notice_data(self) -> Any:
+        """
+        When calling send_self, the notice of type self.get_notice_alias() will add custom data to the notice before sending.
+        The returned object from this function is the data associtated with the notice
+
+        Returns:
+            Any : The data which will be added to the Tf.Notice object before sending.
+        """
+        return self
 
     @abstractmethod
     def get_notice_alias(self) -> ChunkNoticeAlias:
-        """Return the default notice type for when add_callback() is called without notice_type argument. Should be overwritten in sub-classes
-
+        """Return the default notice type for when add_callback() is called without notice_type argument, or when calling send_self().
+        This should be overwritten in sub-classes in order to send the proper notice when something on the chunk object changed
         Returns:
+
             chunk_notice.NoticeType: The default notice type to send for callbacks
         """
         raise NotImplementedError
 
     def iter_changes(self) -> Generator[Tuple[Tf.Notice | None, Optional["ChunkNoticePropagator"]], None, None]:
+        """
+        Returns a generator for iterating over the notices that lead up to the last change of this object
+
+        Yields:
+            Generator[Tuple[Tf.Notice | None, Optional["ChunkNoticePropagator"]], None, None]: The generator to loop over
+        """
         ln, ls = self.get_last_change()
 
         if not ls or ls is self:
@@ -250,10 +449,10 @@ class ChunkNoticePropagator:
             yield from ls.iter_changes()
 
     def get_owner(self) -> Optional["ChunkNoticePropagator"]:
-        """Get the owner of this object. A ChunkParam might be added to a group, this would return the group holding this param
+        """Get the owning ChunkNoticePropagator of this object
 
         Returns:
-            ChunkContainer: The parent ChunkContainer, or None
+            Optional["ChunkNoticePropagator"]: The owning object, or None
         """
 
         if self._owner is None:
@@ -262,7 +461,7 @@ class ChunkNoticePropagator:
 
     def set_owner(self, owner: Optional["ChunkNoticePropagator"]):
         """Set the owner of this object. The owner is represents a "parent" in a parent-child relationship. This function
-        should therefor be used once the parent have actually taken ownership of this object. I.e, this function should only
+        should therefore be used once the parent have actually taken ownership of this object. I.e, this function should only
         be used to update the child when the relationship have changed.
 
         The ChunkNoticePropagator does nothing with the owner except propagating notices from the child
@@ -280,9 +479,9 @@ class ChunkNoticePropagator:
         ChunkParamGroup will also call this function on the group
 
         Args:
-            propagated (ChunkParamBase): The propagated sender. The sender that triggered the change
             notice (chunk_notice.InterfaceChangeNotice): The notice object which was sent
             sender (Any): The python object which was used as sender for the notice
+            propagated (ChunkParamBase): The propagated sender. The sender that triggered the change
         """
 
         self._last_notice = notice
@@ -292,24 +491,42 @@ class ChunkNoticePropagator:
         owner = self.get_owner()
 
         if owner and my_notice is None:
-            # if my_notice is None, then ignore any notices from self and just propagate
+            # if my_notice is None, then ignore any notices from self and just propagate. Used by NameSyncedContainer
             return owner.data_changed(notice, sender, propagated if propagated else sender)
 
         # Set owner data_changed if available
         if owner:
             owner.data_changed(my_notice, self, propagated if propagated else sender)
-
         return my_notice
 
-    def send_self(self) -> Optional[Tf.Notice]:
-        """Send a Tf.Notice of type default_notice_type, with self as sender"""
-        alias = self.get_notice_alias()
+    def send_self(self, alias: Optional[ChunkNoticeAlias] = None) -> Optional[Tf.Notice]:
+        """Sends a Tf.Notice, with self as sender. The type of notice is determined by get_notice_alias(), or optionally the alias argument.
+
+        Args:
+            alias (Optional[ChunkNoticeAlias]): An optional alias to send. If alias is not None, it will be used instead of the default from get_notice_alias()
+        """
+        if alias is None:
+            alias = self.get_notice_alias()
 
         if not alias:
             return None
 
-        notice = get_notice(alias)
-        notice().Send(self)
+        notice_class = get_notice(alias)
+
+        if issubclass(notice_class, ChunkNotice):
+            notice = notice_class(self.get_notice_data())
+        else:
+            notice = notice_class()
+        notice.Send(self)
+
+        # Iterate over all owners and have them send this notice as well. This is a bit nasty as the owners will themselves become senders,
+        # so accessing the original sender may only be done through notice.data in the subscribing functions
+        # TODO: Rethink this
+        iter_owner = self.get_owner()
+        while iter_owner is not None:
+            send_notice(alias, iter_owner, self.get_notice_data())
+            iter_owner = iter_owner.get_owner()
+
         return notice
 
     def get_last_change(self) -> Tuple[Tf.Notice | None, Any | None]:
@@ -362,15 +579,18 @@ class ChunkNoticePropagator:
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
-        send_self: bool = False,
     ):
-        """Subscribe to a notice. When the notice is sent, the suplpied method will be called with two arguments:
+        """Subscribe to a notice. When the notice is sent, the supplied method will be called, by default, with three arguments:
+        (owner(self), notice(Tf.Notice), sender(Any))
+        if `send_self==True`
+        then the notice will expect 2 parameters:
         (notice(Tf.Notice), sender(Any))
 
-        If the sender argument is specified, the method will be called only when said sender sends a notice. If not, ans also listen_globally is False, then assume the sender is self
-
-        If listen_globally = True, subscribe to all notices of the same type regardless of the sender. If listening to param changes globally f.e., then all param changes will trigger method,
-        not just changes from a certain param or group
+        If `sender==None`, then we assume self to be the sender of the notice. This enables some nice and simple syntax:
+        ``` py
+        myParam.add_callback(myCallback)
+        ```
+        If listen_globally is True, subscribe to all notices of the same type regardless of the sender.
 
         Args:
             method (Callable): The method to call when the notice is sent
@@ -387,115 +607,248 @@ class ChunkNoticePropagator:
         if isinstance(sender, ChunkNoticePropagator) and notice_alias is ChunkNoticeAlias.NONE:
             notice_alias = sender.get_notice_alias()
 
-        conn = NoticeConnection(method, notice_alias, sender, listen_globally, send_self, self)
+        self.add_connection(NoticeConnection(method, notice_alias, sender, listen_globally, self))
 
-        self.add_connection(conn)
+    @abstractmethod
+    def get_edit_context(self) -> Sdf.Layer | None:
+        """
+        Get a Sdf.Layer for which the chunk object can safely add changes to the stage
+
+        Returns:
+            Sdf.Layer: The layer that can be modified
+        """
+        pass
+
+    @abstractmethod
+    def get_layer_identifier(self) -> str:
+        """
+        Get a unique layer identifier for creation / access of layers
+
+        Returns:
+            str: The unique layer identifier
+        """
+        pass
+
+    @abstractmethod
+    def get_stage(self) -> Usd.Stage | None:
+        """
+        Get a handle to the stage
+
+        Returns:
+            Usd.Stage | None: A Usd.Stage if available
+        """
+        pass
 
 
 class NoticeConnection:
+    """
+    A storage for a TfListener object. This class provides a simple client-facing interface for
+    creating callbacks for the TfNotice system, with some additional functionality. This exists also
+    to store the information for the callbacks held by ChunkNoticePropagators.
+
+    All references to external objects, i.e, method, sender and owner, are stored as weakrefs as to not
+    take ownership. Properties are implemented to access them. Because of this, notice.method,
+    notice.owner or notice.sender may be None if they have been garbage collected. If any of the weakrefs
+    dies, the connection is broken.
+
+    The owner can be used to pass an additional object as an argument to the function call, enabling
+    ``` py
+    def func(obj: AClass, notice, sender):
+        pass
+
+
+    class AClass:
+        def __init__(self):
+            NoticeConnection(func, owner=self)
+    ```
+    as well as:
+
+    ``` py
+    class AnotherClass:
+        def func(self, notice, sender):
+            pass
+
+
+    def bind(obj: AnotherClass):
+        return NoticeConnection(obj.func, owner=obj)
+    ```
+
+    If the owner implements get_stage() and get_edit_context(), the method will be called with the
+    edit context as to contain all edits from the method to the edit context layer.
+
+    Attributes:
+        alias: A ChunkNoticeAlias associated to the notice we want to send
+        sender: The sender of the notice. When globally is True, this has not effect
+        globally: If we dont care about the sender but listening for all notices
+            of the same alias.
+        owner: An optional owner object. Usually 'self', when adding callbacks on a class
+    """
+
     def __init__(
         self,
         method: Callable,
         alias: ChunkNoticeAlias,
         sender: Optional[Any] = None,
         globally: bool = False,
-        send_owner: bool = False,
         owner: Optional[ChunkNoticePropagator] = None,
     ):
         self.alias: ChunkNoticeAlias = alias
-
         self.listener: Optional[Tf.Notice.Listener] = None
 
         self.globally: bool = globally
-        self.method: Callable = method
-        self.send_owner: bool = send_owner
 
-        self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender) if sender else None
-        self._owner: Optional[weakref.ProxyType] = weakref.proxy(owner) if owner else None
-        self.__method = None
+        if inspect.ismethod(method):
+            self._method: Callable = weakref.WeakMethod(method, self._method_died)
+        else:
+            self._method: Callable = weakref.ref(method, self._method_died)
+
+        self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender, self._sender_died) if sender else None
+        self._owner: Optional[weakref.ReferenceType] = weakref.ref(owner, self._owner_died) if owner else None
 
         self.connect()
 
+    def get_method(self) -> Callable | None:
+        """
+        Get the referenced method or function
+
+        Returns:
+            Callable | None: A callable function or method if it's still alive. Otherwise None
+        """
+        if not isinstance(self._method, weakref.ReferenceType):
+            return self._method
+        return self._method()
+
     @property
-    def owner(self):
-        return None if self._owner is None else self._owner
+    def owner(self) -> Optional[ChunkNoticePropagator]:
+        return None if not self._owner else self._owner()
 
     @owner.setter
     def owner(self, obj: Optional[ChunkNoticePropagator]):
-        self._owner = weakref.proxy(obj) if obj else None
+        self._owner = weakref.ref(obj, self._owner_died) if obj else None
 
     @property
-    def sender(self):
+    def sender(self) -> Optional[Any]:
         return None if self._sender is None else self._sender()
 
     @sender.setter
     def sender(self, obj):
         self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
-    
+
+    def handle_callback(self, notice, sender=None):
+        """
+        Forwards the notice after checking that the method, sender and owner are still alive and valid.
+        If the owner is valid and implements get_stage() and get_edit_context(), the method is called
+        with the respective edit context as to contain any stage edits to the correct layer.
+
+        Args:
+            notice (Tf.Notice): The notice to forward
+            sender (ChunkNoticePropagator, optional): The sender of the original notice. Defaults to None.
+        """
+        meth = self.get_method()
+        if not meth:
+            return
+
+        if self.owner:
+            # Try running the callback function with the edit context to safely add any changes to the stage
+            # to the correct layer
+            stage = self.owner.get_stage()
+            ctx = self.owner.get_edit_context()
+            if stage and ctx:
+                with Usd.EditContext(stage, ctx):
+                    if not inspect.ismethod(meth):
+                        partial(meth, self.owner)(notice, sender)
+                    else:
+                        meth(notice, sender)
+                return
+
+        if self.owner and not inspect.ismethod(meth):
+            partial(meth, self.owner)(notice, sender)
+        else:
+            meth(notice, sender)
+
     def __del__(self):
         self.disconnect()
 
     def connect(self, sender=None):
+        """
+        Builds the Tf.Listener from the member variables
+
+        Args:
+            sender (Any, optional): Override the sender. Defaults to None.
+        """
         notice = get_notice(self.alias)
         if not notice:
             print("Could not find appropriate notice to connect")
-            return None
+            return
 
         if self.listener is not None:
             self.disconnect()
 
         if sender is not None:
-            self.sender = sender
-
-        self.__method = None
-        if self.send_owner and self.owner:
-            self.__method = partial(self.method, self.owner)
-        else:
-            self.__method = self.method
+            self._sender = weakref.ref(sender)
 
         if self.sender is None or self.globally:
-            self.listener = Tf.Notice.RegisterGlobally(notice, self.__method)
+            self.listener = Tf.Notice.RegisterGlobally(notice, self.handle_callback)
         elif self.sender:
-            self.listener = Tf.Notice.Register(notice, self.__method, self.sender)
+            self.listener = Tf.Notice.Register(notice, self.handle_callback, self.sender)
 
     def _sender_died(self, ref):
         self.disconnect()
 
+    def _owner_died(self, ref):
+        self.disconnect()
+
+    def _method_died(self, ref):
+        self.disconnect()
+
     def disconnect(self):
+        """
+        Calls Revoke() on the stored TfListener
+        """
         if self.listener is not None:
             self.listener.Revoke()
             self.listener = None
-        self.__method = None
 
 
-class UsdviewSender(ChunkNoticePropagator):
-    def __init__(self, usdviewAPI: UsdviewModule.UsdviewApi):
-        self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
+class SceneSender(ChunkNoticePropagator):
+    """
+    Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
+    See implementation in plugins/usdview/__init__.py
+    """
 
-        # Usdview stubs are not up to date, so need to ignore typing
-        data_model = self.usdviewAPI.dataModel
+    @abstractmethod
+    def get_stage(self) -> Usd.Stage:
+        raise NotImplementedError
 
-        selection_model = data_model.selection  # type: ignore
-        selection_model.signalPrimSelectionChanged.connect(self._primSelectionChanged)
-        selection_model.signalPropSelectionChanged.connect(self._propSelectionChanged)
+    def get_selected_prims(self) -> List[Usd.Prim]:
+        """
+        Get the selected prims in the scene
 
-    @property
-    def selectedPrims(self) -> List[Usd.Prim]:
-        return self.usdviewAPI.selectedPrims  # type: ignore
+        Returns:
+            List[Usd.Prim]: Selected prims
+        """
+        raise NotImplementedError
 
-    @property
-    def selectedProp(self) -> Usd.Property:
-        return self.usdviewAPI.property  # type: ignore
+    def get_selected_property(self) -> Usd.Property:
+        """
+        Get the selected property in the scene
 
-    def _primSelectionChanged(self, *args, **kwargs):
-        selected_prims = [self.usdviewAPI.stage.GetPrimAtPath(prim_path) for prim_path in args[0]]
-        notice = PrimSelectionChangedNotice(
-            selected_prims=selected_prims
-        )
-        send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, self, notice)
+        Returns:
+            Usd.Property: Selected property
+        """
+        raise NotImplementedError
 
-    def _propSelectionChanged(self, *args, **kwargs):
-        send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, self)
+    def primSelectionChangedCallback(self, *args, **kwargs):
+        try:
+            send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.get_selected_prims())
+        except Tf.ErrorException:
+            pass
+
+    def propSelectionChangedCallback(self, *args, **kwargs):
+        try:
+            send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property())
+        except Tf.ErrorException:
+            pass
 
     def get_notice_alias(self) -> ChunkNoticeAlias:
         return ChunkNoticeAlias.NONE

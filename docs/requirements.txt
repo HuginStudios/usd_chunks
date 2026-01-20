@@ -1,0 +1,7 @@
+mkdocs-material
+mkdocstrings-python
+markdown-include
+griffe-fieldz
+mkdocs_gen_files
+mkdocs-git-committers-plugin
+mkdocs-git-revision-date-localized-plugin
