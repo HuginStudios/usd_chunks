@@ -201,7 +201,7 @@ def main():
     sep = chunk.Separator(layout=chunk.ChunkFlags.LayoutFlags.HORIZONTAL)
 
     # Create the actual chunk - this is in practice just a chunk.Group with some addiditional behaviour
-    myChunk = chunk.Chunk("Hello World", category="Examples")
+    myChunk = chunk.Chunk("Hello World")
     myChunk.add_params([label, checkbox, button, sep, textEdit, menu, fileBrowse, sliderGroup, sliderVec])
 
     # Add a callback. With no arguments, the callback will be called whenever any of tthe children on the chunk is changed
@@ -214,4 +214,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(load=False)
+    return chunk.DefaulConfig(load=False, category="Examples")

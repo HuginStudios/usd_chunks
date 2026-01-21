@@ -24,7 +24,6 @@ from typing import (
     Any,
     Dict,
     Protocol,
-    runtime_checkable,
     Tuple,
     TypeVar,
     Optional,
@@ -417,7 +416,7 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
     def __repr__(self) -> str:
         return f"AttributeSender({self.name} = {self.value})"
 
-    def get_notice_data(self) -> "AttributeSender":
+    def get_notice_data(self) -> Self:
         """
         The notice data for AttributeSender's is simply self. A reciever of a notice may use this
         to get any data available on the AttributeSender. This is possible if the original sender
@@ -2033,18 +2032,6 @@ class ChunkGroupBase(ChunkContainerBase):
         return name
 
 
-class ChunkConfig(AttributesBase):
-    """
-    Base class for Configs. A config sets some load time configurations for a chunk.
-    """
-
-    load: bool = attrs.field(default=True)
-    load_for_plugin: Optional[str] = attrs.field(default=None)
-
-    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
-        return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
-
-
 class ChunkBase(ChunkGroupBase):
     """
     Base class for Chunks. Similar to groups, but with a category
@@ -2053,16 +2040,28 @@ class ChunkBase(ChunkGroupBase):
         category (str): A category to sort this chunk by
     """
 
-    category: str = attrs.field(default="Chunks")
+    # The config is set from the chunk_registry.ChunkModule.load_config() function.
+    # This is because the config can be loaded independently from the chunk, without
+    # having to execute main() of the chunk module.
+    _config: Optional["ChunkConfig"] = attrs.field(default=None, init=False)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+
+        self.add_callback(self.disable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
+        self.add_callback(self.enable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
+
+    def disable(self, notice, sender):
+        self.set_state(ChunkFlags.State.DISABLED)
+
+    def enable(self, notice, sender):
+        self.unset_state(ChunkFlags.State.DISABLED)
+
+    def get_config(self) -> Optional["ChunkConfig"]:
+        return self._config
 
     def get_chunk(self) -> Optional["ChunkBase"]:
         return self
-
-    def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
-        if attr.name == "category" and not isinstance(val, str):
-            return attr.default
-
-        return super().convert_attr(attr, val)
 
 
 class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
@@ -2185,3 +2184,16 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
 
     def evaluate_type(self):
         return ChunkFlags.ParamType.VECTOR | self.param.evaluate_type()
+
+
+class ChunkConfig(AttributesBase):
+    """
+    Base class for Configs. A config sets some load time configurations for a chunk.
+    """
+
+    category: str = attrs.field(default="Chunks")
+    load: bool = attrs.field(default=True)
+    load_for_plugin: Optional[str] = attrs.field(default=None)
+
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED

@@ -173,9 +173,12 @@ def main():
     curly_group.set_state(chunk.ChunkFlags.State.HIDDEN)
     curly_group.add_callback(hair_changed)
 
-    chunk_api = chunk.Chunk("Add Hair", category="Modelling")
+    chunk_api = chunk.Chunk("Add Hair")
     chunk_api.add_params([menu, curly_group])
 
     chunk_api.add_callback(menu_changed, sender=menu)
 
     return chunk_api
+
+def config():
+    return chunk.DefaulConfig(category="Modelling")

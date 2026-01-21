@@ -23,7 +23,7 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk
 from usd_chunks.chunk_notice import ChunkNoticeAlias, RegistrySingleton, SceneSender, send_notice, NoticeConnection
-from usd_chunks.chunk_core import ChunkConfig, ChunkCommon, ChunkHash
+from usd_chunks.chunk_core import ChunkConfig, ChunkCommon, ChunkHash, ChunkBase
 
 from timeit import default_timer as timer
 
@@ -84,41 +84,51 @@ class ChunkModule:
 
         self.loaded_chunk = None
 
-    def load(self, func_name="main") -> chunk.Chunk | None:
-        """
-        Load the module by calling func_name from self.module. Can be used instead of run to bypass the config checks
+    def load_config(self, plugin="") -> bool:
+        if hasattr(self.module, "config"):
+            try:
+                func = getattr(self.module, "config")
+                self.config = func()
+            except Exception as e:
+                print(f"Failed to load config for {self.module_name}:", e)
+                return False
 
-        Args:
-            func_name (str, optional): A name of the function to execute from the module. Defaults to "main".
+        return True
 
-        Returns:
-            chunk.Chunk | None: The loaded chunk object of successful. None otherwise
-        """
+    def load(self, func_name: str = "main") -> bool:
         if not hasattr(self.module, func_name):
             print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
             self.loaded = False
-            return
+            return False
 
-        func = getattr(self.module, func_name)
-
-        start = timer()
-        retval: Any = func()
-        end = timer()
+        try:
+            func = getattr(self.module, func_name)
+            start = timer()
+            retval: Any = func()
+            end = timer()
+        except Exception:
+            # This module failed to load. Set to file_name so we can try loading it again later§
+            print(f"Failed to run module {self.module_name}:", traceback.format_exc())
+            self.loaded = False
+            return False
 
         if not (isinstance(retval, chunk.Chunk)):
             print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
             self.loaded = False
-            return
+            return False
 
         try:
             retval.check_hierarchy()
         except Exception as e:
             print(e)
             self.loaded = False
-            return
+            return False
 
         self.loaded_chunk = retval
         self.loaded = True
+
+        if self.config:
+            retval._config = self.config
 
         send_notice(
             ChunkNoticeAlias.CHUNK_LOADED,
@@ -127,9 +137,9 @@ class ChunkModule:
         )
 
         print(f"Loaded Chunk {self.loaded_chunk.name}. Load took {end - start} seconds")
-        return retval
+        return True
 
-    def handle_config(self, plugin_name: str) -> bool:
+    def should_load(self, plugin_name: str) -> bool:
         if not self.config:
             return False
         if not self.config.load:
@@ -276,21 +286,15 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 mod.loaded = False
                 return
 
-        if hasattr(mod.module, "config"):
-            func = getattr(mod.module, "config")
-            mod.config = func()
+        if not mod.load_config():
+            return
 
-        if not mod.handle_config(self.plugin):
+        if not mod.should_load(self.plugin):
             mod.loaded = False
             return
 
-        try:
-            mod.load("main")
-
-        except Exception:
-            # This module failed to load. Set to file_name so we can try loading it again later§
-            print(f"Failed to run module {mod.module_name}:", traceback.format_exc())
-            mod.loaded = False
+        if not mod.load():
+            return
 
     def unload_chunk_module(self, mod: ChunkModule):
         """
@@ -359,7 +363,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         scene (SceneSender) : A handle to the scene for stage access
     """
 
-    chunk_layers: Dict[ChunkHash, str]
+    chunk_layers: Dict[ChunkHash, Sdf.Layer]
     stage: Optional[Usd.Stage]
 
     def initialize(self, stage: Usd.Stage):
@@ -368,7 +372,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         the manager
 
         Args:
-            scene (SceneSender): A SceneSender object with access to the stage
+            stage (Usd.Stage): The stage to manage
         """
 
         self._edit_target_listener = NoticeConnection(
@@ -378,10 +382,27 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._unload_listener = NoticeConnection(self._chunk_unloaded, ChunkNoticeAlias.CHUNK_UNLOADED, globally=True)
         self._delete_listener = NoticeConnection(self._chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True)
 
+        self._flags_listener = NoticeConnection(self._flags_changed, ChunkNoticeAlias.STATE_CHANGED, globally=True)
+
         self.chunk_layers = {}
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
         self.stage = stage
+
+    def get_root_layer(self) -> Sdf.Layer:
+        """
+        Get the parent layer for all chunk layers. This may be a custom layer in the future,
+        for now this returns the session layer of the stage
+
+        Raises:
+            AttributeError: If stage is invalid
+
+        Returns:
+            Sdf.Layer: The root layer which holds the chunk sublayers
+        """
+        if not self.stage:
+            raise AttributeError("Stage is not initialized")
+        return self.stage.GetSessionLayer()
 
     def get_layer(self, c: ChunkHash) -> Sdf.Layer | None:
         """
@@ -394,13 +415,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             Sdf.Layer: The layer associated with the ChunkCommon object
             None: If the layer does not exist
         """
-        layer_id = self.chunk_layers.get(c)
-            
-        if not layer_id or not Sdf.Layer.FindOrOpen(layer_id):
-            return None
-        return Sdf.Layer.FindOrOpen(layer_id)
+        return self.chunk_layers.get(c)
 
-    def get_or_create_layer(self, c: ChunkCommon) -> Sdf.Layer:
+    def get_or_create_layer(self, c: ChunkCommon) -> Sdf.Layer | None:
         """
         Get a layer similarly to get_layer(). Will create a new one if the layer does
         not already exists
@@ -410,7 +427,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         Returns:
             Sdf.Layer: The layer, either found or created
-        
+
         Rasises:
             AttributeError: If the stage has not been initialized
 
@@ -421,8 +438,27 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         layer = self.get_layer(c)
         if not layer:
-            layer = self.add_layer(self.stage.GetSessionLayer(), c)
+            if self.is_muted(c):
+                return None
+
+            print("Layer not muted")
+            layer = self.add_layer(self.get_root_layer(), c)
         return layer
+
+    def is_muted(self, c: ChunkHash) -> bool:
+        """
+        Check if a chunk layer is muted
+
+        Args:
+            c (ChunkHash): The chunk which whose layer to check
+
+        Returns:
+            bool: True when the layer is muted, False otherwise
+        """
+        layer = self.chunk_layers.get(c)
+        if self.stage and layer and layer.IsMuted():
+            return True
+        return False
 
     def add_layer(self, target_layer: Sdf.Layer, c: ChunkCommon) -> Sdf.Layer:
         """
@@ -439,10 +475,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         layer_id = c.get_layer_identifier()
         layer = Sdf.Layer.CreateAnonymous(layer_id)
 
-        print("CREATING LAYER", layer_id)
-        # layer = Sdf.Layer.CreateNew(layer_id)
-
-        self.chunk_layers[c._hashable] = layer.identifier
+        self.chunk_layers[c._hashable] = layer
         target_layer.subLayerPaths.insert(0, layer.identifier)
 
         return layer
@@ -457,15 +490,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not self.stage:
             return
 
-        sublayer_paths = self.stage.GetSessionLayer().subLayerPaths.copy()
-        for i, sublayer in enumerate(sublayer_paths):
-            if layer_id in sublayer:
-                sublayer_paths.pop(i)
-        self.stage.GetSessionLayer().subLayerPaths = sublayer_paths  # type: ignore
-
-        for key in reversed(list(self.chunk_layers.keys())):
-            if self.chunk_layers[key] == layer_id:
-                del self.chunk_layers[key]
+        if layer := Sdf.Layer.Find(layer_id):
+            layer.Clear()
 
     def reload_all(self, stage: Optional[Usd.Stage] = None):
         """
@@ -478,13 +504,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not stage:
             return
 
-        sublayer_paths = stage.GetSessionLayer().subLayerPaths.copy()
+        sublayer_paths = self.get_root_layer().subLayerPaths.copy()
 
         for i, sublayer in reversed(list(enumerate(sublayer_paths))):
             if sublayer in self.chunk_layers.values():
                 sublayer_paths.pop(i)
 
-        stage.GetSessionLayer().subLayerPaths = sublayer_paths  # type: ignore
+        self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
         self.chunk_layers.clear()
 
         for mod in filter(lambda x: x.loaded, ChunkRegistry().registered_modules.values()):
@@ -492,7 +518,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             if not c:
                 continue
 
-            self.add_layer(stage.GetSessionLayer(), c)
+            self.add_layer(self.get_root_layer(), c)
 
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
         stage = notice.GetStage()
@@ -502,20 +528,40 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not self.stage:
             return
 
-        self.add_layer(self.stage.GetSessionLayer(), sender)
+        self.add_layer(self.get_root_layer(), sender)
 
     def _chunk_unloaded(self, notice, sender: chunk.Chunk):
         if not self.stage:
             return
 
         if layer := self.chunk_layers.get(sender._hashable):
-            sublayer_paths = self.stage.GetSessionLayer().subLayerPaths.copy()
+            sublayer_paths = self.get_root_layer().subLayerPaths.copy()
 
             for i, sublayer in reversed(list(enumerate(sublayer_paths))):
                 if sublayer == layer:
                     sublayer_paths.pop(i)
 
-            self.stage.GetSessionLayer().subLayerPaths = sublayer_paths  # type: ignore
+            self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
 
     def _chunk_deleted(self, notice, sender):
         pass
+
+    def _flags_changed(self, notice, sender):
+        c = sender
+        if not isinstance(c, ChunkBase):
+            return
+
+        if not self.stage:
+            return
+
+        if c not in self.chunk_layers:
+            return
+
+        layer = self.chunk_layers.get(c)
+        if layer is None:
+            return
+
+        if c.has_state(chunk.ChunkFlags.State.DISABLED):
+            layer.SetMuted(True)
+        elif self.is_muted(c):
+            layer.SetMuted(False)

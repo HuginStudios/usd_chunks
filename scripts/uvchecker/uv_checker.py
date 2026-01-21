@@ -113,7 +113,7 @@ def scale(owner: chunk.Vector, notice, sender):
 
 
 def main():
-    chunk_api = chunk.Chunk("UV Checker", category="Utility")
+    chunk_api = chunk.Chunk("UV Checker")
 
     spinbox = chunk.Spinbox(default_value=1)
     vec = chunk.Vector("uvscale", "UV Scale", param=spinbox, length=2, suffixes="UV")
@@ -138,3 +138,6 @@ def main():
     chunk_api.add_callback(clear, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
 
     return chunk_api
+
+def config():
+    return chunk.DefaulConfig(category="Utility")

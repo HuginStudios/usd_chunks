@@ -57,10 +57,13 @@ def main():
     menu = chunk.Menu("schemas", "Schemas")
     btn = chunk.Button("apply", "Apply")
 
-    myChunk = chunk.Chunk("Apply Schema", category="utility")
+    myChunk = chunk.Chunk("Apply Schema")
     myChunk.add_params([menu, btn])
 
     myChunk.add_callback(update, listen_globally=True, notice_alias=ChunkNoticeAlias.PRIM_SELECTION_CHANGED)
     myChunk.add_callback(apply, sender=btn)
 
     return myChunk
+
+def config():
+    return chunk.DefaulConfig(category="Utility")
