@@ -372,7 +372,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         the manager
 
         Args:
-            scene (SceneSender): A SceneSender object with access to the stage
+            stage (Usd.Stage): The stage to manage
         """
 
         self._edit_target_listener = NoticeConnection(
@@ -389,7 +389,17 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
         self.stage = stage
 
-    def get_root_layer(self):
+    def get_root_layer(self) -> Sdf.Layer:
+        """
+        Get the parent layer for all chunk layers. This may be a custom layer in the future,
+        for now this returns the session layer of the stage
+
+        Raises:
+            AttributeError: If stage is invalid
+
+        Returns:
+            Sdf.Layer: The root layer which holds the chunk sublayers
+        """
         if not self.stage:
             raise AttributeError("Stage is not initialized")
         return self.stage.GetSessionLayer()
@@ -435,7 +445,16 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             layer = self.add_layer(self.get_root_layer(), c)
         return layer
 
-    def is_muted(self, c: ChunkHash):
+    def is_muted(self, c: ChunkHash) -> bool:
+        """
+        Check if a chunk layer is muted
+
+        Args:
+            c (ChunkHash): The chunk which whose layer to check
+
+        Returns:
+            bool: True when the layer is muted, False otherwise
+        """
         layer = self.chunk_layers.get(c)
         if self.stage and layer and layer.IsMuted():
             return True
@@ -536,7 +555,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return
 
         if c not in self.chunk_layers:
-            print("not in layer", c)
             return
 
         layer = self.chunk_layers.get(c)
@@ -545,10 +563,5 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         if c.has_state(chunk.ChunkFlags.State.DISABLED):
             layer.SetMuted(True)
-            # self.stage.MuteLayer(layer.identifier)
-
         elif self.is_muted(c):
             layer.SetMuted(False)
-            # self.stage.UnmuteLayer(layer.identifier)
-
-        pass

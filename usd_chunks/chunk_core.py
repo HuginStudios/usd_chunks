@@ -64,41 +64,6 @@ GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
 ChunkT = TypeVar("ChunkT", bound="ChunkCommon")
 
 
-# class MenuAction:
-#     def __init__(self, func: Callable, owner: chunk_notice.ChunkNoticePropagator):
-#         self.conn = chunk_notice.NoticeConnection(
-#             func, chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, self, owner=owner
-#         )
-
-#     def execute(self, data: Any):
-#         chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, self, data)
-
-
-# class ParamWidgetActions(Generic[ParamT]):
-#     def __init__(self, param: ParamT) -> None:
-#         self._actions: Dict[str, MenuAction] = {}
-#         self._param = weakref.ref(param)
-
-#     @property
-#     def param(self):
-#         if not self._param or not self._param():
-#             return None
-#         return self._param()
-
-#     def add_action(self, name: str, func: Callable[["ChunkCommon", chunk_notice.MenuActionNotice, MenuAction]]):
-#         if not self.param:
-#             return
-
-#         self._actions[name] = MenuAction(func, self.param)
-
-#     def remove_action(self, name: str):
-#         pass
-
-#     def execute_action(self, name: str):
-#         if action := self._actions.get(name):
-#             action.execute(self.param)
-
-
 class ChunkParamWidget(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
     """Base class for a chunk param widget. Any ui element associated to a chunk or parameter should subclass from this.
     This class acts as an bridge between this toolkit and the UI library.
