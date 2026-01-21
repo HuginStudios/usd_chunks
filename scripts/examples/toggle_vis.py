@@ -40,10 +40,10 @@ def main():
     clearVis = chunk.Button("clr_vis", "Clear Visibility")
     clearVis.add_callback(clear_vis)
 
-    myChunk = chunk.Chunk("Visibility", category="Utility")
+    myChunk = chunk.Chunk("Visibility")
     myChunk.add_params([tglVis, clearVis])
     return myChunk
 
 
 def config():
-    return chunk.DefaulConfig(load=False)
+    return chunk.DefaulConfig(load=False, category="Examples")

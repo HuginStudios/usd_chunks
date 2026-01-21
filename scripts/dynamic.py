@@ -48,7 +48,10 @@ def main():
     Build a dynamic chunk that updates based on the currently selected prims. All suported prim
     attributes will be created as chunk parameters, and connected to their UsdAttributes respectively
     """
-    myChunk = chunk.Chunk("Dynamic", category="Attributes")
+    myChunk = chunk.Chunk("Dynamic")
     myChunk.add_callback(build, listen_globally=True, notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED)
 
     return myChunk
+
+def config():
+    return chunk.DefaulConfig(category="Attributes")

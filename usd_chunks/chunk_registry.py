@@ -84,41 +84,51 @@ class ChunkModule:
 
         self.loaded_chunk = None
 
-    def load(self, func_name="main") -> chunk.Chunk | None:
-        """
-        Load the module by calling func_name from self.module. Can be used instead of run to bypass the config checks
+    def load_config(self, plugin="") -> bool:
+        if hasattr(self.module, "config"):
+            try:
+                func = getattr(self.module, "config")
+                self.config = func()
+            except Exception as e:
+                print(f"Failed to load config for {self.module_name}:", e)
+                return False
 
-        Args:
-            func_name (str, optional): A name of the function to execute from the module. Defaults to "main".
+        return True
 
-        Returns:
-            chunk.Chunk | None: The loaded chunk object of successful. None otherwise
-        """
+    def load(self, func_name: str = "main") -> bool:
         if not hasattr(self.module, func_name):
             print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
             self.loaded = False
-            return
+            return False
 
-        func = getattr(self.module, func_name)
-
-        start = timer()
-        retval: Any = func()
-        end = timer()
+        try:
+            func = getattr(self.module, func_name)
+            start = timer()
+            retval: Any = func()
+            end = timer()
+        except Exception:
+            # This module failed to load. Set to file_name so we can try loading it again later§
+            print(f"Failed to run module {self.module_name}:", traceback.format_exc())
+            self.loaded = False
+            return False
 
         if not (isinstance(retval, chunk.Chunk)):
             print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
             self.loaded = False
-            return
+            return False
 
         try:
             retval.check_hierarchy()
         except Exception as e:
             print(e)
             self.loaded = False
-            return
+            return False
 
         self.loaded_chunk = retval
         self.loaded = True
+
+        if self.config:
+            retval._config = self.config
 
         send_notice(
             ChunkNoticeAlias.CHUNK_LOADED,
@@ -127,9 +137,9 @@ class ChunkModule:
         )
 
         print(f"Loaded Chunk {self.loaded_chunk.name}. Load took {end - start} seconds")
-        return retval
+        return True
 
-    def handle_config(self, plugin_name: str) -> bool:
+    def should_load(self, plugin_name: str) -> bool:
         if not self.config:
             return False
         if not self.config.load:
@@ -276,21 +286,15 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 mod.loaded = False
                 return
 
-        if hasattr(mod.module, "config"):
-            func = getattr(mod.module, "config")
-            mod.config = func()
+        if not mod.load_config():
+            return
 
-        if not mod.handle_config(self.plugin):
+        if not mod.should_load(self.plugin):
             mod.loaded = False
             return
 
-        try:
-            mod.load("main")
-
-        except Exception:
-            # This module failed to load. Set to file_name so we can try loading it again later§
-            print(f"Failed to run module {mod.module_name}:", traceback.format_exc())
-            mod.loaded = False
+        if not mod.load():
+            return
 
     def unload_chunk_module(self, mod: ChunkModule):
         """
@@ -395,7 +399,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             None: If the layer does not exist
         """
         layer_id = self.chunk_layers.get(c)
-            
+
         if not layer_id or not Sdf.Layer.FindOrOpen(layer_id):
             return None
         return Sdf.Layer.FindOrOpen(layer_id)
@@ -410,7 +414,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         Returns:
             Sdf.Layer: The layer, either found or created
-        
+
         Rasises:
             AttributeError: If the stage has not been initialized
 

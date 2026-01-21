@@ -17,11 +17,11 @@ def main():
     button = chunk.Button("add_cube", "Add Cube")
     button.add_callback(addCube)
 
-    chunk_api = chunk.Chunk("Add Cubes", category="Examples")
+    chunk_api = chunk.Chunk("Add Cubes")
     chunk_api.add_param(button)
 
     return chunk_api
 
 
 def config():
-    return chunk.DefaulConfig(load=False)
+    return chunk.DefaulConfig(load=False, category="Examples")

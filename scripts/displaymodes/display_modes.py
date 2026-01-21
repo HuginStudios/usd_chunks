@@ -15,7 +15,7 @@ def set_shademode(owner: chunk.ChunkParamBase, notice, sender: chunk.Button):
 
 
 def main():
-    chunk_api = chunk.Chunk("Display Modes", category="Utility")
+    chunk_api = chunk.Chunk("Display Modes")
     scene = chunk_registry.ChunkRegistry().scene
 
     if not isinstance(scene, chunk_usdview.UsdviewScene):
@@ -48,4 +48,4 @@ def main():
     return chunk_api
 
 def config():
-    return chunk.DefaulConfig(load_for_plugin="chunk_usdview")
+    return chunk.DefaulConfig(load_for_plugin="chunk_usdview", category="Utility")

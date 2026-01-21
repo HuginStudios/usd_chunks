@@ -24,7 +24,7 @@ from pxr import Tf, Usd, Sdf
 # from enum import IntEnum, auto
 from enum import IntEnum, auto
 from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator
-
+from typing_extensions import Self
 from functools import partial
 from abc import abstractmethod
 
@@ -55,6 +55,8 @@ class ChunkNoticeAlias(IntEnum):
         ATTRIBUTE_CHANGED : Default notice for attributes that does not set an alias excplicitly
         FLAGS_CHANGED : Sent when the flags attribute changes
         STATE_CHANGED : Sent when the state attribute changes
+
+        MENU_ACTION_NOTICE: Sent when a menu action should be executed
 
         PRIM_SELECTION_CHANGED : Sent whenever the prim selection changed in UsdView
         PROP_SELECTION_CHANGED : Sent whenever the prop selection changed in UsdView
@@ -91,6 +93,9 @@ class ChunkNoticeAlias(IntEnum):
     FLAGS_CHANGED = auto()
     # Sent when the state attribute changes
     STATE_CHANGED = auto()
+
+    # UI notices
+    MENU_ACTION_NOTICE = auto()
 
     # Stage notices
     PRIM_SELECTION_CHANGED = auto()
@@ -275,6 +280,12 @@ class ChunkConfigChanged(ChunkNotice):
     pass
 
 
+### UI Notices
+@chunk_notice(ChunkNoticeAlias.MENU_ACTION_NOTICE)
+class MenuActionNotice(ChunkNotice):
+    pass
+
+
 ### UsdView selection notices
 
 
@@ -320,7 +331,7 @@ def is_notice_type(notice: Tf.Notice, alias: ChunkNoticeAlias) -> bool:
     return type(notice) is get_notice(alias)
 
 
-def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None, context: Optional[Sdf.Layer] = None):
+def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None):
     """
     Sends a notice of type alias, triggering subscribed callback functions to run
 
@@ -575,7 +586,7 @@ class ChunkNoticePropagator:
 
     def add_callback(
         self,
-        method: Callable,
+        method: Callable[[ChunkNotice, Any], Any] | Callable[[Self, ChunkNotice, Any], Any],
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,

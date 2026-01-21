@@ -482,8 +482,11 @@ def main():
     grid_group.set_state(chunk.ChunkFlags.State.HIDDEN)
     grid_group.add_callback(grid_changed)
 
-    chunk_api = chunk.Chunk("Add Mesh", category="Modelling")
+    chunk_api = chunk.Chunk("Add Mesh")
     chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
     chunk_api.add_callback(menu_changed, sender=menu)
 
     return chunk_api
+
+def config():
+    return chunk.DefaulConfig(category="Modelling")

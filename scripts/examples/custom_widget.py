@@ -47,10 +47,10 @@ def main():
     # decide to subscribe to that notice, and call customButtonClicked when sent
     custom.add_callback(customButtonClicked)
 
-    myChunk = chunk.Chunk("Custom Widget", category="Examples")
+    myChunk = chunk.Chunk("Custom Widget")
     myChunk.add_param(custom)
 
     return myChunk
 
 def config():
-    return chunk.DefaulConfig(load=False)
+    return chunk.DefaulConfig(load=False, category="Examples")

@@ -77,7 +77,7 @@ def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, 
 
 
 def main():
-    vSwitcherChunk = chunk.Chunk("Variant Switcher", category="Utility")
+    vSwitcherChunk = chunk.Chunk("Variant Switcher")
     reg = chunk_registry.ChunkRegistry()
 
     vSwitcherChunk.add_callback(
@@ -91,3 +91,6 @@ def main():
     )
 
     return vSwitcherChunk
+
+def config():
+    return chunk.DefaulConfig(category="Utility")

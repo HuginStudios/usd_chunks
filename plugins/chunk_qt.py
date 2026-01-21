@@ -234,8 +234,6 @@ class ChunkComboBoxWidget(ChunkParamWidget[chunk.Menu], QtWidgets.QComboBox):
 
         if self.param.default_value:
             self.setCurrentIndex(menu_items.index(self.param.default_value))
-        
-
 
     def get_value(self):
         return self.currentText()
@@ -798,7 +796,9 @@ class ChunkWidget(ContainerWidget):
         Returns:
             str: Category of this Chunk
         """
-        return self.group.category
+        if config := self.group.get_config():
+            return config.category
+        return chunk.DefaulConfig().category
 
 
 class ChunkArea(QtWidgets.QScrollArea):
@@ -999,9 +999,9 @@ class ChunkModuleLoader(QtWidgets.QDialog):
         self.content.setItem(row, 1, c1)
         if mod.loaded_chunk:
             c2 = QtWidgets.QTableWidgetItem(mod.loaded_chunk.name)
-            c3 = QtWidgets.QTableWidgetItem(mod.loaded_chunk.category)
             self.content.setItem(row, 2, c2)
-            self.content.setItem(row, 3, c3)
+        c3 = QtWidgets.QTableWidgetItem(mod.config.category)
+        self.content.setItem(row, 3, c3)
 
     def load_chunks(self):
         reg = chunk_registry.ChunkRegistry()

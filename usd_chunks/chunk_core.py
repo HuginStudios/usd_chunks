@@ -24,7 +24,6 @@ from typing import (
     Any,
     Dict,
     Protocol,
-    runtime_checkable,
     Tuple,
     TypeVar,
     Optional,
@@ -63,6 +62,41 @@ ValueT = TypeVar("ValueT")
 ParamT = TypeVar("ParamT", bound="ChunkParamBase")
 GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
 ChunkT = TypeVar("ChunkT", bound="ChunkCommon")
+
+
+# class MenuAction:
+#     def __init__(self, func: Callable, owner: chunk_notice.ChunkNoticePropagator):
+#         self.conn = chunk_notice.NoticeConnection(
+#             func, chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, self, owner=owner
+#         )
+
+#     def execute(self, data: Any):
+#         chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, self, data)
+
+
+# class ParamWidgetActions(Generic[ParamT]):
+#     def __init__(self, param: ParamT) -> None:
+#         self._actions: Dict[str, MenuAction] = {}
+#         self._param = weakref.ref(param)
+
+#     @property
+#     def param(self):
+#         if not self._param or not self._param():
+#             return None
+#         return self._param()
+
+#     def add_action(self, name: str, func: Callable[["ChunkCommon", chunk_notice.MenuActionNotice, MenuAction]]):
+#         if not self.param:
+#             return
+
+#         self._actions[name] = MenuAction(func, self.param)
+
+#     def remove_action(self, name: str):
+#         pass
+
+#     def execute_action(self, name: str):
+#         if action := self._actions.get(name):
+#             action.execute(self.param)
 
 
 class ChunkParamWidget(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
@@ -2033,18 +2067,6 @@ class ChunkGroupBase(ChunkContainerBase):
         return name
 
 
-class ChunkConfig(AttributesBase):
-    """
-    Base class for Configs. A config sets some load time configurations for a chunk.
-    """
-
-    load: bool = attrs.field(default=True)
-    load_for_plugin: Optional[str] = attrs.field(default=None)
-
-    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
-        return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
-
-
 class ChunkBase(ChunkGroupBase):
     """
     Base class for Chunks. Similar to groups, but with a category
@@ -2053,16 +2075,16 @@ class ChunkBase(ChunkGroupBase):
         category (str): A category to sort this chunk by
     """
 
-    category: str = attrs.field(default="Chunks")
+    # The config is set from the chunk_registry.ChunkModule.load_config() function.
+    # This is because the config can be loaded independently from the chunk, without
+    # having to execute main() of the chunk module.
+    _config: Optional["ChunkConfig"] = attrs.field(default=None, init=False)
+
+    def get_config(self) -> Optional["ChunkConfig"]:
+        return self._config
 
     def get_chunk(self) -> Optional["ChunkBase"]:
         return self
-
-    def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
-        if attr.name == "category" and not isinstance(val, str):
-            return attr.default
-
-        return super().convert_attr(attr, val)
 
 
 class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
@@ -2185,3 +2207,16 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
 
     def evaluate_type(self):
         return ChunkFlags.ParamType.VECTOR | self.param.evaluate_type()
+
+
+class ChunkConfig(AttributesBase):
+    """
+    Base class for Configs. A config sets some load time configurations for a chunk.
+    """
+
+    category: str = attrs.field(default="Chunks")
+    load: bool = attrs.field(default=True)
+    load_for_plugin: Optional[str] = attrs.field(default=None)
+
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
