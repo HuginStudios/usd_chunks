@@ -423,7 +423,7 @@ class ChunkNoticePropagator:
             )
             self.add_connection(new_conn)
 
-    def get_notice_data(self) -> Any:
+    def get_notice_data(self) -> Self:
         """
         When calling send_self, the notice of type self.get_notice_alias() will add custom data to the notice before sending.
         The returned object from this function is the data associtated with the notice
@@ -576,7 +576,7 @@ class ChunkNoticePropagator:
             List[chunk_notice.NoticeConnection]: A list of found connections matching the arguments
         """
 
-        query = {"method": method, "sender": sender, "notice_type": notice_type}
+        query = {"method": method, "sender": sender, "alias": notice_type}
         result = []
         for conn in self._connections:
             if any([query[y] is not None and getattr(conn, y) == query[y] for y in query]):
@@ -745,7 +745,7 @@ class NoticeConnection:
     def sender(self, obj):
         self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
 
-    def handle_callback(self, notice, sender=None):
+    def handle_callback(self, notice, sender=None, context=True):
         """
         Forwards the notice after checking that the method, sender and owner are still alive and valid.
         If the owner is valid and implements get_stage() and get_edit_context(), the method is called
@@ -764,7 +764,8 @@ class NoticeConnection:
             # to the correct layer
             stage = self.owner.get_stage()
             ctx = self.owner.get_edit_context()
-            if stage and ctx:
+
+            if stage and ctx and context:
                 with Usd.EditContext(stage, ctx):
                     if not inspect.ismethod(meth):
                         partial(meth, self.owner)(notice, sender)

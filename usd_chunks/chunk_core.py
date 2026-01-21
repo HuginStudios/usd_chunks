@@ -451,7 +451,7 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
     def __repr__(self) -> str:
         return f"AttributeSender({self.name} = {self.value})"
 
-    def get_notice_data(self) -> "AttributeSender":
+    def get_notice_data(self) -> Self:
         """
         The notice data for AttributeSender's is simply self. A reciever of a notice may use this
         to get any data available on the AttributeSender. This is possible if the original sender
@@ -2079,6 +2079,18 @@ class ChunkBase(ChunkGroupBase):
     # This is because the config can be loaded independently from the chunk, without
     # having to execute main() of the chunk module.
     _config: Optional["ChunkConfig"] = attrs.field(default=None, init=False)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+
+        self.add_callback(self.disable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
+        self.add_callback(self.enable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
+
+    def disable(self, notice, sender):
+        self.set_state(ChunkFlags.State.DISABLED)
+
+    def enable(self, notice, sender):
+        self.unset_state(ChunkFlags.State.DISABLED)
 
     def get_config(self) -> Optional["ChunkConfig"]:
         return self._config

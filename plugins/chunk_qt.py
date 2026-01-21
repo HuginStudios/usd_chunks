@@ -7,6 +7,8 @@ from usd_chunks import chunk, chunk_notice, chunk_registry
 from usd_chunks.chunk_core import ChunkFlags, ChunkParamWidget
 from usd_chunks import chunk_core
 
+import weakref
+
 
 class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QWidget):
     def __init__(self, param: chunk.Slider):
@@ -554,7 +556,7 @@ class ContainerWidget(QtWidgets.QWidget):
 
     def update_from_state(self):
         self.setHidden(self.group.has_state(ChunkFlags.State.HIDDEN))
-        self.setEnabled(not self.group.has_state(ChunkFlags.State.DISABLED))
+        self.content.setEnabled(not self.group.has_state(ChunkFlags.State.DISABLED))
 
         if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
             self.minimize_button.setChecked(not self.group.has_state(ChunkFlags.State.COLLAPSED))
@@ -789,6 +791,37 @@ class ChunkWidget(ContainerWidget):
         parent=None,
     ):
         super().__init__(group, parent)
+        # self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        # self.customContextMenuRequested.connect(self.emptySpaceMenu)
+
+    # def emptySpaceMenu(self):
+    #     menu = QtWidgets.QMenu()
+    #     menu.addAction('You clicked on the empty space')
+    #     # menu.exec_(QtGui.QCursor.pos())
+    #     menu.exec_(self.parent().mapToGlobal(self.geometry().topLeft()))
+
+    def contextMenuEvent(self, event):
+        menu = QtWidgets.QMenu()
+        actions: Dict[QtGui.QAction, chunk_notice.NoticeConnection] = {}
+        for conn in self.group.find_connections(notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE):
+            meth = conn.get_method()
+            if not meth:
+                continue
+
+            actions[QtGui.QAction(meth.__name__)] = conn
+
+        menu.addActions(list(actions.keys()))
+
+        if parent := self.parentWidget():
+            res = menu.exec_(parent.mapToGlobal(self.geometry().topLeft()))
+        else:
+            res = menu.exec_(event.globalPos())
+
+        if not res:
+            return
+
+        conn = actions[res]
+        conn.handle_callback(chunk_notice.MenuActionNotice(self.group.get_notice_data()), self.group, False)
 
     def get_category(self) -> str:
         """Get the category of this Chunk

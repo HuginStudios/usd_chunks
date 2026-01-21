@@ -53,5 +53,6 @@ def main():
 
     return myChunk
 
+
 def config():
     return chunk.DefaulConfig(category="Attributes")
