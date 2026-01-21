@@ -435,7 +435,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             layer = self.add_layer(self.get_root_layer(), c)
         return layer
 
-    def is_muted(self, c):
+    def is_muted(self, c: ChunkHash):
         layer = self.chunk_layers.get(c)
         if self.stage and layer and layer.IsMuted():
             return True
