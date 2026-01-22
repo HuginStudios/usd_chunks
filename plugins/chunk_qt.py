@@ -7,7 +7,6 @@ from usd_chunks import chunk, chunk_notice, chunk_registry
 from usd_chunks.chunk_core import ChunkFlags, ChunkParamWidget
 from usd_chunks import chunk_core
 
-import weakref
 
 
 class ChunkSliderWidget(ChunkParamWidget[chunk.Slider], QtWidgets.QWidget):
@@ -957,8 +956,9 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         """)
 
         for module_name, mod in registry.registered_modules.items():
+
             loaded_chunk = mod.loaded_chunk
-            if not loaded_chunk or mod.loaded:
+            if not loaded_chunk or not mod.loaded:
                 continue
 
             if not self.add_chunk_widget(loaded_chunk):
