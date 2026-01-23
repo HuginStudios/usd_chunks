@@ -359,6 +359,13 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 return mod.loaded_chunk
         return None
 
+    def reload_all(self):
+        for name, mod in self.registered_modules.items():
+            self.unload_chunk_module(mod)
+            if not mod.loaded:
+                self.load_module(mod)
+
+
 
 class ChunkLayerManager(metaclass=RegistrySingleton):
     """
@@ -396,6 +403,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
         self.stage = stage
+
+    # @property
+    # def stage(self):
+    #     return ChunkRegistry().scene.get_stage()
 
     def get_root_layer(self) -> Sdf.Layer:
         """
@@ -449,8 +460,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             if self.is_muted(c):
                 return None
 
-            print("Layer not muted")
             layer = self.add_layer(self.get_root_layer(), c)
+        
         return layer
 
     def is_muted(self, c: ChunkHash) -> bool:
@@ -487,6 +498,19 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         target_layer.subLayerPaths.insert(0, layer.identifier)
 
         return layer
+
+    def clear_all_layers(self):
+        for c, lay in self.chunk_layers.items():
+            self.clear_layer(lay.identifier)
+        
+        sublayer_paths = self.get_root_layer().subLayerPaths.copy()
+
+        for i, sublayer in reversed(list(enumerate(sublayer_paths))):
+            if sublayer in self.chunk_layers.values():
+                sublayer_paths.pop(i)
+
+        self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
+        self.chunk_layers.clear()
 
     def clear_layer(self, layer_id: str):
         """

@@ -1467,7 +1467,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
     def data_changed(
         self, notice: Tf.Notice | None, sender: Any, propagated: chunk_notice.ChunkNoticePropagator | None = None
     ) -> Tf.Notice | None:
-        stage = chunk_registry.ChunkLayerManager().stage
+        stage = chunk_registry.ChunkRegistry().scene.get_stage()
         if not stage:
             return
 

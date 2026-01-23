@@ -56,11 +56,7 @@ def launch_chunks(usdviewApi) -> None:
 class ChunksPluginContainer(PluginContainer):
     def reloadChunks(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
-
-        for name, mod in reg.registered_modules.items():
-            reg.unload_chunk_module(mod)
-            if not mod.loaded:
-                reg.load_module(mod)
+        reg.reload_all()
 
     def openModuleSettings(self, usdviewApi):
         dial = chunk_qt.ChunkModuleLoader(usdviewApi.qMainWindow)

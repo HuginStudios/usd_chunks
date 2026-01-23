@@ -5,7 +5,7 @@ This module provides a framework for dynamically loading and managing custom UI 
 
 from pxr import Tf
 from kraken.plugin import KrakenPluginContainer
-from kraken.scene import SceneManager, PrimSelectionNotice
+from kraken.scene import SceneManager, PrimSelectionNotice, StageLoadedNotice
 # import kraken
 
 from usd_chunks import chunk_registry, chunk_notice
@@ -19,10 +19,16 @@ class KrakenScene(chunk_notice.SceneSender):
     """
 
     def __init__(self, scene: SceneManager):
-
         self.selection_listener = Tf.Notice.RegisterGlobally(PrimSelectionNotice, self.primSelectionChangedCallback)
+        self.loaded_listener = Tf.Notice.RegisterGlobally(StageLoadedNotice, self.stage_loaded)
         self.scene = scene
         pass
+
+    def stage_loaded(self, notice, sender=None):
+        chunk_registry.ChunkLayerManager().clear_all_layers()
+        chunk_registry.ChunkLayerManager().stage = notice.stage
+        reg = chunk_registry.ChunkRegistry()
+        reg.reload_all()
 
     def get_stage(self):
         return self.scene.stage
@@ -57,11 +63,7 @@ def launch_chunks(scene: SceneManager) -> None:
 class ChunksPluginContainer(KrakenPluginContainer):
     def reloadChunks(self):
         reg = chunk_registry.ChunkRegistry()
-
-        for name, mod in reg.registered_modules.items():
-            reg.unload_chunk_module(mod)
-            if not mod.loaded:
-                reg.load_module(mod)
+        reg.reload_all()
 
     def openModuleSettings(self):
         dial = chunk_qt.ChunkModuleLoader(SceneManager().main_window)
