@@ -1021,6 +1021,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         self.content.setSelectionMode(QtWidgets.QTableWidget.SelectionMode.ExtendedSelection)
         self.content.setSelectionBehavior(QtWidgets.QTableWidget.SelectionBehavior.SelectRows)
+        self.content.setEditTriggers(QtWidgets.QTableWidget.EditTrigger.NoEditTriggers)
 
         self.main_layout = QtWidgets.QVBoxLayout()
         self.main_layout.addWidget(self.content)

@@ -84,7 +84,7 @@ class ChunkModule:
 
         self.loaded_chunk = None
 
-    def load_config(self, plugin="") -> bool:
+    def load_config(self) -> bool:
         if hasattr(self.module, "config"):
             try:
                 func = getattr(self.module, "config")
@@ -139,10 +139,15 @@ class ChunkModule:
         print(f"Loaded Chunk {self.loaded_chunk.name}. Load took {end - start} seconds")
         return True
 
-    def should_load(self, plugin_name: str) -> bool:
+    def should_load(self) -> bool:
         if not self.config:
             return False
         if not self.config.load:
+            return False
+        return True
+
+    def should_load_for_plugin(self, plugin_name: str) -> bool:
+        if not self.config:
             return False
         if self.config.load_for_plugin and plugin_name not in self.config.load_for_plugin:
             return False
@@ -246,9 +251,8 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
                 mod = ChunkModule(module_name=module_name, module_file=module_path)
 
-                self.load_module(mod)
-
-                new_modules[mod.module_name] = mod
+                if self.load_module(mod):
+                    new_modules[mod.module_name] = mod
 
         self.registered_modules |= new_modules
 
@@ -272,29 +276,33 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             # This module failed to load. Set to file_name so we can try loading it again later§
             print(f"Failed to load module {mod.module_name}:", traceback.format_exc())
             mod.loaded = False
-            return
+            return False
         else:
             mod.module = module
 
         if "main" not in module_attributes:
             # Only python files with a main functions are valid chunk entrypoints.
-            mod.loaded = False
-            return
+            return False
 
         if module_filter := os.environ.get("USD_CHUNK_FILTER"):
             if mod.module_name not in module_filter:
                 mod.loaded = False
-                return
+                return True
 
         if not mod.load_config():
-            return
+            return True
 
-        if not mod.should_load(self.plugin):
+        if not mod.should_load():
             mod.loaded = False
-            return
+            return True
 
-        if not mod.load():
-            return
+        if not mod.should_load_for_plugin(self.plugin):
+            mod.loaded = False
+            return False
+
+        mod.load()
+        return True
+        
 
     def unload_chunk_module(self, mod: ChunkModule):
         """
