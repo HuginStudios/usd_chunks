@@ -790,14 +790,6 @@ class ChunkWidget(ContainerWidget):
         parent=None,
     ):
         super().__init__(group, parent)
-        # self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-        # self.customContextMenuRequested.connect(self.emptySpaceMenu)
-
-    # def emptySpaceMenu(self):
-    #     menu = QtWidgets.QMenu()
-    #     menu.addAction('You clicked on the empty space')
-    #     # menu.exec_(QtGui.QCursor.pos())
-    #     menu.exec_(self.parent().mapToGlobal(self.geometry().topLeft()))
 
     def contextMenuEvent(self, event):
         menu = QtWidgets.QMenu()
@@ -850,6 +842,27 @@ class ChunkArea(QtWidgets.QScrollArea):
         self.setWidgetResizable(True)
 
 
+class ChunkTabWidget(QtWidgets.QTabWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
+
+    def update_tab_position(self):
+        if self.height() > self.width():
+            self._tabPosition = QtWidgets.QTabWidget.TabPosition.East
+        else:
+            self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
+        self.setTabPosition(self._tabPosition)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        self.update_tab_position()
+        return super().resizeEvent(event)
+
+    def tabPosition(self) -> QtWidgets.QTabWidget.TabPosition:
+        return self._tabPosition
+
+
 class ChunkWidgetDocker(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -877,7 +890,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
     def build(self):
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.MinimumExpanding)
         self.chunk_tabs: dict[str, ChunkArea] = {}
-        self.tab_widget: QtWidgets.QTabWidget = QtWidgets.QTabWidget(self)
+        self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
         registry = chunk_registry.ChunkRegistry()
         self.setStyleSheet("""
         QFrame{

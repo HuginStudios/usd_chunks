@@ -5,7 +5,7 @@ This module provides a framework for dynamically loading and managing custom UI 
 
 from pxr import Tf
 from kraken.plugin import KrakenPluginContainer
-from kraken.scene import SceneManager
+from kraken.scene import SceneManager, PrimSelectionNotice
 # import kraken
 
 from usd_chunks import chunk_registry, chunk_notice
@@ -19,15 +19,8 @@ class KrakenScene(chunk_notice.SceneSender):
     """
 
     def __init__(self, scene: SceneManager):
-        # self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
 
-        # Usdview stubs are not up to date, so need to ignore typing
-        # data_model = self.usdviewAPI.dataModel
-
-        # selection_model = data_model.selection  # type: ignore
-
-        # selection_model.signalPrimSelectionChanged.connect(self.primSelectionChangedCallback)
-        # selection_model.signalPropSelectionChanged.connect(self.propSelectionChangedCallback)
+        self.selection_listener = Tf.Notice.RegisterGlobally(PrimSelectionNotice, self.primSelectionChangedCallback)
         self.scene = scene
         pass
 
@@ -35,7 +28,10 @@ class KrakenScene(chunk_notice.SceneSender):
         return self.scene.stage
 
     def get_selected_prims(self):
-        return []
+        if not self.scene or not self.scene.stage:
+            return
+
+        return [self.scene.stage.GetPrimAtPath(x) for x in self.scene.selected_prims]
 
     def get_selected_property(self):
         return []
@@ -59,53 +55,47 @@ def launch_chunks(scene: SceneManager) -> None:
 
 
 class ChunksPluginContainer(KrakenPluginContainer):
-    # def reloadChunks(self, usdviewApi):
-    #     reg = chunk_registry.ChunkRegistry()
+    def reloadChunks(self):
+        reg = chunk_registry.ChunkRegistry()
 
-    #     for name, mod in reg.registered_modules.items():
-    #         reg.unload_chunk_module(mod)
-    #         if not mod.loaded:
-    #             reg.load_module(mod)
+        for name, mod in reg.registered_modules.items():
+            reg.unload_chunk_module(mod)
+            if not mod.loaded:
+                reg.load_module(mod)
 
-    # def openModuleSettings(self, usdviewApi):
-    #     dial = chunk_qt.ChunkModuleLoader(usdviewApi.qMainWindow)
-    #     dial.show()
+    def openModuleSettings(self):
+        dial = chunk_qt.ChunkModuleLoader(SceneManager().main_window)
+        dial.show()
 
-    # def saveLayers(self, usdviewApi):
-    #     reg = chunk_registry.ChunkLayerManager()
-    #     for i in reg.chunk_layers.keys():
-    #         layer = reg.get_layer(i)
-    #         if not layer:
-    #             continue
+    def saveLayers(self):
+        reg = chunk_registry.ChunkLayerManager()
+        for i in reg.chunk_layers.keys():
+            layer = reg.get_layer(i)
+            if not layer:
+                continue
 
-    #         name = layer.GetDisplayName().split("_")[0]
-    #         path = f"C:/Users/Viktor/chunk_layers/{name}.usda"
+            name = layer.GetDisplayName().split("_")[0]
+            path = f"C:/Users/Viktor/chunk_layers/{name}.usda"
 
-    #         print("save layer: ", path)
-    #         layer.Export(path)
+            print("save layer: ", path)
+            layer.Export(path)
 
-    def registerPlugins(self, scene) -> None:
-        # """Register the UI Creator plugin with the plugin registry.
+    def load(self, scene) -> None:
+        """Register the UI Creator plugin with the plugin registry.
 
-        # Args:
-        #     plugRegistry: The plugin registry to register the UI Creator plugin with.
-        #     usdviewApi: The Usdview API instance to use for module creation.
-        # """
-        # self._reloadChunksCommand = plugRegistry.registerCommandPlugin(
-        #     "ChunksPlugin.reloadChunks", "Reload Chunks", self.reloadChunks
-        # )
-        # self._openModuleSettingsCommand = plugRegistry.registerCommandPlugin(
-        #     "ChunksPlugin.openModuleSettings", "Modules", self.openModuleSettings
-        # )
-        # self._saveLayersCommand = plugRegistry.registerCommandPlugin(
-        #     "ChunksPlugin.saveLayers", "Save Layers", self.saveLayers
-        # )
+        Args:
+            plugRegistry: The plugin registry to register the UI Creator plugin with.
+            usdviewApi: The Usdview API instance to use for module creation.
+        """
+
+        self.add_command_plugin("Chunks", "Reload Chunks", self.reloadChunks)
+        self.add_command_plugin("Chunks", "Modules", self.openModuleSettings)
+        self.add_command_plugin("Chunks", "Save Layers", self.saveLayers)
+
+    def configure(self, scene, mainWindow) -> None:
+        chunk_qt.build_chunk_docker(mainWindow)
 
         launch_chunks(scene)
-        pass
-
-    def configureView(self, mainWindow) -> None:
-        chunk_qt.build_chunk_docker(mainWindow)
 
 
 Tf.Type.Define(ChunksPluginContainer)
