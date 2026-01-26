@@ -6,7 +6,6 @@ from pxr import Usd
 def build(myChunk: chunk.Chunk, signal, sender):
     for grp in myChunk.get_my_params():
         grp.request_delete()
-        # myChunk.remove_param_or_group(grp)
 
     prims: List[Usd.Prim] = signal.data
     if not prims:
@@ -16,11 +15,33 @@ def build(myChunk: chunk.Chunk, signal, sender):
         prim_grp = chunk.Group(prim.GetName())
 
         attributes = prim.GetAttributes()
+        relationships = prim.GetRelationships()
 
         groups = {}
-
         for attr in attributes:
             param = chunk.param_from_attr(attr)
+            if not param:
+                continue
+
+            if not isinstance(param, chunk.ChunkGroupBase):
+                param.set_flag(chunk.ChunkFlags.ParamFlags.LABELED)
+
+            ns = attr.GetNamespace()
+            tgt_grp = prim_grp if not ns else groups.get(ns)
+
+            if not tgt_grp:
+                tgt_grp = chunk.Group(
+                    ns, flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED
+                )
+                prim_grp.add_param(tgt_grp)
+                groups[ns] = tgt_grp
+
+            if param:
+                tgt_grp.add_param(param)
+
+        # Do the same for relationships
+        for rel in relationships:
+            param = chunk.param_from_rel(rel)
             if not param:
                 continue
 
@@ -55,4 +76,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="Attributes")
+    return chunk.DefaulConfig(category="Properties")

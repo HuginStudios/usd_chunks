@@ -968,6 +968,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         }
         """)
 
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         for module_name, mod in registry.registered_modules.items():
 
             loaded_chunk = mod.loaded_chunk

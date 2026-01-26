@@ -219,8 +219,8 @@ from .chunk_core import (  # noqa: E402
 
 class DefaulConfig(ChunkConfig):
     """
-    This class is used as a default config. 
-    
+    This class is used as a default config.
+
     To use, in the chunk module, add an additional function besides main():
 
     ``` py
@@ -230,6 +230,7 @@ class DefaulConfig(ChunkConfig):
         )
     ```
     """
+
     pass
 
 
@@ -410,6 +411,22 @@ class LineEdit(ChunkParamBase[str]):
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.LINEEDIT
 
+    @classmethod
+    def from_usd_rel(cls, rel: Usd.Relationship, *args, **kwargs):
+        rel_name = rel.GetName()
+
+        if (args and isinstance(args[0], str)) or kwargs.get("name"):
+            param = cls(*args, **kwargs)
+        else:
+            kwargs["name"] = rel_name.split(":")[-1]
+            param = cls(*args, **kwargs)
+        try:
+            if sender := param.get_attribute_sender("value"):
+                param.set_usd_prop(rel, sender)
+        except AttributeError:
+            pass
+        return param
+
 
 class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
     """
@@ -513,3 +530,7 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
         return t[0].from_usd_attr(attr, *args, **kwargs)
     else:
         return t.from_usd_attr(attr, *args, **kwargs)
+
+
+def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | None:
+    return LineEdit.from_usd_rel(attr, *args, **kwargs)

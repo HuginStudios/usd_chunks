@@ -456,7 +456,7 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
         if owner := self.get_owner():
             if not isinstance(owner, ChunkUsdAttributeSupport):
                 return
-            return owner.get_usd_attr()
+            return owner.get_usd_prop()
 
     def _copy_connection(self, conn: chunk_notice.NoticeConnection, src: chunk_notice.ChunkNoticePropagator):
         # Add connections to the copy by creating new NoticeConnection objects
@@ -1457,10 +1457,11 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
     # link to UsdAttribute if needed. Hidden in __init__ as the field would be added as the first argument
     # by the concrete classes
-    _usd_attr: Optional[Usd.Attribute] = attrs.field(default=None, init=False)
+    _usd_prop: Optional[Usd.Property] = attrs.field(default=None, init=False)
+    # _usd_rel: Optional[Usd.Relationship] = attrs.field(default=None, init=False)
 
     # Hold a connection to the Usd.Attribute of usd_attr.
-    _usd_attr_connection: Optional[chunk_notice.NoticeConnection] = attrs.field(
+    _usd_prop_connection: Optional[chunk_notice.NoticeConnection] = attrs.field(
         default=None, init=False, metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND)
     )
 
@@ -1472,9 +1473,8 @@ class ChunkUsdAttributeSupport(AttributesBase):
             return
 
         my_notice = super().data_changed(notice, sender, propagated)
-        if usd_attr := self.get_usd_attr():
+        if usd_attr := self.get_usd_prop():
             chunk_notice.send_notice(sender.get_notice_alias(), sender, usd_attr)
-
         return my_notice
 
     def get_stage(self) -> Usd.Stage | None:
@@ -1490,7 +1490,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         raise NotImplementedError
 
     @abstractmethod
-    def update_usd_attrib(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
+    def update_usd_prop(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
         """
         A callback for setting the UsdAttribute on changes to the sender. Used by parameters when
         modifying the 'value' attribute, then this will be invoked with sender build the 'value'
@@ -1500,16 +1500,16 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice (chunk_notice.AttributeChangeNotice): The notice holding the UsdAttribute
             sender (AttributeSender): The sender of the notice
         """
-        if not isinstance(notice.data, Usd.Attribute):
-            return
-
-        if notice.data.Get(0) == sender.value:
-            return
-
-        notice.data.Set(sender.value)
+        if isinstance(notice.data, Usd.Attribute):
+            if notice.data.Get(0) == sender.value:
+                return
+            notice.data.Set(sender.value)
+        elif isinstance(notice.data, Usd.Relationship):
+            targets = [Sdf.Path(x) for x in sender.value.split(",")]
+            notice.data.SetTargets(targets)
 
     @abstractmethod
-    def usd_attrib_changed(self, attr: Usd.Attribute):
+    def usd_prop_changed(self, attr: Usd.Property):
         """
         A callback for when the UsdAttribute member was changed. This will update the value of
         the AttributeSender passed to set_usd_attr().
@@ -1517,14 +1517,17 @@ class ChunkUsdAttributeSupport(AttributesBase):
         Args:
             attr (Usd.Attribute): The updated UsdAttribute.
         """
-        if not self._usd_attr_connection:
+        if not self._usd_prop_connection:
             return
-        if not isinstance(self._usd_attr_connection.sender, AttributeSender):
+        if not isinstance(self._usd_prop_connection.sender, AttributeSender):
             return
 
-        self._usd_attr_connection.sender.value = attr.Get(0)
+        if isinstance(attr, Usd.Attribute):
+            self._usd_prop_connection.sender.value = attr.Get(0)
+        elif isinstance(attr, Usd.Relationship):
+            self._usd_prop_connection.sender.value = ",".join([str(x) for x in attr.GetForwardedTargets()])
 
-    def set_usd_attr(self, attr: Usd.Attribute, sender: AttributeSender):
+    def set_usd_prop(self, attr: Usd.Property, sender: AttributeSender):
         """
         Set the references UsdAttribute object. Any changes to the param will
         update the attribute
@@ -1535,24 +1538,24 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 When a signal with sender and ATTRIBUTE_CHANGED notice is sent, the method
                 update_usd_attrib() of this class is called
         """
-        self._usd_attr = attr
+        self._usd_prop = attr
 
-        if self._usd_attr_connection:
-            self._usd_attr_connection.disconnect()
+        if self._usd_prop_connection:
+            self._usd_prop_connection.disconnect()
 
-        self._usd_attr_connection = chunk_notice.NoticeConnection(
-            self.update_usd_attrib, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender, owner=self
+        self._usd_prop_connection = chunk_notice.NoticeConnection(
+            self.update_usd_prop, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender, owner=self
         )
-        self.usd_attrib_changed(attr)
+        self.usd_prop_changed(attr)
 
-    def get_usd_attr(self) -> Usd.Attribute | None:
+    def get_usd_prop(self) -> Usd.Property | None:
         """
         Get the usd attribute references by this object
 
         Returns:
             Usd.Attribute | None: The referenced usd attribute
         """
-        return self._usd_attr
+        return self._usd_prop
 
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> "ChunkUsdAttributeSupport":
@@ -1584,7 +1587,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
         try:
             if sender := param.get_attribute_sender("value"):
-                param.set_usd_attr(attr, sender)
+                param.set_usd_prop(attr, sender)
         except AttributeError:
             pass
 
