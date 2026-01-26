@@ -93,4 +93,4 @@ def main():
     return vSwitcherChunk
 
 def config():
-    return chunk.DefaulConfig(category="Utility")
+    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)

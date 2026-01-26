@@ -181,4 +181,4 @@ def main():
     return chunk_api
 
 def config():
-    return chunk.DefaulConfig(category="Modelling")
+    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)

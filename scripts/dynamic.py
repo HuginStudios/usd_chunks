@@ -76,4 +76,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="Properties")
+    return chunk.DefaulConfig(category=chunk.StandardCategory.PROPERTIES)

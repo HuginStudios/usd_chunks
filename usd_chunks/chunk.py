@@ -55,7 +55,7 @@ See [example](../example.md) for a more extensive example.
 from attr import Attribute
 from attrs import field, define
 
-from enum import IntFlag, auto
+from enum import IntFlag, auto, Enum
 from typing import Any, List, Dict, Optional, Sequence, Type, Tuple
 from usd_chunks import chunk_notice
 
@@ -232,6 +232,15 @@ class DefaulConfig(ChunkConfig):
     """
 
     pass
+
+
+class StandardCategory(str, Enum):
+    PROPERTIES = "Properties"
+    MODELLING = "Modelling"
+    UTILS = "Utility"
+    RIGS = "Rigs"
+    USER = "User"
+    EXAMPLES = "Examples"
 
 
 ##############################################

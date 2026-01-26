@@ -2,6 +2,7 @@ import os
 from usd_chunks import chunk, chunk_registry
 from plugins import chunk_usdview
 
+
 def set_shademode(owner: chunk.ChunkParamBase, notice, sender: chunk.Button):
     shade_action = owner.user_data["action"]
     shade_action.setChecked(True)
@@ -20,7 +21,6 @@ def main():
 
     if not isinstance(scene, chunk_usdview.UsdviewScene):
         return
-
 
     appController = scene.usdviewAPI._UsdviewApi__appController
 
@@ -47,5 +47,6 @@ def main():
 
     return chunk_api
 
+
 def config():
-    return chunk.DefaulConfig(load_for_plugin="chunk_usdview", category="Utility")
+    return chunk.DefaulConfig(load_for_plugin="chunk_usdview", category=chunk.StandardCategory.UTILS)
