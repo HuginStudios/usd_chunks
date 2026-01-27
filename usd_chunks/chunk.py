@@ -56,10 +56,13 @@ from attr import Attribute
 from attrs import field, define
 
 from enum import IntFlag, auto, Enum
-from typing import Any, List, Dict, Optional, Sequence, Type, Tuple
+from typing import Any, List, Dict, Optional, Sequence, Type, Tuple, TYPE_CHECKING
 from usd_chunks import chunk_notice
 
 from pxr import Usd, Sdf
+
+if TYPE_CHECKING:
+    from pxr import UsdGeom
 
 
 class ChunkFlags:
@@ -501,17 +504,17 @@ _type_map = {
     "string": LineEdit,
     "asset": FileBrowser,
     "path": FileBrowser,
-    "float2": (Vector, {"param": Slider("0"), "length": 2}),
-    "float3": (Vector, {"param": Slider("0"), "length": 3}),
-    "float4": (Vector, {"param": Slider("0"), "length": 4}),
-    "vector3f": (Vector, {"param": Slider("0"), "length": 3}),
-    "color3f": (Vector, {"param": Slider("0"), "length": 3}),
-    "int2": (Vector, {"param": Slider("0"), "length": 2}),
-    "int3": (Vector, {"param": Slider("0"), "length": 3}),
-    "int4": (Vector, {"param": Slider("0"), "length": 4}),
-    "double2": (Vector, {"param": Slider("0"), "length": 2}),
-    "double3": (Vector, {"param": Slider("0"), "length": 3}),
-    "double4": (Vector, {"param": Slider("0"), "length": 4}),
+    "float2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
+    "float3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "float4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
+    "vector3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "color3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "int2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
+    "int3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "int4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
+    "double2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
+    "double3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "double4": (Vector, {"param": Slider(), "suffixes": "xyw", "length": 4}),
 }
 
 

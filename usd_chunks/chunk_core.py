@@ -58,13 +58,14 @@ from pxr import Tf, Usd, Sdf
 # BASE CLASSES FOR UI ELEMENTS #
 ################################
 
+_T = TypeVar("_T")
 ValueT = TypeVar("ValueT")
 ParamT = TypeVar("ParamT", bound="ChunkParamBase")
 GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
 ChunkT = TypeVar("ChunkT", bound="ChunkCommon")
 
 
-class ChunkParamWidget(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
+class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
     """Base class for a chunk param widget. Any ui element associated to a chunk or parameter should subclass from this.
     This class acts as an bridge between this toolkit and the UI library.
 
@@ -185,6 +186,13 @@ class ChunkParamWidget(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         pass
 
     def value_changed(self, value: Optional[Any] = None):
+        """
+        Called whenever the value of the widget changed, and forwards the new value to self.set_value.
+        This will also update param.value
+
+        Args:
+            value (Optional[Any], optional): The new value set on the widget. Defaults to None.
+        """
         if self.param is not None:
             if value is None:
                 value = self.get_value()
@@ -206,7 +214,7 @@ class ChunkWidgetFactoryBase(Protocol):
             object types and its corresponding widget.
     """
 
-    widget_map: Dict[ChunkFlags.ParamType, type[ChunkParamWidget]]
+    widget_map: Dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]
 
     def get_map(self):
         """
@@ -217,7 +225,7 @@ class ChunkWidgetFactoryBase(Protocol):
         """
         return self.widget_map
 
-    def add_mapping(self, key: ChunkFlags.ParamType, widget_type: type[ChunkParamWidget]):
+    def add_mapping(self, key: ChunkFlags.ParamType, widget_type: type[ChunkParamWidgetBase]):
         """
         Add a mapping from key to widget_type
 
@@ -240,7 +248,7 @@ class ChunkWidgetFactoryBase(Protocol):
         return key in self.get_map()
 
     @abstractmethod
-    def create_widget(self, param: "ChunkParamBase") -> Any:
+    def create_widget(self, param: "ChunkParamBase") -> ChunkParamWidgetBase:
         """
         A subclass should implement this and create a new widget from the param
 
@@ -254,6 +262,420 @@ class ChunkWidgetFactoryBase(Protocol):
             Any: The UI library widget. I.e QtWidget for Qt
         """
         raise NotImplementedError
+
+
+class ChunkContainerWidgetBase(Generic[GroupT]):
+    """
+    Chunk is a base class for creating UI representation of chunk containers.
+    """
+
+    def __init__(self, group: GroupT, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self._group = weakref.ref(group, self._group_died)
+
+        self._callbacks: List[chunk_notice.NoticeConnection] = []
+
+        # Calls _delete_self() whenever the chunk sends the CHUNK_DELETED
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(self._delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, self.group)
+        )
+
+        # Add a parameter to this widget whenever a param was added to the group
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(
+                self._param_added_callback, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, self.group
+            )
+        )
+
+        # Remove a parameter when the parameter was removed from the group
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(
+                self._param_removed_callback, chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, self.group
+            )
+        )
+
+        # Listen to state changes on the group
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(
+                self._state_changed,
+                chunk_notice.ChunkNoticeAlias.STATE_CHANGED,
+                self.group.get_attribute_sender("state"),
+            )
+        )
+
+        # Associate ChunkParamGroup objects with group widgets
+        self.param_groups: dict[ChunkContainerBase, ChunkContainerWidgetBase] = {}
+
+        # Container for all widgets in this chunk. Dict will map between ChunkParam -> widget
+        # for each widget created from the same ChunkParam instance
+        self.param_widgets: dict[ChunkParamBase, ChunkParamWidgetBase] = {}
+
+        # Initialize everything
+        self.factory = self.get_widget_factory()
+        self.build_collapsable()
+        self._build_param_widgets(self.group)
+        self.update_from_flags()
+        self.update_from_state()
+
+    @property
+    def group(self) -> "ChunkContainerBase":
+        if group := self._group():
+            return group
+        raise ReferenceError("reference to group is dead! :'(")
+
+    @abstractmethod
+    def get_widget_factory(self) -> ChunkWidgetFactoryBase:
+        """
+        Override this function to return a specific ui plugin widget factory
+
+        Raises:
+            AttributeError: _description_
+
+        Returns:
+            ChunkWidgetFactoryBase: The factory that can create the valued parameters from ChunkParamBase objects
+        """
+        factory = self.group.widget_factory
+        if factory is None:
+            raise AttributeError(
+                "No widget factory supplied to ChunkContainerWidgetBase. Implement get_widget_factory()"
+            )
+        return factory
+
+    @abstractmethod
+    def delete_self(self):
+        """
+        The entire group should be deleted
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def remove_widget(self, widget: Any):
+        """
+        Called when a child param widget should be removed from this group widget
+
+        Args:
+            widget (Any): The widget to remove from the group widget
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    def is_collapsed(self) -> bool:
+        """
+        Returns whether the group widget should be collapsed
+
+        Returns:
+            bool: True if the group should be collapsed
+        """
+        val = self.group.has_state(ChunkFlags.State.COLLAPSED)
+        parent = self.group.get_owner()
+        if parent and isinstance(parent, ChunkContainerBase):
+            val |= parent.has_state(ChunkFlags.State.COLLAPSED)
+        return val
+
+    @abstractmethod
+    def build_collapsable(self):
+        """
+        Build the group widget.
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_from_flags(self):
+        """
+        Update the widget from the flags of self.group
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_hidden(self, val: bool):
+        """
+        Set the ui widget hidden based on the value of val
+
+        Args:
+            val (bool): Whether to hide or show the widget
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_enabled(self, val: bool):
+        """
+        Set the ui widget enabled or disabled based on value of val
+
+        Args:
+            val (bool): Whether to enable or disable the widget
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_from_state(self):
+        """
+        Called when state of the group has changed
+        """
+        self.set_hidden(self.group.has_state(ChunkFlags.State.HIDDEN))
+        self.set_enabled(not self.group.has_state(ChunkFlags.State.DISABLED))
+
+    @abstractmethod
+    def set_expanded(self, checked: bool):
+        """
+        Set if the widget should be expanded and show all child widgets. If false, this should
+        hide all the child widgets
+
+        Args:
+            checked (bool): Whether the group widget should be expanded or not
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_label(self, param: "ChunkCommon", notice, sender: "AttributeSender"):
+        """
+        When a param name, label or flag is changed, this will correct the label in the FormLayout.
+        If LABELED was unset, then remove the label and set the widget role to SpanningRole
+        If LABELED was set, add the label
+        otherwise, just update the label text if name or label changed.
+
+        A ui implementation plugin should implement this function to get labeled widgets
+
+        Args:
+            param (chunk_core.ChunkCommon): The param that was changed
+            notice (Tf.Notice): The notice that was sent
+            sender (chunk_core.AttributeSender): The attribute that changed
+        """
+        pass
+
+    @abstractmethod
+    def supports_widget(self, widget: Any) -> bool:
+        """
+        For ui implementation plugins to make sure the supplied widget is supported. F.e:
+        ``` py
+        return isinstance(widget, QtWidgets.QWidget)
+        ```
+
+        Args:
+            widget (Any): The widget to check
+
+        Raises:
+            NotImplementedError: _description_
+
+        Returns:
+            bool: True if the widget is supported by the current ui plugin
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_widget(self, widget: "ChunkContainerWidgetBase | ChunkParamWidgetBase", label: Optional[str] = None):
+        """
+        Called after a param has been added to the group. This should add the widget to the relevant layouts
+
+        Args:
+            widget (ChunkContainerWidgetBase | ChunkParamWidgetBase): The widget to add
+            label (str, optional): An optional label of the widget. Defaults to None.
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    def has_param_widget(self, param: "ChunkParamBase | str") -> bool:
+        """Check to see if param exists in this Chunk widget
+
+        Args:
+            param (chunk.ChunkParamBase | str): The parameter to look for. Either name of param, or ChunkParam object
+
+        Returns:
+            bool: True if found, otherwise False
+        """
+        return self.get_param_widget(param) is not None
+
+    def get_param_widget(self, param: "ChunkParamBase | str") -> Optional["ChunkParamWidgetBase"]:
+        """Get the ChunkParamWidget for a ChunkParam. If a string is passed as param, then look for the associated name
+
+        Args:
+            param (ChunkChunkParamBaseParam | str): The name of the param, or ChunkParam object, to find
+
+        Returns:
+            ChunkParamWidget | None: The found ChunkParamWidget if found, otherwise None
+        """
+        if isinstance(param, ChunkParamBase):
+            return self.param_widgets.get(param, None)
+
+        for bound_param, widget in self.param_widgets.items():
+            if bound_param.name == param:
+                return widget
+
+    def has_group_layout(self, group: "ChunkGroupBase | str") -> bool:
+        """Check to see if group exists in this Chunk widget
+
+        Args:
+            group (chunk.ChunkGroupBase | str): The group to look for. Either name of group, or ChunkParamGroup object
+
+        Returns:
+            bool: True if found, otherwise False
+        """
+        return self.get_group_layout(group) is not None
+
+    def get_group_layout(self, group: "ChunkGroupBase | str") -> Optional["ChunkContainerWidgetBase"]:
+        """Get the QLayout object for a ChunkParamGroup. If a string is passed as param, then look for the associated name
+
+        Args:
+            group (ChunkGroupBase | str): The name of the group, or ChunkParamGroup object, to find
+
+        Returns:
+            QLayout | None: The found QLayout associated with group. If not found, returns None
+        """
+        if isinstance(group, ChunkGroupBase):
+            return self.param_groups.get(group, None)
+
+        for bound_group, layout in self.param_groups.items():
+            if bound_group.name == group:
+                return layout
+
+    def _group_died(self, ref):
+        self.delete_self()
+
+    def _delete_self(self, notice, sender):
+        if not chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED):
+            return
+
+        if sender is not self.group:
+            return
+
+        self.param_groups.clear()
+        self.param_widgets.clear()
+
+        self.delete_self()
+
+    def _param_added_callback(self, notice, sender: GroupT):
+        h = sender.children.last_added
+        if not h or not h == notice.data:
+            return
+
+        param = sender.get_param(h)
+        if not param:
+            return
+
+        self._add_param(param)
+
+    def _param_removed_callback(self, notice, sender: GroupT):
+        h = sender.children.last_removed
+        if not h:
+            return
+
+        param = None
+
+        for p in self.param_widgets.keys():
+            if p == h:
+                param = p
+                break
+
+        if not param:
+            return
+
+        if isinstance(param, ChunkParamBase):
+            if wid := self.param_widgets.get(param):
+                self.remove_widget(wid)
+
+        del self.param_widgets[param]
+
+    def _state_changed(self, notice, sender):
+        self.update_from_state()
+
+    def _add_param_widget(self, param: "ChunkParamBase", group: Optional["ChunkContainerBase"] = None):
+        t = param.evaluate_type()
+        if t == ChunkFlags.ParamType.NONE:
+            return
+
+        widget: ChunkParamWidgetBase
+        # Custom widget is created and managed externally
+        if t == ChunkFlags.ParamType.CUSTOM and param.custom_widget and self.supports_widget(param.custom_widget):
+            widget = param.custom_widget
+        else:
+            if not self.factory.has_mapping(t):
+                print("Missing mapping in factory for creating widget", param.name)
+                return
+
+            # Create a widget from the factory based on the param.get_type()
+            widget = self.factory.create_widget(param)
+
+        if not widget:
+            return
+
+        self._callbacks.extend(
+            [
+                chunk_notice.NoticeConnection(
+                    self.update_label,
+                    chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                    param.get_attribute_sender("name"),
+                    owner=param,
+                ),
+                chunk_notice.NoticeConnection(
+                    self.update_label,
+                    chunk_notice.ChunkNoticeAlias.GROUP_CHANGED,
+                    param.get_attribute_sender("name"),
+                    owner=param,
+                ),
+                chunk_notice.NoticeConnection(
+                    self.update_label,
+                    chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                    param.get_attribute_sender("label"),
+                    owner=param,
+                ),
+                chunk_notice.NoticeConnection(
+                    self.update_label,
+                    chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED,
+                    param.get_attribute_sender("flags"),
+                    owner=param,
+                ),
+            ]
+        )
+
+        if group is not None:
+            layout = self._add_group_layout(group)
+        else:
+            layout = self
+
+        self.param_widgets[param] = widget
+        layout.add_widget(widget)
+        return widget
+
+    def _add_group_layout(self, group: "ChunkContainerBase") -> "ChunkContainerWidgetBase":
+        container = self.param_groups.get(group, None)
+        if not container:
+            container = self.__class__.__new__(self.__class__)
+            container.__init__(group, parent=self)  # type: ignore
+            self.add_widget(container)
+            self.param_groups[group] = container
+        return container
+
+    def _build_param_widgets(self, group: "ChunkContainerBase"):
+        for param in group.get_my_params():
+            self._add_param(param)
+
+    def _add_param(self, param: "ChunkCommon"):
+        if isinstance(param, ChunkContainerBase):
+            self._add_group_layout(param)
+        elif isinstance(param, ChunkParamBase):
+            self._add_param_widget(param)
 
 
 #####################
@@ -452,7 +874,7 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return self.alias
 
-    def get_usd_attr(self) -> Usd.Attribute | None:
+    def get_usd_prop(self) -> Usd.Property | None:
         if owner := self.get_owner():
             if not isinstance(owner, ChunkUsdAttributeSupport):
                 return
@@ -1500,10 +1922,12 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice (chunk_notice.AttributeChangeNotice): The notice holding the UsdAttribute
             sender (AttributeSender): The sender of the notice
         """
+
         if isinstance(notice.data, Usd.Attribute):
             if notice.data.Get(0) == sender.value:
                 return
             notice.data.Set(sender.value)
+
         elif isinstance(notice.data, Usd.Relationship):
             targets = [Sdf.Path(x) for x in sender.value.split(",")]
             notice.data.SetTargets(targets)
@@ -1615,7 +2039,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     # If possible, will use this custom widget in the ui.
     # TODO: Currently, this only works with ChunkParamBase objects with type == CUSTOM
     #       This should also work on groups and chunks... But thats a bit more complicated
-    custom_widget: Optional[ChunkParamWidget] = attrs.field(default=None)
+    custom_widget: Optional[ChunkParamWidgetBase] = attrs.field(default=None)
 
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "value":
@@ -1655,7 +2079,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
         if attr.name == "custom_widget":
             # Custom widget should be a subclass of ChunkParamWidget
-            if val is not None and not isinstance(val, ChunkParamWidget):
+            if val is not None and not isinstance(val, ChunkParamWidgetBase):
                 raise ValueError(f"custom_widget {val} is not a subclass of ChunkParamWidget")
             return True
         return super().validate_attr(attr, val)
@@ -2104,6 +2528,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
+        self._attr_senders["value"] = AttributeSender(self, "value", chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
 
         if self.children:
             # __attrs_post_init__ was called when copied, so no need to reinitialize the children as they
@@ -2113,8 +2538,6 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         for i in range(self.length):
             # Clone the self.param length times, and add the clones to the clildren container
             np = self.param.clone()
-            if not np.name:
-                np.name = self.name
 
             if self.suffixes:
                 np.name += self.suffixes[i]
@@ -2141,8 +2564,20 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
 
         if not param or not isinstance(param, ChunkParamBase):
             raise KeyError(f"Index {key} does not exist on vector")
-
         return param
+
+    def data_changed(
+        self, notice: Tf.Notice | None, sender: Any, propagated: chunk_notice.ChunkNoticePropagator | None = None
+    ) -> Tf.Notice | None:
+        # my_notice = super().data_changed(notice, sender, propagated)
+
+        my_notice = super().data_changed(notice, sender, propagated)
+
+        if isinstance(propagated, AttributeSender) and propagated.name == "value":
+            if usd_attr := self.get_usd_prop():
+                chunk_notice.send_notice(propagated.get_notice_alias(), self.get_attribute_sender("value"), usd_attr)
+
+        return my_notice
 
     def __setitem__(self, key: str | int, val: Any) -> Optional[ChunkParamBase]:
         param = self[key]

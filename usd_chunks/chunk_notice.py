@@ -533,10 +533,10 @@ class ChunkNoticePropagator:
         # Iterate over all owners and have them send this notice as well. This is a bit nasty as the owners will themselves become senders,
         # so accessing the original sender may only be done through notice.data in the subscribing functions
         # TODO: Rethink this
-        iter_owner = self.get_owner()
-        while iter_owner is not None:
-            send_notice(alias, iter_owner, self.get_notice_data())
-            iter_owner = iter_owner.get_owner()
+        owner = self.get_owner()
+        while owner is not None:
+            send_notice(alias, owner, self.get_notice_data())
+            owner = owner.get_owner()
 
         return notice
 

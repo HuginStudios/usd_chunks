@@ -55,6 +55,9 @@ def launch_chunks(usdviewApi) -> None:
 
 class ChunksPluginContainer(PluginContainer):
     def reloadChunks(self, usdviewApi):
+        lay = chunk_registry.ChunkLayerManager()
+        lay.clear_all_layers()
+
         reg = chunk_registry.ChunkRegistry()
         reg.reload_all()
 

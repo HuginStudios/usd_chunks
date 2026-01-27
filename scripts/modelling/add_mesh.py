@@ -212,7 +212,7 @@ def build_cube(
     return mesh
 
 
-def build_tube(stage, name="/tube", rows=5, columns=5, radius=1, height=2, caps=True, pos=(0, 0, 0)):
+def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, caps=True, pos=(0, 0, 0)):
     """
     Build a tube for testing hair procedural
     """
