@@ -22,20 +22,23 @@ def nice_print(func):
 def chunkChanged(owner, notice, sender):
     # This works just as groupChanged, but is registered on a Chunk, so will only be sent on Chunk changes
     def get_chunk_str(s):
+        res = "{}"
+        if isinstance(s, chunk_core.ProxyParam):
+            res = "Proxy[{}]"
         if isinstance(s, chunk.Chunk):
-            return "Chunk"
+            return res.format("Chunk")
 
         if isinstance(s, chunk.Group):
-            return "Group"
+            return res.format("Group")
 
         if isinstance(s, chunk.Vector):
-            return "Vector"
+            return res.format("Vector")
 
         if isinstance(s, chunk_core.ChunkParamBase):
-            return s.evaluate_type().name
+            return res.format(s.evaluate_type().name)
 
         if isinstance(s, chunk_core.AttributeSender):
-            return "Attribute"
+            return res.format("Attribute")
 
     msg = f"Chunk Changed: {sender.name} -> {notice.__class__.__name__}"
 
@@ -91,6 +94,30 @@ def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: 
         return
 
     owner.value = str(path)
+
+
+@nice_print
+def listChanged(owner, notice, sender):
+    for i in owner.get_params():
+        if isinstance(i, chunk_core.ChunkParamBase):
+            print(i.name, i.value, isinstance(i, chunk_core.ProxyParam))
+
+
+def nameChanged(owner, notice, sender: chunk.LineEdit):
+    on, os = sender.get_last_change()
+    if not os:
+        return
+
+    c = owner.get_chunk()
+    if not os.old_value:
+        p = c.get_param("listSlider")
+    else:
+        p = c.get_param(os.old_value)
+
+    if not p:
+        return
+
+    p.name = os.value
 
 
 def main():
@@ -181,15 +208,35 @@ def main():
     label_grp = chunk.Group("Group")
     label_grp.add_param(label)
 
+    listSlider = chunk.Slider("listSlider")
+    listSlider.add_callback(paramValueChanged)
+
+    nestedListGroup = chunk.Group("nestedGroup")
+    nestedListGroup.add_params([listSlider])
+
+    # listGroup = chunk.Group("listGroup")
+    # listGroup.add_params([nestedListGroup, chunk_core.ProxyParam(nestedListGroup)])
+
+    listGroup = chunk.ListGroup("listGroup")
+    listGroup.add_params([nestedListGroup, listSlider.clone()])
+    listGroup.size = 2
+
+    # nestedListGroup.add_param(checkbox)
+    # listSlider.request_delete()
+
     # A text edit is a parameter for editing strings
-    textEdit = chunk.LineEdit("line_edit")
+    textEdit = chunk.LineEdit("list_name")
+    textEdit.add_callback(nameChanged)
 
     # A FileBrowser is a LineEdit with a button for launching a File Browser dialog. The filtering of file names
     # is done by appending all extensions to the pattern, so this would result in a filter:
     #   '*.jpg *.png *.tif'
     # If pattern is not set, an asterix '*' will be used. If no extensions are set, the filter will use only the pattern
     fileBrowse = chunk.FileBrowser(
-        "line_edit", pattern="*", extensions=[".jpg", ".png", ".tif"], flags=chunk.ChunkFlags.ParamFlags.FILE_EXISTING
+        "line_edit",
+        pattern="*",
+        extensions=[".jpg", ".png", ".tif"],
+        flags=chunk.ChunkFlags.ParamFlags.FILE_EXISTING | chunk.ChunkFlags.ParamFlags.LABELED,
     )
 
     # A simple menu
@@ -202,7 +249,8 @@ def main():
 
     # Create the actual chunk - this is in practice just a chunk.Group with some addiditional behaviour
     myChunk = chunk.Chunk("Hello World")
-    myChunk.add_params([label, checkbox, button, sep, textEdit, menu, fileBrowse, sliderGroup, sliderVec])
+    # myChunk.add_params([label, checkbox, button, sep, menu, fileBrowse, sliderGroup, sliderVec, textEdit, listGroup])
+    myChunk.add_params([textEdit, listGroup])
 
     # Add a callback. With no arguments, the callback will be called whenever any of tthe children on the chunk is changed
     myChunk.add_callback(chunkChanged)
@@ -213,5 +261,13 @@ def main():
     return myChunk
 
 
+# from usd_chunks import chunk_registry as reg
+# from usd_chunks import chunk
+# r = reg.ChunkRegistry()
+# c = r.get_chunk("HelloWorld")
+# p = c.get_param("test")
+# print(p)
+
+
 def config():
-    return chunk.DefaulConfig(load=False, category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaulConfig(load=True, category=chunk.StandardCategory.EXAMPLES)

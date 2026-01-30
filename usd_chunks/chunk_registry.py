@@ -117,12 +117,12 @@ class ChunkModule:
             self.loaded = False
             return False
 
-        try:
-            retval.check_hierarchy()
-        except Exception as e:
-            print(e)
-            self.loaded = False
-            return False
+        # try:
+        #     retval.check_hierarchy()
+        # except Exception as e:
+        #     print(e)
+        #     self.loaded = False
+        #     return False
 
         self.loaded_chunk = retval
         self.loaded = True

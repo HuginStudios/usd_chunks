@@ -510,7 +510,7 @@ class ChunkNoticePropagator:
             owner.data_changed(my_notice, self, propagated if propagated else sender)
         return my_notice
 
-    def send_self(self, alias: Optional[ChunkNoticeAlias] = None) -> Optional[Tf.Notice]:
+    def send_self(self, alias: Optional[ChunkNoticeAlias] = None, data: Any = None) -> Optional[Tf.Notice]:
         """Sends a Tf.Notice, with self as sender. The type of notice is determined by get_notice_alias(), or optionally the alias argument.
 
         Args:
@@ -522,10 +522,12 @@ class ChunkNoticePropagator:
         if not alias:
             return None
 
+        notice_data = data if data is not None else self.get_notice_data()
+
         notice_class = get_notice(alias)
 
         if issubclass(notice_class, ChunkNotice):
-            notice = notice_class(self.get_notice_data())
+            notice = notice_class(notice_data)
         else:
             notice = notice_class()
         notice.Send(self)
@@ -533,10 +535,8 @@ class ChunkNoticePropagator:
         # Iterate over all owners and have them send this notice as well. This is a bit nasty as the owners will themselves become senders,
         # so accessing the original sender may only be done through notice.data in the subscribing functions
         # TODO: Rethink this
-        owner = self.get_owner()
-        while owner is not None:
-            send_notice(alias, owner, self.get_notice_data())
-            owner = owner.get_owner()
+        if owner := self.get_owner():
+            owner.send_self(alias, notice_data)
 
         return notice
 

@@ -53,10 +53,10 @@ See [example](../example.md) for a more extensive example.
 """
 
 from attr import Attribute
-from attrs import field, define
+from attrs import field
 
 from enum import IntFlag, auto, Enum
-from typing import Any, List, Dict, Optional, Sequence, Type, Tuple, TYPE_CHECKING
+from typing import Any, List, Dict, Optional, Sequence, Type, Tuple, TYPE_CHECKING, overload
 from usd_chunks import chunk_notice
 
 from pxr import Usd, Sdf
@@ -101,11 +101,13 @@ class ChunkFlags:
             LABELED: If the group should have a label in the ui
             COLLAPSABLE: If the group should be able to collapse
             FRAMED: A simple style flag
+            LIST: Parameters on this group is treated as a list that can be extended and shrinked
         """
 
         LABELED = 1
         COLLAPSABLE = auto()
         FRAMED = auto()
+        LIST = auto()
 
     class ParamFlags(IntFlag):
         """Flags for chunk params
@@ -213,6 +215,7 @@ from .chunk_core import (  # noqa: E402
     ChunkVectorBase,
     ChunkUsdAttributeSupport,
     ChunkCommon,
+    ChunkListGroupBase
 )
 
 ###########
@@ -272,6 +275,15 @@ class Group(ChunkGroupBase):
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
 
+class ListGroup(ChunkListGroupBase):
+    """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
+
+    # Override defaults
+    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED | ChunkFlags.GroupFlags.LIST)
+
+    def get_notice_alias(self):
+        return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
+
 
 class Vector(ChunkVectorBase):
     """A Vector is basically a group which holds a set number of parameters"""
@@ -296,6 +308,7 @@ class Slider(ChunkParamBase[int | float]):
     min_value: Optional[float | int] = field(default=None)
     max_value: Optional[float | int] = field(default=None)
     is_int: bool = field(default=False)
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -333,6 +346,7 @@ class Spinbox(ChunkParamBase[float | int]):
     min_value: Optional[float | int] = field(default=None)
     max_value: Optional[float | int] = field(default=None)
     is_int: bool = field(default=False)
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -366,8 +380,10 @@ class Menu(ChunkParamBase[str]):
     Attributes:
         menu_items: A list of items to display in the menu
     """
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     menu_items: Sequence[str] = field(factory=list)
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs):
@@ -418,6 +434,7 @@ class LineEdit(ChunkParamBase[str]):
     """
     An editable string parameter
     """
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -448,6 +465,7 @@ class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
         extensions: A list of supported file extensions
         pattern: A regex pattern for filtering file names. Defaults to "\\*"
     """
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     extensions: List[str] = field(factory=list)
     pattern: str = field(default="*")

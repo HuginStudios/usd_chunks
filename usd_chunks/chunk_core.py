@@ -276,10 +276,6 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
         self._callbacks: List[chunk_notice.NoticeConnection] = []
 
-        # Calls _delete_self() whenever the chunk sends the CHUNK_DELETED
-        self._callbacks.append(
-            chunk_notice.NoticeConnection(self._delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, self.group)
-        )
 
         # Add a parameter to this widget whenever a param was added to the group
         self._callbacks.append(
@@ -295,6 +291,11 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             )
         )
 
+        # Calls _delete_self() whenever the chunk sends the CHUNK_DELETED
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(self._delete_self, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, self.group)
+        )
+
         # Listen to state changes on the group
         self._callbacks.append(
             chunk_notice.NoticeConnection(
@@ -305,7 +306,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         )
 
         # Associate ChunkParamGroup objects with group widgets
-        self.param_groups: dict[ChunkContainerBase, ChunkContainerWidgetBase] = {}
+        self.group_widgets: dict[ChunkContainerBase, ChunkContainerWidgetBase] = {}
 
         # Container for all widgets in this chunk. Dict will map between ChunkParam -> widget
         # for each widget created from the same ChunkParam instance
@@ -447,7 +448,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         raise NotImplementedError
 
     @abstractmethod
-    def update_label(self, param: "ChunkCommon", notice, sender: "AttributeSender"):
+    def update_label(self, notice, sender: "AttributeSender"):
         """
         When a param name, label or flag is changed, this will correct the label in the FormLayout.
         If LABELED was unset, then remove the label and set the widget role to SpanningRole
@@ -484,6 +485,22 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
     @abstractmethod
     def add_widget(self, widget: "ChunkContainerWidgetBase | ChunkParamWidgetBase", label: Optional[str] = None):
+        """
+        Called after a param has been added to the group. This should add the widget to the relevant layouts
+
+        Args:
+            widget (ChunkContainerWidgetBase | ChunkParamWidgetBase): The widget to add
+            label (str, optional): An optional label of the widget. Defaults to None.
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_list_widget(
+        self, widget: "ChunkContainerWidgetBase | ChunkParamWidgetBase", label: Optional[str] = None, list_index=0
+    ):
         """
         Called after a param has been added to the group. This should add the widget to the relevant layouts
 
@@ -544,9 +561,9 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             QLayout | None: The found QLayout associated with group. If not found, returns None
         """
         if isinstance(group, ChunkGroupBase):
-            return self.param_groups.get(group, None)
+            return self.group_widgets.get(group, None)
 
-        for bound_group, layout in self.param_groups.items():
+        for bound_group, layout in self.group_widgets.items():
             if bound_group.name == group:
                 return layout
 
@@ -554,53 +571,72 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         self.delete_self()
 
     def _delete_self(self, notice, sender):
-        if not chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED):
-            return
-
         if sender is not self.group:
             return
 
-        self.param_groups.clear()
+        self.group_widgets.clear()
         self.param_widgets.clear()
 
         self.delete_self()
 
     def _param_added_callback(self, notice, sender: GroupT):
-        h = sender.children.last_added
-        if not h or not h == notice.data:
-            return
+        h = notice.data
+        param = None
 
-        param = sender.get_param(h)
+        if isinstance(self.group, ChunkListGroupBase):
+            # param = self.group.get_indexed_param(h, -1)
+            param = self.group.get_my_params()[-1]
+
+        else:
+            for p in sender.get_my_params():
+                if p == h:
+                    param = p
+                    break
+
         if not param:
+            print("could not find param", h.name, "from sender", sender.name)
             return
 
         self._add_param(param)
 
     def _param_removed_callback(self, notice, sender: GroupT):
-        h = sender.children.last_removed
+        h = notice.data
         if not h:
             return
 
         param = None
+        if isinstance(h, ChunkParamBase):
+            for p in self.param_widgets.keys():
+                if p == h:
+                    param = p
+                    break
+            if not param:
+                return
 
-        for p in self.param_widgets.keys():
-            if p == h:
-                param = p
-                break
-
-        if not param:
-            return
-
-        if isinstance(param, ChunkParamBase):
             if wid := self.param_widgets.get(param):
                 self.remove_widget(wid)
 
-        del self.param_widgets[param]
+            del self.param_widgets[param]
+
+        elif isinstance(h, ChunkContainerBase):
+
+            for p in self.group_widgets.keys():
+                if p == h:
+                    param = p
+                    break
+
+            if not param:
+                return
+
+            if wid := self.group_widgets.get(param):
+                self.remove_widget(wid)
+
+            del self.group_widgets[param]
 
     def _state_changed(self, notice, sender):
         self.update_from_state()
 
-    def _add_param_widget(self, param: "ChunkParamBase", group: Optional["ChunkContainerBase"] = None):
+    def _add_param_widget(self, param: "ChunkParamBase", group: Optional["ChunkContainerBase"] = None, list_index=0):
         t = param.evaluate_type()
         if t == ChunkFlags.ParamType.NONE:
             return
@@ -626,26 +662,25 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
                     self.update_label,
                     chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
                     param.get_attribute_sender("name"),
-                    owner=param,
                 ),
                 chunk_notice.NoticeConnection(
                     self.update_label,
                     chunk_notice.ChunkNoticeAlias.GROUP_CHANGED,
                     param.get_attribute_sender("name"),
-                    owner=param,
+                    # owner=param,
                 ),
-                chunk_notice.NoticeConnection(
-                    self.update_label,
-                    chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
-                    param.get_attribute_sender("label"),
-                    owner=param,
-                ),
-                chunk_notice.NoticeConnection(
-                    self.update_label,
-                    chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED,
-                    param.get_attribute_sender("flags"),
-                    owner=param,
-                ),
+                # chunk_notice.NoticeConnection(
+                #     self.update_label,
+                #     chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                #     param.get_attribute_sender("label"),
+                #     # owner=param,
+                # ),
+                # chunk_notice.NoticeConnection(
+                #     self.update_label,
+                #     chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED,
+                #     param.get_attribute_sender("flags"),
+                #     # owner=param,
+                # ),
             ]
         )
 
@@ -655,27 +690,45 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             layout = self
 
         self.param_widgets[param] = widget
-        layout.add_widget(widget)
+
+        # if self.group.has_flag(ChunkFlags.GroupFlags.LIST):
+        #     if param.has_flag(ChunkFlags.ParamFlags.LABELED):
+        #         layout.add_list_widget(widget, param.get_label(), list_index)
+        #     else:
+        #         layout.add_list_widget(widget, list_index=list_index)
+
+        # else:
+        if param.has_flag(ChunkFlags.ParamFlags.LABELED):
+            layout.add_widget(widget, param.get_label())
+        else:
+            layout.add_widget(widget)
+
         return widget
 
-    def _add_group_layout(self, group: "ChunkContainerBase") -> "ChunkContainerWidgetBase":
-        container = self.param_groups.get(group, None)
+    def _add_group_layout(self, group: "ChunkContainerBase", list_index=0) -> "ChunkContainerWidgetBase":
+        container = self.group_widgets.get(group, None)
         if not container:
             container = self.__class__.__new__(self.__class__)
             container.__init__(group, parent=self)  # type: ignore
             self.add_widget(container)
-            self.param_groups[group] = container
+
+            self.group_widgets[group] = container
         return container
 
     def _build_param_widgets(self, group: "ChunkContainerBase"):
+        # if isinstance(group, ChunkListGroupBase):
+        #     for i, container in enumerate(group._proxy_params):
+        #         for param in container.get_my_params():
+        #             self._add_param(param, i)
+        # self._add_list_param()
         for param in group.get_my_params():
             self._add_param(param)
 
-    def _add_param(self, param: "ChunkCommon"):
+    def _add_param(self, param: "ChunkCommon", list_index=0):
         if isinstance(param, ChunkContainerBase):
-            self._add_group_layout(param)
+            self._add_group_layout(param, list_index)
         elif isinstance(param, ChunkParamBase):
-            self._add_param_widget(param)
+            self._add_param_widget(param, list_index=list_index)
 
 
 #####################
@@ -824,7 +877,7 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
 
     def __init__(
         self,
-        owner: "AttributesBase",
+        owner: chunk_notice.ChunkNoticePropagator,
         name: str,
         alias: chunk_notice.ChunkNoticeAlias,
     ):
@@ -996,7 +1049,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             self._attr_senders[name] = sender
 
         self._resolve_failed_converters()
-
         super().__init__()  # initialise ChunkNoticePropagator
 
     def clone(self) -> Self:
@@ -1246,6 +1298,204 @@ class ChunkHash(Protocol):
     def __eq__(self, value: object) -> bool: ...
 
 
+class ProxyParam(chunk_notice.ChunkNoticePropagator):
+    """
+    A proxy parameter lies ontop of a concrete parameter. The proxy stores only a uniuqe value and unique children
+    if the parameter is a group. This is useful for lists, where an original group dictates the content of each list
+    entry, but the list entries can hold unique values. This means we can change any attribute except 'value' on the
+    original, and the proxies will update.
+
+    The proxy will have a unique hash value. To get the original parameter, use the param_ref property of the proxy
+
+    Args:
+        param (ChunkCommon): A chunk object which to reference
+    """
+
+    def __init__(self, param: "ChunkCommon", *args, **kwargs):
+        self.__param_ref = weakref.ref(param)
+
+        if isinstance(param, ChunkParamBase):
+            self._value = param.value
+            self.__value_sender = AttributeSender(self, "value", param.get_attribute_sender("value").alias)
+        else:
+            self._value = None
+            self.__value_sender = None
+
+        self.__hashable = HashVal()
+
+        super().__init__(*args, **kwargs)
+        self._children = NameSyncedContainer()
+
+        if isinstance(param, ChunkContainerBase):
+            self._children.set_owner(self)
+            self._children = NameSyncedContainer.create_proxy(param.children, self._children)
+
+            self.add_callback(self._ref_child_added, param, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_ADDED)
+            self.add_callback(self._ref_child_removed, param, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_REMOVED)
+            # self.add_callback(self._ref_child_removed, param, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
+
+    def _ref_child_added(self, notice, sender):
+        if isinstance(notice.data, ChunkParamBase):
+            self._children.add(ProxyParam(notice.data))
+
+    def _ref_child_removed(self, notice, sender):
+        if isinstance(notice.data, ChunkCommon):
+            p = None
+            for param in self._children.get_my_params():
+                if isinstance(param, ProxyParam) and param._param_ref == notice.data:
+                    p = param
+                    break
+                if param == notice.data:
+                    p = param
+                    break
+
+            if not p:
+                raise ReferenceError("Could not find ref child")
+
+            del self._children[p]
+
+    @property
+    def _param_ref(self):
+        if param := self.__param_ref():
+            return param
+        raise ReferenceError("Reference to param is dead")
+
+    def __eq__(self, value: object) -> bool:
+        return self._hashable == value
+
+    def __hash__(self) -> int:
+        return self._hashable.__hash__()
+
+    def __instancecheck__(self, instance: Any) -> bool:
+        if issubclass(instance, ChunkCommon):
+            return True
+        if isinstance(self._param_ref, ChunkContainerBase) and isinstance(instance, ChunkContainerBase):
+            return True
+        if isinstance(self._param_ref, ChunkParamBase) and isinstance(instance, ChunkParamBase):
+            return True
+        return super().__instancecheck__(instance)  # type: ignore
+
+    def _get_my_params(self):
+        return self._children.get_my_params()
+
+    def _get_params(self):
+        return self._children.get_params()
+
+    def _get_param(self, *args, **kwargs):
+        return self._children.get_param(*args, **kwargs)
+
+    def _iter_hierarchy(self, level=0):
+        yield level, self
+        for p in self._get_my_params():
+            if isinstance(p, ChunkGroupBase):
+                yield from p.iter_hierarchy(level + 1)
+            else:
+                yield level + 1, p
+
+    def _get_attribute_sender(self, name):
+        if name == "value":
+            return self.__value_sender
+        return self._param_ref.get_attribute_sender(name)
+
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return self._param_ref.get_notice_alias()
+
+    def request_delete(self):
+        """Sends a notice for owners to delete this Chunk object. It's the owners responsibility to remove their reference to this object.
+        If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.
+        """
+
+        self._children.clear()
+        self._children.set_owner(None)
+
+        owner = self.get_owner()
+        if owner and isinstance(owner, ChunkContainerBase):
+            # Owner is a group, so delete this param from the group
+            owner.remove_param_or_group(self)
+        elif owner and isinstance(owner, NameSyncedContainer):
+            # Owner is a NameSyncedContainer, pop it from the contiainer. When successfully removed,
+            # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
+            owner.pop(self)
+
+        self.set_owner(None)
+        for i in self._connections:
+            i.disconnect()
+
+        self._connections.clear()
+        self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
+
+    def send_self(self, alias: chunk_notice.ChunkNoticeAlias | None = None, data: Any = None) -> Tf.Notice | None:
+        res = super().send_self(alias, data)
+        if alias is None:
+            alias = self.get_notice_alias()
+
+        if alias is chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED:
+            # Run all methods connected to the reference param, with self as
+            # sender. This is possibly idiotic
+            notice_class = chunk_notice.get_notice(alias)
+            if issubclass(notice_class, chunk_notice.ChunkNotice):
+                notice = notice_class(self.get_notice_data())
+            else:
+                notice = notice_class()
+            for conn in self._param_ref._connections:
+                conn.handle_callback(notice, self)
+
+        return res
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "value":
+            # Get the value stored on the proxy
+            return self._value
+        if name == "iter_hierarchy":
+            return super().__getattribute__("_iter_hierarchy")
+        if name == "get_my_params":
+            return super().__getattribute__("_get_my_params")
+        if name == "get_params":
+            return super().__getattribute__("_get_params")
+        if name == "get_param":
+            return super().__getattribute__("_get_param")
+        if name == "get_attribute_sender":
+            return super().__getattribute__("_get_attribute_sender")
+
+        if not name.startswith("__") and hasattr(super(), name) or name in ["_owner", "_connections"]:
+            return super().__getattribute__(name)
+
+        if name == "_hashable":
+            return self.__hashable
+
+        if name == "children":
+            return super().__getattribute__("_children")
+
+        if not name.endswith("_param_ref") and hasattr(self._param_ref, name):
+            return getattr(self._param_ref, name)
+
+        return super().__getattribute__(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # All attributes except 'owner' and 'value' are proxied, meaning we set the attributes
+        # back on to the parameter we're proxying.
+
+        if not name.startswith("__") and hasattr(super(), name) or name in ["_owner", "_connections"]:
+            return super().__setattr__(name, value)
+
+        if name == "children":
+            return super().__setattr__("_children", value)
+
+        if name == "value" and self.__value_sender:
+            # Instead of setting the value on the param, we intercept and store the value on the
+            # proxy itself. This will propagate the notices through the correct channel instead
+            # of through the original param ownership channel.
+            self.__value_sender.old_value = self._value
+            self._value = value
+            self.__value_sender.data_changed(None, None)
+            return
+
+        if not name.endswith("_param_ref") and hasattr(self._param_ref, name):
+            return setattr(self._param_ref, name, value)
+
+        return super().__setattr__(name, value)
+
+
 class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
     """Container for holding ChunkCommon objects. The container holds two maps: params & names. The maps
     are ChainMaps, meaning they provide access to all nested NameSyncedContainer param and names as well.
@@ -1315,7 +1565,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         self.names.clear()
         self.params.clear()
 
-    def add(self, obj: "ChunkCommon"):
+    def add(self, obj: "ChunkCommon | ProxyParam", send=True):
         """Add a chunk object to this container. This will make the container the owner of the param, and store the
         object in self.params, and obj.name in self.names. Access to the object can thus be done through
             self.get_param(), self.get_by_name()
@@ -1332,11 +1582,16 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
 
         # Append child the object + name to the first layer of the ChainMaps
-        self.params.maps[0][obj._hashable] = obj
+        self.params.maps[0][obj._hashable] = obj  # type: ignore
         self.names.maps[0][obj.name] = obj._hashable
 
         # Mark self as the owner of the added obj as we need to be notified when the object changes
         obj.set_owner(self)
+
+        # if isinstance(obj, ChunkListGroupBase):
+        #     for proxy in obj._proxy_params:
+        #         self.params.maps.append(proxy.params)
+        #         self.names.maps.append(proxy.names)
 
         if isinstance(obj, ChunkGroupBase):
             # Also append the children of the group, as this allows for fast lookups accross the layers.
@@ -1347,6 +1602,13 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
         self.send_added(obj)
 
+    @staticmethod
+    def create_proxy(source: "NameSyncedContainer", target: "NameSyncedContainer"):
+        for param in source.get_my_params():
+            proxy = ProxyParam(param)
+            target.add(proxy)
+        return target
+
     def data_changed(
         self,
         notice: Tf.Notice,
@@ -1354,7 +1616,6 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         propagated: Optional[chunk_notice.ChunkNoticePropagator] = None,
     ) -> Optional[Tf.Notice]:
         # Override to reflect any changes on the children in this ds. Used to update the names when a name changes
-
         if (
             propagated
             and isinstance(propagated, AttributeSender)
@@ -1416,7 +1677,9 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         else:
             raise ValueError(f"Failed to update old name {old_name} in container")
 
-    def get_param(self, key: Union[ChunkHash, str], default: Any = None) -> Optional["ChunkCommon"]:
+    def get_param(
+        self, key: Union[ChunkHash, str], default: Any = None, proxy_index: Optional[int] = None
+    ) -> Optional["ChunkCommon"]:
         """Retrieve a param from this datastructure. Key can be either a ChunkCommon (It hashes to the HashVal),
         an explicit HashVal (ChunkObject._hashable) or a name.
 
@@ -1427,7 +1690,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             return self.get_by_name(key, default)
         return self.params.get(key, default)
 
-    def get_by_name(self, name: str, default: Any = None) -> Optional["ChunkCommon"]:
+    def get_by_name(self, name: str, default: Any = None, proxy_index: Optional[int] = None) -> Optional["ChunkCommon"]:
         """
         Excplicitly retrieve a param by its name. In order to find nested children, one can
         pass the hierarchy to the 'name' argument by adding a dot (.) for each level in the hierarchy:
@@ -1495,7 +1758,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
         return tuple(self.params.maps[0].values())
 
-    def send_added(self, obj: "ChunkCommon"):
+    def send_added(self, obj: "ChunkCommon | ProxyParam"):
         self.last_added = obj._hashable
         obj.send_self(chunk_notice.ChunkNoticeAlias.PARAM_ADDED)
 
@@ -1890,12 +2153,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
     def data_changed(
         self, notice: Tf.Notice | None, sender: Any, propagated: chunk_notice.ChunkNoticePropagator | None = None
     ) -> Tf.Notice | None:
-        stage = chunk_registry.ChunkRegistry().scene.get_stage()
-        if not stage:
-            return
-
         my_notice = super().data_changed(notice, sender, propagated)
-        if usd_attr := self.get_usd_prop():
+
+        stage = chunk_registry.ChunkRegistry().scene.get_stage()
+        if stage and (usd_attr := self.get_usd_prop()):
             chunk_notice.send_notice(sender.get_notice_alias(), sender, usd_attr)
         return my_notice
 
@@ -2397,7 +2658,6 @@ class ChunkGroupBase(ChunkContainerBase):
         Raises:
             ValueError: If a duplicate was found
         """
-
         if param in self.get_params():
             raise ValueError(f"A duplicate for param {param.name} was found on container {self.name}")
 
@@ -2408,13 +2668,13 @@ class ChunkGroupBase(ChunkContainerBase):
         reserved_names.add(new_name)
 
         new_param = param
-        new_param.name = new_name
+        # new_param.name = new_name
 
-        if isinstance(new_param, ChunkGroupBase):
-            for p in new_param.get_params():
-                new_name = self.get_valid_child_name(p, reserved_names)
-                reserved_names.add(new_name)
-                p.name = new_name
+        # if isinstance(new_param, ChunkGroupBase):
+        #     for p in new_param.get_params():
+        #         new_name = self.get_valid_child_name(p, reserved_names)
+        #         reserved_names.add(new_name)
+        #         p.name = new_name
 
         return new_param
 
@@ -2457,6 +2717,45 @@ class ChunkGroupBase(ChunkContainerBase):
             if idx > max_iter:
                 raise RuntimeError(f"Failed to resolve name, loop exceeded {max_iter} iterations")
         return name
+
+
+class ChunkListGroupBase(ChunkGroupBase):
+    size: int = attrs.field(default=0)
+    _proxy_params: List[ChunkGroupBase] = attrs.field(factory=list, init=False)
+
+    def get_indexed_param(self, param: ChunkCommon | str | HashVal, index: int) -> ChunkCommon | None:
+        if len(self._proxy_params) == 0:
+            return
+
+        for proxy in self._proxy_params[index].get_my_params():
+            if proxy == param or proxy.name == param:
+                return proxy
+
+    def value_changed(self, attrname: str, old_value: Any, value: Any):
+        if attrname == "size":
+            if value > old_value:
+                for i in range(old_value, value):
+                    group = ChunkGroupBase(str(i), flags=ChunkFlags.GroupFlags.LABELED)
+                    group.set_owner(self)
+
+                    proxy = NameSyncedContainer()
+                    proxy.set_owner(group)
+                    self._proxy_params.append(group)
+
+                    group.children = proxy
+                    NameSyncedContainer.create_proxy(self.children, proxy)
+
+        return super().value_changed(attrname, old_value, value)
+
+    def get_params(self) -> Tuple[ChunkCommon, ...]:
+        res = []
+        for container in self._proxy_params:
+            for param in container.get_params():
+                res.append(param)
+        return tuple(res)
+
+    def get_my_params(self) -> Tuple[ChunkCommon, ...]:
+        return tuple(self._proxy_params)
 
 
 class ChunkBase(ChunkGroupBase):

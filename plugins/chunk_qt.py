@@ -3,26 +3,16 @@ from typing import Any, Dict, Optional, List
 
 from pxr import Tf
 
-from usd_chunks import chunk, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources
 from usd_chunks.chunk_core import ChunkFlags, ChunkParamWidgetBase
 from usd_chunks import chunk_core
 
+from functools import partial
 
-class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QWidget):
+
+class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
     def __init__(self, param: chunk.Slider):
         super().__init__(param)
-
-        self.vlayout = QtWidgets.QVBoxLayout()
-        self.vlayout.setContentsMargins(0, 5, 0, 0)
-
-        self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-
-        self.slider = QtWidgets.QSlider()
-        self.label = QtWidgets.QLabel(param.name)
-
-        self.vlayout.addWidget(self.label)
-        self.vlayout.addWidget(self.slider)
-        self.setLayout(self.vlayout)
 
         self._step = 1000 if chunk.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
 
@@ -30,30 +20,30 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QWidget):
         max_val = param.max_value
 
         if min_val is not None:
-            self.slider.setMinimum(int(min_val * self._step))
+            self.setMinimum(int(min_val * self._step))
         else:
-            self.slider.setMinimum(0)
+            self.setMinimum(0)
 
         if max_val is not None:
-            self.slider.setMaximum(int(max_val * self._step))
+            self.setMaximum(int(max_val * self._step))
         else:
-            self.slider.setMaximum(10 * self._step)
+            self.setMaximum(10 * self._step)
 
         self.setup_chunk_widget()
-        self.slider.valueChanged.connect(self.value_changed)
+        self.valueChanged.connect(self.value_changed)
 
     def get_value(self):
-        return self.slider.value() / self._step
+        return self.value() / self._step
 
     def set_value(self, value):
-        return self.slider.setValue(value * self._step)
+        return self.setValue(value * self._step)
 
     def set_param_layout(self, layout_flags: chunk.ChunkFlags.LayoutFlags):
         is_horizontal = chunk.ChunkFlags.LayoutFlags.HORIZONTAL in layout_flags
 
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
-        self.slider.setOrientation(orient)
+        self.setOrientation(orient)
 
     def value_changed(self, value: int | float):
         if not self.param:
@@ -334,16 +324,32 @@ class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
         return widget
 
 
-class FormLabelWidget(QtWidgets.QLabel):
-    def __init__(self, text, parent=None):
+class LabeledWidget(QtWidgets.QWidget):
+    def __init__(self, widget, parent=None):
         super().__init__(parent)
 
-        self.setText(text)
+        self.vlayout = QtWidgets.QVBoxLayout()
+        self.vlayout.setContentsMargins(0, 0, 0, 0)
+        self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
-        self.setMaximumWidth(100)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Minimum)
+        self.widget: ChunkParamWidgetBase = widget
+        self.label = QtWidgets.QLabel()
 
-        self.setMargin(3)
+        self.vlayout.addWidget(self.label)
+        self.vlayout.addWidget(widget)
+        self.setLayout(self.vlayout)
+
+    def update_label(self, text):
+        self.label.setText(text)
+
+
+class ListEntryWidget(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.vlayout = QtWidgets.QVBoxLayout()
+
+        self.setLayout(self.vlayout)
 
 
 class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
@@ -363,12 +369,64 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
         self._animation_value = 0
         super().__init__(group, parent=parent)
 
+    def build_collapsable(self):
+        self.content = QtWidgets.QFrame()
+        self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
+
+        self.content_layout = QtWidgets.QFormLayout()
+        # self.content_layout = QtWidgets.QVBoxLayout()
+        # self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
+        # self.content_layout.setContentsMargins(10, 10, 10, 10)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        # self.content_layout.setHorizontalSpacing(0)
+        self.content.setLayout(self.content_layout)
+
+        # Setup minimize/maximize button
+        self.minimize_button = QtWidgets.QToolButton()
+        self.minimize_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.minimize_button.setIconSize(QtCore.QSize(6, 6))
+        self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
+
+        self.list_expand_button = QtWidgets.QToolButton()
+        self.list_expand_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.list_expand_button.setIconSize(QtCore.QSize(6, 6))
+        self.list_expand_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum
+        )
+        self.list_expand_button.setHidden(True)
+
+        # Used when collapsable
+        self.toggle_anim = QtCore.QPropertyAnimation(self, b"animation_value")
+        self.toggle_anim.setStartValue(0)
+        self.toggle_anim.setEndValue(self.animation_duration)
+
+        self.__layout__ = QtWidgets.QVBoxLayout()
+        self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.__layout__.setContentsMargins(2, 2, 10, 10)
+        self.__layout__.setSpacing(0)
+
+        self.__layout__.addWidget(self.minimize_button)
+        self.__layout__.addWidget(self.list_expand_button)
+        self.__layout__.addWidget(self.content)
+
+        self.setLayout(self.__layout__)
+
     def delete_self(self):
         self.setParent(None)
         self.deleteLater()
 
     def remove_widget(self, widget: QtWidgets.QWidget):
-        self.content_layout.removeRow(widget)  # type: ignore
+        count = self.content_layout.rowCount()
+
+        for i in reversed(range(count)):
+            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
+            iw = item.widget()
+
+            if isinstance(iw, LabeledWidget) and iw.widget == widget:
+                self.content_layout.removeRow(i)
+
+            elif iw == widget:
+                self.content_layout.removeRow(i)
 
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
@@ -384,38 +442,6 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
 
         h = self.content_layout.sizeHint().height()
         self.content.setFixedHeight(h * scale)
-
-    def build_collapsable(self):
-        self.content = QtWidgets.QFrame()
-        self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
-
-        self.content_layout = QtWidgets.QFormLayout()
-        self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
-        # self.content_layout.setContentsMargins(10, 10, 10, 10)
-        self.content_layout.setContentsMargins(0, 0, 0, 0)
-        self.content_layout.setHorizontalSpacing(0)
-        self.content.setLayout(self.content_layout)
-
-        # Setup minimize/maximize button
-        self.minimize_button = QtWidgets.QToolButton()
-        self.minimize_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.minimize_button.setIconSize(QtCore.QSize(6, 6))
-        self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
-
-        # Used when collapsable
-        self.toggle_anim = QtCore.QPropertyAnimation(self, b"animation_value")
-        self.toggle_anim.setStartValue(0)
-        self.toggle_anim.setEndValue(self.animation_duration)
-
-        self.__layout__ = QtWidgets.QVBoxLayout()
-        self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.__layout__.setContentsMargins(2, 2, 10, 10)
-        self.__layout__.setSpacing(0)
-
-        self.__layout__.addWidget(self.minimize_button)
-        self.__layout__.addWidget(self.content)
-
-        self.setLayout(self.__layout__)
 
     def animation_finished(self):
         """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
@@ -450,6 +476,38 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
         else:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
 
+        if chunk.ChunkFlags.GroupFlags.LIST in self.group.flags:
+            self.list_expand_button.setHidden(False)
+
+            # pixmapi = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical
+            icon = QtGui.QIcon(str(chunk_resources.get_icon("add")))
+            self.list_expand_button.setIcon(icon)
+            self.list_expand_button.setIconSize(QtCore.QSize(20, 20))
+            self.list_expand_button.clicked.connect(self.list_expand)
+
+            # del_icon = QtGui.QIcon(str(chunk_resources.get_icon("remove")))
+
+            # for i in range(self.content_layout.rowCount()):
+            #     item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
+            #     label = self.content_layout.labelForField(item.widget())
+
+            #     if label is None:
+
+            #         del_btn = QtWidgets.QToolButton()
+            #         del_btn.setIcon(del_icon)
+            #         del_btn.setIconSize(QtCore.QSize(15, 15))
+
+            #         self.content_layout.setWidget(
+            #             i, QtWidgets.QFormLayout.ItemRole.LabelRole, del_btn
+            #         )
+            #         self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, item.widget())
+
+    def list_expand(self):
+        if not isinstance(self.group, chunk_core.ChunkListGroupBase):
+            return
+
+        self.group.size += 1
+
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
@@ -476,14 +534,64 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
         self.toggle_anim.setDirection(direction)
         self.toggle_anim.start()
 
-    def add_widget(self, widget: QtWidgets.QWidget, label=None):
+    def add_widget(self, widget: QtWidgets.QWidget, lfield=None):
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
-        if label is None:
-            self.content_layout.addRow(widget)
-        else:
-            self.content_layout.addRow(label, widget)
 
-    def update_label(self, param: chunk_core.ChunkCommon, notice, sender: chunk_core.AttributeSender):
+        labeled = LabeledWidget(widget, self)
+        if lfield is not None:
+            labeled.update_label(lfield)
+
+        self.content_layout.addWidget(labeled)
+
+        if self.group.has_flag(ChunkFlags.GroupFlags.LIST):
+            del_icon = QtGui.QIcon(str(chunk_resources.get_icon("remove")))
+
+            i = self.content_layout.rowCount() - 1
+            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
+            lfield = self.content_layout.labelForField(item.widget())
+
+            if lfield is None:
+                del_btn = QtWidgets.QToolButton()
+                del_btn.setIcon(del_icon)
+                del_btn.setIconSize(QtCore.QSize(15, 15))
+                del_btn.clicked.connect(partial(self.remove_from_list_group, widget))
+
+                self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.LabelRole, del_btn)
+                self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, item.widget())
+
+    # def add_list_widget(self, widget: QtWidgets.QWidget, label=None, list_index=0):
+    #     widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
+
+    #     labeled = LabeledWidget(widget, self)
+    #     if label is not None:
+    #         labeled.update_label(label)
+
+
+    #     # self.content_layout.addWidget(labeled)
+
+    #     if self.group.has_flag(ChunkFlags.GroupFlags.LIST):
+    #         del_icon = QtGui.QIcon(str(chunk_resources.get_icon("remove")))
+
+    #         i = self.content_layout.rowCount() - 1
+    #         item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
+    #         lfield = self.content_layout.labelForField(item.widget())
+
+    #         if lfield is None:
+    #             del_btn = QtWidgets.QToolButton()
+    #             del_btn.setIcon(del_icon)
+    #             del_btn.setIconSize(QtCore.QSize(15, 15))
+    #             del_btn.clicked.connect(partial(self.remove_from_list_group, widget))
+
+    #             self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.LabelRole, del_btn)
+    #             self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, item.widget())
+
+    def remove_from_list_group(self, widget):
+        if isinstance(widget, chunk_core.ChunkContainerWidgetBase):
+            widget.group.request_delete()
+        elif isinstance(widget, chunk_core.ChunkParamWidgetBase):
+            widget.param.request_delete()
+
+    def update_label(self, notice, sender: chunk_core.AttributeSender):
         """
         When a param name, label or flag is changed, this will correct the label in the FormLayout.
         If LABELED was unset, then remove the label and set the widget role to SpanningRole
@@ -495,30 +603,34 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
             notice (Tf.Notice): The notice that was sent
             sender (chunk_core.AttributeSender): The attribute that changed
         """
+
+        param = sender.get_owner()
+        if not param or not isinstance(param, chunk_core.ChunkCommon):
+            return
+
         labeled = param.has_flag(ChunkFlags.ParamFlags.LABELED)
+        if not labeled:
+            return
 
-        for i in range(self.content_layout.rowCount()):
-            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-            if not item:
-                item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.SpanningRole)
-
+        for i in range(self.content_layout.count()):
+            item = self.content_layout.itemAt(i)
             if not item:
                 continue
 
             w = item.widget()
-            if isinstance(w, ChunkParamWidgetBase) and w.param == param:
-                label = self.content_layout.labelForField(w)
+            if isinstance(w, LabeledWidget):
+                if not isinstance(w.widget, ChunkParamWidgetBase):
+                    continue
 
-                if isinstance(label, QtWidgets.QLabel) and labeled:
-                    label.setText(param.get_label())
-                elif label is not None and not labeled:
-                    self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.SpanningRole, w)
-                    label.deleteLater()
-                elif label is None and labeled:
-                    self.content_layout.setWidget(
-                        i, QtWidgets.QFormLayout.ItemRole.LabelRole, FormLabelWidget(param.get_label(), w)
-                    )
-                    self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, w)
+                if isinstance(w.widget.param, chunk_core.ProxyParam):
+                    if not w.widget.param._param_ref == param:
+                        continue
+                else:
+                    if not w.widget.param == param:
+                        continue
+
+                if labeled:
+                    w.update_label(param.get_label())
 
 
 class ChunkWidget(ContainerWidget):
