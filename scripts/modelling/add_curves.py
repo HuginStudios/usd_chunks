@@ -2,6 +2,7 @@ from pxr import Usd, UsdGeom, Sdf
 from usd_chunks import chunk, chunk_registry, chunk_notice
 
 import numpy as np
+import usd_chunks.chunk_core
 
 
 def build_hair(stage, target, count=15, seg=2, length=0.2, path="/curves", faces=None):
@@ -124,9 +125,9 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
 
     for g in groups:
         if g.name == selected:
-            g.unset_state(chunk.ChunkFlags.State.HIDDEN)
+            g.unset_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
         else:
-            g.set_state(chunk.ChunkFlags.State.HIDDEN)
+            g.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
 
 
 def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
@@ -137,7 +138,7 @@ def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
 
     layer = owner.get_edit_context()
 
-    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+    if owner.has_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN):
         chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
         return
 
@@ -170,7 +171,7 @@ def main():
             chunk.Slider("length", default_value=1),
         ]
     )
-    curly_group.set_state(chunk.ChunkFlags.State.HIDDEN)
+    curly_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
     curly_group.add_callback(hair_changed)
 
     chunk_api = chunk.Chunk("Add Hair")

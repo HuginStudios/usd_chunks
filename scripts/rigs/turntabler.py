@@ -4,6 +4,8 @@ from scripts.modelling import add_mesh
 
 import math
 
+import usd_chunks.chunk_core
+
 
 def apply(owner, notice, sender):
     layer = owner.get_edit_context()
@@ -73,8 +75,8 @@ def num_lights_changed(owner: chunk.Group, notice, sender):
 
             # Create the container group for the light parameters
             light_grp = chunk.Group(f"light{i}")
-            light_grp.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
-            light_grp.set_state(chunk.ChunkFlags.State.COLLAPSED)
+            light_grp.set_flag(usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE)
+            light_grp.set_state(usd_chunks.chunk_core.ChunkFlags.State.COLLAPSED)
 
             light_grp.add_params([intens_param, pos_param, color_param])
             light_pos_grp.add_param(light_grp)
@@ -207,13 +209,13 @@ def main():
     model_grp = build_model_group(turntabler)
     camera_grp = build_camera_group(turntabler)
 
-    light_grp.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
-    model_grp.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
-    camera_grp.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
+    light_grp.set_flag(usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE)
+    model_grp.set_flag(usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE)
+    camera_grp.set_flag(usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE)
 
-    light_grp.set_state(chunk.ChunkFlags.State.COLLAPSED)
-    model_grp.set_state(chunk.ChunkFlags.State.COLLAPSED)
-    camera_grp.set_state(chunk.ChunkFlags.State.COLLAPSED)
+    light_grp.set_state(usd_chunks.chunk_core.ChunkFlags.State.COLLAPSED)
+    model_grp.set_state(usd_chunks.chunk_core.ChunkFlags.State.COLLAPSED)
+    camera_grp.set_state(usd_chunks.chunk_core.ChunkFlags.State.COLLAPSED)
 
     apply_btn = chunk.Button("apply")
 

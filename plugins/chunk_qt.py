@@ -4,17 +4,20 @@ from typing import Any, Dict, Optional, List
 from pxr import Tf
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources
-from usd_chunks.chunk_core import ChunkFlags, ChunkParamWidgetBase
+import usd_chunks.chunk_flags
+from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
 
 from functools import partial
+
+from usd_chunks.chunk_flags import ChunkFlags
 
 
 class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
     def __init__(self, param: chunk.Slider):
         super().__init__(param)
 
-        self._step = 1000 if chunk.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
+        self._step = 1000 if usd_chunks.chunk_flags.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
 
         min_val = param.min_value
         max_val = param.max_value
@@ -38,8 +41,8 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
     def set_value(self, value):
         return self.setValue(value * self._step)
 
-    def set_param_layout(self, layout_flags: chunk.ChunkFlags.LayoutFlags):
-        is_horizontal = chunk.ChunkFlags.LayoutFlags.HORIZONTAL in layout_flags
+    def set_param_layout(self, layout_flags: usd_chunks.chunk_flags.ChunkFlags.LayoutFlags):
+        is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL in layout_flags
 
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
@@ -276,7 +279,7 @@ class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
     def __init__(self, param: chunk.Separator):
         super().__init__(param)
 
-        is_horizontal = chunk.ChunkFlags.LayoutFlags.HORIZONTAL in param.layout
+        is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL in param.layout
         shape = QtWidgets.QFrame.Shape.HLine if is_horizontal else QtWidgets.QFrame.Shape.VLine
         self.setFrameShape(shape)
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
@@ -467,40 +470,26 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
             # The layout should update min and max size. When Collapsable, this is handled in animation_finished, as collapsed groups should set NoConstraint
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
 
-        if chunk.ChunkFlags.GroupFlags.LABELED in self.group.flags:
+        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
             self.minimize_button.setText(self.group.get_label())
         else:
             self.minimize_button.setText("")
-        if chunk.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
+        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
             self.content.setLineWidth(2)
         else:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
 
-        if chunk.ChunkFlags.GroupFlags.LIST in self.group.flags:
+        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LIST in self.group.flags:
             self.list_expand_button.setHidden(False)
 
-            # pixmapi = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical
             icon = QtGui.QIcon(str(chunk_resources.get_icon("add")))
             self.list_expand_button.setIcon(icon)
             self.list_expand_button.setIconSize(QtCore.QSize(20, 20))
             self.list_expand_button.clicked.connect(self.list_expand)
 
-            # del_icon = QtGui.QIcon(str(chunk_resources.get_icon("remove")))
-
-            # for i in range(self.content_layout.rowCount()):
-            #     item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-            #     label = self.content_layout.labelForField(item.widget())
-
-            #     if label is None:
-
-            #         del_btn = QtWidgets.QToolButton()
-            #         del_btn.setIcon(del_icon)
-            #         del_btn.setIconSize(QtCore.QSize(15, 15))
-
-            #         self.content_layout.setWidget(
-            #             i, QtWidgets.QFormLayout.ItemRole.LabelRole, del_btn
-            #         )
-            #         self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, item.widget())
+    def update_label(self, text: str):
+        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
+            self.minimize_button.setText(text)
 
     def list_expand(self):
         if not isinstance(self.group, chunk_core.ChunkListGroupBase):
@@ -559,39 +548,22 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
                 self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.LabelRole, del_btn)
                 self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, item.widget())
 
-    # def add_list_widget(self, widget: QtWidgets.QWidget, label=None, list_index=0):
-    #     widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
+    def remove_from_list_group(self, widget: QtWidgets.QWidget):
 
-    #     labeled = LabeledWidget(widget, self)
-    #     if label is not None:
-    #         labeled.update_label(label)
+        if isinstance(self.group, chunk_core.ChunkListGroupBase):
+            for i in range(self.content_layout.rowCount()):
+                item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
+                iw = item.widget()
+                if isinstance(iw, LabeledWidget) and iw.widget == widget:
+                    self.group.remove_index(i)
 
-
-    #     # self.content_layout.addWidget(labeled)
-
-    #     if self.group.has_flag(ChunkFlags.GroupFlags.LIST):
-    #         del_icon = QtGui.QIcon(str(chunk_resources.get_icon("remove")))
-
-    #         i = self.content_layout.rowCount() - 1
-    #         item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-    #         lfield = self.content_layout.labelForField(item.widget())
-
-    #         if lfield is None:
-    #             del_btn = QtWidgets.QToolButton()
-    #             del_btn.setIcon(del_icon)
-    #             del_btn.setIconSize(QtCore.QSize(15, 15))
-    #             del_btn.clicked.connect(partial(self.remove_from_list_group, widget))
-
-    #             self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.LabelRole, del_btn)
-    #             self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, item.widget())
-
-    def remove_from_list_group(self, widget):
-        if isinstance(widget, chunk_core.ChunkContainerWidgetBase):
+        elif isinstance(widget, chunk_core.ChunkContainerWidgetBase):
             widget.group.request_delete()
         elif isinstance(widget, chunk_core.ChunkParamWidgetBase):
             widget.param.request_delete()
+        self.remove_widget(widget)
 
-    def update_label(self, notice, sender: chunk_core.AttributeSender):
+    def update_param_label(self, notice, sender: chunk_core.AttributeSender):
         """
         When a param name, label or flag is changed, this will correct the label in the FormLayout.
         If LABELED was unset, then remove the label and set the widget role to SpanningRole

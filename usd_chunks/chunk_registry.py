@@ -11,7 +11,7 @@ myChunk = reg.get_chunk("my_chunk")
 """
 
 from types import ModuleType
-from typing import Iterable, Optional, Set, Any, Dict
+from typing import Iterable, Optional, Set, Any, Dict, TYPE_CHECKING
 from importlib import util
 
 import glob
@@ -21,9 +21,12 @@ import sys
 
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk
 from usd_chunks.chunk_notice import ChunkNoticeAlias, RegistrySingleton, SceneSender, send_notice, NoticeConnection
-from usd_chunks.chunk_core import ChunkConfig, ChunkCommon, ChunkHash, ChunkBase
+from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks import chunk
+
+if TYPE_CHECKING:
+    from usd_chunks.chunk_core import ChunkConfig, ChunkCommon, ChunkHash
 
 from timeit import default_timer as timer
 
@@ -302,7 +305,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         mod.load()
         return True
-        
 
     def unload_chunk_module(self, mod: ChunkModule):
         """
@@ -344,7 +346,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             return None
         return self.registered_modules[module_name]
 
-    def get_chunk(self, name: str) -> chunk.Chunk | None:
+    def get_chunk(self, name: str) -> "chunk.Chunk | None":
         """Get a loaded chunk object in the registry
 
         Args:
@@ -366,7 +368,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 self.load_module(mod)
 
 
-
 class ChunkLayerManager(metaclass=RegistrySingleton):
     """
     A singleton class for managing the chunk layers. All chunks will be associated with a layer, on to
@@ -378,8 +379,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         scene (SceneSender) : A handle to the scene for stage access
     """
 
-    chunk_layers: Dict[ChunkHash, Sdf.Layer]
-    stage: Optional[Usd.Stage]
+    # chunk_layers: Dict[ChunkHash, Sdf.Layer]
+    # stage: Optional[Usd.Stage]
 
     def initialize(self, stage: Usd.Stage):
         """
@@ -399,14 +400,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         self._flags_listener = NoticeConnection(self._flags_changed, ChunkNoticeAlias.STATE_CHANGED, globally=True)
 
-        self.chunk_layers = {}
+        self.chunk_layers: Dict[ChunkHash, Sdf.Layer] = {}
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
-        self.stage = stage
-
-    # @property
-    # def stage(self):
-    #     return ChunkRegistry().scene.get_stage()
+        self.stage: Usd.Stage = stage
 
     def get_root_layer(self) -> Sdf.Layer:
         """
@@ -423,7 +420,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             raise AttributeError("Stage is not initialized")
         return self.stage.GetSessionLayer()
 
-    def get_layer(self, c: ChunkHash) -> Sdf.Layer | None:
+    def get_layer(self, c: "ChunkHash") -> Sdf.Layer | None:
         """
         Get a layer associated with the a chunk
 
@@ -436,7 +433,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
         return self.chunk_layers.get(c)
 
-    def get_or_create_layer(self, c: ChunkCommon) -> Sdf.Layer | None:
+    def get_or_create_layer(self, c: "ChunkCommon") -> Sdf.Layer | None:
         """
         Get a layer similarly to get_layer(). Will create a new one if the layer does
         not already exists
@@ -453,7 +450,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
 
         if not self.stage:
-            raise AttributeError("ChunkLayerManager stage is None. Can't open layer")
+            raise AttributeError("ChunkLayerManager stage is not initialized. Can't open layer")
 
         layer = self.get_layer(c)
         if not layer:
@@ -461,10 +458,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 return None
 
             layer = self.add_layer(self.get_root_layer(), c)
-        
+
         return layer
 
-    def is_muted(self, c: ChunkHash) -> bool:
+    def is_muted(self, c: "ChunkHash") -> bool:
         """
         Check if a chunk layer is muted
 
@@ -479,7 +476,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return True
         return False
 
-    def add_layer(self, target_layer: Sdf.Layer, c: ChunkCommon) -> Sdf.Layer:
+    def add_layer(self, target_layer: Sdf.Layer, c: "ChunkCommon") -> Sdf.Layer:
         """
         Add a layer to the stage and add a mapping from chunk c to the new layer.
 
@@ -502,7 +499,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def clear_all_layers(self):
         for c, lay in self.chunk_layers.items():
             self.clear_layer(lay.identifier)
-        
+
         sublayer_paths = self.get_root_layer().subLayerPaths.copy()
 
         for i, sublayer in reversed(list(enumerate(sublayer_paths))):
@@ -556,13 +553,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         stage = notice.GetStage()
         self.stage = stage
 
-    def _chunk_loaded(self, notice, sender: chunk.Chunk):
+    def _chunk_loaded(self, notice, sender: "chunk.Chunk"):
         if not self.stage:
             return
 
         self.add_layer(self.get_root_layer(), sender)
 
-    def _chunk_unloaded(self, notice, sender: chunk.Chunk):
+    def _chunk_unloaded(self, notice, sender: "chunk.Chunk"):
         if not self.stage:
             return
 
@@ -580,7 +577,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
     def _flags_changed(self, notice, sender):
         c = sender
-        if not isinstance(c, ChunkBase):
+        if not isinstance(c, chunk.Chunk):
             return
 
         if not self.stage:
@@ -593,7 +590,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if layer is None:
             return
 
-        if c.has_state(chunk.ChunkFlags.State.DISABLED):
+        if c.has_state(ChunkFlags.State.DISABLED):
             layer.SetMuted(True)
         elif self.is_muted(c):
             layer.SetMuted(False)

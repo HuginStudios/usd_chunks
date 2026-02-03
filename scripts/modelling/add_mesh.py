@@ -7,6 +7,8 @@ from enum import IntEnum
 
 from typing import Optional
 
+import usd_chunks.chunk_core
+
 
 class Topo(IntEnum):
     TRIS = 3
@@ -280,9 +282,9 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
 
     for g in groups:
         if g.name == selected:
-            g.unset_state(chunk.ChunkFlags.State.HIDDEN)
+            g.unset_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
         else:
-            g.set_state(chunk.ChunkFlags.State.HIDDEN)
+            g.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
 
 
 def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
@@ -353,7 +355,7 @@ def cube_changed(owner: chunk.Group, notice, sender):
     if not layer:
         return None
 
-    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+    if owner.has_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN):
         chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
 
         return
@@ -388,7 +390,7 @@ def tube_changed(owner: chunk.Group, notice, sender):
     if not layer:
         return None
 
-    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+    if owner.has_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN):
         chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
         return
 
@@ -411,7 +413,7 @@ def grid_changed(owner: chunk.Group, notice, sender):
 
     layer = owner.get_edit_context()
 
-    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+    if owner.has_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN):
         chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
 
         return
@@ -453,7 +455,7 @@ def main():
             chunk.Slider("depth", default_value=1),
         ]
     )
-    cube_group.set_state(chunk.ChunkFlags.State.HIDDEN)
+    cube_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
     cube_group.add_callback(cube_changed)
 
     tube_group = chunk.Group("tube", "Tube")
@@ -466,7 +468,7 @@ def main():
             chunk.Checkbox("caps", default_value=False),
         ]
     )
-    tube_group.set_state(chunk.ChunkFlags.State.HIDDEN)
+    tube_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
     tube_group.add_callback(tube_changed)
 
     grid_group = chunk.Group("grid", "Grid")
@@ -479,7 +481,7 @@ def main():
             chunk.Menu("topo", default_value="quads", menu_items=["tris", "quads"]),
         ]
     )
-    grid_group.set_state(chunk.ChunkFlags.State.HIDDEN)
+    grid_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
     grid_group.add_callback(grid_changed)
 
     chunk_api = chunk.Chunk("Add Mesh")

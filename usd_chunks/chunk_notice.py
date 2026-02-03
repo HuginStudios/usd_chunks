@@ -21,7 +21,6 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 
 from pxr import Tf, Usd, Sdf
 
-# from enum import IntEnum, auto
 from enum import IntEnum, auto
 from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator
 from typing_extensions import Self

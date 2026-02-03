@@ -2,6 +2,8 @@ from usd_chunks import chunk, chunk_core, chunk_notice, chunk_registry
 
 from functools import wraps
 
+import usd_chunks.chunk_flags
+
 
 def nice_print(func):
     @wraps(func)
@@ -156,13 +158,13 @@ def main():
 
     # Make the group collapsable and labeled. Flags and states can be combined with bitwise operator:
     #   & (AND), | (OR), ^ (XOR), ~ (NOT)
-    sliderGroup.set_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.FRAMED)
+    sliderGroup.set_flag(usd_chunks.chunk_flags.ChunkFlags.GroupFlags.COLLAPSABLE | usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED)
 
     # Similarly, flags and states can be unset
     #   sliderGroup.unset_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
 
     # Sets the sliderGroup to collapsed by default.
-    sliderGroup.set_state(chunk.ChunkFlags.State.COLLAPSED)
+    sliderGroup.set_state(usd_chunks.chunk_flags.ChunkFlags.State.COLLAPSED)
 
     # Groups default layout flags are LABELED | FRAMED
     # Chunks default layout flags are LABELED | FRAMED | COLLAPSABLE
@@ -205,28 +207,26 @@ def main():
         updateLabel, listen_globally=True, notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED
     )
 
-    label_grp = chunk.Group("Group")
-    label_grp.add_param(label)
 
+    # Example of a list group. The list groups params are proxied 'size' times. Modifying the parameters of the listGroup will automatically
+    # modify all proxies, with the exception of the 'value' attribute
     listSlider = chunk.Slider("listSlider")
     listSlider.add_callback(paramValueChanged)
 
     nestedListGroup = chunk.Group("nestedGroup")
     nestedListGroup.add_params([listSlider])
 
-    # listGroup = chunk.Group("listGroup")
-    # listGroup.add_params([nestedListGroup, chunk_core.ProxyParam(nestedListGroup)])
-
     listGroup = chunk.ListGroup("listGroup")
-    listGroup.add_params([nestedListGroup, listSlider.clone()])
+    listGroup.add_params([nestedListGroup])
     listGroup.size = 2
+    # listGroup.add_param(listSlider.clone())
 
-    # nestedListGroup.add_param(checkbox)
-    # listSlider.request_delete()
+    if p := listGroup.get_indexed_param(listSlider, 1):
+        p.value = 10
 
-    # A text edit is a parameter for editing strings
-    textEdit = chunk.LineEdit("list_name")
-    textEdit.add_callback(nameChanged)
+    # A text edit is a parameter for editing strings. In this case, the callback will rename the listSlider, showing how the proxies will update.
+    nameEdit = chunk.LineEdit("list_name")
+    nameEdit.add_callback(nameChanged)
 
     # A FileBrowser is a LineEdit with a button for launching a File Browser dialog. The filtering of file names
     # is done by appending all extensions to the pattern, so this would result in a filter:
@@ -236,7 +236,7 @@ def main():
         "line_edit",
         pattern="*",
         extensions=[".jpg", ".png", ".tif"],
-        flags=chunk.ChunkFlags.ParamFlags.FILE_EXISTING | chunk.ChunkFlags.ParamFlags.LABELED,
+        flags=usd_chunks.chunk_flags.ChunkFlags.ParamFlags.FILE_EXISTING | usd_chunks.chunk_flags.ChunkFlags.ParamFlags.LABELED,
     )
 
     # A simple menu
@@ -245,12 +245,11 @@ def main():
     # validation and revert to default value of menu_items[0]
 
     # A seperator holds no value, is just there for the UI.
-    sep = chunk.Separator(layout=chunk.ChunkFlags.LayoutFlags.HORIZONTAL)
+    sep = chunk.Separator(layout=usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL)
 
     # Create the actual chunk - this is in practice just a chunk.Group with some addiditional behaviour
     myChunk = chunk.Chunk("Hello World")
-    # myChunk.add_params([label, checkbox, button, sep, menu, fileBrowse, sliderGroup, sliderVec, textEdit, listGroup])
-    myChunk.add_params([textEdit, listGroup])
+    myChunk.add_params([label, checkbox, button, sep, menu, fileBrowse, sliderGroup, sliderVec, nameEdit, listGroup])
 
     # Add a callback. With no arguments, the callback will be called whenever any of tthe children on the chunk is changed
     myChunk.add_callback(chunkChanged)
@@ -259,15 +258,6 @@ def main():
     # myChunk.print_hierarchy()
 
     return myChunk
-
-
-# from usd_chunks import chunk_registry as reg
-# from usd_chunks import chunk
-# r = reg.ChunkRegistry()
-# c = r.get_chunk("HelloWorld")
-# p = c.get_param("test")
-# print(p)
-
 
 def config():
     return chunk.DefaulConfig(load=True, category=chunk.StandardCategory.EXAMPLES)

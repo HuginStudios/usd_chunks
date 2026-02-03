@@ -2,6 +2,8 @@ from usd_chunks import chunk, chunk_notice
 from typing import List
 from pxr import Usd
 
+import usd_chunks.chunk_core
+
 
 def build(myChunk: chunk.Chunk, signal, sender):
     for grp in myChunk.get_my_params():
@@ -24,14 +26,14 @@ def build(myChunk: chunk.Chunk, signal, sender):
                 continue
 
             if not isinstance(param, chunk.ChunkGroupBase):
-                param.set_flag(chunk.ChunkFlags.ParamFlags.LABELED)
+                param.set_flag(usd_chunks.chunk_core.ChunkFlags.ParamFlags.LABELED)
 
             ns = attr.GetNamespace()
             tgt_grp = prim_grp if not ns else groups.get(ns)
 
             if not tgt_grp:
                 tgt_grp = chunk.Group(
-                    ns, flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED
+                    ns, flags=usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | usd_chunks.chunk_core.ChunkFlags.GroupFlags.LABELED
                 )
                 prim_grp.add_param(tgt_grp)
                 groups[ns] = tgt_grp
@@ -46,14 +48,14 @@ def build(myChunk: chunk.Chunk, signal, sender):
                 continue
 
             if not isinstance(param, chunk.ChunkGroupBase):
-                param.set_flag(chunk.ChunkFlags.ParamFlags.LABELED)
+                param.set_flag(usd_chunks.chunk_core.ChunkFlags.ParamFlags.LABELED)
 
             ns = attr.GetNamespace()
             tgt_grp = prim_grp if not ns else groups.get(ns)
 
             if not tgt_grp:
                 tgt_grp = chunk.Group(
-                    ns, flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED
+                    ns, flags=usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | usd_chunks.chunk_core.ChunkFlags.GroupFlags.LABELED
                 )
                 prim_grp.add_param(tgt_grp)
                 groups[ns] = tgt_grp
