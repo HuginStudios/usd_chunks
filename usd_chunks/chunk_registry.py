@@ -11,7 +11,7 @@ myChunk = reg.get_chunk("my_chunk")
 """
 
 from types import ModuleType
-from typing import Iterable, Optional, Set, Any, Dict, TYPE_CHECKING
+from typing import Iterable, Optional, Set, Any, List, Dict, TYPE_CHECKING
 from importlib import util
 
 import glob
@@ -56,7 +56,7 @@ class ChunkModule:
         self.module_file = module_file
 
         self.loaded = False
-        self.loaded_chunk: Optional[chunk.Chunk] = None
+        self.loaded_chunks: Dict[str, chunk.Chunk] = {}
         self.config: ChunkConfig = chunk.DefaulConfig()
         self.config_listener: Optional[NoticeConnection] = None
 
@@ -69,23 +69,32 @@ class ChunkModule:
     def config_changed(self, notice, sender):
         pass
 
-    def unload(self):
+    def unload(self, chunk_name: Optional[str] = None):
         """
         Unload this module by deleting the associated chunk object
         """
-        if not self.loaded or not self.loaded_chunk:
+        if not self.loaded or len(self.loaded_chunks) == 0:
             return
 
-        self.loaded_chunk.request_delete()
-        self.loaded = False
+        if chunk_name is not None:
+            c = self.get_chunk(chunk_name)
+            if not c:
+                return
 
-        send_notice(
-            ChunkNoticeAlias.CHUNK_UNLOADED,
-            self.loaded_chunk,
-            data=self.loaded_chunk,
-        )
+            if len(self.loaded_chunks) == 1:
+                self.loaded = False
 
-        self.loaded_chunk = None
+            dc = self.loaded_chunks.pop(chunk_name)
+            dc.request_delete()
+            send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, dc, data=dc)
+
+        else:
+            self.loaded = False
+            for c in self.loaded_chunks.values():
+                c.request_delete()
+                send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, c, data=c)
+
+            self.loaded_chunks.clear()
 
     def load_config(self) -> bool:
         if hasattr(self.module, "config"):
@@ -98,9 +107,50 @@ class ChunkModule:
 
         return True
 
+    def holds_chunk(self, chunk_name: str) -> bool:
+        return chunk_name in self.loaded_chunks
+
+    def get_chunk(self, chunk_name: str) -> chunk.Chunk | None:
+        return self.loaded_chunks.get(chunk_name)
+
+    def _add_chunk(self, c: chunk.Chunk):
+        if not (isinstance(c, chunk.Chunk)):
+            print(f"main() in module: {self.module_name} does not return a Chunk object")
+            self.loaded = False
+            return False
+
+        if self.config:
+            c._config = self.config
+
+        if self.holds_chunk(c.name):
+            print(
+                f"Module {self.module_name} created chunks with duplicate names {c.name}. Will unload and replace old chunk with new"
+            )
+            self.unload()
+
+        if c.name in ChunkRegistry().get_chunk_names():
+            print(
+                f"Module {self.module_name} created chunk {c.name}. A chunk with this name is already registered. Will not load this module"
+            )
+            self.loaded = False
+            return False
+
+        self.loaded_chunks[c.name] = c
+
+        # try:
+        #     c.check_hierarchy()
+        # except Exception as e:
+        #     print(e)
+        #     self.loaded = False
+        #     return False
+
+        return True
+
     def load(self, func_name: str = "main") -> bool:
+        self.unload()
+
         if not hasattr(self.module, func_name):
-            print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
+            print(f"Function: {func_name} in module: {self.module_name} is not defined")
             self.loaded = False
             return False
 
@@ -115,31 +165,22 @@ class ChunkModule:
             self.loaded = False
             return False
 
-        if not (isinstance(retval, chunk.Chunk)):
-            print(f"Function: {func_name} in module: {self.module_name} does not return a Chunk object")
-            self.loaded = False
-            return False
+        try:
+            for c in retval:
+                if not self._add_chunk(c):
+                    return False
+        except TypeError:
+            if not self._add_chunk(c):
+                return False
 
-        # try:
-        #     retval.check_hierarchy()
-        # except Exception as e:
-        #     print(e)
-        #     self.loaded = False
-        #     return False
-
-        self.loaded_chunk = retval
         self.loaded = True
 
-        if self.config:
-            retval._config = self.config
+        msg = ""
+        for c in self.loaded_chunks.values():
+            send_notice(ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+            msg += f"   {c.name}\n"
 
-        send_notice(
-            ChunkNoticeAlias.CHUNK_LOADED,
-            self.loaded_chunk,
-            data=self.loaded_chunk,
-        )
-
-        print(f"Loaded Chunk {self.loaded_chunk.name}. Load took {end - start} seconds")
+        print(f"loaded module: {self.module_name}. Module created chunks:\n{msg}Load took {end - start} seconds")
         return True
 
     def should_load(self) -> bool:
@@ -165,6 +206,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         registered_directories (Set[str]) : A set of directories we have searched
         registered_modules (Dict[str, ChunkModule]) : A mapping between module names and modules
         scene (SceneSender) : An instance of the SceneSender for accesing the scene
+        plugin (str) : A string identifier of the currently loaded plugin
     """
 
     registered_directories: Set[str] = set()
@@ -172,25 +214,30 @@ class ChunkRegistry(metaclass=RegistrySingleton):
     scene: SceneSender
     plugin: str
 
-    def initialize(self, scene_sender: SceneSender, plugin: str) -> None:
+    initialized: bool = False
+
+    def initialize(self, scene_sender: SceneSender, plugin: str, unloaded: bool = False) -> None:
         """Initialize the FileReader with the working directory.
 
         Args:
             scene_sender (SceneSender): A SceneSender instance for access to the scene.
                 We hold a reference to it here in order to keep it alive
+            plugin (str): A string identifying the currently used plugin
+            unloaded (bool): If the modules should not be loaded
         """
 
         self.scene = scene_sender
         self.plugin = plugin
 
         self.register_chunk_environ_directories()
-        self.register_chunk_modules(self.registered_directories)
+        self.register_chunk_modules(self.registered_directories, unloaded)
 
         c = 0
         for mod in self.registered_modules.values():
             c += 1 if mod.loaded else 0
 
         print(f"Found {len(self.registered_modules)} chunks. Loaded {c}")
+        self.initialized = True
 
     def __repr__(self):
         """Return a string representation of the FileReader."""
@@ -232,7 +279,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         sys.path.append(chunk_dir)
         self.registered_directories.add(chunk_dir)
 
-    def register_chunk_modules(self, working_dirs: Iterable[str]):
+    def register_chunk_modules(self, working_dirs: Iterable[str], unloaded: bool = False):
         """Read and register Python files in the working directory.
 
         Args:
@@ -254,12 +301,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
                 mod = ChunkModule(module_name=module_name, module_file=module_path)
 
-                if self.load_module(mod):
+                if self.load_module(mod, not unloaded):
                     new_modules[mod.module_name] = mod
 
         self.registered_modules |= new_modules
 
-    def load_module(self, mod: ChunkModule):
+    def load_module(self, mod: ChunkModule, load_chunk=True):
         """
         Load the actual module and runs the main function
 
@@ -287,13 +334,15 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             # Only python files with a main functions are valid chunk entrypoints.
             return False
 
+        if not mod.load_config():
+            # Returning True because the module should be added to registered_modules
+            # Although not loaded
+            return True
+
         if module_filter := os.environ.get("USD_CHUNK_FILTER"):
             if mod.module_name not in module_filter:
                 mod.loaded = False
                 return True
-
-        if not mod.load_config():
-            return True
 
         if not mod.should_load():
             mod.loaded = False
@@ -303,7 +352,9 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             mod.loaded = False
             return False
 
-        mod.load()
+        if load_chunk:
+            mod.load()
+
         return True
 
     def unload_chunk_module(self, mod: ChunkModule):
@@ -325,9 +376,11 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         Args:
             chunk_name (str): The name of the chunk we wish to unload
         """
+
         for mod in self.registered_modules.values():
-            if mod.loaded_chunk and mod.loaded_chunk.name == chunk_name:
-                self.unload_chunk_module(mod)
+            if not mod.holds_chunk(chunk_name):
+                continue
+            mod.unload(chunk_name)
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
         """Get the ChunkModule object in the registry where module_name matches the
@@ -346,6 +399,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             return None
         return self.registered_modules[module_name]
 
+    def get_chunk_names(self) -> Set[str]:
+        res = set()
+        for mod in self.registered_modules.values():
+            res |= mod.loaded_chunks.keys()
+        return res
+
     def get_chunk(self, name: str) -> "chunk.Chunk | None":
         """Get a loaded chunk object in the registry
 
@@ -357,13 +416,14 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         """
 
         for mod in self.registered_modules.values():
-            if mod.loaded_chunk and mod.loaded_chunk.name == name:
-                return mod.loaded_chunk
+            if c := mod.get_chunk(name):
+                return c
         return None
 
     def reload_all(self):
-        for name, mod in self.registered_modules.items():
+        for mod in self.registered_modules.values():
             self.unload_chunk_module(mod)
+
             if not mod.loaded:
                 self.load_module(mod)
 
@@ -379,8 +439,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         scene (SceneSender) : A handle to the scene for stage access
     """
 
-    # chunk_layers: Dict[ChunkHash, Sdf.Layer]
-    # stage: Optional[Usd.Stage]
+    initialized: bool = False
 
     def initialize(self, stage: Usd.Stage):
         """
@@ -397,13 +456,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._load_listener = NoticeConnection(self._chunk_loaded, ChunkNoticeAlias.CHUNK_LOADED, globally=True)
         self._unload_listener = NoticeConnection(self._chunk_unloaded, ChunkNoticeAlias.CHUNK_UNLOADED, globally=True)
         self._delete_listener = NoticeConnection(self._chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True)
-
         self._flags_listener = NoticeConnection(self._flags_changed, ChunkNoticeAlias.STATE_CHANGED, globally=True)
 
         self.chunk_layers: Dict[ChunkHash, Sdf.Layer] = {}
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
         self.stage: Usd.Stage = stage
+        self.initialized = True
 
     def get_root_layer(self) -> Sdf.Layer:
         """
@@ -446,7 +505,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         Rasises:
             AttributeError: If the stage has not been initialized
-
         """
 
         if not self.stage:
@@ -543,11 +601,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.chunk_layers.clear()
 
         for mod in filter(lambda x: x.loaded, ChunkRegistry().registered_modules.values()):
-            c = mod.loaded_chunk
-            if not c:
-                continue
-
-            self.add_layer(self.get_root_layer(), c)
+            for c in mod.loaded_chunks.values():
+                self.add_layer(self.get_root_layer(), c)
 
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
         stage = notice.GetStage()

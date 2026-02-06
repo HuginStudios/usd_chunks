@@ -1,13 +1,11 @@
 from pxr import Usd, UsdGeom, Sdf, UsdShade
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk, chunk_core
 import itertools
 import numpy as np
 import os
 from enum import IntEnum
 
 from typing import Optional
-
-import usd_chunks.chunk_core
 
 
 class Topo(IntEnum):
@@ -282,9 +280,9 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
 
     for g in groups:
         if g.name == selected:
-            g.unset_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
+            g.unset_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
         else:
-            g.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
+            g.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
 
 
 def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
@@ -348,50 +346,34 @@ def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
 def cube_changed(owner: chunk.Group, notice, sender):
     stage = owner.get_stage()
 
+    print("UHEUHEUE")
     if not stage:
         return
 
-    layer = owner.get_edit_context()
-    if not layer:
-        return None
-
-    if owner.has_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN):
-        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
-
+    if owner.has_state(chunk_core.ChunkFlags.State.HIDDEN):
         return
 
     xseg = owner.get_param("dimx")
     yseg = owner.get_param("dimy")
     zseg = owner.get_param("dimz")
 
-    if not xseg or not yseg or not zseg:
-        return
-
     width = owner.get_param("width")
     height = owner.get_param("height")
     depth = owner.get_param("depth")
 
-    if not width or not height or not depth:
+    if not all([xseg, yseg, zseg, width, height, depth]):
         return
 
-    # with Usd.EditContext(stage, layer):
-    build_cube(
-        owner.get_stage(), "/cube", xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value
-    )
+    build_cube(stage, "/cube", xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
 
 
 def tube_changed(owner: chunk.Group, notice, sender):
+
+    if owner.has_state(chunk_core.ChunkFlags.State.HIDDEN):
+        return -1
+
     stage = owner.get_stage()
-
     if not stage:
-        return
-
-    layer = owner.get_edit_context()
-    if not layer:
-        return None
-
-    if owner.has_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN):
-        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
         return
 
     rows = owner.get_param("rows")
@@ -401,7 +383,9 @@ def tube_changed(owner: chunk.Group, notice, sender):
     height = owner.get_param("height1")
     caps = owner.get_param("caps")
 
-    # with Usd.EditContext(stage, layer):
+    if not all([rows, cols, radius, height, caps]):
+        return
+
     build_tube(owner.get_stage(), "/tube", rows.value, cols.value, radius.value, height.value, caps.value)
 
 
@@ -411,11 +395,7 @@ def grid_changed(owner: chunk.Group, notice, sender):
     if not stage:
         return
 
-    layer = owner.get_edit_context()
-
-    if owner.has_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN):
-        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
-
+    if owner.has_state(chunk_core.ChunkFlags.State.HIDDEN):
         return
 
     dimx = owner.get_param("dimx1")
@@ -425,16 +405,71 @@ def grid_changed(owner: chunk.Group, notice, sender):
     height = owner.get_param("height2")
     topo = owner.get_param("topo")
 
+    if not all([dimx, dimy, width, height, topo]):
+        return
+
     topo_val = Topo.QUAD
 
     if topo and topo.value == "tris":
         topo_val = Topo.TRIS
 
-    grid = build_plane(
-        owner.get_stage(), "/plane", dimx.value, dimy.value, width.value, height.value, topo=topo_val
-    )
+    grid = build_plane(owner.get_stage(), "/plane", dimx.value, dimy.value, width.value, height.value, topo=topo_val)
     if grid:
         add_texture(grid.GetPrim())
+
+
+from functools import wraps
+
+
+def nice_print(func):
+    @wraps(func)
+    def _wrapper(*args, **kwargs):
+        begin = f"{'-' * 10}* {func.__qualname__} *{'-' * 10}"
+        end = "-" * len(begin)
+
+        print(begin)
+        res = func(*args, **kwargs)
+        print(end, "\n")
+
+        return res
+
+    return _wrapper
+
+
+@nice_print
+def chunkChanged(owner, notice, sender):
+    # This works just as groupChanged, but is registered on a Chunk, so will only be sent on Chunk changes
+    def get_chunk_str(s):
+        res = "{}"
+        if isinstance(s, chunk_core.ProxyParam):
+            res = "Proxy[{}]"
+        if isinstance(s, chunk.Chunk):
+            return res.format("Chunk")
+
+        if isinstance(s, chunk.Group):
+            return res.format("Group")
+
+        if isinstance(s, chunk.Vector):
+            return res.format("Vector")
+
+        if isinstance(s, chunk_core.ChunkParamBase):
+            return res.format(s.evaluate_type().name)
+
+        if isinstance(s, chunk_core.AttributeSender):
+            return res.format("Attribute")
+
+    msg = f"Chunk Changed: {sender.name} -> {notice.__class__.__name__}"
+
+    step = 4
+    indent = step
+
+    for n, s in sender.iter_changes():
+        msg += "\n" + " " * indent + f"{get_chunk_str(s)}: {s.name} -> {n.__class__.__name__}"
+
+        if isinstance(s, chunk_core.AttributeSender):
+            msg += f": [New Value] = {s.value}"
+        indent += step
+    print(msg)
 
 
 def main():
@@ -455,7 +490,7 @@ def main():
             chunk.Slider("depth", default_value=1),
         ]
     )
-    cube_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
+    cube_group.set_state(chunk_core.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     cube_group.add_callback(cube_changed)
 
     tube_group = chunk.Group("tube", "Tube")
@@ -468,7 +503,7 @@ def main():
             chunk.Checkbox("caps", default_value=False),
         ]
     )
-    tube_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
+    tube_group.set_state(chunk_core.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     tube_group.add_callback(tube_changed)
 
     grid_group = chunk.Group("grid", "Grid")
@@ -481,14 +516,16 @@ def main():
             chunk.Menu("topo", default_value="quads", menu_items=["tris", "quads"]),
         ]
     )
-    grid_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
+    grid_group.set_state(chunk_core.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     grid_group.add_callback(grid_changed)
 
     chunk_api = chunk.Chunk("Add Mesh")
     chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
     chunk_api.add_callback(menu_changed, sender=menu)
+    chunk_api.add_callback(chunkChanged)
 
     return chunk_api
+
 
 def config():
     return chunk.DefaulConfig(category=chunk.StandardCategory.MODELLING)

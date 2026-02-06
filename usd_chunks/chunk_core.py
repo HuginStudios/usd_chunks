@@ -36,10 +36,8 @@ from typing import (
 )
 
 from typing_extensions import dataclass_transform, Self
-
 from abc import abstractmethod
 import attrs
-# from ._deps import attrs
 
 from attr import _make as attrMake
 from collections import ChainMap
@@ -49,23 +47,25 @@ import re
 import uuid
 import inspect
 
-from usd_chunks import chunk_notice, chunk_registry
+from usd_chunks import chunk_notice, chunk_registry, ATTRS_VERSION
 from usd_chunks.chunk_flags import ChunkFlags
 import weakref
 
 import os
 from pxr import Tf, Usd, Sdf
 
-
-################################
-# BASE CLASSES FOR UI ELEMENTS #
-################################
+_ATTRS_SUPPORT_CONVERTER = ATTRS_VERSION >= (24, 1)  # type: ignore
+_ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
 
 _T = TypeVar("_T")
 ValueT = TypeVar("ValueT")
 ParamT = TypeVar("ParamT", bound="ChunkParamBase")
 GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
 ChunkT = TypeVar("ChunkT", bound="ChunkCommon")
+
+################################
+# BASE CLASSES FOR UI ELEMENTS #
+################################
 
 
 class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
@@ -127,7 +127,8 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         value = self.param.value
         label = self.param.get_label()
 
-        self.set_value(value)
+        if value is not None:
+            self.set_value(value)
         self.set_label(label)
 
         if self.param.icon:
@@ -275,7 +276,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
     def __init__(self, group: GroupT, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self._group = weakref.ref(group, self._group_died)
+        self._group = weakref.ref(group)
 
         self._callbacks: List[chunk_notice.NoticeConnection] = []
 
@@ -634,33 +635,16 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         if not h:
             return
 
-        param = None
         if isinstance(h, ChunkParamBase):
-            for p in self.param_widgets.keys():
-                if p == h:
-                    param = p
-                    break
-            if not param:
-                return
-
-            if wid := self.param_widgets.get(param):
+            if wid := self.param_widgets.get(h):
                 self.remove_widget(wid)
-
-            del self.param_widgets[param]
+                del self.param_widgets[h]
 
         elif isinstance(h, ChunkContainerBase):
-            for p in self.group_widgets.keys():
-                if p == h:
-                    param = p
-                    break
-
-            if not param:
-                return
-
-            if wid := self.group_widgets.get(param):
+            if wid := self.group_widgets.get(h):
                 self.remove_widget(wid)
 
-            del self.group_widgets[param]
+                del self.group_widgets[h]
 
     def _state_changed(self, notice, sender):
         self.update_from_state()
@@ -696,19 +680,16 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
                     self.update_param_label,
                     chunk_notice.ChunkNoticeAlias.GROUP_CHANGED,
                     param.get_attribute_sender("name"),
-                    # owner=param,
                 ),
                 # chunk_notice.NoticeConnection(
                 #     self.update_label,
                 #     chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
                 #     param.get_attribute_sender("label"),
-                #     # owner=param,
                 # ),
                 # chunk_notice.NoticeConnection(
                 #     self.update_label,
                 #     chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED,
                 #     param.get_attribute_sender("flags"),
-                #     # owner=param,
                 # ),
             ]
         )
@@ -727,30 +708,25 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
         return widget
 
-    def _add_group_layout(self, group: "ChunkContainerBase", list_index=0) -> "ChunkContainerWidgetBase":
+    def _add_group_layout(self, group: "ChunkContainerBase") -> "ChunkContainerWidgetBase":
         container = self.group_widgets.get(group, None)
         if not container:
             container = self.__class__.__new__(self.__class__)
             container.__init__(group, parent=self)  # type: ignore
             self.add_widget(container)
-
             self.group_widgets[group] = container
+
         return container
 
     def _build_param_widgets(self, group: "ChunkContainerBase"):
-        # if isinstance(group, ChunkListGroupBase):
-        #     for i, container in enumerate(group._proxy_params):
-        #         for param in container.get_my_params():
-        #             self._add_param(param, i)
-        # self._add_list_param()
         for param in group.get_my_params():
             self._add_param(param)
 
-    def _add_param(self, param: "ChunkCommon", list_index=0):
+    def _add_param(self, param: "ChunkCommon"):
         if isinstance(param, ChunkContainerBase):
-            self._add_group_layout(param, list_index)
+            self._add_group_layout(param)
         elif isinstance(param, ChunkParamBase):
-            self._add_param_widget(param, list_index=list_index)
+            self._add_param_widget(param)
 
 
 #####################
@@ -781,19 +757,6 @@ def get_attr_index(cls, data):
     return idx
 
 
-def converter(fun):
-    if hasattr(attrs, "Converter"):
-        return attrs.Converter(
-            lambda val, self_, attr: self_._safe_convert(attr, val),  # type: ignore
-            takes_self=True,
-            takes_field=True,
-        )
-    return fun
-
-
-def _conv(*args, **kwargs):
-    print(*args, **kwargs)
-
 def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Attribute]):
     """Used as attrs.field_transformer for chunk attributes.
     Adds cls.validate_attr as a validation function to all attrs.fields if hasattr(cls, "validate_attr").
@@ -803,26 +766,38 @@ def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Att
     results = []
     for i, f in enumerate(fields):
         m = f.metadata
-        if m.get("convert", True) and hasattr(cls, "_safe_convert"):
-            conv = attrs.Converter(
+
+        validator = None
+        converter = None
+        if not _ATTRS_SUPPORT_CONVERTER and m.get("convert", True):
+            # from functools import partial
+            # The attrs.Converter is unavailable, so we can't bind it to _safe_convert. For this reason, we skip the
+            # converter and validator here, and instead invoke _safe_convert() and validate_attr() in our on_setattr
+            # hook
+            converter = attrs.converters.default_if_none(f.default)
+
+        elif m.get("convert", True) and hasattr(cls, "_safe_convert"):
+            # Converters was added for attrs 24.1.0. Houdini use 22.2. If the Converters are available, we should use them.
+            # create a converter that binds to the class instance's _safe_convert method
+            converter = attrs.Converter(  # type: ignore
                 lambda val, self_, attr: self_._safe_convert(attr, val),  # type: ignore
                 takes_self=True,
                 takes_field=True,
             )
-            # conv = converter(lambda val, self_, attr: self_._safe_convert(attr, val))
-            # conv = lambda val, self_, attr: self_._safe_convert(attr, val)
-            # conv = _conv
-            if f.converter:
-                conv = attrs.converters.pipe(conv, f.converter)
-        else:
-            conv = f.converter
 
+        # Add the validate_attr function as a validator
         if m.get("validate", True) and hasattr(cls, "validate_attr"):
-            valid = cls.validate_attr
-            if f.validator:
-                valid = attrs.validators.and_(valid, f.validator)
-        else:
-            valid = f.validator
+            validator = cls.validate_attr
+
+        if f.converter and converter:
+            converter = attrs.converters.pipe(converter, f.converter)
+        elif f.converter:
+            converter = f.converter
+
+        if f.validator and validator:
+            validator = attrs.validators.and_(validator, f.validator)
+        elif f.validator:
+            validator = f.validator
 
         # Find the first occurance of the attribute in the inheritance hierarchy, and use the index of the
         # first declaration. This is to match the constructor arguments of pylance
@@ -832,7 +807,7 @@ def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Att
         else:
             sort_keys[f.name] = i
 
-        results.append(f.evolve(converter=conv, validator=valid))
+        results.append(f.evolve(converter=converter, validator=validator))
 
     return sorted(results, key=lambda x: sort_keys[x.name])
 
@@ -849,46 +824,115 @@ class AttributesMetaclass(type):
 
     def __new__(cls, name, bases, attributes):
         # Construct new class and wrap it around attrs.define
+
         res = super().__new__(cls, name, bases, attributes)
+
+        setattr_override = None
+        if not _ATTRS_SUPPORT_CONVERTER:
+            # Because attrs.Converter was not supported until 24.1, we wrap the same functionality in
+            # a custom __setattr__. A couple of reasons for doing this:
+            #   - We need the 'self' argument to the converter function, which the old-style converters does not support.
+            #   - the on_setattr method is not called when first setting the attributes, meaning if we were to hook this to
+            #     on_setattr, the _safe_convert() function is not called when first initializing the values
+            #   - value_changed() should be called *after* __setattr__, which is seemingly not possible with on_setattr.
+
+            setattr_override = attrs.setters.NO_OP
+
+            def _wrapped_setattr(inst: "AttributesBase", name, value):
+                nonlocal res
+
+                if name not in attributes:
+                    return super(res, inst).__setattr__(name, value)
+
+                resval = value
+
+                # First run converters and validators
+                attrib = None
+                fields = attrs.fields(res)  # type: ignore
+                try:
+                    attrib = getattr(fields, name)
+                except Exception:
+                    return super(res, inst).__setattr__(name, resval)
+
+                # Run conversion
+                if attrib and attrib.metadata.get("convert", True):
+                    resval = inst._safe_convert(attrib, value)
+
+                old_value = None
+                try:
+                    old_value = getattr(inst, name)
+                except AttributeError:
+                    old_value = resval
+                super(res, inst).__setattr__(name, resval)
+
+                try:
+                    inst.value_changed(name, old_value, resval)
+                except AttributeError:
+                    pass
+
+            res.__setattr__ = _wrapped_setattr  # type: ignore
+
+        else:
+            setattr_override = attrs.setters.NO_OP
+
+            def _wrapped_setattr(inst: "AttributesBase", name, value):
+                nonlocal res
+                if name not in attributes:
+                    return super(res, inst).__setattr__(name, value)
+
+                try:
+                    old_value = getattr(inst, name)
+                except AttributeError:
+                    old_value = value
+
+                super(res, inst).__setattr__(name, value)
+
+                try:
+                    inst.value_changed(name, old_value, value)
+                except AttributeError:
+                    pass
+
+            res.__setattr__ = _wrapped_setattr  # type: ignore
+
         res = attrs.define(
-            res,
-            slots=False,
-            eq=False,
-            field_transformer=add_validate_and_convert,
+            res, slots=False, eq=False, field_transformer=add_validate_and_convert, on_setattr=setattr_override
         )
         return res
 
-    def __setattr__(cls, name: str, value: Any) -> None:
-        """Overrides the default __setattr__ for all cubclasses. This is to inject a custom callback AFTER attrs validation and conversion.
-        The injected callback is used to send attribute changed notices. This should happen after any value changes, which is otherwise
-        not supported by attrs when using os_setattr hooks (validation, convert).
+    # def __setattr__(cls, name: str, value: Any) -> None:
+    #     """Overrides the default __setattr__ for all cubclasses. This is to inject a custom callback AFTER attrs validation and conversion.
+    #     The injected callback is used to send attribute changed notices. This should happen after any value changes, which is otherwise
+    #     not supported by attrs when using os_setattr hooks (validation, convert).
 
-        Will look for value_changed functions on the cls, and if it exists, add a call to it after the attrs __setattr__ function was called
+    #     Will look for value_changed functions on the cls, and if it exists, add a call to it after the attrs __setattr__ function was called
 
-        Args:
-            name (str): The name of the attribute
-            value (Any): The new value of the attribute
-        """
+    #     Args:
+    #         name (str): The name of the attribute. Only using __setattr__
+    #         value (Any): The value of the attribute
+    #     """
 
-        if name == "__setattr__" and hasattr(cls, "value_changed"):
+    #     if name == "__setattr__" and hasattr(cls, "value_changed"):
+    #         def _setattr_wrapper(func: Callable, func1: Callable):
+    #             def _wrapped_setattr(inst, name, value):
+    #                 try:
+    #                     old_value = getattr(inst, name)
+    #                 except AttributeError:
+    #                     old_value = None
 
-            def _setattr_wrapper(func: Callable, func1: Callable):
-                def _wrapped_setattr(inst, name, value):
-                    try:
-                        old_value = getattr(inst, name)
-                    except AttributeError:
-                        old_value = None
+    #                 nonlocal func
+    #                 nonlocal func1
 
-                    # First call original attrs __setattr__
-                    func(inst, name, value)
-                    # Next call value_changed
-                    func1(inst, name, old_value, value)
+    #                 # First call original attrs __setattr__
+    #                 func(inst, name, value)
+    #                 # Next call value_changed
+    #                 func1(inst, name, old_value, value)
 
-                return _wrapped_setattr
+    #             return _wrapped_setattr
 
-            return super().__setattr__(name, _setattr_wrapper(value, getattr(cls, "value_changed")))
+    #         return super().__setattr__(name, _setattr_wrapper(value, getattr(cls, "value_changed")))
 
-        return super().__setattr__(name, value)
+    #     # Use native setattr
+    #     return super().__setattr__(name, value)
 
 
 class AttributeSender(chunk_notice.ChunkNoticePropagator):
@@ -970,7 +1014,16 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
                 return
             return owner.get_usd_prop()
 
-    def _copy_connection(self, conn: chunk_notice.NoticeConnection, src: chunk_notice.ChunkNoticePropagator):
+    def is_blocked(self) -> bool:
+        if owner := self.get_owner():
+            return owner.is_blocked()
+        return super().is_blocked()
+
+    def _copy_connection(
+        self,
+        conn: chunk_notice.NoticeConnection,
+        src: chunk_notice.ChunkNoticePropagator,
+    ):
         # Add connections to the copy by creating new NoticeConnection objects
         # Rewire the connection to the copy if conn.sender is the source of the copy (self)
         if meth := conn.get_method():
@@ -1173,13 +1226,15 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         return copied
 
     @classmethod
-    def inspect_class(cls) -> "attrs.ClassProps":
+    def inspect_class(cls) -> "attrs.ClassProps":  # type: ignore
         """Wrapper around attrs.inspect. Can be used to debug the class attributes
 
         Returns:
             attrs.ClassProps: ClassProps of this class
         """
-        return attrs.inspect(cls)
+        if not _ATTRS_SUPPORT_INSPECT:
+            return None  # type: ignore
+        return attrs.inspect(cls)  # type: ignore
 
     def get_attribute_sender(self, attribname: str) -> AttributeSender:
         """Get a sender for an attribute on this instance. The AttributeSender can be used to
@@ -1220,6 +1275,8 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             attrname (str): The name of the attribute that was changed
             value (Any): The new value
         """
+        if self.is_blocked():
+            return
 
         if old_value == value or attrname.startswith("_"):
             # No change was made, we should not send the notice
@@ -1298,7 +1355,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         Returns:
             Any: A valid, possibly converted, attribute value.
         """
-
         if val is None and attr.default:
             return attrs.converters.default_if_none(attr.default)(val)
         return val
@@ -1311,7 +1367,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         Returns:
             bool: If this value is supported by the Interface
         """
-
         # Attemp to cast to the type hint where applicable
         if attr.type:
             t = get_origin(attr.type)
@@ -1351,6 +1406,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
     """
 
     def __init__(self, param: "ChunkCommon", *args, **kwargs):
+        self.__hashable = HashVal()
         self.__param_ref = weakref.ref(param, self._param_died)
 
         if isinstance(param, ChunkParamBase):
@@ -1359,8 +1415,6 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         else:
             self._value = None
             self.__value_sender = None
-
-        self.__hashable = HashVal()
 
         super().__init__(*args, **kwargs)
         self._children = NameSyncedContainer()
@@ -1445,22 +1499,23 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         self._children.clear()
         self._children.set_owner(None)
 
-        owner = self.get_owner()
-        if owner and isinstance(owner, NameSyncedContainer):
-            # Owner is a NameSyncedContainer, pop it from the contiainer. When successfully removed,
-            # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
-            owner.send_removed(self)
+        if self.__param_ref():
+            # If the parameter is alive, we should send
+
+            owner = self.get_owner()
+            if owner and isinstance(owner, NameSyncedContainer):
+                # Owner is a NameSyncedContainer, pop it from the contiainer. When successfully removed,
+                # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
+                owner.send_removed(self)
 
         self.set_owner(None)
-
-        for i in self._connections:
-            i.disconnect()
-
-        self._connections.clear()
-        self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
+        self._conn_manager.clear()
 
     def send_self(self, alias: chunk_notice.ChunkNoticeAlias | None = None, data: Any = None) -> Tf.Notice | None:
         res = super().send_self(alias, data)
+        if not res:
+            return None
+
         if alias is None:
             alias = self.get_notice_alias()
 
@@ -1472,7 +1527,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
                 notice = notice_class(self.get_notice_data())
             else:
                 notice = notice_class()
-            for conn in self._param_ref._connections:
+            for conn in self._param_ref.get_connections():
                 conn.handle_callback(notice, self)
 
         return res
@@ -1505,7 +1560,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         try:
             if not name.endswith("_param_ref") and hasattr(self._param_ref, name):
                 return getattr(self._param_ref, name)
-        except ReferenceError:
+        except (ReferenceError, AttributeError):
             pass
 
         return super().__getattribute__(name)
@@ -1529,8 +1584,11 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             self.__value_sender.data_changed(None, None)
             return
 
-        if not name.endswith("_param_ref") and hasattr(self._param_ref, name):
-            return setattr(self._param_ref, name, value)
+        try:
+            if not name.endswith("_param_ref") and hasattr(self._param_ref, name):
+                return setattr(self._param_ref, name, value)
+        except (ReferenceError, AttributeError):
+            pass
 
         return super().__setattr__(name, value)
 
@@ -1594,6 +1652,11 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
     def get_notice_data(self) -> Self:
         return self
+
+    def is_blocked(self) -> bool:
+        if owner := self.get_owner():
+            return owner.is_blocked()
+        return super().is_blocked()
 
     def clear(self):
         """
@@ -1802,12 +1865,12 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
     def __delitem__(self, key: ChunkHash):
         if obj := self.get_param(key):
-            del self.names.maps[0][obj.name]
-            del self.params.maps[0][key]
-
             # send_removed uses obj.send_self(). For this reason, we need to call send_remove before set_owner(None),
             # as send_self() will propagate the notice to the owners
             self.send_removed(obj)
+
+            del self.names.maps[0][obj.name]
+            del self.params.maps[0][key]
 
             if obj.get_owner() == self:
                 obj.set_owner(None)
@@ -1956,6 +2019,13 @@ class ChunkCommon(AttributesBase):
 
         return f"{name}_{val}"
 
+    def is_blocked(self) -> bool:
+        v = self.has_state(ChunkFlags.State.DISABLED)
+        owner = self.get_owner()
+        if not owner:
+            return v
+        return v or owner.is_blocked()
+
     def get_hash(self) -> ChunkHash:
         """
         Implements the ChunkUsdLayerSupport protocol
@@ -1982,6 +2052,8 @@ class ChunkCommon(AttributesBase):
         Returns:
             Sdf.Layer: A layer for this object
         """
+        if not chunk_registry.ChunkLayerManager().initialized:
+            return
 
         if c := self.get_chunk():
             return chunk_registry.ChunkLayerManager().get_or_create_layer(c)
@@ -2158,13 +2230,10 @@ class ChunkCommon(AttributesBase):
             # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
             owner.pop(self)
 
-        self.set_owner(None)
-        for i in self._connections:
-            i.disconnect()
-
         self._connections.clear()
-        self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
+        self.set_owner(None)
+        self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
 class ChunkUsdAttributeSupport(AttributesBase):
     """
@@ -2190,7 +2259,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         my_notice = super().data_changed(notice, sender, propagated)
 
         stage = chunk_registry.ChunkRegistry().scene.get_stage()
-        if stage and (usd_attr := self.get_usd_prop()):
+        if stage and (usd_attr := self.get_usd_prop()) and not self.is_blocked():
             chunk_notice.send_notice(sender.get_notice_alias(), sender, usd_attr)
         return my_notice
 
@@ -2224,7 +2293,12 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice.data.Set(sender.value)
 
         elif isinstance(notice.data, Usd.Relationship):
-            targets = [Sdf.Path(x) for x in sender.value.split(",")]
+            # Currently just assume the string is a comma separated list of paths. This will likely
+            # be changed in the future for a more robust approach
+            paths = sender.value.split(",")
+            if not all([Sdf.Path.IsValidPathString(x) for x in paths]):
+                return
+            targets = [Sdf.Path(x) for x in paths]
             notice.data.SetTargets(targets)
 
     @abstractmethod
@@ -2677,14 +2751,13 @@ class ChunkGroupBase(ChunkContainerBase):
             raise ValueError("Chunks only support params inherited from ChunkCommon")
         return new_param
 
-    def resolve_new_param(self, param: ChunkT, reserved_names: Optional[set[str]] = None) -> Optional[ChunkT]:
+    def resolve_new_param(self, param: ChunkT) -> Optional[ChunkT]:
         """
         Return a copy of a param or group that does not conflict with other child on this group. Raises an error
         if a param with the same hash already exists
 
         Args:
             param (ChunkParamBase): A ChunkParam or ChunkContainer object to copy
-            reserved_names (List[str], optional): A list of reserved names which the copy will respect. Defaults to None.
 
         Returns:
             ChunkT: If the parameter was valid, return the parameter but with posibly a new name as to not fix name conflicts
@@ -2695,20 +2768,22 @@ class ChunkGroupBase(ChunkContainerBase):
         if param in self.get_params():
             raise ValueError(f"A duplicate for param {param.name} was found on container {self.name}")
 
-        if not reserved_names:
+        new_param = param
+
+        if not isinstance(param, ProxyParam):
             reserved_names = self.get_reserved_names()
 
-        new_name = self.get_valid_child_name(param, reserved_names)
-        reserved_names.add(new_name)
+            new_name = self.get_valid_child_name(param, reserved_names)
+            new_param.name = new_name
 
-        new_param = param
-        # new_param.name = new_name
+            reserved_names.add(new_name)
 
-        # if isinstance(new_param, ChunkGroupBase):
-        #     for p in new_param.get_params():
-        #         new_name = self.get_valid_child_name(p, reserved_names)
-        #         reserved_names.add(new_name)
-        #         p.name = new_name
+            if isinstance(new_param, ChunkGroupBase):
+                for p in new_param.get_params():
+                    if not isinstance(p, ProxyParam):
+                        new_name = self.get_valid_child_name(p, reserved_names)
+                        reserved_names.add(new_name)
+                        p.name = new_name
 
         return new_param
 
@@ -2733,7 +2808,6 @@ class ChunkGroupBase(ChunkContainerBase):
         """
 
         orig_name = param.name
-
         suffix = ""
 
         if m := re.match("(.*?)([0-9]+)$", orig_name):
@@ -2966,7 +3040,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
     ) -> Tf.Notice | None:
         my_notice = super().data_changed(notice, sender, propagated)
 
-        if isinstance(propagated, AttributeSender) and propagated.name == "value":
+        if isinstance(propagated, AttributeSender) and propagated.name == "value" and not self.is_blocked():
             if usd_attr := self.get_usd_prop():
                 chunk_notice.send_notice(propagated.get_notice_alias(), self.get_attribute_sender("value"), usd_attr)
 

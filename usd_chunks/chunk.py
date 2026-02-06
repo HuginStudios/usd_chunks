@@ -59,7 +59,7 @@ from typing import Any, List, Optional, Sequence, TYPE_CHECKING
 
 from pxr import Usd, Sdf
 
-from usd_chunks import chunk_notice
+from usd_chunks.chunk_notice import ChunkNoticeAlias
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
@@ -120,7 +120,7 @@ class Chunk(ChunkBase):
     )
 
     def get_notice_alias(self):
-        return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
+        return ChunkNoticeAlias.CHUNK_CHANGED
 
 
 class Group(ChunkGroupBase):
@@ -130,7 +130,7 @@ class Group(ChunkGroupBase):
     flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
     def get_notice_alias(self):
-        return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
+        return ChunkNoticeAlias.GROUP_CHANGED
 
 
 class ListGroup(ChunkListGroupBase):
@@ -142,7 +142,7 @@ class ListGroup(ChunkListGroupBase):
     )
 
     def get_notice_alias(self):
-        return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
+        return ChunkNoticeAlias.GROUP_CHANGED
 
 
 class Vector(ChunkVectorBase):
@@ -151,8 +151,8 @@ class Vector(ChunkVectorBase):
     # Override defaults
     flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
-    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
-        return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
+    def get_notice_alias(self) -> ChunkNoticeAlias:
+        return ChunkNoticeAlias.GROUP_CHANGED
 
 
 class Slider(ChunkParamBase[int | float]):
@@ -268,7 +268,6 @@ class Menu(ChunkParamBase[str]):
 
         return super().convert_attr(attr, val)
 
-
 class Button(ChunkParamBase):
     """
     A button parameter. Does not store any usable value. Should be used with callbacks only
@@ -377,27 +376,6 @@ class Custom(ChunkParamBase):
         return ChunkFlags.ParamType.CUSTOM
 
 
-_type_map = {
-    "float": Slider,
-    "int": (Spinbox, {"is_int": True}),
-    "token": Menu,
-    "bool": Checkbox,
-    "string": LineEdit,
-    "asset": FileBrowser,
-    "path": FileBrowser,
-    "float2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
-    "float3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-    "float4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
-    "vector3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-    "color3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-    "int2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
-    "int3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-    "int4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
-    "double2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
-    "double3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-    "double4": (Vector, {"param": Slider(), "suffixes": "xyw", "length": 4}),
-}
-
 
 def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
     """
@@ -413,11 +391,30 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
         ChunkCommon | None: If a mapping exists for the attr type, then returns a ChunkCommon object. Else None.
     """
     type_name = attr.GetTypeName()
+    type_map = {
+        "float": Slider,
+        "int": (Spinbox, {"is_int": True}),
+        "token": Menu,
+        "bool": Checkbox,
+        "string": LineEdit,
+        "asset": FileBrowser,
+        "path": FileBrowser,
+        "float2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
+        "float3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+        "float4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
+        "vector3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+        "color3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+        "int2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
+        "int3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+        "int4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
+        "double2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
+        "double3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+        "double4": (Vector, {"param": Slider(), "suffixes": "xyw", "length": 4}),
+    }
 
-    t = _type_map.get(str(type_name))
+    t = type_map.get(str(type_name))
     if not t:
         return None
-
     if isinstance(t, tuple):
         kwargs.update(t[1])
         return t[0].from_usd_attr(attr, *args, **kwargs)

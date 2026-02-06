@@ -12,5 +12,6 @@
                 }
             ]
         }
-    ]
+    ],
+    "hpath": "${USD_CHUNKS_HOME}/plugins/chunk_houdini"
 }

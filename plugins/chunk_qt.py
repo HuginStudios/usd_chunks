@@ -346,15 +346,6 @@ class LabeledWidget(QtWidgets.QWidget):
         self.label.setText(text)
 
 
-class ListEntryWidget(QtWidgets.QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self.vlayout = QtWidgets.QVBoxLayout()
-
-        self.setLayout(self.vlayout)
-
-
 class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
     """
     Chunk is a base class for creating UI components.
@@ -378,10 +369,9 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
 
         self.content_layout = QtWidgets.QFormLayout()
         # self.content_layout = QtWidgets.QVBoxLayout()
-        # self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
-        # self.content_layout.setContentsMargins(10, 10, 10, 10)
+        self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
-        # self.content_layout.setHorizontalSpacing(0)
+        self.content_layout.setHorizontalSpacing(0)
         self.content.setLayout(self.content_layout)
 
         # Setup minimize/maximize button
@@ -549,7 +539,6 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
                 self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, item.widget())
 
     def remove_from_list_group(self, widget: QtWidgets.QWidget):
-
         if isinstance(self.group, chunk_core.ChunkListGroupBase):
             for i in range(self.content_layout.rowCount()):
                 item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
@@ -798,13 +787,13 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         # """)
 
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        for module_name, mod in registry.registered_modules.items():
-            loaded_chunk = mod.loaded_chunk
-            if not loaded_chunk or not mod.loaded:
+        for mod in registry.registered_modules.values():
+            if not mod.loaded:
                 continue
 
-            if not self.add_chunk_widget(loaded_chunk):
-                continue
+            for c in mod.loaded_chunks.values():
+                if not self.add_chunk_widget(c):
+                    continue
 
         self.main_layout = QtWidgets.QVBoxLayout()
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -873,8 +862,9 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         self.content.setItem(row, 0, c0)
         self.content.setItem(row, 1, c1)
-        if mod.loaded_chunk:
-            c2 = QtWidgets.QTableWidgetItem(mod.loaded_chunk.name)
+        if mod.loaded_chunks:
+            c2 = QtWidgets.QTableWidgetItem()
+            c2.setText(", ".join([x.name for x in mod.loaded_chunks.values()]))
             self.content.setItem(row, 2, c2)
         c3 = QtWidgets.QTableWidgetItem(mod.config.category)
         self.content.setItem(row, 3, c3)

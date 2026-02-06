@@ -33,7 +33,9 @@ def build(myChunk: chunk.Chunk, signal, sender):
 
             if not tgt_grp:
                 tgt_grp = chunk.Group(
-                    ns, flags=usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | usd_chunks.chunk_core.ChunkFlags.GroupFlags.LABELED
+                    ns,
+                    flags=usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE
+                    | usd_chunks.chunk_core.ChunkFlags.GroupFlags.LABELED,
                 )
                 prim_grp.add_param(tgt_grp)
                 groups[ns] = tgt_grp
@@ -55,7 +57,9 @@ def build(myChunk: chunk.Chunk, signal, sender):
 
             if not tgt_grp:
                 tgt_grp = chunk.Group(
-                    ns, flags=usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | usd_chunks.chunk_core.ChunkFlags.GroupFlags.LABELED
+                    ns,
+                    flags=usd_chunks.chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE
+                    | usd_chunks.chunk_core.ChunkFlags.GroupFlags.LABELED,
                 )
                 prim_grp.add_param(tgt_grp)
                 groups[ns] = tgt_grp

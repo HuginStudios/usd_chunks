@@ -158,7 +158,9 @@ def main():
 
     # Make the group collapsable and labeled. Flags and states can be combined with bitwise operator:
     #   & (AND), | (OR), ^ (XOR), ~ (NOT)
-    sliderGroup.set_flag(usd_chunks.chunk_flags.ChunkFlags.GroupFlags.COLLAPSABLE | usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED)
+    sliderGroup.set_flag(
+        usd_chunks.chunk_flags.ChunkFlags.GroupFlags.COLLAPSABLE | usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED
+    )
 
     # Similarly, flags and states can be unset
     #   sliderGroup.unset_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
@@ -207,7 +209,6 @@ def main():
         updateLabel, listen_globally=True, notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED
     )
 
-
     # Example of a list group. The list groups params are proxied 'size' times. Modifying the parameters of the listGroup will automatically
     # modify all proxies, with the exception of the 'value' attribute
     listSlider = chunk.Slider("listSlider")
@@ -219,7 +220,6 @@ def main():
     listGroup = chunk.ListGroup("listGroup")
     listGroup.add_params([nestedListGroup])
     listGroup.size = 2
-    # listGroup.add_param(listSlider.clone())
 
     if p := listGroup.get_indexed_param(listSlider, 1):
         p.value = 10
@@ -236,7 +236,8 @@ def main():
         "line_edit",
         pattern="*",
         extensions=[".jpg", ".png", ".tif"],
-        flags=usd_chunks.chunk_flags.ChunkFlags.ParamFlags.FILE_EXISTING | usd_chunks.chunk_flags.ChunkFlags.ParamFlags.LABELED,
+        flags=usd_chunks.chunk_flags.ChunkFlags.ParamFlags.FILE_EXISTING
+        | usd_chunks.chunk_flags.ChunkFlags.ParamFlags.LABELED,
     )
 
     # A simple menu
@@ -258,6 +259,7 @@ def main():
     # myChunk.print_hierarchy()
 
     return myChunk
+
 
 def config():
     return chunk.DefaulConfig(load=True, category=chunk.StandardCategory.EXAMPLES)

@@ -1,6 +1,7 @@
 from importlib.metadata import PackageNotFoundError, version
-# import sys
-# from pathlib import Path
+import sys
+from pathlib import Path
+from typing import Final
 
 try:
     __version__ = version("usd_chunks")
@@ -10,26 +11,24 @@ __author__ = "Viktor Lanner"
 __email__ = "viktor.lanner@huginstudios.com"
 
 
-from . import _deps
+# Attempt to import nesessary deps. If not found, use the installed packages from .venv
+try:
+    import attrs  # noqa: F401
+    import typing_extensions  # noqa: F401
+except ImportError as e:
+    p = Path(__file__).parent.parent / ".venv/Lib/site-packages"
+    if p.exists():
+        sys.path.append(str(p))
+    else:
+        raise e
 
-# try:
-#     import attrs  # noqa: F401
-#     import typing_extensions  # noqa: F401
-# except ImportError as e:
-#     p = Path(__file__).parent.parent / ".venv/Lib/site-packages"
-#     if p.exists():
-#         sys.path.append(str(p))
-#     else:
-#         raise e
+import attrs
 
-# finally:
-#     import attrs
+ATTRS_VERSION: Final = attrs.__version_info__
 
-#     major, minor, build = attrs.__version__.split(".")
-
-#     if int(major) < 25 and int(minor) < 4:
-#         p = Path(__file__).parent.parent / ".venv/Lib/site-packages"
-#         if p.exists():
-#             sys.path.insert(0, str(p))
-#         else:
-#             raise ImportError(f"Found attrs version {attrs.__version__}. 25.4 or later is required")
+if ATTRS_VERSION < (25, 4):  # type: ignore
+    print(
+        "Found unsupported attrs version:",
+        attrs.__version__,
+        "Some functionality may not work. Consider updating to 25.4",
+    )
