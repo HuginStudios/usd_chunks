@@ -393,9 +393,9 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             bool: True if the group should be collapsed
         """
         val = self.group.has_state(ChunkFlags.State.COLLAPSED)
-        parent = self.group.get_owner()
-        if parent and isinstance(parent, ChunkContainerBase):
-            val |= parent.has_state(ChunkFlags.State.COLLAPSED)
+        # parent = self.group.get_owner()
+        # if parent and isinstance(parent, ChunkContainerBase):
+        #     val |= parent.has_state(ChunkFlags.State.COLLAPSED)
         return val
 
     @abstractmethod
@@ -863,6 +863,7 @@ class AttributesMetaclass(type):
                     old_value = getattr(inst, name)
                 except AttributeError:
                     old_value = resval
+
                 super(res, inst).__setattr__(name, resval)
 
                 try:
@@ -893,6 +894,18 @@ class AttributesMetaclass(type):
                     pass
 
             res.__setattr__ = _wrapped_setattr  # type: ignore
+
+        # def _wrapped_getattribute(inst: "AttributesBase", name):
+        #     nonlocal res
+        #     val = super(res, inst).__getattribute__(name)
+        #     if name in ["evaluate_attribute"]:
+        #         return val
+        #     try:
+        #         return inst.evaluate_attribute(name, val)
+        #     except AttributeError:
+        #         return val
+
+        # res.__getattribute__ = _wrapped_getattribute  # type: ignore
 
         res = attrs.define(
             res, slots=False, eq=False, field_transformer=add_validate_and_convert, on_setattr=setattr_override
@@ -935,7 +948,7 @@ class AttributesMetaclass(type):
     #     return super().__setattr__(name, value)
 
 
-class AttributeSender(chunk_notice.ChunkNoticePropagator):
+class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
     """An AttributeSender gets sent when an attribute changes on a AttributesBase instance, as attrs.Attribute
     is not able to send through the Tf.Notice system. Instances of this class can be added to a propagator hierarchy
     as it subclass from chunk_notice.ChunkNoticePropagator. This enables us to automatically send the
@@ -956,6 +969,8 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
 
     """
 
+    __slots__ = ("name", "alias", "old_value")
+
     def __init__(
         self,
         owner: chunk_notice.ChunkNoticePropagator,
@@ -965,12 +980,22 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
         super().__init__()
         self.name: str = name
         self.alias: chunk_notice.ChunkNoticeAlias = alias
-        self.old_value: Any = None
+        self.old_value: Optional[ValueT] = None
+        self.value: Optional[ValueT] = None
 
         self.set_owner(owner)
 
     def __repr__(self) -> str:
         return f"AttributeSender({self.name} = {self.value})"
+
+    def __get__(self, inst, owner=None):
+        return self.value
+
+    def __set__(self, inst, value):
+        self.value = value
+        if node := self.get_dag_node():
+            node.dirty = True
+            node.solve_outputs(None, None)
 
     def get_notice_data(self) -> Self:
         """
@@ -989,21 +1014,21 @@ class AttributeSender(chunk_notice.ChunkNoticePropagator):
         """
         return self
 
-    @property
-    def value(self) -> Any:
-        if not self.get_owner():
-            return None
-        return getattr(self.get_owner(), self.name)
+    # @property
+    # def value(self) -> ValueT | None:
+    #     if not self.get_owner():
+    #         return None
+    #     return getattr(self.get_owner(), self.name)
 
-    @value.setter
-    def value(self, val: Any):
-        if not self.get_owner():
-            return
-        if not hasattr(self.get_owner(), self.name):
-            print(f"Failed to set attribute {self.name} from AttributeSender")
-            return
+    # @value.setter
+    # def value(self, val: ValueT):
+    #     if not self.get_owner():
+    #         return
+    #     if not hasattr(self.get_owner(), self.name):
+    #         print(f"Failed to set attribute {self.name} from AttributeSender")
+    #         return
 
-        setattr(self.get_owner(), self.name, val)
+    #     setattr(self.get_owner(), self.name, val)
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return self.alias
@@ -1123,6 +1148,9 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         print(f"{cls.__name__} __init__ signature: \n", msg)
 
     def __attrs_post_init__(self):
+        # initialise ChunkNoticePropagator
+        super().__init__()
+
         # Loop over all fields and add an AttributeSender for the attribute, which will be sent in value_changed. Doing this instead of
         # get_notice_alias_for_attr in order to have a seperate sender for each attribute
         attr = attrs.fields_dict(type(self))
@@ -1135,11 +1163,11 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
                 # Includes ChunkNoticeAlias.NONE
                 continue
 
-            sender = AttributeSender(self, name, alias)
-            self._attr_senders[name] = sender
+            if name not in self._attr_senders:
+                sender = AttributeSender(self, name, alias)
+                self._attr_senders[name] = sender
 
         self._resolve_failed_converters()
-        super().__init__()  # initialise ChunkNoticePropagator
 
     def clone(self) -> Self:
         """
@@ -1285,11 +1313,12 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         if attrname in self._failed_converters:
             return
 
-        # Send a TfNotice for the changed attribute. Assuming
-        attr_sender = self._attr_senders.get(attrname)
-        if attr_sender:
-            attr_sender.old_value = old_value
-            attr_sender.data_changed(None, None)
+        if sender := self._attr_senders.get(attrname):
+            sender.old_value = old_value
+            if node := sender.get_dag_node():
+                node.dirty = True
+                node.solve_outputs(None, None)
+
         else:
             self.send_self()
 
@@ -1377,10 +1406,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             if t and not isinstance(val, t):
                 raise ValueError(f"Validation failed. Tried to set value of type: {type(val)} to parameter {attr.name}")
         return True
-
-    def set_validators_enabled(self, enabled: bool):
-        # TODO: Implement
-        pass
 
 
 class ChunkHash(Protocol):
@@ -1527,7 +1552,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
                 notice = notice_class(self.get_notice_data())
             else:
                 notice = notice_class()
-            for conn in self._param_ref.get_connections():
+            for conn in self._param_ref.get_callbacks():
                 conn.handle_callback(notice, self)
 
         return res
@@ -1551,7 +1576,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         if name == "request_delete":
             return super().__getattribute__("request_delete")
 
-        if not name.startswith("__") and hasattr(super(), name) or name in ["_owner", "_connections"]:
+        if not name.startswith("__") and hasattr(super(), name) or name in ["_owner", "_callbacks"]:
             return super().__getattribute__(name)
 
         if name in ["children", "_children"]:
@@ -1569,7 +1594,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         # All attributes except 'owner' and 'value' are proxied, meaning we set the attributes
         # back on to the parameter we're proxying.
 
-        if not name.startswith("__") and hasattr(super(), name) or name in ["_owner", "_connections"]:
+        if not name.startswith("__") and hasattr(super(), name) or name in ["_owner", "_callbacks"]:
             return super().__setattr__(name, value)
 
         if name == "children":
@@ -1647,7 +1672,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         for param in self.params.maps[0].values():
             copied.add(copy.copy(param))
 
-        copied._copy_connections(self)
+        copied._copy_callbacks(self)
         return copied
 
     def get_notice_data(self) -> Self:
@@ -1708,7 +1733,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
     def data_changed(
         self,
-        notice: Tf.Notice,
+        notice: Optional[chunk_notice.ChunkNotice],
         sender: Any,
         propagated: Optional[chunk_notice.ChunkNoticePropagator] = None,
     ) -> Optional[Tf.Notice]:
@@ -1719,7 +1744,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             and propagated.name == "name"
             and propagated.old_value in self.names.maps[0]
         ):
-            self.name_changed(propagated.old_value)
+            self.name_changed(propagated.old_value)  # type: ignore
 
         return super().data_changed(notice, sender, propagated)
 
@@ -2230,10 +2255,11 @@ class ChunkCommon(AttributesBase):
             # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
             owner.pop(self)
 
-        self._connections.clear()
+        self._callbacks.clear()
 
         self.set_owner(None)
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
+
 
 class ChunkUsdAttributeSupport(AttributesBase):
     """
@@ -2254,8 +2280,11 @@ class ChunkUsdAttributeSupport(AttributesBase):
     )
 
     def data_changed(
-        self, notice: Tf.Notice | None, sender: Any, propagated: chunk_notice.ChunkNoticePropagator | None = None
-    ) -> Tf.Notice | None:
+        self,
+        notice: Optional[chunk_notice.ChunkNotice],
+        sender: Any,
+        propagated: chunk_notice.ChunkNoticePropagator | None = None,
+    ) -> Optional[chunk_notice.ChunkNotice]:
         my_notice = super().data_changed(notice, sender, propagated)
 
         stage = chunk_registry.ChunkRegistry().scene.get_stage()
@@ -2292,7 +2321,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 return
             notice.data.Set(sender.value)
 
-        elif isinstance(notice.data, Usd.Relationship):
+        elif isinstance(notice.data, Usd.Relationship) and sender.value is not None:
             # Currently just assume the string is a comma separated list of paths. This will likely
             # be changed in the future for a more robust approach
             paths = sender.value.split(",")
@@ -2404,6 +2433,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
     # Value is not an argument to __init__. Will set to default_value
     value: Optional[ValueT] = attrs.field(default=None, init=False)
+    # value: Optional[AttributeSender[ValueT]] = attrs.field(default=AttributeSender, init=False)
 
     # If possible, will use this custom widget in the ui.
     # TODO: Currently, this only works with ChunkParamBase objects with type == CUSTOM
@@ -2436,6 +2466,13 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
                     return type_default()
 
         return super().convert_attr(attr, val)
+
+    # def evaluate_attribute(self, name: str, val: Any) -> Any:
+    #     if name == "value":
+    #         print("Evaluate", name, val)
+    #         return val
+
+    #     return super().evaluate_attribute(name, val)
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "value" and val is not None:
@@ -2501,8 +2538,8 @@ class ChunkContainerBase(ChunkCommon):
     )
 
     def __attrs_post_init__(self):
+        super().__attrs_post_init__()
         self.children.set_owner(self)
-        return super().__attrs_post_init__()
 
     def remove_param_or_group(self, param: ChunkCommon):
         """
@@ -3036,8 +3073,11 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         return param
 
     def data_changed(
-        self, notice: Tf.Notice | None, sender: Any, propagated: chunk_notice.ChunkNoticePropagator | None = None
-    ) -> Tf.Notice | None:
+        self,
+        notice: Optional[chunk_notice.ChunkNotice],
+        sender: Any,
+        propagated: chunk_notice.ChunkNoticePropagator | None = None,
+    ) -> Optional[chunk_notice.ChunkNotice]:
         my_notice = super().data_changed(notice, sender, propagated)
 
         if isinstance(propagated, AttributeSender) and propagated.name == "value" and not self.is_blocked():
@@ -3097,6 +3137,7 @@ class ChunkConfig(AttributesBase):
     """
 
     category: str = attrs.field(default="Chunks")
+    description: str = attrs.field(default="Chunk description...")
     load: bool = attrs.field(default=True)
     load_for_plugin: Optional[str] = attrs.field(default=None)
 

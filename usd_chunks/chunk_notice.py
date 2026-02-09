@@ -21,12 +21,14 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 
 from pxr import Tf, Usd, Sdf
 
-from enum import IntEnum, auto
-from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator, TypeAlias
-from typing_extensions import Self
+from enum import IntEnum, auto, Enum
+from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator, TypeAlias, DefaultDict, TypedDict
+from typing_extensions import Self, NotRequired
 from abc import abstractmethod
 import weakref
 import inspect
+from collections import defaultdict
+from attrs import define, field
 
 
 class ChunkNoticeAlias(IntEnum):
@@ -151,10 +153,10 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
         registered (Dict[int, Type[Tf.Notice]]): A dictionary mapping between a ChunkNoticeAlias and a registered TfNotice
     """
 
-    registered: Dict[int, type[Tf.Notice]] = {}
+    registered: Dict[int, type[ChunkNotice]] = {}
 
     @classmethod
-    def get_from_alias(cls, alias: ChunkNoticeAlias) -> Type[Tf.Notice]:
+    def get_from_alias(cls, alias: ChunkNoticeAlias) -> Type[ChunkNotice]:
         """
         Get a registered notice from a ChunkNoticeAlias
 
@@ -253,12 +255,6 @@ class AttributeStateChangeNotice(ChunkNotice):
     pass
 
 
-# ### DAG notice
-# @chunk_notice(ChunkNoticeAlias.SOLVED_NODE)
-# class AttributeStateChangeNotice(ChunkNotice):
-#     pass
-
-
 ### Chunk registry load / unload notices
 @chunk_notice(ChunkNoticeAlias.CHUNK_LOADED)
 class ChunkLoadedNotice(ChunkNotice):
@@ -299,7 +295,7 @@ ChunkNoticeRegistry().register(ChunkNoticeAlias.STAGE_CONTENTS_CHANGED, Usd.Noti
 ChunkNoticeRegistry().register(ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED, Usd.Notice.StageEditTargetChanged)
 
 
-def get_notice(alias: ChunkNoticeAlias) -> Type[Tf.Notice]:
+def get_notice(alias: ChunkNoticeAlias) -> Type[ChunkNotice]:
     """Return a class of type Tf.Notice for the specified ChunkNoticeAlias
 
     Args:
@@ -324,7 +320,7 @@ def is_notice_type(notice: Tf.Notice, alias: ChunkNoticeAlias) -> bool:
     return type(notice) is get_notice(alias)
 
 
-def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None):
+def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -> Optional[ChunkNotice]:
     """
     Sends a notice of type alias, triggering subscribed callback functions to run
 
@@ -333,9 +329,9 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None):
         sender (Any, optional): The object to pass as sender. If None, the notice will be sent globally. Defaults to None.
         data (Any, optional): Any additional data to attach to the notice object. Defaults to None.
     """
+
+    # Exception is handled upstream
     notice_class = get_notice(alias)
-    if not notice_class:
-        return
 
     if issubclass(notice_class, ChunkNotice):
         notice = notice_class(data)
@@ -353,15 +349,24 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None):
     return notice
 
 
-CallbackT: TypeAlias = Callable[["DagNode"], bool]
+CallbackT: TypeAlias = Callable[[Optional[ChunkNotice], Any, Optional["ChunkNoticePropagator"]], Optional[ChunkNotice]]
+ConnSetT: TypeAlias = weakref.WeakSet["DagNode"]
+
+
+@define(slots=True)
+class DagConnections:
+    owner: Optional[weakref.ReferenceType["ChunkNoticePropagator"]] = field(default=None)
+    inputs: ConnSetT = field(factory=ConnSetT)
+    outputs: ConnSetT = field(factory=ConnSetT)
 
 
 class DagNode:
-    def __init__(self, owner: "ChunkNoticePropagator", callback: Optional[CallbackT] = None):
+    __slots__ = ("_dirty", "_connections", "_callback", "name", "__weakref__")
+
+    def __init__(self, callback: Optional[CallbackT] = None):
+
         self._dirty = False
-        self._owner: weakref.ReferenceType["ChunkNoticePropagator"] = weakref.ref(owner)
-        self._inputs: weakref.WeakSet[DagNode] = weakref.WeakSet()
-        self._outputs: weakref.WeakSet[DagNode] = weakref.WeakSet()
+        self._connections: DagConnections = DagConnections()
 
         self._callback: Optional[weakref.ReferenceType[CallbackT]] = None
         self.set_callback(callback)
@@ -386,31 +391,43 @@ class DagNode:
         if val:
             self.dirty_dependents()
 
-    @property
-    def owner(self):
-        if owner := self._owner():
-            return owner
-        raise ReferenceError("DagNode owner is dead")
-
-    def add_input(self, node: "DagNode"):
-        self._inputs.add(node)
-        node.add_output(self)
+    def add_input(self, node: "DagNode", connect_output=True):
+        self._connections.inputs.add(node)
+        if connect_output:
+            node.add_output(self)
         self.dirty = True
 
     def add_output(self, node: "DagNode"):
-        self._outputs.add(node)
+        self._connections.outputs.add(node)
+
+    def set_owner(self, owner: Optional["ChunkNoticePropagator"]):
+        if owner is None:
+            self._connections.owner = None
+            return
+
+        self._connections.owner = weakref.ref(owner)
 
     def get_inputs(self) -> weakref.WeakSet["DagNode"]:
-        return self._inputs
+        return self._connections.inputs
 
     def get_outputs(self) -> weakref.WeakSet["DagNode"]:
-        return self._outputs
+        return self._connections.outputs
+
+    def get_owner(self) -> Optional["ChunkNoticePropagator"]:
+        if owner := self._connections.owner:
+            return owner()
+        return None
+
+    def get_owner_node(self) -> Optional["DagNode"]:
+        if owner := self.get_owner():
+            return owner.get_dag_node()
+        return None
 
     def should_solve(self) -> bool:
         if not self.dirty:
             return False
 
-        if self._outputs or (self._callback and self._callback()):
+        if self.get_outputs() or (self._callback and self._callback()) or self.get_owner_node():
             return True
         return False
 
@@ -420,35 +437,63 @@ class DagNode:
                 continue
             node.dirty = True
 
-    def is_inputs_dirty(self) -> bool:
-        return any([x.dirty for x in self._inputs])
+        if (owner := self.get_owner_node()) and not owner.dirty:
+            owner.dirty = True
 
-    def solve(self):
+    def is_inputs_dirty(self) -> bool:
+        return any([x.dirty for x in self.get_inputs()])
+
+    def solve_self(
+        self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
+    ) -> Optional[ChunkNotice]:
+
         if not self.should_solve():
             return
 
-        outputs = self.get_outputs()
-
-        print("\nSolving dag node:", self.name)
-
         if self.is_inputs_dirty():
-            print("   inputs are dirty", [x.name for x in self.get_inputs() if x.dirty])
-            return
+            return self.solve_inputs()
+
+        my_notice = None
+        self.dirty = False
 
         if self._callback:
             if not (cb := self._callback()):
-                raise ReferenceError("Owner of DagNode is dead")
+                raise ReferenceError("Callback of DagNode is dead")
             try:
-                self._dirty = not cb(self)
+                my_notice = cb(notice, sender, propagated)
             except Exception as e:
+                self.dirty = True
                 raise e
-        else:
-            self._dirty = False
 
-        print("   self.dirty==", self._dirty)
+        if not my_notice:
+            return notice
 
-        for o in outputs:
-            o.solve()
+        msg = f"Solved DagNode: {self.name}: payload: {my_notice.alias.name if my_notice else None}"
+        print(msg)
+
+        return my_notice
+
+    def solve_inputs(self) -> Optional[ChunkNotice]:
+        dirty_inputs = False
+        for node in filter(lambda x: x.dirty, self.get_inputs()):
+            node.solve_inputs()
+            dirty_inputs = True
+
+        if not dirty_inputs:
+            return self.solve_outputs(None, None)
+
+    def solve_outputs(
+        self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
+    ) -> Optional[ChunkNotice]:
+        if not (my_notice := self.solve_self(notice, sender, propagated)):
+            return notice
+
+        for o in self.get_outputs():
+            o.solve_outputs(my_notice, my_notice.data, propagated)
+
+        if node := self.get_owner_node():
+            node.solve_outputs(my_notice, my_notice.data, propagated)
+        return my_notice
 
 
 class ChunkNoticePropagator:
@@ -472,23 +517,20 @@ class ChunkNoticePropagator:
     See NoticeConnection.handle_callback for more info
     """
 
-    # class ConnectionType(IntEnum):
-    #     CALLBACK = 1
-    #     INPUT = auto()
-    #     OUTPUT = auto()
-
     _last_notice: Optional[Tf.Notice]
     _last_sender: Optional[weakref.ReferenceType]
-    _owner: Optional[weakref.ReferenceType["ChunkNoticePropagator"]]
-    _connections: List["NoticeConnection"]
+    _callbacks: List["NoticeConnection"]
     _dag_node: Optional[DagNode]
 
     def __init__(self, *args, **kwargs) -> None:
         self._last_notice = None
         self._last_sender = None
-        self._owner = None
-        self._connections = []
+        self._callbacks = []
         self._dag_node = None
+
+        # self._execution_function: Optional[
+        #     Callable[["ChunkNoticePropagator", Tuple["ChunkNoticePropagator", ...]], Any]
+        # ] = None
 
         super().__init__(*args, **kwargs)
 
@@ -542,10 +584,7 @@ class ChunkNoticePropagator:
         Returns:
             Optional["ChunkNoticePropagator"]: The owning object, or None
         """
-
-        if self._owner is None:
-            return None
-        return self._owner()
+        return self.get_dag_node().get_owner()
 
     def set_owner(self, owner: Optional["ChunkNoticePropagator"]):
         """Set the owner of this object. The owner is represents a "parent" in a parent-child relationship. This function
@@ -557,11 +596,11 @@ class ChunkNoticePropagator:
         Args:
             owner (ChunkNoticePropagator | None): The owning (parent) object that should recieve notices when this instance is modified
         """
-        self._owner = weakref.ref(owner) if owner is not None else None
+        self.get_dag_node().set_owner(owner)
 
     def data_changed(
-        self, notice: Optional[Tf.Notice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
-    ) -> Optional[Tf.Notice]:
+        self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
+    ) -> Optional[ChunkNotice]:
         """A callback which, by default, is only called when attributes or children are modified. Subclasses can connect custom
         notices to this function in order to propagate the signals to listeners of this instance, f.e. ChunkParam changes inside a
         ChunkParamGroup will also call this function on the group
@@ -578,24 +617,12 @@ class ChunkNoticePropagator:
         self._last_notice = notice
         self._last_sender = None if sender is None else weakref.ref(sender)
 
-        my_notice = self.send_self()
-        owner = self.get_owner()
-
-        if owner and my_notice is None:
-            # if my_notice is None, then ignore any notices from self and just propagate. Used by NameSyncedContainer
-            return owner.data_changed(notice, sender, propagated if propagated else sender)
-
-        # Set owner data_changed if available
-        if owner:
-            owner.data_changed(my_notice, self, propagated if propagated else sender)
-
-        if self._dag_node:
-            self._dag_node.dirty = True
-            self._dag_node.solve()
+        if not (my_notice := self.send_self()):
+            return notice
 
         return my_notice
 
-    def send_self(self, alias: Optional[ChunkNoticeAlias] = None, data: Any = None) -> Optional[Tf.Notice]:
+    def send_self(self, alias: Optional[ChunkNoticeAlias] = None, data: Any = None) -> Optional[ChunkNotice]:
         """Sends a Tf.Notice, with self as sender. The type of notice is determined by get_notice_alias(), or optionally the alias argument.
 
         Args:
@@ -613,12 +640,6 @@ class ChunkNoticePropagator:
         notice_data = data if data is not None else self.get_notice_data()
         notice = send_notice(alias, self, notice_data)
 
-        # Iterate over all owners and have them send this notice as well. This is a bit nasty as the owners will themselves become senders,
-        # so accessing the original sender may only be done through notice.data in the subscribing functions
-        # TODO: Rethink this
-        if owner := self.get_owner():
-            owner.send_self(alias, notice_data)
-
         return notice
 
     def get_last_change(self) -> Tuple[Tf.Notice | None, Any | None]:
@@ -630,18 +651,17 @@ class ChunkNoticePropagator:
 
         return self._last_notice, None if self._last_sender is None else self._last_sender()
 
-    def _copy_connections(self, src: "ChunkNoticePropagator"):
+    def _copy_callbacks(self, src: "ChunkNoticePropagator"):
         """
         Copy connections to this object from src
 
         Args:
             src (ChunkNoticePropagator): The source object to copy connections from
         """
-        # for ct, conns in src._connections.items():
-        for conn in src._connections:
-            self._copy_connection(conn, src)
+        for conn in src._callbacks:
+            self._copy_callback(conn, src)
 
-    def _copy_connection(self, conn: "NoticeConnection", src: "ChunkNoticePropagator"):
+    def _copy_callback(self, conn: "NoticeConnection", src: "ChunkNoticePropagator"):
         """
         Copy a connection from src to this object.
         Rewire the connection if conn.sender is the source of the copy (self)
@@ -657,22 +677,31 @@ class ChunkNoticePropagator:
             self.add_connection(new_conn)
 
     def add_connection(self, conn: "NoticeConnection"):
-        self._connections.append(conn)
+        self._callbacks.append(conn)
 
     def get_dag_node(self) -> DagNode:
         if not self._dag_node:
-            self._dag_node = DagNode(self.execute)
-            self._dag_node.name = self.name
+            self._dag_node = DagNode(self.data_changed)
+            self._dag_node.name = self.name if hasattr(self, "name") else self.__class__.__name__
+
         return self._dag_node
 
     def add_input(self, input: "ChunkNoticePropagator"):
         self.get_dag_node().add_input(input.get_dag_node())
 
-    def execute(self, node: DagNode) -> bool:
-        return True
+    def get_input(self, index: int = 0) -> Optional["ChunkNoticePropagator"]:
+        inputs = list(self.get_dag_node().get_inputs())
+        try:
+            return inputs[index].get_owner()
+        except IndexError:
+            return None
 
-    def get_connections(self) -> List["NoticeConnection"]:
-        return self._connections
+    def evaluate(self, value: Any) -> bool:
+        self.get_dag_node().solve_inputs()
+        return value
+
+    def get_callbacks(self) -> List["NoticeConnection"]:
+        return self._callbacks
 
     def find_connections(
         self,
@@ -694,7 +723,7 @@ class ChunkNoticePropagator:
 
         query = {"method": method, "sender": sender, "alias": notice_type}
         result = []
-        for conn in self.get_connections():
+        for conn in self.get_callbacks():
             if any([query[y] is not None and getattr(conn, y) == query[y] for y in query]):
                 result.append(conn)
 
@@ -810,6 +839,8 @@ class NoticeConnection:
             of the same alias.
         owner: An optional owner object. Usually 'self', when adding callbacks on a class
     """
+
+    __slots__ = ("alias", "listener", "globally", "_method", "_sender", "_owner", "__weakref__")
 
     def __init__(
         self,

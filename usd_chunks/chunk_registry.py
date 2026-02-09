@@ -170,7 +170,7 @@ class ChunkModule:
                 if not self._add_chunk(c):
                     return False
         except TypeError:
-            if not self._add_chunk(c):
+            if not self._add_chunk(retval):
                 return False
 
         self.loaded = True

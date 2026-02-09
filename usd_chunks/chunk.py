@@ -268,6 +268,7 @@ class Menu(ChunkParamBase[str]):
 
         return super().convert_attr(attr, val)
 
+
 class Button(ChunkParamBase):
     """
     A button parameter. Does not store any usable value. Should be used with callbacks only
@@ -375,6 +376,16 @@ class Custom(ChunkParamBase):
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.CUSTOM
 
+
+####################
+# STATIC FUNCTIONS #
+####################
+
+
+def set_validators_enabled(enabled: bool):
+    from attrs import validators
+
+    validators.set_disabled(not enabled)
 
 
 def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
