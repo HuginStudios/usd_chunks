@@ -393,9 +393,9 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             bool: True if the group should be collapsed
         """
         val = self.group.has_state(ChunkFlags.State.COLLAPSED)
-        # parent = self.group.get_owner()
-        # if parent and isinstance(parent, ChunkContainerBase):
-        #     val |= parent.has_state(ChunkFlags.State.COLLAPSED)
+        parent = self.group.get_owner()
+        if parent and isinstance(parent, ChunkContainerBase):
+            val |= parent.has_state(ChunkFlags.State.COLLAPSED)
         return val
 
     @abstractmethod
@@ -857,7 +857,6 @@ class AttributesMetaclass(type):
                 # Run conversion
                 if attrib and attrib.metadata.get("convert", True):
                     resval = inst._safe_convert(attrib, value)
-
                 old_value = None
                 try:
                     old_value = getattr(inst, name)
@@ -894,18 +893,6 @@ class AttributesMetaclass(type):
                     pass
 
             res.__setattr__ = _wrapped_setattr  # type: ignore
-
-        # def _wrapped_getattribute(inst: "AttributesBase", name):
-        #     nonlocal res
-        #     val = super(res, inst).__getattribute__(name)
-        #     if name in ["evaluate_attribute"]:
-        #         return val
-        #     try:
-        #         return inst.evaluate_attribute(name, val)
-        #     except AttributeError:
-        #         return val
-
-        # res.__getattribute__ = _wrapped_getattribute  # type: ignore
 
         res = attrs.define(
             res, slots=False, eq=False, field_transformer=add_validate_and_convert, on_setattr=setattr_override
@@ -975,27 +962,17 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         self,
         owner: chunk_notice.ChunkNoticePropagator,
         name: str,
-        alias: chunk_notice.ChunkNoticeAlias,
+        alias: chunk_notice.ChunkNoticeAlias = chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
     ):
         super().__init__()
         self.name: str = name
         self.alias: chunk_notice.ChunkNoticeAlias = alias
         self.old_value: Optional[ValueT] = None
-        self.value: Optional[ValueT] = None
 
         self.set_owner(owner)
 
     def __repr__(self) -> str:
         return f"AttributeSender({self.name} = {self.value})"
-
-    def __get__(self, inst, owner=None):
-        return self.value
-
-    def __set__(self, inst, value):
-        self.value = value
-        if node := self.get_dag_node():
-            node.dirty = True
-            node.solve_outputs(None, None)
 
     def get_notice_data(self) -> Self:
         """
@@ -1014,21 +991,21 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         """
         return self
 
-    # @property
-    # def value(self) -> ValueT | None:
-    #     if not self.get_owner():
-    #         return None
-    #     return getattr(self.get_owner(), self.name)
+    @property
+    def value(self) -> ValueT | None:
+        if not self.get_owner():
+            return None
+        return getattr(self.get_owner(), self.name)
 
-    # @value.setter
-    # def value(self, val: ValueT):
-    #     if not self.get_owner():
-    #         return
-    #     if not hasattr(self.get_owner(), self.name):
-    #         print(f"Failed to set attribute {self.name} from AttributeSender")
-    #         return
+    @value.setter
+    def value(self, val: ValueT):
+        if not self.get_owner():
+            return
+        if not hasattr(self.get_owner(), self.name):
+            print(f"Failed to set attribute {self.name} from AttributeSender")
+            return
 
-    #     setattr(self.get_owner(), self.name, val)
+        setattr(self.get_owner(), self.name, val)
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return self.alias
@@ -1135,6 +1112,14 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         ),
     )
 
+    # _attr_evaluators: weakref.WeakValueDictionary[str, Callable[[Self, Any], Any]] = attrs.field(
+    #     factory=weakref.WeakValueDictionary,
+    #     init=False,
+    #     metadata=AttributeMetadata(
+    #         copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False
+    #     ),
+    # )
+
     @classmethod
     def print_init_signature(cls):
         """
@@ -1163,9 +1148,8 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
                 # Includes ChunkNoticeAlias.NONE
                 continue
 
-            if name not in self._attr_senders:
-                sender = AttributeSender(self, name, alias)
-                self._attr_senders[name] = sender
+            sender = AttributeSender(self, name, alias)
+            self._attr_senders[name] = sender
 
         self._resolve_failed_converters()
 
@@ -1286,7 +1270,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         Raises:
             AttributeError: If the attribute sender was not found
         """
-
         if sender := self._attr_senders.get(attribname):
             return sender
         raise AttributeError(f"Attribute sender not found {attribname}")
@@ -1315,12 +1298,12 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
         if sender := self._attr_senders.get(attrname):
             sender.old_value = old_value
-            if node := sender.get_dag_node():
-                node.dirty = True
-                node.solve_outputs(None, None)
-
+            node = sender.get_dag_node()
         else:
-            self.send_self()
+            node = self.get_dag_node()
+        
+        node.dirty = True
+        node.solve_outputs(None, None)
 
     def _safe_convert(self, attr: attrs.Attribute, val: Any) -> Any:
         """
@@ -2416,6 +2399,22 @@ class ChunkUsdAttributeSupport(AttributesBase):
         return param
 
 
+class ValueWrapper(Generic[ValueT]):
+    def __init__(self, value: Optional[ValueT] = None):
+        self._value = value
+
+    def __set_name__(self, inst, name):
+        print("SET NAME")
+
+    def __get__(self, inst, cls):
+        print("GET")
+        return self._value
+
+    def __set__(self, inst, value):
+        print("SET")
+        self._value = value
+
+
 class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     """
     Base class for valued parameters
@@ -2433,7 +2432,6 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
     # Value is not an argument to __init__. Will set to default_value
     value: Optional[ValueT] = attrs.field(default=None, init=False)
-    # value: Optional[AttributeSender[ValueT]] = attrs.field(default=AttributeSender, init=False)
 
     # If possible, will use this custom widget in the ui.
     # TODO: Currently, this only works with ChunkParamBase objects with type == CUSTOM
@@ -2476,11 +2474,18 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "value" and val is not None:
-            expected_type = ChunkFlags.ParamTypeToTypes(self.get_type())
-            if type(val) not in expected_type:
-                raise ValueError(
-                    f"Value of {val} is not supported for attribute {attr.name}, type is {type(val)}. Expects {expected_type}"
-                )
+            # expected_type = ChunkFlags.ParamTypeToTypes(self.get_type())
+
+            # t = type(val)
+            # if t is AttributeSender:
+            #     if not val.value:
+            #         return True
+            #     t = type(val.value)
+
+            # if t not in expected_type:
+            #     raise ValueError(
+            #         f"Value of {val} is not supported for attribute {attr.name}, type is {t}. Expects {expected_type}"
+            #     )
             return True
 
         if attr.name == "custom_widget":

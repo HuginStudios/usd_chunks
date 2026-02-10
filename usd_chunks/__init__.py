@@ -22,10 +22,9 @@ except ImportError as e:
     else:
         raise e
 
-import attrs
+    import attrs
 
 ATTRS_VERSION: Final = attrs.__version_info__
-
 if ATTRS_VERSION < (25, 4):  # type: ignore
     print(
         "Found unsupported attrs version:",

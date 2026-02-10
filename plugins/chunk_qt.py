@@ -612,7 +612,7 @@ class ChunkWidget(ContainerWidget):
     def contextMenuEvent(self, event):
         menu = QtWidgets.QMenu()
         actions: Dict[QtGui.QAction, chunk_notice.NoticeConnection] = {}
-        for conn in self.group.find_connections(notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE):
+        for conn in self.group.find_callbacks(notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE):
             meth = conn.get_method()
             if not meth:
                 continue

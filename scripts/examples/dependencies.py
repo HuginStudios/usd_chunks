@@ -3,7 +3,8 @@ import pprint
 
 
 def param_callback(owner, notice, sender):
-    print("Param callback: ", owner.name, notice.alias)
+    print("Param callback: ", owner.name, owner.value)
+    # owner.value *= 2
 
 
 def run_execute(owner: chunk.Chunk, notice, sender):
@@ -27,7 +28,6 @@ def print_hierarchy(data, indent=0):
 
 
 def get_inputs_dict(node):
-
     inputs = {}
     for n in node.get_inputs():
         inputs.update(get_inputs_dict(n))
@@ -35,47 +35,76 @@ def get_inputs_dict(node):
 
 
 def callback(owner: chunk.Chunk, notice: chunk_notice.ChunkNotice, sender):
-    # print(sender)
-    print("CALLBACK")
+    a = owner.get_input(0)
+    b = owner.get_input(1)
+    c = owner.get_input(2)
 
-    # node = owner.get_dag_node()
-    # inputs = get_inputs_dict(node)
-    # print(print_hierarchy(inputs))
-    # print(notice.data.name)
+    if not (a and b and c):
+        print("Inputs failed")
+        return
+
+    assert isinstance(a, chunk.Chunk)
+    assert isinstance(b, chunk.Chunk)
+    assert isinstance(c, chunk.Chunk)
+
+    ap = a.get_param("A_param")
+    bp = b.get_param("B_param")
+    cp = c.get_param("C_param")
+    print(a.name, b.name, c.name, "->", (ap.value, bp.value, cp.value))
+
+def c_callback(owner: chunk.Slider, notice: chunk_notice.ChunkNotice, sender):
+    a = owner.get_input(0)
+    b = owner.get_input(1)
+
+    if not (a and b):
+        print("Inputs failed")
+        return
+
+    assert isinstance(a, chunk.Slider)
+    assert isinstance(b, chunk.Slider)
+
+    res = a.value * b.value
+    owner.value = res
+    print("Setting C: ", res)
 
 
-def eval_a(slider, value):
-    return value
+def eval_a(param, value):
+    res = value * 2
+    print(f"EVAL {param.name}", value, "->", res)
+    return res
+
+
+def eval_b(param, value):
+    pass
 
 
 def main():
     a = chunk.Chunk("A")
     a_param = chunk.Slider("A_param")
-    # a_param.set_evaluator("value", eval_a)
-
-    # a_param.get_attribute_sender("value")._evaluation_function = evaluate_a
-    # a_param.add_callback
     a.add_param(a_param)
 
     b = chunk.Chunk("B")
     b_param = chunk.Slider("B_param")
     b.add_param(b_param)
 
-    # c = chunk.Chunk("C")
-    # c_param = chunk.Slider("C_param")
-    # c.add_param(c_param)
-    # c.add_input(a)
+    c = chunk.Chunk("C")
+    c_param = chunk.Slider("C_param")
+    c.add_param(c_param)
+    c_param.add_input(a_param)
+    c_param.add_input(b_param)
+    c_param.add_callback(c_callback)
 
     d = chunk.Chunk("D")
     d_param = chunk.Button("Execute")
     d.add_param(d_param)
     d.add_callback(callback)
+    d.add_callback(run_execute, sender=d_param)
 
     d.add_input(a)
     d.add_input(b)
-    # d.add_input(c)
+    d.add_input(c)
 
-    return [a, b, d]
+    return [a, b, c, d]
 
 
 def config():

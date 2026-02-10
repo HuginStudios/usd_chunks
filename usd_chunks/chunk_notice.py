@@ -22,7 +22,20 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 from pxr import Tf, Usd, Sdf
 
 from enum import IntEnum, auto, Enum
-from typing import Callable, Any, List, Type, Tuple, Dict, Optional, Generator, TypeAlias, DefaultDict, TypedDict
+from typing import (
+    Callable,
+    Any,
+    List,
+    Type,
+    Tuple,
+    Dict,
+    Optional,
+    Generator,
+    TypeAlias,
+    DefaultDict,
+    TypedDict,
+    Iterator,
+)
 from typing_extensions import Self, NotRequired
 from abc import abstractmethod
 import weakref
@@ -350,7 +363,8 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
 
 
 CallbackT: TypeAlias = Callable[[Optional[ChunkNotice], Any, Optional["ChunkNoticePropagator"]], Optional[ChunkNotice]]
-ConnSetT: TypeAlias = weakref.WeakSet["DagNode"]
+# CallbackT: TypeAlias = Callable[[Optional[Dict[str, Any]]], Dict[str, Any]]
+ConnSetT: TypeAlias = weakref.WeakValueDictionary[int, "DagNode"]
 
 
 @define(slots=True)
@@ -361,9 +375,9 @@ class DagConnections:
 
 
 class DagNode:
-    __slots__ = ("_dirty", "_connections", "_callback", "name", "__weakref__")
+    __slots__ = ("_dirty", "_connections", "_callback", "name", "notice", "propagator", "__weakref__")
 
-    def __init__(self, callback: Optional[CallbackT] = None):
+    def __init__(self, propagator: "ChunkNoticePropagator", callback: Optional[CallbackT] = None):
 
         self._dirty = False
         self._connections: DagConnections = DagConnections()
@@ -372,6 +386,7 @@ class DagNode:
         self.set_callback(callback)
 
         self.name = ""
+        self.propagator = propagator
 
     def set_callback(self, callback: CallbackT | None):
         if not callback:
@@ -391,14 +406,22 @@ class DagNode:
         if val:
             self.dirty_dependents()
 
+    def next_key(self, items: ConnSetT):
+        for i in range(len(items) + 1):
+            if i not in items:
+                return i
+        raise IndexError("Somewthign went wrong")
+
     def add_input(self, node: "DagNode", connect_output=True):
-        self._connections.inputs.add(node)
+        next_key = self.next_key(self._connections.inputs)
+        self._connections.inputs[next_key] = node
         if connect_output:
             node.add_output(self)
         self.dirty = True
 
     def add_output(self, node: "DagNode"):
-        self._connections.outputs.add(node)
+        next_key = self.next_key(self._connections.outputs)
+        self._connections.outputs[next_key] = node
 
     def set_owner(self, owner: Optional["ChunkNoticePropagator"]):
         if owner is None:
@@ -407,11 +430,17 @@ class DagNode:
 
         self._connections.owner = weakref.ref(owner)
 
-    def get_inputs(self) -> weakref.WeakSet["DagNode"]:
-        return self._connections.inputs
+    def get_inputs(self) -> Iterator["DagNode"]:
+        return self._connections.inputs.values()
 
-    def get_outputs(self) -> weakref.WeakSet["DagNode"]:
-        return self._connections.outputs
+    def get_input(self, index: int) -> "DagNode":
+        return self._connections.inputs[index]
+
+    def get_outputs(self) -> Iterator["DagNode"]:
+        return self._connections.outputs.values()
+
+    def get_output(self, index: int) -> "DagNode":
+        return self._connections.outputs[index]
 
     def get_owner(self) -> Optional["ChunkNoticePropagator"]:
         if owner := self._connections.owner:
@@ -432,9 +461,8 @@ class DagNode:
         return False
 
     def dirty_dependents(self):
+        # for node in filter(lambda x: not x.dirty, self.get_outputs()):
         for node in self.get_outputs():
-            if node.dirty:
-                continue
             node.dirty = True
 
         if (owner := self.get_owner_node()) and not owner.dirty:
@@ -453,8 +481,7 @@ class DagNode:
         if self.is_inputs_dirty():
             return self.solve_inputs()
 
-        my_notice = None
-        self.dirty = False
+        my_notice = notice
 
         if self._callback:
             if not (cb := self._callback()):
@@ -464,13 +491,7 @@ class DagNode:
             except Exception as e:
                 self.dirty = True
                 raise e
-
-        if not my_notice:
-            return notice
-
-        msg = f"Solved DagNode: {self.name}: payload: {my_notice.alias.name if my_notice else None}"
-        print(msg)
-
+        self.dirty = False
         return my_notice
 
     def solve_inputs(self) -> Optional[ChunkNotice]:
@@ -485,14 +506,15 @@ class DagNode:
     def solve_outputs(
         self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
     ) -> Optional[ChunkNotice]:
+
         if not (my_notice := self.solve_self(notice, sender, propagated)):
             return notice
 
         for o in self.get_outputs():
-            o.solve_outputs(my_notice, my_notice.data, propagated)
+            o.solve_outputs(my_notice, sender, propagated)
 
         if node := self.get_owner_node():
-            node.solve_outputs(my_notice, my_notice.data, propagated)
+            node.solve_outputs(my_notice, sender, propagated)
         return my_notice
 
 
@@ -527,10 +549,6 @@ class ChunkNoticePropagator:
         self._last_sender = None
         self._callbacks = []
         self._dag_node = None
-
-        # self._execution_function: Optional[
-        #     Callable[["ChunkNoticePropagator", Tuple["ChunkNoticePropagator", ...]], Any]
-        # ] = None
 
         super().__init__(*args, **kwargs)
 
@@ -617,9 +635,14 @@ class ChunkNoticePropagator:
         self._last_notice = notice
         self._last_sender = None if sender is None else weakref.ref(sender)
 
-        if not (my_notice := self.send_self()):
+        my_notice = self.send_self()
+
+        if my_notice is None:
+            # if my_notice is None, then ignore any notices from self and just propagate. Used by NameSyncedContainer
             return notice
 
+        if notice:
+            notice.Send(self)
         return my_notice
 
     def send_self(self, alias: Optional[ChunkNoticeAlias] = None, data: Any = None) -> Optional[ChunkNotice]:
@@ -681,29 +704,28 @@ class ChunkNoticePropagator:
 
     def get_dag_node(self) -> DagNode:
         if not self._dag_node:
-            self._dag_node = DagNode(self.data_changed)
+            self._dag_node = DagNode(self, self.data_changed)
             self._dag_node.name = self.name if hasattr(self, "name") else self.__class__.__name__
-
         return self._dag_node
+
+    def execute(self):
+        node = self.get_dag_node()
+        node.dirty = True
+        node.solve_self(None, None)
 
     def add_input(self, input: "ChunkNoticePropagator"):
         self.get_dag_node().add_input(input.get_dag_node())
 
     def get_input(self, index: int = 0) -> Optional["ChunkNoticePropagator"]:
-        inputs = list(self.get_dag_node().get_inputs())
         try:
-            return inputs[index].get_owner()
-        except IndexError:
+            return self.get_dag_node().get_input(index).propagator
+        except (IndexError, AttributeError):
             return None
-
-    def evaluate(self, value: Any) -> bool:
-        self.get_dag_node().solve_inputs()
-        return value
 
     def get_callbacks(self) -> List["NoticeConnection"]:
         return self._callbacks
 
-    def find_connections(
+    def find_callbacks(
         self,
         method: Optional[Callable] = None,
         sender: Optional["ChunkNoticePropagator"] = None,
