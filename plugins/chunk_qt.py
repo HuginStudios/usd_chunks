@@ -139,7 +139,7 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QLineE
         return self.setText(str(value))
 
 
-class ChunkFileWidget(ChunkParamWidget[chunk.FileBrowser], QtWidgets.QWidget):
+class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
     ValueChanged = QtCore.Signal(str)
 
     def __init__(self, param: chunk.FileBrowser):
