@@ -596,7 +596,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         if t == ChunkFlags.ParamType.NONE:
             return
 
-        widget: ChunkParamWidgetBase
+        widget: ChunkParamWidgetBase | None
         # Custom widget is created and managed externally
         if t == ChunkFlags.ParamType.CUSTOM and param.custom_widget and self.supports_widget(param.custom_widget):
             widget = param.custom_widget

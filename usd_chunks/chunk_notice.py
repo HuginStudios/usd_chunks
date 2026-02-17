@@ -781,8 +781,10 @@ class ChunkNoticePropagator:
         """
         if self._blocked:
             return True
+
         if self.get_notice_alias() == ChunkNoticeAlias.STATE_CHANGED:
             return False
+
         if owner := self.get_owner():
             return owner.is_blocked()
         return False
@@ -836,8 +838,9 @@ class ChunkNoticePropagator:
             Optional[ChunkNotice]: The result from calling send_self
         """
 
-        if self.is_blocked():
-            return None
+        if not notice or (notice and notice.alias != ChunkNoticeAlias.STATE_CHANGED):
+            if self.is_blocked():
+                return None
 
         self._last_notice = notice
         self._last_sender = None if sender is None else weakref.ref(sender)
@@ -861,6 +864,11 @@ class ChunkNoticePropagator:
         Returns:
             Optional[ChunkNotice]: The notice that was sent, or None if no notice was sent
         """
+
+
+        if not alias or (alias != ChunkNoticeAlias.STATE_CHANGED):
+            if self.is_blocked():
+                return None
 
         if self.is_blocked():
             return None
