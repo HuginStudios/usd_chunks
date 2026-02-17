@@ -3,25 +3,26 @@ from usd_chunks.chunk_notice import ChunkNoticeAlias
 
 from pxr import Usd, Tf
 
+
 def apply(owner: chunk.Chunk, notice, sender):
     menu = owner.get_param("schemas")
     if not menu:
         return
-    
+
     schema_str = menu.value
     if not schema_str:
         return
-    
+
     prims = chunk_registry.ChunkRegistry().scene.get_selected_prims()
     if not prims:
         return
-    
+
     schema_reg = Usd.SchemaRegistry()
     schema = schema_reg.GetTypeFromName(schema_str)
 
-
     for prim in prims:
         prim.ApplyAPI(schema)
+
 
 def update(owner: chunk.Chunk, notice, sender):
     prims = notice.data
@@ -53,6 +54,7 @@ def update(owner: chunk.Chunk, notice, sender):
 
     param.menu_items = schema_list
 
+
 def main():
     menu = chunk.Menu("schemas", "Schemas")
     btn = chunk.Button("apply", "Apply")
@@ -65,5 +67,6 @@ def main():
 
     return myChunk
 
+
 def config():
-    return chunk.DefaulConfig(category="Utility")
+    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)

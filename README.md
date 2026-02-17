@@ -1,54 +1,82 @@
-# README
+# usd_chunks
 
-![image](images/chunk_view_1.png)
+![image](docs/assets/chunks_view.png)
 
 ## Intro
 
-Ready to create some simple widgets in a fast and easy way for OpenUSDs usdview?
-That is possible with this chunk framework. You can easily create small chunks that are meant to lower the bar for developing and sharing cool small USD programs that can easily be shared.
+usd_chunks is a simple library for interfacing with USD. The aim is to lower the bar for users interested in working with USD. The target was primarily to extend [usdview](https://openusd.org/release/toolset.html#usdview) by providing UI elements in order to modify the stage interactively. This target has been extended to include USD as a whole, meaning one can use usd_chunks to interface with USD regardless of the application.
 
-As an example there are some example chunks that does invis/vis, adding cubes etc under scripts to get you started. The example widget shows all available widgets a chunk have.
+When creating plugins for usdview natively:
+Each plugin need to define some boilerplate code as well as define a plugInfo.json in order to be recognized by usdview. The plugin author can write some Qt code for the UI. Although fairly simple, when creating and managing many plugins, this quickly becomes tedious. The plugin as well as the UI is also not application-agnostic, meaning the same code need to be rewritten for all supported applications. usd_chunks exists to solve this.
 
-With this chunk framework you can copy and share chunks very easily by dropping them in a direcory that the USD_CHUNK_DIR finds.
+usd_chunks is a single plugin for USD that can load 'Chunks'. A Chunk is created using python and registered with the usd_chunks plugin, and optionally represented graphically. Without writing Qt and without registering the plugin with USD. The Chunk can in turn modify the stage however one likes, such as setting attributes, creating prims, import and export of files etc.
+
+## Chunks
+A 'Chunk' is primarily a container of parameters, groups and attributes. All data encapsulated in a chunk can be modified freely. Chunks, parameters and groups are similar and can be used similarly. Parameters hold values and are ultimately the things we can interact with. Any data modified on a chunk object will send a relevant notice for users to listen for through callbacks. Callbacks are python functions, commonly for modifying the stage. Any changes to the stage through a callback will be encapsulated in a relevant UsdLayer, as to not clutter irrelevant layers. As chunks are dynamic, callbacks can also be used to modify the chunks at runtime by adding / removing params, or otherise change the behaviour of the Chunk.
+
+### Example
+A simple Chunk module providing a button, which when pressed creates a cube prim. By default, the chunks are put in a dockable widget to the right of the viewport in usdview.
+
+``` py
+from usd_chunks import chunk
+from pxr import Usd
+
+
+def addCube(owner, notice, sender):
+    # A simple callback, adding a cube to the stage. If the /cube prim exists, create a new one with unique name
+    stage = owner.get_stage()
+    count = 0
+    while True:
+        prim = stage.GetPrimAtPath(f"/cube{count}")
+        if not prim.IsValid():
+            prim = stage.DefinePrim(f"/cube{count}", "Cube")
+            break
+        count = count + 1
+
+
+def main():
+    # This function should return the chunk. In this case, the chunk contains a button parameter with a callback
+    button = chunk.Button("add_cube", "Add Cube")
+    button.add_callback(addCube)
+
+    chunk_api = chunk.Chunk("Add Cubes")
+    chunk_api.add_param(button)
+
+    return chunk_api
+
+
+def config():
+    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES)
+
+```
+
+![image](docs/assets/example_add_cube.png)
+
+See more examples and use cases in [scripts](/scripts/)
+
+A Chunk is defined in a python module like above and should be returned from a **main()** function of the same module. Similarly, a **config()** function may return a configuration of the chunk module. This module is found from the **USD_CHUNK_DIR** environment variable, where .py files are scanned for a **main()** function returning a Chunk. 
+
+## Params
+
+## Groups
+
+## How it works
+
+## Reliance on attrs
+We use [python-attrs](https://www.attrs.org/en/stable) extensively to get dataclass-like behaviour for all the chunk classes. The reasoning being that managing of chunk attributes become much easier, without having to define \_\_init\_\_ functions with heavy signatures. Chunk classes has many attributes, and thus this would fill the class definitions with unnecessary clutter. We also get attribute validation and conversion for free using attrs. Our base classes defines some standard attributes, and each higher lever of the inheritance hierarchy defines more specific attributes. All of these attributes are combined dynamically by attrs, creating the final class with a genertated \_\_init\_\_ function. 
+
+This means we trade off some readability for cleaner code and easier maintanence, as the classes we interface with do not have explicit \_\_init\_\_ functions. We therefore rely on static type checking (using pylance) for hints on the signatures.
+
+Most of the attrs interfacing has been abstracted away execpt for using attrs.field() for class attributes. Users do not need to think about this unless creating custom parameters or otherwise extending the chunk_core module.
 
 ## Setup
 To set this up you need to set two environment variables after having cloned or downloaded this repo. The environment variables to be set are:
 
-PXR_PLUGINPATH_NAME -  Add the path to the usd plugin. for UsdView, this is **plugins/chunk_usdview**.
+**PXR_PLUGINPATH_NAME** -  Add the path to the chunk usd plugin. for UsdView, this is **plugins/chunk_usdview**.
 
-PYTHONPATH - Add this repo location path to this envar.
+**PYTHONPATH** - Add this repo location path to this envar for usdview to find our python modules
 
-USD_CHUNK_DIR - Add your chunk directory to this envar. No need to set if you just want to test the scripts here.
-
-The scripts are gathered recursively and sorts out the ones with a main function in it.
-
-## USD Chunks
-
-Chunks are created by using python. The structure is pretty simple, lets look at a hello world example:
-``` python
-from usd_chunks.chunk import Chunk
-
-def greeting(api):
-    print("Hello World")
-
-def main(api, parent=None):
-    # Init a chunk widget
-    chunk_api = Chunk(api, parent=parent)
-    # Set the name, this is is what will show up
-    # as the title name of the widghet.
-    chunk_api.name = "Hello World"
-    # Set the category. This is optional.
-    # It decides which tab your widget will be added to.
-    # If no category is applied, it will default to General.
-    chunk_api.category = "Examples"
-    # Creating a layout is optional. By default it is vertical layout.
-    # If you create a layout, like below, the default
-    # layout will be a horizontal layout.
-    layout = chunk_api.create_layout()
-    # Creat a button and attach the callback function directly.
-    chunk_api.create_button("Hello world!", greeting, layout=layout)
-    return chunk_api
-```
+**USD_CHUNK_DIR** - Add your chunk directory to this envar. This can be a list of directories, separated by ; on windows, and : on unix systems. Nested directories are scanned for chunks as well.
 
 ## Build documentation
 In order to build the documentation, your environment must be set to run the usd_chunks modules.

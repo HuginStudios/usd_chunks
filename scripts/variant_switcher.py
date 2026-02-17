@@ -1,4 +1,5 @@
 from usd_chunks import chunk, chunk_notice, chunk_registry
+import usd_chunks.chunk_core
 
 
 def variant_selection_callback(owner: chunk.ChunkParamBase, notice, sender):
@@ -56,7 +57,7 @@ def update(mychunk: chunk.Chunk, selected_prim):
             menu_items=variants,
         )
         menu.default_value = vset.GetVariantSelection()
-        menu.set_flag(chunk.ChunkFlags.ParamFlags.LABELED)
+        menu.set_flag(usd_chunks.chunk_core.ChunkFlags.ParamFlags.LABELED)
         menu.user_data = {"prim_path": str(selected_prim.GetPath())}
         mychunk.add_params([menu])
         menu.add_callback(variant_selection_callback)
@@ -93,4 +94,4 @@ def main():
     return vSwitcherChunk
 
 def config():
-    return chunk.DefaulConfig(category="Utility")
+    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)

@@ -1,0 +1,17 @@
+{
+    "load_package_once": true,
+    "env": [
+        {
+            "USD_CHUNKS_HOME": "$HOUDINI_PACKAGE_PATH/../../../"
+        },
+        {
+            "PYTHONPATH": [
+                {
+                    "method": "prepend",
+                    "value": "${USD_CHUNKS_HOME}"
+                }
+            ]
+        }
+    ],
+    "hpath": "${USD_CHUNKS_HOME}/plugins/chunk_houdini"
+}

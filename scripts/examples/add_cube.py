@@ -24,4 +24,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(load=False, category="Examples")
+    return chunk.DefaulConfig(load=False, category=chunk.StandardCategory.EXAMPLES)

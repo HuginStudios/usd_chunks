@@ -1,6 +1,6 @@
 PySide6
 PyOpenGL
 types-usd
-attrs
+attrs>=25.4.0
 typing-extensions
 
