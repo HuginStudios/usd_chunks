@@ -139,18 +139,22 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QLineE
         return self.setText(str(value))
 
 
-class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
+class ChunkFileWidget(ChunkParamWidget[chunk.FileBrowser], QtWidgets.QWidget):
+    ValueChanged = QtCore.Signal(str)
+
     def __init__(self, param: chunk.FileBrowser):
         super().__init__(param)
 
         self.button = QtWidgets.QToolButton(self)
-        self.button.setStyleSheet("border: 0px; padding: 0px;")
+        self.button.setText("Test button")
+        self.button.setIcon(QtGui.QIcon(self.style().standardIcon(QtWidgets.QStyle.SP_DialogOpenButton)))
         self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
         self.button.clicked.connect(self.open_file_dial)
         self.text = QtWidgets.QLineEdit(self)
 
         self.setup_chunk_widget()
         self.text.editingFinished.connect(self.value_changed)
+        self.ValueChanged.connect(self.value_changed)
 
     def open_file_dial(self):
         if not self.param:
@@ -179,6 +183,7 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
                 return
 
             self.set_value(sel[0])
+            self.ValueChanged.emit(sel[0])
 
     def get_value(self):
         return self.text.text()
@@ -716,11 +721,13 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             background-color: #202020;
         }
         QToolButton{
+            border: 2px solid;
             text-align: center;border: 0px;
             border-radius: 0px;
             padding: 4px;
             background-color: #333333;
             color: #EEEEEE;
+            border-color: rgb(156, 156, 156); 
         }
         QPushButton{border: 1px solid;
             border-color: rgb(115, 115, 115);
