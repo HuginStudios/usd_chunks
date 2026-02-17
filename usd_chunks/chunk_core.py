@@ -788,7 +788,7 @@ class AttributesMetaclass(type):
                 resval = inst._safe_convert(attrib, value)
     
             if attrib and attrib.metadata.get("validate", True):
-                inst.validate_attr(attrib, value)
+                inst.validate_attr(attrib, resval)
 
             old_value = None
             try:
@@ -2643,7 +2643,7 @@ class ChunkGroupBase(ChunkContainerBase):
 
     """
 
-    def get_notice_alias(self):
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
 
     def add_params(self, params: Iterable[ChunkT], force_unique: bool = True, clone: bool = False) -> List[ChunkT]:
