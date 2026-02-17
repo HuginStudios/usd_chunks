@@ -32,15 +32,12 @@ from typing import (
     Optional,
     Generator,
     TypeAlias,
-    DefaultDict,
-    TypedDict,
     Iterator,
 )
-from typing_extensions import Self, NotRequired
+from typing_extensions import Self
 from abc import abstractmethod
 import weakref
 import inspect
-from collections import defaultdict
 from attrs import define, field
 
 
@@ -89,6 +86,7 @@ class ChunkNoticeAlias(IntEnum):
     PARAM_CHANGED = auto()  # Sent when a param changes
     GROUP_CHANGED = auto()  # Sent when a group changes. This includes nested groups and param changes
     CHUNK_CHANGED = auto()  # Similar to GROUP_CHANGED but only for chunks
+    CHUNK_EXECUTED = auto()  # Sent when a chunks execute() function has been called
 
     PARAM_ADDED = auto()  # Sent when a param was added as a child to a group or chunk
     PARAM_REMOVED = auto()  # Sent when a param was removed as a child from a group or chunk. Not necessarily deleted
@@ -235,6 +233,9 @@ class GroupChangeNotice(ChunkNotice):
 class ChunkChangeNotice(ChunkNotice):
     pass
 
+@chunk_notice(ChunkNoticeAlias.CHUNK_EXECUTED)
+class ChunkExecuteNotice(ChunkNotice):
+    pass
 
 ### Create / Delete notices
 @chunk_notice(ChunkNoticeAlias.PARAM_ADDED)
@@ -951,6 +952,8 @@ class ChunkNoticePropagator:
         node = self.get_dag_node()
         node.dirty = True
         node.solve_outputs(notice, sender)
+
+        self.send_self(ChunkNoticeAlias.CHUNK_EXECUTED)
 
     def add_dependency(self, input: "ChunkNoticePropagator"):
         self.get_dag_node().add_dependency(input.get_dag_node())

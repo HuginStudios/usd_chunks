@@ -2355,7 +2355,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     default_value: Optional[ValueT] = attrs.field(default=None)
 
     # Value is not an argument to __init__. Will set to default_value
-    value: Optional[ValueT] = attrs.field(default=None, init=False)
+    value: ValueT = attrs.field(default=None, init=False)
 
     # If possible, will use this custom widget in the ui.
     # TODO: Currently, this only works with ChunkParamBase objects with type == CUSTOM

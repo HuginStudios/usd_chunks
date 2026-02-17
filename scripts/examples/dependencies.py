@@ -49,7 +49,7 @@ def callback(owner: chunk.Chunk, notice, sender):
     assert isinstance(bp, chunk.Slider)
     assert isinstance(cp, chunk.Slider)
 
-    print(a.name, b.name, c.name, "->", (ap.value, bp.value, cp.value))
+    print(f"({a.name} * {b.name} = {c.name}): {ap.value} * {bp.value} = {cp.value}")
 
 
 def c_function(owner: chunk.Slider, attrib):
@@ -63,9 +63,7 @@ def c_function(owner: chunk.Slider, attrib):
     assert isinstance(a, chunk.Slider)
     assert isinstance(b, chunk.Slider)
 
-    res = a.value * b.value
-    print("Setting C: ", res)
-    return res
+    return a.value * b.value
 
 
 def main():
@@ -80,7 +78,6 @@ def main():
     c = chunk.Chunk("C")
     c_param = chunk.Slider("C_param")
     c.add_param(c_param)
-    c.add_dependency(a)
 
     c_param.add_dependency(a_param)
     c_param.add_dependency(b_param)
@@ -89,6 +86,7 @@ def main():
     d = chunk.Chunk("D")
     d_param = chunk.Button("Execute")
     d.add_param(d_param)
+
     d.add_callback(callback)
     d.add_callback(run_execute, sender=d_param)
 
