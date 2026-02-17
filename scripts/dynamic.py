@@ -4,7 +4,6 @@ from pxr import Usd
 
 import usd_chunks.chunk_core
 
-
 def build(myChunk: chunk.Chunk, signal, sender):
     for grp in myChunk.get_my_params():
         grp.request_delete()
@@ -15,14 +14,12 @@ def build(myChunk: chunk.Chunk, signal, sender):
 
     for prim in prims:
         prim_grp = chunk.Group(prim.GetName())
+        myChunk.add_param(prim_grp)
 
         attributes = prim.GetAttributes()
-        relationships = prim.GetRelationships()
-
         groups = {}
         for attr in attributes:
-            param = chunk.param_from_attr(attr)
-            if not param:
+            if not (param := chunk.param_from_attr(attr)):
                 continue
 
             if not isinstance(param, chunk.ChunkGroupBase):
@@ -43,6 +40,7 @@ def build(myChunk: chunk.Chunk, signal, sender):
             if param:
                 tgt_grp.add_param(param)
 
+        relationships = prim.GetRelationships()
         # Do the same for relationships
         for rel in relationships:
             param = chunk.param_from_rel(rel)
@@ -52,7 +50,7 @@ def build(myChunk: chunk.Chunk, signal, sender):
             if not isinstance(param, chunk.ChunkGroupBase):
                 param.set_flag(usd_chunks.chunk_core.ChunkFlags.ParamFlags.LABELED)
 
-            ns = attr.GetNamespace()
+            ns = rel.GetNamespace()
             tgt_grp = prim_grp if not ns else groups.get(ns)
 
             if not tgt_grp:
@@ -66,8 +64,6 @@ def build(myChunk: chunk.Chunk, signal, sender):
 
             if param:
                 tgt_grp.add_param(param)
-
-        myChunk.add_param(prim_grp)
 
 
 def main():

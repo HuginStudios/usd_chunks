@@ -606,7 +606,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
         stage = notice.GetStage()
-        self.stage = stage
+        if stage:
+            self.stage = stage
 
     def _chunk_loaded(self, notice, sender: "chunk.Chunk"):
         if not self.stage:

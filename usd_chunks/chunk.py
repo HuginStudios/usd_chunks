@@ -241,10 +241,9 @@ class Menu(ChunkParamBase[str]):
         menu_items: A list of items to display in the menu
     """
 
-    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+    flags: ChunkFlags.ParamFlags = field(default=ChunkFlags.ParamFlags.LABELED)
 
     menu_items: Sequence[str] = field(factory=list)
-    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs):
@@ -388,6 +387,28 @@ def set_validators_enabled(enabled: bool):
     validators.set_disabled(not enabled)
 
 
+type_map = {
+    "float": Slider,
+    "int": (Spinbox, {"is_int": True}),
+    "token": Menu,
+    "bool": Checkbox,
+    "string": LineEdit,
+    "asset": FileBrowser,
+    "path": FileBrowser,
+    "float2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
+    "float3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "float4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
+    "vector3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "color3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "int2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
+    "int3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "int4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
+    "double2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
+    "double3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "double4": (Vector, {"param": Slider(), "suffixes": "xyw", "length": 4}),
+}
+
+
 def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
     """
     Create a new paramaeter from a Usd.Attribute if the attribute type is supported. Will use
@@ -402,26 +423,6 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
         ChunkCommon | None: If a mapping exists for the attr type, then returns a ChunkCommon object. Else None.
     """
     type_name = attr.GetTypeName()
-    type_map = {
-        "float": Slider,
-        "int": (Spinbox, {"is_int": True}),
-        "token": Menu,
-        "bool": Checkbox,
-        "string": LineEdit,
-        "asset": FileBrowser,
-        "path": FileBrowser,
-        "float2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
-        "float3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-        "float4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
-        "vector3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-        "color3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-        "int2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
-        "int3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-        "int4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
-        "double2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
-        "double3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-        "double4": (Vector, {"param": Slider(), "suffixes": "xyw", "length": 4}),
-    }
 
     t = type_map.get(str(type_name))
     if not t:

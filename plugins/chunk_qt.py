@@ -48,8 +48,8 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
 
         self.setOrientation(orient)
 
-    def value_changed(self, value: int | float):
-        if not self.param:
+    def value_changed(self, value: Optional[int | float] = None):
+        if not self.param or value is None:
             return
         self.param.value = value / float(self._step)
 
@@ -121,8 +121,8 @@ class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
     def set_value(self, value):
         return self.set_label(value)
 
-    def set_label(self, value):
-        return self.setText(value)
+    def set_label(self, text):
+        return self.setText(text)
 
 
 class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QLineEdit):
@@ -261,18 +261,14 @@ class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushB
     def set_label(self, text):
         self.setText(text)
 
-    def set_icon(self, path: str):
-        icon = QtGui.QIcon(path)
-        self.setIcon(icon)
+    def set_icon(self, icon: str):
+        qicon = QtGui.QIcon(icon)
+        self.setIcon(qicon)
 
-    def value_changed(self, _: Any):
-        """Override for buttons as the param do not have a value. Better to just send the param notice directly
-
-        Args:
-            _ (Any): Ignored
-        """
+    def value_changed(self, value: Any = None):
+        """Override for buttons as the param do not have a value. Better to just send the param notice directly"""
         if self.param:
-            self.param.send_self()
+            self.param.execute()
 
 
 class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
@@ -288,7 +284,7 @@ class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
 
 
 class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
-    widget_map: Dict[ChunkFlags.ParamType, type[QtWidgets.QWidget]] = {
+    widget_map = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.FLOAT_SPINBOX: ChunkFloatSpinboxWidget,
@@ -368,9 +364,8 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
         self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
 
         self.content_layout = QtWidgets.QFormLayout()
-        # self.content_layout = QtWidgets.QVBoxLayout()
         self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
-        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setContentsMargins(2, 2, 2, 2)
         self.content_layout.setHorizontalSpacing(0)
         self.content.setLayout(self.content_layout)
 
@@ -395,7 +390,7 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
 
         self.__layout__ = QtWidgets.QVBoxLayout()
         self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.__layout__.setContentsMargins(2, 2, 10, 10)
+        self.__layout__.setContentsMargins(2, 2, 2, 2)
         self.__layout__.setSpacing(0)
 
         self.__layout__.addWidget(self.minimize_button)
@@ -403,23 +398,6 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
         self.__layout__.addWidget(self.content)
 
         self.setLayout(self.__layout__)
-
-    def delete_self(self):
-        self.setParent(None)
-        self.deleteLater()
-
-    def remove_widget(self, widget: QtWidgets.QWidget):
-        count = self.content_layout.rowCount()
-
-        for i in reversed(range(count)):
-            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-            iw = item.widget()
-
-            if isinstance(iw, LabeledWidget) and iw.widget == widget:
-                self.content_layout.removeRow(i)
-
-            elif iw == widget:
-                self.content_layout.removeRow(i)
 
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
@@ -465,6 +443,7 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
         else:
             self.minimize_button.setText("")
         if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
+            self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
             self.content.setLineWidth(2)
         else:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
@@ -513,12 +492,27 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
         self.toggle_anim.setDirection(direction)
         self.toggle_anim.start()
 
-    def add_widget(self, widget: QtWidgets.QWidget, lfield=None):
+    def delete_self(self):
+        self.setParent(None)
+        self.deleteLater()
+
+    def remove_widget(self, widget: QtWidgets.QWidget):
+        count = self.content_layout.rowCount()
+        for i in reversed(range(count)):
+            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
+            if not item:
+                continue
+            iw = item.widget()
+
+            if isinstance(iw, LabeledWidget) and iw.widget == widget:
+                self.content_layout.removeRow(i)
+
+    def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
         labeled = LabeledWidget(widget, self)
-        if lfield is not None:
-            labeled.update_label(lfield)
+        if label is not None:
+            labeled.update_label(label)
 
         self.content_layout.addWidget(labeled)
 
@@ -527,21 +521,27 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
 
             i = self.content_layout.rowCount() - 1
             item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-            lfield = self.content_layout.labelForField(item.widget())
+            if not item or not (w := item.widget()):
+                return
 
-            if lfield is None:
+            label = self.content_layout.labelForField(w)
+
+            if label is None:
                 del_btn = QtWidgets.QToolButton()
                 del_btn.setIcon(del_icon)
                 del_btn.setIconSize(QtCore.QSize(15, 15))
                 del_btn.clicked.connect(partial(self.remove_from_list_group, widget))
 
                 self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.LabelRole, del_btn)
-                self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, item.widget())
+                self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, w)
 
     def remove_from_list_group(self, widget: QtWidgets.QWidget):
         if isinstance(self.group, chunk_core.ChunkListGroupBase):
             for i in range(self.content_layout.rowCount()):
                 item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
+                if not item:
+                    continue
+
                 iw = item.widget()
                 if isinstance(iw, LabeledWidget) and iw.widget == widget:
                     self.group.remove_index(i)
@@ -564,7 +564,6 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
             notice (Tf.Notice): The notice that was sent
             sender (chunk_core.AttributeSender): The attribute that changed
         """
-
         param = sender.get_owner()
         if not param or not isinstance(param, chunk_core.ChunkCommon):
             return
@@ -599,8 +598,6 @@ class ChunkWidget(ContainerWidget):
     Chunk is a base class for creating UI components.
     It provides a structure for initializing the API and creating UI Chunks.
     """
-
-    group: chunk.Chunk
 
     def __init__(
         self,
@@ -638,8 +635,9 @@ class ChunkWidget(ContainerWidget):
         Returns:
             str: Category of this Chunk
         """
-        if config := self.group.get_config():
-            return config.category
+        if isinstance(self.group, chunk_core.ChunkBase):
+            if config := self.group.get_config():
+                return config.category
         return chunk.DefaulConfig().category
 
 
@@ -710,81 +708,81 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
         registry = chunk_registry.ChunkRegistry()
-        # self.setStyleSheet("""
-        # QFrame{
-        #     background-color: #333333;
-        # }
-        # QComboBox{
-        #     background-color: #202020;
-        # }
-        # QToolButton{
-        #     text-align: center;border: 0px;
-        #     border-radius: 0px;
-        #     padding: 4px;
-        #     background-color: #333333;
-        #     color: #EEEEEE;
-        # }
-        # QPushButton{border: 1px solid;
-        #     border-color: rgb(115, 115, 115);
-        #     border-radius: 3px;
-        #     background-color: #333333;
-        #     }
-        #     QPushButton:hover {
-        #     border: 1px solid;
-        #     border-radius: 3px;
-        #     border-color: rgb(156, 156, 156);
-        # }
-        # QPushButton:focus {
-        #     outline-color: transparent;
-        #     border: 2px solid;
-        #     border-color: rgb(243, 243, 243);
-        # }
-        # QPushButton:pressed{
-        #     background-color: rgb(80, 80, 80);
-        # }
-        # QPushButton:disabled {
-        #     color: rgb(40, 40, 40);
-        #     border-color: rgb(40, 40, 40);
-        #     background-color: rgb(40, 40, 40);
-        # }
-        # QSlider {
-        #     min-height: 8px;
-        #     background: transparent;
-        #     height: 20px; }
-        # }
+        self.setStyleSheet("""
+        QFrame{
+            background-color: #333333;
+        }
+        QComboBox{
+            background-color: #202020;
+        }
+        QToolButton{
+            text-align: center;border: 0px;
+            border-radius: 0px;
+            padding: 4px;
+            background-color: #333333;
+            color: #EEEEEE;
+        }
+        QPushButton{border: 1px solid;
+            border-color: rgb(115, 115, 115);
+            border-radius: 3px;
+            background-color: #333333;
+            }
+            QPushButton:hover {
+            border: 1px solid;
+            border-radius: 3px;
+            border-color: rgb(156, 156, 156);
+        }
+        QPushButton:focus {
+            outline-color: transparent;
+            border: 2px solid;
+            border-color: rgb(243, 243, 243);
+        }
+        QPushButton:pressed{
+            background-color: rgb(80, 80, 80);
+        }
+        QPushButton:disabled {
+            color: rgb(40, 40, 40);
+            border-color: rgb(40, 40, 40);
+            background-color: rgb(40, 40, 40);
+        }
+        QSlider {
+            min-height: 8px;
+            background: transparent;
+            height: 20px;
+        }
 
-        # QSlider::groove:horizontal {
-        #     border: 0px;
-        #     background: #202020;
-        #     height: 5px;
-        #     border-radius: 10px;
-        # }
+        QSlider::groove:horizontal {
+            border: 0px;
+            background: #202020;
+            height: 5px;
+            border-radius: 10px;
+        }
 
-        # QSlider::handle {
-        #     background: #808080;
-        #     height: 10px;
-        #     width: 10px;
-        #     border-radius: 5px;
-        #     margin: -3px 0px;
-        # }
-        # QSlider::handle:hover {
-        #     background: #999999;
-        #     height: 10px;
-        #     width: 10px;
-        #     border-radius: 5px;
-        #     margin: -3px 0px;
-        # }
+        QSlider::handle {
+            background: #808080;
+            height: 10px;
+            width: 10px;
+            border-radius: 5px;
+            margin: -3px 0px;
+        }
+        QSlider::handle:hover {
+            background: #999999;
+            height: 10px;
+            width: 10px;
+            border-radius: 5px;
+            margin: -3px 0px;
+        }
 
-        # QSlider::sub-page:horizontal {
-        #     background: #404040;
-        #     border-top-left-radius: 10px;
-        #     border-bottom-left-radius: 10px;
-        # }
+        QSlider::sub-page:horizontal {
+            background: #404040;
+            border-top-left-radius: 10px;
+            border-bottom-left-radius: 10px;
+        }
 
-        # QRangeSlider {
-        #     qproperty-barColor: #202020;
-        # }
-        # """)
+        QRangeSlider {
+            qproperty-barColor: #202020;
+        }
+        """)
 
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         for mod in registry.registered_modules.values():

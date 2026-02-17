@@ -1,10 +1,4 @@
-from usd_chunks import chunk, chunk_notice
-import pprint
-
-
-def param_callback(owner, notice, sender):
-    print("Param callback: ", owner.name, owner.value)
-    # owner.value *= 2
+from usd_chunks import chunk
 
 
 def run_execute(owner: chunk.Chunk, notice, sender):
@@ -34,10 +28,10 @@ def get_inputs_dict(node):
     return {node: inputs}
 
 
-def callback(owner: chunk.Chunk, notice: chunk_notice.ChunkNotice, sender):
-    a = owner.get_input(0)
-    b = owner.get_input(1)
-    c = owner.get_input(2)
+def callback(owner: chunk.Chunk, notice, sender):
+    a = owner.get_dependency(0)
+    b = owner.get_dependency(1)
+    c = owner.get_dependency(2)
 
     if not (a and b and c):
         print("Inputs failed")
@@ -50,11 +44,17 @@ def callback(owner: chunk.Chunk, notice: chunk_notice.ChunkNotice, sender):
     ap = a.get_param("A_param")
     bp = b.get_param("B_param")
     cp = c.get_param("C_param")
+
+    assert isinstance(ap, chunk.Slider)
+    assert isinstance(bp, chunk.Slider)
+    assert isinstance(cp, chunk.Slider)
+
     print(a.name, b.name, c.name, "->", (ap.value, bp.value, cp.value))
 
-def c_callback(owner: chunk.Slider, notice: chunk_notice.ChunkNotice, sender):
-    a = owner.get_input(0)
-    b = owner.get_input(1)
+
+def c_function(owner: chunk.Slider, attrib):
+    a = owner.get_dependency(0)
+    b = owner.get_dependency(1)
 
     if not (a and b):
         print("Inputs failed")
@@ -64,18 +64,8 @@ def c_callback(owner: chunk.Slider, notice: chunk_notice.ChunkNotice, sender):
     assert isinstance(b, chunk.Slider)
 
     res = a.value * b.value
-    owner.value = res
     print("Setting C: ", res)
-
-
-def eval_a(param, value):
-    res = value * 2
-    print(f"EVAL {param.name}", value, "->", res)
     return res
-
-
-def eval_b(param, value):
-    pass
 
 
 def main():
@@ -90,9 +80,11 @@ def main():
     c = chunk.Chunk("C")
     c_param = chunk.Slider("C_param")
     c.add_param(c_param)
-    c_param.add_input(a_param)
-    c_param.add_input(b_param)
-    c_param.add_callback(c_callback)
+    c.add_dependency(a)
+
+    c_param.add_dependency(a_param)
+    c_param.add_dependency(b_param)
+    c_param.set_function("value", c_function)
 
     d = chunk.Chunk("D")
     d_param = chunk.Button("Execute")
@@ -100,9 +92,9 @@ def main():
     d.add_callback(callback)
     d.add_callback(run_execute, sender=d_param)
 
-    d.add_input(a)
-    d.add_input(b)
-    d.add_input(c)
+    d.add_dependency(a)
+    d.add_dependency(b)
+    d.add_dependency(c)
 
     return [a, b, c, d]
 

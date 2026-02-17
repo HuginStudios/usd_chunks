@@ -1,5 +1,5 @@
 from pxr import Usd, UsdGeom, Sdf, UsdShade
-from usd_chunks import chunk, chunk_core
+from usd_chunks import chunk, chunk_core, chunk_registry
 import itertools
 import numpy as np
 import os
@@ -278,6 +278,10 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
     groups = [x for x in owner.get_my_params() if isinstance(x, chunk.Group)]
     selected = sender.value
 
+    ctx = owner.get_edit_context()
+    if ctx and chunk_registry.ChunkLayerManager().initialized:
+        chunk_registry.ChunkLayerManager().clear_layer(ctx.identifier)
+
     for g in groups:
         if g.name == selected:
             g.unset_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
@@ -346,7 +350,6 @@ def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
 def cube_changed(owner: chunk.Group, notice, sender):
     stage = owner.get_stage()
 
-    print("UHEUHEUE")
     if not stage:
         return
 
@@ -418,60 +421,6 @@ def grid_changed(owner: chunk.Group, notice, sender):
         add_texture(grid.GetPrim())
 
 
-from functools import wraps
-
-
-def nice_print(func):
-    @wraps(func)
-    def _wrapper(*args, **kwargs):
-        begin = f"{'-' * 10}* {func.__qualname__} *{'-' * 10}"
-        end = "-" * len(begin)
-
-        print(begin)
-        res = func(*args, **kwargs)
-        print(end, "\n")
-
-        return res
-
-    return _wrapper
-
-
-@nice_print
-def chunkChanged(owner, notice, sender):
-    # This works just as groupChanged, but is registered on a Chunk, so will only be sent on Chunk changes
-    def get_chunk_str(s):
-        res = "{}"
-        if isinstance(s, chunk_core.ProxyParam):
-            res = "Proxy[{}]"
-        if isinstance(s, chunk.Chunk):
-            return res.format("Chunk")
-
-        if isinstance(s, chunk.Group):
-            return res.format("Group")
-
-        if isinstance(s, chunk.Vector):
-            return res.format("Vector")
-
-        if isinstance(s, chunk_core.ChunkParamBase):
-            return res.format(s.evaluate_type().name)
-
-        if isinstance(s, chunk_core.AttributeSender):
-            return res.format("Attribute")
-
-    msg = f"Chunk Changed: {sender.name} -> {notice.__class__.__name__}"
-
-    step = 4
-    indent = step
-
-    for n, s in sender.iter_changes():
-        msg += "\n" + " " * indent + f"{get_chunk_str(s)}: {s.name} -> {n.__class__.__name__}"
-
-        if isinstance(s, chunk_core.AttributeSender):
-            msg += f": [New Value] = {s.value}"
-        indent += step
-    print(msg)
-
-
 def main():
     path = chunk.LineEdit("prim_path", "Prim Patm", default_value="/mesh")
 
@@ -522,7 +471,6 @@ def main():
     chunk_api = chunk.Chunk("Add Mesh")
     chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
     chunk_api.add_callback(menu_changed, sender=menu)
-    chunk_api.add_callback(chunkChanged)
 
     return chunk_api
 
