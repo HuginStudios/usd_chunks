@@ -6,7 +6,7 @@ def customButtonClicked(owner, notice, sender):
     print(owner.user_data["customValue"])
 
 
-class MyWidget(chunk_core.ChunkParamWidget, QtWidgets.QPushButton):
+class MyWidget(chunk_core.ChunkParamWidgetBase, QtWidgets.QPushButton):
     def __init__(self, param: chunk.ChunkParamBase):
         super().__init__(param)
 
@@ -53,4 +53,4 @@ def main():
     return myChunk
 
 def config():
-    return chunk.DefaulConfig(load=False, category="Examples")
+    return chunk.DefaulConfig(load=False, category=chunk.StandardCategory.EXAMPLES)

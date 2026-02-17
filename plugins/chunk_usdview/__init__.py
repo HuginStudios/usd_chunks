@@ -27,6 +27,11 @@ class UsdviewScene(chunk_notice.SceneSender):
         selection_model.signalPrimSelectionChanged.connect(self.primSelectionChangedCallback)
         selection_model.signalPropSelectionChanged.connect(self.propSelectionChangedCallback)
 
+    def primSelectionChangedCallback(self, added, removed):
+        if not added and not removed:
+            return
+        return super().primSelectionChangedCallback(added, removed)
+
     def get_stage(self):
         return self.usdviewAPI.stage
 
@@ -55,12 +60,11 @@ def launch_chunks(usdviewApi) -> None:
 
 class ChunksPluginContainer(PluginContainer):
     def reloadChunks(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry()
+        lay = chunk_registry.ChunkLayerManager()
+        lay.clear_all_layers()
 
-        for name, mod in reg.registered_modules.items():
-            reg.unload_chunk_module(mod)
-            if not mod.loaded:
-                reg.load_module(mod)
+        reg = chunk_registry.ChunkRegistry()
+        reg.reload_all()
 
     def openModuleSettings(self, usdviewApi):
         dial = chunk_qt.ChunkModuleLoader(usdviewApi.qMainWindow)
@@ -80,12 +84,12 @@ class ChunksPluginContainer(PluginContainer):
             layer.Export(path)
 
 
-    def registerPlugins(self, plugRegistry, usdviewApi) -> None:
+    def registerPlugins(self, plugRegistry, plugCtx) -> None:
         """Register the UI Creator plugin with the plugin registry.
 
         Args:
             plugRegistry: The plugin registry to register the UI Creator plugin with.
-            usdviewApi: The Usdview API instance to use for module creation.
+            plugCtx: The Usdview API instance to use for module creation.
         """
         self._reloadChunksCommand = plugRegistry.registerCommandPlugin(
             "ChunksPlugin.reloadChunks", "Reload Chunks", self.reloadChunks
@@ -97,9 +101,9 @@ class ChunksPluginContainer(PluginContainer):
             "ChunksPlugin.saveLayers", "Save Layers", self.saveLayers
         )
 
-        launch_chunks(usdviewApi)
+        launch_chunks(plugCtx)
 
-    def configureView(self, _, plugUIBuilder) -> None:
+    def configureView(self, plugRegistry, plugUIBuilder) -> None:
         menu = plugUIBuilder.findOrCreateMenu("Chunks")
         menu.addItem(self._reloadChunksCommand, "SHIFT+R")
         menu.addItem(self._openModuleSettingsCommand)
