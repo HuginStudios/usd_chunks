@@ -40,4 +40,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="Utility")
+    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)
