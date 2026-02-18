@@ -147,7 +147,7 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
 
         self.button = QtWidgets.QToolButton(self)
         self.button.setText("Test button")
-        
+
         self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("folder_open"))))
 
         self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
