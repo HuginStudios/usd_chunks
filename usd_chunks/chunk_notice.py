@@ -233,9 +233,11 @@ class GroupChangeNotice(ChunkNotice):
 class ChunkChangeNotice(ChunkNotice):
     pass
 
+
 @chunk_notice(ChunkNoticeAlias.CHUNK_EXECUTED)
 class ChunkExecuteNotice(ChunkNotice):
     pass
+
 
 ### Create / Delete notices
 @chunk_notice(ChunkNoticeAlias.PARAM_ADDED)
@@ -363,7 +365,7 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
     return notice
 
 
-CallbackT: TypeAlias = Callable[[Optional[ChunkNotice], Any, Optional["ChunkNoticePropagator"]], Optional[ChunkNotice]]
+CallbackT: TypeAlias = Callable[[Optional[ChunkNotice], Any, Optional[ChunkNotice]], Optional[ChunkNotice]]
 ConnSetT: TypeAlias = weakref.WeakValueDictionary[int, "DagNode"]
 
 
@@ -500,12 +502,10 @@ class DagNode:
         if owner == self.get_owner():
             return
 
-        self.dirty = True
         if owner is None:
             self._connections.owner = None
-            return
-
-        self._connections.owner = weakref.ref(owner)
+        else:
+            self._connections.owner = weakref.ref(owner)
 
     def get_inputs(self) -> Iterator["DagNode"]:
         """
@@ -607,7 +607,7 @@ class DagNode:
         for node in self.get_outputs():
             node.dirty = True
 
-        if (owner := self.get_owner_node()) and not owner.dirty:
+        if owner := self.get_owner_node():
             owner.dirty = True
 
     def is_inputs_dirty(self) -> bool:
@@ -620,7 +620,7 @@ class DagNode:
         return any([x.dirty for x in self.get_inputs()])
 
     def solve_self(
-        self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
+        self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional[ChunkNotice] = None
     ) -> Optional[ChunkNotice]:
         """
         Solve this node, calling the callback with the same arguments as passed here, and setting dirty = False upon success
@@ -655,6 +655,8 @@ class DagNode:
                 raise e
 
         self.dirty = False
+        # print("SolveSelf", self.propagator.name if hasattr(self.propagator, "name") else self.propagator.__class__.__name__, my_notice)
+
         return my_notice
 
     def solve_inputs(self) -> Optional[ChunkNotice]:
@@ -673,7 +675,7 @@ class DagNode:
             return self.solve_outputs(None, None)
 
     def solve_outputs(
-        self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
+        self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional[ChunkNotice] = None
     ) -> Optional[ChunkNotice]:
         """
         Solve self + outputs + owner. This is the main solve method that clients should use, as it will trigger all dependent nodes
@@ -687,17 +689,20 @@ class DagNode:
         Returns:
             Optional[ChunkNotice]: The result notice, being either the input notice, or the result from the callback, or None
         """
-        root_prop = self.propagator if not propagated else propagated
         sender = notice.data if notice else sender
+        my_notice = self.solve_self(notice, sender, propagated)
+        if not propagated:
+            propagated = my_notice
 
-        if not (my_notice := self.solve_self(notice, sender, root_prop)):
-            return notice
+        if not my_notice:
+            my_notice = notice
 
         for o in self.get_outputs():
-            o.solve_outputs(my_notice, sender, root_prop)
+            o.solve_outputs(my_notice, sender, propagated)
 
         if node := self.get_owner_node():
             node.solve_outputs(my_notice, sender, propagated)
+
         return my_notice
 
 
@@ -825,7 +830,7 @@ class ChunkNoticePropagator:
         self.get_dag_node().set_owner(owner)
 
     def data_changed(
-        self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional["ChunkNoticePropagator"] = None
+        self, notice: Optional[ChunkNotice], sender: Any, propagated: Optional[ChunkNotice] = None
     ) -> Optional[ChunkNotice]:
         """Called by the DagNode when the node is solved. This will be called when all inputs (dependencies) are solved.
         The returned notice will be propagated by the DagNode
@@ -833,7 +838,7 @@ class ChunkNoticePropagator:
         Args:
             notice (chunk_notice.InterfaceChangeNotice): The notice object which was sent
             sender (Any): The python object which was used as sender for the notice
-            propagated (ChunkParamBase): The propagated sender. The sender that triggered the change
+            propagated (ChunkNotice): The propagated notice. The first notice that was sent
 
         Returns:
             Optional[ChunkNotice]: The result from calling send_self
@@ -845,13 +850,19 @@ class ChunkNoticePropagator:
 
         self._last_notice = notice
         self._last_sender = None if sender is None else weakref.ref(sender)
+
         my_notice = self.send_self()
 
-        if notice and type(my_notice) is not type(notice):
-            notice.Send(self)
-
         if not my_notice:
+            if notice and type(my_notice) is not type(notice):
+                notice.Send(self)
             return notice
+
+        # Send my notice from all owners
+        owner = self.get_owner()
+        while owner:
+            owner.send_self(my_notice.alias)
+            owner = owner.get_owner()
 
         return my_notice
 
@@ -865,7 +876,6 @@ class ChunkNoticePropagator:
         Returns:
             Optional[ChunkNotice]: The notice that was sent, or None if no notice was sent
         """
-
 
         if not alias or (alias != ChunkNoticeAlias.STATE_CHANGED):
             if self.is_blocked():
@@ -1175,15 +1185,11 @@ class NoticeConnection:
             # to the correct layer
             stage = self.owner.get_stage()
             ctx = self.owner.get_edit_context()
-
-            self.owner._blocked = sender is self.owner
             if stage and ctx and context:
                 with Usd.EditContext(stage, ctx):
                     meth(*args)
             else:
                 meth(*args)
-
-            self.owner._blocked = False
             return
 
         meth(*args)

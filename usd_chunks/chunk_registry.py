@@ -11,7 +11,7 @@ myChunk = reg.get_chunk("my_chunk")
 """
 
 from types import ModuleType
-from typing import Iterable, Optional, Set, Any, List, Dict, TYPE_CHECKING
+from typing import Iterable, Optional, Set, Any, Callable, List, Dict, TYPE_CHECKING
 from importlib import util
 
 import glob
@@ -58,7 +58,9 @@ class ChunkModule:
         self.loaded = False
         self.loaded_chunks: Dict[str, chunk.Chunk] = {}
         self.config: ChunkConfig = chunk.DefaulConfig()
-        self.config_listener: Optional[NoticeConnection] = None
+        # self.config_listener: Optional[NoticeConnection] = None
+        self.listeners: List[NoticeConnection] = []
+        self.func: Optional[Callable[[], chunk.Chunk | List[chunk.Chunk]]] = None
 
     def __hash__(self):
         return hash(self.module_name)
@@ -84,17 +86,16 @@ class ChunkModule:
             if len(self.loaded_chunks) == 1:
                 self.loaded = False
 
-            dc = self.loaded_chunks.pop(chunk_name)
-            dc.request_delete()
-            send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, dc, data=dc)
+            if dc := self.loaded_chunks.get(chunk_name):
+                dc.request_delete()
+                send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, dc, data=dc)
 
         else:
             self.loaded = False
-            for c in self.loaded_chunks.values():
+            chunks = list(self.loaded_chunks.values())
+            for c in chunks:
                 c.request_delete()
                 send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, c, data=c)
-
-            self.loaded_chunks.clear()
 
     def load_config(self) -> bool:
         if hasattr(self.module, "config"):
@@ -136,15 +137,20 @@ class ChunkModule:
             return False
 
         self.loaded_chunks[c.name] = c
+        self.listeners.append(NoticeConnection(self.pop_chunk, ChunkNoticeAlias.CHUNK_DELETED, c))
 
-        # try:
-        #     c.check_hierarchy()
-        # except Exception as e:
-        #     print(e)
-        #     self.loaded = False
-        #     return False
+        try:
+            c.check_hierarchy()
+        except Exception as e:
+            print(e)
+            self.loaded = False
+            return False
 
         return True
+
+    def pop_chunk(self, notice, sender):
+        if sender in self.loaded_chunks.values():
+            self.loaded_chunks.pop(sender.name)
 
     def load(self, func_name: str = "main") -> bool:
         self.unload()
@@ -155,9 +161,13 @@ class ChunkModule:
             return False
 
         try:
-            func = getattr(self.module, func_name)
+            self.func = getattr(self.module, func_name)
+            if not self.func:
+                self.loaded = False
+                return False
+
             start = timer()
-            retval: Any = func()
+            retval: Any = self.func()
             end = timer()
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later§
@@ -182,6 +192,33 @@ class ChunkModule:
 
         print(f"loaded module: {self.module_name}. Module created chunks:\n{msg}Load took {end - start} seconds")
         return True
+
+    def create(self):
+        if not self.loaded:
+            print("Trying to create a chunk from an unloaded module. Consider running load() first")
+            return
+
+        if not self.func:
+            return
+
+        names = ChunkRegistry().get_chunk_names()
+        retval = self.func()
+
+        loaded = []
+        try:
+            loaded.extend(retval)  # type: ignore
+        except TypeError:
+            loaded.append(retval)
+
+        for c in loaded:
+            c.name = chunk.Chunk.get_valid_child_name(c.name, names)
+            names.add(c.name)
+
+            if not self._add_chunk(c):
+                continue
+
+            send_notice(ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+        return loaded
 
     def should_load(self) -> bool:
         if not self.config:
@@ -514,9 +551,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not layer:
             if self.is_muted(c):
                 return None
-
             layer = self.add_layer(self.get_root_layer(), c)
-
         return layer
 
     def is_muted(self, c: "ChunkHash") -> bool:

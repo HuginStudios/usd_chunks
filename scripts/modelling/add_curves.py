@@ -123,23 +123,24 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
     groups = [x for x in owner.get_my_params() if isinstance(x, chunk.Group)]
     selected = param.value
 
+    ctx = owner.get_edit_context()
+    if ctx and chunk_registry.ChunkLayerManager().initialized:
+        chunk_registry.ChunkLayerManager().clear_layer(ctx.identifier)
+
     for g in groups:
         if g.name == selected:
-            g.unset_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
+            g.unset_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
         else:
-            g.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
+            g.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
 
 
 def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
+    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+        return
+
     stage = owner.get_stage()
 
     if not stage:
-        return
-
-    layer = owner.get_edit_context()
-
-    if owner.has_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN):
-        chunk_registry.ChunkLayerManager().clear_layer(layer.identifier)
         return
 
     count = owner.get_param("count")
@@ -171,7 +172,7 @@ def main():
             chunk.Slider("length", default_value=1),
         ]
     )
-    curly_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN)
+    curly_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     curly_group.add_callback(hair_changed)
 
     chunk_api = chunk.Chunk("Add Hair")
@@ -181,5 +182,6 @@ def main():
 
     return chunk_api
 
+
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)
+    return chunk.DefaulConfig(category=chunk.StandardCategory.MODELLING)

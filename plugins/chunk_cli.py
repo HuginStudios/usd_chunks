@@ -84,6 +84,5 @@ if __name__ == "__main__":
         parse_params(mod, args.args)
 
         if args.e:
-            print("EXECUTE")
             c = list(mod.loaded_chunks.values())[-1]
             c.execute()

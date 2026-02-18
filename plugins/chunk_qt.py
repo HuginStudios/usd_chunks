@@ -1,5 +1,5 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, DefaultDict, List
 
 from pxr import Tf
 
@@ -9,8 +9,9 @@ from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
 
 from functools import partial
-
+from collections import defaultdict
 from usd_chunks.chunk_flags import ChunkFlags
+from enum import Enum
 
 
 class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
@@ -340,12 +341,14 @@ class LabeledWidget(QtWidgets.QWidget):
 
         self.widget: ChunkParamWidgetBase = widget
         self.label = QtWidgets.QLabel()
+        self.label.setHidden(True)
 
         self.vlayout.addWidget(self.label)
         self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
     def update_label(self, text):
+        self.label.setHidden(not bool(text))
         self.label.setText(text)
 
 
@@ -372,7 +375,7 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
 
         self.content_layout = QtWidgets.QFormLayout()
         self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
-        self.content_layout.setContentsMargins(2, 2, 2, 2)
+        self.content_layout.setContentsMargins(2, 1, 2, 1)
         self.content_layout.setHorizontalSpacing(0)
         self.content.setLayout(self.content_layout)
 
@@ -397,7 +400,7 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
 
         self.__layout__ = QtWidgets.QVBoxLayout()
         self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.__layout__.setContentsMargins(2, 2, 2, 2)
+        self.__layout__.setContentsMargins(2, 1, 2, 1)
         self.__layout__.setSpacing(0)
 
         self.__layout__.addWidget(self.minimize_button)
@@ -447,8 +450,12 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
 
         if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
             self.minimize_button.setText(self.group.get_label())
+            self.minimize_button.setHidden(False)
         else:
             self.minimize_button.setText("")
+            if not self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
+                self.minimize_button.setHidden(True)
+
         if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
             self.content.setLineWidth(2)
@@ -653,7 +660,7 @@ class ChunkArea(QtWidgets.QScrollArea):
         super().__init__(parent)
 
         self.flow = QtWidgets.QVBoxLayout()
-        self.flow.setContentsMargins(0, 5, 0, 0)
+        self.flow.setContentsMargins(0, 0, 0, 0)
 
         self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -684,6 +691,42 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
     def tabPosition(self) -> QtWidgets.QTabWidget.TabPosition:
         return self._tabPosition
+
+    def contextMenuEvent(self, event):
+        items = dict()
+        items["menu"] = QtWidgets.QMenu("chunks")
+
+        for mod in chunk_registry.ChunkRegistry().registered_modules.values():
+            cat = mod.config.category
+            if isinstance(cat, Enum):
+                cat = cat.value
+
+            namespace = mod.module_name.split(".")
+            if namespace[0].lower() == cat.lower():
+                namespace.pop(0)
+
+            if cat:
+                namespace.insert(0, cat)
+
+            d = items
+            for ns in namespace:
+                if ns == namespace[-1]:
+                    if m := d.get("menu"):
+                        action = m.addAction(ns)
+                        action.setData(mod)
+                    break
+                elif ns not in d:
+                    d[ns] = {"menu": d.get("menu").addMenu(ns)}
+                d = d[ns]
+
+        res = items["menu"].exec_(event.globalPos())
+
+        if not res or not (mod := res.data()):
+            return
+        if mod.loaded:
+            mod.create()
+        else:
+            mod.load()
 
 
 class ChunkWidgetDocker(QtWidgets.QWidget):

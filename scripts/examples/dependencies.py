@@ -98,4 +98,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaulConfig(chunk.StandardCategory.EXAMPLES, load=False)
