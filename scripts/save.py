@@ -14,7 +14,7 @@ def save_stage(owner: chunk.Chunk, notice, sender):
         return
 
     if stage := owner.get_stage():
-        print("EXPORT FILE", dest)
+        print("Save file:", dest)
         stage.Export(dest)
 
 def main():
@@ -28,8 +28,7 @@ def main():
     myChunk.add_param(btn)
 
     myChunk.add_callback(save_stage, notice_alias=chunk.ChunkNoticeAlias.CHUNK_EXECUTED)
-
     return myChunk
 
 def config():
-    return chunk.DefaulConfig(chunk.StandardCategory.EXAMPLES, "Save the stage to a file")
+    return chunk.DefaulConfig(chunk.StandardCategory.UTILS, "Save the stage to a file")
