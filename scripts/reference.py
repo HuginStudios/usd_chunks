@@ -55,14 +55,14 @@ def main():
     # import
     reference_fb = chunk.FileBrowser("file_path", extensions=[".usd", ".usda", ".usdc", ".usdz"])
     reference_fb.add_callback(file_changed)
-    import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path", flags=[chunk.ChunkFlags.ParamFlags.LABELED])
+    import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     import_primpath.add_callback(import_callback)
 
     referenceChunk.add_param(reference_fb)
     referenceChunk.add_param(import_primpath)
 
     # prim location
-    primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=[chunk.ChunkFlags.ParamFlags.LABELED])
+    primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     primpath.add_callback(import_callback)
     referenceChunk.add_param(primpath)
 

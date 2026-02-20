@@ -13,6 +13,7 @@ myChunk = reg.get_chunk("my_chunk")
 from types import ModuleType
 from typing import Iterable, Optional, Set, Any, Callable, List, Dict, TYPE_CHECKING
 from importlib import util
+from collections import defaultdict
 
 import glob
 import os
@@ -79,23 +80,25 @@ class ChunkModule:
             return
 
         if chunk_name is not None:
-            c = self.get_chunk(chunk_name)
-            if not c:
+            if not (c := self.get_chunk(chunk_name)):
                 return
 
             if len(self.loaded_chunks) == 1:
                 self.loaded = False
 
-            if dc := self.loaded_chunks.get(chunk_name):
-                dc.request_delete()
-                send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, dc, data=dc)
+            self.loaded_chunks.pop(chunk_name)
+            c.request_delete()
+            send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, c, data=c)
 
         else:
             self.loaded = False
             chunks = list(self.loaded_chunks.values())
             for c in chunks:
+                self.loaded_chunks.pop(c.name)
+                print("UNLOAD CHUNK", c.name)
                 c.request_delete()
                 send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, c, data=c)
+
 
     def load_config(self) -> bool:
         if hasattr(self.module, "config"):
@@ -160,6 +163,11 @@ class ChunkModule:
             self.loaded = False
             return False
 
+        # if reqs := self.config.requirements:
+        #     loaded = set(ChunkRegistry().registered_modules.keys())
+        #     unloaded = [x for x in reqs if x not in loaded]
+        #     if unloaded:
+        #         raise ModuleNotFoundError(f"Module {self.module_name} is missing requirements: {unloaded}")
         try:
             self.func = getattr(self.module, func_name)
             if not self.func:
@@ -221,6 +229,9 @@ class ChunkModule:
         return loaded
 
     def should_load(self) -> bool:
+        if module_filter := os.environ.get("USD_CHUNK_FILTER"):
+            if self.module_name not in module_filter:
+                return False
         if not self.config:
             return False
         if not self.config.load:
@@ -323,8 +334,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             working_dirs (Iterable[str]): The directories containing the Python chunk files to register.
         """
 
-        new_modules: Dict[str, ChunkModule] = {}
-
         for working_dir in working_dirs:
             # Loop over all directories of the working_dirs directory
             chunk_python_files = glob.glob(os.path.sep.join([working_dir, "**", "*.py"]), recursive=True)
@@ -338,21 +347,30 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
                 mod = ChunkModule(module_name=module_name, module_file=module_path)
 
-                if self.load_module(mod, not unloaded):
-                    new_modules[mod.module_name] = mod
+                if self.register_module(mod):
+                    self.registered_modules[mod.module_name] = mod
 
-        self.registered_modules |= new_modules
+        if not unloaded:
+            self._load_modules()
 
-    def load_module(self, mod: ChunkModule, load_chunk=True):
+    def _load_modules(self):
+        for mod in self.registered_modules.values():
+            if mod.should_load() and mod.should_load_for_plugin(self.plugin):
+                mod.load()
+
+    def register_module(self, mod: ChunkModule):
         """
         Load the actual module and runs the main function
 
         Args:
             mod (ChunkModule): The ChunkModule to load and run
         """
+
+        mod.loaded = False
+
         spec = util.spec_from_file_location(mod.module_name, mod.module_file)
         if not spec or not spec.loader:
-            return
+            return False
 
         module = util.module_from_spec(spec)
         try:
@@ -362,7 +380,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later§
             print(f"Failed to load module {mod.module_name}:", traceback.format_exc())
-            mod.loaded = False
             return False
         else:
             mod.module = module
@@ -376,48 +393,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             # Although not loaded
             return True
 
-        if module_filter := os.environ.get("USD_CHUNK_FILTER"):
-            if mod.module_name not in module_filter:
-                mod.loaded = False
-                return True
-
-        if not mod.should_load():
-            mod.loaded = False
+        if not (mod.should_load() or mod.should_load_for_plugin(self.plugin)):
             return True
 
-        if not mod.should_load_for_plugin(self.plugin):
-            mod.loaded = False
-            return False
-
-        if load_chunk:
-            mod.load()
-
         return True
-
-    def unload_chunk_module(self, mod: ChunkModule):
-        """
-        Unload a ChunkModule
-
-        Args:
-            mod (ChunkModule): The module to unload
-        """
-        if not mod:
-            return
-        mod.unload()
-
-    def unload_chunk(self, chunk_name: str):
-        """
-        Similarly to unload_chunk_module(), but this takes the name of a chunk
-        instead of a ChunkModule object
-
-        Args:
-            chunk_name (str): The name of the chunk we wish to unload
-        """
-
-        for mod in self.registered_modules.values():
-            if not mod.holds_chunk(chunk_name):
-                continue
-            mod.unload(chunk_name)
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
         """Get the ChunkModule object in the registry where module_name matches the
@@ -459,10 +438,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     def reload_all(self):
         for mod in self.registered_modules.values():
-            self.unload_chunk_module(mod)
+            mod.unload()
 
             if not mod.loaded:
-                self.load_module(mod)
+                self.register_module(mod)
+
+        self._load_modules()
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):

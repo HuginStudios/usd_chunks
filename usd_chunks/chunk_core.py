@@ -110,7 +110,8 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
             sender (ChunkParamBase): The sender
         """
         attrname = notice.data.name
-        if attrname == "value" and notice.data.value is not None:
+        if attrname == "value":
+            self._blocked = True
             self.set_value(notice.data.value)
 
         elif attrname in ["name", "label"]:
@@ -197,6 +198,12 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         Args:
             value (Optional[Any], optional): The new value set on the widget. Defaults to None.
         """
+
+        blocked = self._blocked
+        self._blocked = False
+        if blocked:
+            return
+        
         if self.param is not None:
             if value is None:
                 value = self.get_value()
@@ -204,7 +211,6 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
                 self.param.value = value
             except ValueError:
                 self.set_value(self.param.value)
-
 
 class ChunkWidgetFactoryBase(Protocol):
     """
@@ -783,6 +789,20 @@ class AttributesMetaclass(type):
             except Exception:
                 return super(res, inst).__setattr__(name, resval)
 
+            resval = value
+
+            # try:
+            #     for name, func in inst._attrib_functions.items():
+            #         attr_sender = inst._attr_senders.get(name)
+            #         if not attr_sender:
+            #             continue
+            #         resval = func(inst, attr_sender)
+            #         print("SOLVE ATTRIBUTE", name, "=", res)
+            #         # setattr(self, name, res)
+
+            # except AttributeError:
+            #     pass
+
             # Run conversion
             if attrib and attrib.metadata.get("convert", True):
                 resval = inst._safe_convert(attrib, value)
@@ -1218,19 +1238,27 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         self,
         notice: chunk_notice.ChunkNotice | None,
         sender: Any,
-        propagated: Optional[chunk_notice.ChunkNotice] = None,
+        propagated: Optional[Set[chunk_notice.ChunkNotice]] = None,
     ) -> chunk_notice.ChunkNotice | None:
 
         if not self._solving_attributes:
             # Run any attribute functions before continuing. Since calling __setattr__ calls value_changed, we need to disable
             # the notices to not get recursion. Only the first call to __setattr__ should send notices.
-            self._solving_attributes = True
-            for name, func in self._attrib_functions.items():
+
+            if notice and notice.alias == chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED:
+                # for name, func in self._attrib_functions.items():
+                name = notice.data.name
                 attr_sender = self._attr_senders.get(name)
-                if not attr_sender:
-                    continue
-                setattr(self, name, func(self, attr_sender))
-            self._solving_attributes = False
+                func = self._attrib_functions.get(name)
+
+                if attr_sender and func:
+                    # self._solving_attributes = True
+                    res = func(self, attr_sender)
+                    print("SOLVE ATTRIBUTE", self.name, name, "=", res)
+                    setattr(self, name, res)
+                    # return None
+
+            # self._solving_attributes = False
 
         return super().data_changed(notice, sender, propagated)
 
@@ -1660,12 +1688,13 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         self,
         notice: Optional[chunk_notice.ChunkNotice],
         sender: Any,
-        propagated: Optional[chunk_notice.ChunkNotice] = None,
+        propagated: Optional[Set[chunk_notice.ChunkNotice]] = None,
     ) -> Optional[chunk_notice.ChunkNotice]:
+        
         # Override to reflect any changes on the children in this ds. Used to update the names when a name changes
-        if propagated and (p := propagated.data):
+        if notice and (p := notice.data):
             if isinstance(p, AttributeSender) and p.name == "name" and p.old_value in self.names.maps[0]:
-                self.name_changed(propagated.old_value)  # type: ignore
+                self.name_changed(notice.old_value)  # type: ignore
 
         return super().data_changed(notice, sender, propagated)
 
@@ -2190,9 +2219,11 @@ class ChunkCommon(AttributesBase):
         If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.
         """
 
+
         if not self.can_delete():
-            print("Cant delete", self.name)
-            return
+            print(f"Deleting node: {self.name} with connected outputs. Stuff may break")
+            self.get_dag_node()._connections.inputs.clear()
+            self.get_dag_node()._connections.outputs.clear()
 
         owner = self.get_owner()
         if owner and isinstance(owner, ChunkContainerBase):
@@ -2219,7 +2250,6 @@ class ChunkUsdAttributeSupport(AttributesBase):
     # link to UsdAttribute if needed. Hidden in __init__ as the field would be added as the first argument
     # by the concrete classes
     _usd_prop: Optional[Usd.Property] = attrs.field(default=None, init=False)
-    # _usd_rel: Optional[Usd.Relationship] = attrs.field(default=None, init=False)
 
     # Hold a connection to the Usd.Attribute of usd_attr.
     _usd_prop_connection: Optional[chunk_notice.NoticeConnection] = attrs.field(
@@ -2230,7 +2260,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         self,
         notice: Optional[chunk_notice.ChunkNotice],
         sender: Any,
-        propagated: Optional[chunk_notice.ChunkNotice] = None,
+        propagated: Optional[Set[chunk_notice.ChunkNotice]] = None,
     ) -> Optional[chunk_notice.ChunkNotice]:
         my_notice = super().data_changed(notice, sender, propagated)
 
@@ -2505,9 +2535,9 @@ class ChunkContainerBase(ChunkCommon):
         """
         Request delete this container, and subsequently clear its children
         """
-        if not self.can_delete():
-            print("Cant delete", self.name)
-            return
+        # if not self.can_delete():
+        #     # print("Cant delete", self.name)
+        #     return
 
         self.children.clear()
         self.children.set_owner(None)
@@ -2881,6 +2911,9 @@ class ChunkListGroupBase(ChunkGroupBase):
             for i, grp in enumerate(self.proxy_params):
                 grp.name = str(i)
 
+            if value != old_value:
+                self.send_self(chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
+
         return super().value_changed(attrname, old_value, value)
 
     def get_params(self) -> Tuple[ChunkCommon, ...]:
@@ -3030,11 +3063,11 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         self,
         notice: Optional[chunk_notice.ChunkNotice],
         sender: Any,
-        propagated: Optional[chunk_notice.ChunkNotice] = None,
+        propagated: Optional[Set[chunk_notice.ChunkNotice]] = None,
     ) -> Optional[chunk_notice.ChunkNotice]:
         my_notice = super().data_changed(notice, sender, propagated)
 
-        if propagated and (p := propagated.data):
+        if notice and (p := notice.data):
             if isinstance(p, AttributeSender) and p.name == "value" and not self.is_blocked():
                 if usd_attr := self.get_usd_prop():
                     chunk_notice.send_notice(p.get_notice_alias(), self.get_attribute_sender("value"), usd_attr)
@@ -3095,6 +3128,7 @@ class ChunkConfig(AttributesBase):
     description: str = attrs.field(default="Chunk description...")
     load: bool = attrs.field(default=True)
     load_for_plugin: Optional[str] = attrs.field(default=None)
+    requirements: list[str] = attrs.field(factory=list)
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED

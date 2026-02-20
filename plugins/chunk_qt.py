@@ -40,11 +40,12 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
         return self.value() / self._step
 
     def set_value(self, value):
-        return self.setValue(value * self._step)
+        # self.blockSignals(True)
+        self.setValue(value * self._step)
+        # self.blockSignals(False)
 
     def set_param_layout(self, layout_flags: usd_chunks.chunk_flags.ChunkFlags.LayoutFlags):
         is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL in layout_flags
-
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
         self.setOrientation(orient)
@@ -52,7 +53,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
     def value_changed(self, value: Optional[int | float] = None):
         if not self.param or value is None:
             return
-        self.param.value = value / float(self._step)
+        super().value_changed(value / float(self._step))
 
 
 class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
