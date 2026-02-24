@@ -203,7 +203,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         self._blocked = False
         if blocked:
             return
-        
+
         if self.param is not None:
             if value is None:
                 value = self.get_value()
@@ -211,6 +211,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
                 self.param.value = value
             except ValueError:
                 self.set_value(self.param.value)
+
 
 class ChunkWidgetFactoryBase(Protocol):
     """
@@ -786,7 +787,7 @@ class AttributesMetaclass(type):
             fields = attrs.fields(res)  # type: ignore
             try:
                 attrib = getattr(fields, name)
-            except Exception:
+            except AttributeError:
                 return super(res, inst).__setattr__(name, resval)
 
             resval = value
@@ -820,7 +821,8 @@ class AttributesMetaclass(type):
 
             try:
                 inst.value_changed(name, old_value, resval)
-            except AttributeError:
+            except AttributeError as e:
+                print(e)
                 pass
 
         res.__setattr__ = _wrapped_setattr  # type: ignore
@@ -1126,7 +1128,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
                 # SHARE should not copy nor get from default. Simply pass the same reference. Should be used with caution
                 data[name] = self.__dict__.get(name)
 
-        copied.__dict__.update(data)
+        copied.__dict__.update(data)  # type: ignore
 
         # Call the post-init if available. If not explicitly overwritten, this should initialize the base ChunkNoticePropagator
         post_init = getattr(copied, "__attrs_post_init__", None)
@@ -1192,14 +1194,14 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             value (Any): The new value
         """
 
-        if self.is_blocked() and attrname != "state":
-            return
-
         if old_value == value or attrname.startswith("_"):
             # No change was made, we should not send the notice
             return
 
         if attrname in self._failed_converters:
+            return
+
+        if self.is_blocked() and attrname != "state":
             return
 
         if sender := self._attr_senders.get(attrname):
@@ -1234,33 +1236,31 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         """
         self._attrib_functions[attrname] = method
 
-    def data_changed(
-        self,
-        notice: chunk_notice.ChunkNotice | None,
-        sender: Any,
-        propagated: Optional[Set[chunk_notice.ChunkNotice]] = None,
-    ) -> chunk_notice.ChunkNotice | None:
+    def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> chunk_notice.ChunkNotice | None:
 
         if not self._solving_attributes:
             # Run any attribute functions before continuing. Since calling __setattr__ calls value_changed, we need to disable
             # the notices to not get recursion. Only the first call to __setattr__ should send notices.
 
-            if notice and notice.alias == chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED:
-                # for name, func in self._attrib_functions.items():
-                name = notice.data.name
-                attr_sender = self._attr_senders.get(name)
-                func = self._attrib_functions.get(name)
+            if notice and notice.alias in [
+                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                chunk_notice.ChunkNoticeAlias.INPUT_CHANGED,
+            ]:
+                for name, func in self._attrib_functions.items():
+                    # name = notice.data.name
+                    attr_sender = self._attr_senders.get(name)
+                    # func = self._attrib_functions.get(name)
 
-                if attr_sender and func:
-                    # self._solving_attributes = True
-                    res = func(self, attr_sender)
-                    print("SOLVE ATTRIBUTE", self.name, name, "=", res)
-                    setattr(self, name, res)
+                    if attr_sender and func:
+                        self._solving_attributes = True
+                        res = func(self, attr_sender)
+                        # print("SOLVE ATTRIBUTE", self.name, name, "=", res)
+                        setattr(self, name, res)
                     # return None
 
-            # self._solving_attributes = False
+            self._solving_attributes = False
 
-        return super().data_changed(notice, sender, propagated)
+        return super().data_changed(notice)
 
     def _safe_convert(self, attr: attrs.Attribute, val: Any) -> Any:
         """
@@ -1474,15 +1474,6 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
 
         self.set_owner(None)
 
-    # def get_dag_node(self) -> chunk_notice.DagNode:
-    #     # return super().get_dag_node()
-    #     if not self._dag_node:
-    #         self._dag_node = chunk_notice.DagNode(self, self.data_changed)
-    #     return self._dag_node
-
-    # def data_changed(self, notice: chunk_notice.ChunkNotice | None, sender: Any, propagated: chunk_notice.ChunkNoticePropagator | None = None) -> chunk_notice.ChunkNotice | None:
-    #     return super().data_changed(notice, sender, propagated)
-
     def send_self(
         self, alias: chunk_notice.ChunkNoticeAlias | None = None, data: Any = None
     ) -> chunk_notice.ChunkNotice | None:
@@ -1527,7 +1518,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         if name == "request_delete":
             return super().__getattribute__("request_delete")
 
-        if not name.startswith("__") and hasattr(super(), name) or name in ["_dag_node", "_blocked", "_callbacks"]:
+        if not name.startswith("__") and hasattr(super(), name) or name in ["_blocked", "_callbacks"]:
             return super().__getattribute__(name)
 
         if name in ["children", "_children"]:
@@ -1558,13 +1549,6 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             self.__value_sender.old_value = self._value
             self._value = value
             self.__value_sender.execute()
-
-            # owner = self.get_owner()
-            # idx = 0
-            # while owner:
-            #     print(" " * idx, owner.__class__.__name__)
-            #     idx += 1
-            #     owner = owner.get_owner()
             return
 
         try:
@@ -1684,19 +1668,14 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             target.add(proxy)
         return target
 
-    def data_changed(
-        self,
-        notice: Optional[chunk_notice.ChunkNotice],
-        sender: Any,
-        propagated: Optional[Set[chunk_notice.ChunkNotice]] = None,
-    ) -> Optional[chunk_notice.ChunkNotice]:
-        
+    def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> Optional[chunk_notice.ChunkNotice]:
+
         # Override to reflect any changes on the children in this ds. Used to update the names when a name changes
         if notice and (p := notice.data):
             if isinstance(p, AttributeSender) and p.name == "name" and p.old_value in self.names.maps[0]:
                 self.name_changed(notice.old_value)  # type: ignore
 
-        return super().data_changed(notice, sender, propagated)
+        return super().data_changed(notice)
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         # We are only interested in hijacking data_changed, and should not send any signals.
@@ -2219,7 +2198,6 @@ class ChunkCommon(AttributesBase):
         If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.
         """
 
-
         if not self.can_delete():
             print(f"Deleting node: {self.name} with connected outputs. Stuff may break")
             self.get_dag_node()._connections.inputs.clear()
@@ -2256,17 +2234,13 @@ class ChunkUsdAttributeSupport(AttributesBase):
         default=None, init=False, metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND)
     )
 
-    def data_changed(
-        self,
-        notice: Optional[chunk_notice.ChunkNotice],
-        sender: Any,
-        propagated: Optional[Set[chunk_notice.ChunkNotice]] = None,
-    ) -> Optional[chunk_notice.ChunkNotice]:
-        my_notice = super().data_changed(notice, sender, propagated)
+    def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> Optional[chunk_notice.ChunkNotice]:
+        my_notice = super().data_changed(notice)
 
         stage = chunk_registry.ChunkRegistry().scene.get_stage()
-        if stage and (usd_attr := self.get_usd_prop()) and not self.is_blocked():
-            chunk_notice.send_notice(sender.get_notice_alias(), sender, usd_attr)
+        if notice and stage and (usd_attr := self.get_usd_prop()) and not self.is_blocked():
+            chunk_notice.send_notice(notice.alias, notice.data, usd_attr)
+
         return my_notice
 
     def get_stage(self) -> Usd.Stage | None:
@@ -2292,7 +2266,6 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice (chunk_notice.AttributeChangeNotice): The notice holding the UsdAttribute
             sender (AttributeSender): The sender of the notice
         """
-
         if isinstance(notice.data, Usd.Attribute):
             if notice.data.Get(0) == sender.value:
                 return
@@ -2581,15 +2554,15 @@ class ChunkContainerBase(ChunkCommon):
         """
         return self.children.get_my_params()
 
-    def get_last_param_change(
-        self,
-    ) -> Tuple[Tf.Notice | None, chunk_notice.ChunkNoticePropagator | None]:
-        """Retreive the last changed parameter in this group. Will look inside nested groups as well to find parameter changes
+    # def get_last_param_change(
+    #     self,
+    # ) -> Tuple[Tf.Notice | None, chunk_notice.ChunkNoticePropagator | None]:
+    #     """Retreive the last changed parameter in this group. Will look inside nested groups as well to find parameter changes
 
-        Returns:
-            Tuple[Tf.Notice, ChunkParam]: Last changed ChunkParam and the notice associated with the change on this group or in nested group
-        """
-        return list(self.iter_changes())[-1]
+    #     Returns:
+    #         Tuple[Tf.Notice, ChunkParam]: Last changed ChunkParam and the notice associated with the change on this group or in nested group
+    #     """
+    #     return list(self.iter_changes())[-1]
 
     def check_hierarchy(self):
         """
@@ -3059,13 +3032,8 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             raise KeyError(f"Index {key} does not exist on vector")
         return param
 
-    def data_changed(
-        self,
-        notice: Optional[chunk_notice.ChunkNotice],
-        sender: Any,
-        propagated: Optional[Set[chunk_notice.ChunkNotice]] = None,
-    ) -> Optional[chunk_notice.ChunkNotice]:
-        my_notice = super().data_changed(notice, sender, propagated)
+    def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> Optional[chunk_notice.ChunkNotice]:
+        my_notice = super().data_changed(notice)
 
         if notice and (p := notice.data):
             if isinstance(p, AttributeSender) and p.name == "value" and not self.is_blocked():
