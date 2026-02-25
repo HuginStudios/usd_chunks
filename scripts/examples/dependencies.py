@@ -44,7 +44,12 @@ def callback(owner: chunk.Chunk, notice, sender):
     assert isinstance(bp, chunk.Slider)
     assert isinstance(cp, chunk.Slider)
 
+    # print("D changed:", notice.data.name)
     print(f"({a.name} * {b.name} = {c.name}): {ap.value} * {bp.value} = {cp.value}")
+    
+    exp = ap.value * bp.value
+    if abs(exp - cp.value) > 0.00001:
+        print(f"FAILED. C value = {cp.value}. Expected value: {exp}")
 
 
 def c_function(owner: chunk.Slider, attrib):
@@ -59,9 +64,6 @@ def c_function(owner: chunk.Slider, attrib):
     assert isinstance(b, chunk.Slider)
 
     return a.value * b.value
-
-def chunk_changed(owner, notice, sender):
-    print("Chunk Changed", owner.name)
 
 def main():
     a = chunk.Chunk("A")
@@ -83,7 +85,7 @@ def main():
     d_param = chunk.Button("Execute")
     d.add_param(d_param)
 
-    d.add_callback(callback, sender=c, notice_alias=chunk.ChunkNoticeAlias.INPUT_CHANGED)
+    d.add_callback(callback)
 
     d.add_dependency(a)
     d.add_dependency(b)
@@ -91,8 +93,6 @@ def main():
 
     ## Test circular dependency
     # a.add_dependency(d)
-
-    d.add_callback(chunk_changed)
 
     return [a, b, c, d]
 

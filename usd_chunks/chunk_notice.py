@@ -251,17 +251,17 @@ class ChunkExecuteNotice(ChunkNotice):
 
 ### Create / Delete notices
 @chunk_notice(ChunkNoticeAlias.PARAM_ADDED)
-class ParamAddedNotice(ChunkNotice):
+class ParamAddedNotice(ParamChangeNotice):
     pass
 
 
 @chunk_notice(ChunkNoticeAlias.PARAM_REMOVED)
-class ParamRemovedNotice(ChunkNotice):
+class ParamRemovedNotice(ParamChangeNotice):
     pass
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_DELETED)
-class ChunkDeletedNotice(ChunkNotice):
+class ChunkDeletedNotice(ChunkChangeNotice):
     pass
 
 
@@ -418,23 +418,17 @@ class DagNode:
     """
 
     __slots__ = (
-        "_cache",
-        "_cached",
         "_input_data",
         "_dirty",
         "_connections",
         "_callback",
-        "notice",
         "_propagator",
         "__weakref__",
     )
 
     def __init__(self, propagator: "ChunkNoticePropagator"):
-
         self._input_data: Set[Tuple[ChunkNoticeAlias, "DagNode"]] = set()
         self._dirty = True
-        self._cache = []
-        self._cached = False
         self._connections: DagConnections = DagConnections()
         self._propagator = weakref.ref(propagator)
 
@@ -450,30 +444,24 @@ class DagNode:
             return cb
         raise ReferenceError("Callback died")
 
-    def set_callback(self, callback: CallbackT | None):
-        """
-        Set the callback to call when solving this node. The callback should return a ChunkNotice upon success.
-        In the standard usecase of the DagNode, the owning ChunkNoticePropagator will set the callback to data_changed
-
-        Args:
-            callback (CallbackT | None): The callback
-        """
-        if not callback:
-            self._callback = None
-        elif inspect.ismethod(callback):
-            self._callback = weakref.WeakMethod(callback)
-        else:
-            self._callback = weakref.ref(callback)
-
     @property
     def dirty(self):
         return self._dirty
+
+    @property
+    def name(self):
+        # Useful for debugging the solve
+        return self.propagator.name if hasattr(self.propagator, "name") else self.propagator.__class__.__name__  # type: ignore
 
     @dirty.setter
     def dirty(self, val: bool):
         self._dirty = val
         if val:
             self.dirty_dependants()
+
+    def disconnect(self):
+        self._connections.inputs.clear()
+        self._connections.outputs.clear()
 
     def next_key(self, items: ConnSetT) -> int:
         """
@@ -493,10 +481,6 @@ class DagNode:
                 return i
         raise KeyError("Somewthign went wrong")
 
-    def clear_cache(self):
-        self._cache.clear()
-        self._cached = False
-
     def add_dependency(self, node: "DagNode", connect_reverse=True):
         """
         Add a dependency (aka input) to this node. This will dirty self
@@ -505,11 +489,11 @@ class DagNode:
             node (DagNode): The new dependency to add
             connect_reverse (bool, optional): If the input node should connect this node to its output. Defaults to True.
         """
-        self.clear_cache()
         self._connections.inputs[self.next_key(self._connections.inputs)] = node
         if connect_reverse:
             node.add_dependant(self)
-        self.dirty = True
+        else:
+            self.dirty = True
 
     def add_dependant(self, node: "DagNode"):
         """
@@ -518,8 +502,8 @@ class DagNode:
         Args:
             node (DagNode): The dependant node
         """
-        self.clear_cache()
         self._connections.outputs[self.next_key(self._connections.outputs)] = node
+        self.dirty = True
 
     def set_owner(self, owner: Optional["ChunkNoticePropagator"]):
         """
@@ -532,7 +516,6 @@ class DagNode:
         if owner == self.get_owner():
             return
 
-        self.clear_cache()
         if owner is None:
             self._connections.owner = None
         else:
@@ -642,7 +625,7 @@ class DagNode:
         if searched is None:
             searched = set()
 
-        if self._dirty and self in searched:
+        if self in searched:
             # If the node was added to the local copy of the searched set, then it is a circular dependency
             raise RecursionError("DAG has circular dependencies at node:", self.propagator)
 
@@ -685,7 +668,7 @@ class DagNode:
         if not dirty_inputs:
             yield from self.solve_outputs()
 
-    def _solve_outputs(self) -> Generator["DagNode", None, None]:
+    def solve_outputs(self) -> Generator["DagNode", None, None]:
         """
         Solve self + outputs + owner. This is the main solve method that clients should use, as it will trigger all dependent nodes
         to solve when this node has solved.
@@ -702,51 +685,31 @@ class DagNode:
         if not self.should_solve():
             return None
 
-        self.dirty = False
-
         should_yield_self = self.propagator and self.propagator.get_notice_alias()
 
         if self.is_inputs_dirty():
-            yield from self.solve_inputs()
-            if should_yield_self:
-                yield self
+            if g := self.solve_inputs():
+                yield from g
 
             self._input_data.clear()
             return
+            # if should_yield_self:
+            #     yield self
 
+            # self.dirty = False
+            # return
+
+        self.dirty = False
         if should_yield_self:
             yield self
 
         for node in self.get_outputs():
-            yield from node._solve_outputs()
+            yield from node.solve_outputs()
 
         if node := self.get_owner_node():
-            yield from node._solve_outputs()
+            yield from node.solve_outputs()
 
         self._input_data.clear()
-
-    def solve_outputs(self) -> Generator["DagNode", None, None]:
-        """
-        Solve self + outputs + owner. This is the main solve method that clients should use, as it will trigger all dependent nodes
-        to solve when this node has solved.
-
-        Args:
-            notice (Optional[ChunkNotice]): The input notice
-            sender (Any): The input sender
-            propagated (Optional[ChunkNoticePropagator], optional): An optional propagator. Defaults to None.
-
-        Returns:
-            Optional[ChunkNotice]: The result notice, being either the input notice, or the result from the callback, or None
-        """
-        if self._cache and self._cached:
-            for i in self._cache:
-                yield i
-            return
-
-        for i in self._solve_outputs():
-            self._cache.append(i)
-            yield i
-        self._cached = True
 
 
 class ChunkNoticePropagator:
@@ -869,8 +832,13 @@ class ChunkNoticePropagator:
             if self.is_blocked():
                 return None
 
+        # name = self.name if hasattr(self,"name") else self.__class__.__name__
+        # print("sending self:", name)
+        # print("   ", notice)
+
         if notice:
             notice.Send(self)
+        return notice
 
     def send_self(self, alias: Optional[ChunkNoticeAlias] = None, data: Any = None) -> Optional[ChunkNotice]:
         """Sends a Tf.Notice, with self as sender. The type of notice is determined by get_notice_alias(), or optionally the alias argument.
@@ -883,14 +851,13 @@ class ChunkNoticePropagator:
             Optional[ChunkNotice]: The notice that was sent, or None if no notice was sent
         """
 
-        if not alias or (alias != ChunkNoticeAlias.STATE_CHANGED):
-            if self.is_blocked():
-                return None
-
         if alias is None:
             alias = self.get_notice_alias()
 
         if not alias:
+            return None
+
+        if alias != ChunkNoticeAlias.STATE_CHANGED and self.is_blocked():
             return None
 
         notice_data = data if data is not None else self.get_notice_data()
@@ -960,21 +927,32 @@ class ChunkNoticePropagator:
         node = self.get_dag_node()
         node.dirty = True
 
+        msg = ""
+        msg += "\n====== SOLVE ======\n"
+
         for n in node.solve_outputs():
             if not (prop := n.propagator):
                 continue
 
-            # name = prop.name if hasattr(prop, "name") else prop.__class__.__name__
-            # print(name)
+            msg += f"solved: {n.name}\n"
 
             if inputs := n._input_data.copy():
                 for alias, inode in inputs:
                     if not (iprop := inode.propagator):
                         continue
-                    prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
-                    # print("   ", alias, iprop.name)
 
-            prop.send_self()
+                    if alias == prop.get_notice_alias():
+                        continue
+
+                    msg += f"   {alias.name}\n"
+                    prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
+
+
+            if notice := prop.send_self():
+                msg += f"   {notice.alias.name}\n"
+
+        msg += "====== FINISHED ======\n"
+        print(msg)
 
     def add_dependency(self, input: "ChunkNoticePropagator"):
         self.get_dag_node().add_dependency(input.get_dag_node())
@@ -1195,17 +1173,16 @@ class NoticeConnection:
             # Try running the callback function with the edit context to safely add any changes to the stage
             # to the correct layer
 
-            self.owner._blocked = sender is self.owner
-
             stage = self.owner.get_stage()
             ctx = self.owner.get_edit_context()
-            if stage and ctx and context:
-                with Usd.EditContext(stage, ctx):
+            try:
+                if stage and ctx and context:
+                    with Usd.EditContext(stage, ctx):
+                        meth(*args)
+                else:
                     meth(*args)
-            else:
-                meth(*args)
-
-            self.owner._blocked = False
+            except Exception as e:
+                print("Failed callback:", meth, e)
             return
 
         meth(*args)

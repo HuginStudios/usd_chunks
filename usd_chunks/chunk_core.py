@@ -110,15 +110,15 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
             sender (ChunkParamBase): The sender
         """
         attrname = notice.data.name
+        value = notice.data.value
         if attrname == "value":
-            self._blocked = True
-            self.set_value(notice.data.value)
+            self.set_value(value)
 
         elif attrname in ["name", "label"]:
-            self.param.get_label()
+            self.set_label(self.param.get_label())
 
-        elif attrname == "icon" and sender.icon:  #
-            self.set_icon(sender.icon)
+        elif attrname == "icon":
+            self.set_icon(value)
 
     def setup_chunk_widget(self):
         """
@@ -199,19 +199,13 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
             value (Optional[Any], optional): The new value set on the widget. Defaults to None.
         """
 
-        blocked = self._blocked
-        self._blocked = False
-        if blocked:
-            return
-
         if self.param is not None:
+            if self.param._solving_attributes:
+                return
+
             if value is None:
                 value = self.get_value()
-            try:
-                self.param.value = value
-            except ValueError:
-                self.set_value(self.param.value)
-
+            self.param.value = value
 
 class ChunkWidgetFactoryBase(Protocol):
     """
@@ -1237,28 +1231,23 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         self._attrib_functions[attrname] = method
 
     def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> chunk_notice.ChunkNotice | None:
-
         if not self._solving_attributes:
             # Run any attribute functions before continuing. Since calling __setattr__ calls value_changed, we need to disable
             # the notices to not get recursion. Only the first call to __setattr__ should send notices.
-
             if notice and notice.alias in [
                 chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
                 chunk_notice.ChunkNoticeAlias.INPUT_CHANGED,
             ]:
+
                 for name, func in self._attrib_functions.items():
-                    # name = notice.data.name
                     attr_sender = self._attr_senders.get(name)
-                    # func = self._attrib_functions.get(name)
 
                     if attr_sender and func:
+
                         self._solving_attributes = True
                         res = func(self, attr_sender)
-                        # print("SOLVE ATTRIBUTE", self.name, name, "=", res)
                         setattr(self, name, res)
-                    # return None
-
-            self._solving_attributes = False
+                self._solving_attributes = False
 
         return super().data_changed(notice)
 
@@ -2200,8 +2189,7 @@ class ChunkCommon(AttributesBase):
 
         if not self.can_delete():
             print(f"Deleting node: {self.name} with connected outputs. Stuff may break")
-            self.get_dag_node()._connections.inputs.clear()
-            self.get_dag_node()._connections.outputs.clear()
+            self.get_dag_node().disconnect()
 
         owner = self.get_owner()
         if owner and isinstance(owner, ChunkContainerBase):
@@ -2508,10 +2496,6 @@ class ChunkContainerBase(ChunkCommon):
         """
         Request delete this container, and subsequently clear its children
         """
-        # if not self.can_delete():
-        #     # print("Cant delete", self.name)
-        #     return
-
         self.children.clear()
         self.children.set_owner(None)
 
@@ -2852,7 +2836,6 @@ class ChunkListGroupBase(ChunkGroupBase):
         Raises:
             IndexError:
                 If the index is out of bounds
-
         """
         if len(self.proxy_params) == 0:
             return
@@ -2867,13 +2850,9 @@ class ChunkListGroupBase(ChunkGroupBase):
                 for i in range(old_value, value):
                     group = ChunkGroupBase(str(i), flags=ChunkFlags.GroupFlags.LABELED)
                     group.set_owner(self)
-
-                    proxy = NameSyncedContainer()
-                    proxy.set_owner(group)
                     self.proxy_params.append(group)
 
-                    group.children = proxy
-                    NameSyncedContainer.create_proxy(self.children, proxy)
+                    NameSyncedContainer.create_proxy(self.children, group.children)
                     self.send_self(chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
 
             elif value < old_value and len(self.proxy_params) > value:
@@ -2881,11 +2860,9 @@ class ChunkListGroupBase(ChunkGroupBase):
                     self.proxy_params[i].request_delete()
                     self.proxy_params.pop(i)
 
-            for i, grp in enumerate(self.proxy_params):
-                grp.name = str(i)
-
             if value != old_value:
-                self.send_self(chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
+                for i, grp in enumerate(self.proxy_params):
+                    grp.name = str(i)
 
         return super().value_changed(attrname, old_value, value)
 
@@ -2909,8 +2886,12 @@ class ChunkListGroupBase(ChunkGroupBase):
             index (int): The index to remove
         """
         try:
-            self.proxy_params[index].request_delete()
+            param = self.proxy_params[index]
+            param.get_dag_node().disconnect()
+
+            param.request_delete()
             self.proxy_params.pop(index)
+
         except IndexError as e:
             print("Failed to remove index from list. Index out of range", e)
             return

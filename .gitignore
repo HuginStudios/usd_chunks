@@ -4,4 +4,4 @@ __pycache__
 scripts/user
 .mypy*
 .env
-./testdoc/
+._installed_deps
