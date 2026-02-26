@@ -19,29 +19,31 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 
 """
 
-from pxr import Tf, Usd, Sdf
-
-from enum import IntEnum, IntFlag, auto
-from typing import (
-    Callable,
-    Any,
-    List,
-    Type,
-    Tuple,
-    Dict,
-    Optional,
-    Generator,
-    TypeAlias,
-    Iterator,
-    DefaultDict,
-    Set,
-)
-from typing_extensions import Self
-from collections import defaultdict
-from abc import abstractmethod
-import weakref
 import inspect
+import logging
+import weakref
+from abc import abstractmethod
+from enum import IntEnum, auto
+from typing import (
+    Any,
+    Callable,
+    DefaultDict,
+    Dict,
+    Generator,
+    Iterator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Type,
+    TypeAlias,
+)
+
 from attrs import define, field
+from pxr import Sdf, Tf, Usd
+from typing_extensions import Self
+
+logger = logging.getLogger(__name__)
 
 
 class ChunkNoticeAlias(IntEnum):
@@ -363,7 +365,7 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
         notice = notice_class(data)
     else:
         if data is not None:
-            print(
+            logger.warning(
                 f"Attempting to send notice {alias} with custom data which is not supported. Consider sending a ChunkNotice instead"
             )
         notice = notice_class()
@@ -831,11 +833,6 @@ class ChunkNoticePropagator:
         if not notice or (notice and notice.alias != ChunkNoticeAlias.STATE_CHANGED):
             if self.is_blocked():
                 return None
-
-        # name = self.name if hasattr(self,"name") else self.__class__.__name__
-        # print("sending self:", name)
-        # print("   ", notice)
-
         if notice:
             notice.Send(self)
         return notice
@@ -947,12 +944,11 @@ class ChunkNoticePropagator:
                     msg += f"   {alias.name}\n"
                     prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
 
-
             if notice := prop.send_self():
                 msg += f"   {notice.alias.name}\n"
 
         msg += "====== FINISHED ======\n"
-        print(msg)
+        logger.debug(msg)
 
     def add_dependency(self, input: "ChunkNoticePropagator"):
         self.get_dag_node().add_dependency(input.get_dag_node())
@@ -1182,7 +1178,7 @@ class NoticeConnection:
                 else:
                     meth(*args)
             except Exception as e:
-                print("Failed callback:", meth, e)
+                logger.exception(e)
             return
 
         meth(*args)
@@ -1199,7 +1195,7 @@ class NoticeConnection:
         """
         notice = get_notice(self.alias)
         if not notice:
-            print("Could not find appropriate notice to connect")
+            logger.warning("Could not find appropriate notice to connect for alias %s", self.alias)
             return
 
         if self.listener is not None:

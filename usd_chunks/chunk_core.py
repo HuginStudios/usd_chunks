@@ -17,47 +17,46 @@ we can propagate the attribute changes up the hierarchy in order to send notices
 """
 
 import copy
+import inspect
+import logging
+import os
+import re
+import uuid
+import weakref
+from abc import abstractmethod
+from collections import ChainMap
+from enum import IntEnum, IntFlag
 from typing import (
-    Callable,
-    List,
-    Set,
     Any,
+    Callable,
     Dict,
-    Protocol,
-    Tuple,
-    TypeVar,
-    Optional,
-    Union,
-    Iterable,
-    Generic,
-    TypedDict,
     Generator,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+    Set,
+    Tuple,
+    TypedDict,
+    TypeVar,
+    Union,
     get_origin,
 )
 
-from typing_extensions import dataclass_transform, Self
-from abc import abstractmethod
 import attrs
-
 from attr import _make as attrMake
-from collections import ChainMap
-from enum import IntEnum, IntFlag
+from pxr import Sdf, Usd
+from typing_extensions import Self, dataclass_transform
 
-import re
-import uuid
-import inspect
-
-from usd_chunks import chunk_notice, chunk_registry, ATTRS_VERSION
+from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
-import weakref
-
-import os
-from pxr import Tf, Usd, Sdf
 
 _ATTRS_SUPPORT_CONVERTER = ATTRS_VERSION >= (24, 1)  # type: ignore
 _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
 
-_T = TypeVar("_T")
+logger = logging.getLogger(__name__)
+
 ValueT = TypeVar("ValueT")
 ParamT = TypeVar("ParamT", bound="ChunkParamBase")
 GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
@@ -603,7 +602,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             widget = param.custom_widget
         else:
             if not self.factory.has_mapping(t):
-                print("Missing mapping in factory for creating widget", param.name)
+                logger.warning("Missing widget mapping for param %s", param.name)
                 return
 
             # Create a widget from the factory based on the param.get_type()
@@ -816,8 +815,7 @@ class AttributesMetaclass(type):
             try:
                 inst.value_changed(name, old_value, resval)
             except AttributeError as e:
-                print(e)
-                pass
+                logger.exception(e)
 
         res.__setattr__ = _wrapped_setattr  # type: ignore
 
@@ -894,7 +892,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         if not self.get_owner():
             return
         if not hasattr(self.get_owner(), self.name):
-            print(f"Failed to set attribute {self.name} from AttributeSender")
+            logger.error(f"Failed to set attribute {self.name} from AttributeSender")
             return
 
         setattr(self.get_owner(), self.name, val)
@@ -1291,7 +1289,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
             count += 1
             if count > max_count:
-                print("Failed to resolve failed converters. Tests exceeded max count")
+                logger.error("Failed to resolve failed converters. Tests exceeded max count")
                 self._failed_converters = {}
                 return
 
@@ -2188,7 +2186,7 @@ class ChunkCommon(AttributesBase):
         """
 
         if not self.can_delete():
-            print(f"Deleting node: {self.name} with connected outputs. Stuff may break")
+            logger.warning(f"Deleting node: {self.name} with connected outputs. Stuff may break")
             self.get_dag_node().disconnect()
 
         owner = self.get_owner()
@@ -2893,7 +2891,7 @@ class ChunkListGroupBase(ChunkGroupBase):
             self.proxy_params.pop(index)
 
         except IndexError as e:
-            print("Failed to remove index from list. Index out of range", e)
+            logger.warning("Failed to remove index from list. Index out of range %s", e)
             return
 
         self.size -= 1
