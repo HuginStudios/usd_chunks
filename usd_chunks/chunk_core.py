@@ -206,6 +206,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
                 value = self.get_value()
             self.param.value = value
 
+
 class ChunkWidgetFactoryBase(Protocol):
     """
     A ChunkWidgetFactory exists to handle the creation of widgets from chunk objects. This is
@@ -655,6 +656,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             self._add_param(param)
 
     def _add_param(self, param: "ChunkCommon"):
+
         if isinstance(param, ChunkContainerBase):
             self._add_group_layout(param)
         if isinstance(param, ChunkParamBase):
@@ -697,40 +699,6 @@ def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Att
     sort_keys = {}
     results = []
     for i, f in enumerate(fields):
-        m = f.metadata
-
-        validator = None
-        converter = None
-        if not _ATTRS_SUPPORT_CONVERTER and m.get("convert", True):
-            # from functools import partial
-            # The attrs.Converter is unavailable, so we can't bind it to _safe_convert. For this reason, we skip the
-            # converter and validator here, and instead invoke _safe_convert() and validate_attr() in our on_setattr
-            # hook
-            converter = attrs.converters.default_if_none(f.default)
-
-        elif m.get("convert", True) and hasattr(cls, "_safe_convert"):
-            # Converters was added for attrs 24.1.0. Houdini use 22.2. If the Converters are available, we should use them.
-            # create a converter that binds to the class instance's _safe_convert method
-            converter = attrs.Converter(  # type: ignore
-                lambda val, self_, attr: self_._safe_convert(attr, val),  # type: ignore
-                takes_self=True,
-                takes_field=True,
-            )
-
-        # Add the validate_attr function as a validator
-        if m.get("validate", True) and hasattr(cls, "validate_attr"):
-            validator = cls.validate_attr
-
-        if f.converter and converter:
-            converter = attrs.converters.pipe(converter, f.converter)
-        elif f.converter:
-            converter = f.converter
-
-        if f.validator and validator:
-            validator = attrs.validators.and_(validator, f.validator)
-        elif f.validator:
-            validator = f.validator
-
         # Find the first occurance of the attribute in the inheritance hierarchy, and use the index of the
         # first declaration. This is to match the constructor arguments of pylance
         index = get_attr_index(cls, f.name)
@@ -739,7 +707,7 @@ def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Att
         else:
             sort_keys[f.name] = i
 
-        results.append(f.evolve(converter=converter, validator=validator))
+        results.append(f)
 
     return sorted(results, key=lambda x: sort_keys[x.name])
 
@@ -783,20 +751,6 @@ class AttributesMetaclass(type):
             except AttributeError:
                 return super(res, inst).__setattr__(name, resval)
 
-            resval = value
-
-            # try:
-            #     for name, func in inst._attrib_functions.items():
-            #         attr_sender = inst._attr_senders.get(name)
-            #         if not attr_sender:
-            #             continue
-            #         resval = func(inst, attr_sender)
-            #         print("SOLVE ATTRIBUTE", name, "=", res)
-            #         # setattr(self, name, res)
-
-            # except AttributeError:
-            #     pass
-
             # Run conversion
             if attrib and attrib.metadata.get("convert", True):
                 resval = inst._safe_convert(attrib, value)
@@ -804,18 +758,18 @@ class AttributesMetaclass(type):
             if attrib and attrib.metadata.get("validate", True):
                 inst.validate_attr(attrib, resval)
 
+            has_attr = hasattr(inst, name)
             old_value = None
-            try:
+            if has_attr:
                 old_value = getattr(inst, name)
-            except AttributeError:
-                old_value = value
 
             super(res, inst).__setattr__(name, resval)
 
-            try:
-                inst.value_changed(name, old_value, resval)
-            except AttributeError as e:
-                logger.exception(e)
+            if has_attr:
+                try:
+                    inst.value_changed(name, old_value, resval)
+                except AttributeError as e:
+                    logger.exception(e)
 
         res.__setattr__ = _wrapped_setattr  # type: ignore
 
@@ -1236,12 +1190,10 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
                 chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
                 chunk_notice.ChunkNoticeAlias.INPUT_CHANGED,
             ]:
-
                 for name, func in self._attrib_functions.items():
                     attr_sender = self._attr_senders.get(name)
 
                     if attr_sender and func:
-
                         self._solving_attributes = True
                         res = func(self, attr_sender)
                         setattr(self, name, res)
@@ -1358,6 +1310,8 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
     """
 
     def __init__(self, param: "ChunkCommon", *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
         self.__hashable = HashVal()
         self.__param_ref = weakref.ref(param, self._param_died)
 
@@ -1368,7 +1322,6 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             self._value = None
             self.__value_sender = None
 
-        super().__init__(*args, **kwargs)
         self._children = NameSyncedContainer()
 
         if isinstance(param, ChunkContainerBase):
@@ -1413,15 +1366,6 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
     def __hash__(self) -> int:
         return self.__hashable.__hash__()
 
-    def __instancecheck__(self, instance: Any) -> bool:
-        if issubclass(instance, ChunkCommon):
-            return True
-        if isinstance(self._param_ref, ChunkContainerBase) and isinstance(instance, ChunkContainerBase):
-            return True
-        if isinstance(self._param_ref, ChunkParamBase) and isinstance(instance, ChunkParamBase):
-            return True
-        return super().__instancecheck__(instance)  # type: ignore
-
     def _get_my_params(self):
         return self._children.get_my_params()
 
@@ -1465,9 +1409,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         self, alias: chunk_notice.ChunkNoticeAlias | None = None, data: Any = None
     ) -> chunk_notice.ChunkNotice | None:
 
-        res = super().send_self(alias, data)
-
-        if not res:
+        if not (res := super().send_self(alias, data)):
             return None
 
         if alias is None:
@@ -1505,7 +1447,10 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         if name == "request_delete":
             return super().__getattribute__("request_delete")
 
-        if not name.startswith("__") and hasattr(super(), name) or name in ["_blocked", "_callbacks"]:
+        if name in ["_dag_node", "_callbacks", "_blocked"]:
+            return super().__getattribute__(name)
+
+        if name != "__class__" and hasattr(chunk_notice.ChunkNoticePropagator, name):
             return super().__getattribute__(name)
 
         if name in ["children", "_children"]:
@@ -1523,7 +1468,10 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         # All attributes except 'owner' and 'value' are proxied, meaning we set the attributes
         # back on to the parameter we're proxying.
 
-        if not name.startswith("__") and hasattr(super(), name) or name in ["_dag_node", "_blocked", "_callbacks"]:
+        if name != "__class__" and hasattr(chunk_notice.ChunkNoticePropagator, name):
+            return super().__setattr__(name, value)
+
+        if name in ["_dag_node", "_callbacks", "_blocked"]:
             return super().__setattr__(name, value)
 
         if name == "children":
@@ -1633,8 +1581,10 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
 
         # Append child the object + name to the first layer of the ChainMaps
-        self.params.maps[0][obj._hashable] = obj  # type: ignore
-        self.names.maps[0][obj.name] = obj._hashable
+        self.params.maps[0][obj.get_hash()] = obj  # type: ignore
+        self.names.maps[0][obj.name] = obj.get_hash()
+
+        # if obj.name:
 
         # Mark self as the owner of the added obj as we need to be notified when the object changes
         obj.set_owner(self)
@@ -1656,11 +1606,10 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         return target
 
     def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> Optional[chunk_notice.ChunkNotice]:
-
         # Override to reflect any changes on the children in this ds. Used to update the names when a name changes
         if notice and (p := notice.data):
             if isinstance(p, AttributeSender) and p.name == "name" and p.old_value in self.names.maps[0]:
-                self.name_changed(notice.old_value)  # type: ignore
+                self.name_changed(p.old_value)  # type: ignore
 
         return super().data_changed(notice)
 
@@ -1708,6 +1657,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
         # Only look for names on the first layer. Groups are responsible for their respective layers
         mapping = self.names.maps[0]
+
         if old_name in mapping:
             idx = mapping.pop(old_name)
             if obj := self.get_param(idx):
@@ -1908,6 +1858,12 @@ class ChunkCommon(AttributesBase):
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
 
+    _logger: Optional[logging.Logger] = attrs.field(
+        init=False,
+        default=None,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
+
     # Name for the chunk object
     name: str = attrs.field(default="")
 
@@ -1974,6 +1930,11 @@ class ChunkCommon(AttributesBase):
             val = str(hash(self))
 
         return f"{name}_{val}"
+
+    def get_logger(self) -> logging.Logger:
+        if not self._logger:
+            self._logger = logging.getLogger(f"usd_chunks.{self.__class__.__name__}.{self.name}")
+        return self._logger
 
     def is_blocked(self) -> bool:
         v = self.has_state(ChunkFlags.State.DISABLED)
@@ -2536,16 +2497,6 @@ class ChunkContainerBase(ChunkCommon):
         """
         return self.children.get_my_params()
 
-    # def get_last_param_change(
-    #     self,
-    # ) -> Tuple[Tf.Notice | None, chunk_notice.ChunkNoticePropagator | None]:
-    #     """Retreive the last changed parameter in this group. Will look inside nested groups as well to find parameter changes
-
-    #     Returns:
-    #         Tuple[Tf.Notice, ChunkParam]: Last changed ChunkParam and the notice associated with the change on this group or in nested group
-    #     """
-    #     return list(self.iter_changes())[-1]
-
     def check_hierarchy(self):
         """
         A debug function for checking the hierarchy structure of a group.
@@ -2563,7 +2514,7 @@ class ChunkContainerBase(ChunkCommon):
         found_params: set[ChunkCommon] = set()
         found_names: set[str] = set()
 
-        for p in self.children.params.values():
+        for p in self.get_params():
             if isinstance(p, ChunkBase):
                 # Chunks (inherit from ChunkAttributes) do not need owners
                 continue
@@ -2582,8 +2533,7 @@ class ChunkContainerBase(ChunkCommon):
                 raise TypeError(failed_msg.format(f"{p.name}'s owner is not a ChunkNoticePropagator object"))
 
             if isinstance(owner, ChunkContainerBase) and not isinstance(owner, ChunkListGroupBase):
-                owner_has_child = p in owner.get_my_params()
-                if not owner_has_child:
+                if p not in [x._param_ref if isinstance(x, ProxyParam) else x for x in owner.get_my_params()]:
                     raise ValueError(
                         failed_msg.format(f"{p.name} has owner: {owner.name}. Owner does not hold this param")
                     )
@@ -2627,7 +2577,7 @@ class ChunkContainerBase(ChunkCommon):
                 msg += f". Owner = ({owner.name})"
             msg += "\n"
 
-        print(msg)
+        self.get_logger().info(msg)
 
     def iter_hierarchy(self, level=0) -> Generator[Tuple[int, ChunkCommon], None, None]:
         """
@@ -2843,24 +2793,26 @@ class ChunkListGroupBase(ChunkGroupBase):
         return self.proxy_params[index].get_param(param)
 
     def value_changed(self, attrname: str, old_value: Any, value: Any):
-        if attrname == "size":
-            if value > old_value:
-                for i in range(old_value, value):
-                    group = ChunkGroupBase(str(i), flags=ChunkFlags.GroupFlags.LABELED)
-                    group.set_owner(self)
-                    self.proxy_params.append(group)
+        if old_value is None or attrname != "size":
+            return super().value_changed(attrname, old_value, value)
 
-                    NameSyncedContainer.create_proxy(self.children, group.children)
-                    self.send_self(chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
+        if value > old_value:
+            for i in range(old_value, value):
+                group = ChunkGroupBase(str(i), flags=ChunkFlags.GroupFlags.LABELED)
+                group.set_owner(self)
+                self.proxy_params.append(group)
 
-            elif value < old_value and len(self.proxy_params) > value:
-                for i in range(value, old_value):
-                    self.proxy_params[i].request_delete()
-                    self.proxy_params.pop(i)
+                NameSyncedContainer.create_proxy(self.children, group.children)
+                self.send_self(chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
 
-            if value != old_value:
-                for i, grp in enumerate(self.proxy_params):
-                    grp.name = str(i)
+        elif value < old_value and len(self.proxy_params) > value:
+            for i in range(value, old_value):
+                self.proxy_params[i].request_delete()
+                self.proxy_params.pop(i)
+
+        if value != old_value:
+            for i, grp in enumerate(self.proxy_params):
+                grp.name = str(i)
 
         return super().value_changed(attrname, old_value, value)
 
@@ -2891,7 +2843,7 @@ class ChunkListGroupBase(ChunkGroupBase):
             self.proxy_params.pop(index)
 
         except IndexError as e:
-            logger.warning("Failed to remove index from list. Index out of range %s", e)
+            self.get_logger().warning("Failed to remove index from list. Index out of range %s", e)
             return
 
         self.size -= 1

@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_core, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_core, chunk_notice
 
 from functools import wraps
 
@@ -21,64 +21,59 @@ def nice_print(func):
 
 
 @nice_print
-def chunkChanged(owner, notice, sender):
+def chunkChanged(owner: chunk.Chunk, notice, sender):
     # This works just as groupChanged, but is registered on a Chunk, so will only be sent on Chunk changes
     def get_chunk_str(s):
         res = "{}"
         if isinstance(s, chunk_core.ProxyParam):
             res = "Proxy[{}]"
-        if isinstance(s, chunk.Chunk):
-            return res.format("Chunk")
+        return res.format(s.__class__.__name__)
 
-        if isinstance(s, chunk_core.ChunkGroupBase):
-            return res.format("Group")
-
-        if isinstance(s, chunk.Vector):
-            return res.format("Vector")
-
-        if isinstance(s, chunk_core.ChunkParamBase):
-            return res.format(s.evaluate_type().name)
-
-        if isinstance(s, chunk_core.AttributeSender):
-            return res.format("Attribute")
-
-    msg = f"Chunk Changed: {sender.name} -> {notice.__class__.__name__}"
+    msg = []
+    msg.append(f"\nChunk Changed: {owner.name} -> {notice.alias.name}")
 
     step = 4
-    indent = step
+    owners = {}
 
-    for n, s in sender.iter_changes():
-        msg += "\n" + " " * indent + f"{get_chunk_str(s)}: {s.name} -> {n.__class__.__name__}"
+    for alias, s in reversed(list(owner.get_dag_node().iter_changes())):
+        if not s or isinstance(s, chunk_core.NameSyncedContainer):
+            continue
+
+        _owner = s.get_owner()
+        if isinstance(_owner, chunk_core.NameSyncedContainer):
+            _owner = _owner.get_owner()
+
+        # print(_owner.name)
+
+        node = s.get_dag_node()
+        ln = node._index
+        indent, lineno = owners.get(_owner, (step, ln))
+
+        owners[s] = (indent + step, lineno + 1)
+
+        text = " " * indent + f"{get_chunk_str(s)}: {s.name} -> {alias.name}"
 
         if isinstance(s, chunk_core.AttributeSender):
-            msg += f": [New Value] = {s.value}"
-        indent += step
-    print(msg)
+            text += f": [New Value] = {s.value}"
+        text = str(lineno) + text
+        msg.insert(lineno, text)
 
-
-@nice_print
-def paramChanged(owner, notice, sender):
-    print(sender.name, sender.value)
-
-
-@nice_print
-def paramValueChanged(owner, notice, sender: chunk_notice.ChunkNoticePropagator):
-    print(notice, sender)
+    owner.get_logger().info("\n".join(msg))
 
 
 @nice_print
 def clickedButton(owner, notice, sender):
-    print("Button clicked: ", owner.name)
+    owner.get_logger().info(f"Button clicked: {owner.name}")
 
 
 @nice_print
 def primSelectionChanged(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.SceneSender):
-    print("Prim selection changed: ", notice.data.value)
+    owner.get_logger().info(f"Prim selection changed: {notice.data.value}")
 
 
 @nice_print
 def propSelectionChanged(owner, notice: chunk_notice.PropSelectionChangedNotice, sender: chunk_notice.SceneSender):
-    print("Prop selection changed: ", notice.data.value)
+    owner.get_logger().info(f"Prop selection changed: {notice.data.value}")
 
 
 def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk.ChunkParamBase):
@@ -102,39 +97,35 @@ def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: 
 def listChanged(owner, notice, sender):
     for i in owner.get_params():
         if isinstance(i, chunk_core.ChunkParamBase):
-            print(i.name, i.value, isinstance(i, chunk_core.ProxyParam))
+            owner.get_logger().info(i.name, i.value, isinstance(i, chunk_core.ProxyParam))
 
 
-def nameChanged(owner, notice, sender: chunk.LineEdit):
-    on, os = sender.get_last_change()
-    if not os:
+def nameChanged(owner: chunk.LineEdit, notice, sender):
+    if not (s := notice.data) or s.name != "value":
         return
 
-    c = owner.get_chunk()
-    if not os.old_value:
-        p = c.get_param("listSlider")
-    else:
-        p = c.get_param(os.old_value)
-
-    if not p:
+    if not (c := owner.get_chunk()):
         return
 
-    p.name = os.value
+    param_name = s.old_value if s.old_value else "listSlider"
+
+    print("RENAME:", param_name, "->", s.value)
+
+    if p := c.get_param(param_name):
+        p.name = s.value
 
 
 def main():
 
     # Create the actual chunk - this is in practice just a chunk.Group with some addiditional behaviour
-    # myChunk = chunk.Chunk("Hello World")
-    # myChunk.add_params([label, checkbox, button, sep, menu, fileBrowse, sliderGroup, sliderVec, nameEdit, listGroup])
     myChunk = chunk.Chunk("Hello World")
 
     # Add a callback. With no arguments, the callback will be called whenever any of tthe children on the chunk is changed
     myChunk.add_callback(chunkChanged)
 
     # A simple checkbox
-    # checkbox = chunk.Checkbox("enable")
-    # myChunk.add_param(checkbox)
+    checkbox = chunk.Checkbox("enable")
+    myChunk.add_param(checkbox)
 
     # A simple callback. This is called whenever anything on the checkbox is changed
     #     checkbox.add_callback(paramChanged)
@@ -160,7 +151,7 @@ def main():
     #   sliderGroup.add_callback(paramValueChanged, notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
     # instead of this:
     #   sliderGroup.add_callback(paramValueChanged, sender=sliderGroup.get_param("slider").get_attribute_sender("value"))
-    # The difference being we can subscribe to all ATTRIBUTE_CHANGED notices instead of only the ones from the specified sender.
+    # The difference being we can subscribe to all ATTRIBUTE_CHANGED notices in the notice chain instead of only the ones from the specified sender.
 
     ####################
     # FLAGS AND STATES #
@@ -193,12 +184,12 @@ def main():
 
     # A vector is an extension of the group, with a single param repeated length times. The suffix replace the default
     # numbered suffix for duplicated params.
-    # Accessing params on a vector can be done through __setitem__ (vec["sliderX"] or vec[0]) as well as get_param and similar group functions
+    # Accessing params on a vector can be done through __setitem__ (vec["X"] or vec[0]) as well as get_param and similar group functions
     sliderVec = chunk.Vector("SliderVec", param=chunk.Slider(), length=3, suffixes="XYZ")
     sliderVec[0] = 10
     myChunk.add_param(sliderVec)
 
-    # # A button will call the callback just like any other param, but does not care about its value
+    # A button will call 'execute' when clicked, emitting the PARAM_CHANGED notice. No value is used with the button
     button = chunk.Button("button")
     button.add_callback(clickedButton)
     myChunk.add_param(button)
@@ -246,22 +237,18 @@ def main():
     # Example of a list group. The list groups params are proxied 'size' times. Modifying the parameters of the listGroup will automatically
     # modify all proxies, with the exception of the 'value' attribute
     listSlider = chunk.Slider("listSlider")
-    listSlider.add_callback(paramValueChanged)
-
-    # nestedListGroup = chunk.Group("nestedGroup")
-    # nestedListGroup.add_params([listSlider])
 
     listGroup = chunk.ListGroup("listGroup")
     listGroup.add_params([listSlider])
-    listGroup.size = 2
+    listGroup.size = 1
 
-    if p := listGroup.get_indexed_param(listSlider, 1):
+    if p := listGroup.get_indexed_param(listSlider, 0):
         assert isinstance(p, chunk.Slider)
         p.value = 10
 
     # A text edit is a parameter for editing strings. In this case, the callback will rename the listSlider, showing how the proxies will update.
     nameEdit = chunk.LineEdit("list_name")
-    nameEdit.add_callback(nameChanged)
+    nameEdit.add_callback(nameChanged, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
     myChunk.add_params([nameEdit, listGroup])
 
     # Prints the hierarchy of the chunk. Useful for debugging chunks
@@ -271,4 +258,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(load=False, category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaulConfig(load=True, category=chunk.StandardCategory.EXAMPLES)

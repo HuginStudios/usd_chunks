@@ -27,7 +27,6 @@ from enum import IntEnum, auto
 from typing import (
     Any,
     Callable,
-    DefaultDict,
     Dict,
     Generator,
     Iterator,
@@ -379,10 +378,6 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
 
 CallbackT: TypeAlias = Callable[[Optional[ChunkNotice], Any, Optional[Set[ChunkNotice]]], Optional[ChunkNotice]]
 ConnSetT: TypeAlias = weakref.WeakValueDictionary[int, "DagNode"]
-# CombinedNotice: TypeAlias = dict[int, Set[ChunkNotice]]
-CombinedNotice: TypeAlias = DefaultDict[int, Set[ChunkNotice]]
-
-# CombinedNotice: TypeAlias = set[ChunkNotice]
 
 
 @define(slots=True)
@@ -420,6 +415,7 @@ class DagNode:
     """
 
     __slots__ = (
+        "_index",
         "_input_data",
         "_dirty",
         "_connections",
@@ -433,18 +429,13 @@ class DagNode:
         self._dirty = True
         self._connections: DagConnections = DagConnections()
         self._propagator = weakref.ref(propagator)
+        self._index: int = 0
 
     @property
     def propagator(self):
         if prop := self._propagator():
             return prop
         return None
-
-    @property
-    def calllback(self):
-        if self._callback and (cb := self._callback()):
-            return cb
-        raise ReferenceError("Callback died")
 
     @property
     def dirty(self):
@@ -482,6 +473,13 @@ class DagNode:
             if i not in items:
                 return i
         raise KeyError("Somewthign went wrong")
+
+    def iter_changes(
+        self,
+    ) -> Generator[Tuple[ChunkNoticeAlias, Optional["ChunkNoticePropagator"]], None, StopIteration]:
+        for alias, node in sorted(self._input_data, key=lambda x: x[1]._index):
+            yield alias, node.propagator
+        return StopIteration()
 
     def add_dependency(self, node: "DagNode", connect_reverse=True):
         """
@@ -615,7 +613,7 @@ class DagNode:
         if not self.dirty:
             return False
 
-        if self.get_outputs() or (self._callback and self._callback()) or self.get_owner_node():
+        if self.get_outputs() or self.get_owner_node():
             return True
         return False
 
@@ -635,10 +633,14 @@ class DagNode:
         searched.add(self)
 
         for node in self.get_outputs():
+            node._index += self._index + 1
+
             node._input_data.add((ChunkNoticeAlias.INPUT_CHANGED, self))
             node.dirty_dependants(searched.copy())
 
         if owner := self.get_owner_node():
+            owner._index += self._index + 1
+
             owner._input_data |= self._input_data
             if self.propagator and (alias := self.propagator.get_notice_alias()):
                 owner._input_data.add((alias, self))
@@ -687,23 +689,16 @@ class DagNode:
         if not self.should_solve():
             return None
 
-        should_yield_self = self.propagator and self.propagator.get_notice_alias()
-
         if self.is_inputs_dirty():
             if g := self.solve_inputs():
                 yield from g
 
             self._input_data.clear()
+            self._index = 0
             return
-            # if should_yield_self:
-            #     yield self
-
-            # self.dirty = False
-            # return
 
         self.dirty = False
-        if should_yield_self:
-            yield self
+        yield self
 
         for node in self.get_outputs():
             yield from node.solve_outputs()
@@ -712,6 +707,7 @@ class DagNode:
             yield from node.solve_outputs()
 
         self._input_data.clear()
+        self._index = 0
 
 
 class ChunkNoticePropagator:
@@ -915,34 +911,27 @@ class ChunkNoticePropagator:
         """
         Calls solve_outputs() on the managed DagNode. This will trigger the ChunkNoticePropagator to call data_changed,
         and subsequently send_self(), triggering any connected callbacks
-
-        Args:
-            notice (Optional[ChunkNotice], optional): An optional notice to pass to the node. Defaults to None.
-            sender (Optional[ChunkNoticePropagator], optional): An optional sender. Defaults to None.
         """
 
         node = self.get_dag_node()
         node.dirty = True
 
-        msg = ""
-        msg += "\n====== SOLVE ======\n"
-
+        msg = "\n====== SOLVE ======\n"
         for n in node.solve_outputs():
             if not (prop := n.propagator):
                 continue
 
             msg += f"solved: {n.name}\n"
 
-            if inputs := n._input_data.copy():
-                for alias, inode in inputs:
-                    if not (iprop := inode.propagator):
-                        continue
+            for alias, iprop in n.iter_changes():
+                if not iprop:
+                    continue
 
-                    if alias == prop.get_notice_alias():
-                        continue
+                if alias == prop.get_notice_alias():
+                    continue
 
-                    msg += f"   {alias.name}\n"
-                    prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
+                msg += f"   {alias.name}\n"
+                prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
 
             if notice := prop.send_self():
                 msg += f"   {notice.alias.name}\n"
@@ -951,15 +940,33 @@ class ChunkNoticePropagator:
         logger.debug(msg)
 
     def add_dependency(self, input: "ChunkNoticePropagator"):
+        """
+        Add an input. This propagator will not 'evaulate' until all inputs are solved
+
+        Args:
+            input (ChunkNoticePropagator): The node to add as input
+        """
         self.get_dag_node().add_dependency(input.get_dag_node())
 
     def get_dependency(self, index: int = 0) -> Optional["ChunkNoticePropagator"]:
+        """
+        Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
+
+        Returns:
+            ChunkNoticePropagator | None: The input connected at index, or None if not found
+        """
         try:
             return self.get_dag_node().get_input(index).propagator
         except (IndexError, AttributeError):
             return None
 
     def get_callbacks(self) -> List["NoticeConnection"]:
+        """
+        Get the lsut of callback connections
+
+        Returns:
+            List[NoticeConnection]: The callback connections
+        """
         return self._callbacks
 
     def find_callbacks(

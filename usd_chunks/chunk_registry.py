@@ -519,8 +519,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         mod.loaded = False
 
-        # spec = util.spec_from_file_location(mod.module_name, mod.module_file)
-        spec = util.find_spec(mod.module_name, mod.module_file)
+        spec = util.spec_from_file_location(mod.module_name, mod.module_file)
         if not spec or not spec.loader:
             return False
 
