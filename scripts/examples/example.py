@@ -43,8 +43,6 @@ def chunkChanged(owner: chunk.Chunk, notice, sender):
         if isinstance(_owner, chunk_core.NameSyncedContainer):
             _owner = _owner.get_owner()
 
-        # print(_owner.name)
-
         node = s.get_dag_node()
         ln = node._index
         indent, lineno = owners.get(_owner, (step, ln))
@@ -55,10 +53,9 @@ def chunkChanged(owner: chunk.Chunk, notice, sender):
 
         if isinstance(s, chunk_core.AttributeSender):
             text += f": [New Value] = {s.value}"
-        text = str(lineno) + text
         msg.insert(lineno, text)
 
-    owner.get_logger().info("\n".join(msg))
+    owner.get_logger().info("\n" + "\n".join(msg))
 
 
 @nice_print

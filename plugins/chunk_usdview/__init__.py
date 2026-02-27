@@ -26,6 +26,9 @@ class UsdviewScene(chunk_notice.SceneSender):
         selection_model = data_model.selection  # type: ignore
         selection_model.signalPrimSelectionChanged.connect(self.primSelectionChangedCallback)
         selection_model.signalPropSelectionChanged.connect(self.propSelectionChangedCallback)
+    
+    def should_install_package(self, package_name: str) -> bool:
+        return chunk_qt.confirm_dial(f"Install package dependency {package_name}?")
 
     def primSelectionChangedCallback(self, added, removed):
         if not added and not removed:
@@ -60,9 +63,6 @@ def launch_chunks(usdviewApi) -> None:
 
 class ChunksPluginContainer(PluginContainer):
     def reloadChunks(self, usdviewApi):
-        lay = chunk_registry.ChunkLayerManager()
-        lay.clear_all_layers()
-
         reg = chunk_registry.ChunkRegistry()
         reg.reload_all()
 

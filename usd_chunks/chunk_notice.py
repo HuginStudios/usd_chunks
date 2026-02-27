@@ -18,7 +18,6 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 ```
 
 """
-
 import inspect
 import logging
 import weakref
@@ -1184,8 +1183,8 @@ class NoticeConnection:
                         meth(*args)
                 else:
                     meth(*args)
-            except Exception as e:
-                logger.exception(e)
+            except Exception:
+                logger.exception("failed to run method %s", meth)
             return
 
         meth(*args)
@@ -1239,6 +1238,20 @@ class SceneSender(ChunkNoticePropagator):
     Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
     See implementation in plugins/usdview/__init__.py
     """
+
+    def should_install_package(self, package_name: str) -> bool:
+        """
+        When a modules config has requirements to external pip packages, the packages may be installed automatically by the ChunkDependencyManager.
+        Before any package is installed though, the user should have the option to opt out of this. This method is called when packages can be installed,
+        and should return True if the package may be installed. Any installed package is put in the 
+
+        Args:
+            package_name (str): The name of the package to install
+
+        Returns:
+            bool: If the package can be installed
+        """
+        return False
 
     @abstractmethod
     def get_stage(self) -> Usd.Stage:

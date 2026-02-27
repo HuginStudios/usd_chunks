@@ -724,6 +724,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
         if not res or not (mod := res.data()):
             return
+
         if mod.loaded:
             mod.create()
         else:
@@ -930,7 +931,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
         if check and not mod.loaded:
             mod.load()
         elif not check and mod.loaded:
-            mod.unload()
+            mod.remove_chunk()
 
     def handle_data_change(self, first: QtCore.QModelIndex, last: QtCore.QModelIndex, roles):
         if QtCore.Qt.ItemDataRole.CheckStateRole not in roles:
@@ -970,6 +971,12 @@ class ChunkModuleLoader(QtWidgets.QDialog):
                 if check_item:
                     check_item.setCheckState(self.get_check_state(check))
                     self.load_unload(mod, check)
+
+
+def confirm_dial(msg) -> bool:
+    dial = QtWidgets.QMessageBox(text=msg)
+    dial.setStandardButtons(QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Yes)
+    return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
 
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):

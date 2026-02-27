@@ -12,14 +12,15 @@ myChunk = reg.get_chunk("my_chunk")
 
 from __future__ import annotations
 
+import weakref
 import glob
 import os
 import sys
 import traceback
-from collections import defaultdict
 from importlib import util
+from collections import defaultdict
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Generic, TypeVar, overload
 
 from pxr import Sdf, Usd
 
@@ -35,28 +36,71 @@ import ast
 import importlib.abc
 import logging
 import subprocess
+
 from timeit import default_timer as timer
 
 logger = logging.getLogger(__name__)
 
-def chunk_dirs():
-    return os.environ.get(
-        "USD_CHUNK_DIR", os.path.sep.join([os.path.dirname(os.path.dirname(__file__)), "scripts"])
-    ).split(os.pathsep)
+_T = TypeVar("_T")
 
 
-class ChunkDependencyRegistry(metaclass=RegistrySingleton):
+class ChunkEnvVar(Generic[_T]):
+    def __init__(self, key: str, default: _T, relpath=False):
+        self.key = key
+        self._default: _T = default
+        self._relpath = relpath
+
+    @property
+    def default(self) -> _T:
+        if self._relpath and self._default:
+            dirname = os.path.dirname(os.path.dirname(__file__))
+            if isinstance(self._default, list):
+                return [os.path.join(dirname, x) for x in self._default]  # type: ignore
+            elif isinstance(self._default, str):
+                return os.path.join(dirname, self._default)
+        return self._default
+
+    @overload
+    def _get(self, default: None, fallback=None) -> _T | None: ...
+    @overload
+    def _get(self, default: _T, fallback=None) -> _T: ...
+
+    def _get(self, default, fallback=None):
+        envvar = os.environ.get(self.key, fallback)
+        default = self.default
+
+        if default is None:
+            return envvar
+
+        if not envvar:
+            return default
+
+        if isinstance(default, list) and isinstance(envvar, str):
+            res = envvar.split(os.pathsep)
+            return res + default
+        return envvar
+
+    def __call__(self, fallback: Optional[_T] = None, /, *args: Any, **kwds: Any):
+        return self._get(self.default, fallback)
+
+
+USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", ["scripts"], True)
+USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", "_installed_deps", True)
+USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
+
+
+class ChunkDependencyManager(metaclass=RegistrySingleton):
     initialized = False
 
     def initialize(self):
         self._cache = defaultdict(set)
-        if self.package_dir() not in sys.path:
-            sys.path.append(self.package_dir())
-        self.initialized = True
 
-    @staticmethod
-    def package_dir():
-        return os.path.sep.join([os.path.dirname(os.path.dirname(__file__)), "_installed_deps"])
+        self.package_dir = USD_CHUNK_DEPENDENCY_DIR()
+
+        if self.package_dir:
+            if self.package_dir not in sys.path:
+                sys.path.append(self.package_dir)
+            self.initialized = True
 
     @staticmethod
     def package_info(package):
@@ -68,6 +112,9 @@ class ChunkDependencyRegistry(metaclass=RegistrySingleton):
         return name, version
 
     def install_packages(self, requirements):
+        if not self.initialized:
+            return
+
         packages = []
         recache = True
 
@@ -87,17 +134,23 @@ class ChunkDependencyRegistry(metaclass=RegistrySingleton):
         if not packages:
             return
 
-        args = [sys.executable, "-m", "pip", "install", "-t", self.package_dir()]
+        args = [sys.executable, "-m", "pip", "install", "-t", self.package_dir]
         args.extend(packages)
         subprocess.run(args)
 
-        if (pip_dir := self.package_dir()) and pip_dir in sys.path_importer_cache:
+        if (pip_dir := self.package_dir) and pip_dir in sys.path_importer_cache:
             sys.path_importer_cache.pop(pip_dir)
 
     def should_install_package(self, package):
-        return True
+        reg = ChunkRegistry()
+        if not reg.scene or not self.initialized:
+            return False
+        return reg.scene.should_install_package(package)
 
     def update_cache(self):
+        if not self.initialized:
+            return
+
         # Search the current interpreters' environment
         args = [sys.executable, "-m", "pip", "list", "--format", "freeze"]
 
@@ -108,7 +161,7 @@ class ChunkDependencyRegistry(metaclass=RegistrySingleton):
             self._cache[pname].add(pversion)
 
         # Search the pip_dep_dir
-        args = [sys.executable, "-m", "pip", "list", "--path", self.package_dir(), "--format", "freeze"]
+        args = [sys.executable, "-m", "pip", "list", "--path", self.package_dir, "--format", "freeze"]
 
         proc = subprocess.run(args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         pip_packages = proc.stdout.decode().split()
@@ -117,6 +170,9 @@ class ChunkDependencyRegistry(metaclass=RegistrySingleton):
             self._cache[pname].add(pversion)
 
     def package_in_cache(self, package):
+        if not self.initialized:
+            return False
+
         name, version = self.package_info(package)
         if pvs := self._cache.get(name):
             if not version or version in pvs:
@@ -215,7 +271,6 @@ class ChunkModule:
         self.loaded = False
         self.loaded_chunks: Dict[str, chunk.Chunk] = {}
         self.config: ChunkConfig = chunk.DefaulConfig()
-        self.listeners: List[NoticeConnection] = []
         self.func: Optional[Callable[[], chunk.Chunk | List[chunk.Chunk]]] = None
 
     def __hash__(self):
@@ -227,7 +282,10 @@ class ChunkModule:
     def config_changed(self, notice, sender):
         pass
 
-    def unload(self, chunk_name: Optional[str] = None):
+    def chunk_name_changes(self, notice, sender):
+        pass
+
+    def remove_chunk(self, chunk_name: Optional[str] = None):
         """
         Unload this module by deleting the associated chunk object
         """
@@ -237,32 +295,12 @@ class ChunkModule:
         if chunk_name is not None:
             if not (c := self.get_chunk(chunk_name)):
                 return
-
-            if len(self.loaded_chunks) == 1:
-                self.loaded = False
-
-            self.loaded_chunks.pop(chunk_name)
             c.request_delete()
-            send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, c, data=c)
 
         else:
-            self.loaded = False
             chunks = list(self.loaded_chunks.values())
             for c in chunks:
-                self.loaded_chunks.pop(c.name)
                 c.request_delete()
-                send_notice(ChunkNoticeAlias.CHUNK_UNLOADED, c, data=c)
-
-    def load_config(self) -> bool:
-        if hasattr(self.module, "config"):
-            try:
-                func = getattr(self.module, "config")
-                self.config = func()
-            except Exception as e:
-                logger.exception(e)
-                return False
-
-        return True
 
     def holds_chunk(self, chunk_name: str) -> bool:
         return chunk_name in self.loaded_chunks
@@ -283,7 +321,7 @@ class ChunkModule:
             logger.warning(
                 f"Module {self.module_name} created chunks with duplicate names {c.name}. Will unload and replace old chunk with new"
             )
-            self.unload()
+            self.remove_chunk()
 
         if c.name in ChunkRegistry().get_chunk_names():
             logger.warning(
@@ -293,7 +331,10 @@ class ChunkModule:
             return False
 
         self.loaded_chunks[c.name] = c
-        self.listeners.append(NoticeConnection(self.pop_chunk, ChunkNoticeAlias.CHUNK_DELETED, c))
+
+        # Add the callback to the chunk. Instead of the ChunkModule owning the callback, we add the callback to the chunk so it's
+        # garbage collected when the chunk is deleted
+        c.add_callback(self._pop_chunk, notice_alias=ChunkNoticeAlias.CHUNK_DELETED)
 
         try:
             c.check_hierarchy()
@@ -301,36 +342,60 @@ class ChunkModule:
             logger.exception(e)
             self.loaded = False
             return False
-
         return True
 
-    def pop_chunk(self, notice, sender):
+    def _pop_chunk(self, notice, sender):
         if sender in self.loaded_chunks.values():
             self.loaded_chunks.pop(sender.name)
 
-    def load(self, func_name: str = "main") -> bool:
-        self.unload()
+        if len(self.loaded_chunks) == 0:
+            self.loaded = False
+            self.module = None
 
-        dep_reg = ChunkDependencyRegistry()
+    def exec_module(self):
+        spec = util.spec_from_file_location(self.module_name, self.module_file)
+        if not spec or not spec.loader:
+            return False
+
+        loader = ChunkLazyConfigLoader(self.module_name, self.module_file, spec.loader, self)
+        spec.loader = loader
+
+        module = util.module_from_spec(spec)
+
+        try:
+            sys.modules[self.module_name] = module
+            spec.loader.exec_module(module)
+        except Exception:
+            # This module failed to load. Set to file_name so we can try loading it again later§
+            logger.error(f"Failed to load module {self.module_name}:", traceback.format_exc())
+            return False
+
+        self.module = module
+        return True
+
+    def load(self, func_name: str = "main") -> bool:
+        self.remove_chunk()
+
+        if not self.loaded:
+            if not self.exec_module():
+                return False
+
+        dep_reg = ChunkDependencyManager()
         if not dep_reg.initialized:
             dep_reg.initialize()
 
         dep_reg.install_packages(self.config.requirements)
 
-        if not hasattr(self.module, func_name):
-            logger.error(f"Function: {func_name} in module: {self.module_name} is not defined")
-            self.loaded = False
-            return False
-
         try:
+            if not hasattr(self.module, func_name):
+                logger.error(f"Function: {func_name} in module: {self.module_name} is not defined")
+                self.loaded = False
+                return False
+
             self.func = getattr(self.module, func_name)
             if not self.func:
                 self.loaded = False
                 return False
-
-            start = timer()
-            retval: Any = self.func()
-            end = timer()
 
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later§
@@ -338,19 +403,14 @@ class ChunkModule:
             self.loaded = False
             return False
 
-        try:
-            for c in retval:
-                if not self._add_chunk(c):
-                    return False
-        except TypeError:
-            if not self._add_chunk(retval):
-                return False
-
+        msg = ""
         self.loaded = True
 
-        msg = ""
+        start = timer()
+        self.loaded = self.create()
+        end = timer()
+
         for c in self.loaded_chunks.values():
-            send_notice(ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
             msg += f"   {c.name}\n"
 
         logger.info(f"loaded module: {self.module_name}. Module created chunks:\n{msg}Load took {end - start} seconds")
@@ -359,13 +419,17 @@ class ChunkModule:
     def create(self):
         if not self.loaded:
             logger.warning("Trying to create a chunk from an unloaded module. Consider running load() first")
-            return
+            return False
 
         if not self.func:
-            return
+            return False
 
         names = ChunkRegistry().get_chunk_names()
-        retval = self.func()
+        try:
+            retval = self.func()
+        except Exception:
+            logger.exception("Failed to run main function from module %s", self.module_name)
+            return False
 
         loaded = []
         try:
@@ -381,10 +445,11 @@ class ChunkModule:
                 continue
 
             send_notice(ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
-        return loaded
+
+        return bool(loaded)
 
     def should_load(self) -> bool:
-        if module_filter := os.environ.get("USD_CHUNK_FILTER"):
+        if module_filter := USD_CHUNK_LOAD_FILTER():
             if self.module_name not in module_filter:
                 return False
         if not self.config:
@@ -403,7 +468,7 @@ class ChunkModule:
 
 class ChunkRegistry(metaclass=RegistrySingleton):
     """A singeton class to read and register chunk modules. By default,
-    chunk modules are scanned for in the USD_CHUNK_DIR directory.
+    chunk modules are scanned for in the USD_CHUNK_DIRS directories.
 
     Attributes:
         registered_directories (Set[str]) : A set of directories we have searched
@@ -432,7 +497,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         self.scene = scene_sender
         self.plugin = plugin
 
-        ChunkDependencyRegistry().initialize()
+        ChunkDependencyManager().initialize()
 
         self.register_chunk_environ_directories()
         self.register_chunk_modules(self.registered_directories, unloaded)
@@ -444,21 +509,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         logger.info(f"Found {len(self.registered_modules)} chunks. Loaded {c}")
         self.initialized = True
 
-    def __repr__(self):
-        """Return a string representation of the FileReader."""
-        return f"FileReader(registered_modules={self.registered_modules})"
-
-    def __str__(self):
-        """Return a string representation of the FileReader."""
-        return f"FileReader with {len(self.registered_modules)} registered modules."
-
-    def __len__(self):
-        """Return the number of registered modules."""
-        return len(self.registered_modules)
-
     def register_chunk_environ_directories(self):
-        """Register the USD_CHUNK_DIR directories to find Python modules."""
-        environ_dirs = chunk_dirs()
+        """Register the USD_CHUNK_DIRS directories to find Python modules."""
+        environ_dirs = USD_CHUNK_DIRS()
+        # environ_dirs = chunk_env_var(ChunkEnvVars.USD_CHUNK_DIRS, [])
 
         for chunk_dir in environ_dirs:
             self.register_directory(chunk_dir)
@@ -470,7 +524,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             chunk_dir (str): A pathlike string to add
         """
         if not os.path.isdir(chunk_dir):
-            logger.error(f"USD_CHUNK_DIR:{chunk_dir} directory not found.")
+            logger.error(f"{chunk_dir} directory not found.")
             return
 
         if chunk_dir in self.registered_directories:
@@ -517,28 +571,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             mod (ChunkModule): The ChunkModule to load and run
         """
 
-        mod.loaded = False
-
-        spec = util.spec_from_file_location(mod.module_name, mod.module_file)
-        if not spec or not spec.loader:
-            return False
-
-        loader = ChunkLazyConfigLoader(mod.module_name, mod.module_file, spec.loader, mod)
-        spec.loader = loader
-
-        module = util.module_from_spec(spec)
-        self.registered_modules[mod.module_name] = mod
-
-        try:
-            sys.modules[mod.module_name] = module
-            spec.loader.exec_module(module)
-        except Exception:
-            # This module failed to load. Set to file_name so we can try loading it again later§
-            logger.error(f"Failed to load module {mod.module_name}:", traceback.format_exc())
-            return False
-
-        mod.module = module
-        return True
+        # It's fairly safe to call exec_module since it's lazily loaded. Since we're using the ChunkLazyConfigLoader
+        # we get access to the config() function, prior to loading the rest of the chunk module
+        if mod.exec_module():
+            self.registered_modules[mod.module_name] = mod
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
         """Get the ChunkModule object in the registry where module_name matches the
@@ -580,11 +616,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     def reload_all(self):
         for mod in self.registered_modules.values():
-            mod.unload()
-
-            if not mod.loaded:
-                self.register_module(mod)
-
+            mod.remove_chunk()
         self._load_modules()
 
 
@@ -613,15 +645,16 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._edit_target_listener = NoticeConnection(
             self._edit_target_changed, ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED, globally=True
         )
-        self._load_listener = NoticeConnection(self._chunk_loaded, ChunkNoticeAlias.CHUNK_LOADED, globally=True)
-        self._unload_listener = NoticeConnection(self._chunk_deleted, ChunkNoticeAlias.CHUNK_UNLOADED, globally=True)
-        self._delete_listener = NoticeConnection(self._chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True)
+
         self._flags_listener = NoticeConnection(self._flags_changed, ChunkNoticeAlias.STATE_CHANGED, globally=True)
 
         self.chunk_layers: Dict[ChunkHash, Sdf.Layer] = {}
+        self._chunk_refs = weakref.WeakSet()
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
         self.stage: Usd.Stage = stage
+        self._root_layer = None
+
         self.initialized = True
 
     def get_root_layer(self) -> Sdf.Layer:
@@ -635,9 +668,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         Returns:
             Sdf.Layer: The root layer which holds the chunk sublayers
         """
-        if not self.stage:
-            raise AttributeError("Stage is not initialized")
-        return self.stage.GetSessionLayer()
+
+        if not self._root_layer:
+            self._root_layer = Sdf.Layer.CreateAnonymous("chunks")
+        return Sdf.Find(self._root_layer.identifier)
 
     def get_layer(self, c: "ChunkHash") -> Sdf.Layer | None:
         """
@@ -666,9 +700,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         Rasises:
             AttributeError: If the stage has not been initialized
         """
-
-        if not self.stage:
-            raise AttributeError("ChunkLayerManager stage is not initialized. Can't open layer")
 
         layer = self.get_layer(c)
         if not layer:
@@ -704,11 +735,20 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         Returns:
             Sdf.Layer: A new layer
         """
+
+        if layer := self.chunk_layers.get(c):
+            return layer
+
         layer_id = c.get_layer_identifier()
         layer = Sdf.Layer.CreateAnonymous(layer_id)
 
         self.chunk_layers[c._hashable] = layer
         target_layer.subLayerPaths.insert(0, layer.identifier)
+
+        # We must make sure to delete the layer of the chunk AFTER all other notices are sent.
+        # For this reason, we can't rely on callbacks. Instead we can register a finalizer, so we delete
+        # the layer once the chunk is actually deleted
+        weakref.finalize(c, self._chunk_deleted, c.get_hash())
 
         return layer
 
@@ -732,9 +772,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         Args:
             layer_id (str): The layer to remove
         """
-        if not self.stage:
-            return
-
         if isinstance(layer_id, str):
             layer = Sdf.Layer.Find(layer_id)
         elif _layer_id := self.get_layer(layer_id):
@@ -743,17 +780,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return
         layer.Clear()
 
-    def reload_all(self, stage: Optional[Usd.Stage] = None):
+    def reload_all(self):
         """
         clear the chunk layer stack and recreate them
 
         Args:
             stage (Optional[Usd.Stage], optional): An optional stage. This is used when the stage is just loaded and the scene does not yet have access to it. Defaults to None.
         """
-        stage = stage if stage else self.stage
-        if not stage:
-            return
-
         sublayer_paths = self.get_root_layer().subLayerPaths.copy()
 
         for i, sublayer in reversed(list(enumerate(sublayer_paths))):
@@ -772,30 +805,24 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if stage:
             self.stage = stage
 
-    def _chunk_loaded(self, notice, sender: "chunk.Chunk"):
-        if not self.stage:
-            return
+            root = self.get_root_layer().identifier
+            sesh = stage.GetRootLayer()
+            if root not in sesh.subLayerPaths:
+                sesh.subLayerPaths.append(root)
 
-        self.add_layer(self.get_root_layer(), sender)
-
-    def _chunk_deleted(self, notice, sender):
-        if not self.stage:
-            return
-
-        if lay := self.get_layer(sender._hashable):
+    def _chunk_deleted(self, chunk_hash):
+        if lay := self.get_layer(chunk_hash):
             sublayer_paths = self.get_root_layer().subLayerPaths.copy()
             for i, sublayer in reversed(list(enumerate(sublayer_paths))):
                 if sublayer == lay.identifier:
                     sublayer_paths.pop(i)
 
             self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
+            self.chunk_layers.pop(chunk_hash)
 
     def _flags_changed(self, notice, sender):
         c = sender
         if not isinstance(c, chunk.Chunk):
-            return
-
-        if not self.stage:
             return
 
         if c not in self.chunk_layers:
