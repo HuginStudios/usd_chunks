@@ -1,10 +1,5 @@
 from usd_chunks import chunk
 
-
-def run_execute(owner: chunk.Chunk, notice, sender):
-    owner.execute()
-
-
 def print_hierarchy(data, indent=0):
     istr = ""
     msg = ""
@@ -49,7 +44,12 @@ def callback(owner: chunk.Chunk, notice, sender):
     assert isinstance(bp, chunk.Slider)
     assert isinstance(cp, chunk.Slider)
 
+    # print("D changed:", notice.data.name)
     print(f"({a.name} * {b.name} = {c.name}): {ap.value} * {bp.value} = {cp.value}")
+    
+    exp = ap.value * bp.value
+    if abs(exp - cp.value) > 0.00001:
+        print(f"FAILED. C value = {cp.value}. Expected value: {exp}")
 
 
 def c_function(owner: chunk.Slider, attrib):
@@ -65,7 +65,6 @@ def c_function(owner: chunk.Slider, attrib):
 
     return a.value * b.value
 
-
 def main():
     a = chunk.Chunk("A")
     a_param = chunk.Slider("A_param")
@@ -78,7 +77,6 @@ def main():
     c = chunk.Chunk("C")
     c_param = chunk.Slider("C_param")
     c.add_param(c_param)
-
     c_param.add_dependency(a_param)
     c_param.add_dependency(b_param)
     c_param.set_function("value", c_function)
@@ -88,14 +86,15 @@ def main():
     d.add_param(d_param)
 
     d.add_callback(callback)
-    d.add_callback(run_execute, sender=d_param)
 
     d.add_dependency(a)
     d.add_dependency(b)
     d.add_dependency(c)
 
+    ## Test circular dependency
+    # a.add_dependency(d)
+
     return [a, b, c, d]
 
-
 def config():
-    return chunk.DefaulConfig(chunk.StandardCategory.EXAMPLES, load=False)
+    return chunk.DefaulConfig(chunk.StandardCategory.EXAMPLES, load=True)

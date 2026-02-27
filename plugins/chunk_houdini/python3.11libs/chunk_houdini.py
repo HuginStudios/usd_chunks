@@ -146,7 +146,8 @@ def create_lop_node(chunk_name: str):
     reg = chunk_registry.ChunkRegistry()
     if reg.initialized:
         for name, mod in reg.registered_modules.items():
-            reg.unload_chunk_module(mod)
+            # reg.unload_chunk_module(mod)
+            mod.unload()
 
     reg.initialize(scene, "chunk_houdini", unloaded=True)
 
@@ -154,7 +155,7 @@ def create_lop_node(chunk_name: str):
     if not module:
         raise ModuleNotFoundError("Could not find chunk module:", chunk_name)
 
-    if not module.load() or not module.loaded_chunk:
+    if not module.load() or not module.loaded_chunks:
         return
 
     module.loaded_chunk.user_data["node"] = node

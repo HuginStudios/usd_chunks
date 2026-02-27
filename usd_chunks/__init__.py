@@ -1,5 +1,6 @@
 from importlib.metadata import PackageNotFoundError, version
 import sys
+import logging
 from pathlib import Path
 from typing import Final
 
@@ -10,6 +11,16 @@ except PackageNotFoundError:
 __author__ = "Viktor Lanner"
 __email__ = "viktor.lanner@huginstudios.com"
 
+_logger = logging.getLogger("usd_chunks")
+_logger.setLevel(logging.DEBUG)
+
+# create console handler and set level to debug
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+formatter = logging.Formatter("%(levelname)s: %(asctime)s - %(name)s: %(message)s", datefmt="%y-%m-%d %H:%M")
+ch.setFormatter(formatter)
+_logger.addHandler(ch)
 
 # Attempt to import nesessary deps. If not found, use the installed packages from .venv
 try:

@@ -4,18 +4,19 @@ from pxr import Sdf, Usd, UsdShade
 from PySide6 import QtWidgets
 
 
-def apply(owner: chunk.Chunk, notice, sender: chunk.Chunk):
-    if notice.data is not sender.get_param("apply"):
-        return
+def apply(owner: chunk.Chunk, notice, sender):
+    # if notice.data is not sender.get_param("apply"):
+    #     return
+
 
     # Access the parameter inside the group
-    x_scale_param = sender.get_param("uvscale")[0]
-    y_scale_param = sender.get_param("uvscale")[1]
+    x_scale_param = owner.get_param("uvscale")[0]
+    y_scale_param = owner.get_param("uvscale")[1]
 
     x_scale = x_scale_param.value
     y_scale = y_scale_param.value
 
-    filebrowser = sender.get_param("browse")
+    filebrowser = owner.get_param("browse")
     checker_file = filebrowser.value
 
     # api = sender.get_usdview_api()
@@ -82,12 +83,9 @@ def apply(owner: chunk.Chunk, notice, sender: chunk.Chunk):
         api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
 
 
-def clear(owner: chunk.Chunk, notice, sender: chunk.Chunk):
+def clear(owner: chunk.Chunk, notice, sender):
     """Remove the assign checker edits"""
-    if notice.data is not sender.get_param("clear"):
-        return
-
-    chunk_registry.ChunkLayerManager().clear_layer(owner.get_layer_identifier())
+    chunk_registry.ChunkLayerManager().clear_layer(owner)
 
 
 def scale(owner: chunk.Vector, notice, sender):
@@ -107,8 +105,8 @@ def scale(owner: chunk.Vector, notice, sender):
     scale_val = scale_attr.Get()
 
     # idx = 1 if param.name == "scale1" else 0
-    scale_val[0] = sender[0].value
-    scale_val[1] = sender[1].value
+    scale_val[0] = owner[0].value
+    scale_val[1] = owner[1].value
     scale_attr.Set(scale_val)
 
 
@@ -124,7 +122,6 @@ def main():
     filebrowser = chunk.FileBrowser("browse")
 
     visUVsButton = chunk.Button("apply", "Visualize")
-
     clearUVsButton = chunk.Button("clear", "Clear Vis")
 
     chunk_api.add_params([vec, filebrowser, visUVsButton, clearUVsButton])
@@ -134,8 +131,8 @@ def main():
     # 2 - Tf.Notice (the notice)
     # 3 - ChunkParam (the button)
 
-    chunk_api.add_callback(apply, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
-    chunk_api.add_callback(clear, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
+    chunk_api.add_callback(apply, sender=visUVsButton, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
+    chunk_api.add_callback(clear, sender=clearUVsButton)
 
     return chunk_api
 

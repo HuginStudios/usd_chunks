@@ -272,9 +272,6 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, c
 
 
 def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
-    if sender is not owner.get_param("mesh_type"):
-        return
-
     groups = [x for x in owner.get_my_params() if isinstance(x, chunk.Group)]
     selected = sender.value
 
@@ -355,7 +352,6 @@ def cube_changed(owner: chunk.Group, notice, sender):
 
     if owner.has_state(chunk_core.ChunkFlags.State.HIDDEN):
         return
-
     xseg = owner.get_param("dimx")
     yseg = owner.get_param("dimy")
     zseg = owner.get_param("dimz")

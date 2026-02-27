@@ -1,8 +1,7 @@
-from pxr import Sdf
-
-
 from enum import IntFlag, auto
 from typing import List
+
+from pxr import Sdf
 
 
 class ChunkFlags:
