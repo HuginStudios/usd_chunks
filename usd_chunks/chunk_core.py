@@ -41,6 +41,7 @@ from typing import (
     TypedDict,
     TypeVar,
     Union,
+    Sequence,
     get_origin,
 )
 
@@ -49,8 +50,9 @@ from attr import _make as attrMake
 from pxr import Sdf, Usd
 from typing_extensions import Self, dataclass_transform
 
-from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry
+from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_serial
 from usd_chunks.chunk_flags import ChunkFlags
+
 
 _ATTRS_SUPPORT_CONVERTER = ATTRS_VERSION >= (24, 1)  # type: ignore
 _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
@@ -707,7 +709,9 @@ def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Att
         else:
             sort_keys[f.name] = i
 
-        results.append(f)
+        do_repr = f.init and f.repr
+
+        results.append(f.evolve(repr=do_repr))
 
     return sorted(results, key=lambda x: sort_keys[x.name])
 
@@ -814,9 +818,6 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         self.old_value: Optional[ValueT] = None
 
         self.set_owner(owner)
-
-    def __repr__(self) -> str:
-        return f"AttributeSender({self.name} = {self.value})"
 
     def get_notice_data(self) -> Self:
         """
@@ -925,7 +926,7 @@ class AttributeMetadata(TypedDict, total=False):
     documentation: str
 
 
-class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMetaclass):
+class AttributesBase(chunk_notice.ChunkNoticePropagator, chunk_serial.Serializeable, metaclass=AttributesMetaclass):
     """This class is used as base for Chunk dataclasses. Sends modification notices and validates/converts attribute values
 
     Any modifications to an attribute with `metadata["send_mode"]==SendMode.SEND`, will send a notice of type metadata["sender_alias"] when modified.
@@ -1005,6 +1006,124 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             self._attr_senders[name] = sender
 
         self._resolve_failed_converters()
+
+    def serialize(self) -> Dict | None:
+        if res := super().serialize():
+            res["_callbacks"] = self._callbacks
+            res["_attribFunctions"] = self._attrib_functions
+        return res
+
+
+    # def to_dict(self):
+    #     res: Dict[str, Any] = {}
+    #     res["class"] = f"{self.__module__}.{repr(self)}"
+
+    #     cbs = []
+    #     for i in self._callbacks:
+    #         cbs.append(i.to_dict())
+
+    #     deps = []
+    #     for i in self.get_dependencies():
+    #         deps.append(hash(i))
+
+    #     funcs = []
+    #     for aname, afunc in self._attrib_functions.items():
+    #         func_self = None
+    #         if inspect.ismethod(afunc):
+    #             func_self = hash(afunc.__self__)
+    #         funcs.append((aname, afunc.__name__, func_self))
+
+    #     res["callbacks"] = cbs
+    #     res["dependencies"] = deps
+    #     res["hash"] = hash(self)
+    #     res["attrib_functions"] = funcs
+    #     return res
+
+    # @staticmethod
+    # def from_dict(data, glb=None, loc=None, objs=None):
+    #     cls_name = data.get("class")
+
+    #     if objs is None:
+    #         objs = {"chunks": {}, "waiting": defaultdict(dict)}
+
+    #     if "chunks" not in objs:
+    #         objs["chunks"] = {}
+
+    #     if "waiting" not in objs:
+    #         objs["waiting"] = defaultdict(dict)
+
+    #     try:
+    #         inst: ChunkCommon = eval(cls_name, glb, loc)
+    #     except Exception:
+    #         logger.exception(f"Failed to create from dict {cls_name}")
+    #         return None
+
+    #     oldhash = data.get("hash")
+    #     objs["chunks"][oldhash] = inst
+
+    #     if isinstance(inst, ChunkContainerBase):
+    #         inst.children.clear()
+    #         children = NameSyncedContainer()
+    #         children.set_owner(inst)
+    #         inst.children = children
+    #         for child_data in data.get("children", []):
+    #             if child := AttributesBase.from_dict(child_data, glb, loc, objs):
+    #                 inst.children.add(child)
+
+    #     if isinstance(inst, ChunkParamBase):
+    #         inst.value = data.get("value")
+
+    #     if waiting := objs["waiting"].get(oldhash):
+    #         cbs = waiting.get("callbacks", [])
+    #         for i in reversed(range(len(cbs))):
+    #             succ, conn = chunk_notice.NoticeConnection.from_dict(cbs[i], objs["chunks"], glb, loc)
+    #             if not succ or not conn:
+    #                 continue
+    #             inst.add_connection(cbs.pop(i))
+
+    #         deps = waiting.get("dependencies", [])
+    #         for i in reversed(range(len(deps))):
+    #             inst.add_dependency(deps.pop(i))
+
+    #         afuncs = waiting.get("attrib_functions", [])
+    #         for i in reversed(range(len(afuncs))):
+    #             aname, funcname, target = afuncs[i]
+    #             func = getattr(inst, funcname)
+    #             target.set_function(aname, func)
+
+    #     for cbinfo in data.get("callbacks", []):
+    #         succ, conn = chunk_notice.NoticeConnection.from_dict(cbinfo, objs["chunks"], glb, loc)
+    #         if not succ:
+    #             if "callbacks" not in objs["waiting"][conn]:
+    #                 objs["waiting"][conn]["callbacks"] = []
+    #             objs["waiting"][conn]["callbacks"].append(cbinfo)
+    #             continue
+
+    #         if conn and not inst.find_callbacks(conn.get_method()):
+    #             inst.add_connection(conn)
+
+    #     for dephash in data.get("dependencies", []):
+    #         if not (dep := objs["chunks"].get(dephash)):
+    #             if "dependencies" not in objs["waiting"][dephash]:
+    #                 objs["waiting"][dephash]["dependencies"] = []
+    #             objs["waiting"][dephash]["dependencies"].append(inst)
+    #             continue
+    #         inst.add_dependency(dep)
+
+    #     for aname, funcname, func_self_hash in data.get("attrib_functions", []):
+    #         if func_self_hash:
+    #             if  not (func_self := objs["chunks"].get(func_self_hash)):
+    #                 if "attrib_functions" not in objs["waiting"][func_self_hash]:
+    #                     objs["waiting"][func_self_hash]["attrib_functions"] = []
+    #                 objs["waiting"][func_self_hash]["attrib_functions"].append((aname, funcname, inst))
+    #                 continue
+    #             func = getattr(func_self, funcname)
+    #         else:
+    #             func = eval(funcname, glb, loc)
+
+    #         inst.set_function(aname, func)
+
+    #     return inst
 
     def clone(self) -> Self:
         """
@@ -1491,11 +1610,10 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
                 return setattr(self._param_ref, name, value)
         except (ReferenceError, AttributeError):
             pass
-
         return super().__setattr__(name, value)
 
 
-class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
+class NameSyncedContainer(chunk_notice.ChunkNoticePropagator, chunk_serial.Serializeable):
     """Container for holding ChunkCommon objects. The container holds two maps: params & names. The maps
     are ChainMaps, meaning they provide access to all nested NameSyncedContainer param and names as well.
     In practice, this means we can quickly lookup nested children of chunks or groups, without having to
@@ -1531,26 +1649,39 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             name "myParam" may be accessed as params[names["myParam"]]
     """
 
-    def __init__(self):
+    def __init__(self, params: Optional[Sequence["ChunkCommon"]] = None):
         super().__init__()
 
         self.last_added: Optional[HashVal] = None
         self.last_removed: Optional[HashVal] = None
 
-        self.params: ChainMap[ChunkHash, ChunkCommon] = ChainMap()
-        self.names: ChainMap[str, ChunkHash] = ChainMap()
+        self._params: ChainMap[ChunkHash, ChunkCommon] = ChainMap()
+        self._names: ChainMap[str, ChunkHash] = ChainMap()
+
+        if params is not None:
+            for i in params:
+                self.add(i)
 
     def __bool__(self):
-        return bool(self.params)
+        return bool(self._params)
 
     def __copy__(self):
         copied = NameSyncedContainer()
 
-        for param in self.params.maps[0].values():
+        for param in self._params.maps[0].values():
             copied.add(copy.copy(param))
 
         copied._copy_callbacks(self)
         return copied
+
+    def __repr__(self) -> str:
+        return "NameSyncedContainer()"
+
+    def serialize(self):
+        c = []
+        for p in self.get_my_params():
+            c.append(p)
+        return {"params": c}
 
     def get_notice_data(self) -> Self:
         return self
@@ -1561,8 +1692,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         be held elsewhere. However, it can be expected that the children are implicitly deleted when calling this function, as
         other objects should preferably only store weakrefs to the params
         """
-        self.names.clear()
-        self.params.clear()
+        self._names.clear()
+        self._params.clear()
 
     def add(self, obj: "ChunkCommon | ProxyParam", send=True):
         """Add a chunk object to this container. This will make the container the owner of the param, and store the
@@ -1581,8 +1712,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
 
         # Append child the object + name to the first layer of the ChainMaps
-        self.params.maps[0][obj.get_hash()] = obj  # type: ignore
-        self.names.maps[0][obj.name] = obj.get_hash()
+        self._params.maps[0][obj.get_hash()] = obj  # type: ignore
+        self._names.maps[0][obj.name] = obj.get_hash()
 
         # if obj.name:
 
@@ -1593,8 +1724,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             # Also append the children of the group, as this allows for fast lookups accross the layers.
             # This ignores the children of vectors, as access to the vector elements should be accessed on
             # the vector itself, and not as children
-            self.params.maps.append(obj.children.params)
-            self.names.maps.append(obj.children.names)
+            self._params.maps.append(obj.children._params)
+            self._names.maps.append(obj.children._names)
 
         self.send_added(obj)
 
@@ -1608,7 +1739,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
     def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> Optional[chunk_notice.ChunkNotice]:
         # Override to reflect any changes on the children in this ds. Used to update the names when a name changes
         if notice and (p := notice.data):
-            if isinstance(p, AttributeSender) and p.name == "name" and p.old_value in self.names.maps[0]:
+            if isinstance(p, AttributeSender) and p.name == "name" and p.old_value in self._names.maps[0]:
                 self.name_changed(p.old_value)  # type: ignore
 
         return super().data_changed(notice)
@@ -1622,7 +1753,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         to get correct mapping
         """
         invalid = []
-        for i, mapping in enumerate(self.names.maps):
+        for i, mapping in enumerate(self._names.maps):
             for name, idx in mapping.items():
                 obj = self.get_param(idx)
 
@@ -1630,8 +1761,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
                     invalid.append((i, name, obj.name))
 
         for i, old_name, new_name in invalid:
-            idx = self.names.maps[i].pop(old_name)
-            self.names.maps[i][new_name] = idx
+            idx = self._names.maps[i].pop(old_name)
+            self._names.maps[i][new_name] = idx
 
     def name_changed(self, old_name: str):
         """Marks the old_name as changed, and update the names dict for this layer only, to reflect the change.
@@ -1656,7 +1787,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
 
         # Only look for names on the first layer. Groups are responsible for their respective layers
-        mapping = self.names.maps[0]
+        mapping = self._names.maps[0]
 
         if old_name in mapping:
             idx = mapping.pop(old_name)
@@ -1676,7 +1807,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
         if isinstance(key, str):
             return self.get_by_name(key, default)
-        return self.params.get(key, default)
+        return self._params.get(key, default)
 
     def get_by_name(self, name: str, default: Any = None, proxy_index: Optional[int] = None) -> Optional["ChunkCommon"]:
         """
@@ -1692,7 +1823,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
         if "." in name:
             hierarchy = name.split(".")
-            cm: ChainMap = self.names
+            cm: ChainMap = self._names
 
             idx = 0
             g = hierarchy[0]
@@ -1709,9 +1840,9 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
                 g = hierarchy[idx]
 
             if key := cm.get(g, default):
-                return self.params.get(key, default)
+                return self._params.get(key, default)
 
-        if key := self.names.get(name, default):
+        if key := self._names.get(name, default):
             return self.get_param(key, default)
 
     def get_names(self) -> Tuple[str, ...]:
@@ -1720,7 +1851,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         Returns:
             tuple[str, ...]: All param names on this layer and under
         """
-        return tuple(self.names.keys())
+        return tuple(self._names.keys())
 
     def get_my_names(self) -> Tuple[str, ...]:
         """Get all names on this layer only
@@ -1728,7 +1859,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         Returns:
             tuple[str, ...]: The param names of the first layer
         """
-        return tuple(self.names.maps[0].keys())
+        return tuple(self._names.maps[0].keys())
 
     def get_params(self) -> Tuple["ChunkCommon", ...]:
         """Get all params on this layer and under
@@ -1736,7 +1867,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         Returns:
             Tuple[ChunkCommon, ...]: The params
         """
-        return tuple(self.params.values())
+        return tuple(self._params.values())
 
     def get_my_params(self) -> Tuple["ChunkCommon", ...]:
         """Get all params on this layer only
@@ -1744,7 +1875,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         Returns:
             Tuple[ChunkCommon, ...]: The params
         """
-        return tuple(self.params.maps[0].values())
+        return tuple(self._params.maps[0].values())
 
     def send_added(self, obj: "ChunkCommon | ProxyParam"):
         """
@@ -1775,8 +1906,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             # as send_self() will propagate the notice to the owners
             self.send_removed(obj)
 
-            del self.names.maps[0][obj.name]
-            del self.params.maps[0][key]
+            del self._names.maps[0][obj.name]
+            del self._params.maps[0][key]
 
             if obj.get_owner() == self:
                 obj.set_owner(None)
@@ -1873,7 +2004,7 @@ class ChunkCommon(AttributesBase):
     icon: Optional[str] = attrs.field(default="")  # Path to icon
 
     # Hold custom data which is not used directly by the chunk
-    user_data: Dict[str, Any] = attrs.field(factory=dict)
+    user_data: Dict[str, Any] = attrs.field(factory=dict, repr=False)
 
     # Orientation of the widget, respected if relevant
     layout: ChunkFlags.LayoutFlags = attrs.field(default=ChunkFlags.LayoutFlags.VERTICAL)
@@ -2336,6 +2467,11 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     #       This should also work on groups and chunks... But thats a bit more complicated
     custom_widget: Optional[ChunkParamWidgetBase] = attrs.field(default=None)
 
+    # def to_dict(self):
+    #     res = super().to_dict()
+    #     res["value"] = self.value
+    #     return res
+
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "value":
             if val is None:
@@ -2436,6 +2572,11 @@ class ChunkContainerBase(ChunkCommon):
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         self.children.set_owner(self)
+
+    # def to_dict(self):
+    #     res = super().to_dict()
+    #     res["children"] = self.children
+    #     return res
 
     def remove_param_or_group(self, param: ChunkCommon):
         """
@@ -2588,7 +2729,7 @@ class ChunkContainerBase(ChunkCommon):
             level (int, optional): A value saying what level of the hierarchy the yielded value come from, starting at 0. Defaults to 0.
 
         Yields:
-            Tuple[int, ChunkCommon]: _description_
+            Tuple[int, ChunkCommon]:
         """
         yield level, self
         for p in self.get_my_params():
@@ -2912,7 +3053,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             parameters should be nammed. If the param has a name already, the suffixes will be appended to the name
     """
 
-    param: ChunkParamBase = attrs.field(default=None)
+    param: ChunkParamBase = attrs.field(default=None, repr=False)
     length: int = attrs.field(default=3)
     suffixes: Optional[tuple[str, ...] | str] = attrs.field(default=None)
 
@@ -2928,7 +3069,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         super().__attrs_post_init__()
         self._attr_senders["value"] = AttributeSender(self, "value", chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
 
-        if self.children:
+        if self.children or not self.param:
             # __attrs_post_init__ was called when copied, so no need to reinitialize the children as they
             # have already been initialized
             return

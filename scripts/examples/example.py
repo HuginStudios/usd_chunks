@@ -106,8 +106,6 @@ def nameChanged(owner: chunk.LineEdit, notice, sender):
 
     param_name = s.old_value if s.old_value else "listSlider"
 
-    print("RENAME:", param_name, "->", s.value)
-
     if p := c.get_param(param_name):
         p.name = s.value
 

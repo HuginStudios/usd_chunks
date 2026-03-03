@@ -4,10 +4,15 @@ from typing import List
 from pxr import Sdf
 
 
+class _FlagRepr(IntFlag):
+    def __repr__(self) -> str:
+        return f"{self.__module__}.{self.__class__.__qualname__}({self.value})"
+
+
 class ChunkFlags:
     """Hold common flags for chunks"""
 
-    class LayoutFlags(IntFlag):
+    class LayoutFlags(_FlagRepr):
         """Flags for layout hinting parameters and groups
 
         Attributes:
@@ -18,7 +23,7 @@ class ChunkFlags:
         HORIZONTAL = 0
         VERTICAL = auto()
 
-    class State(IntFlag):
+    class State(_FlagRepr):
         """Store current state of parameters and containers
 
         Attributes:
@@ -33,7 +38,7 @@ class ChunkFlags:
         DISABLED = auto()
         COLLAPSED = auto()
 
-    class GroupFlags(IntFlag):
+    class GroupFlags(_FlagRepr):
         """Flags for chunk constainer type objects (Chunk, Group)
 
         Attributes:
@@ -48,7 +53,7 @@ class ChunkFlags:
         FRAMED = auto()
         LIST = auto()
 
-    class ParamFlags(IntFlag):
+    class ParamFlags(_FlagRepr):
         """Flags for chunk params
 
         Attributes:
@@ -59,7 +64,7 @@ class ChunkFlags:
         LABELED = 1
         FILE_EXISTING = auto()
 
-    class ParamType(IntFlag):
+    class ParamType(_FlagRepr):
         """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
         implement the UI based on these.
 

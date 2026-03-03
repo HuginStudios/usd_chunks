@@ -83,6 +83,13 @@ class ChunksPluginContainer(PluginContainer):
             print("save layer: ", path)
             layer.Export(path)
 
+    def exportChunks(self, usdviewApi):
+        reg = chunk_registry.ChunkRegistry()
+        reg.export_chunks("C:/Users/Viktor/export_chunks.json")
+
+    def importChunks(self, usdviewApi):
+        reg = chunk_registry.ChunkRegistry()
+        reg.import_chunks("C:/Users/Viktor/export_chunks.json")
 
     def registerPlugins(self, plugRegistry, plugCtx) -> None:
         """Register the UI Creator plugin with the plugin registry.
@@ -101,6 +108,13 @@ class ChunksPluginContainer(PluginContainer):
             "ChunksPlugin.saveLayers", "Save Layers", self.saveLayers
         )
 
+        self._exportChunksCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.exportChunks", "Export Chunks", self.exportChunks
+        )
+        self._importChunksCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.importChunks", "Import Chunks", self.importChunks
+        )
+
         launch_chunks(plugCtx)
 
     def configureView(self, plugRegistry, plugUIBuilder) -> None:
@@ -108,6 +122,8 @@ class ChunksPluginContainer(PluginContainer):
         menu.addItem(self._reloadChunksCommand, "SHIFT+R")
         menu.addItem(self._openModuleSettingsCommand)
         menu.addItem(self._saveLayersCommand)
+        menu.addItem(self._exportChunksCommand)
+        menu.addItem(self._importChunksCommand)
 
 
 Tf.Type.Define(ChunksPluginContainer)

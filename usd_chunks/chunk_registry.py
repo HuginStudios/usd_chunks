@@ -17,14 +17,16 @@ import glob
 import os
 import sys
 import traceback
-from importlib import util
+import json
+from pathlib import Path
+from importlib import util, invalidate_caches, import_module
 from collections import defaultdict
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Generic, TypeVar, overload
 
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_serial
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton, SceneSender, send_notice
 
@@ -244,7 +246,7 @@ class ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         self._loader.exec_module(module)
 
 
-class ChunkModule:
+class ChunkModule(chunk_serial.Serializeable):
     """
     A class used by ChunkRegistry for managing chunk modules
 
@@ -262,22 +264,45 @@ class ChunkModule:
         self,
         module: Optional[ModuleType] = None,
         module_name: str = "",
-        module_file: str = "",
+        module_file: Path | str = Path(),
     ):
         self.module = module
         self.module_name = module_name
-        self.module_file = module_file
+        self.module_file = Path(module_file)
 
         self.loaded = False
         self.loaded_chunks: Dict[str, chunk.Chunk] = {}
         self.config: ChunkConfig = chunk.DefaulConfig()
         self.func: Optional[Callable[[], chunk.Chunk | List[chunk.Chunk]]] = None
 
+        self._callbacks = []
+
+        self.exec_module()
+
     def __hash__(self):
         return hash(self.module_name)
 
     def __eq__(self, other):
         return self.module_name == other.module_name
+
+    def __repr__(self) -> str:
+        return f"ChunkModule(module_name='{self.module_name}', module_file='{self.module_file.as_posix()}')"
+
+    def serialize(self):
+        if not (res := super().serialize()):
+            res = {}
+
+        res.update(
+            {
+                "module_name": self.module_name,
+                "module_file": self.module_file.as_posix(),
+                "loaded": self.loaded,
+                "module": None,
+            }
+        )
+
+        # res["loaded_chunks"] = list(self.loaded_chunks.values()) if self.loaded else []
+        return res
 
     def config_changed(self, notice, sender):
         pass
@@ -331,10 +356,7 @@ class ChunkModule:
             return False
 
         self.loaded_chunks[c.name] = c
-
-        # Add the callback to the chunk. Instead of the ChunkModule owning the callback, we add the callback to the chunk so it's
-        # garbage collected when the chunk is deleted
-        c.add_callback(self._pop_chunk, notice_alias=ChunkNoticeAlias.CHUNK_DELETED)
+        self._callbacks.append(NoticeConnection(self._pop_chunk, ChunkNoticeAlias.CHUNK_DELETED, c))
 
         try:
             c.check_hierarchy()
@@ -342,6 +364,9 @@ class ChunkModule:
             logger.exception(e)
             self.loaded = False
             return False
+
+        send_notice(ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+
         return True
 
     def _pop_chunk(self, notice, sender):
@@ -351,13 +376,14 @@ class ChunkModule:
         if len(self.loaded_chunks) == 0:
             self.loaded = False
             self.module = None
+            self._callbacks.clear()
 
     def exec_module(self):
         spec = util.spec_from_file_location(self.module_name, self.module_file)
         if not spec or not spec.loader:
             return False
 
-        loader = ChunkLazyConfigLoader(self.module_name, self.module_file, spec.loader, self)
+        loader = ChunkLazyConfigLoader(self.module_name, str(self.module_file), spec.loader, self)
         spec.loader = loader
 
         module = util.module_from_spec(spec)
@@ -373,7 +399,7 @@ class ChunkModule:
         self.module = module
         return True
 
-    def load(self, func_name: str = "main") -> bool:
+    def _pre_load(self, func_name: str = "main"):
         self.remove_chunk()
 
         if not self.loaded:
@@ -396,15 +422,20 @@ class ChunkModule:
             if not self.func:
                 self.loaded = False
                 return False
-
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later§
             logger.error(f"Failed to run module {self.module_name}: \n%s", traceback.format_exc())
             self.loaded = False
             return False
 
-        msg = ""
         self.loaded = True
+        return True
+
+    def load(self, func_name: str = "main") -> bool:
+        if not self._pre_load(func_name):
+            return False
+
+        msg = ""
 
         start = timer()
         self.loaded = self.create()
@@ -441,10 +472,7 @@ class ChunkModule:
             c.name = chunk.Chunk.get_valid_child_name(c.name, names)
             names.add(c.name)
 
-            if not self._add_chunk(c):
-                continue
-
-            send_notice(ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+            self._add_chunk(c)
 
         return bool(loaded)
 
@@ -477,7 +505,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         plugin (str) : A string identifier of the currently loaded plugin
     """
 
-    registered_directories: Set[str] = set()
+    registered_directories: Set[Path] = set()
     registered_modules: Dict[str, ChunkModule] = {}
     scene: SceneSender
     plugin: str
@@ -512,7 +540,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
     def register_chunk_environ_directories(self):
         """Register the USD_CHUNK_DIRS directories to find Python modules."""
         environ_dirs = USD_CHUNK_DIRS()
-        # environ_dirs = chunk_env_var(ChunkEnvVars.USD_CHUNK_DIRS, [])
 
         for chunk_dir in environ_dirs:
             self.register_directory(chunk_dir)
@@ -523,18 +550,18 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         Args:
             chunk_dir (str): A pathlike string to add
         """
-        if not os.path.isdir(chunk_dir):
+        if (p := Path(chunk_dir)) and not p.exists():
             logger.error(f"{chunk_dir} directory not found.")
             return
 
-        if chunk_dir in self.registered_directories:
+        if p in self.registered_directories:
             # directory already loaded
             return
 
         sys.path.append(chunk_dir)
-        self.registered_directories.add(chunk_dir)
+        self.registered_directories.add(p)
 
-    def register_chunk_modules(self, working_dirs: Iterable[str], unloaded: bool = False):
+    def register_chunk_modules(self, working_dirs: Iterable[Path], unloaded: bool = False):
         """Read and register Python files in the working directory.
 
         Args:
@@ -543,17 +570,19 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         for working_dir in working_dirs:
             # Loop over all directories of the working_dirs directory
-            chunk_python_files = glob.glob(os.path.sep.join([working_dir, "**", "*.py"]), recursive=True)
+            chunk_python_files = glob.glob(os.path.sep.join([str(working_dir), "**", "*.py"]), recursive=True)
+
             for module_path in chunk_python_files:
                 if not module_path.endswith(".py"):
                     continue
-                if not os.path.isfile(module_path):
+
+                if (p := Path(module_path)) and not p.exists():
                     continue
 
-                module_name = os.path.relpath(module_path, working_dir).replace(os.path.sep, ".").replace(".py", "")
-                mod = ChunkModule(module_name=module_name, module_file=module_path)
-
-                self.register_module(mod)
+                # module_name = os.path.relpath(module_path, working_dir).replace(os.path.sep, ".").replace(".py", "")
+                module_name = str(p.relative_to(working_dir)).replace(os.path.sep, ".").replace(".py", "")
+                # mod = ChunkModule(module_name=module_name, module_file=p)
+                self.register_module(module_name, p)
 
         if not unloaded:
             self._load_modules()
@@ -563,18 +592,14 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             if mod.should_load() and mod.should_load_for_plugin(self.plugin):
                 mod.load()
 
-    def register_module(self, mod: ChunkModule):
-        """
-        Load the actual module and runs the main function
-
-        Args:
-            mod (ChunkModule): The ChunkModule to load and run
-        """
+    def register_module(self, name, path):
 
         # It's fairly safe to call exec_module since it's lazily loaded. Since we're using the ChunkLazyConfigLoader
         # we get access to the config() function, prior to loading the rest of the chunk module
-        if mod.exec_module():
-            self.registered_modules[mod.module_name] = mod
+
+        # mod = ChunkModule(module_name=name, module_file=path)
+        # if mod.exec_module():
+        self.registered_modules[name] = ChunkModule(module_name=name, module_file=path)
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
         """Get the ChunkModule object in the registry where module_name matches the
@@ -616,8 +641,38 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     def reload_all(self):
         for mod in self.registered_modules.values():
-            mod.remove_chunk()
-        self._load_modules()
+            if mod.loaded:
+                mod.remove_chunk()
+                mod.load()
+
+    def export_chunks(self, path):
+        serial = chunk_serial.serialize_chunks([x for x in self.registered_modules.values() if x.loaded])
+        with open(path, "w") as f:
+            f.write(serial)
+        print(serial)
+
+    def import_chunks(self, path):
+        with open(path, "rb") as f:
+            serial = f.read()
+
+        chunk_serial.deserialize_chunks(serial)
+        # print(json.dumps(res, indent=4))
+        # objs = {}
+
+        # for dat in res:
+        #     if not (mod_name := dat.get("module_name")):
+        #         raise KeyError("Module does not have a module_name")
+        #     if not (module_file := dat.get("module_file")):
+        #         raise KeyError("Module does not have a module_file")
+
+        #     if not (mod := self.get_chunk_module(mod_name)):
+        #         mod = ChunkModule(module_name=mod_name, module_file=Path(module_file))
+        #         self.register_module(mod)
+
+        #     loaded = dat.get("loaded_chunks", [])
+        #     for i in range(len(loaded)):
+        #         if not mod.load_from_dict(loaded[i], objs):
+        #             return
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):

@@ -18,6 +18,7 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 ```
 
 """
+
 import inspect
 import logging
 import weakref
@@ -40,6 +41,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd
 from typing_extensions import Self
+from usd_chunks import chunk_serial
 
 logger = logging.getLogger(__name__)
 
@@ -959,6 +961,13 @@ class ChunkNoticePropagator:
         except (IndexError, AttributeError):
             return None
 
+    def get_dependencies(self) -> List["ChunkNoticePropagator"]:
+        res = []
+        for node in self.get_dag_node().get_inputs():
+            if prop := node.propagator:
+                res.append(prop)
+        return res
+
     def get_callbacks(self) -> List["NoticeConnection"]:
         """
         Get the lsut of callback connections
@@ -986,10 +995,17 @@ class ChunkNoticePropagator:
             List[chunk_notice.NoticeConnection]: A list of found connections matching the arguments
         """
 
-        query = {"method": method, "sender": sender, "alias": notice_type}
+        query = {"get_method": method, "sender": sender, "alias": notice_type}
         result = []
+
+        def _conn_attr(conn, q):
+            res = getattr(conn, q)
+            if callable(res):
+                return res()
+            return res
+
         for conn in self.get_callbacks():
-            if any([query[y] is not None and getattr(conn, y) == query[y] for y in query]):
+            if any([query[y] is not None and _conn_attr(conn, y) == query[y] for y in query]):
                 result.append(conn)
 
         return result
@@ -1061,7 +1077,7 @@ class ChunkNoticePropagator:
         pass
 
 
-class NoticeConnection:
+class NoticeConnection(chunk_serial.Serializeable):
     """
     A storage for a TfListener object. This class provides a simple client-facing interface for
     creating callbacks for the TfNotice system, with some additional functionality. This exists also
@@ -1105,20 +1121,20 @@ class NoticeConnection:
         owner: An optional owner object. Usually 'self', when adding callbacks on a class
     """
 
-    __slots__ = ("alias", "listener", "globally", "_method", "_sender", "_owner", "__weakref__")
+    __slots__ = ("alias", "_listener", "globally", "_method", "_sender", "_owner", "__weakref__")
 
     def __init__(
         self,
-        method: Callable,
-        alias: ChunkNoticeAlias,
+        method: Optional[Callable] = None,
+        alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
         sender: Optional[Any] = None,
         globally: bool = False,
         owner: Optional[ChunkNoticePropagator] = None,
     ):
         self.alias: ChunkNoticeAlias = alias
-        self.listener: Optional[Tf.Notice.Listener] = None
-
         self.globally: bool = globally
+
+        self._listener: Optional[Tf.Notice.Listener] = None
 
         if inspect.ismethod(method):
             self._method: Callable = weakref.WeakMethod(method, self._method_died)
@@ -1156,6 +1172,77 @@ class NoticeConnection:
     @sender.setter
     def sender(self, obj):
         self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
+
+
+    @staticmethod
+    def from_dict(data):
+        pass
+
+    def serialize(self) -> Dict | None:
+        if res := super().serialize():
+            res["method"] = self.get_method()
+            res["class"] = self.from_dict
+        return res
+
+    # def to_dict(self):
+    #     method_name = ""
+    #     method_module = ""
+    #     method_self = None
+    #     if meth := self.get_method():
+    #         method_module = meth.__module__
+
+    #         if inspect.ismethod(meth):
+    #             if isinstance(meth.__self__, ChunkNoticePropagator):
+    #                 method_self = hash(meth.__self__)
+    #             else:
+    #                 method_self = meth.__self__
+    #             method_name = f"{meth.__name__}"
+    #         else:
+    #             method_name = f"{meth.__name__}"
+
+    #     return {
+    #         "method": method_name,
+    #         "method_module": method_module,
+    #         "method_self": method_self,
+    #         "sender": hash(self.sender) if self.sender else None,
+    #         "owner": hash(self.owner) if self.owner else None,
+    #         "alias": self.alias,
+    #         "globally": self.globally,
+    #     }
+
+    # @staticmethod
+    # def from_dict(cbinfo, objs, glb, loc=None):
+    #     method_str = cbinfo.get("method")
+    #     # method_module = cbinfo.get("method_module")
+
+    #     self_hash = cbinfo.get("method_self")
+    #     owner_hash = cbinfo.get("owner")
+    #     sender_hash = cbinfo.get("sender")
+
+    #     method = None
+    #     if self_hash:
+    #         if method_self := objs.get(self_hash):
+    #             return False, self_hash
+
+    #         method = getattr(method_self, method_str)
+    #     else:
+    #         try:
+    #             method = eval(method_str, glb, loc)
+    #         except Exception:
+    #             logger.exception(method_str)
+    #             return None, None
+
+    #     owner = None
+    #     if owner_hash and not (owner := objs.get(owner_hash)):
+    #         return False, owner_hash
+
+    #     sender = None
+    #     if sender_hash and not (sender := objs.get(sender_hash)):
+    #         return False, sender_hash
+
+    #     return True, NoticeConnection(
+    #         method, ChunkNoticeAlias(cbinfo.get("alias", 0)), sender, bool(cbinfo.get("globally")), owner
+    #     )
 
     def handle_callback(self, notice, sender=None, context=True):
         """
@@ -1204,16 +1291,16 @@ class NoticeConnection:
             logger.warning("Could not find appropriate notice to connect for alias %s", self.alias)
             return
 
-        if self.listener is not None:
+        if self._listener is not None:
             self.disconnect()
 
         if sender is not None:
             self._sender = weakref.ref(sender)
 
         if self.sender is None or self.globally:
-            self.listener = Tf.Notice.RegisterGlobally(notice, self.handle_callback)
+            self._listener = Tf.Notice.RegisterGlobally(notice, self.handle_callback)
         elif self.sender:
-            self.listener = Tf.Notice.Register(notice, self.handle_callback, self.sender)
+            self._listener = Tf.Notice.Register(notice, self.handle_callback, self.sender)
 
     def _sender_died(self, ref):
         self.disconnect()
@@ -1228,9 +1315,9 @@ class NoticeConnection:
         """
         Calls Revoke() on the stored TfListener
         """
-        if self.listener is not None:
-            self.listener.Revoke()
-            self.listener = None
+        if self._listener is not None:
+            self._listener.Revoke()
+            self._listener = None
 
 
 class SceneSender(ChunkNoticePropagator):
@@ -1243,7 +1330,7 @@ class SceneSender(ChunkNoticePropagator):
         """
         When a modules config has requirements to external pip packages, the packages may be installed automatically by the ChunkDependencyManager.
         Before any package is installed though, the user should have the option to opt out of this. This method is called when packages can be installed,
-        and should return True if the package may be installed. Any installed package is put in the 
+        and should return True if the package may be installed. Any installed package is put in the
 
         Args:
             package_name (str): The name of the package to install
