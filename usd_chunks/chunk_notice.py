@@ -38,7 +38,7 @@ from typing import (
     TypeAlias,
 )
 
-from attrs import define, field
+from attrs import define, field, asdict
 from pxr import Sdf, Tf, Usd
 from typing_extensions import Self
 from usd_chunks import chunk_serial
@@ -171,7 +171,7 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
         registered (Dict[int, Type[Tf.Notice]]): A dictionary mapping between a ChunkNoticeAlias and a registered TfNotice
     """
 
-    registered: Dict[int, type[ChunkNotice]] = {}
+    registered: Dict[ChunkNoticeAlias, type[ChunkNotice]] = {}
 
     @classmethod
     def get_from_alias(cls, alias: ChunkNoticeAlias) -> Type[ChunkNotice]:
@@ -187,7 +187,7 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
         Returns:
             Type[Tf.Notice]: The class of the registered notice
         """
-        notice = cls.registered.get(alias.value)
+        notice = cls.registered.get(alias)
         if notice is None:
             raise Tf.ErrorException(f"No notice found for alias {alias}")
         return notice
@@ -205,7 +205,7 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
             notice_class.alias = alias
             if not hasattr(notice_class, "data"):
                 notice_class.data = None
-            cls.registered[alias.value] = notice_class
+            cls.registered[alias] = notice_class
 
 
 def chunk_notice(alias: ChunkNoticeAlias):
@@ -219,7 +219,6 @@ def chunk_notice(alias: ChunkNoticeAlias):
     def _wrapper(cls: Type[ChunkNotice]):
         ChunkNoticeRegistry().register(alias, cls)
         Tf.Type.Define(cls)
-
         return cls
 
     return _wrapper
@@ -381,7 +380,7 @@ CallbackT: TypeAlias = Callable[[Optional[ChunkNotice], Any, Optional[Set[ChunkN
 ConnSetT: TypeAlias = weakref.WeakValueDictionary[int, "DagNode"]
 
 
-@define(slots=True)
+@define(slots=True, hash=True)
 class DagConnections:
     """
     A dataclass for the DagNode connections
@@ -420,7 +419,6 @@ class DagNode:
         "_input_data",
         "_dirty",
         "_connections",
-        "_callback",
         "_propagator",
         "__weakref__",
     )
@@ -446,6 +444,22 @@ class DagNode:
     def name(self):
         # Useful for debugging the solve
         return self.propagator.name if hasattr(self.propagator, "name") else self.propagator.__class__.__name__  # type: ignore
+
+    # def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
+    #     if name in ["name", "dirty"]:
+    #         return (False, value)
+    #     if name == "_connections":
+    #         return (True, {"owner": chunk_serial.serialize_Reference(self.get_owner()), "inputs": list(self.get_inputs())})
+    #         # return (True, list(self.get_inputs()))
+    #     return super().should_serialize_attribute(name, value)
+
+    # def post_serial_setattr(self, name, value):
+    #     if name == "_connections":
+    #         for i in value.get("inputs"):
+    #             self.add_dependency(i)
+    #         self.set_owner(value.get("owner"))
+    #     else:
+    #         return super().post_serial_setattr(name, value)
 
     @dirty.setter
     def dirty(self, val: bool):
@@ -711,7 +725,7 @@ class DagNode:
         self._index = 0
 
 
-class ChunkNoticePropagator:
+class ChunkNoticePropagator(chunk_serial.Serializeable):
     """
     A base class that implements the connectability of chunk objects. Chunk objects may be connected to eachother through
     'physical' connections, and to callbacks through 'non-physical' connections. These two connection methods differ in how
@@ -753,6 +767,33 @@ class ChunkNoticePropagator:
         self._blocked = False
 
         super().__init__(*args, **kwargs)
+
+    def serialize(self, glb):
+        if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
+            res.attributes["dependencies"] = list(self.get_dependencies())
+        return res
+
+    def post_serial(self, owner):
+        if isinstance(owner, ChunkNoticePropagator):
+            self.set_owner(owner)
+        return super().post_serial(owner)
+
+    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
+        if name == "_callbacks":
+            return True, self._callbacks
+        return super().should_serialize_attribute(name, value)
+
+    def post_serial_setattr(self, name, value):
+        self._blocked = True
+        if name == "dependencies":
+            # Since the _dependencies is an attribute of the DagNode, calling setattr(self, '_dependencies', value)
+            # would set the _dependencies on the AttributesBase instance. So instead we make sure the dependencies goes to the
+            # DagNode. The dependencies are serialized to the AttributesBase
+            for dep in value:
+                self.add_dependency(dep)
+        else:
+            super().post_serial_setattr(name, value)
+        self._blocked = False
 
     @abstractmethod
     def request_delete(self):
@@ -1173,76 +1214,10 @@ class NoticeConnection(chunk_serial.Serializeable):
     def sender(self, obj):
         self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
 
-
-    @staticmethod
-    def from_dict(data):
-        pass
-
-    def serialize(self) -> Dict | None:
-        if res := super().serialize():
-            res["method"] = self.get_method()
-            res["class"] = self.from_dict
+    def serialize(self, glb):
+        if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
+            res.kwargs["method"] = self.get_method()
         return res
-
-    # def to_dict(self):
-    #     method_name = ""
-    #     method_module = ""
-    #     method_self = None
-    #     if meth := self.get_method():
-    #         method_module = meth.__module__
-
-    #         if inspect.ismethod(meth):
-    #             if isinstance(meth.__self__, ChunkNoticePropagator):
-    #                 method_self = hash(meth.__self__)
-    #             else:
-    #                 method_self = meth.__self__
-    #             method_name = f"{meth.__name__}"
-    #         else:
-    #             method_name = f"{meth.__name__}"
-
-    #     return {
-    #         "method": method_name,
-    #         "method_module": method_module,
-    #         "method_self": method_self,
-    #         "sender": hash(self.sender) if self.sender else None,
-    #         "owner": hash(self.owner) if self.owner else None,
-    #         "alias": self.alias,
-    #         "globally": self.globally,
-    #     }
-
-    # @staticmethod
-    # def from_dict(cbinfo, objs, glb, loc=None):
-    #     method_str = cbinfo.get("method")
-    #     # method_module = cbinfo.get("method_module")
-
-    #     self_hash = cbinfo.get("method_self")
-    #     owner_hash = cbinfo.get("owner")
-    #     sender_hash = cbinfo.get("sender")
-
-    #     method = None
-    #     if self_hash:
-    #         if method_self := objs.get(self_hash):
-    #             return False, self_hash
-
-    #         method = getattr(method_self, method_str)
-    #     else:
-    #         try:
-    #             method = eval(method_str, glb, loc)
-    #         except Exception:
-    #             logger.exception(method_str)
-    #             return None, None
-
-    #     owner = None
-    #     if owner_hash and not (owner := objs.get(owner_hash)):
-    #         return False, owner_hash
-
-    #     sender = None
-    #     if sender_hash and not (sender := objs.get(sender_hash)):
-    #         return False, sender_hash
-
-    #     return True, NoticeConnection(
-    #         method, ChunkNoticeAlias(cbinfo.get("alias", 0)), sender, bool(cbinfo.get("globally")), owner
-    #     )
 
     def handle_callback(self, notice, sender=None, context=True):
         """

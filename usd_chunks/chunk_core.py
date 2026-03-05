@@ -25,7 +25,7 @@ import uuid
 import weakref
 from abc import abstractmethod
 from collections import ChainMap
-from enum import IntEnum, IntFlag
+from enum import IntEnum, IntFlag, Enum
 from typing import (
     Any,
     Callable,
@@ -778,7 +778,12 @@ class AttributesMetaclass(type):
         res.__setattr__ = _wrapped_setattr  # type: ignore
 
         res = attrs.define(
-            res, slots=False, eq=False, field_transformer=add_validate_and_convert, on_setattr=setattr_override
+            res,
+            slots=False,
+            eq=False,
+            repr=False,
+            field_transformer=add_validate_and_convert,
+            on_setattr=setattr_override,
         )
         return res
 
@@ -924,9 +929,10 @@ class AttributeMetadata(TypedDict, total=False):
     validate: bool
     convert: bool
     documentation: str
+    serialize: bool
 
 
-class AttributesBase(chunk_notice.ChunkNoticePropagator, chunk_serial.Serializeable, metaclass=AttributesMetaclass):
+class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMetaclass):
     """This class is used as base for Chunk dataclasses. Sends modification notices and validates/converts attribute values
 
     Any modifications to an attribute with `metadata["send_mode"]==SendMode.SEND`, will send a notice of type metadata["sender_alias"] when modified.
@@ -970,7 +976,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, chunk_serial.Serializea
         factory=dict,
         init=False,
         metadata=AttributeMetadata(
-            copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False
+            copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False, serialize=True
         ),
     )
 
@@ -1006,124 +1012,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, chunk_serial.Serializea
             self._attr_senders[name] = sender
 
         self._resolve_failed_converters()
-
-    def serialize(self) -> Dict | None:
-        if res := super().serialize():
-            res["_callbacks"] = self._callbacks
-            res["_attribFunctions"] = self._attrib_functions
-        return res
-
-
-    # def to_dict(self):
-    #     res: Dict[str, Any] = {}
-    #     res["class"] = f"{self.__module__}.{repr(self)}"
-
-    #     cbs = []
-    #     for i in self._callbacks:
-    #         cbs.append(i.to_dict())
-
-    #     deps = []
-    #     for i in self.get_dependencies():
-    #         deps.append(hash(i))
-
-    #     funcs = []
-    #     for aname, afunc in self._attrib_functions.items():
-    #         func_self = None
-    #         if inspect.ismethod(afunc):
-    #             func_self = hash(afunc.__self__)
-    #         funcs.append((aname, afunc.__name__, func_self))
-
-    #     res["callbacks"] = cbs
-    #     res["dependencies"] = deps
-    #     res["hash"] = hash(self)
-    #     res["attrib_functions"] = funcs
-    #     return res
-
-    # @staticmethod
-    # def from_dict(data, glb=None, loc=None, objs=None):
-    #     cls_name = data.get("class")
-
-    #     if objs is None:
-    #         objs = {"chunks": {}, "waiting": defaultdict(dict)}
-
-    #     if "chunks" not in objs:
-    #         objs["chunks"] = {}
-
-    #     if "waiting" not in objs:
-    #         objs["waiting"] = defaultdict(dict)
-
-    #     try:
-    #         inst: ChunkCommon = eval(cls_name, glb, loc)
-    #     except Exception:
-    #         logger.exception(f"Failed to create from dict {cls_name}")
-    #         return None
-
-    #     oldhash = data.get("hash")
-    #     objs["chunks"][oldhash] = inst
-
-    #     if isinstance(inst, ChunkContainerBase):
-    #         inst.children.clear()
-    #         children = NameSyncedContainer()
-    #         children.set_owner(inst)
-    #         inst.children = children
-    #         for child_data in data.get("children", []):
-    #             if child := AttributesBase.from_dict(child_data, glb, loc, objs):
-    #                 inst.children.add(child)
-
-    #     if isinstance(inst, ChunkParamBase):
-    #         inst.value = data.get("value")
-
-    #     if waiting := objs["waiting"].get(oldhash):
-    #         cbs = waiting.get("callbacks", [])
-    #         for i in reversed(range(len(cbs))):
-    #             succ, conn = chunk_notice.NoticeConnection.from_dict(cbs[i], objs["chunks"], glb, loc)
-    #             if not succ or not conn:
-    #                 continue
-    #             inst.add_connection(cbs.pop(i))
-
-    #         deps = waiting.get("dependencies", [])
-    #         for i in reversed(range(len(deps))):
-    #             inst.add_dependency(deps.pop(i))
-
-    #         afuncs = waiting.get("attrib_functions", [])
-    #         for i in reversed(range(len(afuncs))):
-    #             aname, funcname, target = afuncs[i]
-    #             func = getattr(inst, funcname)
-    #             target.set_function(aname, func)
-
-    #     for cbinfo in data.get("callbacks", []):
-    #         succ, conn = chunk_notice.NoticeConnection.from_dict(cbinfo, objs["chunks"], glb, loc)
-    #         if not succ:
-    #             if "callbacks" not in objs["waiting"][conn]:
-    #                 objs["waiting"][conn]["callbacks"] = []
-    #             objs["waiting"][conn]["callbacks"].append(cbinfo)
-    #             continue
-
-    #         if conn and not inst.find_callbacks(conn.get_method()):
-    #             inst.add_connection(conn)
-
-    #     for dephash in data.get("dependencies", []):
-    #         if not (dep := objs["chunks"].get(dephash)):
-    #             if "dependencies" not in objs["waiting"][dephash]:
-    #                 objs["waiting"][dephash]["dependencies"] = []
-    #             objs["waiting"][dephash]["dependencies"].append(inst)
-    #             continue
-    #         inst.add_dependency(dep)
-
-    #     for aname, funcname, func_self_hash in data.get("attrib_functions", []):
-    #         if func_self_hash:
-    #             if  not (func_self := objs["chunks"].get(func_self_hash)):
-    #                 if "attrib_functions" not in objs["waiting"][func_self_hash]:
-    #                     objs["waiting"][func_self_hash]["attrib_functions"] = []
-    #                 objs["waiting"][func_self_hash]["attrib_functions"].append((aname, funcname, inst))
-    #                 continue
-    #             func = getattr(func_self, funcname)
-    #         else:
-    #             func = eval(funcname, glb, loc)
-
-    #         inst.set_function(aname, func)
-
-    #     return inst
 
     def clone(self) -> Self:
         """
@@ -1382,9 +1270,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, chunk_serial.Serializea
         Returns:
             Any: A valid, possibly converted, attribute value.
         """
-        if val is None and attr.default:
-            return attrs.converters.default_if_none(attr.default)(val)
-        return val
+        return attrs.converters.default_if_none(attr.default)(val)
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         """Check if val is a supported value for attr prior to setting it. Raises ValueError if validation failed
@@ -1613,7 +1499,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         return super().__setattr__(name, value)
 
 
-class NameSyncedContainer(chunk_notice.ChunkNoticePropagator, chunk_serial.Serializeable):
+class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
     """Container for holding ChunkCommon objects. The container holds two maps: params & names. The maps
     are ChainMaps, meaning they provide access to all nested NameSyncedContainer param and names as well.
     In practice, this means we can quickly lookup nested children of chunks or groups, without having to
@@ -1652,8 +1538,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator, chunk_serial.Seria
     def __init__(self, params: Optional[Sequence["ChunkCommon"]] = None):
         super().__init__()
 
-        self.last_added: Optional[HashVal] = None
-        self.last_removed: Optional[HashVal] = None
+        self._last_added: Optional[HashVal] = None
+        self._last_removed: Optional[HashVal] = None
 
         self._params: ChainMap[ChunkHash, ChunkCommon] = ChainMap()
         self._names: ChainMap[str, ChunkHash] = ChainMap()
@@ -1674,14 +1560,10 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator, chunk_serial.Seria
         copied._copy_callbacks(self)
         return copied
 
-    def __repr__(self) -> str:
-        return "NameSyncedContainer()"
-
-    def serialize(self):
-        c = []
-        for p in self.get_my_params():
-            c.append(p)
-        return {"params": c}
+    def serialize(self, glb):
+        if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
+            res.kwargs["params"] = list(self.get_my_params())
+        return res
 
     def get_notice_data(self) -> Self:
         return self
@@ -1714,8 +1596,6 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator, chunk_serial.Seria
         # Append child the object + name to the first layer of the ChainMaps
         self._params.maps[0][obj.get_hash()] = obj  # type: ignore
         self._names.maps[0][obj.name] = obj.get_hash()
-
-        # if obj.name:
 
         # Mark self as the owner of the added obj as we need to be notified when the object changes
         obj.set_owner(self)
@@ -1884,7 +1764,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator, chunk_serial.Seria
         Args:
             obj (ChunkCommon | ProxyParam): the new parameter
         """
-        self.last_added = obj._hashable
+        self._last_added = obj._hashable
 
         if owner := self.get_owner():
             owner.send_self(chunk_notice.ChunkNoticeAlias.PARAM_ADDED, obj)
@@ -1896,7 +1776,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator, chunk_serial.Seria
         Args:
             obj (ChunkCommon | ProxyParam): the removed parameter
         """
-        self.last_removed = obj._hashable
+        self._last_removed = obj._hashable
         if owner := self.get_owner():
             owner.send_self(chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, obj)
 
@@ -2120,6 +2000,10 @@ class ChunkCommon(AttributesBase):
         if attr.name == "name":
             return re.sub(r"\W+", "", str(val))[0:100]
 
+        if inspect.isclass(attr.type) and issubclass(attr.type, Enum):
+            if val is not None and not isinstance(val, attr.type):
+                return attr.type(val)
+
         return super().convert_attr(attr, val)
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
@@ -2309,7 +2193,9 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
     # Hold a connection to the Usd.Attribute of usd_attr.
     _usd_prop_connection: Optional[chunk_notice.NoticeConnection] = attrs.field(
-        default=None, init=False, metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND)
+        default=None,
+        init=False,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
 
     def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> Optional[chunk_notice.ChunkNotice]:
@@ -2467,11 +2353,6 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     #       This should also work on groups and chunks... But thats a bit more complicated
     custom_widget: Optional[ChunkParamWidgetBase] = attrs.field(default=None)
 
-    # def to_dict(self):
-    #     res = super().to_dict()
-    #     res["value"] = self.value
-    #     return res
-
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "value":
             if val is None:
@@ -2572,11 +2453,6 @@ class ChunkContainerBase(ChunkCommon):
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         self.children.set_owner(self)
-
-    # def to_dict(self):
-    #     res = super().to_dict()
-    #     res["children"] = self.children
-    #     return res
 
     def remove_param_or_group(self, param: ChunkCommon):
         """
@@ -3053,7 +2929,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             parameters should be nammed. If the param has a name already, the suffixes will be appended to the name
     """
 
-    param: ChunkParamBase = attrs.field(default=None, repr=False)
+    param: ChunkParamBase = attrs.field(default=None, repr=False, metadata=AttributeMetadata(serialize=False))
     length: int = attrs.field(default=3)
     suffixes: Optional[tuple[str, ...] | str] = attrs.field(default=None)
 

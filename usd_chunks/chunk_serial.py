@@ -9,14 +9,48 @@ import weakref
 import attrs
 from attr import _make as attrMake
 from functools import partial
-from typing import Any, Dict, Callable, Sequence, Optional
-# from collections import defaultdict
-
-# from usd_chunks import chunk
-# from usd_chunks.chunk_core import ChunkCommon, ChunkContainerBase, ChunkParamBase, NameSyncedContainer
-# from usd_chunks.chunk_notice import ChunkNoticePropagator, NoticeConnection, ChunkNoticeAlias
+from typing import Any, Dict, Callable, Sequence, Optional, Set, Tuple, List
 
 logger = logging.getLogger(__name__)
+
+
+@attrs.define
+class SerializedObject:
+    pass
+
+
+@attrs.define
+class SerializedClass(SerializedObject):
+    module: str = attrs.field()
+    name: str = attrs.field()
+    hashval: int = attrs.field()
+    attributes: Dict[str, Any] = attrs.field(factory=dict)
+    kwargs: Dict[str, Any] = attrs.field(factory=dict)
+
+    def __hash__(self) -> int:
+        return self.hashval
+
+
+@attrs.define
+class SerializedReference(SerializedObject):
+    reference: int = attrs.field()
+
+
+@attrs.define
+class SerializedMethod(SerializedObject):
+    reference: int = attrs.field()
+    name: str = attrs.field()
+
+
+@attrs.define
+class SerializedFunction(SerializedObject):
+    module: str = attrs.field()
+    name: str = attrs.field()
+
+
+@attrs.define
+class SerializedFailed(SerializedObject):
+    failed: bool = attrs.field(default=True)
 
 
 class Serializeable:
@@ -25,405 +59,302 @@ class Serializeable:
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-    def serialize(self) -> Optional[Dict]:
-        fields = {}
+    def post_serial(self, owner):
+        pass
+
+    def post_serial_setattr(self, name, value):
         try:
-            fields = attrs.fields_dict(type(self))
-        except attrs.exceptions.NotAnAttrsClassError:
-            pass
+            setattr(self, name, value)
+        except AttributeError:
+            print(self, name, value)
+            raise
 
-        res = {}
-        # for name, val in inspect.getmembers(self, lambda x: not (inspect.ismethod(x) or inspect.isfunction(x) or inspect.classva)):
+    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
+        return default_should_serialize_attribute(name, value)
 
-        if hasattr(self, "__dict__"):
-            attributes = self.__dict__
+    def serialize(self, glb) -> Optional[SerializedObject | SerializedReference]:
+        return serialize_object(self, glb)
+
+
+def default_should_serialize_attribute(name: str, value: Any) -> Tuple[bool, Any]:
+    return (not name.startswith("_"), value)
+
+
+def serialize_object(obj, glb) -> Optional[SerializedObject | SerializedReference]:
+    if not hasattr(obj, "__module__"):
+        return None
+
+    if isinstance(obj, SerializedObject):
+        print(obj)
+        return None
+
+    if serial := serialize_Reference(obj, glb):
+        return serial
+
+    fields = {}
+    try:
+        fields = attrs.fields_dict(type(obj))
+    except attrs.exceptions.NotAnAttrsClassError:
+        pass
+
+    res = SerializedClass(obj.__module__, obj.__class__.__qualname__, hash(obj))
+
+    if hasattr(obj, "__dict__"):
+        attributes = obj.__dict__.copy()
+    else:
+        # attributes = {x: getattr(obj, x) for x in obj.__slots__}
+        attributes = {x: getattr(obj, x) for x in dir(obj)}
+
+    signature = inspect.signature(obj.__init__)
+    res.kwargs = {
+        x.name: x.default if x.default and x.default is not inspect._empty else None
+        for x in signature.parameters.values()
+    }
+
+    for name, val in filter(lambda x: not (inspect.ismethod(x[1]) or inspect.isfunction(x[1])), attributes.items()):
+        if name.startswith("__"):
+            continue
+
+        if isinstance(obj, Serializeable):
+            sa, val = obj.should_serialize_attribute(name, val)
         else:
-            attributes = {x: getattr(self, x) for x in self.__slots__}
+            sa, val = default_should_serialize_attribute(name, val)
 
-        for name, val in filter(lambda x: not (inspect.ismethod(x[1]) or inspect.isfunction(x[1])), attributes.items()):
-            if name.startswith("_"):
+        if field := fields.get(name):
+            sa = field.metadata.get("serialize", sa)
+
+            default = field.default
+            if isinstance(default, attrMake.Factory):
+                if default.takes_self:
+                    default = default.factory(obj)
+                else:
+                    default = default.factory()
+            if val == default:
                 continue
 
-            if field := fields.get(name):
-                default = field.default
-                if isinstance(default, attrMake.Factory):
-                    if default.takes_self:
-                        default = default.factory(self)
-                    else:
-                        default = default.factory()
-                if val == default:
-                    continue
+        if not sa:
+            continue
 
-            if isinstance(val, weakref.ReferenceType):
-                val = val()
-            res[name] = val
+        if isinstance(val, weakref.ReferenceType):
+            val = val()
 
-        res["class"] = f"{self.__module__}.{repr(self)}"
-        res["hash"] = hash(self)
-        return res
+        if serial := serialize_Reference(val, glb):
+            val = attrs.asdict(serial)
 
+        if name in res.kwargs:
+            res.kwargs[name] = val
+        else:
+            res.attributes[name] = val
 
-def serialize_Function(func: Callable):
-    res: Dict[str, Any] = {}
-    if inspect.ismethod(func):
-        res["self"] = hash(func.__self__)
-        res["function"] = func.__name__
-    else:
-        res["module"] = func.__module__
-        # res["function"] = f"{func.__module__}.{func.__qualname__}"
-        res["function"] = func.__qualname__
+    glb[res.hashval] = res
+
     return res
 
 
-def serialize_CustomClass(custom_class):
-    t = custom_class.__class__.__qualname__
+def serialize_Reference(ref, glb) -> SerializedReference | None:
+    if type(ref).__name__ in __builtins__:
+        return None
+    try:
+        if (h := hash(ref)) and h in glb:
+            return SerializedReference(h)
+    except TypeError:
+        pass
 
-    if hasattr(custom_class, "__dict__"):
-        attributes = custom_class.__dict__.copy()
-    else:
-        attributes = {x: getattr(custom_class, x) for x in custom_class.__slots__}
-
-    return {"custom_class": {"name": t, "module": custom_class.__module__, "attributes": attributes}}
+    return None
 
 
-def serialize_chunks(chunks: Sequence[Serializeable]):
-    return json.dumps(chunks, cls=ChunkEncoder, indent=4)
+def serialize_Function(func: Callable) -> SerializedFunction | SerializedMethod:
+    if inspect.ismethod(func):
+        return SerializedMethod(hash(func.__self__), func.__name__)
+    return SerializedFunction(func.__module__, func.__qualname__)
 
 
 class ChunkEncoder(json.JSONEncoder):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.glb = {}
+
     def default(self, o: Any):
-        if isinstance(o, Serializeable):
-            return o.serialize()
+        if isinstance(o, Serializeable) and (res := o.serialize(self.glb)):
+            return attrs.asdict(res, recurse=False)
 
-        if callable(o):
-            return serialize_Function(o)
+        if callable(o) and (res := serialize_Function(o)):
+            return attrs.asdict(res, recurse=False)
         try:
-            return super().default(o)
-        except TypeError:
-            return serialize_CustomClass(o)
-
+            return attrs.asdict(serialize_object(o, self.glb))
         except Exception:
-            logger.exception(f"Failed to encode: {o}")
-            return {"failed": True}
+            try:
+                res = super().default(o)
+            except Exception:
+                logger.exception(f"Failed to encode: {o}")
+                return attrs.asdict(SerializedFailed())
+        return o
 
 
-def import_module(glb, module_name):
+def serialize_chunks(chunks: Sequence[Serializeable]):
+    res = json.dumps(chunks, cls=ChunkEncoder, indent=4)
+    print(res)
+    return res
+
+
+def import_module(module_name):
+    if mod := sys.modules.get(module_name):
+        return mod
+
+    importlib.invalidate_caches()
     spec = util.find_spec(module_name)
     if not spec:
         return
 
-    importlib.invalidate_caches()
     module = util.module_from_spec(spec)
     if not module or not spec.loader:
         return
-    try:
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-    except Exception:
-        # This module failed to load. Set to file_name so we can try loading it again later§
-        return
 
-    glb[module_name] = module
-    return module
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+
+    return sys.modules[module_name]
+
+
+def get_module_attrib(mod_name, attr_name):
+    if not mod_name:
+        return None
+    if not (module := import_module(mod_name)):
+        return None
+    return getattr(module, attr_name)
+
+
+class TemporaryObject:
+    def __init__(self, refs: Set, data, glb) -> None:
+        self.data = data
+        self.refs = refs
+        self.glb = glb
+
+    def __repr__(self) -> str:
+        return f"TemporaryObject({self.refs})"
+
+    def construct(self):
+        return decodeCallable(self.glb, self.data)
+
+
+class ClassConstructor:
+    def __init__(self, cls, glb, serialized: SerializedClass):
+        self.cls = cls
+        self.glb = glb
+        self.serial = serialized
+
+    def _cnstr_val(self, val):
+        if isinstance(val, ClassConstructor):
+            return val.construct()
+
+        if isinstance(val, TemporaryObject):
+            return val.construct()
+
+        if isinstance(val, dict):
+            res = {}
+            for _k, _v in val.items():
+                res[_k] = self._cnstr_val(_v)
+            return res
+
+        if isinstance(val, list):
+            res = []
+            for _v in val:
+                res.append(self._cnstr_val(_v))
+            return res
+
+        return val
+
+    def construct(self):
+        for key, val in self.serial.kwargs.copy().items():
+            self.serial.kwargs[key] = self._cnstr_val(val)
+
+        inst = self.glb["__chunk_objects"].get(self.serial.hashval)
+        if not inst:
+            inst = self.cls(**self.serial.kwargs)
+            self.glb["__chunk_objects"][self.serial.hashval] = inst
+
+        for key, val in self.serial.attributes.items():
+            resval = self._cnstr_val(val)
+
+            if isinstance(resval, Serializeable):
+                resval.post_serial(inst)
+
+            if isinstance(inst, Serializeable):
+                inst.post_serial_setattr(key, resval)
+            else:
+                Serializeable.post_serial_setattr(inst, key, resval)
+
+        return inst
+
+
+def decodeCallable(glb, data):
+    try:
+        serial = SerializedMethod(**data)
+        if obj := glb["__chunk_objects"].get(serial.reference):
+            return getattr(obj, serial.name)
+        else:
+            return TemporaryObject(set((serial.reference,)), data, glb)
+    except TypeError:
+        pass
+
+    try:
+        serial = SerializedFunction(**data)
+        return get_module_attrib(serial.module, serial.name)
+    except TypeError:
+        pass
+
+    try:
+        serial = SerializedReference(**data)
+        if ref := glb["__chunk_objects"].get(serial.reference):
+            return ref
+        else:
+            return TemporaryObject(set((serial.reference,)), data, glb)
+    except TypeError:
+        pass
+
+    return None
 
 
 def decodeChunk(glb, data):
     if "__chunk_objects" not in glb:
         glb["__chunk_objects"] = {}
 
-    if fn := data.get("function"):
-        if fnself := data.get("self"):
-            if obj := glb["__chunk_objects"].get(fnself):
-                return getattr(obj, fn)
-        else:
-            mod_name = data.get("module")
-            if not (module := import_module(glb, mod_name)):
-                return
-            return getattr(module, fn)
+    # res = None
+    if cb := decodeCallable(glb, data):
+        return cb
 
-    if cnstr := data.get("class"):
-        cls = eval(cnstr, glb)
+    else:
+        try:
+            serial = SerializedClass(**data)
+            if not (cls := get_module_attrib(serial.module, serial.name)):
+                return None
 
-        if h := data.get("hash"):
-            glb["__chunk_objects"][h] = cls
-
-    if custom_class := data.get("custom_class"):
-        mod_name = custom_class.get("module")
-        if not (module := import_module(glb, mod_name)):
-            return
-
-        cls = getattr(module, custom_class.get("name"))
-
-        if h := data.get("hash"):
-            glb["__chunk_objects"][h] = cls
-
-        return cls(**custom_class.get("attributes"))
+            return ClassConstructor(cls, glb, serial)
+        except TypeError:
+            pass
 
     return data
 
+    # elif cls_str := data.get("class"):
+    #     if not (cls := get_module_attrib(data.get("module"), cls_str)):
+    #         return None
+    #     res = ClassConstructor(cls, glb, data.get("args"), data.get("attributes"), data.get("hash"))
+    # if not res:
+    #     return data
+    # return res
 
-def deserialize_chunks(serial):
+
+def deserialize_chunks(serial) -> Optional[List[ClassConstructor]]:
     if not __package__:
-        return False
+        return None
 
     importlib.invalidate_caches()
     glb = globals().copy()
     glb[__package__] = importlib.import_module(__package__)
 
-    data = json.loads(serial, object_hook=partial(decodeChunk, glb))
+    res = json.loads(serial, object_hook=partial(decodeChunk, glb))
 
-    # if not (c := from_dict(data, glb, chunk.__dict__, objs)):
-    #     return False
-    # names = ChunkRegistry().get_chunk_names()
+    import pprint
 
-    # c.name = chunk.Chunk.get_valid_child_name(c.name, names)
-    # self._add_chunk(c)
-    return True
-
-
-# def to_dict_ChunkModule(mod):
-#     if not mod.loaded:
-#         return None
-
-#     res: Dict[str, Any] = {
-#         "module_name": mod.module_name,
-#         "module_file": mod.module_file.as_posix(),
-#         "loaded": mod.loaded,
-#     }
-#     cs = []
-#     if mod.loaded:
-#         for i in mod.loaded_chunks.values():
-#             cs.append(i.to_dict())
-#     res["loaded_chunks"] = cs
-#     return res
-
-
-# def to_dict_NoticeConnection(conn: NoticeConnection):
-#     method_name = ""
-#     method_module = ""
-#     method_self = None
-#     if meth := conn.get_method():
-#         method_module = meth.__module__
-
-#         if inspect.ismethod(meth):
-#             if isinstance(meth.__self__, ChunkNoticePropagator):
-#                 method_self = hash(meth.__self__)
-#             else:
-#                 method_self = meth.__self__
-#             method_name = f"{meth.__name__}"
-#         else:
-#             method_name = f"{meth.__name__}"
-
-#     return {
-#         "method": method_name,
-#         "method_module": method_module,
-#         "method_self": method_self,
-#         "sender": hash(conn.sender) if conn.sender else None,
-#         "owner": hash(conn.owner) if conn.owner else None,
-#         "alias": conn.alias,
-#         "globally": conn.globally,
-#     }
-
-
-# def to_dict_ChunkCommon(c: ChunkCommon):
-#     res: Dict[str, Any] = {}
-#     res["class"] = f"{c.__module__}.{repr(c)}"
-
-#     cbs = []
-#     for i in c._callbacks:
-#         cbs.append(to_dict_NoticeConnection(i))
-
-#     deps = []
-#     for i in c.get_dependencies():
-#         deps.append(hash(i))
-
-#     funcs = []
-#     for aname, afunc in c._attrib_functions.items():
-#         func_self = None
-#         if inspect.ismethod(afunc):
-#             func_self = hash(afunc.__self__)
-#         funcs.append((aname, afunc.__name__, func_self))
-
-#     res["callbacks"] = cbs
-#     res["dependencies"] = deps
-#     res["hash"] = hash(c)
-#     res["attrib_functions"] = funcs
-#     return res
-
-
-# def from_dict_NoticeConnection(cbinfo, objs, glb, loc=None):
-#     method_str = cbinfo.get("method")
-#     self_hash = cbinfo.get("method_self")
-#     owner_hash = cbinfo.get("owner")
-#     sender_hash = cbinfo.get("sender")
-
-#     method = None
-#     if self_hash:
-#         if method_self := objs.get(self_hash):
-#             return False, self_hash
-
-#         method = getattr(method_self, method_str)
-#     else:
-#         try:
-#             method = eval(method_str, glb, loc)
-#         except Exception:
-#             logger.exception(method_str)
-#             return None, None
-
-#     owner = None
-#     if owner_hash and not (owner := objs.get(owner_hash)):
-#         return False, owner_hash
-
-#     sender = None
-#     if sender_hash and not (sender := objs.get(sender_hash)):
-#         return False, sender_hash
-
-#     return True, NoticeConnection(
-#         method, ChunkNoticeAlias(cbinfo.get("alias", 0)), sender, bool(cbinfo.get("globally")), owner
-#     )
-
-
-# def from_dict(data, glb=None, loc=None, objs=None):
-#     cls_name = data.get("class")
-
-#     if objs is None:
-#         objs = {"chunks": {}, "waiting": defaultdict(dict)}
-
-#     if "chunks" not in objs:
-#         objs["chunks"] = {}
-
-#     if "waiting" not in objs:
-#         objs["waiting"] = defaultdict(dict)
-
-#     try:
-#         inst = eval(cls_name, glb, loc)
-#     except Exception:
-#         logger.exception(f"Failed to create from dict {cls_name}")
-#         return None
-
-#     oldhash = data.get("hash")
-#     objs["chunks"][oldhash] = inst
-
-#     if isinstance(inst, ChunkContainerBase):
-#         inst.children.clear()
-#         children = NameSyncedContainer()
-#         children.set_owner(inst)
-#         inst.children = children
-#         for child_data in data.get("children", []):
-#             if child := from_dict(child_data, glb, loc, objs):
-#                 inst.children.add(child)
-
-#     if isinstance(inst, ChunkParamBase):
-#         inst.value = data.get("value")
-
-#     if waiting := objs["waiting"].get(oldhash):
-#         cbs = waiting.get("callbacks", [])
-#         for i in reversed(range(len(cbs))):
-#             succ, conn = from_dict_NoticeConnection(cbs[i], objs["chunks"], glb, loc)
-#             if not succ or not conn:
-#                 continue
-#             inst.add_connection(cbs.pop(i))
-
-#         deps = waiting.get("dependencies", [])
-#         for i in reversed(range(len(deps))):
-#             inst.add_dependency(deps.pop(i))
-
-#         afuncs = waiting.get("attrib_functions", [])
-#         for i in reversed(range(len(afuncs))):
-#             aname, funcname, target = afuncs[i]
-#             func = getattr(inst, funcname)
-#             target.set_function(aname, func)
-
-#     for cbinfo in data.get("callbacks", []):
-#         succ, conn = from_dict_NoticeConnection(cbinfo, objs["chunks"], glb, loc)
-#         if not succ:
-#             if "callbacks" not in objs["waiting"][conn]:
-#                 objs["waiting"][conn]["callbacks"] = []
-#             objs["waiting"][conn]["callbacks"].append(cbinfo)
-#             continue
-
-#         if conn and not inst.find_callbacks(conn.get_method()):
-#             inst.add_connection(conn)
-
-#     for dephash in data.get("dependencies", []):
-#         if not (dep := objs["chunks"].get(dephash)):
-#             if "dependencies" not in objs["waiting"][dephash]:
-#                 objs["waiting"][dephash]["dependencies"] = []
-#             objs["waiting"][dephash]["dependencies"].append(inst)
-#             continue
-#         inst.add_dependency(dep)
-
-#     for aname, funcname, func_self_hash in data.get("attrib_functions", []):
-#         if func_self_hash:
-#             if not (func_self := objs["chunks"].get(func_self_hash)):
-#                 if "attrib_functions" not in objs["waiting"][func_self_hash]:
-#                     objs["waiting"][func_self_hash]["attrib_functions"] = []
-#                 objs["waiting"][func_self_hash]["attrib_functions"].append((aname, funcname, inst))
-#                 continue
-#             func = getattr(func_self, funcname)
-#         else:
-#             func = eval(funcname, glb, loc)
-
-#         inst.set_function(aname, func)
-
-#     return inst
-
-
-# def to_dict(self):
-#     method_name = ""
-#     method_module = ""
-#     method_self = None
-#     if meth := self.get_method():
-#         method_module = meth.__module__
-
-#         if inspect.ismethod(meth):
-#             if isinstance(meth.__self__, ChunkNoticePropagator):
-#                 method_self = hash(meth.__self__)
-#             else:
-#                 method_self = meth.__self__
-#             method_name = f"{meth.__name__}"
-#         else:
-#             method_name = f"{meth.__name__}"
-
-#     return {
-#         "method": method_name,
-#         "method_module": method_module,
-#         "method_self": method_self,
-#         "sender": hash(self.sender) if self.sender else None,
-#         "owner": hash(self.owner) if self.owner else None,
-#         "alias": self.alias,
-#         "globally": self.globally,
-#     }
-
-# def from_dict(cbinfo, objs, glb, loc=None):
-#     method_str = cbinfo.get("method")
-#     # method_module = cbinfo.get("method_module")
-
-#     self_hash = cbinfo.get("method_self")
-#     owner_hash = cbinfo.get("owner")
-#     sender_hash = cbinfo.get("sender")
-
-#     method = None
-#     if self_hash:
-#         if method_self := objs.get(self_hash):
-#             return False, self_hash
-
-#         method = getattr(method_self, method_str)
-#     else:
-#         try:
-#             method = eval(method_str, glb, loc)
-#         except Exception:
-#             logger.exception(method_str)
-#             return None, None
-
-#     owner = None
-#     if owner_hash and not (owner := objs.get(owner_hash)):
-#         return False, owner_hash
-
-#     sender = None
-#     if sender_hash and not (sender := objs.get(sender_hash)):
-#         return False, sender_hash
-
-#     return True, NoticeConnection(
-#         method, ChunkNoticeAlias(cbinfo.get("alias", 0)), sender, bool(cbinfo.get("globally")), owner
-#     )
+    pprint.pp(res, indent=4)
+    return res

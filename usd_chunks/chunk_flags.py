@@ -1,6 +1,6 @@
 from enum import IntFlag, auto
 from typing import List
-
+from usd_chunks import chunk_serial
 from pxr import Sdf
 
 

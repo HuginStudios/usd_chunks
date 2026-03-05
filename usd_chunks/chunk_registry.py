@@ -17,7 +17,7 @@ import glob
 import os
 import sys
 import traceback
-import json
+import attrs
 from pathlib import Path
 from importlib import util, invalidate_caches, import_module
 from collections import defaultdict
@@ -288,21 +288,33 @@ class ChunkModule(chunk_serial.Serializeable):
     def __repr__(self) -> str:
         return f"ChunkModule(module_name='{self.module_name}', module_file='{self.module_file.as_posix()}')"
 
-    def serialize(self):
-        if not (res := super().serialize()):
-            res = {}
+    def should_serialize_attribute(self, name: str, value: Any) -> chunk_serial.Tuple[bool, Any]:
+        if name == "module_file":
+            return (True, self.module_file.as_posix())
+        if name == "module_name":
+            return (True, value)
+        if name == "loaded_chunks":
+            return (True, value)
+        return (False, None)
+        # return super().should_serialize_attribute(name, value)
 
-        res.update(
-            {
-                "module_name": self.module_name,
-                "module_file": self.module_file.as_posix(),
-                "loaded": self.loaded,
-                "module": None,
-            }
-        )
+    # def serialize(self, glb):
+    #     # if not (res := super().serialize(glb)):
+    #     #     res = {}
 
-        # res["loaded_chunks"] = list(self.loaded_chunks.values()) if self.loaded else []
-        return res
+    #     # res["args"].update(
+    #     #     {
+    #     #         "module_name": self.module_name,
+    #     #         "module_file": self.module_file.as_posix(),
+    #     #         "module": None,
+    #     #     }
+    #     # )
+    #     # return res
+    #     return {
+    #         "module_name": self.module_name,
+    #         "module_file": self.module_file.as_posix(),
+    #         "chunks": list(self.loaded_chunks.values()),
+    #     }
 
     def config_changed(self, notice, sender):
         pass
@@ -593,7 +605,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 mod.load()
 
     def register_module(self, name, path):
-
         # It's fairly safe to call exec_module since it's lazily loaded. Since we're using the ChunkLazyConfigLoader
         # we get access to the config() function, prior to loading the rest of the chunk module
 
@@ -649,30 +660,36 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         serial = chunk_serial.serialize_chunks([x for x in self.registered_modules.values() if x.loaded])
         with open(path, "w") as f:
             f.write(serial)
-        print(serial)
 
     def import_chunks(self, path):
         with open(path, "rb") as f:
             serial = f.read()
 
-        chunk_serial.deserialize_chunks(serial)
-        # print(json.dumps(res, indent=4))
-        # objs = {}
+        if not (data := chunk_serial.deserialize_chunks(serial)):
+            return
 
-        # for dat in res:
-        #     if not (mod_name := dat.get("module_name")):
-        #         raise KeyError("Module does not have a module_name")
-        #     if not (module_file := dat.get("module_file")):
-        #         raise KeyError("Module does not have a module_file")
+        names = ChunkRegistry().get_chunk_names()
+        for mod_cnstr in data:
 
-        #     if not (mod := self.get_chunk_module(mod_name)):
-        #         mod = ChunkModule(module_name=mod_name, module_file=Path(module_file))
-        #         self.register_module(mod)
+            mod_name = mod_cnstr.serial.kwargs.get("module_name")
+            if not mod_name:
+                continue
 
-        #     loaded = dat.get("loaded_chunks", [])
-        #     for i in range(len(loaded)):
-        #         if not mod.load_from_dict(loaded[i], objs):
-        #             return
+            if not (mod := self.get_chunk_module(mod_name)):
+                mod = mod_cnstr.construct()
+
+            else:
+                loaded_chunks = mod_cnstr.serial.attributes.get("loaded_chunks")
+                if not loaded_chunks:
+                    continue
+
+                for c_cnstr in loaded_chunks.values():
+                    c = c_cnstr.construct()
+
+                    c.name = chunk.Chunk.get_valid_child_name(c.name, names)
+                    names.add(c.name)
+                    mod._add_chunk(c)
+                    c.check_hierarchy()
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):
