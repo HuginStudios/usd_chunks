@@ -781,6 +781,8 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
         if name == "_callbacks":
             return True, self._callbacks
+        if name.startswith("_"):
+            return False, value
         return super().should_serialize_attribute(name, value)
 
     def post_serial_setattr(self, name, value):
@@ -1214,10 +1216,22 @@ class NoticeConnection(chunk_serial.Serializeable):
     def sender(self, obj):
         self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
 
-    def serialize(self, glb):
-        if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
-            res.kwargs["method"] = self.get_method()
-        return res
+    def serialize_kwarg(self, name: str, default: Any) -> Any:
+        if name == "method":
+            return self.get_method()
+        if name == "alias":
+            return self.alias
+        if name == "sender":
+            return self.sender
+        if name == "globally":
+            return self.globally
+        if name == "owner":
+            return self.owner
+        return super().serialize_kwarg(name, default)
+
+    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
+        # No attributes should be serialized as the attributes are serialized by kwargs
+        return False, value
 
     def handle_callback(self, notice, sender=None, context=True):
         """

@@ -1,19 +1,39 @@
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_serial
+
 
 def slider_changed(owner: chunk.Slider, notice, sender):
     c = owner.get_chunk()
     if not c:
         raise AttributeError("COULD NOT FIND CHUNK")
-    c.user_data["data"].va = owner.value
+    c.user_data["custom_class"].va = owner.value
 
-def dep_changed(slider, sender):
+
+def dep_changed(slider: chunk.Slider, sender):
     dep = slider.get_dependency(0)
-    print("DEP CHANGED...", slider.name)
+    assert isinstance(dep, chunk.Slider)
 
+    slider.get_logger().info("dep changed")
     return dep.value
 
+
 def chunk_changed(owner: chunk.Chunk, notice, sender):
-    print("CHUNK CHANGED", owner.user_data)
+    owner.get_logger().info("changed")
+
+
+class Foo(chunk_serial.Serializeable):
+    def __init__(self, bar):
+        self.bar = "hello"
+        self.baz = bar
+        self.__baz = bar
+
+    def serialize(self, glb):
+        if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
+            res.kwargs["bar"] = self.baz
+        return res
+
+    def __repr__(self):
+        return str(self.__dict__)
+
 
 class SomeCustomData:
     def __init__(self, va, vb):
@@ -31,11 +51,16 @@ class SomeCustomData:
 def main():
     c = chunk.Chunk("Serial")
 
-    # menu = chunk.Menu("Menu", menu_items=["A", "B", "C"])
-    # c.add_param(menu)
+    listGroup = chunk.ListGroup("listGroup")
+    listGroup.add_param(chunk.Slider("Slider"))
+    listGroup.size = 1
+    c.add_param(listGroup)
 
-    # vec = chunk.Vector("Vector", param=chunk.Slider(), length=3, suffixes="ABC")
-    # c.add_param(vec)
+    menu = chunk.Menu("Menu", menu_items=["A", "B", "C"])
+    c.add_param(menu)
+
+    vec = chunk.Vector("Vector", param=chunk.Slider(), length=3, suffixes="ABC")
+    c.add_param(vec)
 
     sliderA = chunk.Slider("SliderA", is_int=True)
     sliderA.add_callback(slider_changed)
@@ -45,8 +70,13 @@ def main():
     sliderB.set_function("value", dep_changed)
 
     c.add_params([sliderA, sliderB])
-    c.add_callback(chunk_changed, notice_alias=chunk.ChunkNoticeAlias.PARAM_CHANGED, sender=sliderB)
+    c.add_callback(chunk_changed, notice_alias=chunk.ChunkNoticeAlias.PARAM_CHANGED)
 
-    c.user_data["data"] = SomeCustomData(10, "hello")
+    c.user_data["custom_class"] = SomeCustomData(10, "hello")
+    c.user_data["foo"] = Foo(10)
 
     return c
+
+
+def config():
+    return chunk.DefaulConfig(load=True, category=chunk.StandardCategory.EXAMPLES)

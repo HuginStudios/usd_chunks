@@ -1336,6 +1336,12 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             self.add_callback(self._ref_child_added, param, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_ADDED)
             self.add_callback(self._ref_child_removed, param, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_REMOVED)
 
+    def serialize(self, glb):
+        if (ref := super().serialize(glb)) and isinstance(ref, chunk_serial.SerializedClass):
+            ref.kwargs["param"] = self._param_ref
+            ref.attributes["value"] = self._value
+        return ref
+
     def _ref_child_added(self, notice, sender):
         if isinstance(notice.data, ChunkParamBase):
             self._children.add(ProxyParam(notice.data))
@@ -2808,6 +2814,12 @@ class ChunkListGroupBase(ChunkGroupBase):
         if index > len(self.proxy_params):
             raise IndexError("Index out of range")
         return self.proxy_params[index].get_param(param)
+
+    def post_serial_setattr(self, name, value):
+        if name == "proxy_params":
+            for p in value:
+                p.set_owner(self)
+        return super().post_serial_setattr(name, value)
 
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         if old_value is None or attrname != "size":
