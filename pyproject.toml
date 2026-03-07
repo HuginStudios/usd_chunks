@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "usd_chunks"
+version = "0.0.1"
+authors = [
+  { name="Viktor Lanner", email="viktor.lanner@huginstudios.com" },
+  { name="Dan Englesson", email="dan.englesson@huginstudios.com" },
+  { name="Joakim Johansson", email="joakim.johansson@huginstudios.com" },
+]
+description = "UI and execution interface for OpenUSD"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "attrs>=24.0.0",
+    'typing-extensions'
+]
+
+[tool.setuptools]
+packages = ["usd_chunks"]
