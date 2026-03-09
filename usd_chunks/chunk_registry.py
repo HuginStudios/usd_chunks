@@ -16,10 +16,8 @@ import weakref
 import glob
 import os
 import sys
-import traceback
-import attrs
 from pathlib import Path
-from importlib import util, invalidate_caches, import_module
+from importlib import util
 from collections import defaultdict
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Generic, TypeVar, overload
@@ -298,13 +296,9 @@ class ChunkModule(chunk_serial.Serializeable):
         return super().serialize_kwarg(name, default)
 
     def should_serialize_attribute(self, name: str, value: Any) -> chunk_serial.Tuple[bool, Any]:
-        if name in ["loaded_chunks", "loaded"]:
+        if name in ["loaded_chunks"]:
             return (True, value)
         return (False, None)
-
-    def post_serial(self, owner: Any):
-        self._pre_load()
-        return super().post_serial(owner)
 
     def post_serial_setattr(self, name: str, value: Any) -> None:
         if name == "loaded_chunks":
@@ -375,45 +369,57 @@ class ChunkModule(chunk_serial.Serializeable):
 
         if len(self.loaded_chunks) == 0:
             self.loaded = False
-            self.module = None
             self._callbacks.clear()
 
     def exec_module(self):
-        if not self.module_file.exists():
-            return False
+        if type(self.module) is chunk_serial.RuntimeModule:
+            if not self.loaded:
+                transformer = _ConfigTransformer(self.module._code, self.module.__dict__, self)
+                transformer.visit(ast.parse(self.module._code))
 
-        spec = util.spec_from_file_location(self.module_name, self.module_file)
-        if not spec or not spec.loader:
-            return False
+            self._install_deps()
 
-        loader = ChunkLazyConfigLoader(self.module_name, str(self.module_file), spec.loader, self)
-        spec.loader = loader
+            if self.module_name not in sys.modules:
+                dat = compile(self.module._code, filename=f"<ChunkSerial_{self.module_name}>", mode="exec")
+                exec(dat, self.module.__dict__)
+                sys.modules[self.module_name] = self.module
 
-        module = util.module_from_spec(spec)
-
-        try:
-            sys.modules[self.module_name] = module
-            spec.loader.exec_module(module)
-        except Exception:
-            # This module failed to load. Set to file_name so we can try loading it again later§
-            logger.exception(f"Failed to load module {self.module_name}")
-            return False
-
-        self.module = module
-        return True
-
-    def _pre_load(self, func_name: str = "main"):
-        self.remove_chunk()
-
-        if not self.loaded:
-            if not self.exec_module():
+        elif self.module_file.exists():
+            spec = util.spec_from_file_location(self.module_name, self.module_file)
+            if not spec or not spec.loader:
                 return False
 
+            loader = ChunkLazyConfigLoader(self.module_name, str(self.module_file), spec.loader, self)
+            spec.loader = loader
+            module = util.module_from_spec(spec)
+            sys.modules[self.module_name] = module
+
+            try:
+                spec.loader.exec_module(module)
+            except Exception:
+                # This module failed to load. Set to file_name so we can try loading it again later§
+                logger.exception(f"Failed to load module {self.module_name}")
+                return False
+            self.module = module
+
+        else:
+            return False
+
+        return True
+
+    def _install_deps(self):
         dep_reg = ChunkDependencyManager()
         if not dep_reg.initialized:
             dep_reg.initialize()
 
         dep_reg.install_packages(self.config.requirements)
+
+    def _pre_load(self, func_name: str = "main"):
+        if not self.loaded:
+            if not self.exec_module():
+                return False
+
+        self._install_deps()
 
         try:
             if not hasattr(self.module, func_name):
@@ -423,11 +429,13 @@ class ChunkModule(chunk_serial.Serializeable):
 
             self.func = getattr(self.module, func_name)
             if not self.func:
+                logger.error(f"Could not find function {func_name} of module {self.module_name}")
                 self.loaded = False
                 return False
+
         except Exception:
-            # This module failed to load. Set to file_name so we can try loading it again later§
-            logger.error(f"Failed to run module {self.module_name}: \n%s", traceback.format_exc())
+            # This module failed to load. Set to file_name so we can try loading it again later
+            logger.exception(f"Failed to run module {self.module_name}")
             self.loaded = False
             return False
 
@@ -435,7 +443,10 @@ class ChunkModule(chunk_serial.Serializeable):
         return True
 
     def load(self, func_name: str = "main") -> bool:
+        self.remove_chunk()
+
         if not self._pre_load(func_name):
+            logger.warning(f"Could not load module {self.module}. {self.loaded}, {self.func}")
             return False
 
         start = timer()
@@ -455,6 +466,7 @@ class ChunkModule(chunk_serial.Serializeable):
             return False
 
         if not self.func:
+            logger.warning(f"module {self.module_name} does not have a function")
             return False
 
         try:
@@ -655,33 +667,51 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 continue
 
             if not (mod := self.get_chunk_module(mod_name)):
+                logger.info(f"Creating new module {mod_name}")
+
                 if mod_file := mod_cnstr.serial.kwargs.get("module_file"):
                     mod_package = os.path.dirname(mod_file)
                     if os.path.exists(mod_package):
                         self.register_directory(mod_package)
 
                 mod = mod_cnstr.construct()
-                if not isinstance(mod, ChunkModule) or not mod.loaded:
-                    logger.error(f"Could not create module {mod_name}")
+                if not isinstance(mod, ChunkModule):
+                    logger.error(f"Return value from serial is not a ChunkModule: {mod}")
+                    continue
+
+                if not mod._pre_load():
+                    continue
+
+                self.registered_modules[mod_name] = mod
+
+            elif mod.module:
+                logger.info(f"Adding chunks to module {mod_name}")
+                loaded_chunks = mod_cnstr.serial.attributes.get("loaded_chunks")
+                if not loaded_chunks:
+                    continue
+
+                if not mod._pre_load():
+                    continue
+
+                for c_cnstr in loaded_chunks.values():
+                    c = c_cnstr.construct()
+                    mod._add_chunk(c)
+
+            elif (mod := mod_cnstr.construct()) and isinstance(mod, ChunkModule):
+                logger.info(f"Overriding module {mod_name}")
+                if not mod._pre_load():
                     continue
 
                 self.registered_modules[mod_name] = mod
 
             else:
-                loaded_chunks = mod_cnstr.serial.attributes.get("loaded_chunks")
-                if not loaded_chunks:
-                    continue
-
-                for c_cnstr in loaded_chunks.values():
-                    c = c_cnstr.construct()
-
-                    mod._add_chunk(c)
+                logger.error(f"Could not create module {mod_name}")
+                continue
 
             for c in mod.loaded_chunks.values():
                 c.check_hierarchy()
-                c.print_hierarchy()
 
-            logger.info(f"Imported module {mod.module_name}")
+            mod.loaded = True
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):

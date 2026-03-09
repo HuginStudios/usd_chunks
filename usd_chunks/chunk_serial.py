@@ -17,7 +17,7 @@ import attrs
 logger = logging.getLogger(__name__)
 
 ## These are placeholders waiting for a better implementation
-COMPRESS = True
+COMPRESS = False
 PICKLE_ENABLED = False
 SAVE_MODULES = True
 
@@ -158,16 +158,19 @@ class SerializedReference(SerializedObject):
     reference: int = attrs.field()
 
 
+class RuntimeModule(types.ModuleType):
+    def __init__(self, code: str, name: str, doc: str | None = None) -> None:
+        super().__init__(name, doc)
+        self._code = code
+
+
 @attrs.define
 class SerializedModule(SerializedObject):
     code: str = attrs.field()
     module_name: str = attrs.field()
 
     def create(self):
-        mod = types.ModuleType(self.module_name)
-        dat = compile(self.code, filename=f"<ChunkSerial.{self.module_name}>", mode="exec")
-        exec(dat, mod.__dict__)
-        return mod
+        return RuntimeModule(self.code, self.module_name)
 
 
 @attrs.define
@@ -293,7 +296,7 @@ def serialize_object(obj: Any, glb: dict) -> Optional[SerializedObject]:
         # identical class
         return serial
 
-    if SAVE_MODULES and isinstance(obj, types.ModuleType):
+    if SAVE_MODULES and isinstance(obj, (types.ModuleType, RuntimeModule)):
         if serial := serialize_Module(obj):
             return serial
 
@@ -324,7 +327,12 @@ def serialize_Function(func: Callable) -> SerializedFunction | SerializedMethod:
 
 def serialize_Module(mod: types.ModuleType) -> SerializedModule | None:
     try:
-        return SerializedModule(inspect.getsource(mod), mod.__name__)
+        if isinstance(mod, RuntimeModule):
+            code = mod._code
+        else:
+            code = inspect.getsource(mod)
+
+        return SerializedModule(code, mod.__name__)
     except OSError:
         return None
 
@@ -363,6 +371,8 @@ def serialize_chunks(chunks: Sequence[Serializeable]):
 
 
 def save_file(serial: str, file):
+    if not serial:
+        return
     if COMPRESS:
         compressed = zlib.compress(serial.encode())
         with open(file, "wb") as f:
@@ -405,14 +415,21 @@ def get_module_attrib(glb, mod_name, attr_name):
         return None
 
     if mod := glb.get(mod_name):
-        return getattr(mod, attr_name)
+        try:
+            return getattr(mod, attr_name)
+        except Exception:
+            pass
 
     if not (module := import_module(mod_name)):
         return None
+
+    glb[mod_name] = module
     try:
         return getattr(module, attr_name)
     except AttributeError:
         logger.error(f"Could not find attribute {attr_name} in module {mod_name}")
+    except ModuleNotFoundError:
+        pass
 
 
 class TemporaryObject:
@@ -439,10 +456,7 @@ class ClassConstructor:
         self.serial = serialized
 
     def _cnstr_val(self, val):
-        if isinstance(val, ClassConstructor):
-            return val.construct()
-
-        if isinstance(val, TemporaryObject):
+        if isinstance(val, (ClassConstructor, TemporaryObject)):
             return val.construct()
 
         if isinstance(val, dict):
