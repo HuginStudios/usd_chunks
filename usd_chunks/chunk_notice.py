@@ -113,6 +113,7 @@ class ChunkNoticeAlias(IntEnum):
 
     # UI notices
     MENU_ACTION_NOTICE = auto()
+    WIDGET_CHANGED = auto()
 
     # Stage notices
     PRIM_SELECTION_CHANGED = auto()
@@ -301,6 +302,11 @@ class ChunkConfigChanged(ChunkNotice):
 ### UI Notices
 @chunk_notice(ChunkNoticeAlias.MENU_ACTION_NOTICE)
 class MenuActionNotice(ChunkNotice):
+    pass
+
+
+@chunk_notice(ChunkNoticeAlias.WIDGET_CHANGED)
+class WidgetChangedNotice(ChunkNotice):
     pass
 
 

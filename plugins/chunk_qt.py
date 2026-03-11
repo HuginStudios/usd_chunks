@@ -9,9 +9,9 @@ from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
 
 from functools import partial
-from collections import defaultdict
 from usd_chunks.chunk_flags import ChunkFlags
 from enum import Enum
+import os
 
 
 class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
@@ -348,9 +348,61 @@ class LabeledWidget(QtWidgets.QWidget):
         self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
+        self._value_tooltip = QtWidgets.QToolTip()
+        # self._value_label = QtWidgets.QLabel(parent=self)
+        # self._value_label.setHidden(True)
+
+        if isinstance(self.widget, ChunkParamWidgetBase):
+            self._listener = chunk_notice.NoticeConnection(
+                self.update_value, alias=self.widget.get_notice_alias(), sender=self.widget
+            )
+
+        self.setMouseTracking(True)
+
+    def should_show_tooltip(self):
+        if not isinstance(self.widget, ChunkParamWidgetBase):
+            return False
+
+        if ChunkFlags.ParamType.EMPTY in self.widget.param.evaluate_type():
+            return False
+        return True
+
+    def tooltip_pos(self):
+        # return self.mapToGlobal(self.rect().topLeft() - QtCore.QPoint(0, 10))
+        return self.mapToGlobal(self.rect().bottomLeft() - QtCore.QPoint(0, 10))
+
+    def show_tooltip(self):
+        self._value_tooltip.showText(self.tooltip_pos(), str(self.widget.param.value), msecShowTime=10000)
+
+    def hide_tooltip(self):
+        self._value_tooltip.hideText()
+
+    def update_value(self, notice: chunk_notice.ChunkNotice, sender):
+        name = notice.data.name
+        if name in ["label", "name"]:
+            self.update_label(notice.data.value)
+        elif name == "value":
+            self.show_tooltip()
+
     def update_label(self, text):
         self.label.setHidden(not bool(text))
         self.label.setText(text)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self.should_show_tooltip():
+            self.show_tooltip()
+            event.accept()
+        return super().mouseMoveEvent(event)
+
+    def enterEvent(self, event: QtGui.QEnterEvent) -> None:
+        if self.should_show_tooltip():
+            self.show_tooltip()
+            event.accept()
+        return super().enterEvent(event)
+
+    # def leaveEvent(self, event: QtCore.QEvent) -> None:
+    #     self.hide_tooltip()
+    #     return super().leaveEvent(event)
 
 
 class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
@@ -567,45 +619,45 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
             widget.param.request_delete()
         self.remove_widget(widget)
 
-    def update_param_label(self, notice, sender: chunk_core.AttributeSender):
-        """
-        When a param name, label or flag is changed, this will correct the label in the FormLayout.
-        If LABELED was unset, then remove the label and set the widget role to SpanningRole
-        If LABELED was set, add the label
-        otherwise, just update the label text if name or label changed
+    # def update_param_label(self, notice, sender: chunk_core.AttributeSender):
+    #     """
+    #     When a param name, label or flag is changed, this will correct the label in the FormLayout.
+    #     If LABELED was unset, then remove the label and set the widget role to SpanningRole
+    #     If LABELED was set, add the label
+    #     otherwise, just update the label text if name or label changed
 
-        Args:
-            param (chunk_core.ChunkCommon): The param that was changed
-            notice (Tf.Notice): The notice that was sent
-            sender (chunk_core.AttributeSender): The attribute that changed
-        """
-        param = sender.get_owner()
-        if not param or not isinstance(param, chunk_core.ChunkCommon):
-            return
+    #     Args:
+    #         param (chunk_core.ChunkCommon): The param that was changed
+    #         notice (Tf.Notice): The notice that was sent
+    #         sender (chunk_core.AttributeSender): The attribute that changed
+    #     """
+    #     param = sender.get_owner()
+    #     if not param or not isinstance(param, chunk_core.ChunkCommon):
+    #         return
 
-        labeled = param.has_flag(ChunkFlags.ParamFlags.LABELED)
-        if not labeled:
-            return
+    #     labeled = param.has_flag(ChunkFlags.ParamFlags.LABELED)
+    #     if not labeled:
+    #         return
 
-        for i in range(self.content_layout.count()):
-            item = self.content_layout.itemAt(i)
-            if not item:
-                continue
+    #     for i in range(self.content_layout.count()):
+    #         item = self.content_layout.itemAt(i)
+    #         if not item:
+    #             continue
 
-            w = item.widget()
-            if isinstance(w, LabeledWidget):
-                if not isinstance(w.widget, ChunkParamWidgetBase):
-                    continue
+    #         w = item.widget()
+    #         if isinstance(w, LabeledWidget):
+    #             if not isinstance(w.widget, ChunkParamWidgetBase):
+    #                 continue
 
-                if isinstance(w.widget.param, chunk_core.ProxyParam):
-                    if not w.widget.param._param_ref == param:
-                        continue
-                else:
-                    if not w.widget.param == param:
-                        continue
+    #             if isinstance(w.widget.param, chunk_core.ProxyParam):
+    #                 if not w.widget.param._param_ref == param:
+    #                     continue
+    #             else:
+    #                 if not w.widget.param == param:
+    #                     continue
 
-                if labeled:
-                    w.update_label(param.get_label())
+    #             # if labeled:
+    #             #     w.update_label(param.get_label())
 
 
 class ChunkWidget(ContainerWidget):
@@ -977,6 +1029,22 @@ def confirm_dial(msg) -> bool:
     dial = QtWidgets.QMessageBox(text=msg)
     dial.setStandardButtons(QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Yes)
     return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
+
+
+def file_dial(filter: Optional[str] = None, create_new=False):
+    dial = QtWidgets.QFileDialog()
+    if filter:
+        dial.setNameFilter(filter)
+    if not dial.exec():
+        return None
+
+    res = dial.selectedFiles()[0]
+
+    if create_new:
+        if os.path.exists(res) and not confirm_dial(f"Override {res}?"):
+            return None
+
+    return res
 
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):

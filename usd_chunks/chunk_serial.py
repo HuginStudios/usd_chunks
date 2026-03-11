@@ -8,6 +8,7 @@ import sys
 import types
 import weakref
 import zlib
+import os
 from functools import partial
 from importlib import util
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, overload
@@ -366,13 +367,26 @@ class ChunkEncoder(json.JSONEncoder):
         return o
 
 
-def serialize_chunks(chunks: Sequence[Serializeable]):
+def serialize_json(chunks: Sequence[Serializeable]):
     return json.dumps(chunks, cls=ChunkEncoder, indent=4)
+
+
+def serialize_py(mod: types.ModuleType):
+    return inspect.getsource(mod)
+
+
+def file_extensions():
+    return (".json", ".chunk", ".chum", ".py")
 
 
 def save_file(serial: str, file):
     if not serial:
         return
+
+    _, ext = os.path.splitext(file)
+    if ext not in file_extensions():
+        return
+
     if COMPRESS:
         compressed = zlib.compress(serial.encode())
         with open(file, "wb") as f:
@@ -383,6 +397,10 @@ def save_file(serial: str, file):
 
 
 def load_file(file):
+    _, ext = os.path.splitext(file)
+    if ext not in file_extensions():
+        return
+
     with open(file, "rb") as f:
         serial = f.read()
 
@@ -441,7 +459,10 @@ class TemporaryObject:
     def __repr__(self) -> str:
         return f"TemporaryObject({self.refs})"
 
-    def construct(self):
+    def construct(self, glb):
+        if glb is not None:
+            self.glb.update(glb)
+
         res = decodeCallable(self.glb, self.data)
         if isinstance(res, TemporaryObject):
             logger.warning(f"Could not decode data from {self.data}")
@@ -455,40 +476,55 @@ class ClassConstructor:
         self.glb = glb
         self.serial = serialized
 
-    def _cnstr_val(self, val):
+    def _cnstr_val(self, val, glb):
         if isinstance(val, (ClassConstructor, TemporaryObject)):
-            return val.construct()
+            return val.construct(glb=glb)
 
         if isinstance(val, dict):
             res = {}
             for _k, _v in val.items():
-                res[_k] = self._cnstr_val(_v)
+                res[_k] = self._cnstr_val(_v, glb)
             return res
 
         if isinstance(val, list):
             res = []
             for _v in val:
-                res.append(self._cnstr_val(_v))
+                res.append(self._cnstr_val(_v, glb))
             return res
         return val
 
-    def construct(self):
+    def construct(self, post_constuct=True, glb=None):
+        # if glb is None:
+        # glb = self.glb
+        if glb is not None:
+            self.glb.update(glb)
+
+        kwargs = {}
         for key, val in self.serial.kwargs.copy().items():
-            self.serial.kwargs[key] = self._cnstr_val(val)
+            kwargs[key] = self._cnstr_val(val, self.glb)
 
         inst = self.glb.get(self.serial.hashval)
         if not inst:
             try:
                 if not (cls := get_module_attrib(self.glb, self.serial.module, self.serial.name)):
                     return None
-                inst = cls(**self.serial.kwargs)
+                inst = cls(**kwargs)
             except TypeError:
                 return
 
             self.glb[self.serial.hashval] = inst
 
+        if post_constuct:
+            self.post_constuct()
+
+        return inst
+
+    def post_constuct(self):
+        if not (inst := self.glb.get(self.serial.hashval)):
+            return
+
         for key, val in self.serial.attributes.items():
-            resval = self._cnstr_val(val)
+            resval = self._cnstr_val(val, self.glb)
 
             if isinstance(resval, Serializeable):
                 resval.post_serial(inst)

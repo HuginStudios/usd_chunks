@@ -261,7 +261,7 @@ class Menu(ChunkParamBase[str]):
         return ChunkFlags.ParamType.STRING_MENU
 
     def convert_attr(self, attr: "Attribute", val: Any) -> Any:
-        if attr.name == "default_value":
+        if attr.name in ["default_value", "value"]:
             if self.menu_items and val not in self.menu_items:
                 return self.menu_items[0]
 

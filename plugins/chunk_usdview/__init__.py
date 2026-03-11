@@ -7,7 +7,7 @@ from pxr import Tf
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 
-from usd_chunks import chunk_registry, chunk_notice
+from usd_chunks import chunk_registry, chunk_notice, chunk_serial
 from plugins import chunk_qt
 
 
@@ -69,27 +69,31 @@ class ChunksPluginContainer(PluginContainer):
     def openModuleSettings(self, usdviewApi):
         dial = chunk_qt.ChunkModuleLoader(usdviewApi.qMainWindow)
         dial.show()
-    
+
     def saveLayers(self, usdviewApi):
         reg = chunk_registry.ChunkLayerManager()
         for i in reg.chunk_layers.keys():
             layer = reg.get_layer(i)
             if not layer:
                 continue
-        
+
             name = layer.GetDisplayName().split("_")[0]
             path = f"C:/Users/Viktor/chunk_layers/{name}.usda"
-
-            print("save layer: ", path)
             layer.Export(path)
 
     def exportChunks(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
-        reg.export_chunks("C:/Users/Viktor/export_chunks.json")
+
+        flt = " ".join([f"*{x}" for x in chunk_serial.file_extensions()])
+        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+            reg.export_chunks(file)
 
     def importChunks(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
-        reg.import_chunks("C:/Users/Viktor/export_chunks.json")
+
+        flt = " ".join([f"*{x}" for x in chunk_serial.file_extensions()])
+        if file := chunk_qt.file_dial(filter=flt, create_new=False):
+            reg.import_chunks(file)
 
     def registerPlugins(self, plugRegistry, plugCtx) -> None:
         """Register the UI Creator plugin with the plugin registry.

@@ -77,7 +77,8 @@ class ChunkEnvVar(Generic[_T]):
 
         if isinstance(default, list) and isinstance(envvar, str):
             res = envvar.split(os.pathsep)
-            return list(set(res + default))
+
+            return [x for x in set(res + default) if x]
         return envvar
 
     def __call__(self, fallback: Optional[_T] = None, /, *args: Any, **kwds: Any):
@@ -274,6 +275,7 @@ class ChunkModule(chunk_serial.Serializeable):
         self.func: Optional[Callable[[], chunk.Chunk | List[chunk.Chunk]]] = None
 
         self._callbacks = []
+        self._cls_cnstr: Optional[chunk_serial.ClassConstructor] = None
 
         self.exec_module()
 
@@ -377,11 +379,7 @@ class ChunkModule(chunk_serial.Serializeable):
                 transformer = _ConfigTransformer(self.module._code, self.module.__dict__, self)
                 transformer.visit(ast.parse(self.module._code))
 
-            self._install_deps()
-
             if self.module_name not in sys.modules:
-                dat = compile(self.module._code, filename=f"<ChunkSerial_{self.module_name}>", mode="exec")
-                exec(dat, self.module.__dict__)
                 sys.modules[self.module_name] = self.module
 
         elif self.module_file.exists():
@@ -421,6 +419,10 @@ class ChunkModule(chunk_serial.Serializeable):
 
         self._install_deps()
 
+        if type(self.module) is chunk_serial.RuntimeModule:
+            dat = compile(self.module._code, filename=f"<ChunkSerial_{self.module_name}>", mode="exec")
+            exec(dat, self.module.__dict__)
+
         try:
             if not hasattr(self.module, func_name):
                 logger.error(f"Function: {func_name} in module: {self.module_name} is not defined")
@@ -453,33 +455,30 @@ class ChunkModule(chunk_serial.Serializeable):
         self.loaded = self.create()
         end = timer()
 
-        msg = ""
-        for c in self.loaded_chunks.values():
-            msg += f"   {c.name}\n"
 
-        logger.info(f"loaded module: {self.module_name}. Module created chunks:\n{msg}Load took {end - start} seconds")
+        logger.info(f"loaded module: {self.module_name}. Load took {end - start} seconds")
         return True
 
     def create(self):
         if not self.loaded:
             logger.warning("Trying to create a chunk from an unloaded module. Consider running load() first")
             return False
+        loaded = []
 
-        if not self.func:
+        if self.func:
+            try:
+                retval = self.func()
+            except Exception:
+                logger.exception("Failed to run main function from module %s", self.module_name)
+                return False
+            try:
+                loaded.extend(retval)  # type: ignore
+            except TypeError:
+                loaded.append(retval)
+
+        else:
             logger.warning(f"module {self.module_name} does not have a function")
             return False
-
-        try:
-            retval = self.func()
-        except Exception:
-            logger.exception("Failed to run main function from module %s", self.module_name)
-            return False
-
-        loaded = []
-        try:
-            loaded.extend(retval)  # type: ignore
-        except TypeError:
-            loaded.append(retval)
 
         for c in loaded:
             self._add_chunk(c)
@@ -538,7 +537,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         ChunkDependencyManager().initialize()
 
         self.register_chunk_environ_directories()
-        self.register_chunk_modules(self.registered_directories, unloaded)
+        self.register_chunk_modules(self.registered_directories.copy(), unloaded)
 
         c = 0
         for mod in self.registered_modules.values():
@@ -577,28 +576,37 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         Args:
             working_dirs (Iterable[str]): The directories containing the Python chunk files to register.
         """
+        serial = []
 
         for working_dir in working_dirs:
             # Loop over all directories of the working_dirs directory
-            chunk_python_files = glob.glob(os.path.sep.join([str(working_dir), "**", "*.py"]), recursive=True)
+            extensions = chunk_serial.file_extensions()
 
-            for module_path in chunk_python_files:
-                if not module_path.endswith(".py"):
+            for module_path in filter(lambda x: x.suffix in extensions, Path(working_dir).glob("**/*")):
+                if not module_path.exists():
                     continue
 
-                if (p := Path(module_path)) and not p.exists():
+                if not module_path.suffix == ".py":
+                    serial.append(module_path)
                     continue
 
-                module_name = str(p.relative_to(working_dir)).replace(os.path.sep, ".").replace(".py", "")
-                self.register_module(module_name, p)
+                rel = (module_path.parent / module_path.stem).relative_to(working_dir)
+                module_name = str(rel).replace(os.path.sep, ".")
+                mod = self.register_module(module_name, module_path)
 
-        if not unloaded:
-            self._load_modules()
+                if not unloaded and mod and mod.should_load() and mod.should_load_for_plugin(self.plugin):
+                    mod.load()
 
-    def _load_modules(self):
-        for mod in self.registered_modules.values():
-            if mod.should_load() and mod.should_load_for_plugin(self.plugin):
-                mod.load()
+        for p in serial:
+            self.import_chunks(p, unloaded)
+
+        # if not unloaded:
+        #     self._load_modules()
+
+    # def _load_modules(self):
+    #     for mod in self.registered_modules.values():
+    #         if mod.should_load() and mod.should_load_for_plugin(self.plugin):
+    #             mod.load()
 
     def register_module(self, name, path):
         # It's fairly safe to call exec_module since it's lazily loaded. Since we're using the ChunkLazyConfigLoader
@@ -608,6 +616,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             logger.warning("Duplicate module:", name)
             return
         self.registered_modules[name] = ChunkModule(module_name=name, module_file=path)
+        return self.registered_modules[name]
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
         """Get the ChunkModule object in the registry where module_name matches the
@@ -654,11 +663,40 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 mod.load()
 
     def export_chunks(self, path):
-        serial = chunk_serial.serialize_chunks([x for x in self.registered_modules.values() if x.loaded])
-        chunk_serial.save_file(serial, path)
+        p = Path(path)
+        if p.suffix not in chunk_serial.file_extensions():
+            return
 
-    def import_chunks(self, path):
+        mods = [x for x in self.registered_modules.values() if x.loaded]
+        if p.suffix == ".py":
+            for i, mod in enumerate(mods):
+                if not mod.module:
+                    continue
+
+                if not isinstance(mod.module, chunk_serial.RuntimeModule):
+                    serial = chunk_serial.serialize_py(mod.module)
+                else:
+                    serial = mod.module._code
+
+                indexed_path = p.parent / (p.stem + str(i) + p.suffix)
+                chunk_serial.save_file(serial, indexed_path)
+        else:
+            serial = chunk_serial.serialize_json(mods)
+            chunk_serial.save_file(serial, path)
+
+    def import_chunks(self, path, unloaded=False):
+        p = Path(path)
+        if not p.exists() or p.suffix not in chunk_serial.file_extensions():
+            return
+
+        if p.suffix == ".py":
+            if (mod := self.register_module(p.stem, p.absolute())) and not unloaded:
+                if mod.should_load() and mod.should_load_for_plugin(self.plugin):
+                    mod.load()
+            return
+
         serial = chunk_serial.load_file(path)
+
         if not (data := chunk_serial.deserialize_chunks(serial)):
             return
 
@@ -674,12 +712,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                     if os.path.exists(mod_package):
                         self.register_directory(mod_package)
 
-                mod = mod_cnstr.construct()
+                mod = mod_cnstr.construct(not unloaded)
                 if not isinstance(mod, ChunkModule):
                     logger.error(f"Return value from serial is not a ChunkModule: {mod}")
                     continue
 
-                if not mod._pre_load():
+                if not unloaded and not mod._pre_load():
                     continue
 
                 self.registered_modules[mod_name] = mod
@@ -690,16 +728,17 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 if not loaded_chunks:
                     continue
 
-                if not mod._pre_load():
+                if not unloaded and not mod._pre_load():
                     continue
 
-                for c_cnstr in loaded_chunks.values():
-                    c = c_cnstr.construct()
-                    mod._add_chunk(c)
+                if not unloaded:
+                    for c_cnstr in loaded_chunks.values():
+                        c = c_cnstr.construct()
+                        mod._add_chunk(c)
 
-            elif (mod := mod_cnstr.construct()) and isinstance(mod, ChunkModule):
+            elif (mod := mod_cnstr.construct(not unloaded)) and isinstance(mod, ChunkModule):
                 logger.info(f"Overriding module {mod_name}")
-                if not mod._pre_load():
+                if not unloaded and not mod._pre_load():
                     continue
 
                 self.registered_modules[mod_name] = mod
@@ -708,10 +747,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 logger.error(f"Could not create module {mod_name}")
                 continue
 
+            mod._cls_cnstr = mod_cnstr
+
             for c in mod.loaded_chunks.values():
                 c.check_hierarchy()
 
-            mod.loaded = True
+            mod.loaded = not unloaded
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):

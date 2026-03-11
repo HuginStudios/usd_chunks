@@ -101,6 +101,9 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
             return param
         raise ReferenceError("reference to param is dead! :'(")
 
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return chunk_notice.ChunkNoticeAlias.WIDGET_CHANGED
+
     def handle_param_changed(self, notice: chunk_notice.ChunkNotice, sender: "ChunkParamBase"):
         """
         callback for handling changes to the parameter. Currently implements changes to
@@ -110,6 +113,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
             notice (chunk_notice.ChunkNotice): The notice sent for the change
             sender (ChunkParamBase): The sender
         """
+
         attrname = notice.data.name
         value = notice.data.value
         if attrname == "value":
@@ -120,6 +124,8 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
         elif attrname == "icon":
             self.set_icon(value)
+
+        self.send_self(data=notice.data)
 
     def setup_chunk_widget(self):
         """
@@ -1327,6 +1333,8 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             self._value = None
             self.__value_sender = None
 
+        self.add_dependency(param)
+
         self._children = NameSyncedContainer()
 
         if isinstance(param, ChunkContainerBase):
@@ -1415,6 +1423,15 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
                 owner.send_removed(self)
 
         self.set_owner(None)
+
+    def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
+        if not notice or not (res := super().data_changed(notice)):
+            return None
+
+        if notice.data == self._param_ref:
+            for alias, prop in notice.data.get_dag_node().iter_changes():
+                self.send_self(alias, prop)
+        return res
 
     def send_self(
         self, alias: chunk_notice.ChunkNoticeAlias | None = None, data: Any = None
