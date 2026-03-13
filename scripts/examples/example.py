@@ -57,19 +57,18 @@ def chunkChanged(owner: chunk.Chunk, notice, sender):
 
     owner.get_logger().info("\n" + "\n".join(msg))
 
-
 @nice_print
 def clickedButton(owner, notice, sender):
     owner.get_logger().info(f"Button clicked: {owner.name}")
 
 
 @nice_print
-def primSelectionChanged(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.SceneSender):
+def primSelectionChanged(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_core.SceneSender):
     owner.get_logger().info(f"Prim selection changed: {notice.data.value}")
 
 
 @nice_print
-def propSelectionChanged(owner, notice: chunk_notice.PropSelectionChangedNotice, sender: chunk_notice.SceneSender):
+def propSelectionChanged(owner, notice: chunk_notice.PropSelectionChangedNotice, sender: chunk_core.SceneSender):
     owner.get_logger().info(f"Prop selection changed: {notice.data.value}")
 
 

@@ -9,27 +9,52 @@ import types
 import weakref
 import zlib
 import os
+import ast
+from pathlib import Path
 from functools import partial
 from importlib import util
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, overload
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, overload
 
 import attrs
 
 logger = logging.getLogger(__name__)
 
 ## These are placeholders waiting for a better implementation
-COMPRESS = False
 PICKLE_ENABLED = False
 SAVE_MODULES = True
 
 
 @attrs.define
+class _Glb:
+    modules: Dict[int, Any] = attrs.field(factory=dict)
+    objects: Dict[int, Any] = attrs.field(factory=dict)
+
+
+@attrs.define
 class SerializedObject:
+    """
+    Base class for representing objects in serialized form
+    """
+
     pass
 
 
 @attrs.define
 class SerializedClass(SerializedObject):
+    """
+    A Serialized class is a generic placeholder for a non-builtin class to be serialized by JSON. The
+    attributes contains relevant information to recreate the class. When recreating the class, the
+    'module' attribute will be imported, and a class of type 'name' will be created. The arguments to
+    __init__ is the 'kwargs' attribute. After initialization, calls setattr() for each item in 'attributes'.
+
+    A subclass of Serializeable may determine what attributes and kwargs to serialize, as well as converting
+    them to appropriate values prior to serialization.
+
+    To create a SerializedClass instance, use the static from_class function. The glb argument should be a dictionairy
+    holding the created objects. When an attribute or kwarg references an existing object (its hash maps to an object
+    in the glb dict), then the encoder can create a SerializedReference or similar.
+    """
+
     module: str = attrs.field()
     name: str = attrs.field()
     hashval: int = attrs.field()
@@ -40,7 +65,18 @@ class SerializedClass(SerializedObject):
         return self.hashval
 
     @classmethod
-    def from_class(cls, obj, glb):
+    def from_class(cls, obj, glb) -> Optional["SerializedClass"]:
+        """
+        Returns a new SerializedClass, that makes the passed obj serializeable for JSON. This is called by the ChunkEncoder
+        for all objects that are not builtins, functions, methods or weakrefs
+
+        Args:
+            obj (Any): An object which to serialize
+            glb (dict): A dictionairy that holds the created objects.
+
+        Returns:
+            SerializedClass | None: A new serialized class for obj if successful
+        """
         if obj is None:
             return None
 
@@ -72,7 +108,7 @@ class SerializedClass(SerializedObject):
             if isinstance(obj, Serializeable):
                 val = obj.serialize_kwarg(i.name, val)
             else:
-                val = default_serialize_kwarg(i.name, val)
+                val = _default_serialize_kwarg(i.name, val)
 
             if serial := serialize_Reference(val, glb):
                 val = attrs.asdict(serial, recurse=False)
@@ -89,7 +125,7 @@ class SerializedClass(SerializedObject):
             if isinstance(obj, Serializeable):
                 sa, val = obj.should_serialize_attribute(name, val)
             else:
-                sa, val = default_should_serialize_attribute(name, val)
+                sa, val = _default_should_serialize_attribute(name, val)
 
             if field := fields.get(name):
                 # For attrs classes, we can get the field and check if the field metadata excplicitly sets 'serialize'. This can be used as
@@ -151,15 +187,24 @@ class SerializedClass(SerializedObject):
 
 @attrs.define
 class PickledObject(SerializedObject):
+    """A SerializedObject holding a pickle stream"""
+
     stream: str = attrs.field()
 
 
 @attrs.define
 class SerializedReference(SerializedObject):
+    """A SerializedObject holding a reference to another, already serialized object"""
+
     reference: int = attrs.field()
 
 
 class RuntimeModule(types.ModuleType):
+    """
+    A ModuleType holding the code of an imported module. The imported module may not be
+    a file on disc, so this can be used to compile() and exec() the code at runtime.
+    """
+
     def __init__(self, code: str, name: str, doc: str | None = None) -> None:
         super().__init__(name, doc)
         self._code = code
@@ -167,27 +212,45 @@ class RuntimeModule(types.ModuleType):
 
 @attrs.define
 class SerializedModule(SerializedObject):
+    """A SerializedObject holding a ModuleType."""
+
     code: str = attrs.field()
     module_name: str = attrs.field()
+    hashval: int = attrs.field()
 
     def create(self):
-        return RuntimeModule(self.code, self.module_name)
+        mod = RuntimeModule(self.code, self.module_name + str(self.hashval))
+        return mod
 
 
 @attrs.define
 class SerializedMethod(SerializedObject):
+    """
+    A SerializedObject holding a reference to another object (self) and the name of the
+    method
+    """
+
     reference: int = attrs.field()
     name: str = attrs.field()
 
 
 @attrs.define
 class SerializedFunction(SerializedObject):
+    """
+    A SerializedObject holding a function. Module is a string from where to import the module. and name is the name of the function
+    """
+
+    reference: int = attrs.field()
     module: str = attrs.field()
     name: str = attrs.field()
 
 
 @attrs.define
 class SerializedFailed(SerializedObject):
+    """
+    Returned by ChunkEncoder when the encoding failed
+    """
+
     cnstr: Optional[str] = attrs.field(default=None)
     failed: bool = attrs.field(default=True)
 
@@ -224,7 +287,7 @@ class Serializeable:
             name (str): The name of the attribute from the SerializedClass
             value (Any): The decoded value to set
         """
-        default_post_serial_setattr(self, name, value)
+        _default_post_serial_setattr(self, name, value)
 
     def serialize_kwarg(self, name: str, default: Any) -> Any:
         """
@@ -238,7 +301,7 @@ class Serializeable:
         Returns:
             Any: A serializeable value that will be decoded and passed to __init__ when decoding this class
         """
-        return default_serialize_kwarg(name, default)
+        return _default_serialize_kwarg(name, default)
 
     def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
         """
@@ -253,7 +316,7 @@ class Serializeable:
         Returns:
             Tuple[bool, Any]: A tuple (serialize, value). If the first entry of the tuple is False, the attribute is ignored when serialized
         """
-        return default_should_serialize_attribute(name, value)
+        return _default_should_serialize_attribute(name, value)
 
     def serialize(self, glb) -> Optional[SerializedClass | SerializedReference]:
         """
@@ -269,15 +332,15 @@ class Serializeable:
         return serialize_object(self, glb)
 
 
-def default_should_serialize_attribute(name: str, value: Any) -> Tuple[bool, Any]:
+def _default_should_serialize_attribute(name: str, value: Any) -> Tuple[bool, Any]:
     return (True, value)
 
 
-def default_post_serial_setattr(obj, name: str, value: Any) -> None:
+def _default_post_serial_setattr(obj, name: str, value: Any) -> None:
     setattr(obj, name, value)
 
 
-def default_serialize_kwarg(name: str, default: Any) -> Any:
+def _default_serialize_kwarg(name: str, default: Any) -> Any:
     if type(default).__name__ not in __builtins__ and default is not None:
         return attrs.asdict(SerializedFailed(repr(default)))
     return default
@@ -292,14 +355,20 @@ def serialize_object(obj: types.ModuleType, glb: dict) -> Optional[SerializedMod
 
 
 def serialize_object(obj: Any, glb: dict) -> Optional[SerializedObject]:
+    """
+    Create a SerializedObject from obj. If not seccessful, this returns None
+
+    Args:
+        obj (Any): The object which to create a serial representation of
+        glb (dict): The dict holding already created SerializedObjects. Used for reference finding
+
+    Returns:
+        Optional[SerializedObject]: The created SerializedObject or None
+    """
     if serial := serialize_Reference(obj, glb):
         # If the object exists in glb, reuturn a reference SerializedReference rather than creating an
         # identical class
         return serial
-
-    if SAVE_MODULES and isinstance(obj, (types.ModuleType, RuntimeModule)):
-        if serial := serialize_Module(obj):
-            return serial
 
     # Create a SerializedClass representation of the object
     if res := SerializedClass.from_class(obj, glb):
@@ -308,7 +377,17 @@ def serialize_object(obj: Any, glb: dict) -> Optional[SerializedObject]:
     return res
 
 
-def serialize_Reference(ref, glb) -> SerializedReference | None:
+def serialize_Reference(ref, glb) -> Optional[SerializedReference]:
+    """
+    Create a SerializedReference to ref it exists in glb. Otherwise returns None
+
+    Args:
+        ref (Any): An object which to reference
+        glb (dict): A dictionairy holding created SerializedObjects
+
+    Returns:
+        Optional[SerializedReference]: A SerializedReference or None
+    """
     if type(ref).__name__ in __builtins__:
         return None
     try:
@@ -320,30 +399,67 @@ def serialize_Reference(ref, glb) -> SerializedReference | None:
     return None
 
 
-def serialize_Function(func: Callable) -> SerializedFunction | SerializedMethod:
+def serialize_Function(func: Callable, glb) -> SerializedFunction | SerializedMethod:
+    """
+    Serialize a function or method and return an appropriate SerializedObject. func must be
+    a function or method. No checks is done to confirm...
+
+    Args:
+        func (Callable): A callable which to reference
+
+    Returns:
+        SerializedFunction | SerializedMethod: A SerializedFunction or SerilalizedMethod
+    """
     if inspect.ismethod(func):
         return SerializedMethod(hash(func.__self__), func.__name__)
-    return SerializedFunction(func.__module__, func.__qualname__)
+
+    if mod := _import_module(func.__module__):
+        return SerializedFunction(hash(mod), func.__module__, func.__qualname__)
+
+    return SerializedFunction(0, func.__module__, func.__qualname__)
 
 
-def serialize_Module(mod: types.ModuleType) -> SerializedModule | None:
+def serialize_Module(mod: types.ModuleType, glb) -> SerializedModule | None:
+    """
+    Serialize a module and return a new SerializedModule if successful
+
+    Args:
+        mod (types.ModuleType): The module to serialize. This may be a RuntimeModule
+
+    Returns:
+        SerializedModule | None: If successful, return a SerializedModule. Else returns None
+    """
     try:
         if isinstance(mod, RuntimeModule):
             code = mod._code
         else:
             code = inspect.getsource(mod)
 
-        return SerializedModule(code, mod.__name__)
+        res = SerializedModule(code, mod.__name__, hash(mod))
+        glb[res.hashval] = res
+        return res
+
     except OSError:
         return None
 
 
 class ChunkEncoder(json.JSONEncoder):
+    _export_modules = True
+    _enable_pickle = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.glb = {}
 
     def default(self, o: Any):
+
+        if isinstance(o, (types.ModuleType, RuntimeModule)):
+            if not self._export_modules:
+                return None
+
+            if serial := serialize_Module(o, self.glb):
+                return attrs.asdict(serial, recurse=False)
+
         if isinstance(o, weakref.ReferenceType) and (res := serialize_Reference(o(), self.glb)):
             return attrs.asdict(res, recurse=False)
 
@@ -351,10 +467,10 @@ class ChunkEncoder(json.JSONEncoder):
             return attrs.asdict(res, recurse=False)
 
         is_cb = callable(o)
-        if PICKLE_ENABLED and is_cb and not inspect.ismethod(o):
+        if self._enable_pickle and is_cb and not inspect.ismethod(o):
             return attrs.asdict(PickledObject(codecs.encode(pickle.dumps(o), "base64").decode()), recurse=False)
 
-        if is_cb and (res := serialize_Function(o)):
+        if is_cb and (res := serialize_Function(o, self.glb)):
             return attrs.asdict(res, recurse=False)
 
         elif not is_cb and (res := serialize_object(o, self.glb)):
@@ -367,27 +483,84 @@ class ChunkEncoder(json.JSONEncoder):
         return o
 
 
-def serialize_json(chunks: Sequence[Serializeable]):
+def serialize_json(chunks: Dict[str, Serializeable], save_modules=True) -> str:
+    """
+    From a sequence of Serializables, create a serialized representation. The format is JSON and encoded using the ChunkEncoder
+
+    Args:
+        chunks (Sequence[Serializeable]): A sequence of serializeable objects
+
+    Returns:
+        str: A string representation of the objects in JSON format
+    """
+    ChunkEncoder._export_modules = save_modules
+
     return json.dumps(chunks, cls=ChunkEncoder, indent=4)
 
 
-def serialize_py(mod: types.ModuleType):
+def serialize_py(mod: types.ModuleType) -> str:
+    """
+    Serialize a module to python by extracting the source code
+
+    Args:
+        mod (types.ModuleType): A module to get the source of
+
+    Returns:
+        str: The modules source code
+    """
+
+    if isinstance(mod, RuntimeModule):
+        return mod._code
     return inspect.getsource(mod)
 
 
-def file_extensions():
-    return (".json", ".chunk", ".chum", ".py")
+def chunk_file_extensions() -> Tuple[str, ...]:
+    """
+    Return the supported file extensions for import / export of chunks.
+    .json = the file is saved as a JSON without compression
+    .chunk = the file is saved as compressed JSON
+    .py = the file is saved as uncompressed python source code
+
+    Returns:
+        Tuple[str, ...]: A tuple of supported file extensions, such as (".json", ".py")
+    """
+    return (".chunk", ".py")
 
 
-def save_file(serial: str, file):
+def scene_file_extensions() -> Tuple[str, ...]:
+    """
+    Return the supported file extensions for import / export of chunks.
+    .json = the file is saved as a JSON without compression
+    .chunk = the file is saved as compressed JSON
+    .py = the file is saved as uncompressed python source code
+
+    Returns:
+        Tuple[str, ...]: A tuple of supported file extensions, such as (".json", ".py")
+    """
+    return (".json",)
+
+
+def file_extensions() -> Tuple[str, ...]:
+    return tuple(set(chunk_file_extensions()) | set(scene_file_extensions()))
+
+
+def save_file(serial: str, file: str | Path):
+    """
+    Save serial to a file. serial should be created with either serialize_py() or serialize_json().
+
+    Args:
+        serial (str): The content to save
+        file (str): The file save to
+    """
     if not serial:
         return
 
     _, ext = os.path.splitext(file)
     if ext not in file_extensions():
+        logger.warning(f"Unsupported file extension of {file}")
         return
 
-    if COMPRESS:
+    if ext == ".chunk":
         compressed = zlib.compress(serial.encode())
         with open(file, "wb") as f:
             f.write(compressed)
@@ -395,22 +568,53 @@ def save_file(serial: str, file):
         with open(file, "w") as f:
             f.write(serial)
 
+    logger.info(f"Saved file {file}")
 
-def load_file(file):
+
+def load_file(file: str | Path) -> Optional[bytes]:
+    """
+    Load a file and return its content as bytes
+
+    Args:
+        file (str): A path to a file which to load
+
+    Returns:
+        Optional[bytes]: The content of the file. If the file is not supported, returns None
+    """
+    if not os.path.exists(file):
+        logger.warning(f"Tried to load a file that does not exist: {file}")
+        return
+
     _, ext = os.path.splitext(file)
     if ext not in file_extensions():
+        logger.warning(f"Unsupported file extension of {file}")
         return
 
     with open(file, "rb") as f:
         serial = f.read()
 
-    try:
-        return zlib.decompress(serial)
-    except zlib.error:
-        return serial
+    if ext == ".chunk":
+        try:
+            # If the file was saved with compression, we can try to decompress it here
+            return zlib.decompress(serial)
+        except zlib.error:
+            logger.warning(f"Failed to decompress {file}")
+            return
+
+    return serial
 
 
-def import_module(module_name):
+def _import_module(module_name: str) -> Optional[types.ModuleType]:
+    """
+    Import a module with name module_name
+
+    Args:
+        module_name (str): A module to import from the current environment
+
+    Returns:
+        Optional[typed.ModuleType]: The imported module if successful, else None
+    """
+
     if mod := sys.modules.get(module_name):
         return mod
 
@@ -428,20 +632,34 @@ def import_module(module_name):
     return sys.modules[module_name]
 
 
-def get_module_attrib(glb, mod_name, attr_name):
+def get_module_attrib(glb: _Glb, mod_name: str, attr_name):
+    """
+    get an attribute from a module
+
+    Args:
+        glb (dict): A dictionairy holding previously loaded modules and objects
+        mod_name (str): The name of the module to get the attribute from
+        attr_name (str): The attribute of the module to get
+
+    Returns:
+        Optional[Any]: The module attribute. Returns None if something went wrong
+    """
     if not mod_name:
         return None
 
-    if mod := glb.get(mod_name):
-        try:
-            return getattr(mod, attr_name)
-        except Exception:
-            pass
+    # if mod := glb.modules.get(mod_name):
+    #     # If glb has mod, then we can try to get the attribute from there. If unseccessful and
+    #     # _import_module succeeds, the module in glb is overritten
+    #     try:
+    #         return getattr(mod, attr_name)
+    #     except Exception:
+    #         return None
 
-    if not (module := import_module(mod_name)):
+    if not (module := _import_module(mod_name)):
         return None
 
-    glb[mod_name] = module
+    glb.modules[hash(module)] = module
+
     try:
         return getattr(module, attr_name)
     except AttributeError:
@@ -450,61 +668,117 @@ def get_module_attrib(glb, mod_name, attr_name):
         pass
 
 
-class TemporaryObject:
-    def __init__(self, refs: Set, data, glb) -> None:
+class CallableConstructor:
+    def __init__(self, data, glb: _Glb) -> None:
+        """
+        A CallableConstructor is created when decodeCallable fails, meaning the reference or module was not yet
+        created. For this reason, the direct result of the decoding is not 'valid', and instead contain
+        CallableConstructors and ClassConstructors, which in turn need to be constructed.
+
+        Args:
+            data (dict): The dict representation of a SerializedObject. This is used to decode the object
+            glb (dict): The dict containing decoded objects
+        """
         self.data = data
-        self.refs = refs
-        self.glb = glb
+        self.glb: _Glb = glb
 
-    def __repr__(self) -> str:
-        return f"TemporaryObject({self.refs})"
+    def construct(self, glb: Optional[_Glb] = None):
+        """
+        After decoding, calling construct() will return the recreated object. If unable to create the object, this returns None
+        and prints a warning
 
-    def construct(self, glb):
+        Args:
+            glb (dict): A dict, in addition to self.glb, which to search for objects when decoding the callable
+
+        Returns:
+            Optional[Any]: The decoded callable or None
+        """
         if glb is not None:
-            self.glb.update(glb)
+            self.glb.modules.update(glb.modules)
+            self.glb.objects.update(glb.objects)
 
         res = decodeCallable(self.glb, self.data)
-        if isinstance(res, TemporaryObject):
-            logger.warning(f"Could not decode data from {self.data}")
+        if isinstance(res, ClassConstructor):
             return None
+
+        if isinstance(res, CallableConstructor):
+            # raise ValueError(f"Could not decode data from {self.data}")
+            raise ValueError(f"Failed to decode callable {self.data}")
+
         return res
 
 
 class ClassConstructor:
-    def __init__(self, data, glb, serialized: SerializedClass):
-        self.data = data
-        self.glb = glb
-        self.serial = serialized
+    def __init__(self, glb: _Glb, serialized: SerializedClass):
+        """
+        A ClassConstructor is created when decoding a SerializedClass. The ClassConstructor
+        holds the necessary information for recreating the serialized class. Calling construct()
+        will create the new python object based on the information of the SerializedClass
 
-    def _cnstr_val(self, val, glb):
-        if isinstance(val, (ClassConstructor, TemporaryObject)):
+        Args:
+            glb (dict): A dictionairy holding previously decoded modules, classes and functions
+            serialized (SerializedClass): The SerializedClass to ultimately recreate
+        """
+        self.glb: _Glb = glb
+        self.serial: SerializedClass = serialized
+
+    def construct_value(self, val, glb):
+        """
+        Called to construct a value of serial.kwargs or serial.attributes before use
+
+        Args:
+            val (Any): The value to construct
+            glb (dict): A dictionairy holding created objects
+
+        Returns:
+            Any: The constructed value
+        """
+        if isinstance(val, (ClassConstructor, CallableConstructor)):
             return val.construct(glb=glb)
 
+        # TODO: These checks should be more generic... This will ultimately skip kwargs and attributes that do not match these checks
         if isinstance(val, dict):
             res = {}
             for _k, _v in val.items():
-                res[_k] = self._cnstr_val(_v, glb)
+                res[_k] = self.construct_value(_v, glb)
             return res
 
-        if isinstance(val, list):
+        if isinstance(val, (list, tuple, set)):
             res = []
             for _v in val:
-                res.append(self._cnstr_val(_v, glb))
+                res.append(self.construct_value(_v, glb))
+            if isinstance(val, tuple):
+                return tuple(res)
+            if isinstance(val, set):
+                return set(res)
             return res
+
         return val
 
-    def construct(self, post_constuct=True, glb=None):
-        # if glb is None:
-        # glb = self.glb
+    def construct(self, post_constuct=True, glb: Optional[_Glb] = None) -> Any:
+        """
+        Construct the class with the information from self.serial. This should be called after
+        the JSON decoder is done, as the glb should contain information about all the objects
+        that will be created. The reason for this is that some SerializedObjects will reference
+        other objects, and if they cannot be de-referenced, these object will fail to construct
+
+        Args:
+            post_constuct (bool, optional): Set to also call setattr() after initialization. If False, this will only create the class, without updating any attributes. Defaults to True.
+            glb (dict, optional): An optional dictionairy that will be used with self.glb. Defaults to None.
+
+        Returns:
+            Any: The constructed class
+        """
         if glb is not None:
-            self.glb.update(glb)
+            self.glb.modules.update(glb.modules)
+            self.glb.objects.update(glb.objects)
 
         kwargs = {}
         for key, val in self.serial.kwargs.copy().items():
-            kwargs[key] = self._cnstr_val(val, self.glb)
+            kwargs[key] = self.construct_value(val, self.glb)
 
-        inst = self.glb.get(self.serial.hashval)
-        if not inst:
+        inst = self.glb.objects.get(self.serial.hashval)
+        if not inst or isinstance(inst, ClassConstructor):
             try:
                 if not (cls := get_module_attrib(self.glb, self.serial.module, self.serial.name)):
                     return None
@@ -512,19 +786,25 @@ class ClassConstructor:
             except TypeError:
                 return
 
-            self.glb[self.serial.hashval] = inst
+            self.glb.objects[self.serial.hashval] = inst
 
         if post_constuct:
             self.post_constuct()
 
         return inst
 
-    def post_constuct(self):
-        if not (inst := self.glb.get(self.serial.hashval)):
+    def post_constuct(self) -> Any:
+        """
+        calls setattr() on the object created by construct() for all attributes in self.serial.attributes
+
+        Returns:
+            Any: The object created by construct
+        """
+        if not (inst := self.glb.objects.get(self.serial.hashval)):
             return
 
         for key, val in self.serial.attributes.items():
-            resval = self._cnstr_val(val, self.glb)
+            resval = self.construct_value(val, self.glb)
 
             if isinstance(resval, Serializeable):
                 resval.post_serial(inst)
@@ -532,35 +812,50 @@ class ClassConstructor:
             if isinstance(inst, Serializeable):
                 inst.post_serial_setattr(key, resval)
             else:
-                default_post_serial_setattr(inst, key, resval)
+                _default_post_serial_setattr(inst, key, resval)
 
         return inst
 
 
-def decodeCallable(glb, data):
+def decodeCallable(glb: _Glb, data) -> Callable | CallableConstructor | None:
+    """
+    Decode data. Will try to decode to SerializedMethod, SerialziedFunction, SerializedReference and PickledObject. If
+    Any of these succeeds, the returned value is the function, method or object that was referenced. Otherwise, if any of these
+    classes can be constructed from data, but the reference, method or object cannot be retrieved, then return a CallableConstructor
+    that should be constructed later
+
+    Args:
+        glb (dict): A dict holding information about the previously created objects
+        data (dict): The decoded data as a dictionairy. Typically attrs.asdict(SerializedFunction()) or similar
+
+    Returns:
+        Callable | CallableConstructor | None: The callable if found, else a CallableConstructor if a SerializedObject could be created from data, else None
+    """
     try:
         serial = SerializedMethod(**data)
-        if obj := glb.get(serial.reference):
+        if obj := glb.objects.get(serial.reference):
             return getattr(obj, serial.name)
-        else:
-            return TemporaryObject(set((serial.reference,)), data, glb)
+        return CallableConstructor(data, glb)
     except TypeError:
         pass
 
     try:
         serial = SerializedFunction(**data)
-        if obj := get_module_attrib(glb, serial.module, serial.name):
-            return obj
-        return TemporaryObject(set(), data, glb)
+        if ref := glb.modules.get(serial.reference):
+            return getattr(ref, serial.name)
+
+        elif func := get_module_attrib(glb, serial.module, serial.name):
+            return func
+
+        return CallableConstructor(data, glb)
     except TypeError:
         pass
 
     try:
         serial = SerializedReference(**data)
-        if ref := glb.get(serial.reference):
+        if ref := glb.objects.get(serial.reference):
             return ref
-        else:
-            return TemporaryObject(set((serial.reference,)), data, glb)
+        return CallableConstructor(data, glb)
     except TypeError:
         pass
 
@@ -572,7 +867,7 @@ def decodeCallable(glb, data):
         try:
             res = pickle.loads(codecs.decode(serial.stream.encode(), "base64"))
         except Exception:
-            return TemporaryObject(set(), data, glb)
+            return CallableConstructor(data, glb)
         return res
     except TypeError:
         pass
@@ -580,34 +875,79 @@ def decodeCallable(glb, data):
     return None
 
 
-def decodeChunk(glb, data):
+def _decodeChunk(glb: _Glb, data):
     """
     Used as object_hook for the json decoder. Decodes serialized chunk objects
     """
+
+    # First see if the data is a Module. In that case, we can return it
     try:
         serial = SerializedModule(**data)
         mod = serial.create()
-        glb[mod.__name__] = mod
+        glb.modules[serial.hashval] = mod
         return mod
 
     except TypeError:
         pass
 
+    # If we can create a Callable from the data, return it
     if cb := decodeCallable(glb, data):
         return cb
 
+    # If a SerializedClass can be created from data, return it. Else just return data
     try:
         serial = SerializedClass(**data)
     except TypeError:
         return data
-    return ClassConstructor(data, glb, serial)
+
+    res = ClassConstructor(glb, serial)
+    glb.objects[serial.hashval] = res
+    return res
 
 
-def deserialize_chunks(serial) -> Optional[List[ClassConstructor]]:
-    if not __package__:
-        return None
+def is_py_source(serial: str | bytes) -> bool:
+    """
+    Check if the content of serial is valid python code
 
-    glb = {}
+    Args:
+        serial (str | bytes): The code to check for validity
 
-    res = json.loads(serial, object_hook=partial(decodeChunk, glb))
+    Returns:
+        bool: True if the code is valid python code
+    """
+    try:
+        ast.parse(serial)
+    except SyntaxError:
+        return False
+    return True
+
+
+def deserialize_py(code: str, mod_name: str) -> RuntimeModule:
+    """
+    Create a RuntimeModule from a string
+
+    Args:
+        code (str): The code of the runtime module
+        mod_name (str): The name of the module
+
+    Returns:
+        RuntimeModule: The runtime module
+    """
+    return RuntimeModule(code, mod_name)
+
+
+def deserialize_json(serial: str | bytes) -> Optional[Dict[str, Sequence[ClassConstructor]]]:
+    """
+    Deserialize a bytes object. Typically, ChunkModules are serialized, then the result of this function
+    is a list of ClassConstructors. To recreate the ChunkModules, call construct() on the list entries.
+
+    Args:
+        serial (str | bytes): The serial data to deserialize. This data is usually created from load_file()
+
+    Returns:
+        Optional[List[ClassConstructor]]: Depending on the content of serial, the return value may differ. But typically this is a list of ClassConstructors
+    """
+
+    glb = _Glb()
+    res = json.loads(serial, object_hook=partial(_decodeChunk, glb))
     return res

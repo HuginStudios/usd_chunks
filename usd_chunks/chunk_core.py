@@ -59,6 +59,7 @@ _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
 
 logger = logging.getLogger(__name__)
 
+# _T = TypeVar("_T")
 ValueT = TypeVar("ValueT")
 ParamT = TypeVar("ParamT", bound="ChunkParamBase")
 GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
@@ -1522,7 +1523,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         return super().__setattr__(name, value)
 
 
-class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
+class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     """Container for holding ChunkCommon objects. The container holds two maps: params & names. The maps
     are ChainMaps, meaning they provide access to all nested NameSyncedContainer param and names as well.
     In practice, this means we can quickly lookup nested children of chunks or groups, without having to
@@ -1558,13 +1559,13 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             name "myParam" may be accessed as params[names["myParam"]]
     """
 
-    def __init__(self, params: Optional[Sequence["ChunkCommon"]] = None):
+    def __init__(self, params: Optional[Sequence[ChunkT]] = None):
         super().__init__()
 
         self._last_added: Optional[HashVal] = None
         self._last_removed: Optional[HashVal] = None
 
-        self._params: ChainMap[ChunkHash, ChunkCommon] = ChainMap()
+        self._params: ChainMap[ChunkHash, ChunkT] = ChainMap()
         self._names: ChainMap[str, ChunkHash] = ChainMap()
 
         if params is not None:
@@ -1600,7 +1601,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         self._names.clear()
         self._params.clear()
 
-    def add(self, obj: "ChunkCommon | ProxyParam", send=True):
+    # def add(self, obj: "ChunkCommon | ProxyParam", send=True):
+    def add(self, obj: "ChunkT | ProxyParam", send=True):
         """Add a chunk object to this container. This will make the container the owner of the param, and store the
         object in self.params, and obj.name in self.names. Access to the object can thus be done through
             self.get_param(), self.get_by_name()
@@ -1630,7 +1632,8 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             self._params.maps.append(obj.children._params)
             self._names.maps.append(obj.children._names)
 
-        self.send_added(obj)
+        if send:
+            self.send_added(obj)
 
     @staticmethod
     def create_proxy(source: "NameSyncedContainer", target: "NameSyncedContainer"):
@@ -1701,7 +1704,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
 
     def get_param(
         self, key: Union[ChunkHash, str], default: Any = None, proxy_index: Optional[int] = None
-    ) -> Optional["ChunkCommon"]:
+    ) -> Optional[ChunkT]:
         """Retrieve a param from this datastructure. Key can be either a ChunkCommon (It hashes to the HashVal),
         an explicit HashVal (ChunkObject._hashable) or a name.
 
@@ -1712,7 +1715,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
             return self.get_by_name(key, default)
         return self._params.get(key, default)
 
-    def get_by_name(self, name: str, default: Any = None, proxy_index: Optional[int] = None) -> Optional["ChunkCommon"]:
+    def get_by_name(self, name: str, default: Any = None, proxy_index: Optional[int] = None) -> Optional[ChunkT]:
         """
         Excplicitly retrieve a param by its name. In order to find nested children, one can
         pass the hierarchy to the 'name' argument by adding a dot (.) for each level in the hierarchy:
@@ -1764,7 +1767,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
         return tuple(self._names.maps[0].keys())
 
-    def get_params(self) -> Tuple["ChunkCommon", ...]:
+    def get_params(self) -> Tuple[ChunkT, ...]:
         """Get all params on this layer and under
 
         Returns:
@@ -1772,7 +1775,7 @@ class NameSyncedContainer(chunk_notice.ChunkNoticePropagator):
         """
         return tuple(self._params.values())
 
-    def get_my_params(self) -> Tuple["ChunkCommon", ...]:
+    def get_my_params(self) -> Tuple[ChunkT, ...]:
         """Get all params on this layer only
 
         Returns:
@@ -2910,7 +2913,7 @@ class ChunkBase(ChunkGroupBase):
     # The config is set from the chunk_registry.ChunkModule.load_config() function.
     # This is because the config can be loaded independently from the chunk, without
     # having to execute main() of the chunk module.
-    _config: Optional["ChunkConfig"] = attrs.field(default=None, init=False)
+    _config: Optional["ChunkConfig"] = attrs.field(default=None, init=False, metadata=AttributeMetadata(serialize=True))
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
@@ -3077,3 +3080,108 @@ class ChunkConfig(AttributesBase):
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
+
+
+class SceneSender(chunk_notice.ChunkNoticePropagator):
+    """
+    Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
+    See implementation in plugins/usdview/__init__.py
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        self.chunks: NameSyncedContainer[ChunkBase] = NameSyncedContainer()
+        self.chunks.set_owner(self)
+
+    def remove_chunk(self, chunk: str | ChunkHash):
+        """
+        Unload this module by deleting the associated chunk object
+        """
+
+        if not (c := self.get_chunk(chunk)):
+            return
+        c.request_delete()
+
+    def add_chunk(self, c: ChunkBase):
+        names = self.get_chunk_names()
+        if c.name in names:
+            c.name = c.get_valid_child_name(c.name, set(names))
+
+        try:
+            c.check_hierarchy()
+        except Exception as e:
+            logger.exception(e)
+            return
+
+        self.chunks.add(c, False)
+        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+        return c
+
+    def clear(self):
+        self.chunks.clear()
+
+    def holds_chunk(self, chunk: str | ChunkHash) -> bool:
+        return self.get_chunk(chunk) is not None
+
+    def get_chunk(self, chunk: str | ChunkHash) -> ChunkBase | None:
+        return self.chunks.get_param(chunk)
+
+    def get_chunks(self) -> Tuple[ChunkBase, ...]:
+        return self.chunks.get_my_params()
+
+    def get_chunk_names(self):
+        return self.chunks.get_my_names()
+
+    def should_install_package(self, package_name: str) -> bool:
+        """
+        When a modules config has requirements to external pip packages, the packages may be installed automatically by the ChunkDependencyManager.
+        Before any package is installed though, the user should have the option to opt out of this. This method is called when packages can be installed,
+        and should return True if the package may be installed. Any installed package is put in the
+
+        Args:
+            package_name (str): The name of the package to install
+
+        Returns:
+            bool: If the package can be installed
+        """
+        return False
+
+    def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
+
+        return super().data_changed(notice)
+
+    @abstractmethod
+    def get_stage(self) -> Usd.Stage:
+        raise NotImplementedError
+
+    def get_selected_prims(self) -> List[Usd.Prim]:
+        """
+        Get the selected prims in the scene
+
+        Returns:
+            List[Usd.Prim]: Selected prims
+        """
+        raise NotImplementedError
+
+    def get_selected_property(self) -> Usd.Property:
+        """
+        Get the selected property in the scene
+
+        Returns:
+            Usd.Property: Selected property
+        """
+        raise NotImplementedError
+
+    def primSelectionChangedCallback(self, *args, **kwargs):
+        chunk_notice.send_notice(
+            chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.get_selected_prims()
+        )
+
+    def propSelectionChangedCallback(self, *args, **kwargs):
+        chunk_notice.send_notice(
+            chunk_notice.ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property()
+        )
+
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return chunk_notice.ChunkNoticeAlias.NONE

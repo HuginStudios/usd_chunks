@@ -375,10 +375,15 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
             )
         notice = notice_class()
 
-    if sender is None:
-        notice.SendGlobally()
-    else:
-        notice.Send(sender)
+    try:
+        if sender is None:
+            notice.SendGlobally()
+        else:
+            notice.Send(sender)
+    except Tf.ErrorException:
+        logger.exception(f"Could not send notice {notice}")
+        return
+
     return notice
 
 
@@ -1314,60 +1319,3 @@ class NoticeConnection(chunk_serial.Serializeable):
             self._listener.Revoke()
             self._listener = None
 
-
-class SceneSender(ChunkNoticePropagator):
-    """
-    Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
-    See implementation in plugins/usdview/__init__.py
-    """
-
-    def should_install_package(self, package_name: str) -> bool:
-        """
-        When a modules config has requirements to external pip packages, the packages may be installed automatically by the ChunkDependencyManager.
-        Before any package is installed though, the user should have the option to opt out of this. This method is called when packages can be installed,
-        and should return True if the package may be installed. Any installed package is put in the
-
-        Args:
-            package_name (str): The name of the package to install
-
-        Returns:
-            bool: If the package can be installed
-        """
-        return False
-
-    @abstractmethod
-    def get_stage(self) -> Usd.Stage:
-        raise NotImplementedError
-
-    def get_selected_prims(self) -> List[Usd.Prim]:
-        """
-        Get the selected prims in the scene
-
-        Returns:
-            List[Usd.Prim]: Selected prims
-        """
-        raise NotImplementedError
-
-    def get_selected_property(self) -> Usd.Property:
-        """
-        Get the selected property in the scene
-
-        Returns:
-            Usd.Property: Selected property
-        """
-        raise NotImplementedError
-
-    def primSelectionChangedCallback(self, *args, **kwargs):
-        try:
-            send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.get_selected_prims())
-        except Tf.ErrorException:
-            pass
-
-    def propSelectionChangedCallback(self, *args, **kwargs):
-        try:
-            send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property())
-        except Tf.ErrorException:
-            pass
-
-    def get_notice_alias(self) -> ChunkNoticeAlias:
-        return ChunkNoticeAlias.NONE

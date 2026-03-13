@@ -668,7 +668,7 @@ class ChunkWidget(ContainerWidget):
 
     def __init__(
         self,
-        group: chunk.Chunk,
+        group: chunk.ChunkBase,
         parent=None,
     ):
         super().__init__(group, parent)
@@ -812,6 +812,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
         registry = chunk_registry.ChunkRegistry()
+
         self.setStyleSheet("""
         QFrame{
             background-color: #333333;
@@ -891,13 +892,17 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         """)
 
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        for mod in registry.registered_modules.values():
-            if not mod.loaded:
-                continue
+        # for mod in registry.registered_modules.values():
+        #     if not mod.loaded:
+        #         continue
 
-            for c in mod.loaded_chunks.values():
-                if not self.add_chunk_widget(c):
-                    continue
+        #     for c in mod.loaded_chunks.values():
+        #         if not self.add_chunk_widget(c):
+        #             continue
+
+        if registry.initialized:
+            for c in registry.scene.get_chunks():
+                self.add_chunk_widget(c)
 
         self.main_layout = QtWidgets.QVBoxLayout()
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -906,7 +911,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.setLayout(self.main_layout)
         self.show()
 
-    def add_chunk_widget(self, loaded_chunk: chunk.Chunk | ChunkWidget) -> ChunkWidget:
+    def add_chunk_widget(self, loaded_chunk: chunk.ChunkBase | ChunkWidget) -> ChunkWidget:
         """Adds a ChunkWidget to the docker
 
         Args:
@@ -917,7 +922,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         """
         widget = None
 
-        if isinstance(loaded_chunk, chunk.Chunk):
+        if isinstance(loaded_chunk, chunk.ChunkBase):
             # If the returned value is a Chunk, we need to create the widget here as well
             widget = ChunkWidget(loaded_chunk, self)
         elif isinstance(loaded_chunk, ChunkWidget):
@@ -964,14 +969,11 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         c1 = QtWidgets.QTableWidgetItem(mod.module_name)
 
+        c2 = QtWidgets.QTableWidgetItem(mod.config.category)
+
         self.content.setItem(row, 0, c0)
         self.content.setItem(row, 1, c1)
-        if mod.loaded_chunks:
-            c2 = QtWidgets.QTableWidgetItem()
-            c2.setText(", ".join([x.name for x in mod.loaded_chunks.values()]))
-            self.content.setItem(row, 2, c2)
-        c3 = QtWidgets.QTableWidgetItem(mod.config.category)
-        self.content.setItem(row, 3, c3)
+        self.content.setItem(row, 3, c2)
 
     def load_chunks(self):
         reg = chunk_registry.ChunkRegistry()
@@ -983,7 +985,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
         if check and not mod.loaded:
             mod.load()
         elif not check and mod.loaded:
-            mod.remove_chunk()
+            mod.unload()
 
     def handle_data_change(self, first: QtCore.QModelIndex, last: QtCore.QModelIndex, roles):
         if QtCore.Qt.ItemDataRole.CheckStateRole not in roles:
@@ -1031,10 +1033,28 @@ def confirm_dial(msg) -> bool:
     return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
 
 
-def file_dial(filter: Optional[str] = None, create_new=False):
+def file_dial(filter: Optional[str] = None, create_new=False, directory=False):
     dial = QtWidgets.QFileDialog()
-    if filter:
+
+    accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptOpen
+    file_mode = QtWidgets.QFileDialog.FileMode.AnyFile
+
+    # if create_new:
+    #     accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptSave
+
+    if directory:
+        file_mode = QtWidgets.QFileDialog.FileMode.Directory
+
+    elif not create_new:
+        file_mode = QtWidgets.QFileDialog.FileMode.ExistingFile
+        dial.setOption(QtWidgets.QFileDialog.Option.ReadOnly)
+
+    dial.setFileMode(file_mode)
+    dial.setAcceptMode(accept_mode)
+
+    if filter and not directory:
         dial.setNameFilter(filter)
+
     if not dial.exec():
         return None
 
