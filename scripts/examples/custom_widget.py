@@ -13,12 +13,12 @@ class MyWidget(chunk_core.ChunkParamWidgetBase, QtWidgets.QPushButton):
         # calls param.send_self() when the button is clicked
         self.clicked.connect(self.value_changed)
 
-        # Default stuff. Sets label, layout, icon and initial value 
+        # Default stuff. Sets label, layout, icon and initial value
         self.setup_chunk_widget()
 
-    def value_changed(self, _):
+    def value_changed(self, value=None):
         self.param.send_self()
-    
+
     def set_label(self, text: str):
         self.setText(text)
         pass
@@ -52,5 +52,6 @@ def main():
 
     return myChunk
 
+
 def config():
-    return chunk.DefaulConfig(load=False, category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES)

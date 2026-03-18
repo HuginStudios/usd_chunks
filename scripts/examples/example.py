@@ -21,7 +21,7 @@ def nice_print(func):
 
 
 @nice_print
-def chunkChanged(owner: chunk.Chunk, notice, sender):
+def chunkChanged(owner: chunk.Chunk, notice: chunk_notice.ChunkChangeNotice, sender):
     # This works just as groupChanged, but is registered on a Chunk, so will only be sent on Chunk changes
     def get_chunk_str(s):
         res = "{}"
@@ -57,22 +57,13 @@ def chunkChanged(owner: chunk.Chunk, notice, sender):
 
     owner.get_logger().info("\n" + "\n".join(msg))
 
+
 @nice_print
 def clickedButton(owner, notice, sender):
     owner.get_logger().info(f"Button clicked: {owner.name}")
 
 
-@nice_print
-def primSelectionChanged(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_core.SceneSender):
-    owner.get_logger().info(f"Prim selection changed: {notice.data.value}")
-
-
-@nice_print
-def propSelectionChanged(owner, notice: chunk_notice.PropSelectionChangedNotice, sender: chunk_core.SceneSender):
-    owner.get_logger().info(f"Prop selection changed: {notice.data.value}")
-
-
-def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk.ChunkParamBase):
+def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_core.SceneSender):
     """An example callback function that updates the value of the chunkItem to the selected prim path when a new selection occurs
 
     Args:
@@ -262,4 +253,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(load=True, category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES)

@@ -41,14 +41,11 @@ def main():
     reg = chunk_registry.ChunkRegistry()
     if mod := reg.get_chunk_module("examples.dependencies"):
         if not mod.loaded:
-            mod.load()
+            chunks = mod.load()
+        else:
+            chunks = mod.create()
 
-        # The dependencies module exports 4 chunks: A, B, C, D.
-        if a := mod.loaded_chunks.get("A"):
-            myChunk.add_dependency(a)
-        if b := mod.loaded_chunks.get("B"):
-            myChunk.add_dependency(b)
-        if c := mod.loaded_chunks.get("C"):
+        for c in chunks:
             myChunk.add_dependency(c)
 
     return myChunk

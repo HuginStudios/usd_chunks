@@ -1,9 +1,9 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Any, Dict, Optional, DefaultDict, List
+from typing import Any, Dict, Optional, DefaultDict, List, Generic
 
 from pxr import Tf
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_serial
 import usd_chunks.chunk_flags
 from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
@@ -333,14 +333,14 @@ class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
 
 
 class LabeledWidget(QtWidgets.QWidget):
-    def __init__(self, widget, parent=None):
+    def __init__(self, widget: ChunkParamWidgetBase[chunk_core.ParamT], parent=None):
         super().__init__(parent)
 
         self.vlayout = QtWidgets.QVBoxLayout()
         self.vlayout.setContentsMargins(0, 0, 0, 0)
         self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
-        self.widget: ChunkParamWidgetBase = widget
+        self.widget = widget
         self.label = QtWidgets.QLabel()
         self.label.setHidden(True)
 
@@ -348,9 +348,11 @@ class LabeledWidget(QtWidgets.QWidget):
         self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
-        self._value_tooltip = QtWidgets.QToolTip()
-        # self._value_label = QtWidgets.QLabel(parent=self)
-        # self._value_label.setHidden(True)
+        self._value_tooltip = QtWidgets.QLabel(parent=self)
+        self._value_tooltip.setHidden(True)
+        self._value_tooltip.setWindowFlags(QtCore.Qt.WindowType.ToolTip)
+        self._tooltip_timer = QtCore.QTimer(self)
+        self._tooltip_timer.timeout.connect(self.hide_tooltip)
 
         if isinstance(self.widget, ChunkParamWidgetBase):
             self._listener = chunk_notice.NoticeConnection(
@@ -363,25 +365,28 @@ class LabeledWidget(QtWidgets.QWidget):
         if not isinstance(self.widget, ChunkParamWidgetBase):
             return False
 
-        if ChunkFlags.ParamType.EMPTY in self.widget.param.evaluate_type():
+        t = self.widget.param.evaluate_type()
+        if (ChunkFlags.ParamType.EMPTY | ChunkFlags.ParamType.STRING) & t != 0:
             return False
         return True
 
     def tooltip_pos(self):
-        # return self.mapToGlobal(self.rect().topLeft() - QtCore.QPoint(0, 10))
-        return self.mapToGlobal(self.rect().bottomLeft() - QtCore.QPoint(0, 10))
+        return self.mapToGlobal(self.rect().bottomLeft())
 
     def show_tooltip(self):
-        self._value_tooltip.showText(self.tooltip_pos(), str(self.widget.param.value), msecShowTime=10000)
+        self._value_tooltip.move(self.tooltip_pos())
+        self._value_tooltip.setHidden(False)
+        self._value_tooltip.setText(str(self.widget.param.value))
+        self._tooltip_timer.start(3000)
 
     def hide_tooltip(self):
-        self._value_tooltip.hideText()
+        self._value_tooltip.hide()
 
     def update_value(self, notice: chunk_notice.ChunkNotice, sender):
         name = notice.data.name
         if name in ["label", "name"]:
             self.update_label(notice.data.value)
-        elif name == "value":
+        elif name == "value" and self.should_show_tooltip():
             self.show_tooltip()
 
     def update_label(self, text):
@@ -400,12 +405,14 @@ class LabeledWidget(QtWidgets.QWidget):
             event.accept()
         return super().enterEvent(event)
 
-    # def leaveEvent(self, event: QtCore.QEvent) -> None:
-    #     self.hide_tooltip()
-    #     return super().leaveEvent(event)
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        self.hide_tooltip()
+        return super().leaveEvent(event)
 
 
-class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
+class ContainerWidget(
+    Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QWidget
+):
     """
     Chunk is a base class for creating UI components.
     It provides a structure for initializing the API and creating UI Chunks.
@@ -415,7 +422,7 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
 
     def __init__(
         self,
-        group: chunk_core.ChunkContainerBase,
+        group,
         parent=None,
     ):
         self.animation_duration = 300
@@ -660,7 +667,7 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
     #             #     w.update_label(param.get_label())
 
 
-class ChunkWidget(ContainerWidget):
+class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     """
     Chunk is a base class for creating UI components.
     It provides a structure for initializing the API and creating UI Chunks.
@@ -693,8 +700,8 @@ class ChunkWidget(ContainerWidget):
         if not res:
             return
 
-        conn = actions[res]
-        conn.handle_callback(chunk_notice.MenuActionNotice(self.group.get_notice_data()), self.group, False)
+        if conn := actions.get(res):
+            conn.handle_callback(chunk_notice.MenuActionNotice(self.group.get_notice_data()), self.group, False)
 
     def get_category(self) -> str:
         """Get the category of this Chunk
@@ -749,7 +756,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         items = dict()
         items["menu"] = QtWidgets.QMenu("chunks")
 
-        for mod in chunk_registry.ChunkRegistry().registered_modules.values():
+        for mod in chunk_registry.ChunkRegistry().get_chunk_modules(sort_result=True):
             cat = mod.config.category
             if isinstance(cat, Enum):
                 cat = cat.value
@@ -772,9 +779,28 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
                     d[ns] = {"menu": d.get("menu").addMenu(ns)}
                 d = d[ns]
 
-        res = items["menu"].exec_(event.globalPos())
+        items["menu"].addSeparator()
 
-        if not res or not (mod := res.data()):
+        import_action = QtGui.QAction("import")
+        import_action.setData("import")
+        items["menu"].addAction(import_action)
+
+        exc = items["menu"].exec_(event.globalPos())
+
+        if not exc:
+            return
+
+        if exc.data() == "import":
+            ext = (
+                chunk_serial.FileExtensions.PY_MODULE,
+                chunk_serial.FileExtensions.CHUNK_MODULE,
+            )
+            flt = " ".join(f"*{x}" for x in ext)
+            if file := file_dial(flt):
+                chunk_registry.ChunkRegistry().import_chunk(file)
+            return
+
+        if not (mod := exc.data()) or not isinstance(mod, chunk_registry.ChunkModule):
             return
 
         if mod.loaded:
@@ -892,13 +918,6 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         """)
 
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        # for mod in registry.registered_modules.values():
-        #     if not mod.loaded:
-        #         continue
-
-        #     for c in mod.loaded_chunks.values():
-        #         if not self.add_chunk_widget(c):
-        #             continue
 
         if registry.initialized:
             for c in registry.scene.get_chunks():
@@ -944,7 +963,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.content = QtWidgets.QTableWidget(rowCount=0, columnCount=4)
+        self.content = QtWidgets.QTableWidget(rowCount=0, columnCount=4, parent=self)
 
         self.content.setSelectionMode(QtWidgets.QTableWidget.SelectionMode.ExtendedSelection)
         self.content.setSelectionBehavior(QtWidgets.QTableWidget.SelectionBehavior.SelectRows)
@@ -957,6 +976,36 @@ class ChunkModuleLoader(QtWidgets.QDialog):
         self.load_chunks()
 
         self.content.model().dataChanged.connect(self.handle_data_change)
+
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+        if not (item := self.content.currentItem()):
+            return
+
+        reg = chunk_registry.ChunkRegistry()
+        if not (mod := reg.get_chunk_module(item.text())):
+            return
+
+        menu = QtWidgets.QMenu()
+
+        actions: Dict[QtGui.QAction, chunk_registry.ChunkModule] = {}
+
+        actions[QtGui.QAction("export")] = mod
+
+        menu.addActions(list(actions.keys()))
+
+        res = menu.exec_(event.globalPos())
+
+        if not res:
+            return
+
+        mod = actions[res]
+        if res.text() == "export":
+            exts = (chunk_serial.FileExtensions.CHUNK_MODULE, chunk_serial.FileExtensions.PY_MODULE)
+            flt = " ".join([f"*{x}" for x in exts])
+            if file := file_dial(flt, True):
+                mod.export(file)
+
+        return super().contextMenuEvent(event)
 
     def get_check_state(self, loaded):
         return QtCore.Qt.CheckState.Checked if loaded else QtCore.Qt.CheckState.Unchecked
@@ -977,8 +1026,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
     def load_chunks(self):
         reg = chunk_registry.ChunkRegistry()
-        mods = list(reg.registered_modules.values())
-        for row, c in enumerate(mods):
+        for row, c in enumerate(reg.get_chunk_modules()):
             self.new_row(row, c)
 
     def load_unload(self, mod: chunk_registry.ChunkModule, check):

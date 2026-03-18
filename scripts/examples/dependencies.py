@@ -97,4 +97,4 @@ def main():
     return [a, b, c, d]
 
 def config():
-    return chunk.DefaulConfig(chunk.StandardCategory.EXAMPLES, load=True)
+    return chunk.DefaulConfig(chunk.StandardCategory.EXAMPLES)

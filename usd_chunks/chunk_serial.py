@@ -1,3 +1,64 @@
+"""
+Chunk Serial is the interface for serializing Chunks and related classes. Depending on the extension,
+The chunks are encoded as JSON (.chum, .scene, .json), or as string (.py). The Serializeable class may be
+extended by a class to modify how and what to encode. .chum and .py extensions represent a chunk module,
+where .chum is simply a compressed representation of a ChunkModule with the source code embedded. A .json
+file represents a scene file without embedding of any modules. This means that loading a .json scene, the
+modules must already exists in the environment. Another difference is that the modules do not encode any
+loaded chunks, meaning they do not save any modified values. A scene file on the other hand does encode
+all loaded chunks and their respective param values, connections and callbacks.
+
+Decoding is done with the _decodeChunk object hook with json.dumps and translates any SerializedObject back in
+to a python object. In most cases, the result of the decode contains ClassConstructors and
+CallableConstructors. Calling construct() on these will create the actual python object. The construct() will
+first call __init__(**kwargs), where kwargs is a dictionairy encoded in the SerializedClass, then if specified,
+call setattr() for all items in the attributes dictionairy also encoded in the SerialziedClass. Any nested
+ClassConstructor or CallableConstructor in kwargs or attributes will be constructed prior to being used.
+
+Implementing import functionality for a ChunkModule may look like:
+
+``` py
+serial = chunk_serial.load_file(p)
+if not serial:
+    return
+
+if not (data := chunk_serial.deserialize_json(serial)):
+    return
+
+if p.suffix == chunk_serial.FileExtensions.CHUNK_MODULE:
+    for mod_cnstr in data.get("modules", []):
+        mod = mod_cnstr.construct()
+```
+
+And similarly, exporting a module may look like:
+``` py
+mod: ChunkModule = self.module
+
+if p.suffix == chunk_serial.FileExtensions.PY_MODULE:
+    serial = chunk_serial.serialize_py(mod.module)
+
+elif p.suffix == chunk_serial.FileExtensions.CHUNK_MODULE:
+    data = {"modules": [mod], "chunks": []}
+    serial = chunk_serial.serialize_json(data, True)
+
+else:
+    logger.warning(f"wrong file extension {path}")
+    return
+
+chunk_serial.save_file(serial, path)
+```
+
+Both when encoding and decoding, a glb (short for global) dictionairy is used to keep track
+of objects. This is for reference creation - an object should only be encoded / created once, all other
+references to the same object will contain a SerializedReference (or similar) entry. When decoding,
+constructed classes and modules are stored in the glb, and references will be solved by lookup
+in to the glb. When constructing an object multiple times, the glb.objects dict should be cleared in between
+constructing the objects, as the objects will otherwise be identical (same id and hash). Some of the objects
+may be resolved when decoding; modules, for example, will almost always be resolved during decoding,
+which is why the _Glb holds objects and modules seperately
+
+"""
+
 import codecs
 import importlib
 import inspect
@@ -10,24 +71,48 @@ import weakref
 import zlib
 import os
 import ast
+import enum
 from pathlib import Path
 from functools import partial
 from importlib import util
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, overload
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, overload, TypedDict
 
 import attrs
 
 logger = logging.getLogger(__name__)
 
 ## These are placeholders waiting for a better implementation
-PICKLE_ENABLED = False
+PICKLE_ENABLED = True
 SAVE_MODULES = True
+
+
+class FileExtensions(str, enum.Enum):
+    PY_MODULE = ".py"
+    SCENE = ".json"
+    CHUNK = ".chunk"
+    CHUNK_MODULE = ".chum"
 
 
 @attrs.define
 class _Glb:
-    modules: Dict[int, Any] = attrs.field(factory=dict)
+    modules: Dict[int | str, Any] = attrs.field(factory=dict)
     objects: Dict[int, Any] = attrs.field(factory=dict)
+
+    def get_obj(self, hashval):
+        if not (obj := self.objects.get(hashval)):
+            return None
+
+        if isinstance(obj, (ClassConstructor, CallableConstructor)):
+            print(obj)
+            return None
+
+        return obj
+
+    def get_mod(self, hashval):
+        if not (obj := self.modules.get(hashval)):
+            return None
+
+        return obj
 
 
 @attrs.define
@@ -64,8 +149,8 @@ class SerializedClass(SerializedObject):
     def __hash__(self) -> int:
         return self.hashval
 
-    @classmethod
-    def from_class(cls, obj, glb) -> Optional["SerializedClass"]:
+    @staticmethod
+    def from_class(obj, glb) -> Optional["SerializedClass"]:
         """
         Returns a new SerializedClass, that makes the passed obj serializeable for JSON. This is called by the ChunkEncoder
         for all objects that are not builtins, functions, methods or weakrefs
@@ -77,7 +162,7 @@ class SerializedClass(SerializedObject):
         Returns:
             SerializedClass | None: A new serialized class for obj if successful
         """
-        if obj is None:
+        if obj is None or not hasattr(obj, "__module__"):
             return None
 
         res = SerializedClass(obj.__module__, type(obj).__qualname__, hash(obj))
@@ -187,9 +272,9 @@ class SerializedClass(SerializedObject):
 
 @attrs.define
 class PickledObject(SerializedObject):
-    """A SerializedObject holding a pickle stream"""
+    """A SerializedObject holding a pickle string"""
 
-    stream: str = attrs.field()
+    pickle: str = attrs.field()
 
 
 @attrs.define
@@ -209,6 +294,13 @@ class RuntimeModule(types.ModuleType):
         super().__init__(name, doc)
         self._code = code
 
+    def compile(self):
+        """
+        Compiles and executes this module. The result is stored in __dict__
+        """
+        dat = compile(self._code, filename=f"<ChunkSerial_{self.__name__}>", mode="exec")
+        exec(dat, self.__dict__)
+
 
 @attrs.define
 class SerializedModule(SerializedObject):
@@ -218,9 +310,14 @@ class SerializedModule(SerializedObject):
     module_name: str = attrs.field()
     hashval: int = attrs.field()
 
-    def create(self):
-        mod = RuntimeModule(self.code, self.module_name + str(self.hashval))
-        return mod
+    def create(self) -> RuntimeModule:
+        """
+        Creates a RuntimeModule from the code and module_name
+
+        Returns:
+            RuntimeModule: The RuntimeModule
+        """
+        return RuntimeModule(self.code, self.module_name)
 
 
 @attrs.define
@@ -467,14 +564,15 @@ class ChunkEncoder(json.JSONEncoder):
             return attrs.asdict(res, recurse=False)
 
         is_cb = callable(o)
-        if self._enable_pickle and is_cb and not inspect.ismethod(o):
-            return attrs.asdict(PickledObject(codecs.encode(pickle.dumps(o), "base64").decode()), recurse=False)
 
         if is_cb and (res := serialize_Function(o, self.glb)):
             return attrs.asdict(res, recurse=False)
 
         elif not is_cb and (res := serialize_object(o, self.glb)):
             return attrs.asdict(res)
+
+        if self._enable_pickle and not inspect.ismethod(o):
+            return attrs.asdict(PickledObject(codecs.encode(pickle.dumps(o), "base64").decode()), recurse=False)
         try:
             res = super().default(o)
         except Exception:
@@ -483,19 +581,20 @@ class ChunkEncoder(json.JSONEncoder):
         return o
 
 
-def serialize_json(chunks: Dict[str, Serializeable], save_modules=True) -> str:
+def serialize_json(data: Dict[str, Serializeable], save_modules=True) -> str:
     """
     From a sequence of Serializables, create a serialized representation. The format is JSON and encoded using the ChunkEncoder
 
     Args:
-        chunks (Sequence[Serializeable]): A sequence of serializeable objects
+        data (Dict[str, Serializeable]): A dictionairy to serialize
 
     Returns:
         str: A string representation of the objects in JSON format
     """
     ChunkEncoder._export_modules = save_modules
+    ChunkEncoder._enable_pickle = PICKLE_ENABLED
 
-    return json.dumps(chunks, cls=ChunkEncoder, indent=4)
+    return json.dumps(data, cls=ChunkEncoder, indent=4)
 
 
 def serialize_py(mod: types.ModuleType) -> str:
@@ -514,39 +613,24 @@ def serialize_py(mod: types.ModuleType) -> str:
     return inspect.getsource(mod)
 
 
-def chunk_file_extensions() -> Tuple[str, ...]:
+def file_extensions():
     """
-    Return the supported file extensions for import / export of chunks.
-    .json = the file is saved as a JSON without compression
-    .chunk = the file is saved as compressed JSON
-    .py = the file is saved as uncompressed python source code
+    Returns a tuple of supported file extensions
 
     Returns:
-        Tuple[str, ...]: A tuple of supported file extensions, such as (".json", ".py")
+        Tuple[str, ...]: All supported file extensions for saving / loading serialized chunk files
     """
-    return (".chunk", ".py")
+    return tuple(x.value for x in FileExtensions)
 
 
-def scene_file_extensions() -> Tuple[str, ...]:
-    """
-    Return the supported file extensions for import / export of chunks.
-    .json = the file is saved as a JSON without compression
-    .chunk = the file is saved as compressed JSON
-    .py = the file is saved as uncompressed python source code
-
-    Returns:
-        Tuple[str, ...]: A tuple of supported file extensions, such as (".json", ".py")
-    """
-    return (".json",)
-
-
-def file_extensions() -> Tuple[str, ...]:
-    return tuple(set(chunk_file_extensions()) | set(scene_file_extensions()))
+def ext_should_compress(ext: str):
+    return ext in (FileExtensions.CHUNK, FileExtensions.CHUNK_MODULE)
 
 
 def save_file(serial: str, file: str | Path):
     """
-    Save serial to a file. serial should be created with either serialize_py() or serialize_json().
+    Save serial to a file. serial should be created with either serialize_py() or serialize_json(). The
+    encoding is determined by the file extension. .chunk or .chum will be compressed.
 
     Args:
         serial (str): The content to save
@@ -560,7 +644,7 @@ def save_file(serial: str, file: str | Path):
         logger.warning(f"Unsupported file extension of {file}")
         return
 
-    if ext == ".chunk":
+    if ext_should_compress(ext):
         compressed = zlib.compress(serial.encode())
         with open(file, "wb") as f:
             f.write(compressed)
@@ -593,13 +677,13 @@ def load_file(file: str | Path) -> Optional[bytes]:
     with open(file, "rb") as f:
         serial = f.read()
 
-    if ext == ".chunk":
+    if ext_should_compress(ext):
         try:
             # If the file was saved with compression, we can try to decompress it here
             return zlib.decompress(serial)
         except zlib.error:
+            # The file may have been forcefully uncompressed, so instead of returning None, just print a warning
             logger.warning(f"Failed to decompress {file}")
-            return
 
     return serial
 
@@ -647,25 +731,32 @@ def get_module_attrib(glb: _Glb, mod_name: str, attr_name):
     if not mod_name:
         return None
 
-    # if mod := glb.modules.get(mod_name):
-    #     # If glb has mod, then we can try to get the attribute from there. If unseccessful and
-    #     # _import_module succeeds, the module in glb is overritten
-    #     try:
-    #         return getattr(mod, attr_name)
-    #     except Exception:
-    #         return None
+    if mod := glb.modules.get(mod_name):
+        # If glb has mod, then we can try to get the attribute from there. If unseccessful and
+        # _import_module succeeds, the module in glb is overritten
+        try:
+            return getattr(mod, attr_name)
+        except Exception:
+            return None
 
     if not (module := _import_module(mod_name)):
         return None
 
-    glb.modules[hash(module)] = module
+    # print(type(module))
+    # Store in glb, as some references may look for modules
+    # glb.modules[hash(module)] = module
 
     try:
         return getattr(module, attr_name)
     except AttributeError:
         logger.error(f"Could not find attribute {attr_name} in module {mod_name}")
     except ModuleNotFoundError:
+        # Silently fail as this should be handled elsewhere
         pass
+
+
+class _DecodeFailed:
+    pass
 
 
 class CallableConstructor:
@@ -673,7 +764,7 @@ class CallableConstructor:
         """
         A CallableConstructor is created when decodeCallable fails, meaning the reference or module was not yet
         created. For this reason, the direct result of the decoding is not 'valid', and instead contain
-        CallableConstructors and ClassConstructors, which in turn need to be constructed.
+        CallableConstructors and ClassConstructors, which in turn need to be constructed after decoding is done.
 
         Args:
             data (dict): The dict representation of a SerializedObject. This is used to decode the object
@@ -688,22 +779,27 @@ class CallableConstructor:
         and prints a warning
 
         Args:
-            glb (dict): A dict, in addition to self.glb, which to search for objects when decoding the callable
+            glb (dict | None): A dict, in addition to self.glb, which to search for objects when decoding the callable. Defaults to None
 
         Returns:
             Optional[Any]: The decoded callable or None
+
+        Raises:
+            ValueError: If decodeCallable returns a CallableConstructor (decoding the reference failed)
         """
-        if glb is not None:
-            self.glb.modules.update(glb.modules)
-            self.glb.objects.update(glb.objects)
+        # if glb is not None:
+        #     self.glb.modules.update(glb.modules)
+        #     self.glb.objects.update(glb.objects)
 
         res = decodeCallable(self.glb, self.data)
         if isinstance(res, ClassConstructor):
             return None
 
         if isinstance(res, CallableConstructor):
-            # raise ValueError(f"Could not decode data from {self.data}")
             raise ValueError(f"Failed to decode callable {self.data}")
+
+        if res is _DecodeFailed:
+            return None
 
         return res
 
@@ -743,6 +839,7 @@ class ClassConstructor:
                 res[_k] = self.construct_value(_v, glb)
             return res
 
+        # Same as above... How should this be more general?
         if isinstance(val, (list, tuple, set)):
             res = []
             for _v in val:
@@ -752,7 +849,6 @@ class ClassConstructor:
             if isinstance(val, set):
                 return set(res)
             return res
-
         return val
 
     def construct(self, post_constuct=True, glb: Optional[_Glb] = None) -> Any:
@@ -769,16 +865,16 @@ class ClassConstructor:
         Returns:
             Any: The constructed class
         """
-        if glb is not None:
-            self.glb.modules.update(glb.modules)
-            self.glb.objects.update(glb.objects)
+        # if glb is not None:
+        #     self.glb.modules.update(glb.modules)
+        #     self.glb.objects.update(glb.objects)
 
         kwargs = {}
         for key, val in self.serial.kwargs.copy().items():
             kwargs[key] = self.construct_value(val, self.glb)
 
         inst = self.glb.objects.get(self.serial.hashval)
-        if not inst or isinstance(inst, ClassConstructor):
+        if not inst or isinstance(inst, (ClassConstructor, CallableConstructor)):
             try:
                 if not (cls := get_module_attrib(self.glb, self.serial.module, self.serial.name)):
                     return None
@@ -813,11 +909,10 @@ class ClassConstructor:
                 inst.post_serial_setattr(key, resval)
             else:
                 _default_post_serial_setattr(inst, key, resval)
-
         return inst
 
 
-def decodeCallable(glb: _Glb, data) -> Callable | CallableConstructor | None:
+def decodeCallable(glb: _Glb, data) -> Callable | CallableConstructor | _DecodeFailed:
     """
     Decode data. Will try to decode to SerializedMethod, SerialziedFunction, SerializedReference and PickledObject. If
     Any of these succeeds, the returned value is the function, method or object that was referenced. Otherwise, if any of these
@@ -829,11 +924,11 @@ def decodeCallable(glb: _Glb, data) -> Callable | CallableConstructor | None:
         data (dict): The decoded data as a dictionairy. Typically attrs.asdict(SerializedFunction()) or similar
 
     Returns:
-        Callable | CallableConstructor | None: The callable if found, else a CallableConstructor if a SerializedObject could be created from data, else None
+        Callable | CallableConstructor | _DecodeFailed: The callable if found, else a CallableConstructor if a SerializedObject could be created from data, else _DecodeFailed
     """
     try:
         serial = SerializedMethod(**data)
-        if obj := glb.objects.get(serial.reference):
+        if obj := glb.get_obj(serial.reference):
             return getattr(obj, serial.name)
         return CallableConstructor(data, glb)
     except TypeError:
@@ -841,7 +936,10 @@ def decodeCallable(glb: _Glb, data) -> Callable | CallableConstructor | None:
 
     try:
         serial = SerializedFunction(**data)
-        if ref := glb.modules.get(serial.reference):
+        if ref := glb.get_mod(serial.reference):
+            return getattr(ref, serial.name)
+
+        elif ref := glb.get_mod(serial.module):
             return getattr(ref, serial.name)
 
         elif func := get_module_attrib(glb, serial.module, serial.name):
@@ -853,7 +951,7 @@ def decodeCallable(glb: _Glb, data) -> Callable | CallableConstructor | None:
 
     try:
         serial = SerializedReference(**data)
-        if ref := glb.objects.get(serial.reference):
+        if ref := glb.get_obj(serial.reference):
             return ref
         return CallableConstructor(data, glb)
     except TypeError:
@@ -863,16 +961,16 @@ def decodeCallable(glb: _Glb, data) -> Callable | CallableConstructor | None:
         serial = PickledObject(**data)
         if not PICKLE_ENABLED:
             logger.warning("Skipping pickled data. PICKLED_ENABLED is off")
-            return None
+            return _DecodeFailed
         try:
-            res = pickle.loads(codecs.decode(serial.stream.encode(), "base64"))
+            res = pickle.loads(codecs.decode(serial.pickle.encode(), "base64"))
         except Exception:
             return CallableConstructor(data, glb)
         return res
     except TypeError:
         pass
 
-    return None
+    return _DecodeFailed
 
 
 def _decodeChunk(glb: _Glb, data):
@@ -885,13 +983,15 @@ def _decodeChunk(glb: _Glb, data):
         serial = SerializedModule(**data)
         mod = serial.create()
         glb.modules[serial.hashval] = mod
+        glb.modules[serial.module_name] = mod
         return mod
 
     except TypeError:
         pass
 
     # If we can create a Callable from the data, return it
-    if cb := decodeCallable(glb, data):
+    cb = decodeCallable(glb, data)
+    if cb is not _DecodeFailed:
         return cb
 
     # If a SerializedClass can be created from data, return it. Else just return data
@@ -901,7 +1001,7 @@ def _decodeChunk(glb: _Glb, data):
         return data
 
     res = ClassConstructor(glb, serial)
-    glb.objects[serial.hashval] = res
+    # glb.objects[serial.hashval] = res
     return res
 
 
@@ -936,7 +1036,14 @@ def deserialize_py(code: str, mod_name: str) -> RuntimeModule:
     return RuntimeModule(code, mod_name)
 
 
-def deserialize_json(serial: str | bytes) -> Optional[Dict[str, Sequence[ClassConstructor]]]:
+class DecodedResult(TypedDict):
+    modules: Sequence[ClassConstructor]
+    layers: Dict[str, CallableConstructor]
+    glb: _Glb
+
+
+# def deserialize_json(serial: str | bytes) -> Optional[Dict[str, Sequence[ClassConstructor], Literal["glb"], _Glb]]:
+def deserialize_json(serial: str | bytes) -> Optional[DecodedResult]:
     """
     Deserialize a bytes object. Typically, ChunkModules are serialized, then the result of this function
     is a list of ClassConstructors. To recreate the ChunkModules, call construct() on the list entries.
@@ -950,4 +1057,8 @@ def deserialize_json(serial: str | bytes) -> Optional[Dict[str, Sequence[ClassCo
 
     glb = _Glb()
     res = json.loads(serial, object_hook=partial(_decodeChunk, glb))
-    return res
+
+    if isinstance(res, dict):
+        res["glb"] = glb
+
+    return DecodedResult(modules=res.get("modules", []), layers=res.get("layers", {}), glb=glb)

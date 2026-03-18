@@ -59,7 +59,6 @@ _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
 
 logger = logging.getLogger(__name__)
 
-# _T = TypeVar("_T")
 ValueT = TypeVar("ValueT")
 ParamT = TypeVar("ParamT", bound="ChunkParamBase")
 GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
@@ -286,6 +285,8 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
     def __init__(self, group: GroupT, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        # Hold a weakref to the group. If all other references to the group is killed, then
+        # remove it from the UI as well, as the ui should not take ownership of the group
         self._group = weakref.ref(group)
 
         self._callbacks: List[chunk_notice.NoticeConnection] = []
@@ -349,7 +350,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         self.update_from_state()
 
     @property
-    def group(self) -> "ChunkContainerBase":
+    def group(self) -> GroupT:
         if group := self._group():
             return group
         raise ReferenceError("reference to group is dead! :'(")
@@ -554,9 +555,6 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
     def _name_changed(self, notice, sender):
         self.update_label(sender.value)
-
-    def _group_died(self, ref):
-        self.delete_self()
 
     def _delete_self(self, notice, sender):
         if sender is not self.group:
@@ -1601,7 +1599,6 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         self._names.clear()
         self._params.clear()
 
-    # def add(self, obj: "ChunkCommon | ProxyParam", send=True):
     def add(self, obj: "ChunkT | ProxyParam", send=True):
         """Add a chunk object to this container. This will make the container the owner of the param, and store the
         object in self.params, and obj.name in self.names. Access to the object can thus be done through
@@ -1625,15 +1622,18 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         # Mark self as the owner of the added obj as we need to be notified when the object changes
         obj.set_owner(self)
 
-        if isinstance(obj, ChunkGroupBase):
-            # Also append the children of the group, as this allows for fast lookups accross the layers.
-            # This ignores the children of vectors, as access to the vector elements should be accessed on
-            # the vector itself, and not as children
-            self._params.maps.append(obj.children._params)
-            self._names.maps.append(obj.children._names)
-
         if send:
             self.send_added(obj)
+
+    def add_nested(self, nested: "NameSyncedContainer[ChunkT]"):
+        """
+        Appends nested params to the ChainMap. This allows for fast lookups accross the layers.
+
+        Args:
+            nested (NameSyncedContainer) : The nested params to add
+        """
+        self._params.maps.append(nested._params)
+        self._names.maps.append(nested._names)
 
     @staticmethod
     def create_proxy(source: "NameSyncedContainer", target: "NameSyncedContainer"):
@@ -1802,6 +1802,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         Args:
             obj (ChunkCommon | ProxyParam): the removed parameter
         """
+
         self._last_removed = obj._hashable
         if owner := self.get_owner():
             owner.send_self(chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, obj)
@@ -1977,7 +1978,7 @@ class ChunkCommon(AttributesBase):
         v = self.has_state(ChunkFlags.State.DISABLED)
         return v or super().is_blocked()
 
-    def get_hash(self) -> ChunkHash:
+    def get_hash(self) -> HashVal:
         """
         Implements the ChunkUsdLayerSupport protocol
 
@@ -2174,10 +2175,19 @@ class ChunkCommon(AttributesBase):
 
     def get_stage(self) -> Usd.Stage | None:
         """Easy access to the current UsdStage.
+
         Returns:
             Usd.Stage: The stage held by the SceneSender of ChunkRegistry
         """
-        return chunk_registry.ChunkRegistry().scene.get_stage()
+        return self.get_scene().get_stage()
+
+    def get_scene(self) -> "SceneSender":
+        """Easy access to the current chunk scene.
+
+        Returns:
+            SceneSender: The SceneSender of ChunkRegistry
+        """
+        return chunk_registry.ChunkRegistry().scene
 
     def can_delete(self):
         return not bool(list(self.get_dag_node().get_outputs()))
@@ -2372,7 +2382,9 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     default_value: Optional[ValueT] = attrs.field(default=None)
 
     # Value is not an argument to __init__. Will set to default_value
-    value: ValueT = attrs.field(default=None, init=False)
+    value: ValueT = attrs.field(
+        default=None, init=False, metadata=AttributeMetadata(sender_alias=chunk_notice.ChunkNoticeAlias.VALUE_CHANGED)
+    )
 
     # If possible, will use this custom widget in the ui.
     # TODO: Currently, this only works with ChunkParamBase objects with type == CUSTOM
@@ -2464,9 +2476,9 @@ class ChunkContainerBase(ChunkCommon):
             changing the default ui implementation of the container and its children
     """
 
-    children: NameSyncedContainer = attrs.field(
+    children: NameSyncedContainer[ChunkCommon] = attrs.field(
         init=False,
-        factory=NameSyncedContainer,
+        factory=NameSyncedContainer[ChunkCommon],
         metadata=AttributeMetadata(send_mode=SendMode.NO_SEND, copy_mode=CopyMode.COPY),
     )
 
@@ -2712,6 +2724,13 @@ class ChunkGroupBase(ChunkContainerBase):
             # Add the new param to self.children container. The owner/ownee relationship is handled
             # by the container, so should not modify owner here
             self.children.add(new_param)
+
+            if isinstance(new_param, ChunkGroupBase):
+                # Also append the children of the group, as this allows for fast lookups accross the layers.
+                # This ignores the children of vectors, as access to the vector elements should be accessed on
+                # the vector itself, and not as children
+                self.children.add_nested(new_param.children)
+
         else:
             raise ValueError("Chunks only support params inherited from ChunkCommon")
         return new_param
@@ -2922,13 +2941,13 @@ class ChunkBase(ChunkGroupBase):
         self.add_callback(self.enable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
         self.add_callback(self.remove, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
 
-    def disable(self, notice, sender):
+    def disable(self, notice=None, sender=None):
         self.set_state(ChunkFlags.State.DISABLED)
 
-    def enable(self, notice, sender):
+    def enable(self, notice=None, sender=None):
         self.unset_state(ChunkFlags.State.DISABLED)
 
-    def remove(self, notice, sender):
+    def remove(self, notice=None, sender=None):
         self.request_delete()
 
     def get_config(self) -> Optional["ChunkConfig"]:
@@ -3074,9 +3093,10 @@ class ChunkConfig(AttributesBase):
 
     category: str = attrs.field(default="Chunks")
     description: str = attrs.field(default="Chunk description...")
-    load: bool = attrs.field(default=True)
     load_for_plugin: Optional[str] = attrs.field(default=None)
     requirements: list[str] = attrs.field(factory=list)
+    required_modules: list[str] = attrs.field(factory=list)
+    module: str = attrs.field(default="")
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
@@ -3094,6 +3114,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self.chunks: NameSyncedContainer[ChunkBase] = NameSyncedContainer()
         self.chunks.set_owner(self)
 
+        self._modified = False
+
     def remove_chunk(self, chunk: str | ChunkHash):
         """
         Unload this module by deleting the associated chunk object
@@ -3102,6 +3124,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         if not (c := self.get_chunk(chunk)):
             return
         c.request_delete()
+        self._modified = True
 
     def add_chunk(self, c: ChunkBase):
         names = self.get_chunk_names()
@@ -3116,10 +3139,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         self.chunks.add(c, False)
         chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+        self._modified = True
         return c
 
     def clear(self):
         self.chunks.clear()
+        self._modified = True
 
     def holds_chunk(self, chunk: str | ChunkHash) -> bool:
         return self.get_chunk(chunk) is not None
@@ -3132,6 +3157,19 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def get_chunk_names(self):
         return self.chunks.get_my_names()
+
+    def is_modified(self):
+        return self._modified
+
+    def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
+        self._modified = True
+        return super().data_changed(notice)
+
+    def send_self(
+        self, alias: chunk_notice.ChunkNoticeAlias | None = None, data: Any = None
+    ) -> chunk_notice.ChunkNotice | None:
+        self._modified = True
+        return super().send_self(alias, data)
 
     def should_install_package(self, package_name: str) -> bool:
         """
@@ -3147,9 +3185,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return False
 
-    def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
-
-        return super().data_changed(notice)
+    def request_save(self):
+        raise NotImplementedError
 
     @abstractmethod
     def get_stage(self) -> Usd.Stage:

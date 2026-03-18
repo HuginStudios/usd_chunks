@@ -1,6 +1,5 @@
 from enum import IntFlag, auto
 from typing import List
-from usd_chunks import chunk_serial
 from pxr import Sdf
 
 
@@ -59,10 +58,18 @@ class ChunkFlags:
         Attributes:
             LABELED: If the param should have a label in the ui
             FILE_EXISTING: For FILE type params, this rule hints to the file browser that we can not create new files
+            PRIM_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdPrim selections
+            PROP_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdProperty selections
         """
 
         LABELED = 1
+
+        # FILE
         FILE_EXISTING = auto()
+
+        # LINEEDIT
+        PRIM_SELECTION = auto()
+        PROP_SELECTION = auto()
 
     class ParamType(_FlagRepr):
         """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
@@ -90,7 +97,6 @@ class ChunkFlags:
             LINEEDIT : The parameter is an editable stiring
             FILE : The parameter is a string value referring to a file
             STRING_MENU : The parameter is a string valued menu with multiple choices
-            CHECKBOX : The parameter is a bool valued checkbox
         """
 
         # Use 8 bit padding for types. This leaves room for 8 widget variants per type

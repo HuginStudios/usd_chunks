@@ -52,6 +52,7 @@ See [example](../example.md) for a more extensive example.
 
 """
 
+from attr import Attribute as Attribute
 from attrs import field
 
 from enum import IntFlag, Enum
@@ -59,7 +60,7 @@ from typing import Any, List, Optional, Sequence, TYPE_CHECKING
 
 from pxr import Usd, Sdf
 
-from usd_chunks.chunk_notice import ChunkNoticeAlias
+from usd_chunks.chunk_notice import ChunkNoticeAlias, PrimSelectionChangedNotice
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
@@ -296,6 +297,30 @@ class LineEdit(ChunkParamBase[str]):
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+
+        if self.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION):
+            self.set_prims(self.get_scene().get_selected_prims())
+
+    def set_prims(self, prims: List[Usd.Prim]):
+        self.value = ",".join([str(x.GetPath()) for x in prims])
+
+    def get_prims(self):
+        """
+        If this param is a list of prim paths (comma separated), then return the prims on the stage
+
+        Returns:
+            Iterable[Usd.Prim]: The prims
+        """
+        if not (stage := self.get_stage()):
+            return []
+        res = []
+        for pp in self.value.split(","):
+            if pp and (prm := stage.GetPrimAtPath(pp)) and prm.IsValid():
+                res.append(prm)
+        return res
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:

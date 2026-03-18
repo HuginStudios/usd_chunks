@@ -36,14 +36,22 @@ from typing import (
     Tuple,
     Type,
     TypeAlias,
+    TypeVar,
+    Literal,
+    TYPE_CHECKING,
+    overload,
 )
 
-from attrs import define, field, asdict
+from attrs import define, field
 from pxr import Sdf, Tf, Usd
 from typing_extensions import Self
 from usd_chunks import chunk_serial
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+if TYPE_CHECKING:
+    from usd_chunks import chunk_core
 
 
 class ChunkNoticeAlias(IntEnum):
@@ -92,6 +100,8 @@ class ChunkNoticeAlias(IntEnum):
     INPUT_CHANGED = auto()
     # Default notice for attributes that does not set an alias excplicitly
     ATTRIBUTE_CHANGED = auto()
+    # Specific ATTRIBUTE_CHANGED notice for when a 'value' attribute is changed
+    VALUE_CHANGED = auto()
     # Sent when the flags attribute changes
     FLAGS_CHANGED = auto()
     # Sent when the state attribute changes
@@ -159,6 +169,9 @@ class ChunkNotice(Tf.Notice):
         self.data = data
 
 
+NoticeT = TypeVar("NoticeT", bound=ChunkNotice)
+
+
 class ChunkNoticeRegistry(metaclass=RegistrySingleton):
     """
     Register a new notice. Easiest way to register a new notice is to wrap a class declaration with @chunk_notice, as:
@@ -217,7 +230,7 @@ def chunk_notice(alias: ChunkNoticeAlias):
         alias (ChunkNoticeAlias): The alias which maps to the new Tf.Notice class
     """
 
-    def _wrapper(cls: Type[ChunkNotice]):
+    def _wrapper(cls):
         ChunkNoticeRegistry().register(alias, cls)
         Tf.Type.Define(cls)
         return cls
@@ -228,22 +241,22 @@ def chunk_notice(alias: ChunkNoticeAlias):
 ### Chunk / Group / Param changed notices
 @chunk_notice(ChunkNoticeAlias.PARAM_CHANGED)
 class ParamChangeNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkParamBase"
 
 
 @chunk_notice(ChunkNoticeAlias.INPUT_CHANGED)
 class InputChangedNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkCommon"
 
 
 @chunk_notice(ChunkNoticeAlias.GROUP_CHANGED)
 class GroupChangeNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkGroupBase"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_CHANGED)
 class ChunkChangeNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkBase"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_EXECUTED)
@@ -253,23 +266,31 @@ class ChunkExecuteNotice(ChunkNotice):
 
 ### Create / Delete notices
 @chunk_notice(ChunkNoticeAlias.PARAM_ADDED)
-class ParamAddedNotice(ParamChangeNotice):
-    pass
+# class ParamAddedNotice(ParamChangeNotice):
+class ParamAddedNotice(ChunkNotice):
+    data: "chunk_core.ChunkCommon"
 
 
 @chunk_notice(ChunkNoticeAlias.PARAM_REMOVED)
-class ParamRemovedNotice(ParamChangeNotice):
-    pass
+# class ParamRemovedNotice(ParamChangeNotice):
+class ParamRemovedNotice(ChunkNotice):
+    data: "chunk_core.ChunkCommon"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_DELETED)
-class ChunkDeletedNotice(ChunkChangeNotice):
-    pass
+# class ChunkDeletedNotice(ChunkChangeNotice):
+class ChunkDeletedNotice(ChunkNotice):
+    data: "chunk_core.ChunkCommon"
 
 
 ### Attribute notices
 @chunk_notice(ChunkNoticeAlias.ATTRIBUTE_CHANGED)
 class AttributeChangeNotice(ChunkNotice):
+    data: "chunk_core.AttributeSender"
+
+
+@chunk_notice(ChunkNoticeAlias.VALUE_CHANGED)
+class ValueChangedNotice(AttributeChangeNotice):
     pass
 
 
@@ -286,17 +307,17 @@ class AttributeStateChangeNotice(AttributeChangeNotice):
 ### Chunk registry load / unload notices
 @chunk_notice(ChunkNoticeAlias.CHUNK_LOADED)
 class ChunkLoadedNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkBase"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_UNLOADED)
 class ChunkUnloadedNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkBase"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_CONFIG_CHANGED)
 class ChunkConfigChanged(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkConfig"
 
 
 ### UI Notices
@@ -307,18 +328,18 @@ class MenuActionNotice(ChunkNotice):
 
 @chunk_notice(ChunkNoticeAlias.WIDGET_CHANGED)
 class WidgetChangedNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkParamWidgetBase"
 
 
 ### UsdView selection notices
 @chunk_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED)
 class PrimSelectionChangedNotice(ChunkNotice):
-    pass
+    data: List[Usd.Prim]
 
 
 @chunk_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED)
 class PropSelectionChangedNotice(ChunkNotice):
-    pass
+    data: Usd.Property
 
 
 # Register externally manages notice just to map to the custom enum
@@ -387,7 +408,6 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
     return notice
 
 
-CallbackT: TypeAlias = Callable[[Optional[ChunkNotice], Any, Optional[Set[ChunkNotice]]], Optional[ChunkNotice]]
 ConnSetT: TypeAlias = weakref.WeakValueDictionary[int, "DagNode"]
 
 
@@ -455,22 +475,6 @@ class DagNode:
     def name(self):
         # Useful for debugging the solve
         return self.propagator.name if hasattr(self.propagator, "name") else self.propagator.__class__.__name__  # type: ignore
-
-    # def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
-    #     if name in ["name", "dirty"]:
-    #         return (False, value)
-    #     if name == "_connections":
-    #         return (True, {"owner": chunk_serial.serialize_Reference(self.get_owner()), "inputs": list(self.get_inputs())})
-    #         # return (True, list(self.get_inputs()))
-    #     return super().should_serialize_attribute(name, value)
-
-    # def post_serial_setattr(self, name, value):
-    #     if name == "_connections":
-    #         for i in value.get("inputs"):
-    #             self.add_dependency(i)
-    #         self.set_owner(value.get("owner"))
-    #     else:
-    #         return super().post_serial_setattr(name, value)
 
     @dirty.setter
     def dirty(self, val: bool):
@@ -806,6 +810,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                 self.add_dependency(dep)
         else:
             super().post_serial_setattr(name, value)
+
         self._blocked = False
 
     @abstractmethod
@@ -1066,7 +1071,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
 
     def add_callback(
         self,
-        method: Callable[[ChunkNotice, Any], Any] | Callable[[Self, ChunkNotice, Any], Any],
+        method: Callable[[NoticeT, Any], Any] | Callable[[Self, NoticeT, Any], Any],
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
@@ -1191,12 +1196,12 @@ class NoticeConnection(chunk_serial.Serializeable):
         self._listener: Optional[Tf.Notice.Listener] = None
 
         if inspect.ismethod(method):
-            self._method: Callable = weakref.WeakMethod(method, self._method_died)
+            self._method: Callable = weakref.WeakMethod(method, self._connection_broke)
         else:
-            self._method: Callable = weakref.ref(method, self._method_died)
+            self._method: Callable = weakref.ref(method, self._connection_broke)
 
-        self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender, self._sender_died) if sender else None
-        self._owner: Optional[weakref.ReferenceType] = weakref.ref(owner, self._owner_died) if owner else None
+        self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender, self._connection_broke) if sender else None
+        self._owner: Optional[weakref.ReferenceType] = weakref.ref(owner, self._connection_broke) if owner else None
 
         self.connect()
 
@@ -1217,7 +1222,7 @@ class NoticeConnection(chunk_serial.Serializeable):
 
     @owner.setter
     def owner(self, obj: Optional[ChunkNoticePropagator]):
-        self._owner = weakref.ref(obj, self._owner_died) if obj else None
+        self._owner = weakref.ref(obj, self._connection_broke) if obj else None
 
     @property
     def sender(self) -> Optional[Any]:
@@ -1225,7 +1230,7 @@ class NoticeConnection(chunk_serial.Serializeable):
 
     @sender.setter
     def sender(self, obj):
-        self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
+        self._sender = None if obj is None else weakref.ref(obj, self._connection_broke)
 
     def serialize_kwarg(self, name: str, default: Any) -> Any:
         if name == "method":
@@ -1239,6 +1244,14 @@ class NoticeConnection(chunk_serial.Serializeable):
         if name == "owner":
             return self.owner
         return super().serialize_kwarg(name, default)
+
+    def post_serial_setattr(self, name: str, value: Any) -> None:
+        print("POST SERIAL SETATTR", name, value)
+        return super().post_serial_setattr(name, value)
+
+    def post_serial(self, owner: Any):
+        print("POST SERIAL", self.get_method(), owner)
+        return super().post_serial(owner)
 
     def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
         # No attributes should be serialized as the attributes are serialized by kwargs
@@ -1302,13 +1315,7 @@ class NoticeConnection(chunk_serial.Serializeable):
         elif self.sender:
             self._listener = Tf.Notice.Register(notice, self.handle_callback, self.sender)
 
-    def _sender_died(self, ref):
-        self.disconnect()
-
-    def _owner_died(self, ref):
-        self.disconnect()
-
-    def _method_died(self, ref):
+    def _connection_broke(self, ref):
         self.disconnect()
 
     def disconnect(self):
@@ -1318,4 +1325,3 @@ class NoticeConnection(chunk_serial.Serializeable):
         if self._listener is not None:
             self._listener.Revoke()
             self._listener = None
-

@@ -3,12 +3,14 @@
 This module provides a framework for dynamically loading and managing custom UI modules
 """
 
-from pxr import Tf
+from pxr import Tf, Usd
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 
 from usd_chunks import chunk_registry, chunk_core, chunk_serial
 from plugins import chunk_qt
+
+from typing import List
 
 
 class UsdviewScene(chunk_core.SceneSender):
@@ -28,21 +30,34 @@ class UsdviewScene(chunk_core.SceneSender):
         selection_model.signalPropSelectionChanged.connect(self.propSelectionChangedCallback)
         super().__init__()
 
+    def request_save(self) -> bool:
+        reg = chunk_registry.ChunkRegistry()
+
+        if not chunk_qt.confirm_dial("Save scene?"):
+            return True
+
+        flt = "*" + chunk_serial.FileExtensions.SCENE
+        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+            reg.export_scene(file)
+            return True
+
+        return False
+
     def should_install_package(self, package_name: str) -> bool:
         return chunk_qt.confirm_dial(f"Install package dependency {package_name}?")
 
     def primSelectionChangedCallback(self, added, removed):
         if not added and not removed:
             return
-        return super().primSelectionChangedCallback(added, removed)
+        return super().primSelectionChangedCallback()
 
-    def get_stage(self):
-        return self.usdviewAPI.stage
+    def get_stage(self) -> Usd.Stage:
+        return self.usdviewAPI.stage  # type: ignore
 
-    def get_selected_prims(self):
+    def get_selected_prims(self) -> List[Usd.Prim]:
         return self.usdviewAPI.selectedPrims  # type: ignore
 
-    def get_selected_property(self):
+    def get_selected_property(self) -> Usd.Property:
         return self.usdviewAPI.property  # type: ignore
 
 
@@ -69,13 +84,16 @@ class ChunksPluginContainer(PluginContainer):
 
     def saveLayers(self, usdviewApi):
         reg = chunk_registry.ChunkLayerManager()
+        # flt = "*.usda *.usd *.usdc"
+        if not (path := chunk_qt.file_dial(directory=True)):
+            return
+
         for i in reg.chunk_layers.keys():
             layer = reg.get_layer(i)
             if not layer:
                 continue
-
             name = layer.GetDisplayName().split("_")[0]
-            path = f"C:/Users/Viktor/chunk_layers/{name}.usda"
+            path = f"{path}/{name}.usda"
             layer.Export(path)
 
     def saveScene(self, usdviewApi):
@@ -84,7 +102,15 @@ class ChunksPluginContainer(PluginContainer):
         if reg.get_scene_file():
             return reg.save_scene()
 
-        flt = " ".join([f"*{x}" for x in chunk_serial.scene_file_extensions()])
+        flt = "*" + chunk_serial.FileExtensions.SCENE
+        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+            reg.export_scene(file)
+            reg.set_scene_file(file)
+
+    def saveSceneAs(self, usdviewApi):
+        reg = chunk_registry.ChunkRegistry()
+
+        flt = "*" + chunk_serial.FileExtensions.SCENE
         if file := chunk_qt.file_dial(filter=flt, create_new=True):
             reg.export_scene(file)
             reg.set_scene_file(file)
@@ -92,9 +118,21 @@ class ChunksPluginContainer(PluginContainer):
     def openScene(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
 
-        flt = " ".join([f"*{x}" for x in chunk_serial.scene_file_extensions()])
+        flt = "*" + chunk_serial.FileExtensions.SCENE
         if file := chunk_qt.file_dial(filter=flt, create_new=False):
             reg.open_scene(file)
+
+    def importChunk(self, usdviewApi):
+        reg = chunk_registry.ChunkRegistry()
+
+        exts = (
+            chunk_serial.FileExtensions.CHUNK_MODULE,
+            chunk_serial.FileExtensions.PY_MODULE,
+        )
+
+        flt = " ".join([f"*{x}" for x in exts])
+        if file := chunk_qt.file_dial(filter=flt, create_new=False):
+            reg.import_chunk(file)
 
     def registerPlugins(self, plugRegistry, plugCtx) -> None:
         """Register the UI Creator plugin with the plugin registry.
@@ -113,8 +151,15 @@ class ChunksPluginContainer(PluginContainer):
         self._saveSceneCommand = plugRegistry.registerCommandPlugin(
             "ChunksPlugin.saveScene", "Save Scene", self.saveScene
         )
+        self._saveSceneAsCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.saveSceneAs", "Save Scene As", self.saveSceneAs
+        )
         self._openSceneCommand = plugRegistry.registerCommandPlugin(
             "ChunksPlugin.openScene", "Open Scene", self.openScene
+        )
+
+        self._importChunkCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.importChunk", "Import Module", self.importChunk
         )
 
         launch_chunks(plugCtx)
@@ -122,8 +167,12 @@ class ChunksPluginContainer(PluginContainer):
     def configureView(self, plugRegistry, plugUIBuilder) -> None:
         menu = plugUIBuilder.findOrCreateMenu("Chunks")
         menu.addItem(self._openModuleSettingsCommand)
+        menu.addItem(self._importChunkCommand)
+        menu.addSeparator()
         menu.addItem(self._saveLayersCommand)
+        menu.addSeparator()
         menu.addItem(self._saveSceneCommand)
+        menu.addItem(self._saveSceneAsCommand)
         menu.addItem(self._openSceneCommand)
 
 
