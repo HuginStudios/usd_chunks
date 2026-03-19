@@ -2,7 +2,6 @@ from usd_chunks import chunk
 import os
 
 def save_stage(owner: chunk.Chunk, notice, sender):
-
     dest_param = owner.get_param("destination")
     if not dest_param:
         return
@@ -26,8 +25,8 @@ def main():
 
     btn = chunk.Button("execute")
     myChunk.add_param(btn)
+    myChunk.add_callback(save_stage, btn)
 
-    myChunk.add_callback(save_stage, notice_alias=chunk.ChunkNoticeAlias.CHUNK_EXECUTED)
     return myChunk
 
 def config():

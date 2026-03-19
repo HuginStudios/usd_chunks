@@ -33,6 +33,7 @@ def main():
     sublayerChunk = chunk.Chunk("Sublayer")
 
     sublayer_fb = chunk.FileBrowser("sublayer_path", extensions=[".usd", ".usda", ".usdc", ".usdz"])
+    sublayer_fb.set_flag(chunk.ChunkFlags.ParamFlags.FILE_EXISTING)
     button = chunk.Button("import", "import")
 
     listGroup = chunk.ListGroup("imports")

@@ -418,7 +418,7 @@ def set_validators_enabled(enabled: bool):
     validators.set_disabled(not enabled)
 
 
-type_map = {
+usd_type_map = {
     "float": Slider,
     "int": (Spinbox, {"is_int": True}),
     "token": Menu,
@@ -455,7 +455,7 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
     """
     type_name = attr.GetTypeName()
 
-    t = type_map.get(str(type_name))
+    t = usd_type_map.get(str(type_name))
     if not t:
         return None
     if isinstance(t, tuple):
@@ -467,3 +467,4 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
 
 def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | None:
     return LineEdit.from_usd_rel(attr, *args, **kwargs)
+

@@ -83,7 +83,7 @@ def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: 
 @nice_print
 def listChanged(owner, notice, sender):
     for i in owner.get_params():
-        if isinstance(i, chunk_core.ChunkParamBase):
+        if isinstance(i, chunk.ChunkParamBase):
             owner.get_logger().info(i.name, i.value, isinstance(i, chunk_core.ProxyParam))
 
 

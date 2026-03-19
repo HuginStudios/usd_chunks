@@ -186,9 +186,11 @@ class _ConfigTransformer(ast.NodeTransformer):
         self._globs = globs.copy()
         self._found_main = False
 
+    def _get_node_source(self, node):
+        return ast.get_source_segment(self._code, node)
+
     def _exec_node(self, node):
-        src = ast.get_source_segment(self._code, node)
-        if not src:
+        if not (src := self._get_node_source(node)):
             return node
         try:
             dat = compile(src, filename="<ast>", mode="exec")
@@ -204,6 +206,8 @@ class _ConfigTransformer(ast.NodeTransformer):
                 self._module.config = func()
         if node.name == "main":
             self._found_main = True
+            if src := self._get_node_source(node):
+                self._module._checksum = chunk_serial.compute_checksum(src)
         return node
 
     def visit_Import(self, node: ast.Import) -> Any:
@@ -221,7 +225,13 @@ class _ConfigTransformer(ast.NodeTransformer):
         return node
 
 
-class ChunkLazyConfigLoader(importlib.abc.SourceLoader):
+def _pre_load_module(source: str, globs: dict, module: ChunkModule) -> _ConfigTransformer:
+    transformer = _ConfigTransformer(source, globs, module)
+    transformer.visit(ast.parse(source))
+    return transformer
+
+
+class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
     def __init__(self, fullname: str, path: str, loader, mod: ChunkModule):
         self.fullname = fullname
         self.path = path
@@ -243,8 +253,7 @@ class ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         source_bytes = self.get_data(self.get_filename(self.fullname))
         source = source_bytes.decode("utf-8")
 
-        transformer = _ConfigTransformer(source, module.__dict__, self._module)
-        transformer.visit(ast.parse(source_bytes))
+        transformer = _pre_load_module(source, module.__dict__, self._module)
         self._found_main = transformer._found_main
 
         self._loader.exec_module(module)
@@ -252,16 +261,13 @@ class ChunkLazyConfigLoader(importlib.abc.SourceLoader):
 
 class ChunkModule(chunk_serial.Serializeable):
     """
-    A class used by ChunkRegistry for managing chunk modules
+    A class used by ChunkRegistry for managing chunk modules. Modules are loaded at runtime using the
+    ChunkLazyConfigLoader
 
     Args:
         module (ModuleType | None): The loaded chunk module
         module_name (str): The name of the module
         module_file (str): The original, absolute, path to the python module
-
-    Attributes:
-        loaded_chunk (chunk.Chunk | None): The loaded chunk retrieved from running module.main()
-        loaded (bool): If the module loaded successfully
     """
 
     def __init__(
@@ -276,11 +282,20 @@ class ChunkModule(chunk_serial.Serializeable):
 
         self.loaded = False
         self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
-        self.config: ChunkConfig = ChunkConfig()
         self.func: Optional[Callable[[], ChunkBase | List[ChunkBase]]] = None
 
         self._should_serialize_chunks = True
 
+        # This is set by the _ConfigTransformer when parsing the module (before loading) if the module
+        # defines a config() function
+        self.config: ChunkConfig = ChunkConfig()
+        # This is set by the _ConfigTransformer when parsing the module (before loading). The value is
+        # the checksum of the main() function, used for comparing if it has changed when loading a scene
+        # file
+        self._checksum: int = -1
+
+        # Call _exec_module to lazily load the module. This runs the _ConfigTransformer. If module_file is .py and
+        # module is not a RuntimeModule, _exec_module will create a _ChunkConfigLazyLoader
         self._exec_module()
 
     @staticmethod
@@ -345,11 +360,19 @@ class ChunkModule(chunk_serial.Serializeable):
                 self._add_chunk(c)
             return
 
+        if name == "_checksum" and value != self._checksum:
+            logger.warning(
+                f"main() funcion of {self.module_name} has changed since serializing. This may lead to unexpected behaviour"
+            )
+            return
+
         return super().post_serial_setattr(name, value)
 
     def should_serialize_attribute(self, name: str, value: Any) -> chunk_serial.Tuple[bool, Any]:
         if name == "loaded_chunks" and self._should_serialize_chunks:
             return (True, list(self.loaded_chunks.values()))
+        if name == "_checksum":
+            return (True, value)
 
         return (False, None)
 
@@ -370,15 +393,12 @@ class ChunkModule(chunk_serial.Serializeable):
     def _exec_module(self):
         if type(self.module) is chunk_serial.RuntimeModule:
             if not self.loaded:
-                transformer = _ConfigTransformer(self.module._code, self.module.__dict__, self)
-                transformer.visit(ast.parse(self.module._code))
-
+                # Instead of using the ChunkLazyConfigLoader, we can parse the runtime module directly
+                # using the _pre_load_module. This will set self.config and self._checksum
+                transformer = _pre_load_module(self.module._code, self.module.__dict__, self)
                 if not transformer._found_main:
                     logger.warning(f"main function is not defined in module {self.module_name}. Skipping")
                     return False
-
-            # if self.module_name not in sys.modules:
-            #     sys.modules[self.module_name] = self.module
             sys.modules[self.module_name] = self.module
 
         elif not self.module_file.exists():
@@ -391,7 +411,7 @@ class ChunkModule(chunk_serial.Serializeable):
                 logger.warning(f"Module spec or loader failed for module {self.module_name}. Skipping")
                 return False
 
-            loader = ChunkLazyConfigLoader(self.module_name, str(self.module_file), spec.loader, self)
+            loader = _ChunkLazyConfigLoader(self.module_name, str(self.module_file), spec.loader, self)
             spec.loader = loader
             module = util.module_from_spec(spec)
 

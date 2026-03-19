@@ -1,4 +1,5 @@
 """
+## Encoding
 Chunk Serial is the interface for serializing Chunks and related classes. Depending on the extension,
 The chunks are encoded as JSON (.chum, .scene, .json), or as string (.py). The Serializeable class may be
 extended by a class to modify how and what to encode. .chum and .py extensions represent a chunk module,
@@ -8,6 +9,29 @@ modules must already exists in the environment. Another difference is that the m
 loaded chunks, meaning they do not save any modified values. A scene file on the other hand does encode
 all loaded chunks and their respective param values, connections and callbacks.
 
+!!! warning
+    One source of confusion atm as that if a module used in a saved scene file is modified after being
+    serialized, the result of loading the scene file may not be 1:1 with what one would expect. The reasons being:
+
+    1. When loading a serialized scene file, all chunks are recreated from scratch using the saved states - NOT
+        using the main() function of the module
+    2. All constructors are serialized, even those of attributes and arguments to __init__. If a modules main
+        function changed after serialization by f.e modifying the arguments passed to an add_callback(),
+        loading the scene file will recreate the chunks from how they were before the changes, and the callback
+        may not behave as expected
+    3. As a scene file does not serialize the modules in their entirety, refrences to functions of the modules
+        will always use the functions defined in the module.
+
+    Because of this, scene files may break atm if modules main() functions are changed after serialization.
+
+TODO: This behaviour is perhaps not what one would like... One alternative would be to run load() on the
+loaded modules, and instead set the attributes of the chunks post-init. However, that could lead to other
+complications, such as how to recreate connections between different modules. This could also be confusing,
+as the saved scene would not necessarily look the same when loaded. Another alternative is to also embed the
+modules when serializing. For now though, we just compare the hash of the main() function, and show a warning
+if it has changed since serializing
+
+## Decoding
 Decoding is done with the _decodeChunk object hook with json.dumps and translates any SerializedObject back in
 to a python object. In most cases, the result of the decode contains ClassConstructors and
 CallableConstructors. Calling construct() on these will create the actual python object. The construct() will
@@ -597,6 +621,22 @@ def serialize_json(data: Dict[str, Serializeable], save_modules=True) -> str:
     return json.dumps(data, cls=ChunkEncoder, indent=4)
 
 
+def serialize_source(obj: Any):
+    """
+    Serialize the source code of an object. The obj should be a module, class, method, function, traceback, frame,
+    or code object.
+
+    Args:
+        obj (Any): The object which to get the source code from
+
+    Returns:
+        str: The source code of the object
+    """
+    return inspect.getsource(obj)
+
+def compute_checksum(obj: str) -> int:
+    return zlib.adler32(obj.encode())
+
 def serialize_py(mod: types.ModuleType) -> str:
     """
     Serialize a module to python by extracting the source code
@@ -610,7 +650,7 @@ def serialize_py(mod: types.ModuleType) -> str:
 
     if isinstance(mod, RuntimeModule):
         return mod._code
-    return inspect.getsource(mod)
+    return serialize_source(mod)
 
 
 def file_extensions():

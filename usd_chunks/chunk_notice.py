@@ -112,7 +112,6 @@ class ChunkNoticeAlias(IntEnum):
     GROUP_CHANGED = auto()  # Sent when a group changes. This includes nested groups and param changes
 
     CHUNK_CHANGED = auto()  # Similar to GROUP_CHANGED but only for chunks
-    CHUNK_EXECUTED = auto()  # Sent when a chunks execute() function has been called
 
     # A chunk object was deleted. Use instead of PARAM_REMOVED for most applications, as PARAM_REMOVED only sends when
     # a param was added as a child to a NamedSyncedContainer (group / chunk / vector). CHUNK_DELETED on the other hand, sends whenever
@@ -255,12 +254,6 @@ class GroupChangeNotice(ChunkNotice):
 @chunk_notice(ChunkNoticeAlias.CHUNK_CHANGED)
 class ChunkChangeNotice(ChunkNotice):
     data: "chunk_core.ChunkBase"
-
-
-@chunk_notice(ChunkNoticeAlias.CHUNK_EXECUTED)
-class ChunkExecuteNotice(ChunkNotice):
-    pass
-
 
 ### Create / Delete notices
 @chunk_notice(ChunkNoticeAlias.PARAM_ADDED)

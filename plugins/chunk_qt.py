@@ -12,6 +12,7 @@ from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
 from enum import Enum
 import os
+import re
 
 
 class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
@@ -974,6 +975,22 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         return widget
 
 
+class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self._mappings = {}
+
+    def add_mapping(self, pattern, format):
+        self._mappings[pattern] = format
+
+    def highlightBlock(self, text):
+        for pattern, format in self._mappings.items():
+            for match in re.finditer(pattern, text):
+                start, end = match.span()
+                self.setFormat(start, end - start, format)
+
+
 class ChunkModuleLoader(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1002,23 +1019,25 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         menu = QtWidgets.QMenu()
 
-        actions: Dict[QtGui.QAction, chunk_registry.ChunkModule] = {}
+        # actions: Dict[QtGui.QAction, chunk_registry.ChunkModule] = {}
+        export_action = QtGui.QAction("export")
+        inspect_action = QtGui.QAction("inspect")
 
-        actions[QtGui.QAction("export")] = mod
-
-        menu.addActions(list(actions.keys()))
+        menu.addActions([export_action, inspect_action])
 
         res = menu.exec_(event.globalPos())
 
         if not res:
             return
 
-        mod = actions[res]
-        if res.text() == "export":
+        if res == export_action:
             exts = (chunk_serial.FileExtensions.CHUNK_MODULE, chunk_serial.FileExtensions.PY_MODULE)
             flt = " ".join([f"*{x}" for x in exts])
             if file := file_dial(flt, True):
                 mod.export(file)
+        elif res == inspect_action and mod.module:
+            src = chunk_serial.serialize_source(mod.module)
+            python_source_dial(src)
 
         return super().contextMenuEvent(event)
 
@@ -1094,6 +1113,36 @@ def confirm_dial(msg) -> bool:
     dial = QtWidgets.QMessageBox(text=msg)
     dial.setStandardButtons(QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Yes)
     return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
+
+
+def python_source_dial(src: str):
+    _editor = QtWidgets.QPlainTextEdit(src, readOnly=True)
+    hl = PythonSyntaxHighlighter(_editor.document())
+
+    class_format = QtGui.QTextCharFormat()
+    class_format.setFontWeight(QtGui.QFont.Weight.Bold)
+    class_format.setForeground(QtCore.Qt.GlobalColor.blue)
+    pattern = r"^\s*class\s+\w+\(.*$"
+    hl.add_mapping(pattern, class_format)
+
+    function_format = QtGui.QTextCharFormat()
+    function_format.setFontItalic(True)
+    function_format.setForeground(QtCore.Qt.GlobalColor.blue)
+    pattern = r"^\s*def\s+\w+\s*\(.*\)\s*:\s*$"
+    hl.add_mapping(pattern, function_format)
+
+    comment_format = QtGui.QTextCharFormat()
+    comment_format.setBackground(QtGui.QColor("#77ff77"))
+    hl.add_mapping(r"^\s*#.*$", comment_format)
+
+    font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+    _editor.setFont(font)
+
+    dial = QtWidgets.QDialog()
+    dial_layout = QtWidgets.QHBoxLayout()
+    dial.setLayout(dial_layout)
+    dial_layout.addWidget(_editor)
+    return dial.exec()
 
 
 def file_dial(filter: Optional[str] = None, create_new=False, directory=False):
