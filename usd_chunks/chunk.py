@@ -60,7 +60,7 @@ from typing import Any, List, Optional, Sequence, TYPE_CHECKING
 
 from pxr import Usd, Sdf
 
-from usd_chunks.chunk_notice import ChunkNoticeAlias, PrimSelectionChangedNotice
+from usd_chunks.chunk_notice import ChunkNoticeAlias
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,

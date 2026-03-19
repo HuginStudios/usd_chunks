@@ -51,7 +51,7 @@ from pxr import Sdf, Usd
 from typing_extensions import Self, dataclass_transform
 
 from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_serial
-from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.chunk_flags import ChunkFlags, _FlagRepr
 
 
 _ATTRS_SUPPORT_CONVERTER = ATTRS_VERSION >= (24, 1)  # type: ignore
@@ -1923,8 +1923,8 @@ class ChunkCommon(AttributesBase):
     )
 
     # Type specific flags, can be used for setting custom flags.
-    flags: IntFlag = attrs.field(
-        default=ChunkFlags.ParamFlags(0),
+    flags: _FlagRepr = attrs.field(
+        default=_FlagRepr(0),
         metadata=AttributeMetadata(sender_alias=chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED),
     )  # type: ignore
 
@@ -2125,12 +2125,12 @@ class ChunkCommon(AttributesBase):
         """
         self.flags &= ~flag
 
-    def has_flag(self, flag: IntFlag) -> bool:
+    def has_flag(self, flag: _FlagRepr) -> bool:
         """
         Check if a flag is enabled
 
         Args:
-            flag (IntFlag): The flag to check
+            flag (_FlagRepr): The flag to check
 
         Returns:
             bool: If the flag is enabled or not

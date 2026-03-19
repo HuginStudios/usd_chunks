@@ -18,19 +18,17 @@ import sys
 from pathlib import Path
 from importlib import util
 from collections import defaultdict
-from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Generic, TypeVar, overload
 
 from pxr import Sdf, Usd, UsdUtils
 
-from usd_chunks import chunk, chunk_serial
+from usd_chunks import chunk_serial
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_core import SceneSender, ChunkBase, ChunkCommon, ChunkConfig, ChunkHash
 
 if TYPE_CHECKING:
     import types
-    from usd_chunks.chunk_core import ChunkCommon, ChunkConfig, ChunkHash
 
 import ast
 import importlib.abc
@@ -238,7 +236,7 @@ class ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         with open(path, "rb") as f:
             return f.read()
 
-    def load_module(self, fullname: str) -> ModuleType:
+    def load_module(self, fullname: str) -> types.ModuleType:
         return self._loader.load_module(fullname)
 
     def exec_module(self, module: types.ModuleType) -> None:
@@ -268,7 +266,7 @@ class ChunkModule(chunk_serial.Serializeable):
 
     def __init__(
         self,
-        module: Optional[ModuleType] = None,
+        module: Optional[types.ModuleType] = None,
         module_name: str = "",
         module_file: Path | str = Path(),
     ):
@@ -277,9 +275,9 @@ class ChunkModule(chunk_serial.Serializeable):
         self.module_file = Path(module_file)
 
         self.loaded = False
-        self.loaded_chunks: weakref.WeakValueDictionary[str, chunk.Chunk] = weakref.WeakValueDictionary()
-        self.config: ChunkConfig = chunk.DefaulConfig()
-        self.func: Optional[Callable[[], chunk.Chunk | List[chunk.Chunk]]] = None
+        self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
+        self.config: ChunkConfig = ChunkConfig()
+        self.func: Optional[Callable[[], ChunkBase | List[ChunkBase]]] = None
 
         self._should_serialize_chunks = True
 
@@ -355,8 +353,8 @@ class ChunkModule(chunk_serial.Serializeable):
 
         return (False, None)
 
-    def _add_chunk(self, c: chunk.Chunk):
-        if not (isinstance(c, chunk.Chunk)):
+    def _add_chunk(self, c: ChunkBase):
+        if not (isinstance(c, ChunkBase)):
             logger.warning(f"main() in module: {self.module_name} does not return a Chunk object")
             self.loaded = False
             return False
@@ -454,7 +452,7 @@ class ChunkModule(chunk_serial.Serializeable):
         self.loaded = True
         return True
 
-    def load(self) -> List[chunk.Chunk]:
+    def load(self) -> List[ChunkBase]:
         """
         Loads the module. This ensures that the module is properly created. If Already loaded, it's preffered to
         call create() directly, to skip some initialization stuff that should only be called once
@@ -484,7 +482,7 @@ class ChunkModule(chunk_serial.Serializeable):
             c.request_delete()
         self.loaded = False
 
-    def create(self) -> List[chunk.Chunk]:
+    def create(self) -> List[ChunkBase]:
         """
         Runs the main function from the module and adds the chunks returned from the main function to the
         ChunkRegistry scene
@@ -880,7 +878,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
             c = c_cnstr.construct()
 
-            if not isinstance(c, chunk.ChunkCommon):
+            if not isinstance(c, ChunkCommon):
                 logger.warning(f"Could not load layer {rel_layer_path}. The referenced chunk was not found")
                 continue
 
@@ -1068,7 +1066,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
         self.chunk_layers.clear()
 
-    def clear_layer(self, layer_id: str | chunk.ChunkCommon):
+    def clear_layer(self, layer_id: str | ChunkBase):
         """
         Clear a layer and remove from sublayer list
 
@@ -1128,7 +1126,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
     def _flags_changed(self, notice, sender):
         c = sender
-        if not isinstance(c, chunk.Chunk):
+        if not isinstance(c, ChunkBase):
             return
 
         if c not in self.chunk_layers:
