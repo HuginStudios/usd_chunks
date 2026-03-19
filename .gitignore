@@ -5,3 +5,5 @@ scripts/user
 .mypy*
 .env
 _installed_deps
+dist
+*.egg-info
