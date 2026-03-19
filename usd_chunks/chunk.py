@@ -116,7 +116,7 @@ class Chunk(ChunkBase):
     """Chunk is the top level container, holding params and groups which in turn make up the final, displayed chunk."""
 
     # Override defaults
-    flags: ChunkFlags.GroupFlags = field(
+    flags: IntFlag = field(
         default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
 
@@ -128,7 +128,7 @@ class Group(ChunkGroupBase):
     """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
 
     # Override defaults
-    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+    flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
     def get_notice_alias(self):
         return ChunkNoticeAlias.GROUP_CHANGED
@@ -138,7 +138,7 @@ class ListGroup(ChunkListGroupBase):
     """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
 
     # Override defaults
-    flags: ChunkFlags.GroupFlags = field(
+    flags: IntFlag = field(
         default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED | ChunkFlags.GroupFlags.LIST
     )
 
@@ -150,7 +150,7 @@ class Vector(ChunkVectorBase):
     """A Vector is basically a group which holds a set number of parameters"""
 
     # Override defaults
-    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+    flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
     def get_notice_alias(self) -> ChunkNoticeAlias:
         return ChunkNoticeAlias.GROUP_CHANGED
@@ -242,7 +242,7 @@ class Menu(ChunkParamBase[str]):
         menu_items: A list of items to display in the menu
     """
 
-    flags: ChunkFlags.ParamFlags = field(default=ChunkFlags.ParamFlags.LABELED)
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     menu_items: Sequence[str] = field(factory=list)
 
@@ -407,9 +407,9 @@ class Custom(ChunkParamBase):
         return ChunkFlags.ParamType.CUSTOM
 
 
-####################
-# STATIC FUNCTIONS #
-####################
+#################
+# API FUNCTIONS #
+#################
 
 
 def set_validators_enabled(enabled: bool):

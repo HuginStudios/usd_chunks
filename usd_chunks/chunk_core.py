@@ -1923,8 +1923,8 @@ class ChunkCommon(AttributesBase):
     )
 
     # Type specific flags, can be used for setting custom flags.
-    flags: _FlagRepr = attrs.field(
-        default=_FlagRepr(0),
+    flags: IntFlag = attrs.field(
+        default=IntFlag(0),
         metadata=AttributeMetadata(sender_alias=chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED),
     )  # type: ignore
 
@@ -2125,12 +2125,12 @@ class ChunkCommon(AttributesBase):
         """
         self.flags &= ~flag
 
-    def has_flag(self, flag: _FlagRepr) -> bool:
+    def has_flag(self, flag: IntFlag) -> bool:
         """
         Check if a flag is enabled
 
         Args:
-            flag (_FlagRepr): The flag to check
+            flag (IntFlag): The flag to check
 
         Returns:
             bool: If the flag is enabled or not
