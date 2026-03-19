@@ -127,18 +127,44 @@ class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
         return self.setText(text)
 
 
-class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QLineEdit):
+class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidget):
     def __init__(self, param: chunk.LineEdit):
         super().__init__(param)
+
+        self.button = QtWidgets.QToolButton(self)
+        self.button.setText("Pin Selection")
+        self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("pin"))))
+        self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+
+        self.button.clicked.connect(self.pin_prim)
+
+        self.text = QtWidgets.QLineEdit(self)
+        self.text.editingFinished.connect(self.value_changed)
+        self.main_layout = QtWidgets.QHBoxLayout()
+
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.addWidget(self.text)
+        self.main_layout.addWidget(self.button)
+        self.setLayout(self.main_layout)
+
+        self.button.setHidden(not self.param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION))
+
         self.setup_chunk_widget()
 
-        self.editingFinished.connect(self.value_changed)
+    def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: chunk.ChunkParamBase):
+        if notice.alias == chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED and notice.data.value:
+            self.button.setHidden(ChunkFlags.ParamFlags.PRIM_SELECTION not in notice.data.value)
+
+        return super().handle_param_changed(notice, sender)
+
+    def pin_prim(self):
+        self.param.set_prims(self.param.get_scene().get_selected_prims())
 
     def get_value(self):
-        return self.text()
+        return self.text.text()
 
     def set_value(self, value):
-        return self.setText(str(value))
+        return self.text.setText(str(value))
 
 
 class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
@@ -148,7 +174,7 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         super().__init__(param)
 
         self.button = QtWidgets.QToolButton(self)
-        self.button.setText("Test button")
+        self.button.setText("Browse")
 
         self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("folder_open"))))
 
@@ -164,8 +190,6 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         if not self.param:
             return
 
-        dial = QtWidgets.QFileDialog()
-
         pattern = ""
         if self.param.pattern:
             pattern = self.param.pattern
@@ -176,18 +200,9 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         if self.param.extensions:
             pattern = " ".join([pattern + x for x in self.param.extensions])
 
-        dial.setNameFilter(pattern)
-
-        if self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING):
-            dial.setFileMode(dial.FileMode.ExistingFile)
-
-        if dial.exec():
-            sel = dial.selectedFiles()
-            if not sel:
-                return
-
-            self.set_value(sel[0])
-            self.ValueChanged.emit(sel[0])
+        if file := file_dial(pattern, not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)):
+            self.set_value(file)
+            self.ValueChanged.emit(file)
 
     def get_value(self):
         return self.text.text()
@@ -333,14 +348,14 @@ class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
 
 
 class LabeledWidget(QtWidgets.QWidget):
-    def __init__(self, widget: ChunkParamWidgetBase[chunk_core.ParamT], parent=None):
+    def __init__(self, widget, parent=None):
         super().__init__(parent)
 
         self.vlayout = QtWidgets.QVBoxLayout()
         self.vlayout.setContentsMargins(0, 0, 0, 0)
         self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
-        self.widget = widget
+        self.widget: ChunkParamWidgetBase = widget
         self.label = QtWidgets.QLabel()
         self.label.setHidden(True)
 

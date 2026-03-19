@@ -305,6 +305,12 @@ class LineEdit(ChunkParamBase[str]):
             self.set_prims(self.get_scene().get_selected_prims())
 
     def set_prims(self, prims: List[Usd.Prim]):
+        """
+        Sets the value of the param to a list of prim paths
+
+        Args:
+            prims (List[Usd.Prim]): The list of prims to set
+        """
         self.value = ",".join([str(x.GetPath()) for x in prims])
 
     def get_prims(self):

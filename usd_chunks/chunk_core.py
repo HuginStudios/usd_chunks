@@ -104,7 +104,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.WIDGET_CHANGED
 
-    def handle_param_changed(self, notice: chunk_notice.ChunkNotice, sender: "ChunkParamBase"):
+    def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: "ChunkParamBase"):
         """
         callback for handling changes to the parameter. Currently implements changes to
         value, name, label and icon attributes
@@ -122,7 +122,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         elif attrname in ["name", "label"]:
             self.set_label(self.param.get_label())
 
-        elif attrname == "icon":
+        elif attrname == "icon" and isinstance(value, str):
             self.set_icon(value)
 
         self.send_self(data=notice.data)
