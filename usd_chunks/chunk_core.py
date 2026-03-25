@@ -43,6 +43,9 @@ from typing import (
     Union,
     Sequence,
     get_origin,
+    TypeGuard,
+    TypeAlias,
+    overload,
 )
 
 import attrs
@@ -50,6 +53,7 @@ from attr import _make as attrMake
 from pxr import Sdf, Usd
 from typing_extensions import Self, dataclass_transform
 
+from usd_chunks.chunk_notice import Predicate
 from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_serial
 from usd_chunks.chunk_flags import ChunkFlags
 
@@ -1702,7 +1706,13 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         else:
             raise ValueError(f"Failed to update old name {old_name} in container")
 
-    def get_param(self, key: Union[ChunkHash, str], default: Any = None) -> Optional[ChunkT]:
+    @overload
+    def get_param(self, key: Union[ChunkHash, str]) -> Optional[ChunkT]: ...
+
+    @overload
+    def get_param(self, key: Union[ChunkHash, str], predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
+
+    def get_param(self, key: Union[ChunkHash, str], predicate: Optional[Predicate[ValueT]] = None):
         """Retrieve a param from this datastructure. Key can be either a ChunkCommon (It hashes to the HashVal),
         an explicit HashVal (ChunkObject._hashable) or a name.
 
@@ -1710,10 +1720,24 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
             ChunkCommon | None: The found Chunk object if found
         """
         if isinstance(key, str):
-            return self.get_by_name(key, default)
-        return self._params.get(key, default)
+            res = self.get_by_name(key)
+        else:
+            res = self._params.get(key)
 
-    def get_by_name(self, name: str, default: Any = None, proxy_index: Optional[int] = None) -> Optional[ChunkT]:
+        if predicate is None:
+            return res
+
+        if not predicate(res):
+            raise ValueError(f"get_param predicate {predicate} failed for parameter {key}")
+        return res
+
+    @overload
+    def get_by_name(self, name: str) -> Optional[ChunkT]: ...
+
+    @overload
+    def get_by_name(self, name: str, predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
+
+    def get_by_name(self, name: str, predicate: Optional[Predicate[ValueT]] = None):
         """
         Excplicitly retrieve a param by its name. In order to find nested children, one can
         pass the hierarchy to the 'name' argument by adding a dot (.) for each level in the hierarchy:
@@ -1743,11 +1767,17 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
                 cm = cm.maps[1]  # type: ignore
                 g = hierarchy[idx]
 
-            if key := cm.get(g, default):
-                return self._params.get(key, default)
+            if key := cm.get(g):
+                res = self._params.get(key)
+                if not predicate or predicate(res):
+                    return res
+                raise ValueError(f"get_by_name predicate {predicate} failed for parameter {key}")
 
-        if key := self._names.get(name, default):
-            return self.get_param(key, default)
+        if key := self._names.get(name):
+            res = self.get_param(key)
+            if not predicate or predicate(res):
+                return res
+            raise ValueError(f"get_by_name predicate {predicate} failed for parameter {key}")
 
     def get_names(self) -> Tuple[str, ...]:
         """Get all names of this layer and all child layers
@@ -1765,21 +1795,39 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         """
         return tuple(self._names.maps[0].keys())
 
-    def get_params(self) -> Tuple[ChunkT, ...]:
+    @overload
+    def get_params(self) -> Tuple[ChunkT, ...]: ...
+
+    @overload
+    def get_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
+
+    def get_params(self, predicate: Optional[Predicate[ValueT]] = None):
         """Get all params on this layer and under
 
         Returns:
             Tuple[ChunkCommon, ...]: The params
         """
-        return tuple(self._params.values())
+        ps = self._params.values()
 
-    def get_my_params(self) -> Tuple[ChunkT, ...]:
+        if not predicate:
+            return tuple(ps)
+        return tuple(filter(predicate, ps))
+
+    @overload
+    def get_my_params(self) -> Tuple[ChunkT, ...]: ...
+    @overload
+    def get_my_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
+
+    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None):
         """Get all params on this layer only
 
         Returns:
             Tuple[ChunkCommon, ...]: The params
         """
-        return tuple(self._params.maps[0].values())
+        ps = self._params.maps[0].values()
+        if not predicate:
+            return tuple(ps)
+        return tuple(filter(predicate, ps))
 
     def send_added(self, obj: "ChunkCommon | ProxyParam"):
         """
@@ -1827,7 +1875,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         Returns:
             ChunkCommon | None: The pop'ed object, or None if the object is unavailable
         """
-        obj = self.get_param(key, None)
+        obj = self.get_param(key)
         if obj:
             del self[obj]
             return obj
@@ -2512,7 +2560,13 @@ class ChunkContainerBase(ChunkCommon):
 
         super().request_delete()
 
-    def get_param(self, param: ChunkCommon | str | HashVal) -> Optional[ChunkCommon]:
+    @overload
+    def get_param(self, param: ChunkCommon | str | HashVal) -> Optional[ChunkCommon]: ...
+
+    @overload
+    def get_param(self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
+
+    def get_param(self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]] = None):
         """
         Get a parameter or group inside of this group. A string can be passed to get a parameter by name.
         The string can also be the explicit hierarchy of a param by spacing the hiearchy levels with a dot
@@ -2521,33 +2575,52 @@ class ChunkContainerBase(ChunkCommon):
         myChunk.get_param("groupA.groupB.param")
         ```
 
+        A Predicate function can be used to narrot the result type and validates the result:
+        ``` py
+        p = myChunk.get_param("aSlider", chunk.is_ins(chunk.Slider))
+        p.value = 10
+        ```
+
         Args:
             param (ChunkParamBase | str): A parameter to find. If string is passed, look for param with name
+            predicate (Optional[Predicate]): A predicate function used to check and narrow the type of the parameter
 
         Returns:
             ChunkParam: The found parameter or None if not found
         """
 
         if isinstance(param, (ChunkCommon, HashVal, ProxyParam)):
-            return self.children.get_param(param)
+            return self.children.get_param(param, predicate)
         elif isinstance(param, str):
-            return self.children.get_by_name(param)
+            return self.children.get_by_name(param, predicate)
 
-    def get_params(self) -> Tuple[ChunkCommon, ...]:
+    @overload
+    def get_params(self) -> Tuple[ChunkCommon, ...]: ...
+
+    @overload
+    def get_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
+
+    def get_params(self, predicate: Optional[Predicate[ValueT]] = None):
         """Get all parameters in this group including nested
 
         Returns:
             Tuple[ChunkParamBase]: All parameters in this group
         """
-        return self.children.get_params()
+        return self.children.get_params(predicate)
 
-    def get_my_params(self) -> Tuple[ChunkCommon, ...]:
+    @overload
+    def get_my_params(self) -> Tuple[ChunkCommon, ...]: ...
+
+    @overload
+    def get_my_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
+
+    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None):
         """Get all parameters added directly to this group
 
         Returns:
             Tuple[ChunkParamBase]: All parameters owned by this group
         """
-        return self.children.get_my_params()
+        return self.children.get_my_params(predicate)
 
     def check_hierarchy(self):
         """
@@ -2825,7 +2898,16 @@ class ChunkListGroupBase(ChunkGroupBase):
     size: int = attrs.field(default=0)
     proxy_params: List[ChunkGroupBase] = attrs.field(factory=list, init=False)
 
-    def get_indexed_param(self, param: ChunkCommon | str | HashVal, index: int) -> ChunkCommon | None:
+    @overload
+    def get_indexed_param(self, param: ChunkCommon | str | HashVal, index: int) -> Optional[ChunkCommon]: ...
+    @overload
+    def get_indexed_param(
+        self, param: ChunkCommon | str | HashVal, index: int, predicate: Optional[Predicate[ValueT]] = None
+    ) -> ValueT: ...
+
+    def get_indexed_param(
+        self, param: ChunkCommon | str | HashVal, index: int, predicate: Optional[Predicate[ValueT]] = None
+    ):
         """
         Get a param from the proxy list. The index should be an index of the proxy_params list. If found, The returned
         value is a ProxyParam referencing the param input, at index.
@@ -2841,12 +2923,18 @@ class ChunkListGroupBase(ChunkGroupBase):
             IndexError:
                 If the index is out of bounds
         """
-        if len(self.proxy_params) == 0:
+
+        if len(self.proxy_params) == 0 and not predicate:
             return
 
         if index > len(self.proxy_params):
             raise IndexError("Index out of range")
-        return self.proxy_params[index].get_param(param)
+
+        res = self.proxy_params[index].get_param(param)
+        if not predicate or predicate(res):
+            return res
+
+        raise ValueError(f"Predicate {predicate} failed for get_indexed_param with index {index}")
 
     def post_serial_setattr(self, name, value):
         if name == "proxy_params":
@@ -2878,14 +2966,19 @@ class ChunkListGroupBase(ChunkGroupBase):
 
         return super().value_changed(attrname, old_value, value)
 
-    def get_params(self) -> Tuple[ChunkCommon, ...]:
+    @overload
+    def get_params(self) -> Tuple[ChunkCommon, ...]: ...
+
+    @overload
+    def get_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ValueT, ...]: ...
+
+    def get_params(self, predicate: Optional[Predicate[ValueT]] = None):
         res = []
         for container in self.proxy_params:
-            for param in container.get_params():
-                res.append(param)
+            res.extend(container.get_params(predicate))
         return tuple(res)
 
-    def get_my_params(self) -> Tuple[ChunkCommon, ...]:
+    def get_my_params(self, *args, **kwargs) -> Tuple[ChunkGroupBase, ...]:
         return tuple(self.proxy_params)
 
     def remove_index(self, index: int):
@@ -3123,6 +3216,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         if not (c := self.get_chunk(chunk)):
             return
+
         c.request_delete()
         self._modified = True
 

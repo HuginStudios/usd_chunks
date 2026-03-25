@@ -30,25 +30,17 @@ def noop(owner: chunk.Chunk, notice, sender):
 
 
 def callback(owner: chunk.Chunk, notice, sender):
-    a = owner.get_dependency(0)
-    b = owner.get_dependency(1)
-    c = owner.get_dependency(2)
+    a = owner.get_dependency(0, chunk.is_chunk)
+    b = owner.get_dependency(1, chunk.is_chunk)
+    c = owner.get_dependency(2, chunk.is_chunk)
 
     if not (a and b and c):
         print("Inputs failed")
         return
-
-    assert isinstance(a, chunk.Chunk)
-    assert isinstance(b, chunk.Chunk)
-    assert isinstance(c, chunk.Chunk)
-
-    ap = a.get_param("A_param")
-    bp = b.get_param("B_param")
-    cp = c.get_param("C_param")
-
-    assert isinstance(ap, chunk.Slider)
-    assert isinstance(bp, chunk.Slider)
-    assert isinstance(cp, chunk.Slider)
+    
+    ap = a.get_param("A_param", chunk.is_param_t(float))
+    bp = b.get_param("B_param", chunk.is_param_t(float))
+    cp = c.get_param("C_param", chunk.is_param_t(float))
 
     # print("D changed:", notice.data.name)
     print(f"({a.name} * {b.name} = {c.name}): {ap.value} * {bp.value} = {cp.value}")
@@ -59,15 +51,12 @@ def callback(owner: chunk.Chunk, notice, sender):
 
 
 def c_function(owner: chunk.Slider, attrib):
-    a = owner.get_dependency(0)
-    b = owner.get_dependency(1)
+    a = owner.get_dependency(0, chunk.is_param_t(float))
+    b = owner.get_dependency(1, chunk.is_param_t(float))
 
     if not (a and b):
         print("Inputs failed")
         return
-
-    assert isinstance(a, chunk.Slider)
-    assert isinstance(b, chunk.Slider)
 
     return a.value * b.value
 

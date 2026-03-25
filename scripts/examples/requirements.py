@@ -1,21 +1,17 @@
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk
 
 import numpy as np
 import cv2 as cv
 
 
 def show_plot(owner: chunk.Chunk, notice, sender):
-    a = owner.get_dependency(0)
-    b = owner.get_dependency(1)
-    c = owner.get_dependency(2)
+    a = owner.get_dependency(0, chunk.is_chunk)
+    b = owner.get_dependency(1, chunk.is_chunk)
+    c = owner.get_dependency(2, chunk.is_chunk)
 
-    assert isinstance(a, chunk.Chunk) and isinstance(b, chunk.Chunk) and isinstance(c, chunk.Chunk)
-
-    ap = a.get_param("A_param")
-    bp = b.get_param("B_param")
-    cp = c.get_param("C_param")
-
-    assert isinstance(ap, chunk.Slider) and isinstance(bp, chunk.Slider) and isinstance(cp, chunk.Slider)
+    ap = a.get_param("A_param", chunk.is_param_t(float))
+    bp = b.get_param("B_param", chunk.is_param_t(float))
+    cp = c.get_param("C_param", chunk.is_param_t(float))
 
     apv = int((1 - ap.value / 10) * 511)
     bpv = int((1 - bp.value / 10) * 511)

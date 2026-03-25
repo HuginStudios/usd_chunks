@@ -8,15 +8,14 @@ def apply(owner: chunk.Chunk, notice, sender):
     # if notice.data is not sender.get_param("apply"):
     #     return
 
-
     # Access the parameter inside the group
-    x_scale_param = owner.get_param("uvscale")[0]
-    y_scale_param = owner.get_param("uvscale")[1]
+    x_scale_param = owner.get_param("uvscale", chunk.is_inst(chunk.Vector))[0]
+    y_scale_param = owner.get_param("uvscale", chunk.is_inst(chunk.Vector))[1]
 
     x_scale = x_scale_param.value
     y_scale = y_scale_param.value
 
-    filebrowser = owner.get_param("browse")
+    filebrowser = owner.get_param("browse", chunk.is_param_t(str))
     checker_file = filebrowser.value
 
     # api = sender.get_usdview_api()
@@ -136,5 +135,6 @@ def main():
 
     return chunk_api
 
+
 def config():
-    return chunk.DefaulConfig(category="Utility")
+    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)

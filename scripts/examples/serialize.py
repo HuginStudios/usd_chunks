@@ -14,16 +14,14 @@ def sliderB_changed(owner: chunk.Slider, notice, sender):
     if not c:
         raise AttributeError("COULD NOT FIND CHUNK")
 
-    dep = owner.get_dependency(0)
-    assert isinstance(dep, chunk.Slider)
+    dep = owner.get_dependency(0, chunk.is_param_t(float))
 
     c.user_data["foo"].baz = owner.value
     c.user_data["bar"].baz = np.array((owner.value, dep.value * 2))
 
 
 def dep_changed(slider: chunk.Slider, sender):
-    dep = slider.get_dependency(0)
-    assert isinstance(dep, chunk.Slider)
+    dep = slider.get_dependency(0, chunk.is_param_t(float))
     return dep.value
 
 

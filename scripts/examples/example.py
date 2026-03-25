@@ -59,11 +59,11 @@ def chunkChanged(owner: chunk.Chunk, notice: chunk_notice.ChunkChangeNotice, sen
 
 
 @nice_print
-def clickedButton(owner, notice, sender):
+def clickedButton(owner: chunk.Button, notice, sender):
     owner.get_logger().info(f"Button clicked: {owner.name}")
 
 
-def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_core.SceneSender):
+def updateLabel(owner: chunk.Label, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_core.SceneSender):
     """An example callback function that updates the value of the chunkItem to the selected prim path when a new selection occurs
 
     Args:
@@ -81,10 +81,9 @@ def updateLabel(owner, notice: chunk_notice.PrimSelectionChangedNotice, sender: 
 
 
 @nice_print
-def listChanged(owner, notice, sender):
-    for i in owner.get_params():
-        if isinstance(i, chunk.ChunkParamBase):
-            owner.get_logger().info(i.name, i.value, isinstance(i, chunk_core.ProxyParam))
+def listChanged(owner: chunk.Chunk, notice, sender):
+    for i in owner.get_params(chunk.is_param):
+        owner.get_logger().info(i.name, i.value, isinstance(i, chunk_core.ProxyParam))
 
 
 def validate_name(param: chunk.LineEdit, sender: chunk_core.AttributeSender):

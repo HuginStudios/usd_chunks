@@ -1,8 +1,8 @@
-from usd_chunks import chunk, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_notice
 import usd_chunks.chunk_core
 
 
-def variant_selection_callback(owner: chunk.ChunkParamBase, notice, sender):
+def variant_selection_callback(owner: chunk.Menu, notice, sender):
     stage = owner.get_stage()
     if not stage:
         return
@@ -66,7 +66,7 @@ def update(mychunk: chunk.Chunk, selected_prim):
     chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED, mychunk.get_owner())
 
 
-def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_notice.SceneSender):
+def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, sender):
     if not notice:
         return
     selected_prim = None
@@ -79,16 +79,18 @@ def selection_changed(mychunk, notice: chunk_notice.PrimSelectionChangedNotice, 
 
 def main():
     vSwitcherChunk = chunk.Chunk("Variant Switcher")
-    reg = chunk_registry.ChunkRegistry()
+    scene = chunk.get_scene()
+    if not scene:
+        return None
 
     vSwitcherChunk.add_callback(
         selection_changed,
-        sender=reg.scene,
+        sender=scene,
         notice_alias=chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED,
     )
 
     vSwitcherChunk.add_callback(
-        update_variant_selection, sender=reg.scene, notice_alias=chunk_notice.ChunkNoticeAlias.OBJECT_CHANGED
+        update_variant_selection, sender=scene, notice_alias=chunk_notice.ChunkNoticeAlias.OBJECT_CHANGED
     )
 
     return vSwitcherChunk

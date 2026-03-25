@@ -2,12 +2,8 @@ from usd_chunks import chunk, chunk_notice, chunk_core
 
 
 def build(myChunk: chunk.Chunk, notice: chunk_notice.ParamChangeNotice, sender):
-
-    dynGrp = myChunk.get_param("dyn_grp")
-    assert isinstance(dynGrp, chunk.Group)
-
-    ppParm = myChunk.get_param("prim")
-    assert isinstance(ppParm, chunk.LineEdit)
+    dynGrp = myChunk.get_param("dyn_grp", chunk.is_group)
+    ppParm = myChunk.get_param("prim", chunk.is_inst(chunk.LineEdit))
 
     for grp in dynGrp.get_my_params():
         grp.request_delete()
@@ -78,9 +74,6 @@ def main():
     primSel = chunk.LineEdit(
         "prim", flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION
     )
-    # primSel = chunk.LineEdit("prim", flags=chunk.ChunkFlags.ParamFlags.LABELED)
-    # primSel.set_flag(chunk.ChunkFlags.ParamFlags.PRIM_SELECTION)
-
     myChunk.add_param(primSel)
 
     myChunk.add_callback(build, primSel)
@@ -88,7 +81,6 @@ def main():
 
     dynGroup = chunk.Group("dyn_grp", flags=chunk.ChunkFlags.GroupFlags.FRAMED)
     myChunk.add_param(dynGroup)
-
 
     return myChunk
 

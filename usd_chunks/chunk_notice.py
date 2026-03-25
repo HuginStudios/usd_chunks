@@ -38,6 +38,9 @@ from typing import (
     TypeAlias,
     TypeVar,
     TYPE_CHECKING,
+    overload,
+    TypeGuard,
+    Sequence,
 )
 
 from attrs import define, field
@@ -46,7 +49,10 @@ from typing_extensions import Self
 from usd_chunks import chunk_serial
 
 logger = logging.getLogger(__name__)
+
+
 _T = TypeVar("_T")
+Predicate: TypeAlias = Callable[[Any], TypeGuard[_T]]
 
 if TYPE_CHECKING:
     from usd_chunks import chunk_core
@@ -1047,7 +1053,12 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         """
         self.get_dag_node().add_dependency(input.get_dag_node())
 
-    def get_dependency(self, index: int = 0) -> Optional["ChunkNoticePropagator"]:
+    @overload
+    def get_dependency(self, index: int = 0) -> Optional["ChunkNoticePropagator"]: ...
+    @overload
+    def get_dependency(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> _T: ...
+
+    def get_dependency(self, index: int = 0, predicate: Optional[Predicate[_T]] = None):
         """
         Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
 
@@ -1055,18 +1066,32 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             ChunkNoticePropagator | None: The input connected at index, or None if not found
         """
         try:
-            return self.get_dag_node().get_input(index).propagator
+            res = self.get_dag_node().get_input(index).propagator
         except (KeyError, IndexError, AttributeError):
-            return None
+            if not predicate:
+                return None
+            raise
+        if not predicate or predicate(res):
+            return res
+        raise ValueError(f"Predicate {predicate} failed for get_dependency({index})")
 
-    def get_dependencies(self) -> List["ChunkNoticePropagator"]:
-        res = []
-        for node in self.get_dag_node().get_inputs():
-            if prop := node.propagator:
-                res.append(prop)
-        return res
+    @overload
+    def get_dependencies(self) -> List["ChunkNoticePropagator"]: ...
+    @overload
+    def get_dependencies(self, predicate: Optional[Predicate[_T]] = None) -> List[_T]: ...
 
-    def get_dependent(self, index: int = 0) -> Optional["ChunkNoticePropagator"]:
+    def get_dependencies(self, predicate: Optional[Predicate[_T]] = None):
+        if not predicate:
+            return [x.propagator for x in self.get_dag_node().get_inputs() if x.propagator]
+        return [x.propagator for x in self.get_dag_node().get_inputs() if predicate(x.propagator)]
+
+    @overload
+    def get_dependent(self, index: int = 0) -> Optional["ChunkNoticePropagator"]: ...
+
+    @overload
+    def get_dependent(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> _T: ...
+
+    def get_dependent(self, index: int = 0, predicate: Optional[Predicate[_T]] = None):
         """
         Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
 
@@ -1074,16 +1099,24 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             ChunkNoticePropagator | None: The input connected at index, or None if not found
         """
         try:
-            return self.get_dag_node().get_output(index).propagator
+            res = self.get_dag_node().get_output(index).propagator
         except (KeyError, IndexError, AttributeError):
-            return None
+            if not predicate:
+                return None
+            raise
+        if not predicate or predicate(res):
+            return res
+        raise ValueError(f"Predicate {predicate} failed for get_dependency({index})")
 
-    def get_dependents(self) -> List["ChunkNoticePropagator"]:
-        res = []
-        for node in self.get_dag_node().get_outputs():
-            if prop := node.propagator:
-                res.append(prop)
-        return res
+    @overload
+    def get_dependents(self) -> List["ChunkNoticePropagator"]: ...
+    @overload
+    def get_dependents(self, predicate: Optional[Predicate[_T]] = None) -> List[_T]: ...
+
+    def get_dependents(self, predicate: Optional[Predicate[_T]] = None):
+        if not predicate:
+            return [x.propagator for x in self.get_dag_node().get_outputs() if x.propagator]
+        return [x.propagator for x in self.get_dag_node().get_outputs() if predicate(x.propagator)]
 
     def get_callbacks(self) -> List["NoticeConnection"]:
         """
@@ -1303,17 +1336,9 @@ class NoticeConnection(chunk_serial.Serializeable):
             return self.owner
         return super().serialize_kwarg(name, default)
 
-    def post_serial_setattr(self, name: str, value: Any) -> None:
-        print("POST SERIAL SETATTR", name, value)
-        return super().post_serial_setattr(name, value)
-
-    def post_serial(self, owner: Any):
-        print("POST SERIAL", self.get_method(), owner)
-        return super().post_serial(owner)
-
     def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
         # No attributes should be serialized as the attributes are serialized by kwargs
-        return False, value
+        return False, None
 
     def handle_callback(self, notice, sender=None, context=True):
         """

@@ -1,5 +1,4 @@
-from usd_chunks import chunk, chunk_registry
-from pxr import Usd
+from usd_chunks import chunk
 
 
 def toggle_vis(owner: chunk.ChunkParamBase, notice, sender):
@@ -8,7 +7,10 @@ def toggle_vis(owner: chunk.ChunkParamBase, notice, sender):
     if not stage:
         return
 
-    prims = chunk_registry.ChunkRegistry().scene.get_selected_prims()
+    if scene := chunk.get_scene():
+        prims = scene.get_selected_prims()
+    else:
+        return
 
     for prim in prims:
         if not prim.IsValid() or prim == stage.GetPseudoRoot():

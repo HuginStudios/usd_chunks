@@ -2,8 +2,11 @@ from usd_chunks import chunk
 from pxr import Usd
 
 
-def addCube(owner, notice, sender):
+def addCube(owner: chunk.Button, notice, sender):
     stage = owner.get_stage()
+    if not stage:
+        return
+
     count = 0
     while True:
         prim = stage.GetPrimAtPath(f"/cube{count}")
