@@ -58,6 +58,7 @@ class ChunkFlags:
         Attributes:
             LABELED: If the param should have a label in the ui
             FILE_EXISTING: For FILE type params, this rule hints to the file browser that we can not create new files
+            DIRECTORY: For FILE type params. Allows selection of folders
             PRIM_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdPrim selections
             PROP_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdProperty selections
         """
@@ -66,6 +67,7 @@ class ChunkFlags:
 
         # FILE
         FILE_EXISTING = auto()
+        DIRECTORY = auto()
 
         # LINEEDIT
         PRIM_SELECTION = auto()

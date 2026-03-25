@@ -38,15 +38,8 @@ def main():
     btn = chunk.Button("matplotlib")
     myChunk.add_param(btn)
 
-    reg = chunk_registry.ChunkRegistry()
-    if mod := reg.get_chunk_module("examples.dependencies"):
-        if not mod.loaded:
-            chunks = mod.load()
-        else:
-            chunks = mod.create()
-
-        for c in chunks:
-            myChunk.add_dependency(c)
+    for c in chunk.create_chunks("examples.dependencies"):
+        myChunk.add_dependency(c)
 
     return myChunk
 

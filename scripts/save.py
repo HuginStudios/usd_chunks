@@ -25,7 +25,7 @@ def main():
 
     btn = chunk.Button("execute")
     myChunk.add_param(btn)
-    myChunk.add_callback(save_stage, btn)
+    myChunk.add_callback(save_stage)
 
     return myChunk
 

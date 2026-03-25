@@ -201,7 +201,10 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         if self.param.extensions:
             pattern = " ".join([pattern + x for x in self.param.extensions])
 
-        if file := file_dial(pattern, not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)):
+        create_new = not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
+        directory = self.param.has_flag(ChunkFlags.ParamFlags.DIRECTORY)
+
+        if file := file_dial(pattern, create_new, directory):
             self.set_value(file)
             self.ValueChanged.emit(file)
 
@@ -754,6 +757,8 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
         self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
 
+        self.setMinimumWidth(200)
+
     def update_tab_position(self):
         if self.height() > self.width():
             self._tabPosition = QtWidgets.QTabWidget.TabPosition.East
@@ -820,9 +825,11 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             return
 
         if mod.loaded:
-            mod.create()
+            chunks = mod.create()
         else:
-            mod.load()
+            chunks = mod.load()
+
+        chunk_registry.ChunkRegistry().scene.add_chunks(chunks)
 
 
 class ChunkWidgetDocker(QtWidgets.QWidget):

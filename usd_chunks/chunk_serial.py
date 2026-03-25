@@ -127,7 +127,6 @@ class _Glb:
             return None
 
         if isinstance(obj, (ClassConstructor, CallableConstructor)):
-            print(obj)
             return None
 
         return obj
@@ -605,12 +604,12 @@ class ChunkEncoder(json.JSONEncoder):
         return o
 
 
-def serialize_json(data: Dict[str, Serializeable], save_modules=True) -> str:
+def serialize_json(data: Dict[str, Any], save_modules=True) -> str:
     """
     From a sequence of Serializables, create a serialized representation. The format is JSON and encoded using the ChunkEncoder
 
     Args:
-        data (Dict[str, Serializeable]): A dictionairy to serialize
+        data (Dict[str, Any]): A dictionairy to serialize
 
     Returns:
         str: A string representation of the objects in JSON format
@@ -634,8 +633,10 @@ def serialize_source(obj: Any):
     """
     return inspect.getsource(obj)
 
+
 def compute_checksum(obj: str) -> int:
     return zlib.adler32(obj.encode())
+
 
 def serialize_py(mod: types.ModuleType) -> str:
     """
@@ -692,7 +693,7 @@ def save_file(serial: str, file: str | Path):
         with open(file, "w") as f:
             f.write(serial)
 
-    logger.info(f"Saved file {file}")
+    logger.debug(f"Saved file {file}")
 
 
 def load_file(file: str | Path) -> Optional[bytes]:
@@ -1079,10 +1080,10 @@ def deserialize_py(code: str, mod_name: str) -> RuntimeModule:
 class DecodedResult(TypedDict):
     modules: Sequence[ClassConstructor]
     layers: Dict[str, CallableConstructor]
+    chunks: Optional[ClassConstructor]
     glb: _Glb
 
 
-# def deserialize_json(serial: str | bytes) -> Optional[Dict[str, Sequence[ClassConstructor], Literal["glb"], _Glb]]:
 def deserialize_json(serial: str | bytes) -> Optional[DecodedResult]:
     """
     Deserialize a bytes object. Typically, ChunkModules are serialized, then the result of this function
@@ -1101,4 +1102,9 @@ def deserialize_json(serial: str | bytes) -> Optional[DecodedResult]:
     if isinstance(res, dict):
         res["glb"] = glb
 
-    return DecodedResult(modules=res.get("modules", []), layers=res.get("layers", {}), glb=glb)
+    return DecodedResult(modules=res.get("modules", []), layers=res.get("layers", {}), chunks=res.get("chunks"), glb=glb)
+
+
+def deserialize_json_unbound(serial: str | bytes) -> Any:
+    glb = _Glb()
+    return json.loads(serial, object_hook=partial(_decodeChunk, glb))

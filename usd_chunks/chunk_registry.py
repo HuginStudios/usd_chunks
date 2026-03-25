@@ -18,7 +18,20 @@ import sys
 from pathlib import Path
 from importlib import util
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Generic, TypeVar, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Generic,
+    TypeVar,
+    overload,
+    Sequence,
+)
 
 from pxr import Sdf, Usd, UsdUtils
 
@@ -30,6 +43,7 @@ from usd_chunks.chunk_core import SceneSender, ChunkBase, ChunkCommon, ChunkConf
 if TYPE_CHECKING:
     import types
 
+import atexit
 import ast
 import importlib.abc
 import logging
@@ -93,13 +107,29 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
 
     def initialize(self):
         self._cache = defaultdict(set)
-
         self.package_dir = USD_CHUNK_DEPENDENCY_DIR()
 
         if self.package_dir:
             if self.package_dir not in sys.path:
-                sys.path.append(self.package_dir)
+                sys.path.append(str(self.package_dir))
             self.initialized = True
+            self._load_cache()
+            atexit.register(self._write_cache)
+
+    def _write_cache(self):
+        # Writes the cache to disk
+        serial = chunk_serial.serialize_json(dict(self._cache))
+        chunk_serial.save_file(serial, os.path.join(self.package_dir, "_chunk_package_cache.json"))
+
+    def _load_cache(self):
+        # Loads the cache from disk
+        path = os.path.join(self.package_dir, "_chunk_package_cache.json")
+        if not os.path.exists(path):
+            return
+
+        if not (serial := chunk_serial.load_file(path)):
+            return
+        self._cache = chunk_serial.deserialize_json_unbound(serial)
 
     @staticmethod
     def package_info(package):
@@ -129,6 +159,8 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
 
             if self.should_install_package(package):
                 packages.append(package)
+                n, v = self.package_info(package)
+                self._cache[n].add(v)
 
         if not packages:
             return
@@ -281,7 +313,7 @@ class ChunkModule(chunk_serial.Serializeable):
         self.module_file = Path(module_file)
 
         self.loaded = False
-        self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
+        # self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
         self.func: Optional[Callable[[], ChunkBase | List[ChunkBase]]] = None
 
         self._should_serialize_chunks = True
@@ -355,10 +387,10 @@ class ChunkModule(chunk_serial.Serializeable):
         return super().serialize_kwarg(name, default)
 
     def post_serial_setattr(self, name: str, value: Any) -> None:
-        if name == "loaded_chunks":
-            for c in value:
-                self._add_chunk(c)
-            return
+        # if name == "loaded_chunks":
+        #     for c in value:
+        #         self._add_chunk(c)
+        #     return
 
         if name == "_checksum" and value != self._checksum:
             logger.warning(
@@ -369,26 +401,26 @@ class ChunkModule(chunk_serial.Serializeable):
         return super().post_serial_setattr(name, value)
 
     def should_serialize_attribute(self, name: str, value: Any) -> chunk_serial.Tuple[bool, Any]:
-        if name == "loaded_chunks" and self._should_serialize_chunks:
-            return (True, list(self.loaded_chunks.values()))
+        # if name == "loaded_chunks" and self._should_serialize_chunks:
+        #     return (True, list(self.loaded_chunks.values()))
         if name == "_checksum":
             return (True, value)
 
         return (False, None)
 
-    def _add_chunk(self, c: ChunkBase):
-        if not (isinstance(c, ChunkBase)):
-            logger.warning(f"main() in module: {self.module_name} does not return a Chunk object")
-            self.loaded = False
-            return False
+    # def _add_chunk(self, c: ChunkBase):
+    #     if not (isinstance(c, ChunkBase)):
+    #         logger.warning(f"main() in module: {self.module_name} does not return a Chunk object")
+    #         self.loaded = False
+    #         return False
 
-        if self.config:
-            self.config.module = self.module_name
-            c._config = self.config
+    #     if self.config:
+    #         self.config.module = self.module_name
+    #         c._config = self.config
 
-        if ChunkRegistry().scene.add_chunk(c):
-            self.loaded_chunks[c.name] = c
-        return True
+    #     if ChunkRegistry().scene.add_chunk(c):
+    #         self.loaded_chunks[c.name] = c
+    #     return True
 
     def _exec_module(self):
         if type(self.module) is chunk_serial.RuntimeModule:
@@ -472,7 +504,7 @@ class ChunkModule(chunk_serial.Serializeable):
         self.loaded = True
         return True
 
-    def load(self) -> List[ChunkBase]:
+    def load(self) -> Sequence[ChunkBase]:
         """
         Loads the module. This ensures that the module is properly created. If Already loaded, it's preffered to
         call create() directly, to skip some initialization stuff that should only be called once
@@ -497,12 +529,12 @@ class ChunkModule(chunk_serial.Serializeable):
         """
         Deletes any chunk created from this module and sets loaded to False
         """
-        chunks = list(self.loaded_chunks.values())
-        for c in chunks:
-            c.request_delete()
+        # chunks = list(self.loaded_chunks.values())
+        # for c in chunks:
+        #     c.request_delete()
         self.loaded = False
 
-    def create(self) -> List[ChunkBase]:
+    def create(self) -> Sequence[ChunkBase]:
         """
         Runs the main function from the module and adds the chunks returned from the main function to the
         ChunkRegistry scene
@@ -529,8 +561,13 @@ class ChunkModule(chunk_serial.Serializeable):
             logger.warning(f"module {self.module_name} does not have a function for creating chunks")
             return []
 
-        for c in loaded:
-            self._add_chunk(c)
+        if self.config:
+            for c in loaded:
+                self.config.module = self.module_name
+                c._config = self.config
+
+        # for c in loaded:
+        #     self._add_chunk(c)
 
         return loaded
 
@@ -809,14 +846,11 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             return
 
         # data = {"modules": self.get_chunk_modules(True), "chunks": self.scene.get_chunks()}
-        data: Dict[str, Any] = {"modules": self.get_chunk_modules(True)}
+        data: Dict[str, Any] = {"modules": self.get_chunk_modules(True), "chunks": self.scene.chunks}
 
         lreg = ChunkLayerManager()
         if lreg.initialized:
             data["layers"] = lreg.save_layers(p.parent)
-            # layers = lreg.save_layers(p.parent)
-            # data["layers"] = [Path(x).relative_to(p.parent).as_posix() for x in layers]
-            # data["layers"] = {hash(x): str(y) for x, y in lreg.chunk_layers.items()}
 
         serial = chunk_serial.serialize_json(data, False)
         chunk_serial.save_file(serial, path)
@@ -853,9 +887,9 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 return
 
         # Clear the current scene
+        # for mod in self.get_chunk_modules():
+        #     mod.unload()
         self.scene.clear()
-        for mod in self.get_chunk_modules():
-            mod.unload()
 
         serial = chunk_serial.load_file(path)
 
@@ -879,6 +913,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
             mod = mod_cnstr.post_constuct()
             self.registered_modules[mod_name] = mod
+
+        if chunks := data.get("chunks"):
+            for c in chunks.construct().get_my_params():
+                self.scene.add_chunk(c)
 
         for c in self.scene.get_chunks():
             c.check_hierarchy()
@@ -944,6 +982,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._flags_listener = NoticeConnection(self._flags_changed, ChunkNoticeAlias.STATE_CHANGED, globally=True)
 
         self.chunk_layers: Dict[ChunkHash, Sdf.Layer] = {}
+        self.graph_layers: Dict[str, Sdf.Layer] = {}
         self._chunk_refs = weakref.WeakSet()
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
@@ -1022,10 +1061,44 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
 
         layer = self.get_layer(c)
+
+        root = self.get_root_layer()
+        sesh = self.stage.GetRootLayer()
+        if root.identifier not in sesh.subLayerPaths:
+            sesh.subLayerPaths.append(root.identifier)
+
+        # parent = None
+        graph_layer_id = f"graph_{c.get_dag_node().get_graph_id()}"
+
+        if not (parent := self.graph_layers.get(graph_layer_id)):
+            parent = Sdf.Layer.CreateAnonymous(graph_layer_id)
+            self.graph_layers[graph_layer_id] = parent
+            root.subLayerPaths.append(parent.identifier)
+
+        if not parent:
+            parent = root
+
+        index = c.get_dag_node().get_sort_key()
+
+        if index > len(parent.subLayerPaths) - 1:
+            index = len(parent.subLayerPaths)
+
+        index = len(parent.subLayerPaths) - index
+
         if not layer:
             if self.is_muted(c):
                 return None
-            layer = self.add_layer(self.get_root_layer(), c)
+
+            layer = self.add_layer(parent, c, index)
+
+        elif layer.identifier not in parent.subLayerPaths:
+            parent.subLayerPaths.insert(index, layer.identifier)
+
+        # elif parent.subLayerPaths.index(layer.identifier) != index:
+        #     print("REPLACE", parent.subLayerPaths.index(layer.identifier), index)
+        #     parent.subLayerPaths.remove(layer.identifier)
+        #     parent.subLayerPaths.insert(index, layer.identifier)
+
         return layer
 
     def is_muted(self, c: "ChunkHash") -> bool:
@@ -1043,7 +1116,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return True
         return False
 
-    def add_layer(self, target_layer: Sdf.Layer, c: "ChunkCommon") -> Sdf.Layer:
+    def add_layer(self, target_layer: Sdf.Layer, c: "ChunkCommon", index: int = 0) -> Sdf.Layer:
         """
         Add a layer to the stage and add a mapping from chunk c to the new layer.
 
@@ -1064,7 +1137,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         layer = Sdf.Layer.CreateAnonymous(layer_id)
 
         self.chunk_layers[h] = layer
-        target_layer.subLayerPaths.insert(0, layer.identifier)
+        target_layer.subLayerPaths.insert(index, layer.identifier)
 
         # We must make sure to delete the layer of the chunk AFTER all other notices are sent.
         # For this reason, we can't rely on callbacks. Instead we can register a finalizer, so we delete
@@ -1120,10 +1193,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         for c in ChunkRegistry().scene.get_chunks():
             self.add_layer(self.get_root_layer(), c)
 
-        # for mod in filter(lambda x: x.loaded, ChunkRegistry().registered_modules.values()):
-        #     for c in mod.loaded_chunks.values():
-        #         self.add_layer(self.get_root_layer(), c)
-
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
         stage = notice.GetStage()
         if stage:
@@ -1134,15 +1203,47 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             if root not in sesh.subLayerPaths:
                 sesh.subLayerPaths.append(root)
 
-    def _chunk_deleted(self, chunk_hash):
-        if lay := self.get_layer(chunk_hash):
-            sublayer_paths = self.get_root_layer().subLayerPaths.copy()
-            for i, sublayer in reversed(list(enumerate(sublayer_paths))):
-                if sublayer == lay.identifier:
-                    sublayer_paths.pop(i)
+    def _iter_sublayers(self, layer: Sdf.Layer):
+        for lname in layer.subLayerPaths:
+            slayer = Sdf.Find(lname)
+            yield (layer, slayer)
+            yield from self._iter_sublayers(slayer)
 
-            self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
-            self.chunk_layers.pop(chunk_hash)
+    def iter_chunk_layers(self):
+        yield from self._iter_sublayers(self.get_root_layer())
+
+    def _chunk_deleted(self, chunk_hash):
+
+        if not (layer := self.get_layer(chunk_hash)):
+            return
+
+        layer_hierarchy: Dict[Sdf.Layer, Sdf.Layer] = {}
+
+        for parent, sublayer in self.iter_chunk_layers():
+            layer_hierarchy[sublayer] = parent
+
+            if sublayer == layer:
+                # print(parent.identifier, layer.identifier)
+                sublayer_paths = parent.subLayerPaths.copy()
+                sublayer_paths.remove(layer.identifier)
+
+                if len(sublayer_paths) == 0 and (p := layer_hierarchy.get(parent)):
+                    p.subLayerPaths.remove(parent.identifier)
+
+                parent.subLayerPaths = sublayer_paths  # type: ignore
+
+        self.chunk_layers.pop(chunk_hash)
+        # print(lay, lay.identifier)
+
+        # if lay := self.get_layer(chunk_hash):
+        #     sublayer_paths = self.get_root_layer().subLayerPaths.copy()
+
+        #     for i, sublayer in reversed(list(enumerate(sublayer_paths))):
+        #         if sublayer == lay.identifier:
+        #             sublayer_paths.pop(i)
+
+        #     self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
+        #     self.chunk_layers.pop(chunk_hash)
 
     def _flags_changed(self, notice, sender):
         c = sender

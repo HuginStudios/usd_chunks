@@ -255,6 +255,7 @@ class GroupChangeNotice(ChunkNotice):
 class ChunkChangeNotice(ChunkNotice):
     data: "chunk_core.ChunkBase"
 
+
 ### Create / Delete notices
 @chunk_notice(ChunkNoticeAlias.PARAM_ADDED)
 # class ParamAddedNotice(ParamChangeNotice):
@@ -423,6 +424,11 @@ class DagConnections:
     outputs: ConnSetT = field(factory=ConnSetT)
 
 
+class DagGraphID:
+    def __init__(self, identifier: int):
+        self.identifier = identifier
+
+
 class DagNode:
     """
     A DagNode represents a connectable node in a DAG graph. This class handles any 'physical' connections between different
@@ -438,6 +444,9 @@ class DagNode:
 
     __slots__ = (
         "_index",
+        "_sort_key",
+        "_graph_id",
+        "_part_of_graph",
         "_input_data",
         "_dirty",
         "_connections",
@@ -451,6 +460,10 @@ class DagNode:
         self._connections: DagConnections = DagConnections()
         self._propagator = weakref.ref(propagator)
         self._index: int = 0
+
+        self._sort_key: int = 0
+        self._graph_id: DagGraphID = DagGraphID(id(self))
+        self._part_of_graph = True
 
     @property
     def propagator(self):
@@ -511,10 +524,24 @@ class DagNode:
             connect_reverse (bool, optional): If the input node should connect this node to its output. Defaults to True.
         """
         self._connections.inputs[self.next_key(self._connections.inputs)] = node
+
+        if node._part_of_graph and self._part_of_graph:
+            # Set the graph identifier of the input node, meaning they are part of the same graph
+            node._graph_id.identifier = self.get_graph_id()
+
         if connect_reverse:
             node.add_dependant(self)
         else:
             self.dirty = True
+
+        self._sort_key += 1 + node._sort_key
+        for o in self.get_outputs():
+            o._sort_key += 1 + node._sort_key
+
+        owner = self.get_owner_node()
+        while owner:
+            owner._sort_key += 1 + node._sort_key
+            owner = owner.get_owner_node()
 
     def add_dependant(self, node: "DagNode"):
         """
@@ -544,6 +571,9 @@ class DagNode:
 
         if node := self.get_owner_node():
             node.dirty = True
+
+            if node._part_of_graph and self._part_of_graph:
+                self._graph_id = node._graph_id
 
     def get_inputs(self) -> Iterator["DagNode"]:
         """
@@ -638,6 +668,21 @@ class DagNode:
             return True
         return False
 
+    def get_sort_key(self):
+        # idx = 0
+        # for i in self.get_inputs():
+        #     idx += 1 + i.get_sort_key()
+        return self._sort_key
+
+    def get_graph_id(self):
+        # _id = self._graph_id
+        # for i in self.get_inputs():
+        #     _id += i.get_graph_id()
+        # for o in self.get_outputs():
+        #     _id += o.get_graph_id()
+        # return _id
+        return self._graph_id.identifier
+
     def dirty_dependants(self, searched: Optional[Set["DagNode"]] = None):
         """
         Dirty all dependants. This will recursively set dependant (output) nodes dirty=True
@@ -654,13 +699,13 @@ class DagNode:
         searched.add(self)
 
         for node in self.get_outputs():
-            node._index += self._index + 1
+            node._index += 1
 
             node._input_data.add((ChunkNoticeAlias.INPUT_CHANGED, self))
             node.dirty_dependants(searched.copy())
 
         if owner := self.get_owner_node():
-            owner._index += self._index + 1
+            owner._index += 1
 
             owner._input_data |= self._input_data
             if self.propagator and (alias := self.propagator.get_notice_alias()):
@@ -792,7 +837,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         return super().should_serialize_attribute(name, value)
 
     def post_serial_setattr(self, name, value):
-        self._blocked = True
+        self.set_blocked(True)
         if name == "dependencies":
             # Since the _dependencies is an attribute of the DagNode, calling setattr(self, '_dependencies', value)
             # would set the _dependencies on the AttributesBase instance. So instead we make sure the dependencies goes to the
@@ -802,7 +847,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         else:
             super().post_serial_setattr(name, value)
 
-        self._blocked = False
+        self.set_blocked(False)
 
     @abstractmethod
     def request_delete(self):
@@ -845,6 +890,9 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         if owner := self.get_owner():
             return owner.is_blocked()
         return False
+
+    def set_blocked(self, block: bool):
+        self._blocked = block
 
     def get_owner(self) -> Optional["ChunkNoticePropagator"]:
         """Get the owning ChunkNoticePropagator of this object
@@ -1008,12 +1056,31 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         """
         try:
             return self.get_dag_node().get_input(index).propagator
-        except (IndexError, AttributeError):
+        except (KeyError, IndexError, AttributeError):
             return None
 
     def get_dependencies(self) -> List["ChunkNoticePropagator"]:
         res = []
         for node in self.get_dag_node().get_inputs():
+            if prop := node.propagator:
+                res.append(prop)
+        return res
+
+    def get_dependent(self, index: int = 0) -> Optional["ChunkNoticePropagator"]:
+        """
+        Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
+
+        Returns:
+            ChunkNoticePropagator | None: The input connected at index, or None if not found
+        """
+        try:
+            return self.get_dag_node().get_output(index).propagator
+        except (KeyError, IndexError, AttributeError):
+            return None
+
+    def get_dependents(self) -> List["ChunkNoticePropagator"]:
+        res = []
+        for node in self.get_dag_node().get_outputs():
             if prop := node.propagator:
                 res.append(prop)
         return res

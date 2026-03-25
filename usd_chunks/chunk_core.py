@@ -51,7 +51,7 @@ from pxr import Sdf, Usd
 from typing_extensions import Self, dataclass_transform
 
 from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_serial
-from usd_chunks.chunk_flags import ChunkFlags, _FlagRepr
+from usd_chunks.chunk_flags import ChunkFlags
 
 
 _ATTRS_SUPPORT_CONVERTER = ATTRS_VERSION >= (24, 1)  # type: ignore
@@ -1702,9 +1702,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         else:
             raise ValueError(f"Failed to update old name {old_name} in container")
 
-    def get_param(
-        self, key: Union[ChunkHash, str], default: Any = None, proxy_index: Optional[int] = None
-    ) -> Optional[ChunkT]:
+    def get_param(self, key: Union[ChunkHash, str], default: Any = None) -> Optional[ChunkT]:
         """Retrieve a param from this datastructure. Key can be either a ChunkCommon (It hashes to the HashVal),
         an explicit HashVal (ChunkObject._hashable) or a name.
 
@@ -2008,11 +2006,7 @@ class ChunkCommon(AttributesBase):
             return
 
         if c := self.get_chunk():
-            try:
-                layer = chunk_registry.ChunkLayerManager().get_or_create_layer(c)
-            except AttributeError:
-                return
-
+            layer = chunk_registry.ChunkLayerManager().get_or_create_layer(c)
             if layer and layer.IsMuted():
                 return None
             return layer
@@ -2492,6 +2486,9 @@ class ChunkContainerBase(ChunkCommon):
         super().__attrs_post_init__()
         self.children.set_owner(self)
 
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
+
     def remove_param_or_group(self, param: ChunkCommon):
         """
         Remove a child on this group
@@ -2660,9 +2657,6 @@ class ChunkGroupBase(ChunkContainerBase):
     same sense.
 
     """
-
-    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
-        return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
 
     def add_params(self, params: Iterable[ChunkT], force_unique: bool = True, clone: bool = False) -> List[ChunkT]:
         """Adds parameters to this group. Will call add_param on all params in the list
@@ -2936,6 +2930,7 @@ class ChunkBase(ChunkGroupBase):
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
+        self._blocked = True
 
         self.add_callback(self.disable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
         self.add_callback(self.enable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
@@ -2955,6 +2950,9 @@ class ChunkBase(ChunkGroupBase):
 
     def get_chunk(self) -> Optional["ChunkBase"]:
         return self
+
+    def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
 
 
 class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
@@ -3112,6 +3110,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         super().__init__(*args, **kwargs)
 
         self.chunks: NameSyncedContainer[ChunkBase] = NameSyncedContainer()
+        self.chunks.get_dag_node()._part_of_graph = False
+        self.get_dag_node()._part_of_graph = False
         self.chunks.set_owner(self)
 
         self._modified = False
@@ -3131,6 +3131,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         if c.name in names:
             c.name = c.get_valid_child_name(c.name, set(names))
 
+        c.set_blocked(False)
         try:
             c.check_hierarchy()
         except Exception as e:
@@ -3142,7 +3143,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._modified = True
         return c
 
+    def add_chunks(self, chunks: Sequence[ChunkBase]):
+        for c in chunks:
+            self.add_chunk(c)
+
     def clear(self):
+        for c in self.get_chunks():
+            c.request_delete()
+
         self.chunks.clear()
         self._modified = True
 

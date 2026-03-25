@@ -56,7 +56,7 @@ from attr import Attribute as Attribute
 from attrs import field
 
 from enum import IntFlag, Enum
-from typing import Any, List, Optional, Sequence, TYPE_CHECKING
+from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast
 
 from pxr import Usd, Sdf
 
@@ -72,6 +72,8 @@ from usd_chunks.chunk_core import (
     ChunkCommon,
     ChunkListGroupBase,
 )
+
+from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
 
 if TYPE_CHECKING:
     from attr import Attribute
@@ -120,9 +122,6 @@ class Chunk(ChunkBase):
         default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
 
-    def get_notice_alias(self):
-        return ChunkNoticeAlias.CHUNK_CHANGED
-
 
 class Group(ChunkGroupBase):
     """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
@@ -130,20 +129,14 @@ class Group(ChunkGroupBase):
     # Override defaults
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
-    def get_notice_alias(self):
-        return ChunkNoticeAlias.GROUP_CHANGED
-
 
 class ListGroup(ChunkListGroupBase):
-    """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
+    """ListGroup is a container holding child ChunkParamBase and ChunkGroupBase instances with dynamic size. Params added with add_param will be duplicated size times"""
 
     # Override defaults
     flags: IntFlag = field(
         default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED | ChunkFlags.GroupFlags.LIST
     )
-
-    def get_notice_alias(self):
-        return ChunkNoticeAlias.GROUP_CHANGED
 
 
 class Vector(ChunkVectorBase):
@@ -151,9 +144,6 @@ class Vector(ChunkVectorBase):
 
     # Override defaults
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
-
-    def get_notice_alias(self) -> ChunkNoticeAlias:
-        return ChunkNoticeAlias.GROUP_CHANGED
 
 
 class Slider(ChunkParamBase[int | float]):
@@ -313,7 +303,7 @@ class LineEdit(ChunkParamBase[str]):
         """
         self.value = ",".join([str(x.GetPath()) for x in prims])
 
-    def get_prims(self):
+    def get_prims(self) -> List[Usd.Prim]:
         """
         If this param is a list of prim paths (comma separated), then return the prims on the stage
 
@@ -468,3 +458,38 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
 def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | None:
     return LineEdit.from_usd_rel(attr, *args, **kwargs)
 
+
+def get_chunk_registry():
+    res = ChunkRegistry()
+    return res if res.initialized else None
+
+
+def get_layer_manager():
+    res = ChunkLayerManager()
+    return res if res.initialized else None
+
+
+def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
+    if not (reg := get_chunk_registry()):
+        return []
+
+    if not (mod := reg.get_chunk_module(module_name)):
+        return []
+
+    if not mod.loaded:
+        chunks = mod.load()
+    else:
+        chunks = mod.create()
+
+    chunks = cast(List[Chunk], chunks)
+
+    if not anonymous:
+        for c in chunks:
+            reg.scene.add_chunk(c)
+    return chunks
+
+
+def get_chunk(chunk_name: str):
+    if not (reg := get_chunk_registry()):
+        return None
+    return reg.scene.get_chunk(chunk_name)
