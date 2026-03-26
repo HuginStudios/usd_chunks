@@ -168,6 +168,38 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         return self.text.setText(str(value))
 
 
+class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidget):
+    def __init__(self, param: chunk.TextEdit):
+        super().__init__(param)
+
+        self.text = QtWidgets.QTextEdit(parent=self)
+        self.text.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.Maximum) 
+
+        self.main_layout = QtWidgets.QHBoxLayout()
+
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.addWidget(self.text)
+        self.setLayout(self.main_layout)
+        self.setup_chunk_widget()
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if QtCore.Qt.KeyboardModifier.ControlModifier in event.modifiers():
+            if QtCore.Qt.Key.Key_Return == event.keyCombination().key():
+                self.value_changed(self.get_value())
+
+        return super().keyPressEvent(event)
+
+    def focusOutEvent(self, event: QtGui.QFocusEvent) -> None:
+        self.value_changed(self.get_value())
+        return super().focusOutEvent(event)
+
+    def get_value(self):
+        return self.text.document().toPlainText()
+
+    def set_value(self, value):
+        self.text.setText(str(value))
+
+
 class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
     ValueChanged = QtCore.Signal(str)
 
@@ -319,6 +351,7 @@ class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
         ChunkFlags.ParamType.INT_SPINBOX: ChunkIntSpinboxWidget,
         ChunkFlags.ParamType.LABEL: ChunkLabelWidget,
         ChunkFlags.ParamType.LINEEDIT: ChunkLineEditWidget,
+        ChunkFlags.ParamType.TEXTEDIT: ChunkTextEditWidget,
         ChunkFlags.ParamType.FILE: ChunkFileWidget,
         ChunkFlags.ParamType.STRING_MENU: ChunkComboBoxWidget,
         ChunkFlags.ParamType.CHECKBOX: ChunkCheckBoxWidget,

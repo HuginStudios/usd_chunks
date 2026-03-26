@@ -1052,6 +1052,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self.graph_layers[graph_layer_id] = parent
             root.subLayerPaths.append(parent.identifier)
 
+        # If the root has been detatched from the stage's root, reapply it
+        if parent.identifier not in root.subLayerPaths:
+            root.subLayerPaths.append(parent.identifier)
+
         # if parent.IsMuted():
         #     return
 
@@ -1067,10 +1071,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         if not layer:
             if self.is_muted(c):
-                return None
+                return
             layer = self.add_layer(parent, c, index)
 
-        elif layer.identifier not in parent.subLayerPaths:
+        if layer.identifier not in parent.subLayerPaths:
             parent.subLayerPaths.insert(index, layer.identifier)
 
         # If a chunk connection changed after the chunk layer was created, the layer may have been
@@ -1190,8 +1194,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def _iter_sublayers(self, layer: Sdf.Layer):
         for lname in layer.subLayerPaths:
             slayer = Sdf.Find(lname)
-            yield (layer, slayer)
-            yield from self._iter_sublayers(slayer)
+            if slayer:
+                yield (layer, slayer)
+                yield from self._iter_sublayers(slayer)
 
     def iter_chunk_layers(self) -> Generator[Tuple[Sdf.Layer, Sdf.Layer]]:
         yield from self._iter_sublayers(self.get_root_layer())

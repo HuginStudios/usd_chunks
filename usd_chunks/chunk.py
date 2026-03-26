@@ -335,10 +335,25 @@ class LineEdit(ChunkParamBase[str]):
             param = cls(*args, **kwargs)
         try:
             if sender := param.get_attribute_sender("value"):
-                param.set_usd_prop(rel, sender)
+                param.set_usd_prop(str(rel.GetPath()), sender)
         except AttributeError:
             pass
         return param
+
+
+class TextEdit(ChunkParamBase[str]):
+    """
+    An editable string parameter
+    """
+
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.TEXTEDIT
 
 
 class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):

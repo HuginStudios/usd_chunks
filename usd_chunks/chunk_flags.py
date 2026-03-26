@@ -72,6 +72,7 @@ class ChunkFlags:
         # LINEEDIT
         PRIM_SELECTION = auto()
         PROP_SELECTION = auto()
+        MULTILINE = auto()
 
     class ParamType(_FlagRepr):
         """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
@@ -127,8 +128,9 @@ class ChunkFlags:
         # String
         LABEL = STRING | (1 << 0)
         LINEEDIT = STRING | (1 << 1)
-        FILE = STRING | (1 << 2)
-        STRING_MENU = STRING | (1 << 3)
+        TEXTEDIT = STRING | (1 << 2)
+        FILE = STRING | (1 << 3)
+        STRING_MENU = STRING | (1 << 4)
 
         # Bool
         CHECKBOX = BOOL | (1 << 0)

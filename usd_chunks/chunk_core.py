@@ -988,6 +988,11 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False, serialize=True
         ),
     )
+    _logger: Optional[logging.Logger] = attrs.field(
+        init=False,
+        default=None,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
 
     @classmethod
     def print_init_signature(cls):
@@ -1021,6 +1026,11 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             self._attr_senders[name] = sender
 
         self._resolve_failed_converters()
+
+    def get_logger(self) -> logging.Logger:
+        if not self._logger:
+            self._logger = logging.getLogger(f"usd_chunks.{self.__class__.__name__}")
+        return self._logger
 
     def clone(self) -> Self:
         """
@@ -1942,12 +1952,6 @@ class ChunkCommon(AttributesBase):
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
 
-    _logger: Optional[logging.Logger] = attrs.field(
-        init=False,
-        default=None,
-        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
-    )
-
     # Name for the chunk object
     name: str = attrs.field(default="")
 
@@ -2270,7 +2274,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
     # link to UsdAttribute if needed. Hidden in __init__ as the field would be added as the first argument
     # by the concrete classes
-    _usd_prop: Optional[Usd.Property] = attrs.field(default=None, init=False)
+    _usd_prop_path: Optional[str] = attrs.field(default=None, init=False)
 
     # Hold a connection to the Usd.Attribute of usd_attr.
     _usd_prop_connection: Optional[chunk_notice.NoticeConnection] = attrs.field(
@@ -2289,17 +2293,16 @@ class ChunkUsdAttributeSupport(AttributesBase):
         return my_notice
 
     def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
-        if name == "_usd_prop" and self._usd_prop:
-            return (True, str(self._usd_prop.GetPath()))
+        if name == "_usd_prop_path" and self._usd_prop_path:
+            return (True, self._usd_prop_path)
         return super().should_serialize_attribute(name, value)
 
     def post_serial_setattr(self, name, value):
-        if name == "_usd_prop":
-            stage = chunk_registry.ChunkRegistry().scene.get_stage()
-            prop = stage.GetPropertyAtPath(value)
-
-            if prop and (sender := self.get_attribute_sender("value")):
-                self.set_usd_prop(prop, sender)
+        if name == "_usd_prop_path":
+            if value and (sender := self.get_attribute_sender("value")):
+                self.set_usd_prop(value, sender)
+            else:
+                self.get_logger().warning(f"Failed to connect usd property at {value}. The property is missing")
 
         return super().post_serial_setattr(name, value)
 
@@ -2341,7 +2344,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice.data.SetTargets(targets)
 
     @abstractmethod
-    def usd_prop_changed(self, attr: Usd.Property):
+    def usd_prop_changed(self, prop_path: str):
         """
         A callback for when the UsdAttribute member was changed. This will update the value of
         the AttributeSender passed to set_usd_attr().
@@ -2354,12 +2357,13 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if not isinstance(self._usd_prop_connection.sender, AttributeSender):
             return
 
+        attr = self.get_usd_prop()
         if isinstance(attr, Usd.Attribute):
             self._usd_prop_connection.sender.value = attr.Get(0)
         elif isinstance(attr, Usd.Relationship):
             self._usd_prop_connection.sender.value = ",".join([str(x) for x in attr.GetForwardedTargets()])
 
-    def set_usd_prop(self, attr: Usd.Property, sender: AttributeSender):
+    def set_usd_prop(self, prop_path: str, sender: AttributeSender):
         """
         Set the references UsdAttribute object. Any changes to the param will
         update the attribute
@@ -2370,7 +2374,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 When a signal with sender and ATTRIBUTE_CHANGED notice is sent, the method
                 update_usd_attrib() of this class is called
         """
-        self._usd_prop = attr
+        self._usd_prop_path = prop_path
 
         if self._usd_prop_connection:
             self._usd_prop_connection.disconnect()
@@ -2378,7 +2382,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         self._usd_prop_connection = chunk_notice.NoticeConnection(
             self.update_usd_prop, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender, owner=self
         )
-        self.usd_prop_changed(attr)
+        self.usd_prop_changed(prop_path)
 
     def get_usd_prop(self) -> Usd.Property | None:
         """
@@ -2387,7 +2391,9 @@ class ChunkUsdAttributeSupport(AttributesBase):
         Returns:
             Usd.Attribute | None: The referenced usd attribute
         """
-        return self._usd_prop
+        stage = self.get_stage()
+        if stage and self._usd_prop_path:
+            return stage.GetPropertyAtPath(self._usd_prop_path)
 
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> "ChunkUsdAttributeSupport":
@@ -2419,7 +2425,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
         try:
             if sender := param.get_attribute_sender("value"):
-                param.set_usd_prop(attr, sender)
+                param.set_usd_prop(str(attr.GetPath()), sender)
         except AttributeError:
             pass
 
@@ -2566,7 +2572,6 @@ class ChunkContainerBase(ChunkCommon):
             removed = old_state ^ (new_state & old_state)
 
             if ChunkFlags.State.DISABLED in (added | removed):
-
                 def _pred(val) -> TypeGuard[ChunkBase]:
                     return isinstance(val, ChunkBase)
 
@@ -3273,6 +3278,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         self.chunks.add(c, False)
         chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+        c.trigger_callbacks()
+
         self._modified = True
         return c
 

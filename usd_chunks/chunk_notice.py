@@ -1161,7 +1161,6 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
-        send=False,
     ):
         """Subscribe to a notice. When the notice is sent, the supplied method will be called, by default, with three arguments:
         (owner(self), notice(Tf.Notice), sender(Any))
@@ -1192,8 +1191,13 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
 
         self.add_connection(NoticeConnection(method, notice_alias, sender, listen_globally, self))
 
-        if sender and sender is not self:
-            sender.send_self(alias=notice_alias)
+        # if sender and sender is not self:
+        #     sender.send_self(alias=notice_alias)
+
+    def trigger_callbacks(self):
+        for conn in self.get_callbacks():
+            if conn.sender is not self and isinstance(conn.sender, ChunkNoticePropagator):
+                conn.sender.send_self(conn.alias)
 
     @abstractmethod
     def get_edit_context(self) -> Sdf.Layer | None:

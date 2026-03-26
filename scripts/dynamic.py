@@ -5,9 +5,7 @@ def build(myChunk: chunk.Chunk, notice: chunk_notice.ParamChangeNotice, sender):
     dynGrp = myChunk.get_param("dyn_grp", chunk.is_group)
     ppParm = myChunk.get_param("prim", chunk.is_inst(chunk.LineEdit))
 
-
     prims = ppParm.get_prims()
-    print("BUILD", prims)
 
     if not prims:
         return
@@ -78,7 +76,6 @@ def main():
         "prim", flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION
     )
     myChunk.add_param(primSel)
-
     myChunk.add_callback(build, sender=primSel)
     myChunk.add_callback(build, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
 
