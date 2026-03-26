@@ -54,7 +54,7 @@ def config():
 
 See more examples and use cases in [scripts](/scripts/)
 
-A Chunk is defined in a python module like above and should be returned from a **main()** function of the same module. Similarly, a **config()** function may return a configuration of the chunk module. This module is found from the **USD_CHUNK_DIR** environment variable, where .py files are scanned for a **main()** function returning a Chunk. 
+A Chunk is defined in a python module like above and should be returned from a **main()** function of the same module. Similarly, a **config()** function may return a configuration of the chunk module. This module is found from the **USD_CHUNK_DIRS** environment variable, where .py files are scanned for a **main()** function returning a Chunk. 
 
 ## Params
 
@@ -76,7 +76,7 @@ To set this up you need to set two environment variables after having cloned or 
 
 **PYTHONPATH** - Add this repo location path to this envar for usdview to find our python modules
 
-**USD_CHUNK_DIR** - Add your chunk directory to this envar. This can be a list of directories, separated by ; on windows, and : on unix systems. Nested directories are scanned for chunks as well.
+**USD_CHUNK_DIRS** - Add your chunk directory to this envar. This can be a list of directories, separated by ; on windows, and : on unix systems. Nested directories are scanned for chunks as well.
 
 ## Build documentation
 In order to build the documentation, your environment must be set to run the usd_chunks modules.

@@ -52,10 +52,11 @@ See [example](../example.md) for a more extensive example.
 
 """
 
+from attr import Attribute as Attribute
 from attrs import field
 
 from enum import IntFlag, Enum
-from typing import Any, List, Optional, Sequence, TYPE_CHECKING
+from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast, TypeGuard, TypeVar
 
 from pxr import Usd, Sdf
 
@@ -70,7 +71,11 @@ from usd_chunks.chunk_core import (
     ChunkUsdAttributeSupport,
     ChunkCommon,
     ChunkListGroupBase,
+    Predicate,
+    ValueT,
 )
+
+from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
 
 if TYPE_CHECKING:
     from attr import Attribute
@@ -115,44 +120,32 @@ class Chunk(ChunkBase):
     """Chunk is the top level container, holding params and groups which in turn make up the final, displayed chunk."""
 
     # Override defaults
-    flags: ChunkFlags.GroupFlags = field(
+    flags: IntFlag = field(
         default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
-
-    def get_notice_alias(self):
-        return ChunkNoticeAlias.CHUNK_CHANGED
 
 
 class Group(ChunkGroupBase):
     """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
 
     # Override defaults
-    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
-
-    def get_notice_alias(self):
-        return ChunkNoticeAlias.GROUP_CHANGED
+    flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
 
 class ListGroup(ChunkListGroupBase):
-    """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
+    """ListGroup is a container holding child ChunkParamBase and ChunkGroupBase instances with dynamic size. Params added with add_param will be duplicated size times"""
 
     # Override defaults
-    flags: ChunkFlags.GroupFlags = field(
+    flags: IntFlag = field(
         default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED | ChunkFlags.GroupFlags.LIST
     )
-
-    def get_notice_alias(self):
-        return ChunkNoticeAlias.GROUP_CHANGED
 
 
 class Vector(ChunkVectorBase):
     """A Vector is basically a group which holds a set number of parameters"""
 
     # Override defaults
-    flags: ChunkFlags.GroupFlags = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
-
-    def get_notice_alias(self) -> ChunkNoticeAlias:
-        return ChunkNoticeAlias.GROUP_CHANGED
+    flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
 
 class Slider(ChunkParamBase[int | float]):
@@ -241,7 +234,7 @@ class Menu(ChunkParamBase[str]):
         menu_items: A list of items to display in the menu
     """
 
-    flags: ChunkFlags.ParamFlags = field(default=ChunkFlags.ParamFlags.LABELED)
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     menu_items: Sequence[str] = field(factory=list)
 
@@ -261,7 +254,7 @@ class Menu(ChunkParamBase[str]):
         return ChunkFlags.ParamType.STRING_MENU
 
     def convert_attr(self, attr: "Attribute", val: Any) -> Any:
-        if attr.name == "default_value":
+        if attr.name in ["default_value", "value"]:
             if self.menu_items and val not in self.menu_items:
                 return self.menu_items[0]
 
@@ -296,6 +289,36 @@ class LineEdit(ChunkParamBase[str]):
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+
+        if self.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION):
+            self.set_prims(self.get_scene().get_selected_prims())
+
+    def set_prims(self, prims: List[Usd.Prim]):
+        """
+        Sets the value of the param to a list of prim paths
+
+        Args:
+            prims (List[Usd.Prim]): The list of prims to set
+        """
+        self.value = ",".join([str(x.GetPath()) for x in prims])
+
+    def get_prims(self) -> List[Usd.Prim]:
+        """
+        If this param is a list of prim paths (comma separated), then return the prims on the stage
+
+        Returns:
+            Iterable[Usd.Prim]: The prims
+        """
+        if not (stage := self.get_stage()):
+            return []
+        res = []
+        for pp in self.value.split(","):
+            if pp and (prm := stage.GetPrimAtPath(pp)) and prm.IsValid():
+                res.append(prm)
+        return res
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -376,9 +399,9 @@ class Custom(ChunkParamBase):
         return ChunkFlags.ParamType.CUSTOM
 
 
-####################
-# STATIC FUNCTIONS #
-####################
+#################
+# API FUNCTIONS #
+#################
 
 
 def set_validators_enabled(enabled: bool):
@@ -387,7 +410,7 @@ def set_validators_enabled(enabled: bool):
     validators.set_disabled(not enabled)
 
 
-type_map = {
+usd_type_map = {
     "float": Slider,
     "int": (Spinbox, {"is_int": True}),
     "token": Menu,
@@ -424,7 +447,7 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
     """
     type_name = attr.GetTypeName()
 
-    t = type_map.get(str(type_name))
+    t = usd_type_map.get(str(type_name))
     if not t:
         return None
     if isinstance(t, tuple):
@@ -436,3 +459,126 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
 
 def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | None:
     return LineEdit.from_usd_rel(attr, *args, **kwargs)
+
+
+def get_chunk_registry():
+    res = ChunkRegistry()
+    return res if res.initialized else None
+
+
+def get_scene():
+    if reg := get_chunk_registry():
+        return reg.scene
+
+
+def get_layer_manager():
+    res = ChunkLayerManager()
+    return res if res.initialized else None
+
+
+def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
+    if not (reg := get_chunk_registry()):
+        return []
+
+    if not (mod := reg.get_chunk_module(module_name)):
+        return []
+
+    if not mod.loaded:
+        chunks = mod.load()
+    else:
+        chunks = mod.create()
+
+    chunks = cast(List[Chunk], chunks)
+
+    if not anonymous:
+        for c in chunks:
+            reg.scene.add_chunk(c)
+
+    return chunks
+
+
+def get_chunk(chunk_name: str):
+    if not (reg := get_chunk_registry()):
+        return None
+    return reg.scene.get_chunk(chunk_name)
+
+
+##############
+# PREDICATES #
+##############
+
+
+def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:
+    """
+    Created a predicate function which can be used for type narrowing the input parameter v
+
+    Args:
+        cls (type[ValueT]): The type which to check
+
+    Returns:
+        Predicate[ValueT]: The predicate function
+    """
+
+    def _fn(v: Any) -> TypeGuard[ValueT]:
+        return isinstance(v, cls)
+
+    return _fn
+
+
+def is_param(v: Any) -> TypeGuard[ChunkParamBase]:
+    """
+    A predicate function for checking if an object is an instance of ChunkParamBase
+
+    Args:
+        v (Any): The value to check
+
+    Returns:
+        TypeGuard[ChunkParamBase]: The TypeGuard
+    """
+    return is_inst(ChunkParamBase)(v)
+
+
+def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]:
+    """
+    Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
+    a value of type t
+
+    Args:
+        t (type[ValueT]): A value held by the parameter
+
+    Returns:
+        Predicate[ChunkParamBase[ValueT]]: The predicate function
+    """
+
+    def _fn(v) -> TypeGuard[ChunkParamBase[ValueT]]:
+        if not is_param(v):
+            return False
+        return t in ChunkFlags.ParamTypeToTypes(v.evaluate_type())
+
+    return _fn
+
+
+def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
+    """
+    A predicate function for checking if v is a ChunkGroupBase
+
+    Args:
+        v (Any): The input value to check
+
+    Returns:
+        TypeGuard[ChunkGroupBase]: The TypeGuard
+    """
+    return is_inst(ChunkGroupBase)(v)
+
+
+def is_chunk(v: Any) -> TypeGuard[ChunkBase]:
+    """
+    A predicate function for checking if v is a ChunkBase
+
+    Args:
+        v (Any): The input value to check
+
+    Returns:
+        TypeGuard[ChunkBase]: The TypeGuard
+    """
+    return is_inst(ChunkBase)(v)

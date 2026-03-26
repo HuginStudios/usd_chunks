@@ -147,7 +147,7 @@ def create_lop_node(chunk_name: str):
     if reg.initialized:
         for name, mod in reg.registered_modules.items():
             # reg.unload_chunk_module(mod)
-            mod.unload()
+            mod.remove_chunk()
 
     reg.initialize(scene, "chunk_houdini", unloaded=True)
 

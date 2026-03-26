@@ -6,4 +6,5 @@ scripts/user
 .env
 _installed_deps
 dist
+build
 *.egg-info

@@ -5,20 +5,14 @@ from pxr import Usd, Tf
 
 
 def apply(owner: chunk.Chunk, notice, sender):
-    menu = owner.get_param("schemas")
-    if not menu:
-        return
-
-    schema_str = menu.value
-    if not schema_str:
-        return
+    menu = owner.get_param("schemas", chunk.is_param_t(str))
 
     prims = chunk_registry.ChunkRegistry().scene.get_selected_prims()
     if not prims:
         return
 
     schema_reg = Usd.SchemaRegistry()
-    schema = schema_reg.GetTypeFromName(schema_str)
+    schema = schema_reg.GetTypeFromName(menu.value)
 
     for prim in prims:
         prim.ApplyAPI(schema)
@@ -34,9 +28,7 @@ def update(owner: chunk.Chunk, notice, sender):
     if not stage:
         return
 
-    param = owner.get_param("schemas")
-    if not param:
-        return
+    param = owner.get_param("schemas", chunk.is_inst(chunk.Menu))
 
     if not prim or prim == stage.GetPseudoRoot():
         param.menu_items = []

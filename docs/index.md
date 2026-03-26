@@ -27,4 +27,4 @@ def main(api):
 ```
 
 
-The ChunkRegistry will scan files and nested folders inside the directories defined in the environment variable **USD_CHUNK_DIR**
+The ChunkRegistry will scan files and nested folders inside the directories defined in the environment variable **USD_CHUNK_DIRS**

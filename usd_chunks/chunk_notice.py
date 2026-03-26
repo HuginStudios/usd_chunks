@@ -36,13 +36,26 @@ from typing import (
     Tuple,
     Type,
     TypeAlias,
+    TypeVar,
+    TYPE_CHECKING,
+    overload,
+    TypeGuard,
+    Sequence,
 )
 
 from attrs import define, field
 from pxr import Sdf, Tf, Usd
 from typing_extensions import Self
+from usd_chunks import chunk_serial
 
 logger = logging.getLogger(__name__)
+
+
+_T = TypeVar("_T")
+Predicate: TypeAlias = Callable[[Any], TypeGuard[_T]]
+
+if TYPE_CHECKING:
+    from usd_chunks import chunk_core
 
 
 class ChunkNoticeAlias(IntEnum):
@@ -91,6 +104,8 @@ class ChunkNoticeAlias(IntEnum):
     INPUT_CHANGED = auto()
     # Default notice for attributes that does not set an alias excplicitly
     ATTRIBUTE_CHANGED = auto()
+    # Specific ATTRIBUTE_CHANGED notice for when a 'value' attribute is changed
+    VALUE_CHANGED = auto()
     # Sent when the flags attribute changes
     FLAGS_CHANGED = auto()
     # Sent when the state attribute changes
@@ -103,7 +118,6 @@ class ChunkNoticeAlias(IntEnum):
     GROUP_CHANGED = auto()  # Sent when a group changes. This includes nested groups and param changes
 
     CHUNK_CHANGED = auto()  # Similar to GROUP_CHANGED but only for chunks
-    CHUNK_EXECUTED = auto()  # Sent when a chunks execute() function has been called
 
     # A chunk object was deleted. Use instead of PARAM_REMOVED for most applications, as PARAM_REMOVED only sends when
     # a param was added as a child to a NamedSyncedContainer (group / chunk / vector). CHUNK_DELETED on the other hand, sends whenever
@@ -112,6 +126,7 @@ class ChunkNoticeAlias(IntEnum):
 
     # UI notices
     MENU_ACTION_NOTICE = auto()
+    WIDGET_CHANGED = auto()
 
     # Stage notices
     PRIM_SELECTION_CHANGED = auto()
@@ -157,6 +172,9 @@ class ChunkNotice(Tf.Notice):
         self.data = data
 
 
+NoticeT = TypeVar("NoticeT", bound=ChunkNotice)
+
+
 class ChunkNoticeRegistry(metaclass=RegistrySingleton):
     """
     Register a new notice. Easiest way to register a new notice is to wrap a class declaration with @chunk_notice, as:
@@ -170,7 +188,7 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
         registered (Dict[int, Type[Tf.Notice]]): A dictionary mapping between a ChunkNoticeAlias and a registered TfNotice
     """
 
-    registered: Dict[int, type[ChunkNotice]] = {}
+    registered: Dict[ChunkNoticeAlias, type[ChunkNotice]] = {}
 
     @classmethod
     def get_from_alias(cls, alias: ChunkNoticeAlias) -> Type[ChunkNotice]:
@@ -186,7 +204,7 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
         Returns:
             Type[Tf.Notice]: The class of the registered notice
         """
-        notice = cls.registered.get(alias.value)
+        notice = cls.registered.get(alias)
         if notice is None:
             raise Tf.ErrorException(f"No notice found for alias {alias}")
         return notice
@@ -204,7 +222,7 @@ class ChunkNoticeRegistry(metaclass=RegistrySingleton):
             notice_class.alias = alias
             if not hasattr(notice_class, "data"):
                 notice_class.data = None
-            cls.registered[alias.value] = notice_class
+            cls.registered[alias] = notice_class
 
 
 def chunk_notice(alias: ChunkNoticeAlias):
@@ -215,10 +233,9 @@ def chunk_notice(alias: ChunkNoticeAlias):
         alias (ChunkNoticeAlias): The alias which maps to the new Tf.Notice class
     """
 
-    def _wrapper(cls: Type[ChunkNotice]):
+    def _wrapper(cls):
         ChunkNoticeRegistry().register(alias, cls)
         Tf.Type.Define(cls)
-
         return cls
 
     return _wrapper
@@ -227,48 +244,51 @@ def chunk_notice(alias: ChunkNoticeAlias):
 ### Chunk / Group / Param changed notices
 @chunk_notice(ChunkNoticeAlias.PARAM_CHANGED)
 class ParamChangeNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkParamBase"
 
 
 @chunk_notice(ChunkNoticeAlias.INPUT_CHANGED)
 class InputChangedNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkCommon"
 
 
 @chunk_notice(ChunkNoticeAlias.GROUP_CHANGED)
 class GroupChangeNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkGroupBase"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_CHANGED)
 class ChunkChangeNotice(ChunkNotice):
-    pass
-
-
-@chunk_notice(ChunkNoticeAlias.CHUNK_EXECUTED)
-class ChunkExecuteNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkBase"
 
 
 ### Create / Delete notices
 @chunk_notice(ChunkNoticeAlias.PARAM_ADDED)
-class ParamAddedNotice(ParamChangeNotice):
-    pass
+# class ParamAddedNotice(ParamChangeNotice):
+class ParamAddedNotice(ChunkNotice):
+    data: "chunk_core.ChunkCommon"
 
 
 @chunk_notice(ChunkNoticeAlias.PARAM_REMOVED)
-class ParamRemovedNotice(ParamChangeNotice):
-    pass
+# class ParamRemovedNotice(ParamChangeNotice):
+class ParamRemovedNotice(ChunkNotice):
+    data: "chunk_core.ChunkCommon"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_DELETED)
-class ChunkDeletedNotice(ChunkChangeNotice):
-    pass
+# class ChunkDeletedNotice(ChunkChangeNotice):
+class ChunkDeletedNotice(ChunkNotice):
+    data: "chunk_core.ChunkCommon"
 
 
 ### Attribute notices
 @chunk_notice(ChunkNoticeAlias.ATTRIBUTE_CHANGED)
 class AttributeChangeNotice(ChunkNotice):
+    data: "chunk_core.AttributeSender"
+
+
+@chunk_notice(ChunkNoticeAlias.VALUE_CHANGED)
+class ValueChangedNotice(AttributeChangeNotice):
     pass
 
 
@@ -285,17 +305,17 @@ class AttributeStateChangeNotice(AttributeChangeNotice):
 ### Chunk registry load / unload notices
 @chunk_notice(ChunkNoticeAlias.CHUNK_LOADED)
 class ChunkLoadedNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkBase"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_UNLOADED)
 class ChunkUnloadedNotice(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkBase"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_CONFIG_CHANGED)
 class ChunkConfigChanged(ChunkNotice):
-    pass
+    data: "chunk_core.ChunkConfig"
 
 
 ### UI Notices
@@ -304,15 +324,20 @@ class MenuActionNotice(ChunkNotice):
     pass
 
 
+@chunk_notice(ChunkNoticeAlias.WIDGET_CHANGED)
+class WidgetChangedNotice(ChunkNotice):
+    data: "chunk_core.ChunkParamWidgetBase"
+
+
 ### UsdView selection notices
 @chunk_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED)
 class PrimSelectionChangedNotice(ChunkNotice):
-    pass
+    data: List[Usd.Prim]
 
 
 @chunk_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED)
 class PropSelectionChangedNotice(ChunkNotice):
-    pass
+    data: Usd.Property
 
 
 # Register externally manages notice just to map to the custom enum
@@ -369,18 +394,22 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
             )
         notice = notice_class()
 
-    if sender is None:
-        notice.SendGlobally()
-    else:
-        notice.Send(sender)
+    try:
+        if sender is None:
+            notice.SendGlobally()
+        else:
+            notice.Send(sender)
+    except Tf.ErrorException:
+        logger.exception(f"Could not send notice {notice}")
+        return
+
     return notice
 
 
-CallbackT: TypeAlias = Callable[[Optional[ChunkNotice], Any, Optional[Set[ChunkNotice]]], Optional[ChunkNotice]]
 ConnSetT: TypeAlias = weakref.WeakValueDictionary[int, "DagNode"]
 
 
-@define(slots=True)
+@define(slots=True, hash=True)
 class DagConnections:
     """
     A dataclass for the DagNode connections
@@ -401,6 +430,11 @@ class DagConnections:
     outputs: ConnSetT = field(factory=ConnSetT)
 
 
+class DagGraphID:
+    def __init__(self, identifier: int):
+        self.identifier = identifier
+
+
 class DagNode:
     """
     A DagNode represents a connectable node in a DAG graph. This class handles any 'physical' connections between different
@@ -416,10 +450,12 @@ class DagNode:
 
     __slots__ = (
         "_index",
+        "_sort_key",
+        "_graph_id",
+        "_part_of_graph",
         "_input_data",
         "_dirty",
         "_connections",
-        "_callback",
         "_propagator",
         "__weakref__",
     )
@@ -430,6 +466,10 @@ class DagNode:
         self._connections: DagConnections = DagConnections()
         self._propagator = weakref.ref(propagator)
         self._index: int = 0
+
+        self._sort_key: int = 0
+        self._graph_id: DagGraphID = DagGraphID(id(self))
+        self._part_of_graph = True
 
     @property
     def propagator(self):
@@ -490,10 +530,24 @@ class DagNode:
             connect_reverse (bool, optional): If the input node should connect this node to its output. Defaults to True.
         """
         self._connections.inputs[self.next_key(self._connections.inputs)] = node
+
+        if node._part_of_graph and self._part_of_graph:
+            # Set the graph identifier of the input node, meaning they are part of the same graph
+            node._graph_id.identifier = self.get_graph_id()
+
         if connect_reverse:
             node.add_dependant(self)
         else:
             self.dirty = True
+
+        self._sort_key += 1 + node._sort_key
+        for o in self.get_outputs():
+            o._sort_key += 1 + node._sort_key
+
+        owner = self.get_owner_node()
+        while owner:
+            owner._sort_key += 1 + node._sort_key
+            owner = owner.get_owner_node()
 
     def add_dependant(self, node: "DagNode"):
         """
@@ -523,6 +577,9 @@ class DagNode:
 
         if node := self.get_owner_node():
             node.dirty = True
+
+            if node._part_of_graph and self._part_of_graph:
+                self._graph_id = node._graph_id
 
     def get_inputs(self) -> Iterator["DagNode"]:
         """
@@ -617,6 +674,21 @@ class DagNode:
             return True
         return False
 
+    def get_sort_key(self):
+        # idx = 0
+        # for i in self.get_inputs():
+        #     idx += 1 + i.get_sort_key()
+        return self._sort_key
+
+    def get_graph_id(self):
+        # _id = self._graph_id
+        # for i in self.get_inputs():
+        #     _id += i.get_graph_id()
+        # for o in self.get_outputs():
+        #     _id += o.get_graph_id()
+        # return _id
+        return self._graph_id.identifier
+
     def dirty_dependants(self, searched: Optional[Set["DagNode"]] = None):
         """
         Dirty all dependants. This will recursively set dependant (output) nodes dirty=True
@@ -633,13 +705,13 @@ class DagNode:
         searched.add(self)
 
         for node in self.get_outputs():
-            node._index += self._index + 1
+            node._index += 1
 
             node._input_data.add((ChunkNoticeAlias.INPUT_CHANGED, self))
             node.dirty_dependants(searched.copy())
 
         if owner := self.get_owner_node():
-            owner._index += self._index + 1
+            owner._index += 1
 
             owner._input_data |= self._input_data
             if self.propagator and (alias := self.propagator.get_notice_alias()):
@@ -710,7 +782,7 @@ class DagNode:
         self._index = 0
 
 
-class ChunkNoticePropagator:
+class ChunkNoticePropagator(chunk_serial.Serializeable):
     """
     A base class that implements the connectability of chunk objects. Chunk objects may be connected to eachother through
     'physical' connections, and to callbacks through 'non-physical' connections. These two connection methods differ in how
@@ -753,6 +825,35 @@ class ChunkNoticePropagator:
 
         super().__init__(*args, **kwargs)
 
+    def serialize(self, glb):
+        if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
+            res.attributes["dependencies"] = list(self.get_dependencies())
+        return res
+
+    def post_serial(self, owner):
+        if isinstance(owner, ChunkNoticePropagator):
+            self.set_owner(owner)
+        return super().post_serial(owner)
+
+    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
+        if name == "_callbacks":
+            return True, self._callbacks
+        if name.startswith("_"):
+            return False, value
+        return super().should_serialize_attribute(name, value)
+
+    def post_serial_setattr(self, name, value):
+        self.set_blocked(True)
+        if name == "dependencies":
+            # Since the _dependencies is an attribute of the DagNode, calling setattr(self, '_dependencies', value)
+            # would set the _dependencies on the AttributesBase instance. So instead we make sure the dependencies goes to the
+            # DagNode. The dependencies are serialized to the AttributesBase
+            for dep in value:
+                self.add_dependency(dep)
+        else:
+            super().post_serial_setattr(name, value)
+        self.set_blocked(False)
+
     @abstractmethod
     def request_delete(self):
         raise NotImplementedError
@@ -794,6 +895,9 @@ class ChunkNoticePropagator:
         if owner := self.get_owner():
             return owner.is_blocked()
         return False
+
+    def set_blocked(self, block: bool):
+        self._blocked = block
 
     def get_owner(self) -> Optional["ChunkNoticePropagator"]:
         """Get the owning ChunkNoticePropagator of this object
@@ -948,7 +1052,12 @@ class ChunkNoticePropagator:
         """
         self.get_dag_node().add_dependency(input.get_dag_node())
 
-    def get_dependency(self, index: int = 0) -> Optional["ChunkNoticePropagator"]:
+    @overload
+    def get_dependency(self, index: int = 0) -> Optional["ChunkNoticePropagator"]: ...
+    @overload
+    def get_dependency(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> _T: ...
+
+    def get_dependency(self, index: int = 0, predicate: Optional[Predicate[_T]] = None):
         """
         Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
 
@@ -956,9 +1065,57 @@ class ChunkNoticePropagator:
             ChunkNoticePropagator | None: The input connected at index, or None if not found
         """
         try:
-            return self.get_dag_node().get_input(index).propagator
-        except (IndexError, AttributeError):
-            return None
+            res = self.get_dag_node().get_input(index).propagator
+        except (KeyError, IndexError, AttributeError):
+            if not predicate:
+                return None
+            raise
+        if not predicate or predicate(res):
+            return res
+        raise ValueError(f"Predicate {predicate} failed for get_dependency({index})")
+
+    @overload
+    def get_dependencies(self) -> List["ChunkNoticePropagator"]: ...
+    @overload
+    def get_dependencies(self, predicate: Optional[Predicate[_T]] = None) -> List[_T]: ...
+
+    def get_dependencies(self, predicate: Optional[Predicate[_T]] = None):
+        if not predicate:
+            return [x.propagator for x in self.get_dag_node().get_inputs() if x.propagator]
+        return [x.propagator for x in self.get_dag_node().get_inputs() if predicate(x.propagator)]
+
+    @overload
+    def get_dependent(self, index: int = 0) -> Optional["ChunkNoticePropagator"]: ...
+
+    @overload
+    def get_dependent(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> _T: ...
+
+    def get_dependent(self, index: int = 0, predicate: Optional[Predicate[_T]] = None):
+        """
+        Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
+
+        Returns:
+            ChunkNoticePropagator | None: The input connected at index, or None if not found
+        """
+        try:
+            res = self.get_dag_node().get_output(index).propagator
+        except (KeyError, IndexError, AttributeError):
+            if not predicate:
+                return None
+            raise
+        if not predicate or predicate(res):
+            return res
+        raise ValueError(f"Predicate {predicate} failed for get_dependency({index})")
+
+    @overload
+    def get_dependents(self) -> List["ChunkNoticePropagator"]: ...
+    @overload
+    def get_dependents(self, predicate: Optional[Predicate[_T]] = None) -> List[_T]: ...
+
+    def get_dependents(self, predicate: Optional[Predicate[_T]] = None):
+        if not predicate:
+            return [x.propagator for x in self.get_dag_node().get_outputs() if x.propagator]
+        return [x.propagator for x in self.get_dag_node().get_outputs() if predicate(x.propagator)]
 
     def get_callbacks(self) -> List["NoticeConnection"]:
         """
@@ -987,17 +1144,24 @@ class ChunkNoticePropagator:
             List[chunk_notice.NoticeConnection]: A list of found connections matching the arguments
         """
 
-        query = {"method": method, "sender": sender, "alias": notice_type}
+        query = {"get_method": method, "sender": sender, "alias": notice_type}
         result = []
+
+        def _conn_attr(conn, q):
+            res = getattr(conn, q)
+            if callable(res):
+                return res()
+            return res
+
         for conn in self.get_callbacks():
-            if any([query[y] is not None and getattr(conn, y) == query[y] for y in query]):
+            if any([query[y] is not None and _conn_attr(conn, y) == query[y] for y in query]):
                 result.append(conn)
 
         return result
 
     def add_callback(
         self,
-        method: Callable[[ChunkNotice, Any], Any] | Callable[[Self, ChunkNotice, Any], Any],
+        method: Callable[[NoticeT, Any], Any] | Callable[[Self, NoticeT, Any], Any],
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
@@ -1062,7 +1226,7 @@ class ChunkNoticePropagator:
         pass
 
 
-class NoticeConnection:
+class NoticeConnection(chunk_serial.Serializeable):
     """
     A storage for a TfListener object. This class provides a simple client-facing interface for
     creating callbacks for the TfNotice system, with some additional functionality. This exists also
@@ -1106,28 +1270,28 @@ class NoticeConnection:
         owner: An optional owner object. Usually 'self', when adding callbacks on a class
     """
 
-    __slots__ = ("alias", "listener", "globally", "_method", "_sender", "_owner", "__weakref__")
+    __slots__ = ("alias", "_listener", "globally", "_method", "_sender", "_owner", "__weakref__")
 
     def __init__(
         self,
-        method: Callable,
-        alias: ChunkNoticeAlias,
+        method: Optional[Callable] = None,
+        alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
         sender: Optional[Any] = None,
         globally: bool = False,
         owner: Optional[ChunkNoticePropagator] = None,
     ):
         self.alias: ChunkNoticeAlias = alias
-        self.listener: Optional[Tf.Notice.Listener] = None
-
         self.globally: bool = globally
 
-        if inspect.ismethod(method):
-            self._method: Callable = weakref.WeakMethod(method, self._method_died)
-        else:
-            self._method: Callable = weakref.ref(method, self._method_died)
+        self._listener: Optional[Tf.Notice.Listener] = None
 
-        self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender, self._sender_died) if sender else None
-        self._owner: Optional[weakref.ReferenceType] = weakref.ref(owner, self._owner_died) if owner else None
+        if inspect.ismethod(method):
+            self._method: Callable = weakref.WeakMethod(method, self._connection_broke)
+        else:
+            self._method: Callable = weakref.ref(method, self._connection_broke)
+
+        self._sender: Optional[weakref.ReferenceType] = weakref.ref(sender, self._connection_broke) if sender else None
+        self._owner: Optional[weakref.ReferenceType] = weakref.ref(owner, self._connection_broke) if owner else None
 
         self.connect()
 
@@ -1148,7 +1312,7 @@ class NoticeConnection:
 
     @owner.setter
     def owner(self, obj: Optional[ChunkNoticePropagator]):
-        self._owner = weakref.ref(obj, self._owner_died) if obj else None
+        self._owner = weakref.ref(obj, self._connection_broke) if obj else None
 
     @property
     def sender(self) -> Optional[Any]:
@@ -1156,7 +1320,24 @@ class NoticeConnection:
 
     @sender.setter
     def sender(self, obj):
-        self._sender = None if obj is None else weakref.ref(obj, self._sender_died)
+        self._sender = None if obj is None else weakref.ref(obj, self._connection_broke)
+
+    def serialize_kwarg(self, name: str, default: Any) -> Any:
+        if name == "method":
+            return self.get_method()
+        if name == "alias":
+            return self.alias
+        if name == "sender":
+            return self.sender
+        if name == "globally":
+            return self.globally
+        if name == "owner":
+            return self.owner
+        return super().serialize_kwarg(name, default)
+
+    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
+        # No attributes should be serialized as the attributes are serialized by kwargs
+        return False, None
 
     def handle_callback(self, notice, sender=None, context=True):
         """
@@ -1184,8 +1365,8 @@ class NoticeConnection:
                         meth(*args)
                 else:
                     meth(*args)
-            except Exception as e:
-                logger.exception(e)
+            except Exception:
+                logger.exception("failed to run method %s", meth)
             return
 
         meth(*args)
@@ -1205,74 +1386,24 @@ class NoticeConnection:
             logger.warning("Could not find appropriate notice to connect for alias %s", self.alias)
             return
 
-        if self.listener is not None:
+        if self._listener is not None:
             self.disconnect()
 
         if sender is not None:
             self._sender = weakref.ref(sender)
 
         if self.sender is None or self.globally:
-            self.listener = Tf.Notice.RegisterGlobally(notice, self.handle_callback)
+            self._listener = Tf.Notice.RegisterGlobally(notice, self.handle_callback)
         elif self.sender:
-            self.listener = Tf.Notice.Register(notice, self.handle_callback, self.sender)
+            self._listener = Tf.Notice.Register(notice, self.handle_callback, self.sender)
 
-    def _sender_died(self, ref):
-        self.disconnect()
-
-    def _owner_died(self, ref):
-        self.disconnect()
-
-    def _method_died(self, ref):
+    def _connection_broke(self, ref):
         self.disconnect()
 
     def disconnect(self):
         """
         Calls Revoke() on the stored TfListener
         """
-        if self.listener is not None:
-            self.listener.Revoke()
-            self.listener = None
-
-
-class SceneSender(ChunkNoticePropagator):
-    """
-    Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
-    See implementation in plugins/usdview/__init__.py
-    """
-
-    @abstractmethod
-    def get_stage(self) -> Usd.Stage:
-        raise NotImplementedError
-
-    def get_selected_prims(self) -> List[Usd.Prim]:
-        """
-        Get the selected prims in the scene
-
-        Returns:
-            List[Usd.Prim]: Selected prims
-        """
-        raise NotImplementedError
-
-    def get_selected_property(self) -> Usd.Property:
-        """
-        Get the selected property in the scene
-
-        Returns:
-            Usd.Property: Selected property
-        """
-        raise NotImplementedError
-
-    def primSelectionChangedCallback(self, *args, **kwargs):
-        try:
-            send_notice(ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.get_selected_prims())
-        except Tf.ErrorException:
-            pass
-
-    def propSelectionChangedCallback(self, *args, **kwargs):
-        try:
-            send_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property())
-        except Tf.ErrorException:
-            pass
-
-    def get_notice_alias(self) -> ChunkNoticeAlias:
-        return ChunkNoticeAlias.NONE
+        if self._listener is not None:
+            self._listener.Revoke()
+            self._listener = None

@@ -1,17 +1,18 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Any, Dict, Optional, DefaultDict, List
+from typing import Any, Dict, Optional, DefaultDict, List, Generic
 
 from pxr import Tf
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_serial
 import usd_chunks.chunk_flags
 from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
 
 from functools import partial
-from collections import defaultdict
 from usd_chunks.chunk_flags import ChunkFlags
 from enum import Enum
+import os
+import re
 
 
 class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
@@ -127,18 +128,44 @@ class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
         return self.setText(text)
 
 
-class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QLineEdit):
+class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidget):
     def __init__(self, param: chunk.LineEdit):
         super().__init__(param)
+
+        self.button = QtWidgets.QToolButton(self)
+        self.button.setText("Pin Selection")
+        self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("pin"))))
+        self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+
+        self.button.clicked.connect(self.pin_prim)
+
+        self.text = QtWidgets.QLineEdit(self)
+        self.text.editingFinished.connect(self.value_changed)
+        self.main_layout = QtWidgets.QHBoxLayout()
+
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.addWidget(self.text)
+        self.main_layout.addWidget(self.button)
+        self.setLayout(self.main_layout)
+
+        self.button.setHidden(not self.param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION))
+
         self.setup_chunk_widget()
 
-        self.editingFinished.connect(self.value_changed)
+    def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: chunk.ChunkParamBase):
+        if notice.alias == chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED and notice.data.value:
+            self.button.setHidden(ChunkFlags.ParamFlags.PRIM_SELECTION not in notice.data.value)
+
+        return super().handle_param_changed(notice, sender)
+
+    def pin_prim(self):
+        self.param.set_prims(self.param.get_scene().get_selected_prims())
 
     def get_value(self):
-        return self.text()
+        return self.text.text()
 
     def set_value(self, value):
-        return self.setText(str(value))
+        return self.text.setText(str(value))
 
 
 class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
@@ -148,7 +175,7 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         super().__init__(param)
 
         self.button = QtWidgets.QToolButton(self)
-        self.button.setText("Test button")
+        self.button.setText("Browse")
 
         self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("folder_open"))))
 
@@ -164,8 +191,6 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         if not self.param:
             return
 
-        dial = QtWidgets.QFileDialog()
-
         pattern = ""
         if self.param.pattern:
             pattern = self.param.pattern
@@ -176,18 +201,12 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         if self.param.extensions:
             pattern = " ".join([pattern + x for x in self.param.extensions])
 
-        dial.setNameFilter(pattern)
+        create_new = not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
+        directory = self.param.has_flag(ChunkFlags.ParamFlags.DIRECTORY)
 
-        if self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING):
-            dial.setFileMode(dial.FileMode.ExistingFile)
-
-        if dial.exec():
-            sel = dial.selectedFiles()
-            if not sel:
-                return
-
-            self.set_value(sel[0])
-            self.ValueChanged.emit(sel[0])
+        if file := file_dial(pattern, create_new, directory):
+            self.set_value(file)
+            self.ValueChanged.emit(file)
 
     def get_value(self):
         return self.text.text()
@@ -348,12 +367,71 @@ class LabeledWidget(QtWidgets.QWidget):
         self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
+        self._value_tooltip = QtWidgets.QLabel(parent=self)
+        self._value_tooltip.setHidden(True)
+        self._value_tooltip.setWindowFlags(QtCore.Qt.WindowType.ToolTip)
+        self._tooltip_timer = QtCore.QTimer(self)
+        self._tooltip_timer.timeout.connect(self.hide_tooltip)
+
+        if isinstance(self.widget, ChunkParamWidgetBase):
+            self._listener = chunk_notice.NoticeConnection(
+                self.update_value, alias=self.widget.get_notice_alias(), sender=self.widget
+            )
+
+        self.setMouseTracking(True)
+
+    def should_show_tooltip(self):
+        if not isinstance(self.widget, ChunkParamWidgetBase):
+            return False
+
+        t = self.widget.param.evaluate_type()
+        if (ChunkFlags.ParamType.EMPTY | ChunkFlags.ParamType.STRING) & t != 0:
+            return False
+        return True
+
+    def tooltip_pos(self):
+        return self.mapToGlobal(self.rect().bottomLeft())
+
+    def show_tooltip(self):
+        self._value_tooltip.move(self.tooltip_pos())
+        self._value_tooltip.setHidden(False)
+        self._value_tooltip.setText(str(self.widget.param.value))
+        self._tooltip_timer.start(3000)
+
+    def hide_tooltip(self):
+        self._value_tooltip.hide()
+
+    def update_value(self, notice: chunk_notice.ChunkNotice, sender):
+        name = notice.data.name
+        if name in ["label", "name"]:
+            self.update_label(notice.data.value)
+        elif name == "value" and self.should_show_tooltip():
+            self.show_tooltip()
+
     def update_label(self, text):
         self.label.setHidden(not bool(text))
         self.label.setText(text)
 
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self.should_show_tooltip():
+            self.show_tooltip()
+            event.accept()
+        return super().mouseMoveEvent(event)
 
-class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
+    def enterEvent(self, event: QtGui.QEnterEvent) -> None:
+        if self.should_show_tooltip():
+            self.show_tooltip()
+            event.accept()
+        return super().enterEvent(event)
+
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        self.hide_tooltip()
+        return super().leaveEvent(event)
+
+
+class ContainerWidget(
+    Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QWidget
+):
     """
     Chunk is a base class for creating UI components.
     It provides a structure for initializing the API and creating UI Chunks.
@@ -363,7 +441,7 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
 
     def __init__(
         self,
-        group: chunk_core.ChunkContainerBase,
+        group,
         parent=None,
     ):
         self.animation_duration = 300
@@ -567,48 +645,8 @@ class ContainerWidget(chunk_core.ChunkContainerWidgetBase, QtWidgets.QWidget):
             widget.param.request_delete()
         self.remove_widget(widget)
 
-    def update_param_label(self, notice, sender: chunk_core.AttributeSender):
-        """
-        When a param name, label or flag is changed, this will correct the label in the FormLayout.
-        If LABELED was unset, then remove the label and set the widget role to SpanningRole
-        If LABELED was set, add the label
-        otherwise, just update the label text if name or label changed
 
-        Args:
-            param (chunk_core.ChunkCommon): The param that was changed
-            notice (Tf.Notice): The notice that was sent
-            sender (chunk_core.AttributeSender): The attribute that changed
-        """
-        param = sender.get_owner()
-        if not param or not isinstance(param, chunk_core.ChunkCommon):
-            return
-
-        labeled = param.has_flag(ChunkFlags.ParamFlags.LABELED)
-        if not labeled:
-            return
-
-        for i in range(self.content_layout.count()):
-            item = self.content_layout.itemAt(i)
-            if not item:
-                continue
-
-            w = item.widget()
-            if isinstance(w, LabeledWidget):
-                if not isinstance(w.widget, ChunkParamWidgetBase):
-                    continue
-
-                if isinstance(w.widget.param, chunk_core.ProxyParam):
-                    if not w.widget.param._param_ref == param:
-                        continue
-                else:
-                    if not w.widget.param == param:
-                        continue
-
-                if labeled:
-                    w.update_label(param.get_label())
-
-
-class ChunkWidget(ContainerWidget):
+class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     """
     Chunk is a base class for creating UI components.
     It provides a structure for initializing the API and creating UI Chunks.
@@ -616,7 +654,7 @@ class ChunkWidget(ContainerWidget):
 
     def __init__(
         self,
-        group: chunk.Chunk,
+        group: chunk.ChunkBase,
         parent=None,
     ):
         super().__init__(group, parent)
@@ -641,8 +679,8 @@ class ChunkWidget(ContainerWidget):
         if not res:
             return
 
-        conn = actions[res]
-        conn.handle_callback(chunk_notice.MenuActionNotice(self.group.get_notice_data()), self.group, False)
+        if conn := actions.get(res):
+            conn.handle_callback(chunk_notice.MenuActionNotice(self.group.get_notice_data()), self.group, False)
 
     def get_category(self) -> str:
         """Get the category of this Chunk
@@ -679,6 +717,8 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
         self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
 
+        self.setMinimumWidth(200)
+
     def update_tab_position(self):
         if self.height() > self.width():
             self._tabPosition = QtWidgets.QTabWidget.TabPosition.East
@@ -697,7 +737,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         items = dict()
         items["menu"] = QtWidgets.QMenu("chunks")
 
-        for mod in chunk_registry.ChunkRegistry().registered_modules.values():
+        for mod in chunk_registry.ChunkRegistry().get_chunk_modules(sort_result=True):
             cat = mod.config.category
             if isinstance(cat, Enum):
                 cat = cat.value
@@ -720,14 +760,36 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
                     d[ns] = {"menu": d.get("menu").addMenu(ns)}
                 d = d[ns]
 
-        res = items["menu"].exec_(event.globalPos())
+        items["menu"].addSeparator()
 
-        if not res or not (mod := res.data()):
+        import_action = QtGui.QAction("import")
+        import_action.setData("import")
+        items["menu"].addAction(import_action)
+
+        exc = items["menu"].exec_(event.globalPos())
+
+        if not exc:
             return
+
+        if exc.data() == "import":
+            ext = (
+                chunk_serial.FileExtensions.PY_MODULE,
+                chunk_serial.FileExtensions.CHUNK_MODULE,
+            )
+            flt = " ".join(f"*{x}" for x in ext)
+            if file := file_dial(flt):
+                chunk_registry.ChunkRegistry().import_chunk(file)
+            return
+
+        if not (mod := exc.data()) or not isinstance(mod, chunk_registry.ChunkModule):
+            return
+
         if mod.loaded:
-            mod.create()
+            chunks = mod.create()
         else:
-            mod.load()
+            chunks = mod.load()
+
+        chunk_registry.ChunkRegistry().scene.add_chunks(chunks)
 
 
 class ChunkWidgetDocker(QtWidgets.QWidget):
@@ -759,6 +821,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
         registry = chunk_registry.ChunkRegistry()
+
         self.setStyleSheet("""
         QFrame{
             background-color: #333333;
@@ -838,13 +901,10 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         """)
 
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        for mod in registry.registered_modules.values():
-            if not mod.loaded:
-                continue
 
-            for c in mod.loaded_chunks.values():
-                if not self.add_chunk_widget(c):
-                    continue
+        if registry.initialized:
+            for c in registry.scene.get_chunks():
+                self.add_chunk_widget(c)
 
         self.main_layout = QtWidgets.QVBoxLayout()
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -853,7 +913,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.setLayout(self.main_layout)
         self.show()
 
-    def add_chunk_widget(self, loaded_chunk: chunk.Chunk | ChunkWidget) -> ChunkWidget:
+    def add_chunk_widget(self, loaded_chunk: chunk.ChunkBase | ChunkWidget) -> ChunkWidget:
         """Adds a ChunkWidget to the docker
 
         Args:
@@ -864,7 +924,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         """
         widget = None
 
-        if isinstance(loaded_chunk, chunk.Chunk):
+        if isinstance(loaded_chunk, chunk.ChunkBase):
             # If the returned value is a Chunk, we need to create the widget here as well
             widget = ChunkWidget(loaded_chunk, self)
         elif isinstance(loaded_chunk, ChunkWidget):
@@ -882,11 +942,27 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         return widget
 
 
+class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self._mappings = {}
+
+    def add_mapping(self, pattern, format):
+        self._mappings[pattern] = format
+
+    def highlightBlock(self, text):
+        for pattern, format in self._mappings.items():
+            for match in re.finditer(pattern, text):
+                start, end = match.span()
+                self.setFormat(start, end - start, format)
+
+
 class ChunkModuleLoader(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.content = QtWidgets.QTableWidget(rowCount=0, columnCount=4)
+        self.content = QtWidgets.QTableWidget(rowCount=0, columnCount=4, parent=self)
 
         self.content.setSelectionMode(QtWidgets.QTableWidget.SelectionMode.ExtendedSelection)
         self.content.setSelectionBehavior(QtWidgets.QTableWidget.SelectionBehavior.SelectRows)
@@ -900,6 +976,38 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         self.content.model().dataChanged.connect(self.handle_data_change)
 
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+        if not (item := self.content.currentItem()):
+            return
+
+        reg = chunk_registry.ChunkRegistry()
+        if not (mod := reg.get_chunk_module(item.text())):
+            return
+
+        menu = QtWidgets.QMenu()
+
+        # actions: Dict[QtGui.QAction, chunk_registry.ChunkModule] = {}
+        export_action = QtGui.QAction("export")
+        inspect_action = QtGui.QAction("inspect")
+
+        menu.addActions([export_action, inspect_action])
+
+        res = menu.exec_(event.globalPos())
+
+        if not res:
+            return
+
+        if res == export_action:
+            exts = (chunk_serial.FileExtensions.CHUNK_MODULE, chunk_serial.FileExtensions.PY_MODULE)
+            flt = " ".join([f"*{x}" for x in exts])
+            if file := file_dial(flt, True):
+                mod.export(file)
+        elif res == inspect_action and mod.module:
+            src = chunk_serial.serialize_source(mod.module)
+            python_source_dial(src)
+
+        return super().contextMenuEvent(event)
+
     def get_check_state(self, loaded):
         return QtCore.Qt.CheckState.Checked if loaded else QtCore.Qt.CheckState.Unchecked
 
@@ -911,19 +1019,15 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         c1 = QtWidgets.QTableWidgetItem(mod.module_name)
 
+        c2 = QtWidgets.QTableWidgetItem(mod.config.category)
+
         self.content.setItem(row, 0, c0)
         self.content.setItem(row, 1, c1)
-        if mod.loaded_chunks:
-            c2 = QtWidgets.QTableWidgetItem()
-            c2.setText(", ".join([x.name for x in mod.loaded_chunks.values()]))
-            self.content.setItem(row, 2, c2)
-        c3 = QtWidgets.QTableWidgetItem(mod.config.category)
-        self.content.setItem(row, 3, c3)
+        self.content.setItem(row, 3, c2)
 
     def load_chunks(self):
         reg = chunk_registry.ChunkRegistry()
-        mods = list(reg.registered_modules.values())
-        for row, c in enumerate(mods):
+        for row, c in enumerate(reg.get_chunk_modules()):
             self.new_row(row, c)
 
     def load_unload(self, mod: chunk_registry.ChunkModule, check):
@@ -970,6 +1074,76 @@ class ChunkModuleLoader(QtWidgets.QDialog):
                 if check_item:
                     check_item.setCheckState(self.get_check_state(check))
                     self.load_unload(mod, check)
+
+
+def confirm_dial(msg) -> bool:
+    dial = QtWidgets.QMessageBox(text=msg)
+    dial.setStandardButtons(QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Yes)
+    return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
+
+
+def python_source_dial(src: str):
+    _editor = QtWidgets.QPlainTextEdit(src, readOnly=True)
+    hl = PythonSyntaxHighlighter(_editor.document())
+
+    class_format = QtGui.QTextCharFormat()
+    class_format.setFontWeight(QtGui.QFont.Weight.Bold)
+    class_format.setForeground(QtCore.Qt.GlobalColor.blue)
+    pattern = r"^\s*class\s+\w+\(.*$"
+    hl.add_mapping(pattern, class_format)
+
+    function_format = QtGui.QTextCharFormat()
+    function_format.setFontItalic(True)
+    function_format.setForeground(QtCore.Qt.GlobalColor.blue)
+    pattern = r"^\s*def\s+\w+\s*\(.*\)\s*:\s*$"
+    hl.add_mapping(pattern, function_format)
+
+    comment_format = QtGui.QTextCharFormat()
+    comment_format.setBackground(QtGui.QColor("#77ff77"))
+    hl.add_mapping(r"^\s*#.*$", comment_format)
+
+    font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+    _editor.setFont(font)
+
+    dial = QtWidgets.QDialog()
+    dial_layout = QtWidgets.QHBoxLayout()
+    dial.setLayout(dial_layout)
+    dial_layout.addWidget(_editor)
+    return dial.exec()
+
+
+def file_dial(filter: Optional[str] = None, create_new=False, directory=False):
+    dial = QtWidgets.QFileDialog()
+
+    accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptOpen
+    file_mode = QtWidgets.QFileDialog.FileMode.AnyFile
+
+    # if create_new:
+    #     accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptSave
+
+    if directory:
+        file_mode = QtWidgets.QFileDialog.FileMode.Directory
+
+    elif not create_new:
+        file_mode = QtWidgets.QFileDialog.FileMode.ExistingFile
+        dial.setOption(QtWidgets.QFileDialog.Option.ReadOnly)
+
+    dial.setFileMode(file_mode)
+    dial.setAcceptMode(accept_mode)
+
+    if filter and not directory:
+        dial.setNameFilter(filter)
+
+    if not dial.exec():
+        return None
+
+    res = dial.selectedFiles()[0]
+
+    if create_new:
+        if os.path.exists(res) and not confirm_dial(f"Override {res}?"):
+            return None
+
+    return res
 
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):

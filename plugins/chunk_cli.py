@@ -8,20 +8,22 @@ python chunk_cli.py --module examples.dependencies A.A_param=2 B.B_param=3
 ```
 
 will run the examples.dependency module. This modules exports 4 chunks: A, B, C, D. Where C is dependant on A and B, and D is Dependant on A,B, and C.
-The arguments passed to chunk_cli will set the value A_param on chunk A to 2, the value of B_param in chunk B to 3. Since chunk C of the module is 
+The arguments passed to chunk_cli will set the value A_param on chunk A to 2, the value of B_param in chunk B to 3. Since chunk C of the module is
 dependent on A and B, C will solve, then finally triggering D to solve.
 
 In this case, the -e flag is unessesary as the chunk D is already solved after A,B,C are solved.
 """
 
-from usd_chunks import chunk_registry, chunk_notice, chunk
+from usd_chunks import chunk_registry, chunk_core, chunk
 from argparse import ArgumentParser
 
 from pxr import Usd
 
 
-class HeadlessScene(chunk_notice.SceneSender):
+class HeadlessScene(chunk_core.SceneSender):
     def __init__(self, usdFile=None) -> None:
+        super().__init__()
+
         if usdFile:
             self.stage = Usd.Stage.Open(usdFile)
         else:
@@ -31,26 +33,28 @@ class HeadlessScene(chunk_notice.SceneSender):
         return self.stage
 
 
-def initialize(module, usdFile=None):
+def initialize(module_names, usdFile=None):
     scene = HeadlessScene(usdFile)
 
     creg = chunk_registry.ChunkRegistry()
-    creg.initialize(scene, "cli", True)
+    creg.initialize(scene, "cli")
+
     chunk_registry.ChunkLayerManager().initialize(scene.get_stage())
+    for name in module_names:
+        chunk.create_chunks(name)
 
-    if mod := creg.get_chunk_module(module):
-        mod.load()
-        return mod
-    return None
+    return scene.get_chunks()
 
 
-def parse_params(mod: chunk_registry.ChunkModule, args):
+def parse_params(chunks, args):
+    cs = {x.name: x for x in chunks}
+
     for arg in args:
         name, value = arg.split("=")
         cname, parampath = name.split(".", maxsplit=2)
 
-        if not (c := mod.loaded_chunks.get(cname)):
-            print(f"Could not find chunk {cname} from module {mod.module_name}")
+        if not (c := cs.get(cname)):
+            print(f"Could not find chunk {cname}")
             continue
 
         if not (param := c.get_param(parampath)):
@@ -72,17 +76,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--file", required=False, help="A path to a usd file. Supported formats: (.usda, .usd, .usdc, .usdz)"
     )
-    parser.add_argument("--module", help="The chunk module to load")
+    parser.add_argument("--modules", nargs="+", help="The chunk module to load")
+    parser.add_argument("--args", nargs="+", help="Arguments to the chunk loaded from the module")
     parser.add_argument("-e", action="store_true", help="Should the last loaded chunk from the module call execute")
-    parser.add_argument("args", nargs="+", help="Arguments to the chunk loaded from the module")
 
     args = parser.parse_args()
 
-    mod = initialize(args.module, args.file)
+    if chunks := initialize(args.modules, args.file):
+        parse_params(chunks, args.args)
 
-    if mod and mod.loaded_chunks:
-        parse_params(mod, args.args)
-
-        if args.e:
-            c = list(mod.loaded_chunks.values())[-1]
+    if args.e:
+        for c in chunks:
             c.execute()

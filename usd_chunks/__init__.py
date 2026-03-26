@@ -12,7 +12,7 @@ __author__ = "Viktor Lanner"
 __email__ = "viktor.lanner@huginstudios.com"
 
 _logger = logging.getLogger("usd_chunks")
-_logger.setLevel(logging.DEBUG)
+_logger.setLevel(logging.INFO)
 
 # create console handler and set level to debug
 ch = logging.StreamHandler()

@@ -7,13 +7,13 @@ def import_sublayer(owner: chunk.Chunk, notice, sender):
     if notice.data.name not in ["size", "value"]:
         return
 
-    list_group = owner.get_param("imports")
+    list_group = owner.get_param("imports", chunk.is_inst(chunk.ListGroup))
     paths = []
 
-    assert isinstance(list_group, chunk.ListGroup)
+    # assert isinstance(list_group, chunk.ListGroup)
 
     for i in range(list_group.size):
-        p = list_group.get_indexed_param("sublayer_path", i)
+        p = list_group.get_indexed_param("sublayer_path", i, chunk.is_param_t(str))
         if p and p.value:
             paths.append(p.value)
 
@@ -33,6 +33,7 @@ def main():
     sublayerChunk = chunk.Chunk("Sublayer")
 
     sublayer_fb = chunk.FileBrowser("sublayer_path", extensions=[".usd", ".usda", ".usdc", ".usdz"])
+    sublayer_fb.set_flag(chunk.ChunkFlags.ParamFlags.FILE_EXISTING)
     button = chunk.Button("import", "import")
 
     listGroup = chunk.ListGroup("imports")

@@ -1,8 +1,7 @@
 from pxr import Usd, UsdGeom, Sdf
-from usd_chunks import chunk, chunk_registry, chunk_notice
+from usd_chunks import chunk
 
 import numpy as np
-import usd_chunks.chunk_core
 
 
 def build_hair(stage, target, count=15, seg=2, length=0.2, path="/curves", faces=None):
@@ -120,12 +119,12 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
     if sender is not owner.get_param("mesh_type"):
         return
 
-    groups = [x for x in owner.get_my_params() if isinstance(x, chunk.Group)]
+    groups = owner.get_my_params(chunk.is_group)
     selected = param.value
 
     ctx = owner.get_edit_context()
-    if ctx and chunk_registry.ChunkLayerManager().initialized:
-        chunk_registry.ChunkLayerManager().clear_layer(ctx.identifier)
+    if ctx and (lreg := chunk.get_layer_manager()):
+        lreg.clear_layer(ctx.identifier)
 
     for g in groups:
         if g.name == selected:
@@ -143,11 +142,13 @@ def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
     if not stage:
         return
 
-    count = owner.get_param("count")
-    segs = owner.get_param("segments")
-    len = owner.get_param("length")
+    count = owner.get_param("count", chunk.is_param_t(int))
+    segs = owner.get_param("segments", chunk.is_param_t(int))
+    len = owner.get_param("length", chunk.is_param_t(float))
 
-    tgt = chunk_registry.ChunkRegistry().scene.get_selected_prims()
+    tgt = None
+    if scene := chunk.get_scene():
+        tgt = scene.get_selected_prims()
 
     if not tgt:
         return
@@ -172,7 +173,7 @@ def main():
             chunk.Slider("length", default_value=1),
         ]
     )
-    curly_group.set_state(usd_chunks.chunk_core.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
+    curly_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     curly_group.add_callback(hair_changed)
 
     chunk_api = chunk.Chunk("Add Hair")
