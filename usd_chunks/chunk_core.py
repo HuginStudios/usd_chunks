@@ -2239,6 +2239,9 @@ class ChunkCommon(AttributesBase):
         If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.
         """
 
+        # Make sure we're enabled when deleting as being disabled will block necessary notices from being sent
+        self.unset_state(ChunkFlags.State.DISABLED)
+
         if not self.can_delete():
             logger.warning(f"Deleting node: {self.name} with connected outputs. Stuff may break")
             self.get_dag_node().disconnect()
@@ -2536,6 +2539,28 @@ class ChunkContainerBase(ChunkCommon):
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
+
+    def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
+        if isinstance(notice, chunk_notice.AttributeStateChangeNotice):
+            # If this container holds nested chunks, and the DISABLED state was switched, we should propagate the state
+            # to all nested chunks. This is done because the chunk layers are muted/unmuted based on the ENABLED state,
+            # and if parent chunks are DISABLED and nested chunks are not, the nested chunk layer will not be muted
+            old_state = ChunkFlags.State(notice.data.old_value)
+            new_state = ChunkFlags.State(notice.data.value)
+            added = new_state ^ (new_state & old_state)
+            removed = old_state ^ (new_state & old_state)
+
+            if ChunkFlags.State.DISABLED in (added | removed):
+                def _pred(val) -> TypeGuard[ChunkBase]:
+                    return isinstance(val, ChunkBase)
+
+                for cc in self.get_params(_pred):
+                    if ChunkFlags.State.DISABLED in added:
+                        cc.set_state(ChunkFlags.State.DISABLED)
+                    else:
+                        cc.unset_state(ChunkFlags.State.DISABLED)
+
+        return super().data_changed(notice)
 
     def remove_param_or_group(self, param: ChunkCommon):
         """
@@ -3023,8 +3048,6 @@ class ChunkBase(ChunkGroupBase):
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
-        self._blocked = True
-
         self.add_callback(self.disable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
         self.add_callback(self.enable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
         self.add_callback(self.remove, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
@@ -3224,8 +3247,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         names = self.get_chunk_names()
         if c.name in names:
             c.name = c.get_valid_child_name(c.name, set(names))
-
-        c.set_blocked(False)
         try:
             c.check_hierarchy()
         except Exception as e:

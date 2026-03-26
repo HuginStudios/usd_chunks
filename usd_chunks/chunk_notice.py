@@ -852,7 +852,6 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                 self.add_dependency(dep)
         else:
             super().post_serial_setattr(name, value)
-
         self.set_blocked(False)
 
     @abstractmethod

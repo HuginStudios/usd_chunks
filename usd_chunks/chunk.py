@@ -470,6 +470,7 @@ def get_scene():
     if reg := get_chunk_registry():
         return reg.scene
 
+
 def get_layer_manager():
     res = ChunkLayerManager()
     return res if res.initialized else None
@@ -492,6 +493,7 @@ def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
     if not anonymous:
         for c in chunks:
             reg.scene.add_chunk(c)
+
     return chunks
 
 
@@ -516,6 +518,7 @@ def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:
     Returns:
         Predicate[ValueT]: The predicate function
     """
+
     def _fn(v: Any) -> TypeGuard[ValueT]:
         return isinstance(v, cls)
 
@@ -551,6 +554,7 @@ def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]:
         if not is_param(v):
             return False
         return t in ChunkFlags.ParamTypeToTypes(v.evaluate_type())
+
     return _fn
 
 
@@ -565,6 +569,7 @@ def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
         TypeGuard[ChunkGroupBase]: The TypeGuard
     """
     return is_inst(ChunkGroupBase)(v)
+
 
 def is_chunk(v: Any) -> TypeGuard[ChunkBase]:
     """

@@ -146,6 +146,9 @@ class SerializedObject:
 
     pass
 
+    def as_dict(self):
+        return attrs.asdict(self, recurse=False)
+
 
 @attrs.define
 class SerializedClass(SerializedObject):
@@ -243,13 +246,17 @@ class SerializedClass(SerializedObject):
             if not sa:
                 continue
 
-            if isinstance(val, weakref.ReferenceType):
-                val = val()
+            if isinstance(val, SerializedObject):
+                val = attrs.asdict(val, recurse=False)
 
-            if serial := serialize_Reference(val, glb):
-                # if the value itself point to an object that is already added to glb, we store the value as a SerializedReference, rather
-                # than a duplication of the object
-                val = attrs.asdict(serial, recurse=False)
+            else:
+                if isinstance(val, weakref.ReferenceType):
+                    val = val()
+
+                if serial := serialize_Reference(val, glb):
+                    # if the value itself point to an object that is already added to glb, we store the value as a SerializedReference, rather
+                    # than a duplication of the object
+                    val = attrs.asdict(serial, recurse=False)
 
             # For attrs classes, where the attribute has a field specified - the attribute is instead passed to the SerializedClass's kwargs dict
             # in order to pass the correct value when decoding and calling __init__. In the case of a non-attrs class, this may become troublesome.
@@ -921,6 +928,7 @@ class ClassConstructor:
                     return None
                 inst = cls(**kwargs)
             except TypeError:
+                logger.warning(f"Failed to call ClassConstructor {self.serial}")
                 return
 
             self.glb.objects[self.serial.hashval] = inst
@@ -1102,7 +1110,9 @@ def deserialize_json(serial: str | bytes) -> Optional[DecodedResult]:
     if isinstance(res, dict):
         res["glb"] = glb
 
-    return DecodedResult(modules=res.get("modules", []), layers=res.get("layers", {}), chunks=res.get("chunks"), glb=glb)
+    return DecodedResult(
+        modules=res.get("modules", []), layers=res.get("layers", {}), chunks=res.get("chunks"), glb=glb
+    )
 
 
 def deserialize_json_unbound(serial: str | bytes) -> Any:

@@ -645,46 +645,6 @@ class ContainerWidget(
             widget.param.request_delete()
         self.remove_widget(widget)
 
-    # def update_param_label(self, notice, sender: chunk_core.AttributeSender):
-    #     """
-    #     When a param name, label or flag is changed, this will correct the label in the FormLayout.
-    #     If LABELED was unset, then remove the label and set the widget role to SpanningRole
-    #     If LABELED was set, add the label
-    #     otherwise, just update the label text if name or label changed
-
-    #     Args:
-    #         param (chunk_core.ChunkCommon): The param that was changed
-    #         notice (Tf.Notice): The notice that was sent
-    #         sender (chunk_core.AttributeSender): The attribute that changed
-    #     """
-    #     param = sender.get_owner()
-    #     if not param or not isinstance(param, chunk_core.ChunkCommon):
-    #         return
-
-    #     labeled = param.has_flag(ChunkFlags.ParamFlags.LABELED)
-    #     if not labeled:
-    #         return
-
-    #     for i in range(self.content_layout.count()):
-    #         item = self.content_layout.itemAt(i)
-    #         if not item:
-    #             continue
-
-    #         w = item.widget()
-    #         if isinstance(w, LabeledWidget):
-    #             if not isinstance(w.widget, ChunkParamWidgetBase):
-    #                 continue
-
-    #             if isinstance(w.widget.param, chunk_core.ProxyParam):
-    #                 if not w.widget.param._param_ref == param:
-    #                     continue
-    #             else:
-    #                 if not w.widget.param == param:
-    #                     continue
-
-    #             # if labeled:
-    #             #     w.update_label(param.get_label())
-
 
 class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     """

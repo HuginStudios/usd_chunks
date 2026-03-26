@@ -88,13 +88,18 @@ class ChunksPluginContainer(PluginContainer):
         if not (path := chunk_qt.file_dial(directory=True)):
             return
 
-        for i in reg.chunk_layers.keys():
-            layer = reg.get_layer(i)
-            if not layer:
-                continue
-            name = layer.GetDisplayName().split("_")[0]
-            path = f"{path}/{name}.usda"
-            layer.Export(path)
+        for pl, sl in reg.iter_chunk_layers():
+            name = sl.GetDisplayName()
+            file = f"{path}/{name}.usda"
+            sl.Export(file)
+
+        # for i in reg.chunk_layers.keys():
+        #     layer = reg.get_layer(i)
+        #     if not layer:
+        #         continue
+        #     name = layer.GetDisplayName()
+        #     file = f"{path}/{name}.usda"
+        #     layer.Export(file)
 
     def saveScene(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()

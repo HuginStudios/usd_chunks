@@ -31,6 +31,8 @@ from typing import (
     TypeVar,
     overload,
     Sequence,
+    Generator,
+    Tuple,
 )
 
 from pxr import Sdf, Usd, UsdUtils
@@ -920,6 +922,8 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         for c in self.scene.get_chunks():
             c.check_hierarchy()
+            c.print_hierarchy()
+            # print("LAODED C", c)
 
         self.scene._modified = False
         self.set_scene_file(p)
@@ -928,29 +932,29 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         if not lreg.initialized:
             return
 
-        for rel_layer_path, c_cnstr in data.get("layers", {}).items():
-            layer_path = p.parent / rel_layer_path
-            if not layer_path.exists():
-                logger.warning(f"Layer {rel_layer_path} is not relative to {p.parent}. Skipping")
-                continue
+        # for rel_layer_path, c_cnstr in data.get("layers", {}).items():
+        #     layer_path = p.parent / rel_layer_path
+        #     if not layer_path.exists():
+        #         logger.warning(f"Layer {rel_layer_path} is not relative to {p.parent}. Skipping")
+        #         continue
 
-            c = c_cnstr.construct()
+        #     c = c_cnstr.construct()
 
-            if not isinstance(c, ChunkCommon):
-                logger.warning(f"Could not load layer {rel_layer_path}. The referenced chunk was not found")
-                continue
+        #     if not isinstance(c, ChunkCommon):
+        #         logger.warning(f"Could not load layer {rel_layer_path}. The referenced chunk was not found")
+        #         continue
 
-            layer = lreg.open_layer(layer_path)
-            if not layer:
-                logger.warning(f"Could not load layer {layer_path}")
-                continue
+        #     layer = lreg.open_layer(layer_path)
+        #     if not layer:
+        #         logger.warning(f"Could not load layer {layer_path}")
+        #         continue
 
-            c_layer = lreg.get_or_create_layer(c)
-            if not c_layer:
-                logger.warning(f"Could not load layer for chunk {c.name}")
-                continue
+        #     c_layer = lreg.get_or_create_layer(c)
+        #     if not c_layer:
+        #         logger.warning(f"Could not load layer for chunk {c.name}")
+        #         continue
 
-            UsdUtils.StitchLayers(c_layer, layer)
+        #     UsdUtils.StitchLayers(c_layer, layer)
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):
@@ -1002,7 +1006,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             if not layer:
                 continue
 
-            name = layer.GetDisplayName().split("_")[0]
+            name = "_".join(layer.GetDisplayName().split("_")[:-1])
             file = f"{p}/{name}.usda"
             layer.Export(file)
 
@@ -1060,44 +1064,51 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             AttributeError: If the stage has not been initialized
         """
 
-        layer = self.get_layer(c)
-
         root = self.get_root_layer()
         sesh = self.stage.GetRootLayer()
+
+        # If the root has been detatched from the stage's root, reapply it
         if root.identifier not in sesh.subLayerPaths:
             sesh.subLayerPaths.append(root.identifier)
 
-        # parent = None
+        # Create a graph layer - these are mosult for orginizing the layers. When chunks are part of
+        # the same graph, they will become siblings in the same graph layer
         graph_layer_id = f"graph_{c.get_dag_node().get_graph_id()}"
-
         if not (parent := self.graph_layers.get(graph_layer_id)):
             parent = Sdf.Layer.CreateAnonymous(graph_layer_id)
             self.graph_layers[graph_layer_id] = parent
             root.subLayerPaths.append(parent.identifier)
 
-        if not parent:
-            parent = root
+        # if parent.IsMuted():
+        #     return
 
+        # The sort_key is used to determine the order of the chunk sublayers
         index = c.get_dag_node().get_sort_key()
-
         if index > len(parent.subLayerPaths) - 1:
             index = len(parent.subLayerPaths)
-
+        
+        # Reverse the order
         index = len(parent.subLayerPaths) - index
+
+        layer = self.get_layer(c)
 
         if not layer:
             if self.is_muted(c):
                 return None
-
             layer = self.add_layer(parent, c, index)
 
         elif layer.identifier not in parent.subLayerPaths:
             parent.subLayerPaths.insert(index, layer.identifier)
 
-        # elif parent.subLayerPaths.index(layer.identifier) != index:
-        #     print("REPLACE", parent.subLayerPaths.index(layer.identifier), index)
-        #     parent.subLayerPaths.remove(layer.identifier)
-        #     parent.subLayerPaths.insert(index, layer.identifier)
+        # If a chunk connection changed after the chunk layer was created, the layer may have been
+        # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice
+        
+        for pl, sl in self.iter_chunk_layers():
+            if sl.identifier == layer.identifier and pl.identifier != parent.identifier:
+                pl.subLayerPaths.remove(sl.identifier)
+
+            if len(pl.subLayerPaths) == 0:
+                root.subLayerPaths.remove(pl.identifier)
 
         return layer
 
@@ -1209,11 +1220,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             yield (layer, slayer)
             yield from self._iter_sublayers(slayer)
 
-    def iter_chunk_layers(self):
+    def iter_chunk_layers(self) -> Generator[Tuple[Sdf.Layer, Sdf.Layer]]:
         yield from self._iter_sublayers(self.get_root_layer())
 
     def _chunk_deleted(self, chunk_hash):
-
         if not (layer := self.get_layer(chunk_hash)):
             return
 
@@ -1223,7 +1233,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             layer_hierarchy[sublayer] = parent
 
             if sublayer == layer:
-                # print(parent.identifier, layer.identifier)
                 sublayer_paths = parent.subLayerPaths.copy()
                 sublayer_paths.remove(layer.identifier)
 
@@ -1231,19 +1240,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                     p.subLayerPaths.remove(parent.identifier)
 
                 parent.subLayerPaths = sublayer_paths  # type: ignore
-
         self.chunk_layers.pop(chunk_hash)
-        # print(lay, lay.identifier)
-
-        # if lay := self.get_layer(chunk_hash):
-        #     sublayer_paths = self.get_root_layer().subLayerPaths.copy()
-
-        #     for i, sublayer in reversed(list(enumerate(sublayer_paths))):
-        #         if sublayer == lay.identifier:
-        #             sublayer_paths.pop(i)
-
-        #     self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
-        #     self.chunk_layers.pop(chunk_hash)
 
     def _flags_changed(self, notice, sender):
         c = sender
@@ -1253,11 +1250,17 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if c not in self.chunk_layers:
             return
 
-        layer = self.chunk_layers.get(c)
-        if layer is None:
+        if not (layer := self.get_layer(c)):
             return
-
+    
         if c.has_state(ChunkFlags.State.DISABLED):
+            # print("MUTE")
             layer.SetMuted(True)
+            # Sdf.Layer.AddToMutedLayers(layer.identifier)
+            # # self.stage.GetSessionLayer().SetMuted(True)
+
         elif self.is_muted(c):
             layer.SetMuted(False)
+            # print("UNMUTE")
+            # Sdf.Layer.RemoveFromMutedLayers(layer.identifier)
+            # # self.stage.GetSessionLayer().SetMuted(False)
