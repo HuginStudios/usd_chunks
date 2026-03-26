@@ -1050,7 +1050,7 @@ def _decodeChunk(glb: _Glb, data):
         return data
 
     res = ClassConstructor(glb, serial)
-    # glb.objects[serial.hashval] = res
+    glb.objects[serial.hashval] = res
     return res
 
 

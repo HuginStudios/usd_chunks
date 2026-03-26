@@ -11,7 +11,7 @@ from usd_chunks import chunk_registry, chunk_core, chunk_serial
 from plugins import chunk_qt
 
 from typing import List
-
+from collections import defaultdict
 
 class UsdviewScene(chunk_core.SceneSender):
     """
@@ -82,24 +82,35 @@ class ChunksPluginContainer(PluginContainer):
         dial = chunk_qt.ChunkModuleLoader(usdviewApi.qMainWindow)
         dial.show()
 
+    def reloadChunks(self, usdviewApi):
+        reg = chunk_registry.ChunkRegistry()
+
+        loaded_config_names = defaultdict(int)
+        for c in reg.scene.get_chunks():
+            if conf := c.get_config():
+                loaded_config_names[conf.module] += 1
+        
+        reg.scene.clear()
+
+        for mod in reg.registered_modules.values():
+            # mod.unload()
+            if mod.loaded:
+                mod.unload()
+            
+            for i in range(loaded_config_names.get(mod.module_name, 0)):
+                if i == 0:
+                    chunks = mod.load()
+                else:
+                    chunks = mod.create()
+                reg.scene.add_chunks(chunks)
+
     def saveLayers(self, usdviewApi):
         reg = chunk_registry.ChunkLayerManager()
         # flt = "*.usda *.usd *.usdc"
         if not (path := chunk_qt.file_dial(directory=True)):
             return
 
-        for pl, sl in reg.iter_chunk_layers():
-            name = sl.GetDisplayName()
-            file = f"{path}/{name}.usda"
-            sl.Export(file)
-
-        # for i in reg.chunk_layers.keys():
-        #     layer = reg.get_layer(i)
-        #     if not layer:
-        #         continue
-        #     name = layer.GetDisplayName()
-        #     file = f"{path}/{name}.usda"
-        #     layer.Export(file)
+        reg.save_layers(path)
 
     def saveScene(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
@@ -167,6 +178,10 @@ class ChunksPluginContainer(PluginContainer):
             "ChunksPlugin.importChunk", "Import Module", self.importChunk
         )
 
+        self._reloadChunkCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.reloadChunk", "Reload Chunks", self.reloadChunks
+        )
+
         launch_chunks(plugCtx)
 
     def configureView(self, plugRegistry, plugUIBuilder) -> None:
@@ -179,6 +194,8 @@ class ChunksPluginContainer(PluginContainer):
         menu.addItem(self._saveSceneCommand)
         menu.addItem(self._saveSceneAsCommand)
         menu.addItem(self._openSceneCommand)
+        menu.addSeparator()
+        menu.addItem(self._reloadChunkCommand, "SHIFT+R")
 
 
 Tf.Type.Define(ChunksPluginContainer)
