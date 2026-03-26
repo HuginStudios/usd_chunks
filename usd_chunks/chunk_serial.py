@@ -126,8 +126,8 @@ class _Glb:
         if not (obj := self.objects.get(hashval)):
             return None
 
-        if isinstance(obj, (ClassConstructor, CallableConstructor)):
-            return None
+        # if isinstance(obj, (ClassConstructor, CallableConstructor)):
+        #     return None
 
         return obj
 
@@ -835,12 +835,10 @@ class CallableConstructor:
         Raises:
             ValueError: If decodeCallable returns a CallableConstructor (decoding the reference failed)
         """
-        # if glb is not None:
-        #     self.glb.modules.update(glb.modules)
-        #     self.glb.objects.update(glb.objects)
 
         res = decodeCallable(self.glb, self.data)
         if isinstance(res, ClassConstructor):
+            raise ValueError(f"Failed to decode callable {self.data}")
             return None
 
         if isinstance(res, CallableConstructor):
@@ -913,9 +911,6 @@ class ClassConstructor:
         Returns:
             Any: The constructed class
         """
-        # if glb is not None:
-        #     self.glb.modules.update(glb.modules)
-        #     self.glb.objects.update(glb.objects)
 
         kwargs = {}
         for key, val in self.serial.kwargs.copy().items():

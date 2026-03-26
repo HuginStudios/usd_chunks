@@ -431,8 +431,13 @@ class DagConnections:
 
 
 class DagGraphID:
-    def __init__(self, identifier: int):
-        self.identifier = identifier
+    def __init__(self):
+        self._store: Optional[DagGraphID] = None
+
+    def get_identifier(self):
+        if self._store:
+            return self._store.get_identifier()
+        return id(self)
 
 
 class DagNode:
@@ -468,7 +473,7 @@ class DagNode:
         self._index: int = 0
 
         self._sort_key: int = 0
-        self._graph_id: DagGraphID = DagGraphID(id(self))
+        self._graph_id: DagGraphID = DagGraphID()
         self._part_of_graph = True
 
     @property
@@ -521,6 +526,12 @@ class DagNode:
             yield alias, node.propagator
         return StopIteration()
 
+    def set_graph_id(self, node: "DagNode"):
+        if not (node._part_of_graph and self._part_of_graph):
+            return
+
+        node._graph_id._store = self._graph_id
+
     def add_dependency(self, node: "DagNode", connect_reverse=True):
         """
         Add a dependency (aka input) to this node. This will dirty self
@@ -530,10 +541,7 @@ class DagNode:
             connect_reverse (bool, optional): If the input node should connect this node to its output. Defaults to True.
         """
         self._connections.inputs[self.next_key(self._connections.inputs)] = node
-
-        if node._part_of_graph and self._part_of_graph:
-            # Set the graph identifier of the input node, meaning they are part of the same graph
-            node._graph_id.identifier = self.get_graph_id()
+        self.set_graph_id(node)
 
         if connect_reverse:
             node.add_dependant(self)
@@ -577,9 +585,7 @@ class DagNode:
 
         if node := self.get_owner_node():
             node.dirty = True
-
-            if node._part_of_graph and self._part_of_graph:
-                self._graph_id = node._graph_id
+            node.set_graph_id(self)
 
     def get_inputs(self) -> Iterator["DagNode"]:
         """
@@ -675,19 +681,10 @@ class DagNode:
         return False
 
     def get_sort_key(self):
-        # idx = 0
-        # for i in self.get_inputs():
-        #     idx += 1 + i.get_sort_key()
         return self._sort_key
 
     def get_graph_id(self):
-        # _id = self._graph_id
-        # for i in self.get_inputs():
-        #     _id += i.get_graph_id()
-        # for o in self.get_outputs():
-        #     _id += o.get_graph_id()
-        # return _id
-        return self._graph_id.identifier
+        return self._graph_id.get_identifier()
 
     def dirty_dependants(self, searched: Optional[Set["DagNode"]] = None):
         """
@@ -706,7 +703,6 @@ class DagNode:
 
         for node in self.get_outputs():
             node._index += 1
-
             node._input_data.add((ChunkNoticeAlias.INPUT_CHANGED, self))
             node.dirty_dependants(searched.copy())
 
@@ -1165,6 +1161,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
+        send=False,
     ):
         """Subscribe to a notice. When the notice is sent, the supplied method will be called, by default, with three arguments:
         (owner(self), notice(Tf.Notice), sender(Any))
@@ -1194,6 +1191,9 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             notice_alias = sender.get_notice_alias()
 
         self.add_connection(NoticeConnection(method, notice_alias, sender, listen_globally, self))
+
+        if sender and sender is not self:
+            sender.send_self(alias=notice_alias)
 
     @abstractmethod
     def get_edit_context(self) -> Sdf.Layer | None:

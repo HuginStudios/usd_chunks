@@ -241,7 +241,7 @@ class _ConfigTransformer(ast.NodeTransformer):
         if node.name == "main":
             self._found_main = True
             if src := self._get_node_source(node):
-                self._module._checksum = chunk_serial.compute_checksum(src)
+                self._module._checksum = chunk_serial.compute_checksum("".join(src.split()))
         return node
 
     def visit_Import(self, node: ast.Import) -> Any:
@@ -389,11 +389,6 @@ class ChunkModule(chunk_serial.Serializeable):
         return super().serialize_kwarg(name, default)
 
     def post_serial_setattr(self, name: str, value: Any) -> None:
-        # if name == "loaded_chunks":
-        #     for c in value:
-        #         self._add_chunk(c)
-        #     return
-
         if name == "_checksum" and value != self._checksum:
             logger.warning(
                 f"main() funcion of {self.module_name} has changed since serializing. This may lead to unexpected behaviour"
@@ -403,26 +398,10 @@ class ChunkModule(chunk_serial.Serializeable):
         return super().post_serial_setattr(name, value)
 
     def should_serialize_attribute(self, name: str, value: Any) -> chunk_serial.Tuple[bool, Any]:
-        # if name == "loaded_chunks" and self._should_serialize_chunks:
-        #     return (True, list(self.loaded_chunks.values()))
         if name == "_checksum":
             return (True, value)
 
         return (False, None)
-
-    # def _add_chunk(self, c: ChunkBase):
-    #     if not (isinstance(c, ChunkBase)):
-    #         logger.warning(f"main() in module: {self.module_name} does not return a Chunk object")
-    #         self.loaded = False
-    #         return False
-
-    #     if self.config:
-    #         self.config.module = self.module_name
-    #         c._config = self.config
-
-    #     if ChunkRegistry().scene.add_chunk(c):
-    #         self.loaded_chunks[c.name] = c
-    #     return True
 
     def _exec_module(self):
         if type(self.module) is chunk_serial.RuntimeModule:
@@ -433,6 +412,8 @@ class ChunkModule(chunk_serial.Serializeable):
                 if not transformer._found_main:
                     logger.warning(f"main function is not defined in module {self.module_name}. Skipping")
                     return False
+
+            self.module.__dict__["__file__"] = self.module_file.as_posix()
             sys.modules[self.module_name] = self.module
 
         elif not self.module_file.exists():
@@ -531,9 +512,6 @@ class ChunkModule(chunk_serial.Serializeable):
         """
         Deletes any chunk created from this module and sets loaded to False
         """
-        # chunks = list(self.loaded_chunks.values())
-        # for c in chunks:
-        #     c.request_delete()
         self.loaded = False
 
     def create(self) -> Sequence[ChunkBase]:
@@ -567,9 +545,6 @@ class ChunkModule(chunk_serial.Serializeable):
             for c in loaded:
                 self.config.module = self.module_name
                 c._config = self.config
-
-        # for c in loaded:
-        #     self._add_chunk(c)
 
         return loaded
 
@@ -889,8 +864,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 return
 
         # Clear the current scene
-        # for mod in self.get_chunk_modules():
-        #     mod.unload()
         self.scene.clear()
 
         serial = chunk_serial.load_file(path)
@@ -916,45 +889,45 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             mod = mod_cnstr.post_constuct()
             self.registered_modules[mod_name] = mod
 
+        # Construct the layers before constructing the chunks, as chunks may reference the layers
+        lreg = ChunkLayerManager()
+        if not lreg.initialized:
+            return
+
+        for rel_layer_path, c_cnstr in data.get("layers", {}).items():
+            layer_path = p.parent / rel_layer_path
+            if not layer_path.exists():
+                logger.warning(f"Layer {rel_layer_path} is not relative to {p.parent}. Skipping")
+                continue
+
+            c = c_cnstr.construct()
+
+            if not isinstance(c, ChunkCommon):
+                logger.warning(f"Could not load layer {rel_layer_path}. The referenced chunk was not found")
+                continue
+
+            layer = lreg.open_layer(layer_path)
+            if not layer:
+                logger.warning(f"Could not load layer {layer_path}")
+                continue
+
+            c_layer = lreg.get_or_create_layer(c)
+            if not c_layer:
+                logger.warning(f"Could not load layer for chunk {c.name}")
+                continue
+
+            UsdUtils.StitchLayers(c_layer, layer)
+
+        # Construct the chunks
         if chunks := data.get("chunks"):
             for c in chunks.construct().get_my_params():
                 self.scene.add_chunk(c)
 
         for c in self.scene.get_chunks():
             c.check_hierarchy()
-            c.print_hierarchy()
-            # print("LAODED C", c)
 
         self.scene._modified = False
         self.set_scene_file(p)
-
-        lreg = ChunkLayerManager()
-        if not lreg.initialized:
-            return
-
-        # for rel_layer_path, c_cnstr in data.get("layers", {}).items():
-        #     layer_path = p.parent / rel_layer_path
-        #     if not layer_path.exists():
-        #         logger.warning(f"Layer {rel_layer_path} is not relative to {p.parent}. Skipping")
-        #         continue
-
-        #     c = c_cnstr.construct()
-
-        #     if not isinstance(c, ChunkCommon):
-        #         logger.warning(f"Could not load layer {rel_layer_path}. The referenced chunk was not found")
-        #         continue
-
-        #     layer = lreg.open_layer(layer_path)
-        #     if not layer:
-        #         logger.warning(f"Could not load layer {layer_path}")
-        #         continue
-
-        #     c_layer = lreg.get_or_create_layer(c)
-        #     if not c_layer:
-        #         logger.warning(f"Could not load layer for chunk {c.name}")
-        #         continue
-
-        #     UsdUtils.StitchLayers(c_layer, layer)
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):
@@ -1086,7 +1059,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         index = c.get_dag_node().get_sort_key()
         if index > len(parent.subLayerPaths) - 1:
             index = len(parent.subLayerPaths)
-        
+
         # Reverse the order
         index = len(parent.subLayerPaths) - index
 
@@ -1102,7 +1075,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         # If a chunk connection changed after the chunk layer was created, the layer may have been
         # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice
-        
+
         for pl, sl in self.iter_chunk_layers():
             if sl.identifier == layer.identifier and pl.identifier != parent.identifier:
                 pl.subLayerPaths.remove(sl.identifier)
@@ -1252,7 +1225,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         if not (layer := self.get_layer(c)):
             return
-    
+
         if c.has_state(ChunkFlags.State.DISABLED):
             # print("MUTE")
             layer.SetMuted(True)

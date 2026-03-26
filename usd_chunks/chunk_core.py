@@ -2288,6 +2288,21 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
         return my_notice
 
+    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
+        if name == "_usd_prop" and self._usd_prop:
+            return (True, str(self._usd_prop.GetPath()))
+        return super().should_serialize_attribute(name, value)
+
+    def post_serial_setattr(self, name, value):
+        if name == "_usd_prop":
+            stage = chunk_registry.ChunkRegistry().scene.get_stage()
+            prop = stage.GetPropertyAtPath(value)
+
+            if prop and (sender := self.get_attribute_sender("value")):
+                self.set_usd_prop(prop, sender)
+
+        return super().post_serial_setattr(name, value)
+
     def get_stage(self) -> Usd.Stage | None:
         raise NotImplementedError
 
@@ -2551,6 +2566,7 @@ class ChunkContainerBase(ChunkCommon):
             removed = old_state ^ (new_state & old_state)
 
             if ChunkFlags.State.DISABLED in (added | removed):
+
                 def _pred(val) -> TypeGuard[ChunkBase]:
                     return isinstance(val, ChunkBase)
 
@@ -2725,6 +2741,8 @@ class ChunkContainerBase(ChunkCommon):
 
             if owner and isinstance(owner, ChunkContainerBase):
                 msg += f". Owner = ({owner.name})"
+
+            msg += f". Id = ({hex(id(p))})"
             msg += "\n"
 
         self.get_logger().info(msg)

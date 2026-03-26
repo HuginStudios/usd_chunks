@@ -986,7 +986,6 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         menu = QtWidgets.QMenu()
 
-        # actions: Dict[QtGui.QAction, chunk_registry.ChunkModule] = {}
         export_action = QtGui.QAction("export")
         inspect_action = QtGui.QAction("inspect")
 
@@ -1003,7 +1002,10 @@ class ChunkModuleLoader(QtWidgets.QDialog):
             if file := file_dial(flt, True):
                 mod.export(file)
         elif res == inspect_action and mod.module:
-            src = chunk_serial.serialize_source(mod.module)
+            if isinstance(mod.module, chunk_serial.RuntimeModule):
+                src = mod.module._code
+            else:
+                src = chunk_serial.serialize_source(mod.module)
             python_source_dial(src)
 
         return super().contextMenuEvent(event)
