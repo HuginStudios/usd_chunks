@@ -15,6 +15,22 @@ import os
 import re
 
 
+class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
+    def __init__(self, parent, chunk_highlighter: chunk_core.SyntaxHighlightMapping):
+        super().__init__(parent)
+        self._hl = chunk_highlighter
+
+    def highlightBlock(self, text):
+        for start, end, style in self._hl.match_text(text):
+            fmt = QtGui.QTextCharFormat()
+            if style.get("bold"):
+                fmt.setFontWeight(QtGui.QFont.Weight.Bold)
+
+            fmt.setFontItalic(style.get("italic", False))
+            fmt.setForeground(QtGui.QColor(style.get("color")))
+            self.setFormat(start, end - start, fmt)
+
+
 class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
     def __init__(self, param: chunk.Slider):
         super().__init__(param)
@@ -172,8 +188,23 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
     def __init__(self, param: chunk.TextEdit):
         super().__init__(param)
 
-        self.text = QtWidgets.QTextEdit(parent=self)
-        self.text.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.Maximum) 
+        self.text = QtWidgets.QPlainTextEdit(parent=self)
+        self.text.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.Maximum)
+        self.text.textChanged.connect(self.value_changed)
+        self.text.setTabStopDistance(QtGui.QFontMetricsF(self.text.font()).horizontalAdvance(" ") * 4)
+        self.text.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+
+        hlm = None
+        self.hl = None
+        if param.has_flag(ChunkFlags.ParamFlags.PY_SYNTAX_HIGHLIGHT):
+            hlm = chunk_core.PySyntaxHighlightMapping()
+        elif param.has_flag(ChunkFlags.ParamFlags.USD_SYNTAX_HIGHLIGHT):
+            hlm = chunk_core.UsdSyntaxHighlightMapping()
+        if hlm:
+            self.hl = SyntaxHighlighter(self.text.document(), hlm)
+
+        font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+        self.text.setFont(font)
 
         self.main_layout = QtWidgets.QHBoxLayout()
 
@@ -181,13 +212,6 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         self.main_layout.addWidget(self.text)
         self.setLayout(self.main_layout)
         self.setup_chunk_widget()
-
-    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
-        if QtCore.Qt.KeyboardModifier.ControlModifier in event.modifiers():
-            if QtCore.Qt.Key.Key_Return == event.keyCombination().key():
-                self.value_changed(self.get_value())
-
-        return super().keyPressEvent(event)
 
     def focusOutEvent(self, event: QtGui.QFocusEvent) -> None:
         self.value_changed(self.get_value())
@@ -197,7 +221,8 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         return self.text.document().toPlainText()
 
     def set_value(self, value):
-        self.text.setText(str(value))
+        if value != self.get_value():
+            self.text.setPlainText(str(value))
 
 
 class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
@@ -975,22 +1000,6 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         return widget
 
 
-class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
-    def __init__(self, parent):
-        super().__init__(parent)
-
-        self._mappings = {}
-
-    def add_mapping(self, pattern, format):
-        self._mappings[pattern] = format
-
-    def highlightBlock(self, text):
-        for pattern, format in self._mappings.items():
-            for match in re.finditer(pattern, text):
-                start, end = match.span()
-                self.setFormat(start, end - start, format)
-
-
 class ChunkModuleLoader(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1119,7 +1128,7 @@ def confirm_dial(msg) -> bool:
 
 def python_source_dial(src: str):
     _editor = QtWidgets.QPlainTextEdit(src, readOnly=True)
-    hl = PythonSyntaxHighlighter(_editor.document())
+    hl = SyntaxHighlighter(_editor.document())
 
     class_format = QtGui.QTextCharFormat()
     class_format.setFontWeight(QtGui.QFont.Weight.Bold)

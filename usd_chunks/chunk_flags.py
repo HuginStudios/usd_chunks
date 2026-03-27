@@ -72,7 +72,10 @@ class ChunkFlags:
         # LINEEDIT
         PRIM_SELECTION = auto()
         PROP_SELECTION = auto()
-        MULTILINE = auto()
+
+        # TEXTEDIT
+        PY_SYNTAX_HIGHLIGHT = auto()
+        USD_SYNTAX_HIGHLIGHT = auto()
 
     class ParamType(_FlagRepr):
         """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and

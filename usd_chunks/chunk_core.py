@@ -44,14 +44,13 @@ from typing import (
     Sequence,
     get_origin,
     TypeGuard,
-    TypeAlias,
     overload,
 )
 
 import attrs
 from attr import _make as attrMake
 from pxr import Sdf, Usd
-from typing_extensions import Self, dataclass_transform
+from typing_extensions import Self, dataclass_transform, Required
 
 from usd_chunks.chunk_notice import Predicate
 from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_serial
@@ -71,6 +70,65 @@ ChunkT = TypeVar("ChunkT", bound="ChunkCommon")
 ################################
 # BASE CLASSES FOR UI ELEMENTS #
 ################################
+
+
+class SyntaxHighlightStyle(TypedDict, total=False):
+    color: Required[str]
+    italic: bool
+    bold: bool
+
+
+class SyntaxHighlightMapping:
+    def __init__(self):
+        self._mappings: Dict[str, SyntaxHighlightStyle] = {}
+
+    def add_mapping(self, pattern, style: SyntaxHighlightStyle):
+        self._mappings[pattern] = style
+
+    def get_mappings(self):
+        return self._mappings.items()
+
+    def match_text(self, text: str) -> Generator[Tuple[int, int, SyntaxHighlightStyle], None, None]:
+        for pattern, fmt in self._mappings.items():
+            for m in re.finditer(pattern, text):
+                start, end = m.span()
+                yield start, end, fmt
+
+class PySyntaxHighlightMapping(SyntaxHighlightMapping):
+    def __init__(self) -> None:
+        super().__init__()
+
+        pattern = r"^\s*class\s+\w+\(.*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#4c6ea3"))
+
+        pattern = r"^\s*def\s+\w+\s*\(.*\)\s*:\s*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#31a56b"))
+
+        pattern = r"^\s*#.*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#3f883f"))
+
+
+class UsdSyntaxHighlightMapping(SyntaxHighlightMapping):
+    def __init__(self) -> None:
+        super().__init__()
+
+        pattern = r"^\s*class\s+\w+\(.*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#4c6ea3"))
+
+        pattern = r"^\s*(def|over)"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#4a80ec"))
+
+        pattern = r"^\s*#.*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#3f883f"))
+
+        pattern = r"(?<=def )(\w+)"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#51c765"))
+
+        pattern = r"(\"|\')\w+(\"|\')"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#e17a3f"))
+
+        pattern = r"(double|float|int|uniform|asset|token|color)\w?.(\[\])?"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#4aabec"))
 
 
 class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
@@ -2572,6 +2630,7 @@ class ChunkContainerBase(ChunkCommon):
             removed = old_state ^ (new_state & old_state)
 
             if ChunkFlags.State.DISABLED in (added | removed):
+
                 def _pred(val) -> TypeGuard[ChunkBase]:
                     return isinstance(val, ChunkBase)
 
@@ -3278,7 +3337,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         self.chunks.add(c, False)
         chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
-        c.trigger_callbacks()
 
         self._modified = True
         return c

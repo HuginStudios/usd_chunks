@@ -433,7 +433,7 @@ def grid_changed(owner: chunk.Group, notice, sender):
 
 
 def main():
-    path = chunk.LineEdit("prim_path", "Prim Patm", default_value="/mesh")
+    path = chunk.LineEdit("prim_path", "Prim Path", default_value="/mesh")
     menu = chunk.Menu(
         "mesh_type", "Mesh Type", menu_items=["none", "cube", "sphere", "grid", "tube"], default_value="none"
     )

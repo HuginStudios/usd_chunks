@@ -72,15 +72,15 @@ def main():
 
     myChunk = chunk.Chunk("Dynamic")
 
+    dynGroup = chunk.Group("dyn_grp", flags=chunk.ChunkFlags.GroupFlags.FRAMED)
     primSel = chunk.LineEdit(
         "prim", flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION
     )
     myChunk.add_param(primSel)
-    myChunk.add_callback(build, sender=primSel)
-    myChunk.add_callback(build, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
-
-    dynGroup = chunk.Group("dyn_grp", flags=chunk.ChunkFlags.GroupFlags.FRAMED)
     myChunk.add_param(dynGroup)
+    myChunk.add_callback(build, sender=primSel)
+    # myChunk.add_callback(build, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
+
 
     return myChunk
 
