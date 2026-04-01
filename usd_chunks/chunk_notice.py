@@ -388,12 +388,9 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
     if issubclass(notice_class, ChunkNotice):
         notice = notice_class(data)
     else:
-        if data is not None:
-            logger.warning(
-                f"Attempting to send notice {alias} with custom data which is not supported. Consider sending a ChunkNotice instead"
-            )
-        notice = notice_class()
-
+        # notices not derived from ChunkNotice should not be sent
+        return None
+        
     try:
         if sender is None:
             notice.SendGlobally()
@@ -1195,21 +1192,6 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         # if sender and sender is not self:
         if send_on_create and sender and notice_alias != ChunkNoticeAlias.MENU_ACTION_NOTICE:
             sender.send_self(alias=notice_alias)
-
-    # def trigger_callbacks(self):
-    #     for conn in self.get_callbacks():
-    #         if not isinstance(conn.sender, ChunkNoticePropagator):
-    #             continue
-
-    #         if conn.sender is not self:
-    #             conn.sender.send_self(conn.alias)
-
-    #         # else:
-    #             # meth = conn.get_method()
-    #             # if not hasattr(meth, "__self__") or meth.__self__ is not self:
-    #             #     conn.sender.send_self(conn.alias)
-
-    #         # elif conn.get_method().__self__ is not self:
 
     @abstractmethod
     def get_edit_context(self) -> Sdf.Layer | None:

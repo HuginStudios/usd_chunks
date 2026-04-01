@@ -296,6 +296,12 @@ class LineEdit(ChunkParamBase[str]):
         if self.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION):
             self.set_prims(self.get_scene().get_selected_prims())
 
+    def value_changed(self, attrname: str, old_value: Any, value: Any):
+        if attrname == "flags" and ChunkFlags.ParamFlags.PRIM_SELECTION in value:
+            self.set_prims(self.get_scene().get_selected_prims())
+
+        return super().value_changed(attrname, old_value, value)
+
     def set_prims(self, prims: List[Usd.Prim]):
         """
         Sets the value of the param to a list of prim paths

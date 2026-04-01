@@ -1,5 +1,4 @@
 from usd_chunks import chunk
-from pxr import Usd
 
 
 def addCube(owner: chunk.Button, notice, sender):
@@ -18,11 +17,11 @@ def addCube(owner: chunk.Button, notice, sender):
 
 def main():
     button = chunk.Button("add_cube", "Add Cube")
-    button.add_callback(addCube)
 
     chunk_api = chunk.Chunk("Add Cubes")
     chunk_api.add_param(button)
 
+    button.add_callback(addCube)
     return chunk_api
 
 

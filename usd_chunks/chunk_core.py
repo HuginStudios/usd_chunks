@@ -94,6 +94,7 @@ class SyntaxHighlightMapping:
                 start, end = m.span()
                 yield start, end, fmt
 
+
 class PySyntaxHighlightMapping(SyntaxHighlightMapping):
     def __init__(self) -> None:
         super().__init__()
@@ -397,6 +398,14 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             )
         )
 
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(
+                self._layout_changed,
+                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                self.group.get_attribute_sender("layout"),
+            )
+        )
+
         # Associate ChunkParamGroup objects with group widgets
         self.group_widgets: dict[ChunkHash, ChunkContainerWidgetBase] = {}
 
@@ -408,6 +417,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         self.factory = self.get_widget_factory()
         self.build_collapsable()
         self._build_param_widgets(self.group)
+        self.update_from_layout()
         self.update_from_flags()
         self.update_from_state()
 
@@ -526,6 +536,13 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         self.set_enabled(not self.group.has_state(ChunkFlags.State.DISABLED))
 
     @abstractmethod
+    def update_from_layout(self):
+        """
+        Called when layout of the group has changed
+        """
+        pass
+
+    @abstractmethod
     def set_expanded(self, checked: bool):
         """
         Set if the widget should be expanded and show all child widgets. If false, this should
@@ -617,6 +634,10 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
     def _name_changed(self, notice, sender):
         self.update_label(sender.value)
+
+    def _layout_changed(self, notice, sender):
+        # self.§update_label(sender.value)
+        self.update_from_layout()
 
     def _delete_self(self, notice, sender):
         if sender is not self.group:
@@ -1641,6 +1662,9 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         if params is not None:
             for i in params:
                 self.add(i)
+
+                if isinstance(i, ChunkContainerBase):
+                    self.add_nested(i.children)  # type: ignore
 
     def __bool__(self):
         return bool(self._params)
@@ -2899,10 +2923,8 @@ class ChunkGroupBase(ChunkContainerBase):
             # by the container, so should not modify owner here
             self.children.add(new_param)
 
-            if isinstance(new_param, ChunkGroupBase):
-                # Also append the children of the group, as this allows for fast lookups accross the layers.
-                # This ignores the children of vectors, as access to the vector elements should be accessed on
-                # the vector itself, and not as children
+            if isinstance(new_param, ChunkContainerBase):
+                # Also append the children of the group, as this allows for fast lookups accross the layers
                 self.children.add_nested(new_param.children)
 
         else:
@@ -3130,9 +3152,15 @@ class ChunkBase(ChunkGroupBase):
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
-        self.add_callback(self.disable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
-        self.add_callback(self.enable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
-        self.add_callback(self.remove, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
+        self.add_callback(
+            self.disable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, send_on_create=False
+        )
+        self.add_callback(
+            self.enable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, send_on_create=False
+        )
+        self.add_callback(
+            self.remove, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, send_on_create=False
+        )
 
     def disable(self, notice=None, sender=None):
         self.set_state(ChunkFlags.State.DISABLED)
@@ -3178,7 +3206,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
 
     param: ChunkParamBase = attrs.field(default=None, repr=False, metadata=AttributeMetadata(serialize=False))
     length: int = attrs.field(default=3)
-    suffixes: Optional[tuple[str, ...] | str] = attrs.field(default=None)
+    suffixes: Optional[Sequence[str] | str] = attrs.field(default=None)
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "suffixes" and val is not None:

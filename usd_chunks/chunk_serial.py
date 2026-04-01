@@ -102,6 +102,7 @@ from importlib import util
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, overload, TypedDict
 
 import attrs
+from attr._make import Factory
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,7 @@ class SerializedClass(SerializedObject):
         else:
             attributes = {x: getattr(obj, x) for x in dir(obj) if hasattr(obj, x)}
 
+        logger.debug(f"Serialize class: {obj}")
         # In order to recreate the class, we must find the __init__ signature. These go in to the res.kwargs
         # member in order for the decoder to call __init__ on the class
         for i in inspect.signature(obj.__init__).parameters.values():
@@ -223,7 +225,13 @@ class SerializedClass(SerializedObject):
 
             if serial := serialize_Reference(val, glb):
                 val = attrs.asdict(serial, recurse=False)
+
+            if isinstance(val, SerializedFailed):
+                logger.debug(f"   Failed: {i.name}")
+                continue
+
             res.kwargs[i.name] = val
+            logger.debug(f"   kwarg: {i.name}")
 
         for name, val in filter(lambda x: not (inspect.ismethod(x[1]) or inspect.isfunction(x[1])), attributes.items()):
             # Loop over all attributes and set any necessary res.kwargs or res.attributes. All dunder methods are ignored.
@@ -243,6 +251,23 @@ class SerializedClass(SerializedObject):
                 # a nicer way to specify what attributes should be serialized, instead of overriding the 'should_serialize_attribute'
                 sa = field.metadata.get("serialize", sa)
 
+                default = field.default
+                if isinstance(default, Factory):
+                    if default.takes_self:
+                        default = default.factory(obj)
+                    else:
+                        default = default.factory()
+
+                if val == default:
+                    # The value of the attribute is the default value and does not need to be saved. The value is set to the 
+                    # field's default value on creation. This may produce unexpected behaviour if the field changes in between 
+                    # saving / loading and for this reason it may be worth reconsidering if the serialized representation should
+                    # include default values as well... The positives of doing this is that default values perhaps should be controlled
+                    # by the class definition, and deserialization only sets overridden attributes. TODO
+                    if name in res.kwargs:
+                        res.kwargs.pop(name)
+                    continue
+
             if not sa:
                 continue
 
@@ -258,42 +283,7 @@ class SerializedClass(SerializedObject):
                     # than a duplication of the object
                     val = attrs.asdict(serial, recurse=False)
 
-            # For attrs classes, where the attribute has a field specified - the attribute is instead passed to the SerializedClass's kwargs dict
-            # in order to pass the correct value when decoding and calling __init__. In the case of a non-attrs class, this may become troublesome.
-            # For example, in this case, the res.kwargs will be {'bar': None}, and res.attributes will be {'bar': 'hello', 'baz': 10}:
-            #
-            #    class Foo:
-            #        def __init__(self, bar):
-            #            self.bar = "hello"
-            #            self.baz = bar
-            #            self.do_something(bar)
-
-            #         def do_something(self, val):
-            #            print(val)
-            #
-            #    b = Foo(10)
-            #
-            # The decoder will then call b = Foo(None); setattr(b, 'bar', "hello"); setattr(b, 'baz', 10), ... on all attributes. But the call to do_something()
-            # will not be as expected, as Foo is called with None.
-            #
-            # One could decide to instead 'eval' the class's repr, which could solve this specific problem, but would lead to to complications elsewhere.
-            # For now, the better solution is to subclass Serializeable, and override serialize_kwarg() to retrun self.baz when evaluating the 'bar' parameter:
-            #
-            #    class Foo(Serializeable):
-            #        def __init__(self, bar):
-            #            self.bar = "hello"
-            #            self.baz = bar
-            #            self.do_someting(bar)
-            #         ...
-            #
-            #         def serialize_kwarg(self, name: str, default: Any):
-            #             if name == "bar":
-            #                 return self.baz
-            #             return super().serialize_kwarg(name, default)
-            #
-            # This will result in Foo(10), when decoding the class
-
-            if field and field.init:
+            if field and field.init and name in res.kwargs:
                 res.kwargs[name] = val
             else:
                 res.attributes[name] = val

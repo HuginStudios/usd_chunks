@@ -1,4 +1,4 @@
-from enum import IntFlag, auto
+from enum import IntFlag, IntEnum, auto
 from typing import List
 from pxr import Sdf
 
@@ -11,7 +11,7 @@ class _FlagRepr(IntFlag):
 class ChunkFlags:
     """Hold common flags for chunks"""
 
-    class LayoutFlags(_FlagRepr):
+    class LayoutFlags(IntEnum):
         """Flags for layout hinting parameters and groups
 
         Attributes:
@@ -47,7 +47,8 @@ class ChunkFlags:
             LIST: Parameters on this group is treated as a list that can be extended and shrinked
         """
 
-        LABELED = 1
+        NONE = 0
+        LABELED = auto()
         COLLAPSABLE = auto()
         FRAMED = auto()
         LIST = auto()
@@ -62,8 +63,8 @@ class ChunkFlags:
             PRIM_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdPrim selections
             PROP_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdProperty selections
         """
-
-        LABELED = 1
+        NONE = 0
+        LABELED = auto()
 
         # FILE
         FILE_EXISTING = auto()

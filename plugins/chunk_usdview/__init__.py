@@ -13,6 +13,7 @@ from plugins import chunk_qt
 from typing import List
 from collections import defaultdict
 
+
 class UsdviewScene(chunk_core.SceneSender):
     """
     This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
@@ -89,14 +90,14 @@ class ChunksPluginContainer(PluginContainer):
         for c in reg.scene.get_chunks():
             if conf := c.get_config():
                 loaded_config_names[conf.module] += 1
-        
+
         reg.scene.clear()
 
         for mod in reg.registered_modules.values():
             # mod.unload()
             if mod.loaded:
                 mod.unload()
-            
+
             for i in range(loaded_config_names.get(mod.module_name, 0)):
                 if i == 0:
                     chunks = mod.load()
