@@ -34,6 +34,7 @@ from typing import (
     Generator,
     Tuple,
 )
+from enum import Enum
 
 from pxr import Sdf, Usd, UsdUtils
 
@@ -377,6 +378,27 @@ class ChunkModule(chunk_serial.Serializeable):
 
     def __repr__(self) -> str:
         return f"ChunkModule(module_name='{self.module_name}', module_file='{self.module_file.as_posix()}')"
+
+    def get_menu_name(self):
+        """
+        Get a path-like string refereing to where this module can be found in a menu
+        
+        Returns:
+            str: A path-like string to where this module can be found in a menu.
+        """
+
+        cat = self.config.category
+        if isinstance(cat, Enum):
+            cat = cat.value
+
+        namespace = self.module_name.split(".")
+        if namespace[0].lower() == cat.lower():
+            namespace.pop(0)
+
+        if cat:
+            namespace.insert(0, cat)
+
+        return os.pathsep.join(namespace)
 
     def serialize_kwarg(self, name: str, default: Any) -> Any:
         # Override to pass current values to kwargs

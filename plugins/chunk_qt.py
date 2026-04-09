@@ -960,6 +960,14 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             self.tab_widget.addTab(self.chunk_tabs[category], category)
 
         self.chunk_tabs[category].flow.addWidget(widget)
+
+        # When a chunk is created, switch to the relevant tab category
+        tab_bar = self.tab_widget.tabBar()
+        for i in range(tab_bar.count()):
+            if tab_bar.tabText(i) == category:
+                tab_bar.setCurrentIndex(i)
+                break
+
         return widget
 
 
@@ -1117,31 +1125,43 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         super().__init__("Chunks")
         self.filter_widget = QtWidgets.QLineEdit(placeholderText="Search...")
         self.filter_widget.textChanged.connect(self._filter_actions)
-
         self.filter_widget.installEventFilter(self)
+        self.filterable = dict()
+    
+    def _filter_menus(self, menu: QtWidgets.QMenu):
+        c = 0
+        for a in menu.actions():
+            if not a.isVisible():
+                c += 1
 
-    # def _find_all_filterable(self, menu: QtWidgets.QMenu):
+            if m := menu.menuInAction(a):
+                hide = self._filter_menus(m)
+                if hide:
+                    m.menuAction().setVisible(False)
+                else:
+                    m.menuAction().setVisible(True)
 
-    #     filterable = [x for x in menu.actions() if not (x.isSeparator() or x.isWidgetType() or isinstance(x, QtWidgets.QWidgetAction) or x.menu())]
-    #     for action in filterable:
-    #         if m := action.menu():
-    #             filterable.extend(self._find_all_filterable(m))
-    #     return filterable
+        if c == len(menu.actions()):
+            return 1
+        
+        return 0
+
 
     def _filter_actions(self, text: str):
         term = text.strip().lower()
 
-        filterable = [x for x in self.actions()[1:] if not (x.isSeparator() or x.isWidgetType())]
-        # filterable = self._find_all_filterable(self)
-
         if not term:
-            for action in filterable:
+            for action in self.filterable:
                 action.setVisible(True)
+            self._filter_menus(self)
+
             return
 
-        for action in filterable:
-            print(action.text())
-            action.setVisible(term in action.text().lower())
+        for action, path_elems in self.filterable.items():
+            action.setVisible(any(term in x for x in path_elems))
+
+        self._filter_menus(self)
+
 
     def eventFilter(self, obj, event):
         """Keep arrow/return key presses inside the QLineEdit."""
@@ -1149,8 +1169,6 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             if event.type() == event.Type.KeyPress:
                 key = event.key()
                 if key in (
-                    QtCore.Qt.Key.Key_Up,
-                    QtCore.Qt.Key.Key_Down,
                     QtCore.Qt.Key.Key_Return,
                     QtCore.Qt.Key.Key_Escape,
                 ):
@@ -1168,16 +1186,8 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         items["menu"].addSeparator()
 
         for mod in chunk_registry.ChunkRegistry().get_chunk_modules(sort_result=True):
-            cat = mod.config.category
-            if isinstance(cat, Enum):
-                cat = cat.value
-
-            namespace = mod.module_name.split(".")
-            if namespace[0].lower() == cat.lower():
-                namespace.pop(0)
-
-            if cat:
-                namespace.insert(0, cat)
+            namespace = mod.get_menu_name().split(os.pathsep)
+            search_term = set([x.lower() for x in namespace])
 
             d = items
             for ns in namespace:
@@ -1185,6 +1195,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                     if m := d.get("menu"):
                         action = m.addAction(ns)
                         action.setData(mod)
+                        self.filterable[action] = search_term
                     break
                 elif ns not in d:
                     d[ns] = {"menu": d.get("menu").addMenu(ns)}
@@ -1196,6 +1207,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         import_action.setData("import")
         self.addAction(import_action)
 
+        self.filter_widget.setFocus()
         exc = self.exec_(pos)
 
         if not exc:
