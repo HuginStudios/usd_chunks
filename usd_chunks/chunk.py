@@ -56,7 +56,7 @@ from attr import Attribute as Attribute
 from attrs import field
 
 from enum import IntFlag, Enum
-from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast, TypeGuard, TypeVar
+from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast, TypeGuard, overload
 
 from pxr import Usd, Sdf
 
@@ -302,7 +302,7 @@ class LineEdit(ChunkParamBase[str]):
 
         return super().value_changed(attrname, old_value, value)
 
-    def set_prims(self, prims: List[Usd.Prim]):
+    def set_prims(self, prims: Sequence[Usd.Prim]):
         """
         Sets the value of the param to a list of prim paths
 
@@ -311,7 +311,7 @@ class LineEdit(ChunkParamBase[str]):
         """
         self.value = ",".join([str(x.GetPath()) for x in prims])
 
-    def get_prims(self) -> List[Usd.Prim]:
+    def get_prims(self) -> Sequence[Usd.Prim]:
         """
         If this param is a list of prim paths (comma separated), then return the prims on the stage
 
@@ -558,7 +558,26 @@ def is_param(v: Any) -> TypeGuard[ChunkParamBase]:
     """
     return is_inst(ChunkParamBase)(v)
 
+@overload
+def is_param_t(t: ChunkFlags.ParamType) -> Predicate[ChunkParamBase]:
+    """
+    Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
+    a value of type t
 
+    Args:
+        t (type[ValueT]): A value held by the parameter
+
+    Returns:
+        Predicate[ChunkParamBase[ValueT]]: The predicate function
+    """
+
+    def _fn(v) -> TypeGuard[ChunkParamBase]:
+        if not is_param(v):
+            return False
+        return t in v.evaluate_type()
+    return _fn
+
+@overload
 def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]:
     """
     Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
@@ -578,6 +597,24 @@ def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]:
 
     return _fn
 
+def is_param_t(t) -> Predicate:
+    """
+    Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
+    a value of type t
+
+    Args:
+        t (type[ValueT]): A value held by the parameter
+
+    Returns:
+        Predicate[ChunkParamBase[ValueT]]: The predicate function
+    """
+
+    def _fn(v) -> TypeGuard[ChunkGroupBase]:
+        if not is_param(v):
+            return False
+        return t in ChunkFlags.ParamTypeToTypes(v.evaluate_type())
+
+    return _fn
 
 def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
     """

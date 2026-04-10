@@ -3335,10 +3335,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.chunks: NameSyncedContainer[ChunkBase] = NameSyncedContainer()
-        self.chunks.get_dag_node()._part_of_graph = False
-        self.get_dag_node()._part_of_graph = False
-        self.chunks.set_owner(self)
+        self.set_chunks(NameSyncedContainer())
 
         self._modified = False
 
@@ -3351,6 +3348,22 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             return
 
         c.request_delete()
+        self._modified = True
+
+    def set_chunks(self, chunks: NameSyncedContainer[ChunkBase]):
+        self.chunks = chunks
+        self.chunks.get_dag_node()._part_of_graph = False
+        self.get_dag_node()._part_of_graph = False
+        self.chunks.set_owner(self)
+
+        for c in self.get_chunks():
+            try:
+                c.check_hierarchy()
+            except Exception as e:
+                logger.exception(e)
+                return
+
+            chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
         self._modified = True
 
     def add_chunk(self, c: ChunkBase):
@@ -3420,29 +3433,41 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return False
 
     def request_save(self):
+        """
+        Request a save of the scene. Should be implemented by a plugin
+
+        Raises:
+            NotImplementedError: If not implemented by a plugin
+        """
         raise NotImplementedError
 
     @abstractmethod
-    def get_stage(self) -> Usd.Stage:
-        raise NotImplementedError
-
-    def get_selected_prims(self) -> List[Usd.Prim]:
+    def get_stage(self) -> Usd.Stage | None:
         """
-        Get the selected prims in the scene
+        Get the current scene stage. Should be implemented by a plugin
 
         Returns:
-            List[Usd.Prim]: Selected prims
+            Usd.Stage | None: The stage if available
         """
-        raise NotImplementedError
+        return None
 
-    def get_selected_property(self) -> Usd.Property:
+    def get_selected_prims(self) -> Sequence[Usd.Prim]:
         """
-        Get the selected property in the scene
+        Get the selected prims in the scene. Should be implemented by a plugin
+
+        Returns:
+            Sequence[Usd.Prim]: Selected prims
+        """
+        return []
+
+    def get_selected_property(self) -> Usd.Property | None:
+        """
+        Get the selected property in the scene. Should be implemented by a plugin
 
         Returns:
             Usd.Property: Selected property
         """
-        raise NotImplementedError
+        return None
 
     def primSelectionChangedCallback(self, *args, **kwargs):
         chunk_notice.send_notice(

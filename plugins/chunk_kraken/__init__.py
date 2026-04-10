@@ -1,46 +1,45 @@
-"""Custom modules for the Usdview UI Framework.
-
-This module provides a framework for dynamically loading and managing custom UI modules
+"""
+Plugin implementation for Hugins' inhouse Kraken toolset
 """
 
 from pxr import Tf
 from kraken.plugin import KrakenPluginContainer
 from kraken.scene import SceneManager, PrimSelectionNotice, StageLoadedNotice
-# import kraken
 
-from usd_chunks import chunk_registry, chunk_notice
+from usd_chunks import chunk_registry, chunk_core, chunk_serial
 from plugins import chunk_qt
 
 
-class KrakenScene(chunk_notice.SceneSender):
+class KrakenScene(chunk_core.SceneSender):
     """
     This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
     TODO: Make this abstract and move implementation to a UsdView related location
     """
 
-    def __init__(self, scene: SceneManager):
+    def __init__(self, kraken_scene: SceneManager):
         self.selection_listener = Tf.Notice.RegisterGlobally(PrimSelectionNotice, self.primSelectionChangedCallback)
         self.loaded_listener = Tf.Notice.RegisterGlobally(StageLoadedNotice, self.stage_loaded)
-        self.scene = scene
-        pass
+        self.kraken_scene = kraken_scene
+
+        super().__init__()
 
     def stage_loaded(self, notice, sender=None):
         chunk_registry.ChunkLayerManager().clear_all_layers()
         chunk_registry.ChunkLayerManager().stage = notice.stage
         reg = chunk_registry.ChunkRegistry()
-        reg.reload_all()
+        reg.reload_modules()
 
     def get_stage(self):
-        return self.scene.stage
+        return self.kraken_scene.stage
 
     def get_selected_prims(self):
-        if not self.scene or not self.scene.stage:
-            return
+        if not self.kraken_scene or not self.kraken_scene.stage:
+            return []
 
-        return [self.scene.stage.GetPrimAtPath(x) for x in self.scene.selected_prims]
+        return [self.kraken_scene.stage.GetPrimAtPath(x) for x in self.kraken_scene.selected_prims]
 
     def get_selected_property(self):
-        return []
+        return None
 
 
 def launch_chunks(scene: SceneManager) -> None:
@@ -63,7 +62,7 @@ def launch_chunks(scene: SceneManager) -> None:
 class ChunksPluginContainer(KrakenPluginContainer):
     def reloadChunks(self):
         reg = chunk_registry.ChunkRegistry()
-        reg.reload_all()
+        reg.reload_modules()
 
     def openModuleSettings(self):
         dial = chunk_qt.ChunkModuleLoader(SceneManager().main_window)
@@ -82,6 +81,33 @@ class ChunksPluginContainer(KrakenPluginContainer):
             print("save layer: ", path)
             layer.Export(path)
 
+    def saveScene(self):
+        reg = chunk_registry.ChunkRegistry()
+
+        if reg.get_scene_file():
+            return reg.save_scene()
+
+        flt = "*" + chunk_serial.FileExtensions.SCENE
+        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+            reg.export_scene(file)
+            reg.set_scene_file(file)
+
+    def saveSceneAs(self):
+        reg = chunk_registry.ChunkRegistry()
+
+        flt = "*" + chunk_serial.FileExtensions.SCENE
+        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+            reg.export_scene(file)
+            reg.set_scene_file(file)
+
+    def openScene(self):
+        reg = chunk_registry.ChunkRegistry()
+
+        flt = "*" + chunk_serial.FileExtensions.SCENE
+        if file := chunk_qt.file_dial(filter=flt, create_new=False):
+            reg.open_scene(file)
+
+
     def load(self, scene) -> None:
         """Register the UI Creator plugin with the plugin registry.
 
@@ -94,8 +120,12 @@ class ChunksPluginContainer(KrakenPluginContainer):
         self.add_command_plugin("Chunks", "Modules", self.openModuleSettings)
         self.add_command_plugin("Chunks", "Save Layers", self.saveLayers)
 
-    def configure(self, scene, mainWindow) -> None:
-        chunk_qt.build_chunk_docker(mainWindow)
+        self.add_command_plugin("Chunks", "Save Scene", self.saveScene)
+        self.add_command_plugin("Chunks", "Save Scene As", self.saveSceneAs)
+        self.add_command_plugin("Chunks", "Open Scene", self.openScene)
+
+    def configure(self, scene, window) -> None:
+        chunk_qt.build_chunk_docker(window)
 
         launch_chunks(scene)
 

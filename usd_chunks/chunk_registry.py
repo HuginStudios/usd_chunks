@@ -115,24 +115,33 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         if self.package_dir:
             if self.package_dir not in sys.path:
                 sys.path.append(str(self.package_dir))
+
+                # When a chunk runs a subprocess, the os.environ is passed as the env. Therefore we should
+                # also make sure the PYTHONPATH is updated in order for the subprocess to find the packages
+                os.environ["PYTHONPATH"] = os.environ["PYTHONPATH"] + os.pathsep + str(self.package_dir)
+
             self.initialized = True
             self._load_cache()
             atexit.register(self._write_cache)
 
+    def _env_cache_file(self):
+        checksum = chunk_serial.compute_checksum(sys.executable)
+        return os.path.join(self.package_dir, f"{checksum}_chunk_package_cache.json")
+
     def _write_cache(self):
         # Writes the cache to disk
         serial = chunk_serial.serialize_json(dict(self._cache))
-        chunk_serial.save_file(serial, os.path.join(self.package_dir, "_chunk_package_cache.json"))
+        chunk_serial.save_file(serial, self._env_cache_file())
 
     def _load_cache(self):
         # Loads the cache from disk
-        path = os.path.join(self.package_dir, "_chunk_package_cache.json")
+        path = self._env_cache_file()
         if not os.path.exists(path):
             return
 
         if not (serial := chunk_serial.load_file(path)):
             return
-        self._cache = chunk_serial.deserialize_json_unbound(serial)
+        self._cache = defaultdict(set, chunk_serial.deserialize_json_unbound(serial))
 
     @staticmethod
     def package_info(package):
@@ -382,7 +391,7 @@ class ChunkModule(chunk_serial.Serializeable):
     def get_menu_name(self):
         """
         Get a path-like string refereing to where this module can be found in a menu
-        
+
         Returns:
             str: A path-like string to where this module can be found in a menu.
         """
@@ -448,6 +457,10 @@ class ChunkModule(chunk_serial.Serializeable):
                 logger.warning(f"Module spec or loader failed for module {self.module_name}. Skipping")
                 return False
 
+            if mod := sys.modules.get(self.module_name):
+                self.module = mod
+                return True
+
             loader = _ChunkLazyConfigLoader(self.module_name, str(self.module_file), spec.loader, self)
             spec.loader = loader
             module = util.module_from_spec(spec)
@@ -465,8 +478,7 @@ class ChunkModule(chunk_serial.Serializeable):
                 return False
 
             self.module = module
-            # Add the module to sys.modules
-            sys.modules[self.module_name] = self.module
+            sys.modules[self.module_name] = module
 
         elif self.module_file.suffix == chunk_serial.FileExtensions.CHUNK_MODULE:
             if _m := ChunkModule.from_chunk_definition(self.module_file):
@@ -504,6 +516,9 @@ class ChunkModule(chunk_serial.Serializeable):
             # This module failed to load. Set to file_name so we can try loading it again later
             logger.exception(f"Failed to run module {self.module_name}")
             self.loaded = False
+            return False
+
+        if not self.module:
             return False
 
         self.loaded = True
@@ -897,6 +912,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         for mod_cnstr in data.get("modules", []):
             if not (mod_name := mod_cnstr.serial.kwargs.get("module_name")):
                 continue
+            
+            # if mod := self.get_chunk_module(mod_name):
+            #     print(f"using already loaded module for {mod_name}")
+            #     if not mod.loaded:
+            #         mod._pre_load()
+            #     continue
 
             mod = mod_cnstr.construct(False)
 
@@ -912,10 +933,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             self.registered_modules[mod_name] = mod
 
         # Construct the layers before constructing the chunks, as chunks may reference the layers
+        
         lreg = ChunkLayerManager()
         if not lreg.initialized:
             return
-
         for rel_layer_path, c_cnstr in data.get("layers", {}).items():
             layer_path = p.parent / rel_layer_path
             if not layer_path.exists():
@@ -942,14 +963,31 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         # Construct the chunks
         if chunks := data.get("chunks"):
-            for c in chunks.construct().get_my_params():
-                self.scene.add_chunk(c)
-
-        for c in self.scene.get_chunks():
-            c.check_hierarchy()
+            self.scene.set_chunks(chunks.construct())
 
         self.scene._modified = False
         self.set_scene_file(p)
+
+    def reload_modules(self):
+        """
+        Reload all loaded modules
+        """
+        loaded_config_names = defaultdict(int)
+        for c in self.scene.get_chunks():
+            if conf := c.get_config():
+                loaded_config_names[conf.module] += 1
+
+        self.scene.clear()
+
+        for mod in self.get_chunk_modules():
+            if mod.loaded:
+                mod.unload()
+            for i in range(loaded_config_names.get(mod.module_name, 0)):
+                if i == 0:
+                    chunks = mod.load()
+                else:
+                    chunks = mod.create()
+                self.scene.add_chunks(chunks)
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):
@@ -1069,6 +1107,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # Create a graph layer - these are mosult for orginizing the layers. When chunks are part of
         # the same graph, they will become siblings in the same graph layer
         graph_layer_id = f"graph_{c.get_dag_node().get_graph_id()}"
+
         if not (parent := self.graph_layers.get(graph_layer_id)):
             parent = Sdf.Layer.CreateAnonymous(graph_layer_id)
             self.graph_layers[graph_layer_id] = parent
@@ -1254,13 +1293,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return
 
         if c.has_state(ChunkFlags.State.DISABLED):
-            # print("MUTE")
             layer.SetMuted(True)
-            # Sdf.Layer.AddToMutedLayers(layer.identifier)
-            # # self.stage.GetSessionLayer().SetMuted(True)
 
         elif self.is_muted(c):
             layer.SetMuted(False)
-            # print("UNMUTE")
-            # Sdf.Layer.RemoveFromMutedLayers(layer.identifier)
-            # # self.stage.GetSessionLayer().SetMuted(False)

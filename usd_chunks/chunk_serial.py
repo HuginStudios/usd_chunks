@@ -127,9 +127,6 @@ class _Glb:
         if not (obj := self.objects.get(hashval)):
             return None
 
-        # if isinstance(obj, (ClassConstructor, CallableConstructor)):
-        #     return None
-
         return obj
 
     def get_mod(self, hashval):
@@ -259,8 +256,8 @@ class SerializedClass(SerializedObject):
                         default = default.factory()
 
                 if val == default:
-                    # The value of the attribute is the default value and does not need to be saved. The value is set to the 
-                    # field's default value on creation. This may produce unexpected behaviour if the field changes in between 
+                    # The value of the attribute is the default value and does not need to be saved. The value is set to the
+                    # field's default value on creation. This may produce unexpected behaviour if the field changes in between
                     # saving / loading and for this reason it may be worth reconsidering if the serialized representation should
                     # include default values as well... The positives of doing this is that default values perhaps should be controlled
                     # by the class definition, and deserialization only sets overridden attributes. TODO
@@ -740,18 +737,23 @@ def _import_module(module_name: str) -> Optional[types.ModuleType]:
     if mod := sys.modules.get(module_name):
         return mod
 
-    importlib.invalidate_caches()
-    spec = util.find_spec(module_name)
-    if not spec:
+    # If the module is not already loaded, then ModuleNotFoundError is thrown. We can handle this by loading it at construction 
+    # time instead
+    try:
+        spec = util.find_spec(module_name)
+    except ModuleNotFoundError:
         return
 
+    if not spec:
+        return
     module = util.module_from_spec(spec)
     if not module or not spec.loader:
         return
 
-    sys.modules[module_name] = module
     spec.loader.exec_module(module)
-    return sys.modules[module_name]
+    sys.modules[module_name] = module
+
+    return module
 
 
 def get_module_attrib(glb: _Glb, mod_name: str, attr_name):
@@ -779,10 +781,6 @@ def get_module_attrib(glb: _Glb, mod_name: str, attr_name):
 
     if not (module := _import_module(mod_name)):
         return None
-
-    # print(type(module))
-    # Store in glb, as some references may look for modules
-    # glb.modules[hash(module)] = module
 
     try:
         return getattr(module, attr_name)
@@ -829,7 +827,6 @@ class CallableConstructor:
         res = decodeCallable(self.glb, self.data)
         if isinstance(res, ClassConstructor):
             raise ValueError(f"Failed to decode callable {self.data}")
-            return None
 
         if isinstance(res, CallableConstructor):
             raise ValueError(f"Failed to decode callable {self.data}")
@@ -910,16 +907,17 @@ class ClassConstructor:
         if not inst or isinstance(inst, (ClassConstructor, CallableConstructor)):
             try:
                 if not (cls := get_module_attrib(self.glb, self.serial.module, self.serial.name)):
+                    logger.warning(f"Failed to get module attrib {self.serial}")
                     return None
                 inst = cls(**kwargs)
             except TypeError:
                 logger.warning(f"Failed to call ClassConstructor {self.serial}")
                 return
 
-            self.glb.objects[self.serial.hashval] = inst
+        self.glb.objects[self.serial.hashval] = inst
 
         if post_constuct:
-            self.post_constuct()
+            return self.post_constuct()
 
         return inst
 
@@ -930,11 +928,15 @@ class ClassConstructor:
         Returns:
             Any: The object created by construct
         """
+
         if not (inst := self.glb.objects.get(self.serial.hashval)):
             return
 
         for key, val in self.serial.attributes.items():
             resval = self.construct_value(val, self.glb)
+
+            if isinstance(resval, (ClassConstructor, CallableConstructor)):
+                print(key, resval)
 
             if isinstance(resval, Serializeable):
                 resval.post_serial(inst)
@@ -1035,7 +1037,8 @@ def _decodeChunk(glb: _Glb, data):
         return data
 
     res = ClassConstructor(glb, serial)
-    glb.objects[serial.hashval] = res
+    if not glb.get_obj(serial.hashval):
+        glb.objects[serial.hashval] = res
     return res
 
 

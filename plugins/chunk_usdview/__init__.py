@@ -85,25 +85,7 @@ class ChunksPluginContainer(PluginContainer):
 
     def reloadChunks(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
-
-        loaded_config_names = defaultdict(int)
-        for c in reg.scene.get_chunks():
-            if conf := c.get_config():
-                loaded_config_names[conf.module] += 1
-
-        reg.scene.clear()
-
-        for mod in reg.registered_modules.values():
-            # mod.unload()
-            if mod.loaded:
-                mod.unload()
-
-            for i in range(loaded_config_names.get(mod.module_name, 0)):
-                if i == 0:
-                    chunks = mod.load()
-                else:
-                    chunks = mod.create()
-                reg.scene.add_chunks(chunks)
+        reg.reload_modules()
 
     def saveLayers(self, usdviewApi):
         reg = chunk_registry.ChunkLayerManager()

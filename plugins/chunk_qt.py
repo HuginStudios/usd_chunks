@@ -1127,7 +1127,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         self.filter_widget.textChanged.connect(self._filter_actions)
         self.filter_widget.installEventFilter(self)
         self.filterable = dict()
-    
+
     def _filter_menus(self, menu: QtWidgets.QMenu):
         c = 0
         for a in menu.actions():
@@ -1143,9 +1143,8 @@ class FilterableChunkMenu(QtWidgets.QMenu):
 
         if c == len(menu.actions()):
             return 1
-        
-        return 0
 
+        return 0
 
     def _filter_actions(self, text: str):
         term = text.strip().lower()
@@ -1161,7 +1160,6 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             action.setVisible(any(term in x for x in path_elems))
 
         self._filter_menus(self)
-
 
     def eventFilter(self, obj, event):
         """Keep arrow/return key presses inside the QLineEdit."""
@@ -1256,7 +1254,7 @@ def file_dial(filter: Optional[str] = None, create_new=False, directory=False):
 
     res = dial.selectedFiles()[0]
 
-    if create_new:
+    if create_new and not directory:
         if os.path.exists(res) and not confirm_dial(f"Override {res}?"):
             return None
 
