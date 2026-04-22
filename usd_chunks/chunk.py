@@ -60,7 +60,7 @@ from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast, TypeGuard
 
 from pxr import Usd, Sdf
 
-from usd_chunks.chunk_notice import ChunkNoticeAlias
+from usd_chunks.chunk_notice import ChunkNoticeAlias  # noqa: F401
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
@@ -558,6 +558,7 @@ def is_param(v: Any) -> TypeGuard[ChunkParamBase]:
     """
     return is_inst(ChunkParamBase)(v)
 
+
 @overload
 def is_param_t(t: ChunkFlags.ParamType) -> Predicate[ChunkParamBase]:
     """
@@ -575,7 +576,9 @@ def is_param_t(t: ChunkFlags.ParamType) -> Predicate[ChunkParamBase]:
         if not is_param(v):
             return False
         return t in v.evaluate_type()
+
     return _fn
+
 
 @overload
 def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]:
@@ -597,6 +600,7 @@ def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]:
 
     return _fn
 
+
 def is_param_t(t) -> Predicate:
     """
     Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
@@ -615,6 +619,7 @@ def is_param_t(t) -> Predicate:
         return t in ChunkFlags.ParamTypeToTypes(v.evaluate_type())
 
     return _fn
+
 
 def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
     """
