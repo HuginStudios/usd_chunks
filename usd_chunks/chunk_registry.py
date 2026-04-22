@@ -131,7 +131,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
     def _write_cache(self):
         # Writes the cache to disk
         serial = chunk_serial.serialize_json(dict(self._cache))
-        chunk_serial.save_file(serial, self._env_cache_file())
+        chunk_serial.save_json(self._env_cache_file(), serial)
 
     def _load_cache(self):
         # Loads the cache from disk
@@ -141,7 +141,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
 
         if not (serial := chunk_serial.load_file(path)):
             return
-        self._cache = defaultdict(set, chunk_serial.deserialize_json_unbound(serial))
+        self._cache = defaultdict(set, chunk_serial.deserialize_json(serial))
 
     @staticmethod
     def package_info(package):
@@ -228,7 +228,6 @@ class _ConfigTransformer(ast.NodeTransformer):
         self._code = code
         self._module = module
         self._globs = globs.copy()
-        self._found_main = False
 
     def _get_node_source(self, node):
         return ast.get_source_segment(self._code, node)
@@ -249,7 +248,7 @@ class _ConfigTransformer(ast.NodeTransformer):
             if func := self._globs.get("config"):
                 self._module.config = func()
         if node.name == "main":
-            self._found_main = True
+            self._module._has_main = True
             if src := self._get_node_source(node):
                 self._module._checksum = chunk_serial.compute_checksum("".join(src.split()))
         return node
@@ -281,7 +280,6 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         self.path = path
         self._loader = util.LazyLoader(loader)
         self._module = mod
-        self._found_main = False
 
     def get_filename(self, fullname: str) -> str:  # noqa: ARG002
         return self.path
@@ -297,8 +295,7 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         source_bytes = self.get_data(self.get_filename(self.fullname))
         source = source_bytes.decode("utf-8")
 
-        transformer = _pre_load_module(source, module.__dict__, self._module)
-        self._found_main = transformer._found_main
+        _pre_load_module(source, module.__dict__, self._module)
 
         self._loader.exec_module(module)
 
@@ -328,7 +325,7 @@ class ChunkModule(chunk_serial.Serializeable):
         # self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
         self.func: Optional[Callable[[], ChunkBase | List[ChunkBase]]] = None
 
-        self._should_serialize_chunks = True
+        self._has_main = False
 
         # This is set by the _ConfigTransformer when parsing the module (before loading) if the module
         # defines a config() function
@@ -366,7 +363,7 @@ class ChunkModule(chunk_serial.Serializeable):
         if not serial:
             return res
 
-        if not (data := chunk_serial.deserialize_json(serial)):
+        if not (data := chunk_serial.deserialize_scene(serial)):
             return res
 
         if p.suffix == chunk_serial.FileExtensions.CHUNK_MODULE:
@@ -439,9 +436,8 @@ class ChunkModule(chunk_serial.Serializeable):
             if not self.loaded:
                 # Instead of using the ChunkLazyConfigLoader, we can parse the runtime module directly
                 # using the _pre_load_module. This will set self.config and self._checksum
-                transformer = _pre_load_module(self.module._code, self.module.__dict__, self)
-                if not transformer._found_main:
-                    logger.warning(f"main function is not defined in module {self.module_name}. Skipping")
+                _pre_load_module(self.module._code, self.module.__dict__, self)
+                if not self.has_main():
                     return False
 
             self.module.__dict__["__file__"] = self.module_file.as_posix()
@@ -457,10 +453,6 @@ class ChunkModule(chunk_serial.Serializeable):
                 logger.warning(f"Module spec or loader failed for module {self.module_name}. Skipping")
                 return False
 
-            if mod := sys.modules.get(self.module_name):
-                self.module = mod
-                return True
-
             loader = _ChunkLazyConfigLoader(self.module_name, str(self.module_file), spec.loader, self)
             spec.loader = loader
             module = util.module_from_spec(spec)
@@ -472,10 +464,12 @@ class ChunkModule(chunk_serial.Serializeable):
                 logger.exception(f"Failed to load module {self.module_name}")
                 return False
 
-            # found_main = loader._found_main
-            if not loader._found_main:
-                logger.warning(f"main function is not defined in module {self.module_name}. Skipping")
+            if not self.has_main():
                 return False
+
+            if mod := sys.modules.get(self.module_name):
+                self.module = mod
+                return True
 
             self.module = module
             sys.modules[self.module_name] = module
@@ -585,7 +579,7 @@ class ChunkModule(chunk_serial.Serializeable):
 
         return loaded
 
-    def should_load(self) -> bool:
+    def should_load_for_filter(self) -> bool:
         """
         Check if this module should load. Checks if the module name exists in USD_CHUNK_LOAD_FILTER
 
@@ -595,9 +589,13 @@ class ChunkModule(chunk_serial.Serializeable):
         if module_filter := USD_CHUNK_LOAD_FILTER():
             if self.module_name not in module_filter:
                 return False
-        if not self.config:
-            return False
         return True
+
+    def has_config(self):
+        return bool(self.config)
+
+    def has_main(self):
+        return self._has_main
 
     def should_load_for_plugin(self, plugin_name: str) -> bool:
         """
@@ -610,8 +608,6 @@ class ChunkModule(chunk_serial.Serializeable):
         Returns:
             bool: True if the ChunkModule can be used with the plugin plugin_name
         """
-        if not self.config:
-            return False
         if self.config.load_for_plugin and plugin_name not in self.config.load_for_plugin:
             return False
         return True
@@ -629,30 +625,23 @@ class ChunkModule(chunk_serial.Serializeable):
             return
 
         if p.suffix == chunk_serial.FileExtensions.PY_MODULE:
-            serial = chunk_serial.serialize_py(self.module)
-
-        elif p.suffix == chunk_serial.FileExtensions.CHUNK_MODULE:
+            data = chunk_serial.PyModule(module=self.module)
+            chunk_serial.save_py_module(path, data)
+        elif p.suffix == chunk_serial.FileExtensions.CHUNK:
             old_path = self.module_file
             old_name = self.module_name
 
             self.module_file = p
             self.module_name = p.stem
 
-            self._should_serialize_chunks = False
-
-            data: Dict[str, Any] = {"modules": [self]}
-            serial = chunk_serial.serialize_json(data, True)
+            data = chunk_serial.Module(modules=[self])
+            chunk_serial.save_module(path, data)
 
             self.module_file = old_path
             self.module_name = old_name
-
-            self._should_serialize_chunks = True
-
         else:
             logger.warning(f"wrong file extension {path}")
             return
-
-        chunk_serial.save_file(serial, path)
 
 
 class ChunkRegistry(metaclass=RegistrySingleton):
@@ -691,36 +680,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         self.register_chunk_environ_directories()
         self.register_chunk_modules(self.registered_directories.copy())
 
-        self._scene_file: Optional[Path] = None
-        if scene_file:
-            self.open_scene(scene_file)
-
         c = len(self.get_chunk_modules(loaded=True))
         logger.info(f"Found {len(self.registered_modules)} chunks. Loaded {c}")
         self.initialized = True
 
-    def get_scene_file(self):
-        """
-        Get the currently loaded scene file. This may be None if no scene file was loaded
-
-        Returns:
-            Path | None: the path to a scene file, or None if not set
-        """
-        return self._scene_file
-
-    def set_scene_file(self, path: str | Path):
-        """
-        Set the current scene file. The file extension of path should be .json. This will not
-        load the content of the file. To load the content of the file, use open_scene() instead.
-
-        Args:
-            path (str | Path): A .json file path to use as scene file.
-        """
-        if (p := Path(path)) and p.suffix != chunk_serial.FileExtensions.SCENE:
-            logger.warning(f"Unsupported scene file extension: {path}")
-            return
-
-        self._scene_file = Path(path)
+        if scene_file:
+            self.scene.open_scene(scene_file)
 
     def register_chunk_environ_directories(self):
         """Register the USD_CHUNK_DIRS directories to find Python modules."""
@@ -786,14 +751,26 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         Returns:
             ChunkModule | None: The registered module, or None if failed
         """
-        if not module.module or not module.should_load_for_plugin(self.plugin) or not module.should_load():
+        if not module.has_main():
+            logger.info(f"Skipping {module.module_name}. Module is has no main function defined")
+            return
+        if not module.has_config():
+            logger.info(f"Skipping {module.module_name}. Module is has no config function defined")
+            return
+        if not module.module:
+            logger.info(f"Skipping {module.module_name}. Module has no valid python source module")
+            return
+        if not module.should_load_for_plugin(self.plugin):
             logger.info(f"Skipping {module.module_name}. Module should not be registered in this context")
+            return
+        if not module.should_load_for_filter():
+            logger.info(f"Skipping {module.module_name}. Module is excluded in CHUNK_MODULE_FILTER")
             return
 
         name = module.module_name
 
         if name in self.registered_modules:
-            logger.warning(f"Skipping {module.module_file}. Duplicate module: {name}")
+            logger.debug(f"Skipping {module.module_file}. Duplicate module: {name}")
             return
 
         self.registered_modules[name] = module
@@ -841,132 +818,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 if mod.module_name not in self.registered_modules:
                     self.register_module(mod)
                 mod.load()
-            return
-
-        elif p.suffix == chunk_serial.FileExtensions.CHUNK:
-            pass
-
-    def export_scene(self, path: str | Path):
-        """
-        Export the current scene. The result will be written to path, if path is a .json file path.
-        The file will contain information about all the loaded chunks and modules, and when loaded
-        should recrete the scene 1:1
-
-        Args:
-            path (str | Path): A target file path which to write to
-        """
-        p = Path(path)
-        if p.suffix != chunk_serial.FileExtensions.SCENE:
-            return
-
-        # data = {"modules": self.get_chunk_modules(True), "chunks": self.scene.get_chunks()}
-        data: Dict[str, Any] = {"modules": self.get_chunk_modules(True), "chunks": self.scene.chunks}
-
-        lreg = ChunkLayerManager()
-        if lreg.initialized:
-            data["layers"] = lreg.save_layers(p.parent)
-
-        serial = chunk_serial.serialize_json(data, False)
-        chunk_serial.save_file(serial, path)
-
-    def save_scene(self):
-        """
-        Calls export_scene with the current scene file as target, meaning this will override the currently loaded scene.
-        If no scene is set, this will print a warning and do nothing.
-        """
-        if not (f := self.get_scene_file()):
-            logger.warning("No scene file set")
-            return
-
-        self.export_scene(f)
-        self.scene._modified = False
-
-    def open_scene(self, path: str | Path):
-        """
-        Loads a scene file. This will clear the loaded chunks and create new ones from the file.
-        If the file is a .py file, the module will be created
-
-        A .py file will be loaded as a regular module - like those in USD_CHUNK_DIRS
-
-        Args:
-            path (str | Path): A path to a file on disk which to load
-        """
-
-        p = Path(path)
-        if not p.exists() or p.suffix != chunk_serial.FileExtensions.SCENE:
-            return
-
-        if self.scene.is_modified():
-            if not self.scene.request_save():
-                return
-
-        # Clear the current scene
-        self.scene.clear()
-
-        serial = chunk_serial.load_file(path)
-
-        # Deserialize json files
-        if not serial or not (data := chunk_serial.deserialize_json(serial)):
-            return
-
-        for mod_cnstr in data.get("modules", []):
-            if not (mod_name := mod_cnstr.serial.kwargs.get("module_name")):
-                continue
-            
-            # if mod := self.get_chunk_module(mod_name):
-            #     print(f"using already loaded module for {mod_name}")
-            #     if not mod.loaded:
-            #         mod._pre_load()
-            #     continue
-
-            mod = mod_cnstr.construct(False)
-
-            if not isinstance(mod, ChunkModule):
-                logger.error(f"Return value from serial is not a ChunkModule: {mod}")
-                continue
-
-            if not mod._pre_load():
-                logger.error(f"Failed to preload: {mod}")
-                continue
-
-            mod = mod_cnstr.post_constuct()
-            self.registered_modules[mod_name] = mod
-
-        # Construct the layers before constructing the chunks, as chunks may reference the layers
-        
-        lreg = ChunkLayerManager()
-        if not lreg.initialized:
-            return
-        for rel_layer_path, c_cnstr in data.get("layers", {}).items():
-            layer_path = p.parent / rel_layer_path
-            if not layer_path.exists():
-                logger.warning(f"Layer {rel_layer_path} is not relative to {p.parent}. Skipping")
-                continue
-
-            c = c_cnstr.construct()
-
-            if not isinstance(c, ChunkCommon):
-                logger.warning(f"Could not load layer {rel_layer_path}. The referenced chunk was not found")
-                continue
-
-            layer = lreg.open_layer(layer_path)
-            if not layer:
-                logger.warning(f"Could not load layer {layer_path}")
-                continue
-
-            c_layer = lreg.get_or_create_layer(c)
-            if not c_layer:
-                logger.warning(f"Could not load layer for chunk {c.name}")
-                continue
-
-            UsdUtils.StitchLayers(c_layer, layer)
-
-        # Construct the chunks
-        if chunks := data.get("chunks"):
-            self.scene.set_chunks(chunks.construct())
-
-        self.scene._modified = False
-        self.set_scene_file(p)
 
     def reload_modules(self):
         """
@@ -1028,23 +879,33 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         self.initialized = True
 
-    def save_layers(self, path: str | Path) -> Iterable[str]:
+    def get_layer_file_name(self, layer: Sdf.Layer):
+        return "_".join(layer.GetDisplayName().split("_")[:-1]) + ".usda"
+
+    def save_layer(self, c: ChunkHash, dirname: str | Path):
+        if not (layer := self.get_layer(c)):
+            return None
+
+        name = self.get_layer_file_name(layer)
+        file = f"{dirname}/{name}"
+        layer.Export(file)
+        return Path(file)
+
+    def save_layers(self, path: str | Path) -> Dict[str, str]:
         p = Path(path)
         if not p.is_dir():
             logger.warning(f"Can't save layers. Path is not a directory {path}")
-            return []
+            return {}
 
         layers = {}
         for key, layer in self.chunk_layers.items():
             if not layer:
                 continue
 
-            name = "_".join(layer.GetDisplayName().split("_")[:-1])
-            file = f"{p}/{name}.usda"
-            layer.Export(file)
-
-            rpath = Path(file).relative_to(p).as_posix()
-            layers[rpath] = key
+            file = self.save_layer(key, path)
+            if not file:
+                continue
+            layers[file.as_posix()] = key
         return layers
 
     def open_layer(self, path: str | Path):
@@ -1052,6 +913,12 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not p.exists():
             return
         return Sdf.Layer.FindOrOpen(str(path))
+
+    def stitch_layers(self, layer_a, layer_b):
+        UsdUtils.StitchLayers(layer_a, layer_b)
+
+    def get_layer_usda(self, layer: Sdf.Layer):
+        return layer.ExportToString()
 
     def get_root_layer(self) -> Sdf.Layer:
         """
@@ -1116,9 +983,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # If the root has been detatched from the stage's root, reapply it
         if parent.identifier not in root.subLayerPaths:
             root.subLayerPaths.append(parent.identifier)
-
-        # if parent.IsMuted():
-        #     return
 
         # The sort_key is used to determine the order of the chunk sublayers
         index = c.get_dag_node().get_sort_key()

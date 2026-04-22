@@ -47,6 +47,7 @@ from typing import (
     overload,
 )
 
+from pathlib import Path
 import attrs
 from attr import _make as attrMake
 from pxr import Sdf, Usd
@@ -350,7 +351,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
         # Hold a weakref to the group. If all other references to the group is killed, then
         # remove it from the UI as well, as the ui should not take ownership of the group
-        self._group = weakref.ref(group)
+        self._group = weakref.ref(group, self._group_deleted)
 
         self._callbacks: List[chunk_notice.NoticeConnection] = []
 
@@ -638,6 +639,9 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
     def _layout_changed(self, notice, sender):
         # self.§update_label(sender.value)
         self.update_from_layout()
+
+    def _group_deleted(self, ref):
+        self.delete_self()
 
     def _delete_self(self, notice, sender):
         if sender is not self.group:
@@ -1394,7 +1398,7 @@ class ChunkHash(Protocol):
     """Protocol for hashable Chunk object"""
 
     def __hash__(self) -> int: ...
-    def __eq__(self, value: object) -> bool: ...
+    def __eq__(self, value: object, /) -> bool: ...
 
 
 class ProxyParam(chunk_notice.ChunkNoticePropagator):
@@ -1681,6 +1685,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     def serialize(self, glb):
         if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
             res.kwargs["params"] = list(self.get_my_params())
+
         return res
 
     def get_notice_data(self) -> Self:
@@ -3338,6 +3343,144 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self.set_chunks(NameSyncedContainer())
 
         self._modified = False
+        self._scene_file = Path()
+
+    def export_scene(self, path: str | Path):
+        """
+        Export the current scene. The result will be written to path, if path is a chunk_serial.FileExtensions.SCENE file path.
+        The file will contain information about all the loaded chunks and modules, and when loaded
+        should recrete the scene 1:1
+
+        Args:
+            path (str | Path): A target file path which to write to
+        """
+        p = Path(path)
+        if p.suffix != chunk_serial.FileExtensions.SCENE:
+            return
+
+        self.set_scene_file(path)
+
+        layers = {}
+        layer_data = []
+        lreg = chunk_registry.ChunkLayerManager()
+
+        if lreg.initialized:
+            for c in self.get_chunks():
+                if layer := lreg.get_layer(c):
+                    lname = lreg.get_layer_file_name(layer)
+                    layers[lname] = c.get_hash()
+                    layer_data.append((lname, lreg.get_layer_usda(layer)))
+
+        data = chunk_serial.Scene(
+            modules=chunk_registry.ChunkRegistry().get_chunk_modules(True), chunks=self.chunks, layers=layers
+        )
+        chunk_serial.save_scene(path, data, layer_data)
+
+    def save_scene(self):
+        """
+        Calls export_scene with the current scene file as target, meaning this will override the currently loaded scene.
+        If no scene is set, this will print a warning and do nothing.
+        """
+        if not (f := self.get_scene_file()):
+            logger.warning("No scene file set")
+            return
+
+        self.export_scene(f)
+        self._modified = False
+
+    def get_scene_file(self):
+        if self._scene_file == Path():
+            return None
+        return self._scene_file
+
+    def set_scene_file(self, path: str | Path):
+        """
+        Set the current scene file. The file extension of path should be chunk_serial.FileExtensions.SCENE. This will not
+        load the content of the file. To load the content of the file, use open_scene() instead.
+
+        Args:
+            path (str | Path): A path to a scene file.
+        """
+        if (p := Path(path)) and p.suffix != chunk_serial.FileExtensions.SCENE:
+            logger.warning(f"Unsupported scene file extension: {path}")
+            return
+
+        self._scene_file = Path(path)
+
+    def open_scene(self, path: str | Path):
+        """
+        Open a scene file (.chsc) and import its content. The chunks member will be replaced with the chunks
+        imported from the file. All layers will be replaced.
+
+        Args:
+            path (str | Path): _description_
+        """
+        p = Path(path)
+        if not p.exists() or p.suffix != chunk_serial.FileExtensions.SCENE:
+            return
+
+        if self.is_modified():
+            if not self.request_save():
+                return
+
+        # Clear the current scene
+        self.clear()
+
+        # Deserialize json files
+        serial = chunk_serial.load_file(path)
+        if not serial or not (data := chunk_serial.deserialize_scene(serial)):
+            return
+
+        self.set_scene_file(p)
+
+        # Construct the modules
+        for mod_cnstr in data.get("modules", []):
+            mod = mod_cnstr.construct(False)
+
+            if not isinstance(mod, chunk_registry.ChunkModule):
+                logger.error(f"Return value from serial is not a ChunkModule: {mod}")
+                continue
+
+            if not mod._pre_load():
+                logger.error(f"Failed to preload: {mod}")
+                continue
+
+            mod = mod_cnstr.post_constuct()
+            chunk_registry.ChunkRegistry().register_module(mod)
+
+        # Construct the chunks
+        if chunks := data.get("chunks"):
+            if nsc := chunks.construct():
+                self.set_chunks(nsc)
+
+        self._modified = False
+
+        # Construct the layers
+        lreg = chunk_registry.ChunkLayerManager()
+        if not lreg.initialized:
+            return
+
+        for layer_name, cref in data.get("layers", {}).items():
+            c = cref.construct()
+
+            if not isinstance(c, ChunkCommon):
+                logger.warning(f"Could not load layer {layer_name}. The referenced chunk was not found")
+                continue
+
+            layer_str = chunk_serial.load_scene_data(p, layer_name)
+
+            if not layer_str:
+                logger.warning(f"Could not load layer {layer_name}")
+                continue
+
+            layer = Sdf.Layer.CreateAnonymous()
+            layer.ImportFromString(layer_str.decode())
+
+            c_layer = lreg.get_or_create_layer(c)
+            if not c_layer:
+                logger.warning(f"Could not load layer for chunk {c.name}")
+                continue
+            lreg.stitch_layers(c_layer, layer)
 
     def remove_chunk(self, chunk: str | ChunkHash):
         """
@@ -3387,9 +3530,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             self.add_chunk(c)
 
     def clear(self):
-        for c in self.get_chunks():
-            c.request_delete()
-
         self.chunks.clear()
         self._modified = True
 
