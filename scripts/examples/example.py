@@ -92,7 +92,7 @@ def validate_name(param: chunk.LineEdit, sender: chunk_core.AttributeSender):
     return sender.value
 
 
-def nameChanged(owner: chunk.LineEdit, notice, sender):
+def nameChanged1(owner: chunk.LineEdit, notice, sender):
     if not (s := notice.data) or s.name != "value":
         return
 
@@ -102,6 +102,13 @@ def nameChanged(owner: chunk.LineEdit, notice, sender):
     param_name = s.old_value if s.old_value else "listSlider"
     if p := c.get_param(param_name):
         p.name = s.value
+
+
+def nameChanged2(owner: chunk.Slider, attrsender):
+    nameEdit = owner.get_dependency(0, chunk.is_param_t(str))
+    if nameEdit.value:
+        return nameEdit.value
+    return attrsender.value
 
 
 def main():
@@ -239,10 +246,17 @@ def main():
 
     # A text edit is a parameter for editing strings. In this case, the callback will rename the listSlider, showing how the proxies will update.
     nameEdit = chunk.LineEdit("list_name")
-    nameEdit.add_callback(nameChanged, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+
+    # These are examples of how to modify an attribute of a parameter based on another parameter. In both cases, the name of listSlider is modified
+    # when the nameEdit's value is cja
+
+    # nameEdit.add_callback(nameChanged1, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+    # nameEdit.set_function("value", validate_name)
+
+    listSlider.add_dependency(nameEdit)
+    listSlider.set_function("name", nameChanged2)
 
     # Add a function to be called whenever the 'value' attribute changes. The return value of the function will be the new value of the param
-    nameEdit.set_function("value", validate_name)
     myChunk.add_params([nameEdit, listGroup])
 
     # Prints the hierarchy of the chunk. Useful for debugging chunks

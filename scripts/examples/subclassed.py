@@ -1,5 +1,11 @@
-from usd_chunks import chunk
+"""
+An example chunk demonstrating how a chunk class can be implemented. 
 
+When serialized, the MyCustomChunk instance will be serialized with 
+the current counter value, and upon loading, the counter value is restored.
+"""
+
+from usd_chunks import chunk
 
 class MyCustomChunk(chunk.Chunk):
     def __init__(self, startCount=10):
@@ -17,7 +23,7 @@ class MyCustomChunk(chunk.Chunk):
 
 
 def main():
-    return MyCustomChunk(7)
+    return MyCustomChunk(1)
 
 
 def config():
