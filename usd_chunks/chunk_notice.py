@@ -742,15 +742,12 @@ class DagNode:
         Solve self + outputs + owner. This is the main solve method that clients should use, as it will trigger all dependent nodes
         to solve when this node has solved.
 
-        Args:
-            notice (Optional[ChunkNotice]): The input notice
-            sender (Any): The input sender
-            propagated (Optional[ChunkNoticePropagator], optional): An optional propagator. Defaults to None.
-
         Returns:
-            Optional[ChunkNotice]: The result notice, being either the input notice, or the result from the callback, or None
-        """
+            None: If the node should not solve
 
+        Yields:
+            DagNode: All solved outputs, including self
+        """
         if not self.should_solve():
             return None
 
@@ -969,8 +966,6 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
 
         Args:
             notice (chunk_notice.InterfaceChangeNotice): The notice object which was sent
-            sender (Any): The python object which was used as sender for the notice
-            propagated (ChunkNotice): The propagated notice. The first notice that was sent
 
         Returns:
             Optional[ChunkNotice]: The result from calling send_self
@@ -1084,12 +1079,13 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     @overload
     def get_dependency(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> _T: ...
 
-    def get_dependency(self, index: int = 0, predicate: Optional[Predicate[_T]] = None):
+    def get_dependency(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> Optional["ChunkNoticePropagator"] | _T:
         """
         Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
 
         Returns:
             ChunkNoticePropagator | None: The input connected at index, or None if not found
+            _T: The input connected at index matching the predicate if supplied
         """
         try:
             res = self.get_dag_node().get_input(index).propagator
@@ -1117,12 +1113,13 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     @overload
     def get_dependent(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> _T: ...
 
-    def get_dependent(self, index: int = 0, predicate: Optional[Predicate[_T]] = None):
+    def get_dependent(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> Optional["ChunkNoticePropagator"] | _T:
         """
         Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
 
         Returns:
             ChunkNoticePropagator | None: The input connected at index, or None if not found
+            _T: The input connected at index matching the predicate if supplied
         """
         try:
             res = self.get_dag_node().get_output(index).propagator
@@ -1139,7 +1136,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     @overload
     def get_dependents(self, predicate: Optional[Predicate[_T]] = None) -> List[_T]: ...
 
-    def get_dependents(self, predicate: Optional[Predicate[_T]] = None):
+    def get_dependents(self, predicate: Optional[Predicate[_T]] = None) -> List["ChunkNoticePropagator"] | List[_T]:
         """
         Get all propagators that depend on this propagator (nodes connected to the output of this node)
 
@@ -1147,7 +1144,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             predicate (Optional[Predicate[_T]], optional): An optional predicate function. Defaults to None.
 
         Returns:
-            List["ChunkNoticePropagator"]: When no predicate is supplied, all dependents are returned
+            List[ChunkNoticePropagator]: When no predicate is supplied, all dependents are returned
             List[_T]: Dependents matching the predicate
         """
         if not predicate:

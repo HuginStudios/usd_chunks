@@ -1,6 +1,6 @@
 """
 Defines all base classes which the chunks and associated classes should derive from. These classes should not
-be instatiated, instead use the implementations from usd_chunks.chunk.
+be instatiated, instead use the implementations from [usd_chunks.chunk](chunk.md).
 
 We use the attrs library behind the scenes to get dataclass-like behaviour for all the Chunk classes in order to
 easily create and manage attributes. The attributes and function definitions from attrs are inherited through the mro
@@ -293,12 +293,12 @@ class ChunkWidgetFactoryBase(Protocol):
 
     widget_map: Dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]
 
-    def get_map(self):
+    def get_map(self) -> Dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]:
         """
         Return the widget_map of the factory
 
         Returns:
-            ict[ChunkFlags.ParamType, type[ChunkParamWidget]]: The widget_map
+            Dict[ChunkFlags.ParamType, type[ChunkParamWidget]]: The widget_map
         """
         return self.widget_map
 
@@ -568,7 +568,6 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         A ui implementation plugin should implement this function to get labeled widgets
 
         Args:
-            param (chunk_core.ChunkCommon): The param that was changed
             notice (Tf.Notice): The notice that was sent
             sender (chunk_core.AttributeSender): The attribute that changed
         """
@@ -1730,7 +1729,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         Appends nested params to the ChainMap. This allows for fast lookups accross the layers.
 
         Args:
-            nested (NameSyncedContainer) : The nested params to add
+            nested ("NameSyncedContainer[ChunkT]"): The nested params to add
         """
         self._params.maps.append(nested._params)
         self._names.maps.append(nested._names)
@@ -1808,12 +1807,15 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     @overload
     def get_param(self, key: Union[ChunkHash, str], predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
 
-    def get_param(self, key: Union[ChunkHash, str], predicate: Optional[Predicate[ValueT]] = None):
+    def get_param(
+        self, key: Union[ChunkHash, str], predicate: Optional[Predicate[ValueT]] = None
+    ) -> Optional[ChunkT] | ValueT:
         """Retrieve a param from this datastructure. Key can be either a ChunkCommon (It hashes to the HashVal),
         an explicit HashVal (ChunkObject._hashable) or a name.
 
         Returns:
-            ChunkCommon | None: The found Chunk object if found
+            Optional[ChunkT]: The found Chunk object if found
+            ValueT: The found Chunk object matching the predicate if supplied
         """
         if isinstance(key, str):
             res = self.get_by_name(key)
@@ -1833,7 +1835,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     @overload
     def get_by_name(self, name: str, predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
 
-    def get_by_name(self, name: str, predicate: Optional[Predicate[ValueT]] = None):
+    def get_by_name(self, name: str, predicate: Optional[Predicate[ValueT]] = None) -> Optional[ChunkT] | ValueT:
         """
         Excplicitly retrieve a param by its name. In order to find nested children, one can
         pass the hierarchy to the 'name' argument by adding a dot (.) for each level in the hierarchy:
@@ -1843,7 +1845,8 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         ```
 
         Returns:
-            ChunkCommon | None: The found Chunk object if found
+            Optional[ChunkT]: The found Chunk object if found
+            ValueT: The found Chunk object matching the predicate, if supplied
         """
         if "." in name:
             hierarchy = name.split(".")
@@ -1897,11 +1900,12 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     @overload
     def get_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
 
-    def get_params(self, predicate: Optional[Predicate[ValueT]] = None):
+    def get_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ChunkT, ...] | Tuple[ValueT, ...]:
         """Get all params on this layer and under
 
         Returns:
-            Tuple[ChunkCommon, ...]: The params
+            Tuple[ChunkT, ...]: The params
+            Tuple[ValueT, ...]: The params matching the predicate if supplied
         """
         ps = self._params.values()
 
@@ -1914,11 +1918,12 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     @overload
     def get_my_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
 
-    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None):
+    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ChunkT, ...] | Tuple[ValueT, ...]:
         """Get all params on this layer only
 
         Returns:
-            Tuple[ChunkCommon, ...]: The params
+            Tuple[ChunkT, ...]: The params
+            Tuple[ValueT, ...]: The params matching the predicate, if supplied
         """
         ps = self._params.maps[0].values()
         if not predicate:
@@ -2438,7 +2443,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         the AttributeSender passed to set_usd_attr().
 
         Args:
-            attr (Usd.Attribute): The updated UsdAttribute.
+            prop_path (str): Path to the updated UsdAttribute.
         """
         if not self._usd_prop_connection:
             return
@@ -2453,11 +2458,11 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
     def set_usd_prop(self, prop_path: str, sender: AttributeSender):
         """
-        Set the references UsdAttribute object. Any changes to the param will
+        Connect the UsdAttribute at prop_path to self. Any changes to the param will
         update the attribute
 
         Args:
-            attr (Usd.Attribute): The UsdAttribute to refrence
+            prop_path (str): A path to the UsdAttribute to reference
             sender (AttributeSender): A sender object that should connect to the UsdAttribute.
                 When a signal with sender and ATTRIBUTE_CHANGED notice is sent, the method
                 update_usd_attrib() of this class is called
@@ -2701,7 +2706,7 @@ class ChunkContainerBase(ChunkCommon):
     @overload
     def get_param(self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
 
-    def get_param(self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]] = None):
+    def get_param(self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]] = None) -> Optional[ChunkCommon] | ValueT:
         """
         Get a parameter or group inside of this group. A string can be passed to get a parameter by name.
         The string can also be the explicit hierarchy of a param by spacing the hiearchy levels with a dot
@@ -2718,10 +2723,12 @@ class ChunkContainerBase(ChunkCommon):
 
         Args:
             param (ChunkParamBase | str): A parameter to find. If string is passed, look for param with name
-            predicate (Optional[Predicate]): A predicate function used to check and narrow the type of the parameter
+            predicate (Optional[Predicate[ValueT]]): A predicate function used to check and narrow the type of the parameter
 
         Returns:
-            ChunkParam: The found parameter or None if not found
+            Optional[ChunkCommon]: The found parameter or None if not found
+            ValueT: The found parameter matching the predicate if supplied
+
         """
 
         if isinstance(param, (ChunkCommon, HashVal, ProxyParam)):
@@ -2735,11 +2742,15 @@ class ChunkContainerBase(ChunkCommon):
     @overload
     def get_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
 
-    def get_params(self, predicate: Optional[Predicate[ValueT]] = None):
+    def get_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ChunkCommon, ...] | Tuple[ValueT, ...]:
         """Get all parameters in this group including nested
+        
+        Args:
+            predicate (Optional[Predicate[ValueT]]): An optional predicate function to filter the result. Defaults to None.
 
         Returns:
-            Tuple[ChunkParamBase]: All parameters in this group
+            Tuple[ChunkCommon, ...]: All parameters in this group
+            Tuple[ValueT, ...]: All parameters in this group matching the predicate, if supplied
         """
         return self.children.get_params(predicate)
 
@@ -2749,11 +2760,15 @@ class ChunkContainerBase(ChunkCommon):
     @overload
     def get_my_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
 
-    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None):
+    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ChunkCommon, ...] | Tuple[ValueT, ...]:
         """Get all parameters added directly to this group
 
+        Args:
+            predicate (Optional[Predicate[ValueT]]): An optional predicate function to filter the result. Defaults to None.
+
         Returns:
-            Tuple[ChunkParamBase]: All parameters owned by this group
+            Tuple[ChunkCommon, ...]: All parameters owned by this group
+            Tuple[ValueT, ...]: All parameters owned by this group matching the predicate, if supplied
         """
         return self.children.get_my_params(predicate)
 
@@ -2983,10 +2998,10 @@ class ChunkGroupBase(ChunkContainerBase):
 
     @staticmethod
     def get_valid_child_name(orig_name: str, reserved_names: Set[str]) -> str:
-        """Get a unique name for param or group to be added on this group by adding a numerical suffix to duplicate names
+        """Get a unique name from orig_name that does not intersect reserved_names by adding a numerical suffix to duplicate names
 
         Args:
-            param (ChunkParam): a name that might not be unique
+            orig_name (str): The name to make valid
             reserved_names (Set[str]): A list of reserved names. This paramater can't have a name
                 which exist in this list. The new, valid name will be appended to this list to nest a group inside an already created group
 
@@ -3026,8 +3041,10 @@ class ChunkListGroupBase(ChunkGroupBase):
     will return from the 'children' container. i.e the container which the proxies references. To modify all proxies simultaneously one can modify
     the referenced parameters with get_param() and similarly to add a parameter to all instances, use add_param().
 
-    Args:
+    Attributes:
         size (int): The size of the list. This can be modified at runtime to extend / shrink the list
+        proxy_params (List[ChunkGroupBase]): A list of groups holding the proxy parameters. This is managed internally, and should not be modified
+            externally
     """
 
     size: int = attrs.field(default=0)
@@ -3042,7 +3059,7 @@ class ChunkListGroupBase(ChunkGroupBase):
 
     def get_indexed_param(
         self, param: ChunkCommon | str | HashVal, index: int, predicate: Optional[Predicate[ValueT]] = None
-    ):
+    ) -> Optional[ChunkCommon] | ValueT:
         """
         Get a param from the proxy list. The index should be an index of the proxy_params list. If found, The returned
         value is a ProxyParam referencing the param input, at index.
@@ -3050,9 +3067,11 @@ class ChunkListGroupBase(ChunkGroupBase):
         Args:
             param (ChunkCommon | str | HashVal): The param to look for. If a string is supplied, the parameters name will be used for equality check
             index (int): The index in to proxy_params which to get the parameter from
+            predicate (Optional[Predicate[ValueT]]): A predicate function to use for filtering the params. Defaults to None
 
         Returns:
-            ChunkCommon | None: The proxy parameter referencing param
+            Optional[ChunkCommon]: The proxy parameter referencing param
+            ValueT: The proxy parameter referencing param, matching the predicate if predicate is not None
 
         Raises:
             IndexError:

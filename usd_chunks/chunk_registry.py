@@ -385,7 +385,7 @@ class ChunkModule(chunk_serial.Serializeable):
     def __repr__(self) -> str:
         return f"ChunkModule(module_name='{self.module_name}', module_file='{self.module_file.as_posix()}')"
 
-    def get_menu_name(self):
+    def get_menu_name(self) -> str:
         """
         Get a path-like string refereing to where this module can be found in a menu
 
@@ -669,7 +669,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             scene_sender (SceneSender): A SceneSender instance for access to the scene.
                 We hold a reference to it here in order to keep it alive
             plugin (str): A string identifying the currently used plugin
-            unloaded (bool): If the modules should not be loaded
+            scene_file (Optional[Path]): A path to a chunk scene file to load. Defaults to None
         """
 
         self.scene = scene_sender
@@ -1090,9 +1090,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def reload_all(self):
         """
         clear the chunk layer stack and recreate them
-
-        Args:
-            stage (Optional[Usd.Stage], optional): An optional stage. This is used when the stage is just loaded and the scene does not yet have access to it. Defaults to None.
         """
         sublayer_paths = self.get_root_layer().subLayerPaths.copy()
 

@@ -26,6 +26,7 @@ class GriffleChunks(griffe.Extension):
         loader: griffe.GriffeLoader,
         **kwargs,
     ) -> None:
+        
         if obj.analysis == "dynamic":
             return  # Skip runtime objects, their docstrings are already right.
 
@@ -35,7 +36,6 @@ class GriffleChunks(griffe.Extension):
 
         try:
             runtime_obj = griffe.dynamic_import(obj.path)
-
         except ImportError as error:
             logger.warning(f"Could not import {obj.path}: {error}")
             return
@@ -70,7 +70,7 @@ class GriffleChunks(griffe.Extension):
             if isinstance(default, str):
                 default = f"'{default}'"
 
-            param = griffe.Parameter(field_name, annotation=str(field_type), default=default)
+            param = griffe.Parameter(field_name, annotation=str(field_type), default=str(default))
             params.append(param)
 
         obj.set_member("__init__", griffe.Function("__init__", parameters=griffe.Parameters(*params)))

@@ -652,7 +652,7 @@ def serialize_json(data: Mapping, save_modules=True) -> str:
     return res
 
 
-def serialize_source(obj: Any):
+def serialize_source(obj: Any) -> str:
     """
     Serialize the source code of an object. The obj should be a module, class, method, function, traceback, frame,
     or code object.
@@ -695,7 +695,7 @@ def serialize_py(mod: types.ModuleType) -> str:
     return serialize_source(mod)
 
 
-def file_extensions():
+def file_extensions() -> Tuple[str, ...]:
     """
     Returns a tuple of supported file extensions
 
@@ -755,7 +755,7 @@ def save_module(file: str | Path, module: Module):
 
     Args:
         file (str): The file save to
-        serial (str): The Module to save
+        module (Module): The Module to save
     """
     _, ext = os.path.splitext(file)
 
@@ -843,8 +843,8 @@ def save_json(file: str | Path, data: str, include_files: Sequence[str] | None =
     encoding is determined by the file extension. .chunk or .chum will be compressed.
 
     Args:
-        serial (str): The content to save
         file (str): The file save to
+        data (str): The content to save
     """
 
     _, ext = os.path.splitext(file)
@@ -860,7 +860,7 @@ def save_json(file: str | Path, data: str, include_files: Sequence[str] | None =
     logger.debug(f"Saved file {file}")
 
 
-def load_scene_data(file: str | Path, name: str):
+def load_scene_data(file: str | Path, name: str) -> Optional[bytes]:
     """
     From a .chsc scene file, load the content at name
 
@@ -869,7 +869,7 @@ def load_scene_data(file: str | Path, name: str):
         name (str): The name within the archive to load
 
     Returns:
-        bytes: The loaded data
+        Optional[bytes]: The loaded data if success, otherwise None
     """
     _, ext = os.path.splitext(file)
     if ext != FileExtensions.SCENE:
@@ -967,7 +967,7 @@ def _import_module(module_name: str) -> Optional[types.ModuleType]:
     return module
 
 
-def get_module_attrib(glb: _Glb, mod_name: str, attr_name):
+def get_module_attrib(glb: _Glb, mod_name: str, attr_name) -> Any:
     """
     get an attribute from a module
 
@@ -977,7 +977,7 @@ def get_module_attrib(glb: _Glb, mod_name: str, attr_name):
         attr_name (str): The attribute of the module to get
 
     Returns:
-        Optional[Any]: The module attribute. Returns None if something went wrong
+        Any: The module attribute. Returns None if something went wrong
     """
     if not mod_name:
         return None
@@ -1016,7 +1016,7 @@ class CallableConstructor:
         self.data = data
         self.glb: _Glb = glb
 
-    def construct(self):
+    def construct(self) -> Any:
         """
         After decoding, calling construct() will return the recreated object. If unable to create the object, this returns None
         and prints a warning
@@ -1055,7 +1055,7 @@ class ClassConstructor:
         self.glb: _Glb = glb
         self.serial: SerializedClass = serialized
 
-    def construct_value(self, val, glb):
+    def construct_value(self, val, glb) -> Any:
         """
         Called to construct a value of serial.kwargs or serial.attributes before use
 
