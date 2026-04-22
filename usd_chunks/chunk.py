@@ -560,65 +560,38 @@ def is_param(v: Any) -> TypeGuard[ChunkParamBase]:
 
 
 @overload
-def is_param_t(t: ChunkFlags.ParamType) -> Predicate[ChunkParamBase]:
-    """
-    Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
-    a value of type t
-
-    Args:
-        t (type[ValueT]): A value held by the parameter
-
-    Returns:
-        Predicate[ChunkParamBase[ValueT]]: The predicate function
-    """
-
-    def _fn(v) -> TypeGuard[ChunkParamBase]:
-        if not is_param(v):
-            return False
-        return t in v.evaluate_type()
-
-    return _fn
+def is_param_t(t: ChunkFlags.ParamType) -> Predicate[ChunkParamBase]: ...
 
 
 @overload
-def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]:
-    """
-    Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
-    a value of type t
-
-    Args:
-        t (type[ValueT]): A value held by the parameter
-
-    Returns:
-        Predicate[ChunkParamBase[ValueT]]: The predicate function
-    """
-
-    def _fn(v) -> TypeGuard[ChunkParamBase[ValueT]]:
-        if not is_param(v):
-            return False
-        return t in ChunkFlags.ParamTypeToTypes(v.evaluate_type())
-
-    return _fn
+def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]: ...
 
 
 def is_param_t(t) -> Predicate:
     """
     Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
-    a value of type t
+    a value of type t or the param.evaluate_type() is t if t is a chunkFlags.ParamType enum
 
     Args:
-        t (type[ValueT]): A value held by the parameter
+        t (Any): The value type or chunkFlags.ParamType to match
 
     Returns:
         Predicate[ChunkParamBase[ValueT]]: The predicate function
     """
 
-    def _fn(v) -> TypeGuard[ChunkGroupBase]:
+    def _fn_t(v) -> TypeGuard[ChunkParamBase]:
         if not is_param(v):
             return False
         return t in ChunkFlags.ParamTypeToTypes(v.evaluate_type())
 
-    return _fn
+    def _fn_e(v) -> TypeGuard[ChunkParamBase]:
+        if not is_param(v):
+            return False
+        return t in v.evaluate_type()
+
+    if isinstance(t, ChunkFlags.ParamType):
+        return _fn_e
+    return _fn_t
 
 
 def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
