@@ -79,8 +79,6 @@ def main():
     myChunk.add_param(primSel)
     myChunk.add_param(dynGroup)
     myChunk.add_callback(build, sender=primSel)
-    # myChunk.add_callback(build, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
-
 
     return myChunk
 

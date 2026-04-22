@@ -580,8 +580,11 @@ def _serialize(o: Any, glb) -> Dict | type["_Failed"] | None:
         return attrs.asdict(res, recurse=False)
 
     # Any object that inherits Serializeable are serialized with their serialize() method
-    if isinstance(o, Serializeable) and (res := o.serialize(glb)):
-        return attrs.asdict(res, recurse=False)
+    if isinstance(o, Serializeable):
+        res = o.serialize(glb)
+        if isinstance(res, SerializedObject):
+            return attrs.asdict(res, recurse=False)
+        return res
 
     is_cb = callable(o)
 

@@ -786,9 +786,9 @@ def get_attr_index(cls, data):
 
 
 def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Attribute]):
-    """Used as attrs.field_transformer for chunk attributes.
-    Adds cls.validate_attr as a validation function to all attrs.fields if hasattr(cls, "validate_attr").
-    Adds cls._safe_convert to the conversion pipe of all attrs.fields if hasattr(cls, "_safe_convert")"""
+    """Used as attrs.field_transformer for chunk attributes in order to sort the __init__ arguments to
+    match pylance
+    """
 
     sort_keys = {}
     results = []
@@ -976,7 +976,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             new_conn = chunk_notice.NoticeConnection(
                 meth, conn.alias, sender, conn.globally, self if conn.owner is not None else None
             )
-            self.add_connection(new_conn)
+            self._callbacks.add(new_conn)
 
 
 class CopyMode(IntEnum):
@@ -1031,8 +1031,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
     This is achieved by using the AttributeSender class, which holds a handle to the owner (AttributesBase), name of the attribute it represents,
     and the alias for which notice to send. It also holds the old_value (the value of the attribute prior to the change) when available.
 
-    Instances of this class will automatically set self as owner on all AttributeSenders it manages, which allows the attribute to call data_changed
-    on this class when modified.
+    Instances of this class will automatically set self as owner on all AttributeSenders it manages.
 
     AttributesMetaclass is used as metaclass to automatically hook into the attrs framework. Any subclass is thus treated as it was
     created with attrs.define. All fields will call _validate() and _convert() as validation and conversion functions. Any changes made to an
@@ -2328,6 +2327,8 @@ class ChunkCommon(AttributesBase):
     def request_delete(self):
         """Sends a notice for owners to delete this Chunk object. It's the owners responsibility to remove their reference to this object.
         If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.
+
+        In addition, all callbacks will be removed from this object, and the owner will be set to None.
         """
 
         # Make sure we're enabled when deleting as being disabled will block necessary notices from being sent
@@ -2356,7 +2357,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
     This inteface class can be subclassed for valued parameter classes in order to support connections
     to UsdAttribute objects. This enables a parameter to be generated from a UsdAttribute, and creating
     the NoticeConnections for managaging the value setting and getting between the param and the
-    UsdAttribute. A subclass will need to implement the ChunkUsdLayerSupport protocol
+    UsdAttribute
     """
 
     # link to UsdAttribute if needed. Hidden in __init__ as the field would be added as the first argument
@@ -3158,13 +3159,28 @@ class ChunkBase(ChunkGroupBase):
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         self.add_callback(
-            self.disable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, send_on_create=False
+            self.disable,
+            notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE,
+            send_on_create=False,
+            private=True,
         )
         self.add_callback(
-            self.enable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, send_on_create=False
+            self.enable,
+            notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE,
+            send_on_create=False,
+            private=True,
         )
         self.add_callback(
-            self.remove, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE, send_on_create=False
+            self.remove,
+            notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE,
+            send_on_create=False,
+            private=True,
+        )
+        self.add_callback(
+            self.trigger_on_create_callbacks,
+            notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED,
+            send_on_create=False,
+            private=True,
         )
 
     def disable(self, notice=None, sender=None):
@@ -3175,6 +3191,15 @@ class ChunkBase(ChunkGroupBase):
 
     def remove(self, notice=None, sender=None):
         self.request_delete()
+
+    def trigger_on_create_callbacks(self, notice=None, sender=None):
+        """
+        Call trigger() on all callbacks in the container from get_on_create_callbacks(). This function should be called once the chunk is loaded
+        properly and added to the scene. This is a callback that is called when the chunk is loaded ( CHUNK_LOADED is sent ).
+        """
+        for _, child in self.iter_hierarchy():
+            for cb in child.get_on_create_callbacks():
+                cb.trigger()
 
     def get_config(self) -> Optional["ChunkConfig"]:
         return self._config
@@ -3334,7 +3359,10 @@ class ChunkConfig(AttributesBase):
 class SceneSender(chunk_notice.ChunkNoticePropagator):
     """
     Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
-    See implementation in plugins/usdview/__init__.py
+    See implementation in plugins/usdview/__init__.py for an example implementation.
+
+    The class is not purely abstract, as most functions dealing with chunks are implemented. However, a subclass should implement all relevant
+    @abstractmethod functions.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -3506,6 +3534,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 logger.exception(e)
                 return
 
+            # TODO: The chunk may have been loaded before, so dumb to send CHUNK_LOADED here perhaps? CHUNK_LOADED should
+            # just be called when a new chunk instance is created, but after initialization
             chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
         self._modified = True
 
@@ -3558,6 +3588,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._modified = True
         return super().send_self(alias, data)
 
+    @abstractmethod
     def should_install_package(self, package_name: str) -> bool:
         """
         When a modules config has requirements to external pip packages, the packages may be installed automatically by the ChunkDependencyManager.
@@ -3572,6 +3603,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return False
 
+    @abstractmethod
     def request_save(self):
         """
         Request a save of the scene. Should be implemented by a plugin
@@ -3591,6 +3623,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return None
 
+    @abstractmethod
     def get_selected_prims(self) -> Sequence[Usd.Prim]:
         """
         Get the selected prims in the scene. Should be implemented by a plugin
@@ -3600,6 +3633,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return []
 
+    @abstractmethod
     def get_selected_property(self) -> Usd.Property | None:
         """
         Get the selected property in the scene. Should be implemented by a plugin

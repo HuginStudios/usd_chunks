@@ -40,7 +40,7 @@ from typing import (
     TYPE_CHECKING,
     overload,
     TypeGuard,
-    Sequence,
+    Literal,
 )
 
 from attrs import define, field
@@ -390,7 +390,7 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
     else:
         # notices not derived from ChunkNotice should not be sent
         return None
-        
+
     try:
         if sender is None:
             notice.SendGlobally()
@@ -775,6 +775,55 @@ class DagNode:
         self._index = 0
 
 
+class CallbackContainer(chunk_serial.Serializeable):
+    """
+    A container for managing callbacks on the ChunkNoticePropagator. Some callbacks can be tagged private, or should be executed when a chunk is 
+    loaded. This is handled here rather than directly on the NoticeConnection objects as to not pollute that class. 
+
+    This is mostly to have an interface for managing private and non-private callbacks. Private callbcks will not be serialized and not copied between
+    ChunkNoticePropagators. When a propagator is serialized, callbacks that are created in __init__ should ideally not be serialized, as they will be recreated 
+    when de-serializing. Hence, if creating callbacks in __init__, make sure to tag the callbacks as private to not get duplicate callbacks when de-serializing.
+
+    Callbacks are stored in self.callbacks as a list of dicts. An entry of the list will have keys 'conn', 'on_create' and 'private', where conn is the NoticeConnection
+    object
+    """
+    def __init__(self):
+        super().__init__()
+        self.callbacks: List[Dict[Literal["conn", "on_create", "private"], Any]] = []
+
+    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
+        # We serialize only non-private callbacks
+        if name == "callbacks":
+            return True, [
+                {"conn": x.get("conn"), "on_create": x.get("on_create")} for x in self.callbacks if not x.get("private")
+            ]
+        return False, None
+
+    def post_serial_setattr(self, name, value):
+        if name == "on_create_callbacks":
+            return super().post_serial_setattr(name, weakref.WeakSet(value))
+        super().post_serial_setattr(name, value)
+
+    def add(self, conn: "NoticeConnection", trigger_on_create=True, private=False):
+        self.callbacks.append({"conn": conn, "on_create": trigger_on_create, "private": private})
+
+    def get(self, include_private=False):
+        return [x["conn"] for x in self.callbacks if include_private or (not x.get("private"))]
+
+    def get_on_create(self, include_private=False):
+        return [x["conn"] for x in self.callbacks if x.get("on_create") and (include_private or (not x.get("private")))]
+
+    def extend(self, other: "CallbackContainer"):
+        for data in other.callbacks:
+            if data.get("private"):
+                continue
+
+            self.add(data["conn"], data.get("on_create", True))
+
+    def clear(self):
+        self.callbacks.clear()
+
+
 class ChunkNoticePropagator(chunk_serial.Serializeable):
     """
     A base class that implements the connectability of chunk objects. Chunk objects may be connected to eachother through
@@ -794,7 +843,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     and have the system trigger callbacks when appropriate.
 
     **Non-physical:**\n
-    Connections added with add_connection (as well as add_callback) are not physical, meaning they are not managed by the DAG graph.
+    Connections added with add_callback are not physical, meaning they are not managed by the DAG graph.
     These are instead managed by the Tf.Notice system, without any dependency information. Hence a callback will not trigger another callback
     implicitly.
 
@@ -807,15 +856,14 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     See NoticeConnection.handle_callback for more info
     """
 
-    _callbacks: List["NoticeConnection"]
+    _callbacks: CallbackContainer
     _dag_node: Optional[DagNode]
     _blocked: bool
 
     def __init__(self, *args, **kwargs) -> None:
-        self._callbacks = []
+        self._callbacks = CallbackContainer()
         self._dag_node = None
         self._blocked = False
-
         super().__init__(*args, **kwargs)
 
     def serialize(self, glb):
@@ -830,7 +878,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
 
     def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
         if name == "_callbacks":
-            return True, self._callbacks
+            return True, value
         if name.startswith("_"):
             return False, value
         return super().should_serialize_attribute(name, value)
@@ -843,6 +891,11 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             # DagNode. The dependencies are serialized to the AttributesBase
             for dep in value:
                 self.add_dependency(dep)
+        elif name == "_callbacks":
+            # Instead of overriding the callbacks, we extend it in order to keep callbacks created prior to post_serial_setattr() is called, i.e. from __init__.
+            # An example of this is the ChunkBase class that creates some callbacks in __init__, but as they are private, they are not serialized, therefore
+            # if we were to do self._callbacks = value, those initial callbacks would be deleted
+            self._callbacks.extend(value)
         else:
             super().post_serial_setattr(name, value)
         self.set_blocked(False)
@@ -965,32 +1018,13 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         Args:
             src (ChunkNoticePropagator): The source object to copy connections from
         """
-        for conn in src._callbacks:
-            self._copy_callback(conn, src)
-
-    def _copy_callback(self, conn: "NoticeConnection", src: "ChunkNoticePropagator"):
-        """
-        Copy a connection from src to this object.
-        Rewire the connection if conn.sender is the source of the copy (self)
-
-        Args:
-            conn (NoticeConnection): The connection to copy
-            src (ChunkNoticePropagator): The source ChunkNoticePropagator to copy from
-        """
-        if meth := conn.get_method():
-            sender = self if conn.sender == src else conn.sender
-            owner = self if conn.owner is not None else None
-            new_conn = NoticeConnection(meth, conn.alias, sender, conn.globally, owner)
-            self.add_connection(new_conn)
-
-    def add_connection(self, conn: "NoticeConnection"):
-        """
-        Add a non-physical connection to be stored on this instance
-
-        Args:
-            conn (NoticeConnection): The connection to add
-        """
-        self._callbacks.append(conn)
+        for data in src._callbacks.callbacks:
+            conn = data["conn"]
+            if meth := conn.get_method():
+                sender = self if conn.sender == src else conn.sender
+                owner = self if conn.owner is not None else None
+                new_conn = NoticeConnection(meth, conn.alias, sender, conn.globally, owner)
+                self._callbacks.add(new_conn)
 
     def get_dag_node(self) -> DagNode:
         """
@@ -1106,6 +1140,16 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     def get_dependents(self, predicate: Optional[Predicate[_T]] = None) -> List[_T]: ...
 
     def get_dependents(self, predicate: Optional[Predicate[_T]] = None):
+        """
+        Get all propagators that depend on this propagator (nodes connected to the output of this node)
+
+        Args:
+            predicate (Optional[Predicate[_T]], optional): An optional predicate function. Defaults to None.
+
+        Returns:
+            List["ChunkNoticePropagator"]: When no predicate is supplied, all dependents are returned
+            List[_T]: Dependents matching the predicate
+        """
         if not predicate:
             return [x.propagator for x in self.get_dag_node().get_outputs() if x.propagator]
         return [x.propagator for x in self.get_dag_node().get_outputs() if predicate(x.propagator)]
@@ -1117,7 +1161,16 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         Returns:
             List[NoticeConnection]: The callback connections
         """
-        return self._callbacks
+        return self._callbacks.get(True)
+
+    def get_on_create_callbacks(self) -> List["NoticeConnection"]:
+        """
+        Get all callbacks that should be triggered when the chunk is added to the scene
+
+        Returns:
+            List[NoticeConnection]: A tuple containing all connections that should be triggered when loaded
+        """
+        return self._callbacks.get_on_create()
 
     def find_callbacks(
         self,
@@ -1159,6 +1212,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
         send_on_create=True,
+        private=False,
     ):
         """Subscribe to a notice. When the notice is sent, the supplied method will be called, by default, with three arguments:
         (owner(self), notice(Tf.Notice), sender(Any))
@@ -1177,6 +1231,8 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             sender (Any, optional): A sender which to subscribe to. If None, will use self as sender if listen_globally=False, else None. Defaults to None.
             listen_globally (bool, optional): Whether to subscribe to all events of type notice_alias. Defaults to False.
             notice_alias (NoticeType, optional): A specific type of notice to subscribe to. If left at NONE, will use the get_notice_alias(). Defaults to ChunkNoticeAlias.NONE
+            send_on_create (bool): If the callback should be called when the owning object is added to the scene. Defaults to True
+            private (bool): Mark the callback as private, meaning the callback will not be serialized or copied. This is useful when adding callbacks inside an __init__ method. Defaults to False
         """
 
         # If sender is not set and we should not listen for global notices, the sender will be self
@@ -1187,11 +1243,9 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         if isinstance(sender, ChunkNoticePropagator) and notice_alias is ChunkNoticeAlias.NONE:
             notice_alias = sender.get_notice_alias()
 
-        self.add_connection(NoticeConnection(method, notice_alias, sender, listen_globally, self))
-
-        # if sender and sender is not self:
-        if send_on_create and sender and notice_alias != ChunkNoticeAlias.MENU_ACTION_NOTICE:
-            sender.send_self(alias=notice_alias)
+        self._callbacks.add(
+            NoticeConnection(method, notice_alias, sender, listen_globally, self), send_on_create, private
+        )
 
     @abstractmethod
     def get_edit_context(self) -> Sdf.Layer | None:
@@ -1337,6 +1391,20 @@ class NoticeConnection(chunk_serial.Serializeable):
         # No attributes should be serialized as the attributes are serialized by kwargs
         return False, None
 
+    def trigger(self) -> ChunkNotice | None:
+        """
+        Trigger the connection by sending the notice together with the sender (if specified).
+        Because other connections may listen to the same notice + sender, this may trigger other connections
+        as well
+
+        Returns:
+            ChunkNotice | None: The notice that was sent, or None if failed
+        """
+
+        if self.sender and isinstance(self.sender, ChunkNoticePropagator):
+            return self.sender.send_self(alias=self.alias)
+        return send_notice(self.alias, self.sender, self.sender)
+
     def handle_callback(self, notice, sender=None, context=True):
         """
         Forwards the notice after checking that the method, sender and owner are still alive and valid.
@@ -1388,7 +1456,7 @@ class NoticeConnection(chunk_serial.Serializeable):
             self.disconnect()
 
         if sender is not None:
-            self._sender = weakref.ref(sender)
+            self._sender = weakref.ref(sender, self._connection_broke)
 
         if self.sender is None or self.globally:
             self._listener = Tf.Notice.RegisterGlobally(notice, self.handle_callback)
@@ -1396,6 +1464,7 @@ class NoticeConnection(chunk_serial.Serializeable):
             self._listener = Tf.Notice.Register(notice, self.handle_callback, self.sender)
 
     def _connection_broke(self, ref):
+        # This is called when any of the _sender, _owner or _method weakrefs is killed, and will in turn call disconnect()
         self.disconnect()
 
     def disconnect(self):
