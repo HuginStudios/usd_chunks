@@ -53,10 +53,9 @@ def initialize_scene(scene_path, usdFile=None):
     scene = HeadlessScene(usdFile)
 
     creg = chunk_registry.ChunkRegistry()
-    creg.initialize(scene, "cli")
+    creg.initialize(scene, "cli", scene_path)
 
     chunk_registry.ChunkLayerManager().initialize(scene.get_stage())
-    creg.open_scene(scene_path)
     return scene.get_chunks()
 
 
