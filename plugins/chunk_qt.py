@@ -1189,7 +1189,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
 
             d = items
             for ns in namespace:
-                if ns == namespace[-1]:
+                if ns is namespace[-1]:
                     if m := d.get("menu"):
                         action = m.addAction(ns)
                         action.setData(mod)
@@ -1227,39 +1227,19 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         return mod
 
 
-def file_dial(filter: Optional[str] = None, create_new=False, directory=False):
-    dial = QtWidgets.QFileDialog()
-
-    accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptOpen
-    file_mode = QtWidgets.QFileDialog.FileMode.AnyFile
-
-    # if create_new:
-    #     accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptSave
-
+def file_dial(name_filter: Optional[str] = None, create_new=False, directory=False):
     if directory:
-        file_mode = QtWidgets.QFileDialog.FileMode.Directory
+        return QtWidgets.QFileDialog.getExistingDirectory(None, "Open Directory", "")
 
-    elif not create_new:
-        file_mode = QtWidgets.QFileDialog.FileMode.ExistingFile
-        dial.setOption(QtWidgets.QFileDialog.Option.ReadOnly)
+    _filter = ""
+    if name_filter:
+        _filter = ";;".join(name_filter.split())
+    if create_new:
+        res = QtWidgets.QFileDialog.getSaveFileName(None, "Save File", "", _filter, "")
+    else:
+        res = QtWidgets.QFileDialog.getOpenFileName(None, "Open File", "", _filter, "")
 
-    dial.setFileMode(file_mode)
-    dial.setAcceptMode(accept_mode)
-
-    if filter and not directory:
-        dial.setNameFilter(filter)
-
-    if not dial.exec():
-        return None
-
-    res = dial.selectedFiles()[0]
-
-    if create_new and not directory:
-        if os.path.exists(res) and not confirm_dial(f"Override {res}?"):
-            return None
-
-    return res
-
+    return res[0]
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
     # Create an empty dock widget to hold the modules
