@@ -174,7 +174,11 @@ class Slider(ChunkParamBase[int | float]):
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)
 
-        if limits := attr.GetLimits():  # type: ignore
+        try:
+            limits = attr.GetLimits()
+        except Exception as e:
+            limits = None
+        if limits:
             if hard := limits.get("hard"):
                 limit_min = hard.get("minimum", None)
                 limit_max = hard.get("maximum", None)
@@ -443,7 +447,8 @@ usd_type_map = {
     "float3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
     "float4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
     "vector3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-    "color3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
+    "color3f": (Vector, {"param": Slider(), "suffixes": "rgb", "length": 3}),
+    "color4f": (Vector, {"param": Slider(), "suffixes": "rgba", "length": 4}),
     "int2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
     "int3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
     "int4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
