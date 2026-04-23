@@ -111,6 +111,10 @@ def nameChanged2(owner: chunk.Slider, attrsender):
     return attrsender.value
 
 
+def primSelCallback(owner: chunk.LineEdit, notice: chunk_notice.InputChangedNotice, sender: chunk.LineEdit):
+    owner.set_prims(notice.data.get_prims()) # type: ignore
+
+
 def main():
 
     # Create the actual chunk - this is in practice just a chunk.Group with some addiditional behaviour
@@ -261,6 +265,16 @@ def main():
 
     # Prints the hierarchy of the chunk. Useful for debugging chunks
     # myChunk.print_hierarchy()
+
+    lineA = chunk.LineEdit("A")
+    lineA.set_flag(chunk.ChunkFlags.ParamFlags.PRIM_SELECTION)
+    lineB = chunk.LineEdit("B")
+    lineB.set_flag(chunk.ChunkFlags.ParamFlags.PRIM_SELECTION)
+
+    lineB.add_dependency(lineA)
+    lineB.add_callback(primSelCallback, notice_alias=chunk_notice.ChunkNoticeAlias.INPUT_CHANGED)
+
+    myChunk.add_params([lineA, lineB])
 
     return myChunk
 

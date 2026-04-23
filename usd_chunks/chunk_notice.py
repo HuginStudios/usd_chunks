@@ -1153,7 +1153,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
 
     def get_callbacks(self) -> List["NoticeConnection"]:
         """
-        Get the lsut of callback connections
+        Get the list of callback connections
 
         Returns:
             List[NoticeConnection]: The callback connections
