@@ -1,5 +1,6 @@
 import re
 from usd_chunks import chunk, chunk_notice, chunk_core
+from pxr import UsdGeom
 
 def show_attribute(prim, _chunk):
     attr_grp = _chunk.get_param("attr_grp", chunk.is_group)
@@ -118,6 +119,9 @@ def execute(owner, notice, sender):
 
     prim_path = get_unique_path(stage, prim_path)
     prim = stage.DefinePrim(prim_path, light_type)
+
+    attr = (UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr())
+    attr.Set(UsdGeom.Tokens.inherited)
     
     if prim.GetPath().pathString != prim_path:
         _chunk.get_param("primpath_location").value = prim.GetPath().pathString
