@@ -9,9 +9,6 @@ def show_attribute(prim, _chunk):
     for grp in attr_grp.get_my_params():
         grp.request_delete()
 
-    prim_grp = chunk.Group("Attributes")
-    attr_grp.add_param(prim_grp)
-
     # generate params
     attributes = prim.GetAttributes()
     groups = {}
@@ -23,7 +20,7 @@ def show_attribute(prim, _chunk):
             param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
 
         ns = attr.GetNamespace()
-        tgt_grp = prim_grp if not ns else groups.get(ns)
+        tgt_grp = attr_grp if not ns else groups.get(ns)
 
         if not tgt_grp:
             tgt_grp = chunk.Group(
@@ -33,7 +30,7 @@ def show_attribute(prim, _chunk):
             if ns and ns != "inputs":
                 tgt_grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
 
-            prim_grp.add_param(tgt_grp)
+            attr_grp.add_param(tgt_grp)
             groups[ns] = tgt_grp
 
         if param:
@@ -49,14 +46,14 @@ def show_attribute(prim, _chunk):
             param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
 
         ns = rel.GetNamespace()
-        tgt_grp = prim_grp if not ns else groups.get(ns)
+        tgt_grp = attr_grp if not ns else groups.get(ns)
 
         if not tgt_grp:
             tgt_grp = chunk.Group(
                 ns,
                 flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
             )
-            prim_grp.add_param(tgt_grp)
+            attr_grp.add_param(tgt_grp)
             groups[ns] = tgt_grp
 
         if param and tgt_grp:
