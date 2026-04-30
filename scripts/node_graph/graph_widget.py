@@ -2102,7 +2102,11 @@ class NodeGraphWidget(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, self.execute_graph)
 
     def _export_python(self):
-        """Export the graph as a standalone Python script."""
+        """Export the graph as a Python script.
+
+        Chunk nodes emit bootstrap code (create_chunks + set params).
+        Pure USD nodes emit their existing to_python() snippet.
+        """
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Export Python", "", "Python (*.py)")
         if not path:
@@ -2126,16 +2130,27 @@ class NodeGraphWidget(QtWidgets.QWidget):
             _topo(n)
 
         lines = [
-            '"""Auto-generated from Node Graph."""',
-            'from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf, Vt',
+            '"""Auto-generated from Node Graph.',
             '',
-            '# Open your stage here:',
-            '# stage = Usd.Stage.Open("path/to/file.usd")',
+            'Chunk bootstrap sections require usd_chunks + a running ChunkRegistry',
+            '(i.e. run inside usdview or an equivalent host).',
+            '"""',
+            'from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf, Vt',
+            'from usd_chunks import chunk',
+            '',
+            'stage = Usd.Stage.CreateInMemory()',
             '',
         ]
 
+        # Property keys added by NodeGraphQt internals — skip these when
+        # emitting chunk param setters so we only emit real param values.
+        _INTERNAL_PROPS = {
+            "id", "name", "color", "disabled", "selected",
+            "width", "height", "icon", "pos", "type_", "thumb",
+        }
+
         var_counter = [0]
-        node_vars = {}  # node.id -> {port_name: var_name}
+        node_vars = {}  # (node.id, port_name) -> var_name
 
         def _var(node, port_name):
             key = (node.id, port_name)
@@ -2147,23 +2162,42 @@ class NodeGraphWidget(QtWidgets.QWidget):
         for node in order:
             if not isinstance(node, nodes.UsdNodeBase) or node.disabled():
                 continue
-            # Build var_map from output ports
-            var_map = {}
-            for p in node.output_ports():
-                var_map[p.name()] = _var(node, p.name())
-            # Map input vars from connected nodes
-            for p in node.input_ports():
-                connected = p.connected_ports()
-                if connected:
-                    src_port = connected[0]
-                    src_var = node_vars.get((src_port.node().id, src_port.name()))
-                    if src_var:
-                        var_map[p.name()] = src_var
 
-            code = node.to_python(var_map)
             lines.append(f"# {node.name()}")
-            lines.append(code)
+
+            if isinstance(node, nodes.ChunkWrapperBase):
+                module = node._chunk_module
+                lines.append(f"_chunks = chunk.create_chunks('{module}')")
+                lines.append("_c = _chunks[0] if _chunks else None")
+                try:
+                    props = node.model.custom_properties
+                except Exception:
+                    props = {}
+                for k, v in props.items():
+                    if k in _INTERNAL_PROPS:
+                        continue
+                    lines.append(
+                        f"if _c and _c.get_param('{k}'): "
+                        f"_c.get_param('{k}').value = {v!r}"
+                    )
+            else:
+                # Build var_map from output ports
+                var_map = {}
+                for p in node.output_ports():
+                    var_map[p.name()] = _var(node, p.name())
+                # Map input vars from connected nodes
+                for p in node.input_ports():
+                    connected = p.connected_ports()
+                    if connected:
+                        src_port = connected[0]
+                        src_var = node_vars.get((src_port.node().id, src_port.name()))
+                        if src_var:
+                            var_map[p.name()] = src_var
+                lines.append(node.to_python(var_map))
+
             lines.append("")
+
+        lines.append("stage.GetRootLayer().Export('output.usda')")
 
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
