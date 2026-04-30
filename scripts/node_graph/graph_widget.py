@@ -272,9 +272,13 @@ class _ViewportLabel(QtWidgets.QLabel):
 class NodeGraphWidget(QtWidgets.QWidget):
     """Main widget: graph canvas + toolbar."""
     _suggestions_ready = QtCore.Signal(list)
+    _active_instance = None  # class-level ref to the one open graph
 
     def __init__(self, parent=None, stage=None):
+        if NodeGraphWidget._active_instance is not None:
+            raise RuntimeError("A node graph is already open. Close it before opening another.")
         super().__init__(parent)
+        NodeGraphWidget._active_instance = self
         self._stage = stage
         # Patch NodeGraphQt bug: set_context_menu_from_file crashes with None path
         _orig = NodeGraph.set_context_menu_from_file
@@ -3007,6 +3011,10 @@ class NodeGraphWidget(QtWidgets.QWidget):
         for n in all_n:
             if n.id in placed:
                 n.set_pos(placed[n.id][0], placed[n.id][1])
+
+    def closeEvent(self, event):
+        NodeGraphWidget._active_instance = None
+        super().closeEvent(event)
 
     @property
     def graph(self):
