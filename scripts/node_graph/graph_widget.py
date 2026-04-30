@@ -515,6 +515,20 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 painter.setPen(QtCore.Qt.NoPen)
                 painter.setBrush(QtGui.QColor(ar, ag, ab, 180 if is_hover else 120))
                 painter.drawPath(tri)
+                # ── Hidden-wires indicator dot (purple) ──
+                try:
+                    _node = self._graph.get_node_by_id(self_node.id)
+                    if _node:
+                        _has_hidden_wires = any(
+                            not p.visible() and p.connected_ports()
+                            for p in list(_node.input_ports()) + list(_node.output_ports())
+                        )
+                        if _has_hidden_wires:
+                            painter.setBrush(QtGui.QColor(200, 80, 220, 220))
+                            painter.setPen(QtCore.Qt.NoPen)
+                            painter.drawEllipse(QtCore.QPointF(ix + 14, iy + 5), 3, 3)
+                except Exception:
+                    pass
 
             # ── Border ──
             if is_sel:
