@@ -1900,6 +1900,52 @@ class GetLayerStackNode(UsdNodeBase):
         return {"layers": layers}
 
 
+class MergeLayersNode(UsdNodeBase):
+    """Sublayers two Sdf.Layers into a new anonymous composite layer."""
+    NODE_NAME = "Merge Layers"
+    CATEGORY = "Composition"
+
+    def __init__(self):
+        super().__init__()
+        self.add_input("layer_a", color=PORT_COLORS["layer"])
+        self.add_input("layer_b", color=PORT_COLORS["layer"])
+        self.add_output("layer", color=PORT_COLORS["layer"])
+
+    def execute(self, stage):
+        from pxr import Sdf
+        layer_a = self._get_input_value("layer_a")
+        layer_b = self._get_input_value("layer_b")
+        if not layer_a and not layer_b:
+            return {"layer": None}
+        merged = Sdf.Layer.CreateAnonymous("merged")
+        if layer_a:
+            merged.subLayerPaths.append(layer_a.identifier)
+        if layer_b:
+            merged.subLayerPaths.append(layer_b.identifier)
+        return {"layer": merged}
+
+
+class ReferenceAtNode(UsdNodeBase):
+    """References a layer onto a prim at a given path — reuse authored content at any scene location."""
+    NODE_NAME = "Reference At"
+    CATEGORY = "Composition"
+
+    def __init__(self):
+        super().__init__()
+        self.add_input("layer", color=PORT_COLORS["layer"])
+        self.add_text_input("prim_path", "Prim Path", text="/ReferenceAt")
+        self.add_output("prim", color=PORT_COLORS["prim"])
+
+    def execute(self, stage):
+        layer = self._get_input_value("layer")
+        path = self.get_property("prim_path") or "/ReferenceAt"
+        if not layer:
+            return {"prim": None}
+        prim = stage.OverridePrim(path)
+        prim.GetReferences().AddReference(layer.identifier)
+        return {"prim": prim if prim.IsValid() else None}
+
+
 # ────────────────────────────────────────────
 #  Visibility / Purpose nodes
 # ────────────────────────────────────────────
@@ -3658,6 +3704,8 @@ ALL_NODES = [
     AddReferenceNode,
     AddPayloadNode,
     GetLayerStackNode,
+    MergeLayersNode,
+    ReferenceAtNode,
     # Create
     CreateCubeNode,
     CreateSphereNode,
