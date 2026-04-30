@@ -5,7 +5,7 @@ and an execute() method that runs when inputs change.
 """
 from NodeGraphQt import BaseNode
 from NodeGraphQt.widgets.node_widgets import NodeBaseWidget
-from PySide6 import QtWidgets, QtCore, QtGui
+from PySide6 import QtWidgets, QtCore
 from usd_chunks import chunk_core, chunk_notice, chunk_registry
 from usd_chunks.chunk import Button
 from usd_chunks import chunk
@@ -481,7 +481,7 @@ class PrimPathNode(UsdNodeBase):
             name = path.rstrip("/").rsplit("/", 1)[-1] or "/"
             self._preview.set_value(f"● {name}")
         else:
-            self._preview.set_value(f"✗  no prim")
+            self._preview.set_value("✗  no prim")
         return {"prim": prim if valid else None, "prims": [prim] if valid else [], "count": 1 if valid else 0}
 
     def to_python(self, var_map):
@@ -643,11 +643,13 @@ class PrintNode(UsdNodeBase):
 class PythonNode(UsdNodeBase):
     """Execute custom Python code. Available variables: stage, inputs (dict of all input values).
     Set 'output' variable to pass a result downstream.
-    
+
     REMEMBER: THE "inputs" IS A DICT OF ALL INPUT PORT VALUES, {"in_1": value1, "in_2": value2, ...}
     """
     NODE_NAME = "Python"
     CATEGORY = "Code"
+
+    _OUTPUT_TYPES = ["any", "prim", "layer", "string", "float", "list", "bool"]
 
     def __init__(self):
         super().__init__()
@@ -655,6 +657,7 @@ class PythonNode(UsdNodeBase):
         self.add_input("in_2", color=PORT_COLORS["any"])
         self.add_input("in_3", color=PORT_COLORS["any"])
         self.add_text_input("code", "Code", text="output = inputs")
+        self.add_combo_menu("output_type", "Output Type", items=self._OUTPUT_TYPES)
         self.add_output("result", color=PORT_COLORS["any"])
 
     def execute(self, stage):
@@ -668,6 +671,20 @@ class PythonNode(UsdNodeBase):
         except Exception as e:
             print(f"[PythonNode] Error: {e}")
             raise  # Let execution engine catch it for red indicator
+
+        dtype = self.get_property("output_type") or "any"
+        port = self.get_output("result")
+        if port:
+            new_color = PORT_COLORS.get(dtype, PORT_COLORS["any"])
+            if port.connected_ports() and dtype != "any":
+                print(f"[PythonNode] Warning: output type changed to '{dtype}' "
+                      "while connections exist — existing wires are not re-validated")
+            try:
+                port.view.color = new_color
+                port.view._data_type = dtype
+            except Exception:
+                pass
+
         return {"result": local_vars.get("output")}
 
     def to_python(self, var_map):
@@ -1657,7 +1674,7 @@ class GetBoundingBoxNode(UsdNodeBase):
         self.add_output("center", color=PORT_COLORS["any"])
 
     def execute(self, stage):
-        from pxr import UsdGeom, Gf
+        from pxr import UsdGeom
         prim = self._get_input_value("prim")
         if not prim:
             return {"min": None, "max": None, "size": None, "center": None}
@@ -1896,7 +1913,7 @@ class GetLayerStackNode(UsdNodeBase):
         self.add_output("layers", color=PORT_COLORS["list"])
 
     def execute(self, stage):
-        layers = [(l.identifier, l.realPath) for l in stage.GetLayerStack()]
+        layers = [(layer.identifier, layer.realPath) for layer in stage.GetLayerStack()]
         return {"layers": layers}
 
 
@@ -2828,7 +2845,6 @@ class GetPrimLayerStackNode(UsdNodeBase):
         self.add_output("layers", color=PORT_COLORS["list"])
         self.add_output("prim", color=PORT_COLORS["prim"])
     def execute(self, stage):
-        from pxr import Usd
         prim = self._get_input_value("prim")
         if not prim:
             return {"layers": [], "prim": None}
@@ -3000,11 +3016,11 @@ class CreatePlaneNode(UsdNodeBase):
         from pxr import UsdGeom, Vt, Gf
         p = self.get_property("path") or "/Plane"
         w = float(self.get_property("w") or 10) / 2
-        l = float(self.get_property("length") or 10) / 2
+        length = float(self.get_property("length") or 10) / 2
         mesh = UsdGeom.Mesh.Define(stage, p)
         mesh.GetPointsAttr().Set(Vt.Vec3fArray([
-            Gf.Vec3f(-w, -l, 0), Gf.Vec3f(w, -l, 0),
-            Gf.Vec3f(w, l, 0), Gf.Vec3f(-w, l, 0)]))
+            Gf.Vec3f(-w, -length, 0), Gf.Vec3f(w, -length, 0),
+            Gf.Vec3f(w, length, 0), Gf.Vec3f(-w, length, 0)]))
         mesh.GetFaceVertexCountsAttr().Set([4])
         mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
         mesh.GetNormalsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(0, 0, 1)] * 4))
@@ -3049,7 +3065,7 @@ class PointInstancerNode(UsdNodeBase):
         instancer = UsdGeom.PointInstancer.Define(stage, inst_path)
 
         # Setup prototype
-        proto_container = stage.DefinePrim(f"{inst_path}/Prototypes", "Scope")
+        stage.DefinePrim(f"{inst_path}/Prototypes", "Scope")
         if proto_prim and proto_prim.IsValid():
             proto_path = f"{inst_path}/Prototypes/proto_0"
             ref_prim = stage.DefinePrim(proto_path)
@@ -3284,7 +3300,7 @@ class GetPrimMaterialNode(UsdNodeBase):
         self.add_output("textures", color=PORT_COLORS["list"])
         self.add_output("mat_path", color=PORT_COLORS["string"])
     def execute(self, stage):
-        from pxr import UsdShade, Sdf
+        from pxr import UsdShade
         prim = self._get_input_value("prim")
         if prim is None:
             return {"material": None, "shader": None, "textures": [], "mat_path": ""}
