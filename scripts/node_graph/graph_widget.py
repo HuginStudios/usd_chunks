@@ -954,7 +954,14 @@ class NodeGraphWidget(QtWidgets.QWidget):
         scene_pos = self._pending_scene_pos
         self._pending_port = None
 
-        dlg = _TabSearchDialog(self, port_type=port_item.port_type)
+        from NodeGraphQt.constants import PortTypeEnum
+        src_is_output = (port_item.port_type == PortTypeEnum.OUT.value)
+        dlg = _TabSearchDialog(
+            self,
+            port_type=port_item.port_type,
+            dragged_dtype=getattr(port_item, '_data_type', 'any'),
+            dragged_is_output=src_is_output,
+        )
         dlg.move(QtGui.QCursor.pos())
         if dlg.exec_() != QtWidgets.QDialog.Accepted or not dlg.selected_node:
             return
@@ -964,8 +971,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             return
 
         # Find matching port on new node to connect
-        from NodeGraphQt.constants import PortTypeEnum
-        src_is_output = (port_item.port_type == PortTypeEnum.OUT.value)
         g = self._active_graph()
         src_node = g.get_node_by_id(port_item.node.id)
 
@@ -2058,6 +2063,22 @@ class NodeGraphWidget(QtWidgets.QWidget):
         print(f"[ghost] showing buttons: {names}", file=sys.stderr)
         if not names or not hasattr(self, '_selected_node'):
             return
+        # Filter suggestions by compatibility with the selected node's output port types
+        try:
+            out_types = {getattr(p.view, '_data_type', 'any')
+                         for p in self._selected_node.output_ports()}
+            if out_types and 'any' not in out_types:
+                all_node_list = list(nodes.ALL_NODES) + getattr(self, '_discovered_chunks', [])
+                node_map = {n.NODE_NAME: n for n in all_node_list}
+                def _compat(name):
+                    cls = node_map.get(name)
+                    if not cls:
+                        return True
+                    pt = nodes._get_node_port_types(cls)
+                    return bool(out_types & pt["inputs"]) or 'any' in pt["inputs"]
+                names = [n for n in names if _compat(n)]
+        except Exception:
+            pass
         label = QtWidgets.QLabel("⭐ Suggested next:")
         label.setStyleSheet("color: #88aaff; font-size: 11px; margin-top: 8px;")
         self._props_form.addRow(label)
@@ -2814,7 +2835,18 @@ class NodeGraphWidget(QtWidgets.QWidget):
         self._node_menu.exec_(QtGui.QCursor.pos())
 
     def _show_search_menu(self):
-        dlg = _TabSearchDialog(self)
+        dragged_dtype = None
+        dragged_is_output = None
+        try:
+            viewer = self._active_graph().viewer()
+            start_port = getattr(viewer, '_start_port', None)
+            if start_port and getattr(viewer, '_LIVE_PIPE', None) and viewer._LIVE_PIPE.isVisible():
+                from NodeGraphQt.constants import PortTypeEnum
+                dragged_dtype = getattr(start_port, '_data_type', 'any')
+                dragged_is_output = (start_port.port_type == PortTypeEnum.OUT.value)
+        except Exception:
+            pass
+        dlg = _TabSearchDialog(self, dragged_dtype=dragged_dtype, dragged_is_output=dragged_is_output)
         if dlg.exec_() == QtWidgets.QDialog.Accepted and dlg.selected_node:
             g = self._active_graph()
             viewer = g.viewer()
@@ -3058,7 +3090,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
 class _TabSearchDialog(QtWidgets.QDialog):
     """Quick search dialog for nodes — press Tab, type, Enter. AI suggestions appear with ⭐."""
 
-    def __init__(self, parent=None, port_type=None):
+    def __init__(self, parent=None, port_type=None, dragged_dtype=None, dragged_is_output=None):
         super().__init__(parent, QtCore.Qt.Popup)
         self.setStyleSheet(
             "QDialog { background: #0c0e14; border: 1px solid #1e2438; border-radius: 8px; }"
@@ -3089,6 +3121,14 @@ class _TabSearchDialog(QtWidgets.QDialog):
         all_nodes = list(nodes.ALL_NODES)
         if hasattr(parent, '_discovered_chunks'):
             all_nodes += parent._discovered_chunks
+
+        # Filter to compatible nodes when dragging from a typed port
+        if dragged_dtype and dragged_dtype != 'any' and dragged_is_output is not None:
+            def _compat(cls):
+                pt = nodes._get_node_port_types(cls)
+                target = pt["inputs"] if dragged_is_output else pt["outputs"]
+                return dragged_dtype in target or 'any' in target
+            all_nodes = [c for c in all_nodes if _compat(c)]
 
         self._all_items = []
         self._node_map = {}  # NODE_NAME -> node_cls

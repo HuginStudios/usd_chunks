@@ -3,6 +3,8 @@ Node definitions for the USD node graph.
 Each node has typed ports (prim, string, variant_list, bool, etc.)
 and an execute() method that runs when inputs change.
 """
+import inspect as _inspect
+import re as _re
 from NodeGraphQt import BaseNode
 from NodeGraphQt.widgets.node_widgets import NodeBaseWidget
 from PySide6 import QtWidgets, QtCore
@@ -25,6 +27,29 @@ PORT_COLORS = {
 }
 # Reverse map: color tuple → data type name (used for type enforcement)
 _COLOR_TO_TYPE = {v: k for k, v in PORT_COLORS.items()}
+
+_PORT_TYPE_CACHE = {}
+
+def _get_node_port_types(node_cls):
+    """Return {"inputs": set, "outputs": set} of port data-type names for a node class.
+
+    Uses source introspection to find PORT_COLORS["x"] patterns in __init__.
+    All UsdNodeBase nodes accept 'trigger' (added via deferred _init_trigger_input).
+    Falls back to {"inputs": {"any","trigger"}, "outputs": {"any"}} on errors.
+    """
+    if node_cls in _PORT_TYPE_CACHE:
+        return _PORT_TYPE_CACHE[node_cls]
+    result = {"inputs": {"trigger"}, "outputs": set()}
+    try:
+        src = _inspect.getsource(node_cls.__init__)
+        for m in _re.finditer(r'add_input\([^)]*PORT_COLORS\["(\w+)"\]', src):
+            result["inputs"].add(m.group(1))
+        for m in _re.finditer(r'add_output\([^)]*PORT_COLORS\["(\w+)"\]', src):
+            result["outputs"].add(m.group(1))
+    except Exception:
+        result = {"inputs": {"any", "trigger"}, "outputs": {"any"}}
+    _PORT_TYPE_CACHE[node_cls] = result
+    return result
 
 # Sentinel: when a port carries this value, downstream nodes ignore it as data
 class _TriggerSignal:
