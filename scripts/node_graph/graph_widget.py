@@ -848,6 +848,12 @@ class NodeGraphWidget(QtWidgets.QWidget):
         except Exception as e:
             print(f"[NodeGraph] could not attach nodes_deleted signal: {e}")
 
+        # Unified undo: re-execute graph after every undo/redo to restore USD scene
+        try:
+            self._graph.undo_stack().indexChanged.connect(self._on_undo_index_changed)
+        except Exception as e:
+            print(f"[NodeGraph] could not attach undo stack signal: {e}")
+
         # Debounce timer: property changes collapse into a single _execute_from_node
         # call 150 ms after the last change. Connection events bypass this and fire
         # immediately via _execute_from_node() directly.
@@ -1790,6 +1796,10 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 _remove_layer_from_hierarchy(self._stage.GetRootLayer(), layer)
             except Exception as e:
                 print(f"[NodeGraph] layer cleanup err for {node.name()}: {e}")
+
+    def _on_undo_index_changed(self, index):
+        """Re-execute the full graph after any undo or redo to restore USD scene state."""
+        QtCore.QTimer.singleShot(0, self.execute_graph)
 
     def _on_node_double_clicked(self, node):
         if isinstance(node, GroupNode):
