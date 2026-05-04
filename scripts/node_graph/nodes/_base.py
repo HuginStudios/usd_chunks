@@ -115,6 +115,7 @@ class UsdNodeBase(BaseNode):
         self._auto_ports_done = False
         self._widgets_to_hide = set()
         self._hide_scheduled = False
+        self._exec_error_msg = ""
         self.view._node_type_name = self.NODE_NAME
         cat = getattr(self, 'CATEGORY', 'Base')
         if cat in CATEGORY_COLORS:

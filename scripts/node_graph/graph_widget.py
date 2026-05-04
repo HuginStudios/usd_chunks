@@ -172,6 +172,14 @@ class NodeGraphWidget(QtWidgets.QWidget):
             " padding: 0 2px 6px 2px; border-bottom: 1px solid #1e2438;")
         self._props_type_label.hide()
         self._props_layout.addWidget(self._props_type_label)
+        self._props_error_label = QtWidgets.QLabel("")
+        self._props_error_label.setStyleSheet(
+            "color: #ff6b6b; background: rgba(220,60,60,0.12);"
+            " border: 1px solid rgba(220,60,60,0.3); border-radius: 4px;"
+            " padding: 4px 6px; font: 9px 'Consolas'; margin: 2px 0 4px 0;")
+        self._props_error_label.setWordWrap(True)
+        self._props_error_label.hide()
+        self._props_layout.addWidget(self._props_error_label)
 
         # ── Scrollable content area ──
         self._scroll_area = QtWidgets.QScrollArea()
@@ -743,6 +751,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             view = node.view
             view._exec_state = state
             view._exec_error = error_msg
+            node._exec_error_msg = error_msg if state == 'error' else ""
             if state == 'error' and error_msg:
                 view.setToolTip(error_msg)
             elif state == 'none':
@@ -757,6 +766,14 @@ class NodeGraphWidget(QtWidgets.QWidget):
                     setattr(v, '_exec_state', ''),
                     v.update()
                 ) if getattr(v, '_exec_state', '') == state else None)
+            # Refresh side panel error label if this node is currently selected
+            if node is getattr(self, '_selected_node', None):
+                if state == 'error' and error_msg:
+                    self._props_error_label.setText(error_msg)
+                    self._props_error_label.show()
+                else:
+                    self._props_error_label.setText("")
+                    self._props_error_label.hide()
         except Exception:
             pass
 
@@ -998,6 +1015,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             except RuntimeError:
                 pass
             self._props_type_label.hide()
+            self._props_error_label.hide()
             return
 
         type_name = getattr(node, 'NODE_NAME', '')
@@ -1010,6 +1028,14 @@ class NodeGraphWidget(QtWidgets.QWidget):
             self._props_type_label.hide()
         self._selected_node = node
         self._node_name_edit = self._props_label
+        err = getattr(node, '_exec_error_msg', '')
+        exec_state = getattr(getattr(node, 'view', None), '_exec_state', '')
+        if err and exec_state == 'error':
+            self._props_error_label.setText(err)
+            self._props_error_label.show()
+        else:
+            self._props_error_label.setText("")
+            self._props_error_label.hide()
 
         try:
             self._props_label.editingFinished.disconnect()
