@@ -3,6 +3,7 @@ Shared primitives used by all nodes:
 imports, port colors, base classes, UsdNodeBase, thumbnail helpers.
 """
 import inspect as _inspect
+import json as _json
 import re as _re
 from NodeGraphQt import BaseNode
 from NodeGraphQt.widgets.node_widgets import NodeBaseWidget
@@ -567,3 +568,41 @@ class DynamicChunkNode(ChunkWrapperBase):
             return {"prim": prim}
         finally:
             self._executing = False
+
+
+# ── GroupNode promotion helpers ──────────────────────────────────────────────
+
+def _get_promotions(group_node):
+    """Return the _promotions dict for a GroupNode, restoring from JSON if needed."""
+    if not hasattr(group_node, '_promotions'):
+        try:
+            raw = group_node.get_property('promoted_params')
+            group_node._promotions = _json.loads(raw) if isinstance(raw, str) and raw else {}
+        except Exception:
+            group_node._promotions = {}
+    return group_node._promotions
+
+
+def _get_promoted_outputs(group_node):
+    """Return the _promoted_outputs dict for a GroupNode, restoring from JSON if needed."""
+    if not hasattr(group_node, '_promoted_outputs'):
+        try:
+            raw = group_node.get_property('promoted_outputs')
+            group_node._promoted_outputs = _json.loads(raw) if isinstance(raw, str) and raw else {}
+        except Exception:
+            group_node._promoted_outputs = {}
+    return group_node._promoted_outputs
+
+
+def _save_promotions(group_node):
+    """Serialize _promotions/_promoted_outputs to custom properties so save/load works."""
+    try:
+        promos = getattr(group_node, '_promotions', {})
+        group_node.set_property('promoted_params', _json.dumps(promos))
+    except Exception as e:
+        print(f"[NodeGraph] save promotions err: {e}")
+    try:
+        promo_outs = getattr(group_node, '_promoted_outputs', {})
+        group_node.set_property('promoted_outputs', _json.dumps(promo_outs))
+    except Exception as e:
+        print(f"[NodeGraph] save promoted_outputs err: {e}")

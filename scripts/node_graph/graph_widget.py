@@ -6,6 +6,7 @@ from PySide6 import QtWidgets, QtCore, QtGui
 from NodeGraphQt import NodeGraph, GroupNode
 from . import nodes
 from .graph_executor import GraphExecutor
+from .nodes._base import _get_promotions, _get_promoted_outputs, _save_promotions
 from ._graph_ui import (
     _CodeEditor, _PythonHighlighter, _ViewportLabel, _TabSearchDialog,
     add_field_completer,
@@ -584,9 +585,16 @@ class NodeGraphWidget(QtWidgets.QWidget):
         header.setEnabled(False)
         menu.addSeparator()
 
-        copy_act = paste_act = clear_act = None
+        from NodeGraphQt.base.graph import SubGraph
+        is_sub = isinstance(graph, SubGraph)
+
+        copy_act = paste_act = clear_act = promote_out_act = None
         if is_output:
             copy_act = menu.addAction("📋 Copy as Reference")
+            if is_sub:
+                dtype = getattr(port_item, '_data_type', 'any')
+                if dtype in ('prim', 'layer'):
+                    promote_out_act = menu.addAction("⬆ Promote Output to Group")
         else:
             paste_act = menu.addAction("📌 Paste Reference")
             paste_act.setEnabled(NodeGraphWidget._ref_clipboard is not None)
@@ -614,6 +622,13 @@ class NodeGraphWidget(QtWidgets.QWidget):
             else:
                 NodeGraphWidget._ref_clipboard = f"@{node.name()}.{param_name}"
             print(f"[NodeGraph] copied ref: {NodeGraphWidget._ref_clipboard}")
+            return
+
+        if action == promote_out_act and promote_out_act is not None:
+            from .nodes._base import PORT_COLORS
+            dtype = getattr(port_item, '_data_type', 'any')
+            color = PORT_COLORS.get(dtype, (140, 150, 170))
+            self._promote_output_to_group(node, port_name, color)
             return
 
         if action == paste_act and NodeGraphWidget._ref_clipboard:
@@ -1064,11 +1079,14 @@ class NodeGraphWidget(QtWidgets.QWidget):
             except Exception:
                 pass
 
+        if isinstance(node, GroupNode):
+            self._build_group_promo_panel(node)
+            return
         if hasattr(node, '_chunk_module'):
             self._build_chunk_panel(node)
             return
         skip = {"id", "name", "color", "disabled", "selected", "width", "height",
-                "icon", "pos", "layout_direction", "type_", "thumb"}
+                "icon", "pos", "layout_direction", "type_", "promoted_params", "promoted_outputs"}
         for name, val in node.model.custom_properties.items():
             if name in skip:
                 continue
@@ -1380,6 +1398,120 @@ class NodeGraphWidget(QtWidgets.QWidget):
             print(f"[NodeGraph] chunk panel err: {e}")
             self._props_form.addRow(QtWidgets.QLabel(f"Error: {e}"))
 
+    def _build_group_promo_panel(self, group_node):
+        """Side panel for a GroupNode: editable fields for each promoted param."""
+        promotions = _get_promotions(group_node)
+        promo_outs = _get_promoted_outputs(group_node)
+
+        if not promotions and not promo_outs:
+            lbl = QtWidgets.QLabel(
+                "No promoted params.\n"
+                "Double-click to enter group,\n"
+                "then right-click a param → Promote to Group."
+            )
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color: #666; font: 10px 'Consolas'; padding: 8px 4px;")
+            self._props_form.addRow(lbl)
+            return
+
+        for port_name, info in promotions.items():
+            default_val = info.get("default_value")
+            edit = QtWidgets.QLineEdit(str(default_val) if default_val is not None else "")
+
+            def _make_changed(pname, grp):
+                def _on_finish(e=edit, pn=pname, gn=grp):
+                    promos = _get_promotions(gn)
+                    if pn in promos:
+                        promos[pn]["default_value"] = e.text()
+                        _save_promotions(gn)
+                return _on_finish
+
+            edit.editingFinished.connect(_make_changed(port_name, group_node))
+            self._props_form.addRow(port_name, edit)
+
+        if promo_outs:
+            sep = QtWidgets.QLabel("Promoted Outputs")
+            sep.setStyleSheet("color: #666; font: italic 9px 'Consolas'; padding: 6px 0 2px 0;")
+            self._props_form.addRow(sep)
+            for port_name, info in promo_outs.items():
+                lbl = QtWidgets.QLabel(f"→ {info.get('inner_port', '?')}")
+                lbl.setStyleSheet("color: #888; font: 9px 'Consolas';")
+                self._props_form.addRow(port_name, lbl)
+
+    def _promote_param_to_group(self, inner_node, param):
+        """Promote a chunk param to the enclosing GroupNode as an input port."""
+        from NodeGraphQt.base.graph import SubGraph
+        from usd_chunks.chunk import Slider, Spinbox, Menu, Checkbox
+        from .nodes._base import PORT_COLORS
+
+        g = self._active_graph()
+        if not isinstance(g, SubGraph):
+            return
+        group = g.node
+
+        param_name = getattr(param, 'name', None)
+        if not param_name:
+            return
+
+        port_color = PORT_COLORS.get("any", (140, 150, 170))
+        chunk_param_class = "LineEdit"
+        chunk_param_kwargs: dict = {}
+
+        if isinstance(param, (Slider, Spinbox)):
+            port_color = PORT_COLORS.get("float", (50, 210, 220))
+            chunk_param_class = type(param).__name__
+            chunk_param_kwargs = {
+                "min_value": getattr(param, "min_value", None),
+                "max_value": getattr(param, "max_value", None),
+                "is_int": getattr(param, "is_int", False),
+            }
+        elif isinstance(param, Menu):
+            chunk_param_class = "Menu"
+            chunk_param_kwargs = {"menu_items": list(getattr(param, "menu_items", []))}
+        elif isinstance(param, Checkbox):
+            port_color = PORT_COLORS.get("bool", (230, 210, 50))
+            chunk_param_class = "Checkbox"
+
+        current_val = getattr(param, 'value', None)
+        promotions = _get_promotions(group)
+
+        existing_ports = {p.name() for p in group.input_ports()}
+        if param_name not in existing_ports:
+            group.add_input(param_name, color=port_color)
+
+        promotions[param_name] = {
+            "inner_node_id": inner_node.id,
+            "inner_param": param_name,
+            "port_color": list(port_color),
+            "chunk_param_class": chunk_param_class,
+            "chunk_param_kwargs": chunk_param_kwargs,
+            "default_value": current_val,
+        }
+        _save_promotions(group)
+        print(f"[NodeGraph] promoted '{param_name}' from {inner_node.name()} → {group.name()}")
+
+    def _promote_output_to_group(self, inner_node, port_name, port_color):
+        """Promote an inner output port to the enclosing GroupNode as an output port."""
+        from NodeGraphQt.base.graph import SubGraph
+
+        g = self._active_graph()
+        if not isinstance(g, SubGraph):
+            return
+        group = g.node
+
+        promo_outs = _get_promoted_outputs(group)
+        existing_ports = {p.name() for p in group.output_ports()}
+        if port_name not in existing_ports:
+            group.add_output(port_name, color=tuple(port_color) if isinstance(port_color, (list, tuple)) else port_color)
+
+        promo_outs[port_name] = {
+            "inner_node_id": inner_node.id,
+            "inner_port": port_name,
+            "port_color": list(port_color) if isinstance(port_color, (list, tuple)) else list(port_color),
+        }
+        _save_promotions(group)
+        print(f"[NodeGraph] promoted output '{port_name}' from {inner_node.name()} → {group.name()}")
+
     def _add_chunk_widget(self, factory, param, node):
         """Create a chunk widget for a param and add it to the side panel."""
         from usd_chunks import chunk_core
@@ -1530,6 +1662,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 continue
 
             def _show_menu(pos, e=ed, n=node, p=param):
+                from NodeGraphQt.base.graph import SubGraph
                 menu = e.createStandardContextMenu() if isinstance(e, QtWidgets.QLineEdit) else QtWidgets.QMenu(e)
                 menu.setStyleSheet(
                     "QMenu { background: #0e1016; color: #c8d0e8;"
@@ -1544,6 +1677,11 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 clear_act = menu.addAction("✖ Clear Reference")
                 paste_act.setEnabled(NodeGraphWidget._ref_clipboard is not None)
                 clear_act.setEnabled(bool(getattr(p, "value_reference", None)))
+                promote_act = None
+                g = self._active_graph()
+                if isinstance(g, SubGraph):
+                    menu.addSeparator()
+                    promote_act = menu.addAction("⬆ Promote to Group")
                 action = menu.exec_(e.mapToGlobal(pos))
                 if action == copy_act:
                     NodeGraphWidget._ref_clipboard = self._build_chunk_param_ref(n, p)
@@ -1563,6 +1701,11 @@ class NodeGraphWidget(QtWidgets.QWidget):
                         QtCore.QTimer.singleShot(0, lambda _n=n: self._executor.run_from(_n) if self._stage else None)
                     except Exception as err:
                         print(f"[NodeGraph] clear ref err: {err}")
+                elif action == promote_act and promote_act is not None:
+                    self._promote_param_to_group(n, p)
+                    g2 = self._active_graph()
+                    if isinstance(g2, SubGraph):
+                        QtCore.QTimer.singleShot(0, lambda grp=g2.node: self._on_node_selected(grp))
 
             ed.customContextMenuRequested.connect(_show_menu)
 

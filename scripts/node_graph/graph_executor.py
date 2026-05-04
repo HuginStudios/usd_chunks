@@ -9,6 +9,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from NodeGraphQt import GroupNode
 from . import nodes as _nodes
+from .nodes._base import _get_promotions, _get_promoted_outputs
 
 
 class GraphExecutor:
@@ -207,11 +208,13 @@ class GraphExecutor:
                     self._node_layer_registry[node.id] = result["layer"].identifier
             except Exception:
                 pass
-            # Capture thumbnail for PrimPathNode (only on first execution)
+            # Capture thumbnail only when the user has set a real prim path
+            # (skip pseudo-root "/" which is valid but meaningless as a thumbnail)
             if (isinstance(node, _nodes.PrimPathNode)
                     and widget._prim_thumbs_enabled
                     and result and result.get("prim")
-                    and not node._prim_thumb._pixmap):
+                    and not node._prim_thumb._pixmap
+                    and str(result["prim"].GetPath()) not in ("", "/")):
                 widget._capture_prim_thumb(node, result["prim"])
             return True
         except Exception as e:
@@ -242,6 +245,29 @@ class GraphExecutor:
                     pin._output_cache = (
                         {pin.output_ports()[0].name(): val} if pin.output_ports() else {}
                     )
+
+        # Apply promoted input param values to inner nodes before execution
+        inner_nodes_by_id = {n.id: n for n in sub.all_nodes()}
+        for port_name, info in _get_promotions(group).items():
+            inner_node_id = info.get("inner_node_id")
+            inner_param = info.get("inner_param")
+            val = info.get("default_value")
+            grp_port = group.get_input(port_name)
+            if grp_port:
+                connected = grp_port.connected_ports()
+                if connected:
+                    src_port = connected[0]
+                    src_node = src_port.node()
+                    ext_val = (
+                        src_node._output_cache.get(src_port.name())
+                        if hasattr(src_node, "_output_cache") else None
+                    )
+                    if ext_val is not None:
+                        val = ext_val
+            if val is not None and inner_node_id and inner_param:
+                inner_node = inner_nodes_by_id.get(inner_node_id)
+                if inner_node:
+                    self._apply_promoted_value(inner_node, inner_param, val)
 
         visited: set = set()
         order: list = []
@@ -279,12 +305,40 @@ class GraphExecutor:
                     )
                     group._output_cache[parent_port.name()] = val
 
+        # Collect promoted output values from inner nodes directly
+        inner_nodes_by_id = {n.id: n for n in sub.all_nodes()}
+        for port_name, info in _get_promoted_outputs(group).items():
+            inner_node_id = info.get("inner_node_id")
+            inner_port = info.get("inner_port")
+            inner_node = inner_nodes_by_id.get(inner_node_id)
+            if inner_node and inner_port:
+                val = inner_node._output_cache.get(inner_port) if hasattr(inner_node, "_output_cache") else None
+                if val is not None:
+                    group._output_cache[port_name] = val
+
         for n in sub.all_nodes():
             if isinstance(n, _nodes.UsdNodeBase):
                 n.set_color(*_nodes.CATEGORY_COLORS.get(n.CATEGORY, (80, 80, 80)))
 
         widget._graph.collapse_group_node(group)
         widget._set_exec_state(group, "valid")
+
+    @staticmethod
+    def _apply_promoted_value(inner_node, param_name, value):
+        """Push a promoted param value into an inner node (chunk or regular)."""
+        try:
+            adapter = getattr(inner_node, "_cached_adapter", None)
+            if adapter and getattr(adapter, "chunk", None):
+                chunk_param = adapter.chunk.get_param(param_name)
+                if chunk_param is not None:
+                    adapter.set_param(param_name, value)
+                    return
+        except Exception:
+            pass
+        try:
+            inner_node.set_property(param_name, str(value) if not isinstance(value, bool) else value)
+        except Exception:
+            pass
 
     def _get_downstream(self, start_node):
         """Collect downstream nodes in topological order from start_node."""
