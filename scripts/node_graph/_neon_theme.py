@@ -286,11 +286,7 @@ def install_neon_theme(graph_widget):
     def _typed_validate_accept(self_v, from_port, to_port):
         if not _orig_validate_accept(self_v, from_port, to_port):
             return False
-        from_type = getattr(from_port, '_data_type', 'any')
-        to_type = getattr(to_port, '_data_type', 'any')
-        if from_type == 'any' or to_type == 'any':
-            return True
-        return from_type == to_type
+        return True
 
     NodeViewer._validate_accept_connection = _typed_validate_accept
 
@@ -352,6 +348,20 @@ def install_neon_theme(graph_widget):
 
     _orig_pipe_paint = PipeItem.paint
 
+    _AMBER = QtGui.QColor(0xd4, 0xa0, 0x17, 200)
+
+    def _pipe_type_mismatch(self_pipe):
+        try:
+            out_port = getattr(self_pipe, '_output_port', None) or self_pipe.output_port
+            in_port = getattr(self_pipe, '_input_port', None) or self_pipe.input_port
+            if out_port is None or in_port is None:
+                return False
+            t_out = getattr(out_port, '_data_type', 'any')
+            t_in = getattr(in_port, '_data_type', 'any')
+            return t_out != 'any' and t_in != 'any' and t_out != t_in
+        except Exception:
+            return False
+
     def _state_pipe_paint(self_pipe, painter, option, widget):
         src_state = ''
         try:
@@ -370,6 +380,14 @@ def install_neon_theme(graph_widget):
                 pen.setColor(QtGui.QColor(100, 120, 150, 100))
             pen.setStyle(QtCore.Qt.DashLine)
             pen.setWidthF(1.5)
+            painter.setPen(pen)
+            if hasattr(self_pipe, 'path'):
+                painter.drawPath(self_pipe.path())
+            painter.restore()
+        elif _pipe_type_mismatch(self_pipe):
+            painter.save()
+            pen = QtGui.QPen(_AMBER, 1.8, QtCore.Qt.SolidLine)
+            pen.setCapStyle(QtCore.Qt.RoundCap)
             painter.setPen(pen)
             if hasattr(self_pipe, 'path'):
                 painter.drawPath(self_pipe.path())
