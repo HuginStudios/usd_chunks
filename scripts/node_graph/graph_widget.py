@@ -704,7 +704,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             if selected:
                 menu.addSeparator()
 
-        act_exec = act_disable = act_dup = act_del = act_color = act_frame = act_fold = act_layer = None
+        act_exec = act_disable = act_dup = act_del = act_color = act_frame = act_fold = act_layer = act_export_chunk = None
         if selected:
             node = selected[0]
             act_exec = menu.addAction("▶ Execute from here")
@@ -713,6 +713,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 is_folded = getattr(node, '_folded', True)
                 act_fold = menu.addAction("📂 Expand Ports" if is_folded else "📁 Collapse Ports")
                 act_layer = menu.addAction("📄 Show Layer Edits")
+            if isinstance(node, GroupNode):
+                act_export_chunk = menu.addAction("📦 Export as Chunk")
             act_dup = menu.addAction("📋 Duplicate")
             act_del = menu.addAction("🗑 Delete")
             act_color = menu.addAction("🎨 Change Color")
@@ -761,6 +763,20 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 self._toggle_chunk_fold(node)
             elif action == act_layer and hasattr(node, '_chunk_module'):
                 self._show_layer_edits(node)
+            elif action == act_export_chunk and isinstance(node, GroupNode):
+                self._export_group_as_chunk(node)
+
+    def _export_group_as_chunk(self, group_node):
+        """Export GroupNode as a chunk module and hot-register it."""
+        from ._graph_export import export_group_as_chunk
+        try:
+            out_path = export_group_as_chunk(group_node)
+            QtWidgets.QMessageBox.information(
+                self, "Chunk Exported",
+                f"Exported to:\n{out_path}\n\nChunk '{group_node.name()}' is now available in the panel."
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Export Failed", str(e))
 
     def _set_exec_state(self, node, state, error_msg=""):
         """Set persistent execution state on a node view item."""
