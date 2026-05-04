@@ -231,6 +231,11 @@ class GraphExecutor:
         if not sub:
             return
 
+        for n in sub.all_nodes():
+            if getattr(n, '_folded', False):
+                for w in n.view._widgets.values():
+                    w.setVisible(False)
+
         for pin in sub.get_input_port_nodes():
             parent_port = pin.parent_port
             if parent_port:
@@ -285,10 +290,20 @@ class GraphExecutor:
         for n in sub.all_nodes():
             _topo(n)
 
-        for n in order:
+        for idx, n in enumerate(order):
             if isinstance(n, (PortInputNode, PortOutputNode)):
                 continue
             self._exec_node(n)
+            if isinstance(n, _nodes.ForEachNode) and n._iteration_list:
+                downstream_inner = [
+                    x for x in order[idx + 1:]
+                    if not isinstance(x, (PortInputNode, PortOutputNode))
+                ]
+                for i in range(len(n._iteration_list)):
+                    if not n.set_iteration_index(i):
+                        break
+                    for dn in downstream_inner:
+                        self._exec_node(dn)
 
         group._output_cache = {}
         for pout in sub.get_output_port_nodes():

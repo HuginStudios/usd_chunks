@@ -866,6 +866,11 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
         viewer.apply_live_connection = _patched
 
+        for n in sub.all_nodes():
+            if getattr(n, '_folded', False):
+                for w in n.view._widgets.values():
+                    w.setVisible(False)
+
     # ------------------------------------------------------------------
     # Wire handlers — bridge node-graph pipes to the chunk_core notice DAG.
     # ------------------------------------------------------------------
@@ -971,17 +976,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
     def _on_nodes_deleted(self, node_list):
         """Remove each deleted chunk node's Sdf.Layer from the stage layer stack."""
         from pxr import Sdf
-        for node in node_list:
-            layer_id = self._executor._node_layer_registry.pop(node.id, None)
-            if not layer_id:
-                try:
-                    chunk = getattr(node, '_my_chunk', None)
-                    if chunk is not None:
-                        lyr = chunk.get_edit_context()
-                        if lyr:
-                            layer_id = lyr.identifier
-                except Exception:
-                    pass
+        for node_id in node_list:  # signal sends string IDs, not node objects
+            layer_id = self._executor._node_layer_registry.pop(node_id, None)
             if not layer_id or not self._stage:
                 continue
             layer = Sdf.Layer.Find(layer_id)
@@ -990,7 +986,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             try:
                 _remove_layer_from_hierarchy(self._stage.GetRootLayer(), layer)
             except Exception as e:
-                print(f"[NodeGraph] layer cleanup err for {node.name()}: {e}")
+                print(f"[NodeGraph] layer cleanup err for {node_id}: {e}")
 
     def _on_undo_index_changed(self, index):
         QtCore.QTimer.singleShot(0, self._executor.run_full)
@@ -1506,6 +1502,34 @@ class NodeGraphWidget(QtWidgets.QWidget):
         _save_promotions(group)
         print(f"[NodeGraph] promoted '{param_name}' from {inner_node.name()} → {group.name()}")
 
+    def _promote_prop_to_group(self, inner_node, prop_name, value):
+        """Promote a regular node property to the enclosing GroupNode as an input port."""
+        from NodeGraphQt.base.graph import SubGraph
+        from .nodes._base import PORT_COLORS
+
+        g = self._active_graph()
+        if not isinstance(g, SubGraph):
+            return
+        group = g.node
+
+        port_color = PORT_COLORS.get("any", (140, 150, 170))
+        promotions = _get_promotions(group)
+
+        existing_ports = {p.name() for p in group.input_ports()}
+        if prop_name not in existing_ports:
+            group.add_input(prop_name, color=port_color)
+
+        promotions[prop_name] = {
+            "inner_node_id": inner_node.id,
+            "inner_param": prop_name,
+            "port_color": list(port_color),
+            "chunk_param_class": "LineEdit",
+            "chunk_param_kwargs": {},
+            "default_value": value,
+        }
+        _save_promotions(group)
+        print(f"[NodeGraph] promoted prop '{prop_name}' from {inner_node.name()} → {group.name()}")
+
     def _promote_output_to_group(self, inner_node, port_name, port_color):
         """Promote an inner output port to the enclosing GroupNode as an output port."""
         from NodeGraphQt.base.graph import SubGraph
@@ -1636,12 +1660,23 @@ class NodeGraphWidget(QtWidgets.QWidget):
             copy_act = menu.addAction("📋 Copy Reference")
             paste_act = menu.addAction("📌 Paste Reference")
             paste_act.setEnabled(NodeGraphWidget._ref_clipboard is not None)
+            promote_act = None
+            from NodeGraphQt.base.graph import SubGraph
+            g = self._active_graph()
+            if isinstance(g, SubGraph):
+                menu.addSeparator()
+                promote_act = menu.addAction("⬆ Promote to Group")
             action = menu.exec_(e.mapToGlobal(pos))
             if action == copy_act:
                 NodeGraphWidget._ref_clipboard = f"@{n.name()}.{p}"
             elif action == paste_act and NodeGraphWidget._ref_clipboard:
                 e.setText(NodeGraphWidget._ref_clipboard)
                 e.editingFinished.emit()
+            elif action == promote_act and promote_act is not None:
+                self._promote_prop_to_group(n, p, e.text())
+                g2 = self._active_graph()
+                if isinstance(g2, SubGraph):
+                    QtCore.QTimer.singleShot(0, lambda grp=g2.node: self._on_node_selected(grp))
 
         edit.customContextMenuRequested.connect(_show_menu)
 
