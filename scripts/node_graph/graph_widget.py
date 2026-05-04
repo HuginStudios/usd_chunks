@@ -14,6 +14,21 @@ from ._neon_theme import install_neon_theme
 from ._graph_layout import layout_nodes
 from ._graph_export import export_python_script
 
+PANEL_STYLE = (
+    "QWidget { background: #1e1e1e; color: #ddd; font: 11px 'Consolas'; }"
+    "QLabel { color: #aaa; font-size: 11px; }"
+    "QLineEdit { background: #2a2a2a; color: #ddd; border: 1px solid #444;"
+    "  border-radius: 4px; padding: 3px 6px; font: 10px 'Consolas'; }"
+    "QLineEdit:focus { border-color: #32d2dc; }"
+    "QComboBox { background: #2a2a2a; color: #ddd; border: 1px solid #444;"
+    "  border-radius: 4px; padding: 3px 6px; font: 10px 'Consolas'; }"
+    "QAbstractItemView { background: #1e1e1e; color: #ddd; border: 1px solid #444;"
+    "  selection-background-color: #2a3a4a; selection-color: #ddd; outline: none; }"
+    "QPushButton { background: #2a2a2a; color: #ddd; border: 1px solid #444;"
+    "  border-radius: 4px; padding: 3px 8px; font: 10px 'Consolas'; }"
+    "QPushButton:hover { background: #333; border-color: #666; }"
+)
+
 
 def _safe_port_visible(port, visible):
     """Set port visibility, silently ignoring errors (node not yet in graph)."""
@@ -137,20 +152,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
         splitter.addWidget(self._graph.widget)
 
         self._props_widget = QtWidgets.QWidget()
-        self._props_widget.setStyleSheet(
-            "QWidget { background: #0c0e14; color: #c8d0e8; font: 10px 'Consolas'; }"
-            "QLabel { color: #7a86a8; }"
-            "QLineEdit { background: rgba(0,0,0,0.3); color: #c8d0e8; border: 1px solid #1e2438;"
-            "  border-radius: 4px; padding: 3px 6px; font: 10px 'Consolas'; }"
-            "QLineEdit:focus { border-color: #32d2dc; }"
-            "QComboBox { background: rgba(0,0,0,0.3); color: #c8d0e8; border: 1px solid #1e2438;"
-            "  border-radius: 4px; padding: 3px 6px; font: 10px 'Consolas'; }"
-            "QAbstractItemView { background: #0e1016; color: #c8d0e8; border: 1px solid #1e2438;"
-            "  selection-background-color: #1e2a40; selection-color: #c8d0e8; outline: none; }"
-            "QPushButton { background: #0e1016; color: #c8d0e8; border: 1px solid #1e2438;"
-            "  border-radius: 4px; padding: 3px 8px; font: 10px 'Consolas'; }"
-            "QPushButton:hover { background: #161b26; border-color: #2a3550; }"
-        )
+        self._props_widget.setStyleSheet(PANEL_STYLE)
         self._props_layout = QtWidgets.QVBoxLayout(self._props_widget)
         self._props_layout.setContentsMargins(8, 8, 8, 0)
         self._props_layout.setSpacing(0)
@@ -168,8 +170,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
         self._props_layout.addWidget(self._props_label)
         self._props_type_label = QtWidgets.QLabel("")
         self._props_type_label.setStyleSheet(
-            "color: #5a6688; font: italic 9px 'Consolas';"
-            " padding: 0 2px 6px 2px; border-bottom: 1px solid #1e2438;")
+            "color: #888; font: italic 10px 'Consolas';"
+            " padding: 0 2px 6px 2px; border-bottom: 1px solid #333;")
         self._props_type_label.hide()
         self._props_layout.addWidget(self._props_type_label)
         self._props_error_label = QtWidgets.QLabel("")
@@ -995,7 +997,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             self._props_label.setText(new_name)
             type_name = getattr(node, 'NODE_NAME', '')
             if type_name and type_name != new_name:
-                self._props_type_label.setText(type_name)
+                self._props_type_label.setText(f"Type: {type_name}")
                 self._props_type_label.show()
             else:
                 self._props_type_label.hide()
@@ -1022,7 +1024,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
         self._props_label.setReadOnly(False)
         self._props_label.setText(node.name())
         if type_name and type_name != node.name():
-            self._props_type_label.setText(type_name)
+            self._props_type_label.setText(f"Type: {type_name}")
             self._props_type_label.show()
         else:
             self._props_type_label.hide()
