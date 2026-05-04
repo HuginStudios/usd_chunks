@@ -81,6 +81,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        self._executor = GraphExecutor(self)
+
         # Toolbar
         _BTN = ("QPushButton { background:#0e1016; color:#c8d0e8; border:1px solid #1e2438;"
                 "border-radius:6px; padding:5px 12px; font:11px 'Consolas'; }"
@@ -246,8 +248,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
         except Exception as e:
             print(f"[NodeGraph] could not attach undo stack signal: {e}")
 
-        self._executor = GraphExecutor(self)
-
         # Right-click context menu on viewer
         viewer = self._graph.viewer()
         if viewer:
@@ -256,6 +256,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
         self._prop_editors = {}
         self._suggestion_id = 0
         self._suggestions_ready.connect(self._show_ghost_buttons)
+        self._init_timers = []  # repeating per-node timers collected at creation
 
         # Build the add-node menu
         self._node_menu = QtWidgets.QMenu(self)
@@ -1785,6 +1786,31 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
     def _layout_nodes(self, node_list=None):
         layout_nodes(self._active_graph(), node_list)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if hasattr(self, '_minimap_timer'):
+            self._minimap_timer.stop()
+        if hasattr(self, '_exec_pulse_timer'):
+            self._exec_pulse_timer.stop()
+        self._viewport_was_active = (
+            hasattr(self, '_viewport_timer') and self._viewport_timer.isActive()
+        )
+        if self._viewport_was_active:
+            self._viewport_timer.stop()
+        for t in getattr(self, '_init_timers', []):
+            t.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, '_minimap_timer'):
+            self._minimap_timer.start(500)
+        if hasattr(self, '_exec_pulse_timer'):
+            self._exec_pulse_timer.start(50)
+        if getattr(self, '_viewport_was_active', False):
+            self._viewport_timer.start(100)
+        for t in getattr(self, '_init_timers', []):
+            t.start()
 
     def closeEvent(self, event):
         NodeGraphWidget._active_instance = None
