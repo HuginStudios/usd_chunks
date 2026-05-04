@@ -1198,12 +1198,16 @@ class NodeGraphWidget(QtWidgets.QWidget):
             self._prop_editors[name] = edit
 
     def _on_ghost_suggestions(self, suggested_names, sid):
+        if not getattr(self, '_executor', None):
+            return
         if sid == self._suggestion_id and suggested_names:
             self._suggestions_ready.emit(suggested_names)
 
     def _show_ghost_buttons(self, names):
         import sys
         print(f"[ghost] showing buttons: {names}", file=sys.stderr)
+        if not getattr(self, '_executor', None):
+            return
         if not names or not hasattr(self, '_selected_node'):
             return
         try:
