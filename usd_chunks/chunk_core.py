@@ -1295,6 +1295,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             # the notices to not get recursion. Only the first call to __setattr__ should send notices.
             if notice and notice.alias in [
                 chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                chunk_notice.ChunkNoticeAlias.VALUE_CHANGED,
                 chunk_notice.ChunkNoticeAlias.INPUT_CHANGED,
             ]:
                 for name, func in self._attrib_functions.items():
@@ -2623,6 +2624,24 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.PARAM_CHANGED
 
+    def connect_value(self, other: "ChunkParamBase[ValueT]"):
+        my_t = self.evaluate_type()
+        other_t = other.evaluate_type()
+        if my_t not in other_t:
+            raise ValueError(f"Can't connect {other_t.name} to parameter {my_t}")
+
+        idx = -1
+        # If other already is connected to self, then we can use that index
+        for i, node in self.get_dependencies(is_inst(type(other))):
+            if node == other:
+                idx = i
+                break
+
+        if idx == -1:
+            # The nodes are not connected, so we add other as dependency
+            idx = self.add_dependency(other)
+        self.set_function("value", lambda x, _: x.get_dependency(idx, is_inst(type(other))).value)
+
 
 class ChunkContainerBase(ChunkCommon):
     """
@@ -2706,7 +2725,9 @@ class ChunkContainerBase(ChunkCommon):
     @overload
     def get_param(self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
 
-    def get_param(self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]] = None) -> Optional[ChunkCommon] | ValueT:
+    def get_param(
+        self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]] = None
+    ) -> Optional[ChunkCommon] | ValueT:
         """
         Get a parameter or group inside of this group. A string can be passed to get a parameter by name.
         The string can also be the explicit hierarchy of a param by spacing the hiearchy levels with a dot
@@ -2744,7 +2765,7 @@ class ChunkContainerBase(ChunkCommon):
 
     def get_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ChunkCommon, ...] | Tuple[ValueT, ...]:
         """Get all parameters in this group including nested
-        
+
         Args:
             predicate (Optional[Predicate[ValueT]]): An optional predicate function to filter the result. Defaults to None.
 
@@ -2760,7 +2781,9 @@ class ChunkContainerBase(ChunkCommon):
     @overload
     def get_my_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
 
-    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ChunkCommon, ...] | Tuple[ValueT, ...]:
+    def get_my_params(
+        self, predicate: Optional[Predicate[ValueT]] = None
+    ) -> Tuple[ChunkCommon, ...] | Tuple[ValueT, ...]:
         """Get all parameters added directly to this group
 
         Args:
@@ -3514,7 +3537,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 logger.warning(f"Could not load layer {layer_name}. The referenced chunk was not found")
                 continue
 
-            layer_str = chunk_serial.load_scene_data(p, layer_name)
+            try:
+                layer_str = chunk_serial.load_scene_data(p, layer_name)
+            except Exception:
+                continue
 
             if not layer_str:
                 logger.warning(f"Could not load layer {layer_name}")
@@ -3674,3 +3700,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.NONE
+
+
+def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:
+    """
+    Created a predicate function which can be used for type narrowing the input parameter v
+
+    Args:
+        cls (type[ValueT]): The type which to check
+
+    Returns:
+        Predicate[ValueT]: The predicate function
+    """
+
+    def _fn(v: Any) -> TypeGuard[ValueT]:
+        return isinstance(v, cls)
+
+    return _fn

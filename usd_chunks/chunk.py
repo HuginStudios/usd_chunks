@@ -61,11 +61,12 @@ from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast, TypeGuard
 
 from pxr import Usd, Sdf
 
+# Keep the ChunkNoticeAlias import as clients may use usd_chunks.chunk.ChunkNoticeAlias, without having to import chunk_notice
 from usd_chunks.chunk_notice import ChunkNoticeAlias  # noqa: F401
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
-    ChunkConfig,
+    ChunkConfig as _cfg,
     ChunkParamBase,
     ChunkGroupBase,
     ChunkVectorBase,
@@ -74,6 +75,7 @@ from usd_chunks.chunk_core import (
     ChunkListGroupBase,
     Predicate,
     ValueT,
+    is_inst,
 )
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
@@ -86,7 +88,7 @@ if TYPE_CHECKING:
 ###########
 
 
-class DefaulConfig(ChunkConfig):
+class DefaulConfig(_cfg):
     """
     This class is used as a default config.
 
@@ -176,7 +178,7 @@ class Slider(ChunkParamBase[int | float]):
         param = super().from_usd_attr(attr, *args, **kwargs)
 
         try:
-            limits = attr.GetLimits() # type: ignore
+            limits = attr.GetLimits()  # type: ignore
         except Exception:
             limits = None
         if limits:
@@ -533,23 +535,6 @@ def get_chunk(chunk_name: str):
 ##############
 # PREDICATES #
 ##############
-
-
-def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:
-    """
-    Created a predicate function which can be used for type narrowing the input parameter v
-
-    Args:
-        cls (type[ValueT]): The type which to check
-
-    Returns:
-        Predicate[ValueT]: The predicate function
-    """
-
-    def _fn(v: Any) -> TypeGuard[ValueT]:
-        return isinstance(v, cls)
-
-    return _fn
 
 
 def is_param(v: Any) -> TypeGuard[ChunkParamBase]:

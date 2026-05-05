@@ -24,11 +24,6 @@ def get_inputs_dict(node):
     return {node: inputs}
 
 
-def noop(owner: chunk.Chunk, notice, sender):
-    # print(owner.name, owner.get_dag_node()._index)
-    pass
-
-
 def callback(owner: chunk.Chunk, notice, sender):
     a = owner.get_dependency(0, chunk.is_chunk)
     b = owner.get_dependency(1, chunk.is_chunk)
@@ -37,7 +32,7 @@ def callback(owner: chunk.Chunk, notice, sender):
     if not (a and b and c):
         print("Inputs failed")
         return
-    
+
     ap = a.get_param("A_param", chunk.is_param_t(float))
     bp = b.get_param("B_param", chunk.is_param_t(float))
     cp = c.get_param("C_param", chunk.is_param_t(float))
@@ -81,9 +76,6 @@ def main():
     d_param = chunk.Button("Execute")
     d.add_param(d_param)
 
-    # a.add_callback(noop)
-    # b.add_callback(noop)
-    # c.add_callback(noop)
     d.add_callback(callback)
 
     d.add_dependency(a)

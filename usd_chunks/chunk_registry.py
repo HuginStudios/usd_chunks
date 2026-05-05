@@ -41,7 +41,9 @@ from pxr import Sdf, Usd, UsdUtils
 from usd_chunks import chunk_serial
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
-from usd_chunks.chunk_core import SceneSender, ChunkBase, ChunkCommon, ChunkConfig, ChunkHash
+
+import usd_chunks.chunk_core as core
+# from usd_chunks.chunk_core import ChunkBase, ChunkCommon, ChunkConfig, ChunkHash
 
 if TYPE_CHECKING:
     import types
@@ -131,6 +133,10 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
     def _write_cache(self):
         # Writes the cache to disk
         serial = chunk_serial.serialize_json(dict(self._cache))
+        path = self._env_cache_file()
+        if not os.path.exists(os.path.dirname(path)):
+            os.makedirs(os.path.dirname(path))
+
         chunk_serial.save_json(self._env_cache_file(), serial)
 
     def _load_cache(self):
@@ -323,13 +329,13 @@ class ChunkModule(chunk_serial.Serializeable):
 
         self.loaded = False
         # self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
-        self.func: Optional[Callable[[], ChunkBase | List[ChunkBase]]] = None
+        self.func: Optional[Callable[[], core.ChunkBase | List[core.ChunkBase]]] = None
 
         self._has_main = False
 
         # This is set by the _ConfigTransformer when parsing the module (before loading) if the module
         # defines a config() function
-        self.config: ChunkConfig = ChunkConfig()
+        self.config: core.ChunkConfig = core.ChunkConfig()
         # This is set by the _ConfigTransformer when parsing the module (before loading). The value is
         # the checksum of the main() function, used for comparing if it has changed when loading a scene
         # file
@@ -518,7 +524,7 @@ class ChunkModule(chunk_serial.Serializeable):
         self.loaded = True
         return True
 
-    def load(self) -> Sequence[ChunkBase]:
+    def load(self) -> Sequence[core.ChunkBase]:
         """
         Loads the module. This ensures that the module is properly created. If Already loaded, it's preffered to
         call create() directly, to skip some initialization stuff that should only be called once
@@ -545,7 +551,7 @@ class ChunkModule(chunk_serial.Serializeable):
         """
         self.loaded = False
 
-    def create(self) -> Sequence[ChunkBase]:
+    def create(self) -> Sequence[core.ChunkBase]:
         """
         Runs the main function from the module and adds the chunks returned from the main function to the
         ChunkRegistry scene
@@ -657,12 +663,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     registered_directories: Set[Path] = set()
     registered_modules: Dict[str, ChunkModule] = {}
-    scene: SceneSender
+    scene: core.SceneSender
     plugin: str
 
     initialized: bool = False
 
-    def initialize(self, scene_sender: SceneSender, plugin: str, scene_file: Optional[Path] = None) -> None:
+    def initialize(self, scene_sender: core.SceneSender, plugin: str, scene_file: Optional[Path] = None) -> None:
         """Initialize the FileReader with the working directory.
 
         Args:
@@ -869,7 +875,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         self._flags_listener = NoticeConnection(self._flags_changed, ChunkNoticeAlias.STATE_CHANGED, globally=True)
 
-        self.chunk_layers: Dict[ChunkHash, Sdf.Layer] = {}
+        self.chunk_layers: Dict[core.ChunkHash, Sdf.Layer] = {}
         self.graph_layers: Dict[str, Sdf.Layer] = {}
         self._chunk_refs = weakref.WeakSet()
 
@@ -882,7 +888,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def get_layer_file_name(self, layer: Sdf.Layer):
         return "_".join(layer.GetDisplayName().split("_")[:-1]) + ".usda"
 
-    def save_layer(self, c: ChunkHash, dirname: str | Path):
+    def save_layer(self, c: core.ChunkHash, dirname: str | Path):
         if not (layer := self.get_layer(c)):
             return None
 
@@ -936,7 +942,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self._root_layer = Sdf.Layer.CreateAnonymous("chunks")
         return Sdf.Find(self._root_layer.identifier)
 
-    def get_layer(self, c: "ChunkHash") -> Sdf.Layer | None:
+    def get_layer(self, c: "core.ChunkHash") -> Sdf.Layer | None:
         """
         Get a layer associated with the a chunk
 
@@ -949,7 +955,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
         return self.chunk_layers.get(c)
 
-    def get_or_create_layer(self, c: "ChunkCommon") -> Sdf.Layer | None:
+    def get_or_create_layer(self, c: "core.ChunkCommon") -> Sdf.Layer | None:
         """
         Get a layer similarly to get_layer(). Will create a new one if the layer does
         not already exists
@@ -1014,7 +1020,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         return layer
 
-    def is_muted(self, c: "ChunkHash") -> bool:
+    def is_muted(self, c: "core.ChunkHash") -> bool:
         """
         Check if a chunk layer is muted
 
@@ -1029,7 +1035,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return True
         return False
 
-    def add_layer(self, target_layer: Sdf.Layer, c: "ChunkCommon", index: int = 0) -> Sdf.Layer:
+    def add_layer(self, target_layer: Sdf.Layer, c: "core.ChunkCommon", index: int = 0) -> Sdf.Layer:
         """
         Add a layer to the stage and add a mapping from chunk c to the new layer.
 
@@ -1072,7 +1078,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
         self.chunk_layers.clear()
 
-    def clear_layer(self, layer_id: str | ChunkBase):
+    def clear_layer(self, layer_id: str | core.ChunkBase):
         """
         Clear a layer and remove from sublayer list
 
@@ -1144,7 +1150,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
     def _flags_changed(self, notice, sender):
         c = sender
-        if not isinstance(c, ChunkBase):
+        if not isinstance(c, core.ChunkBase):
             return
 
         if c not in self.chunk_layers:

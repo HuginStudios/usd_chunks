@@ -77,6 +77,7 @@ which is why the _Glb holds objects and modules seperately
 
 """
 
+import marshal
 import codecs
 import inspect
 import json
@@ -352,6 +353,17 @@ class SerializedFunction(SerializedObject):
 
 
 @attrs.define
+class SerializedLambda(SerializedObject):
+    """
+    A SerializedObject holding a lambda expr. Module is a string from what module the lambda is defined. closure is the closure values
+    """
+
+    lambda_code: bytes = attrs.field()
+    module: str = attrs.field()
+    closure: Dict = attrs.field()
+
+
+@attrs.define
 class SerializedFailed(SerializedObject):
     """
     Returned by ChunkEncoder when the encoding failed
@@ -504,7 +516,7 @@ def serialize_reference(ref, glb) -> Optional[SerializedReference]:
     return None
 
 
-def serialize_function(func: Callable, glb) -> SerializedFunction | SerializedMethod:
+def serialize_function(func: Callable, glb) -> SerializedFunction | SerializedMethod | SerializedLambda:
     """
     Serialize a function or method and return an appropriate SerializedObject. func must be
     a function or method. No checks is done to confirm...
@@ -515,6 +527,21 @@ def serialize_function(func: Callable, glb) -> SerializedFunction | SerializedMe
     Returns:
         SerializedFunction | SerializedMethod: A SerializedFunction or SerilalizedMethod
     """
+
+    if func.__closure__:
+        logger.warning(f"Function {func} is a closure function. The closure is saved as is")
+
+    if func.__name__ == "<lambda>":
+        closure = {}
+        # If the lambda expression is a closure, we need to store the closure cell_contents 
+        # in order to recreate them at de-serialization. The cell_contents will be serialized
+        # individually.
+        if func.__closure__:
+            for i, cell in enumerate(func.__closure__):
+                closure[func.__code__.co_freevars[i]] = cell.cell_contents
+
+        return SerializedLambda(marshal.dumps(func.__code__), func.__module__, closure)
+
     if inspect.ismethod(func):
         return SerializedMethod(hash(func.__self__), func.__name__)
 
@@ -822,19 +849,21 @@ def save_scene(
 
     serial = serialize_json(scene, False)
 
-    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED, compresslevel=4) as f:
-        f.writestr("scene.json", serial)
+    save_json(p, serial)
 
-        if include_serial:
-            for name, data in include_serial:
-                f.writestr(name, data)
+    # with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED, compresslevel=4) as f:
+    #     f.writestr("scene.json", serial)
 
-        if include_files:
-            for inc_file in include_files:
-                inc_p = Path(inc_file)
-                if not inc_p.exists():
-                    continue
-                f.write(inc_p)
+    #     if include_serial:
+    #         for name, data in include_serial:
+    #             f.writestr(name, data)
+
+    #     if include_files:
+    #         for inc_file in include_files:
+    #             inc_p = Path(inc_file)
+    #             if not inc_p.exists():
+    #                 continue
+    #             f.write(inc_p)
 
 
 def save_json(file: str | Path, data: str, include_files: Sequence[str] | None = None):
@@ -909,17 +938,17 @@ def load_file(file: str | Path) -> Optional[bytes]:
         logger.warning(f"Unsupported file extension of {file}")
         return
 
-    if ext == FileExtensions.SCENE:
-        # Load only the chunk scene from the archive. Although the archive may contain other files,
-        # those are not managed or recognized by default
-        try:
-            serial = load_scene_data(file, "scene.jsonc")
-        except KeyError:
-            serial = load_scene_data(file, "scene.json")
+    # if ext == FileExtensions.SCENE:
+    #     # Load only the chunk scene from the archive. Although the archive may contain other files,
+    #     # those are not managed or recognized by default
+    #     try:
+    #         serial = load_scene_data(file, "scene.jsonc")
+    #     except KeyError:
+    #         serial = load_scene_data(file, "scene.json")
 
-    else:
-        with open(file, "rb") as f:
-            serial = f.read()
+    with open(file, "rb") as f:
+        serial = f.read()
+    # else:
 
     if not serial:
         return
@@ -1206,6 +1235,32 @@ def decodeCallable(glb: _Glb, data) -> Callable | CallableConstructor | _Failed:
         except Exception:
             return CallableConstructor(data, glb)
         return res
+    except TypeError:
+        pass
+
+    try:
+        serial = SerializedLambda(**data)
+        try:
+            res = marshal.loads(serial.lambda_code)
+        except Exception:
+            return CallableConstructor(data, glb)
+
+        mod = glb.get_mod(serial.module)
+        if not mod:
+            mod = _import_module(serial.module)
+        if not mod:
+            return CallableConstructor(data, glb)
+
+        closure = []
+        if serial.closure:
+            for x in serial.closure.values():
+                obj = x
+                if isinstance(obj, (ClassConstructor, CallableConstructor)):
+                    obj = obj.construct()
+                closure.append(types.CellType(obj))
+
+        return types.FunctionType(res, mod.__dict__, "<lambda>", closure=tuple(closure))
+
     except TypeError:
         pass
 

@@ -529,7 +529,7 @@ class DagNode:
 
         node._graph_id._store = self._graph_id
 
-    def add_dependency(self, node: "DagNode", connect_reverse=True):
+    def add_dependency(self, node: "DagNode", connect_reverse=True) -> int:
         """
         Add a dependency (aka input) to this node. This will dirty self
 
@@ -537,7 +537,8 @@ class DagNode:
             node (DagNode): The new dependency to add
             connect_reverse (bool, optional): If the input node should connect this node to its output. Defaults to True.
         """
-        self._connections.inputs[self.next_key(self._connections.inputs)] = node
+        key = self.next_key(self._connections.inputs)
+        self._connections.inputs[key] = node
         self.set_graph_id(node)
 
         if connect_reverse:
@@ -553,6 +554,8 @@ class DagNode:
         while owner:
             owner._sort_key += 1 + node._sort_key
             owner = owner.get_owner_node()
+
+        return key
 
     def add_dependant(self, node: "DagNode"):
         """
@@ -584,14 +587,14 @@ class DagNode:
             node.dirty = True
             node.set_graph_id(self)
 
-    def get_inputs(self) -> Iterator["DagNode"]:
+    def get_inputs(self) -> Iterator[Tuple[int, "DagNode"]]:
         """
         Get the inputs (dependency) nodes of this node
 
         Returns:
             Iterator[DagNode]: An iterator for the input nodes
         """
-        return self._connections.inputs.values()
+        return self._connections.inputs.items()
 
     def get_input(self, index: int) -> "DagNode":
         """
@@ -718,7 +721,7 @@ class DagNode:
         Returns:
             bool: True if any dependency is dirty
         """
-        return any([x.dirty for x in self.get_inputs()])
+        return any([x.dirty for _, x in self.get_inputs()])
 
     def solve_inputs(self) -> Generator:
         """
@@ -728,7 +731,7 @@ class DagNode:
             Optional[ChunkNotice]: The result of the solve if successful, otherwise None
         """
         dirty_inputs = False
-        for node in filter(lambda x: x.dirty, self.get_inputs()):
+        for _, node in filter(lambda x: x[1].dirty, self.get_inputs()):
             if res := node.solve_inputs():
                 yield from res
 
@@ -774,16 +777,17 @@ class DagNode:
 
 class CallbackContainer(chunk_serial.Serializeable):
     """
-    A container for managing callbacks on the ChunkNoticePropagator. Some callbacks can be tagged private, or should be executed when a chunk is 
-    loaded. This is handled here rather than directly on the NoticeConnection objects as to not pollute that class. 
+    A container for managing callbacks on the ChunkNoticePropagator. Some callbacks can be tagged private, or should be executed when a chunk is
+    loaded. This is handled here rather than directly on the NoticeConnection objects as to not pollute that class.
 
     This is mostly to have an interface for managing private and non-private callbacks. Private callbcks will not be serialized and not copied between
-    ChunkNoticePropagators. When a propagator is serialized, callbacks that are created in __init__ should ideally not be serialized, as they will be recreated 
+    ChunkNoticePropagators. When a propagator is serialized, callbacks that are created in __init__ should ideally not be serialized, as they will be recreated
     when de-serializing. Hence, if creating callbacks in __init__, make sure to tag the callbacks as private to not get duplicate callbacks when de-serializing.
 
     Callbacks are stored in self.callbacks as a list of dicts. An entry of the list will have keys 'conn', 'on_create' and 'private', where conn is the NoticeConnection
     object
     """
+
     def __init__(self):
         super().__init__()
         self.callbacks: List[Dict[Literal["conn", "on_create", "private"], Any]] = []
@@ -865,7 +869,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
 
     def serialize(self, glb):
         if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
-            res.attributes["dependencies"] = list(self.get_dependencies())
+            res.attributes["dependencies"] = [node for _, node in self.get_dependencies()]
         return res
 
     def post_serial(self, owner):
@@ -1065,21 +1069,26 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         msg += "====== FINISHED ======\n"
         logger.debug(msg)
 
-    def add_dependency(self, input: "ChunkNoticePropagator"):
+    def add_dependency(self, input: "ChunkNoticePropagator") -> int:
         """
         Add an input. This propagator will not 'evaulate' until all inputs are solved
 
         Args:
             input (ChunkNoticePropagator): The node to add as input
+
+        Returns:
+            int: The dependency index
         """
-        self.get_dag_node().add_dependency(input.get_dag_node())
+        return self.get_dag_node().add_dependency(input.get_dag_node())
 
     @overload
     def get_dependency(self, index: int = 0) -> Optional["ChunkNoticePropagator"]: ...
     @overload
     def get_dependency(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> _T: ...
 
-    def get_dependency(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> Optional["ChunkNoticePropagator"] | _T:
+    def get_dependency(
+        self, index: int = 0, predicate: Optional[Predicate[_T]] = None
+    ) -> Optional["ChunkNoticePropagator"] | _T:
         """
         Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
 
@@ -1098,14 +1107,21 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         raise ValueError(f"Predicate {predicate} failed for get_dependency({index})")
 
     @overload
-    def get_dependencies(self) -> List["ChunkNoticePropagator"]: ...
+    def get_dependencies(self) -> List[Tuple[int, "ChunkNoticePropagator"]]: ...
     @overload
-    def get_dependencies(self, predicate: Optional[Predicate[_T]] = None) -> List[_T]: ...
+    def get_dependencies(self, predicate: Optional[Predicate[_T]] = None) -> List[Tuple[int, _T]]: ...
 
     def get_dependencies(self, predicate: Optional[Predicate[_T]] = None):
+        """
+        Get dependencies of this node. If no predicate is supplied, returns all dependencies.
+
+        Returns:
+            List[Tuple[int, "ChunkNoticePropagator"]]: All inputs
+            List[Tuple[int, _T]]: The inputs matching the predicate
+        """
         if not predicate:
-            return [x.propagator for x in self.get_dag_node().get_inputs() if x.propagator]
-        return [x.propagator for x in self.get_dag_node().get_inputs() if predicate(x.propagator)]
+            return [(x, y.propagator) for x, y in self.get_dag_node().get_inputs() if y.propagator]
+        return [(x, y.propagator) for x, y in self.get_dag_node().get_inputs() if predicate(y.propagator)]
 
     @overload
     def get_dependent(self, index: int = 0) -> Optional["ChunkNoticePropagator"]: ...
@@ -1113,7 +1129,9 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     @overload
     def get_dependent(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> _T: ...
 
-    def get_dependent(self, index: int = 0, predicate: Optional[Predicate[_T]] = None) -> Optional["ChunkNoticePropagator"] | _T:
+    def get_dependent(
+        self, index: int = 0, predicate: Optional[Predicate[_T]] = None
+    ) -> Optional["ChunkNoticePropagator"] | _T:
         """
         Get an input of this propagator. The input is found from the managed DagNode. Return None if not found
 
@@ -1334,7 +1352,9 @@ class NoticeConnection(chunk_serial.Serializeable):
 
         self._listener: Optional[Tf.Notice.Listener] = None
 
-        if inspect.ismethod(method):
+        if method and method.__name__ == "<lambda>":
+            self._method = method
+        elif inspect.ismethod(method):
             self._method: Callable = weakref.WeakMethod(method, self._connection_broke)
         else:
             self._method: Callable = weakref.ref(method, self._connection_broke)

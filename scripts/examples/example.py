@@ -276,6 +276,14 @@ def main():
 
     myChunk.add_params([lineA, lineB])
 
+    # A value can be connected using the connect_value wrapper function. Internally, this does:
+    # idx = sliderB.add_dependency(sliderA)
+    # sliderB.set_function("value", lambda x, _: x.get_dependency(idx, is_inst(type(other))).value)
+    sliderA = chunk.Slider("sliderA")
+    sliderB = chunk.Slider("sliderB")
+    sliderB.connect_value(sliderA)
+    myChunk.add_params([sliderA, sliderB])
+
     return myChunk
 
 
