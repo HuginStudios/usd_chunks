@@ -528,9 +528,6 @@ def serialize_function(func: Callable, glb) -> SerializedFunction | SerializedMe
         SerializedFunction | SerializedMethod: A SerializedFunction or SerilalizedMethod
     """
 
-    if func.__closure__:
-        logger.warning(f"Function {func} is a closure function. The closure is saved as is")
-
     if func.__name__ == "<lambda>":
         closure = {}
         # If the lambda expression is a closure, we need to store the closure cell_contents 
@@ -849,21 +846,19 @@ def save_scene(
 
     serial = serialize_json(scene, False)
 
-    save_json(p, serial)
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED, compresslevel=4) as f:
+        f.writestr("scene.json", serial)
 
-    # with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED, compresslevel=4) as f:
-    #     f.writestr("scene.json", serial)
+        if include_serial:
+            for name, data in include_serial:
+                f.writestr(name, data)
 
-    #     if include_serial:
-    #         for name, data in include_serial:
-    #             f.writestr(name, data)
-
-    #     if include_files:
-    #         for inc_file in include_files:
-    #             inc_p = Path(inc_file)
-    #             if not inc_p.exists():
-    #                 continue
-    #             f.write(inc_p)
+        if include_files:
+            for inc_file in include_files:
+                inc_p = Path(inc_file)
+                if not inc_p.exists():
+                    continue
+                f.write(inc_p)
 
 
 def save_json(file: str | Path, data: str, include_files: Sequence[str] | None = None):
@@ -938,17 +933,16 @@ def load_file(file: str | Path) -> Optional[bytes]:
         logger.warning(f"Unsupported file extension of {file}")
         return
 
-    # if ext == FileExtensions.SCENE:
-    #     # Load only the chunk scene from the archive. Although the archive may contain other files,
-    #     # those are not managed or recognized by default
-    #     try:
-    #         serial = load_scene_data(file, "scene.jsonc")
-    #     except KeyError:
-    #         serial = load_scene_data(file, "scene.json")
-
-    with open(file, "rb") as f:
-        serial = f.read()
-    # else:
+    if ext == FileExtensions.SCENE:
+        # Load only the chunk scene from the archive. Although the archive may contain other files,
+        # those are not managed or recognized by default
+        try:
+            serial = load_scene_data(file, "scene.jsonc")
+        except KeyError:
+            serial = load_scene_data(file, "scene.json")
+    else:
+        with open(file, "rb") as f:
+            serial = f.read()
 
     if not serial:
         return
