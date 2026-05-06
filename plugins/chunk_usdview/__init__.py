@@ -11,7 +11,7 @@ from usd_chunks import chunk_registry, chunk_core, chunk_serial
 from plugins import chunk_qt
 
 from typing import List
-from collections import defaultdict
+
 
 class UsdviewScene(chunk_core.SceneSender):
     """
@@ -31,13 +31,13 @@ class UsdviewScene(chunk_core.SceneSender):
         super().__init__()
 
     def request_save(self) -> bool:
-        reg = chunk_registry.ChunkRegistry()
+        reg = chunk_registry.ChunkRegistry().scene
 
-        if not chunk_qt.confirm_dial("Save scene?"):
+        if not chunk_qt.confirm_dial("Save chunk scene?"):
             return True
 
         flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+        if file := chunk_qt.file_dial(flt, create_new=True):
             reg.export_scene(file)
             return True
 
@@ -84,25 +84,7 @@ class ChunksPluginContainer(PluginContainer):
 
     def reloadChunks(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
-
-        loaded_config_names = defaultdict(int)
-        for c in reg.scene.get_chunks():
-            if conf := c.get_config():
-                loaded_config_names[conf.module] += 1
-        
-        reg.scene.clear()
-
-        for mod in reg.registered_modules.values():
-            # mod.unload()
-            if mod.loaded:
-                mod.unload()
-            
-            for i in range(loaded_config_names.get(mod.module_name, 0)):
-                if i == 0:
-                    chunks = mod.load()
-                else:
-                    chunks = mod.create()
-                reg.scene.add_chunks(chunks)
+        reg.reload_modules()
 
     def saveLayers(self, usdviewApi):
         reg = chunk_registry.ChunkLayerManager()
@@ -113,29 +95,27 @@ class ChunksPluginContainer(PluginContainer):
         reg.save_layers(path)
 
     def saveScene(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry()
+        reg = chunk_registry.ChunkRegistry().scene
 
         if reg.get_scene_file():
             return reg.save_scene()
 
         flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+        if file := chunk_qt.file_dial(flt, create_new=True):
             reg.export_scene(file)
-            reg.set_scene_file(file)
 
     def saveSceneAs(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry()
+        reg = chunk_registry.ChunkRegistry().scene
 
         flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+        if file := chunk_qt.file_dial(flt, create_new=True):
             reg.export_scene(file)
-            reg.set_scene_file(file)
 
     def openScene(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry()
+        reg = chunk_registry.ChunkRegistry().scene
 
         flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=False):
+        if file := chunk_qt.file_dial(flt, create_new=False):
             reg.open_scene(file)
 
     def importChunk(self, usdviewApi):
@@ -147,7 +127,7 @@ class ChunksPluginContainer(PluginContainer):
         )
 
         flt = " ".join([f"*{x}" for x in exts])
-        if file := chunk_qt.file_dial(filter=flt, create_new=False):
+        if file := chunk_qt.file_dial(flt, create_new=False):
             reg.import_chunk(file)
 
     def registerPlugins(self, plugRegistry, plugCtx) -> None:

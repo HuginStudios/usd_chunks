@@ -44,14 +44,14 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
 
 ```
 
-the **setup_chunk_widget()** function is implemented by ChunkParamWidgetBase and will call **set_value(), set_label(), set_icon()** and **set_set_param_layout()** respectively, each with the corresponding arguments taken from the param.
+the **setup_chunk_widget()** function is implemented by [ChunkParamWidgetBase][usd_chunks.chunk_core.ChunkParamWidgetBase] and will call **set_value(), set_label(), set_icon()** and **set_set_param_layout()** respectively, each with the corresponding arguments taken from the param.
 
 The get_* and set_* functions of a ChunkParamWidgetBase should set/get the value of the ui widget only. Any changes to the value of the widget should trigger **value_changed()** of ChunkParamWidgetBase. The **value_changed()** function is concrete and responsible for setting the value back to the actual parameter.
 
 The handle to the chunk param is a weakref.ref() object, meaning it may be set to None in case the param has beed deleted. Hence, it's adviced to check if the param is None prior to doing anything with it. 
 
 ### ChunkWidgetFactoryBase
-A ui implementation may want to create a subclass of **ChunkWidgetFactoryBase** for mapping various params to their respective ui widgets. An example from chunk_qt:
+A ui implementation may want to create a subclass of [ChunkWidgetFactoryBase][usd_chunks.chunk_core.ChunkWidgetFactoryBase] for mapping various params to their respective ui widgets. An example from chunk_qt:
 ``` py
 class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
     widget_map: Dict[ChunkFlags.ParamType, type[QtWidgets.QWidget]] = {
@@ -102,12 +102,10 @@ A chunk Group parameter have an optional widget_factory member, that can dictate
 
 ## Groups
 
-Groups and Chunks may be treated equally, with the exception that Chunks should not themselves be children of other Chunks or Groups. Other than this, they are identical.
-
 All chunk objects (chunks, groups, params) are dynamic, meaning they may be created or deleted at runtime. This should be taken in to consideration when implementing a ui plugin. The notice system can help with this, as relevant creation / deletion notices are sent whenever a chunk object should be added or removed from the ui. 
 
 ### ChunkContainerWidgetBase
-Similarly to the ChunkParamWidget, group widget classes can subclass the abstract **ChunkContainerWidgetBase** class which provides default implementations for much of the chunk->widget communication. However, any ui library specific functionality need be implemented by the ui plugin. See the chunk_qt ContainerWidget for an example.
+Similarly to the ChunkParamWidget, group widget classes can subclass the abstract [ChunkContainerWidgetBase][usd_chunks.chunk_core.ChunkContainerWidgetBase] class which provides default implementations for much of the chunk->widget communication. However, any ui library specific functionality need be implemented by the ui plugin. See the chunk_qt ContainerWidget for an example.
 
 ## CHUNK_LOADED
 A ui implementation may listen to the creation of chunks using the CHUNK_LOADED notice. When recieved, the ui implementation should create the chunk and all its parameters. 
@@ -132,7 +130,7 @@ In any case, using the chunks for any application require some initialization fr
     chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
 ```
 
-The UsdviewScene is an implementation of the abstract **chunk_notice.SceneSender** class, which provides access to the scene as well as sends notices upon selection changes. Any application plugin should provide a similar scene proxy. This is important as some chunks will rely on prim selections, or other scene specific functionality. The scene proxy also provide a handle to the UsdStage, which the underlying application usually provides.
+The UsdviewScene is an implementation of the abstract [SceneSender][usd_chunks.chunk_core.SceneSender] class, which provides access to the scene as well as sends notices upon selection changes. Any application plugin should provide a similar scene proxy. This is important as some chunks will rely on prim selections, or other scene specific functionality. The scene proxy also provide a handle to the UsdStage, which the underlying application usually provides.
 
 The ChunkRegistry is responsible for finding and loading any chunks in the environment, and the ChunkLayerManager is responsible for managing the SdfLayers of the chunks. Both of these need to be initialized in order to get proper functionality
 

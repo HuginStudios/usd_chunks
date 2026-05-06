@@ -5,12 +5,13 @@ def build(myChunk: chunk.Chunk, notice: chunk_notice.ParamChangeNotice, sender):
     dynGrp = myChunk.get_param("dyn_grp", chunk.is_group)
     ppParm = myChunk.get_param("prim", chunk.is_inst(chunk.LineEdit))
 
-    for grp in dynGrp.get_my_params():
-        grp.request_delete()
-
     prims = ppParm.get_prims()
+
     if not prims:
         return
+
+    for grp in dynGrp.get_my_params():
+        grp.request_delete()
 
     for prim in prims:
         prim_grp = chunk.Group(prim.GetName())
@@ -71,16 +72,13 @@ def main():
 
     myChunk = chunk.Chunk("Dynamic")
 
+    dynGroup = chunk.Group("dyn_grp", flags=chunk.ChunkFlags.GroupFlags.FRAMED)
     primSel = chunk.LineEdit(
         "prim", flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION
     )
     myChunk.add_param(primSel)
-
-    myChunk.add_callback(build, primSel)
-    myChunk.add_callback(build, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
-
-    dynGroup = chunk.Group("dyn_grp", flags=chunk.ChunkFlags.GroupFlags.FRAMED)
     myChunk.add_param(dynGroup)
+    myChunk.add_callback(build, sender=primSel)
 
     return myChunk
 
