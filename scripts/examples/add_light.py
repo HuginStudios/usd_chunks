@@ -1,5 +1,6 @@
 import re
 from usd_chunks import chunk, chunk_notice, chunk_core
+from pxr import UsdGeom
 
 def show_attribute(prim, _chunk):
     attr_grp = _chunk.get_param("attr_grp", chunk.is_group)
@@ -7,9 +8,6 @@ def show_attribute(prim, _chunk):
     # clean params.
     for grp in attr_grp.get_my_params():
         grp.request_delete()
-
-    prim_grp = chunk.Group("Attributes")
-    attr_grp.add_param(prim_grp)
 
     # generate params
     attributes = prim.GetAttributes()
@@ -22,7 +20,7 @@ def show_attribute(prim, _chunk):
             param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
 
         ns = attr.GetNamespace()
-        tgt_grp = prim_grp if not ns else groups.get(ns)
+        tgt_grp = attr_grp if not ns else groups.get(ns)
 
         if not tgt_grp:
             tgt_grp = chunk.Group(
@@ -32,7 +30,7 @@ def show_attribute(prim, _chunk):
             if ns and ns != "inputs":
                 tgt_grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
 
-            prim_grp.add_param(tgt_grp)
+            attr_grp.add_param(tgt_grp)
             groups[ns] = tgt_grp
 
         if param:
@@ -48,14 +46,14 @@ def show_attribute(prim, _chunk):
             param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
 
         ns = rel.GetNamespace()
-        tgt_grp = prim_grp if not ns else groups.get(ns)
+        tgt_grp = attr_grp if not ns else groups.get(ns)
 
         if not tgt_grp:
             tgt_grp = chunk.Group(
                 ns,
                 flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
             )
-            prim_grp.add_param(tgt_grp)
+            attr_grp.add_param(tgt_grp)
             groups[ns] = tgt_grp
 
         if param and tgt_grp:
@@ -116,6 +114,9 @@ def execute(owner, notice, sender):
 
     prim_path = get_unique_path(stage, prim_path)
     prim = stage.DefinePrim(prim_path, light_type)
+
+    attr = (UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr())
+    attr.Set(UsdGeom.Tokens.inherited)
     
     if prim.GetPath().pathString != prim_path:
         _chunk.get_param("primpath_location").value = prim.GetPath().pathString

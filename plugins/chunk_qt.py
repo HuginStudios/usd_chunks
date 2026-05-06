@@ -343,7 +343,6 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
     def set_value(self, value: bool):
         return self.setChecked(value)
 
-
 class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushButton):
     def __init__(self, param: chunk.Button):
         super().__init__(param)
@@ -511,21 +510,17 @@ class ContainerWidget(
     ):
         self.animation_duration = 300
         self._animation_value = 0
+        self._depth = 0
         super().__init__(group, parent=parent)
 
     def build_collapsable(self):
         self.content = QtWidgets.QFrame()
         self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
 
-        # self.content_layout = QtWidgets.QFormLayout()
-        # self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
-        # self.content_layout.setContentsMargins(2, 1, 2, 1)
-        # self.content_layout.setHorizontalSpacing(0)
-        # self.content.setLayout(self.content_layout)
-
-        self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
-        self.content_layout.setContentsMargins(2, 1, 2, 1)
-        self.content_layout.setSpacing(0)
+        self.content_layout = QtWidgets.QFormLayout()
+        self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
+        self.content_layout.setContentsMargins(2, 2, 2, 10)
+        self.content_layout.setHorizontalSpacing(1)
         self.content.setLayout(self.content_layout)
 
         # Setup minimize/maximize button
@@ -557,6 +552,22 @@ class ContainerWidget(
         self.__layout__.addWidget(self.content)
 
         self.setLayout(self.__layout__)
+        self._update_group_depth()
+
+    _GROUP_COLORS = ("#303030","#333333")
+
+    def _update_group_depth(self):
+        depth = len(self.group.get_identifier().split("."))
+        bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
+        self._group_bg = bg
+
+        self.minimize_button.setStyleSheet(
+            f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
+        )
+        self.content.setStyleSheet(
+            f"QFrame {{ background-color: {bg};}}"
+            f"border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
+        )
 
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
@@ -661,6 +672,19 @@ class ContainerWidget(
         self.minimize_button.setArrowType(arrow_type)
         self.toggle_anim.setDirection(direction)
         self.toggle_anim.start()
+
+        if hasattr(self, '_group_bg'):
+            bg = self._group_bg
+            if checked:
+                self.minimize_button.setStyleSheet(
+                    f"QToolButton {{ background-color: {bg}; "
+                    f"border-top-left-radius: 4px; border-top-right-radius: 4px; "
+                    f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }}"
+                )
+            else:
+                self.minimize_button.setStyleSheet(
+                    f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
+                )
 
     def delete_self(self):
         self.setParent(None)
@@ -842,12 +866,18 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
         registry = chunk_registry.ChunkRegistry()
-
         self.setStyleSheet("""
+        QCheckBox {
+            background: transparent;
+        }
         QFrame{
             background-color: #333333;
+            border: none;
         }
         QComboBox{
+            background-color: #202020;
+        }
+        QLineEdit{
             background-color: #202020;
         }
         QToolButton{
@@ -896,14 +926,14 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         }
 
         QSlider::handle {
-            background: #808080;
+            background: #eeeeee;
             height: 10px;
             width: 10px;
             border-radius: 5px;
             margin: -3px 0px;
         }
         QSlider::handle:hover {
-            background: #999999;
+            background: #ffffff;
             height: 10px;
             width: 10px;
             border-radius: 5px;
@@ -1251,3 +1281,4 @@ def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
 
     module_dock.setWidget(ChunkWidgetDocker(parent=module_dock))
     parent_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, module_dock)
+    parent_window.resizeDocks([module_dock], [300], QtCore.Qt.Orientation.Horizontal)
