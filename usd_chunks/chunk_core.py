@@ -1980,6 +1980,22 @@ class ChunkCommon(AttributesBase):
         default=None, init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
     )
 
+    def get_identifier(self) -> str:
+        """
+        Get an identifier for this chunk object. The identifier is a dot(.) separated path, from the top-most
+        owner, usually the ChunkBase, to this object. F.e. MyChunk.SomeGroup.MyParam
+
+        Returns:
+            str: The string identifier for this chunk object
+        """
+        names = [self.name]
+        owner = self.get_owner()
+        while owner:
+            if isinstance(owner, ChunkCommon):
+                names.append(owner.name)
+            owner = owner.get_owner()
+        return ".".join(reversed(names))
+
     def get_chunk(self) -> Optional["ChunkBase"]:
         """
         Get the owning Chunk if it exists.

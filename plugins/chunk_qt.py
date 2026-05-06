@@ -487,12 +487,13 @@ class ContainerWidget(
         self.__layout__.addWidget(self.content)
 
         self.setLayout(self.__layout__)
+        self._update_group_depth()
 
-    _GROUP_COLORS = ("#333333","#303030")
+    _GROUP_COLORS = ("#303030","#333333")
 
-    def _set_group_depth(self, depth: int):
-        self._depth = depth
-        bg = self._GROUP_COLORS[(depth - 1) % 2]
+    def _update_group_depth(self):
+        depth = len(self.group.get_identifier().split("."))
+        bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
         self._group_bg = bg
 
         self.minimize_button.setStyleSheet(
@@ -502,12 +503,6 @@ class ContainerWidget(
             f"QFrame {{ background-color: {bg};}}"
             f"border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
-
-        for i in range(self.content_layout.rowCount()):
-            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-            if item and (w := item.widget()):
-                if isinstance(w, LabeledWidget) and isinstance(w.widget, ContainerWidget):
-                    w.widget._set_group_depth(depth + 1)
 
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
@@ -642,9 +637,6 @@ class ContainerWidget(
             labeled.update_label(label)
 
         self.content_layout.addWidget(labeled)
-
-        if isinstance(widget, ContainerWidget):
-            widget._set_group_depth(self._depth + 1)
 
         if self.group.has_flag(ChunkFlags.GroupFlags.LIST):
             del_icon = QtGui.QIcon(str(chunk_resources.get_icon("remove")))
