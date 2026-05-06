@@ -3287,11 +3287,23 @@ class ChunkBase(ChunkGroupBase):
             private=True,
         )
         self.add_callback(
+            self.start_gizmo,
+            notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE,
+            send_on_create=False,
+            private=True,
+        )
+        self.add_callback(
             self.trigger_on_create_callbacks,
             notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED,
             send_on_create=False,
             private=True,
         )
+
+    def start_gizmo(self, notice=None, sender=None):
+        self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_START)
+
+    def stop_gizmo(self, notice=None, sender=None):
+        self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_STOP)
 
     def disable(self, notice=None, sender=None):
         self.set_state(ChunkFlags.State.DISABLED)

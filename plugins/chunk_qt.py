@@ -879,13 +879,98 @@ class ChunkArea(QtWidgets.QScrollArea):
         self.setWidgetResizable(True)
 
 
+class EditableTabBar(QtWidgets.QTabBar):
+    tabAdded = QtCore.Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        # self._editor = QtWidgets.QLineEdit(self)
+        # self._editor.setWindowFlags(QtCore.Qt.WindowType.Popup)
+        # self._editor.setFocusProxy(self)
+        # self._editor.editingFinished.connect(self.handleEditingFinished)
+        # self._editor.installEventFilter(self)
+
+        self._btn = QtWidgets.QPushButton("+", self)
+        self._btn.clicked.connect(self.add_tab_clicked)
+
+        self._btn.show()
+
+    def add_tab_clicked(self):
+        self.tabAdded.emit(self.addTab(f"Tab{self.count()}"))
+
+    def tabInserted(self, index: int) -> None:
+        super().tabInserted(index)
+        if index > 0:
+            print(index)
+            self.setTabButton(index-1, self.ButtonPosition.RightSide, None)
+
+        self.setTabButton(index, self.ButtonPosition.RightSide, self._btn)
+        self.move_btn()
+    
+    def move_btn(self):
+        self._btn.move(self.mapToGlobal(self.rect().bottomRight()))
+
+    # def eventFilter(self, widget, event):
+    #     if (
+    #         event.type() == QtCore.QEvent.Type.MouseButtonPress
+    #         and not self._editor.geometry().contains(event.globalPos())
+    #     ) or (event.type() == QtCore.QEvent.Type.KeyPress and event.key() == QtCore.Qt.Key.Key_Escape):
+    #         self._editor.hide()
+    #         return True
+
+    #     return super().eventFilter(widget, event)
+
+    # def mouseDoubleClickEvent(self, event):
+    #     index = self.tabAt(event.pos())
+    #     if index >= 0:
+    #         self.editTab(index)
+
+    # def editTab(self, index):
+    #     if self.shape() in [
+    #         QtWidgets.QTabBar.Shape.RoundedEast,
+    #         QtWidgets.QTabBar.Shape.RoundedWest,
+    #         QtWidgets.QTabBar.Shape.TriangularEast,
+    #         QtWidgets.QTabBar.Shape.TriangularWest,
+    #     ]:
+    #         rect = self.tabRect(index)
+    #         h = rect.height()
+    #         rect.setHeight(rect.width())
+    #         rect.setWidth(h)
+
+    #     else:
+    #         rect = self.tabRect(index)
+
+    #     self._editor.move(self.mapToGlobal(rect.topLeft()))
+    #     self._editor.setText(self.tabText(index))
+
+    #     self._editor.setFixedSize(rect.size())
+    #     if not self._editor.isVisible():
+    #         self._editor.show()
+
+    # def handleEditingFinished(self):
+    #     index = self.currentIndex()
+    #     if index >= 0:
+    #         self._editor.hide()
+    #         self.setTabText(index, self._editor.text())
+
+    
+
+
 class ChunkTabWidget(QtWidgets.QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        self.tab_bar = EditableTabBar(self)
+        self.setTabBar(self.tab_bar)
+        # self.tab_bar.tabAdded.connect(self.tab_added_callback)
+        
         self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
-
         self.setMinimumWidth(200)
+        self.addTab(ChunkArea(self), "chunks")
+    
+    # def tab_added_callback(self, idx):
+
 
     def update_tab_position(self):
         if self.height() > self.width():
@@ -913,6 +998,9 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
         chunk_registry.ChunkRegistry().scene.add_chunks(chunks)
 
+    def add_widget_to_tab(self, widget, tabidx=-1):
+        self.tabBar()
+
 
 class ChunkWidgetDocker(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -922,12 +1010,6 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._chunk_loaded_listener = chunk_notice.NoticeConnection(
             self._loaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
         )
-        self._chunk_unloaded_listener = chunk_notice.NoticeConnection(
-            self._unloaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_UNLOADED, globally=True
-        )
-
-    def _unloaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
-        pass
 
     def _loaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
         """Called whenever CHUNK_LOADED notice was recieved - will in turn add a new chunk widget
@@ -940,8 +1022,8 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
     def build(self):
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.MinimumExpanding)
-        self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
+
         registry = chunk_registry.ChunkRegistry()
         self.setStyleSheet("""
         QCheckBox {
@@ -1061,19 +1143,14 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         else:
             return None
 
-        category = widget.get_category()
-        if category not in self.chunk_tabs.keys():
-            self.chunk_tabs[category] = ChunkArea(self)
-            self.tab_widget.addTab(self.chunk_tabs[category], category)
+        # category = widget.get_category()
+        # if category not in self.chunk_tabs.keys():
 
-        self.chunk_tabs[category].flow.addWidget(widget)
+        # idx = self.tab_widget.currentIndex()
+        # print(idx)
 
-        # When a chunk is created, switch to the relevant tab category
-        tab_bar = self.tab_widget.tabBar()
-        for i in range(tab_bar.count()):
-            if tab_bar.tabText(i) == category:
-                tab_bar.setCurrentIndex(i)
-                break
+        # self.chunk_tabs[idx].flow.addWidget(widget)
+        self.tab_widget.add_widget_to_tab(widget)
 
         return widget
 
