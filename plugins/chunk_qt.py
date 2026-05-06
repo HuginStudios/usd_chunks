@@ -517,10 +517,9 @@ class ContainerWidget(
         self.content = QtWidgets.QFrame()
         self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
 
-        self.content_layout = QtWidgets.QFormLayout()
-        self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
+        self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
         self.content_layout.setContentsMargins(2, 2, 2, 10)
-        self.content_layout.setHorizontalSpacing(1)
+        self.content_layout.setSpacing(1)
         self.content.setLayout(self.content_layout)
 
         # Setup minimize/maximize button
