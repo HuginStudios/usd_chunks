@@ -21,6 +21,19 @@ Do **not** refactor wiring logic (deferred per ADR-0001).
 - [ ] `MENU_STYLE` and `PANEL_STYLE` are module-level constants (not re-defined inside methods)
 - [ ] No commented-out code blocks remain
 - [ ] All existing tests still pass
+- [ ] Progress is printed per section in this format:
+
+```
+── Standardizing graph_widget.py ─────────────────
+  [1/4] Style constants extracted     ✓
+  [2/4] Type hints added              ✓  · 3 lambdas left untyped (Qt slots)
+  [3/4] Deferred imports moved        ✓
+  [4/4] Dead code removed             ✓
+── Tests ─────────────────────────────────────────
+  37 passed
+```
+
+Flag any non-obvious decision with `·` and a brief reason. One line per step maximum.
 
 ## Blocked by
 

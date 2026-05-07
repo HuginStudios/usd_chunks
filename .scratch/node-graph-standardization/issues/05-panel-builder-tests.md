@@ -21,6 +21,17 @@ Scenarios to cover:
 - [ ] Scenarios 1–3 pass in the existing headless test environment
 - [ ] Scenario 4 is present and either passes or skips gracefully with an informative `pytest.skip` message
 - [ ] All existing tests still pass
+- [ ] Progress is printed per scenario in this format:
+
+```
+── Adding panel builder tests ────────────────────
+  [1/4] Promo panel with promotions   ✓
+  [2/4] Promo panel empty             ✓
+  [3/4] Chunk panel — no plugin       ✓
+  [4/4] Chunk panel — real chunk      skipped (plugins.chunk_qt unavailable)
+── Tests ─────────────────────────────────────────
+  40 passed · 1 skipped
+```
 
 ## Blocked by
 

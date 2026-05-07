@@ -18,6 +18,16 @@ Use the existing `_StubWidget`, `node_graph`, and `stage` fixtures; no new fixtu
 - [ ] Test: `run_from(B)` does not re-execute node A when A is not upstream of B
 - [ ] Test: promoted `default_value` is visible in inner node's property after `_exec_group`
 - [ ] All tests pass
+- [ ] Progress is printed per scenario in this format:
+
+```
+── Adding GraphExecutor integration tests ────────
+  [1/3] Error propagation test        ✓
+  [2/3] run_from subtree scoping test ✓
+  [3/3] Group promoted value test     ✓
+── Tests ─────────────────────────────────────────
+  40 passed
+```
 
 ## Blocked by
 

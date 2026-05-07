@@ -33,7 +33,18 @@ Register `_property_panel` in `CONTEXT.md` as **PropertyPanelFactory** once the 
 - [ ] A test in `test_panel_builder.py` calls `build_node_panel` with a plain `UsdNodeBase` subclass and asserts rows are created
 - [ ] All existing tests still pass
 - [ ] `CONTEXT.md` updated with **PropertyPanelFactory** entry
+- [ ] Progress is printed per step in this format:
+
+```
+── Extracting PropertyPanelFactory ───────────────
+  [1/4] _property_panel.py created    ✓
+  [2/4] build_node_panel implemented  ✓  · 6 property-type handlers
+  [3/4] _on_node_selected refactored  ✓  · 230 → 18 lines
+  [4/4] CONTEXT.md updated            ✓
+── Tests ─────────────────────────────────────────
+  41 passed
+```
 
 ## Blocked by
 
-- `.scratch/node-graph-standardization/issues/03-standardize-graph-widget.md` — file should be tidy before the surgical extraction
+- `.scratch/node-graph-standardization/issues/03-standardize-graph-widget.md` — file should be tidy before the surgical extraction.

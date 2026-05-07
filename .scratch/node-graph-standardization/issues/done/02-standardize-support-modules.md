@@ -20,6 +20,20 @@ Do not alter logic.
 - [ ] Every public function and method has a return-type annotation
 - [ ] No commented-out `print` or debug lines remain
 - [ ] All existing tests still pass
+- [ ] Progress is printed per file in this format:
+
+```
+── Standardizing support modules ─────────────────
+  [1/5] _neon_theme.py      ✓
+  [2/5] _graph_export.py    ✓
+  [3/5] _graph_ui.py        ✓  · 2 inner classes left untyped (Qt subclasses)
+  [4/5] _graph_layout.py    ✓
+  [5/5] graph_host.py       ✓
+── Tests ─────────────────────────────────────────
+  37 passed
+```
+
+Flag any non-obvious decision with `·` and a brief reason. One line per file maximum.
 
 ## Blocked by
 
