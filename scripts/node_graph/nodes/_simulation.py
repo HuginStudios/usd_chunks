@@ -217,6 +217,8 @@ class RBDSolverNode(UsdNodeBase):
 
         # Get prototype bbox for collision shape
         half_extents = [0.5, 0.5, 0.5]
+        proto_mesh_pts = None
+        proto_mesh_idx = None
         proto_targets = instancer.GetPrototypesRel().GetTargets()
         if proto_targets:
             proto_prim = stage.GetPrimAtPath(proto_targets[0])
@@ -227,6 +229,10 @@ class RBDSolverNode(UsdNodeBase):
                 if not rng.IsEmpty():
                     sz = rng.GetMax() - rng.GetMin()
                     half_extents = [sz[0] / 2, sz[1] / 2, sz[2] / 2]
+                if shape_type == "Convex Hull":
+                    proto_mesh_pts, proto_mesh_idx = _extract_mesh_data(proto_prim)
+        if shape_type == "Convex Hull" and proto_mesh_pts is None:
+            print("[RBDSolver] Convex Hull: no mesh points in prototype, falling back to Box")
 
         # Setup PyBullet — substep timestep so N steps == 1 frame
         p.connect(p.DIRECT)
@@ -262,6 +268,11 @@ class RBDSolverNode(UsdNodeBase):
 
             if shape_type == "Sphere":
                 col_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=max(he))
+            elif shape_type == "Convex Hull" and proto_mesh_pts is not None:
+                kwargs = {"meshScale": [sc[0], sc[1], sc[2]], "vertices": proto_mesh_pts}
+                if proto_mesh_idx is not None:
+                    kwargs["indices"] = proto_mesh_idx
+                col_shape = p.createCollisionShape(p.GEOM_MESH, **kwargs)
             else:
                 col_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=he)
 
@@ -372,6 +383,14 @@ class RBDSolverNode(UsdNodeBase):
         body_friction = friction * _variance_multiplier(rng_inst, friction_var)
         body_restitution = restitution * _variance_multiplier(rng_inst, restitution_var)
 
+        # Extract mesh data for convex hull before starting PyBullet
+        single_mesh_pts = None
+        single_mesh_idx = None
+        if shape_type == "Convex Hull":
+            single_mesh_pts, single_mesh_idx = _extract_mesh_data(prim)
+            if single_mesh_pts is None:
+                print("[RBDSolver] Convex Hull: no mesh points found, falling back to Box")
+
         # Setup PyBullet — substep timestep so N steps == 1 frame
         p.connect(p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -382,6 +401,11 @@ class RBDSolverNode(UsdNodeBase):
         # Create rigid body
         if shape_type == "Sphere":
             col_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=max(half_extents))
+        elif shape_type == "Convex Hull" and single_mesh_pts is not None:
+            kwargs = {"meshScale": [1.0, 1.0, 1.0], "vertices": single_mesh_pts}
+            if single_mesh_idx is not None:
+                kwargs["indices"] = single_mesh_idx
+            col_shape = p.createCollisionShape(p.GEOM_MESH, **kwargs)
         else:
             col_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=half_extents)
 
@@ -589,6 +613,23 @@ def _apply_forces(p, body: int, body_index: int, step: int, force_dicts: list) -
             p.applyExternalForce(body, -1, [fx, fy, fz], [0, 0, 0], p.WORLD_FRAME)
         else:
             print(f"[RBDSolver] Unknown force type: {ftype!r}, skipping")
+
+
+def _extract_mesh_data(prim) -> tuple:
+    """Extract mesh vertices and face vertex indices from a UsdGeom.Mesh prim.
+
+    Returns (vertices as np.ndarray of shape [N,3], flat indices list) or (None, None)
+    if the prim has no UsdGeom.Mesh point data.
+    """
+    mesh = UsdGeom.Mesh(prim)
+    pts = mesh.GetPointsAttr().Get()
+    if pts is None or len(pts) == 0:
+        return None, None
+    vertices = _np.array([[v[0], v[1], v[2]] for v in pts])
+    face_idx_attr = mesh.GetFaceVertexIndicesAttr()
+    face_indices = face_idx_attr.Get() if face_idx_attr else None
+    indices = list(face_indices) if face_indices is not None else None
+    return vertices, indices
 
 
 def _variance_multiplier(rng: random.Random, variance: float) -> float:
