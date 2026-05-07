@@ -1,7 +1,9 @@
 """Connection-aware auto-layout algorithm for the node graph."""
+from __future__ import annotations
+from typing import Any
 
 
-def layout_nodes(graph, node_list=None):
+def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
     """Layout nodes left-to-right by depth, vertically aligned to connections."""
     if node_list:
         expanded = set()

@@ -1,12 +1,14 @@
 """Python script exporter for the node graph."""
+from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import nodes
 
 
-def export_python_script(graph, path):
+def export_python_script(graph: Any, path: str | Path) -> None:
     """Export graph as a Python bootstrap script.
 
     Chunk nodes emit create_chunks + set-param code.
@@ -101,7 +103,7 @@ def export_python_script(graph, path):
     print(f"[NodeGraph] Exported to {path}")
 
 
-def export_group_as_chunk(group_node, out_dir=None, sub=None):
+def export_group_as_chunk(group_node: Any, out_dir: str | Path | None = None, sub: Any = None) -> Path:
     """Export a GroupNode as a self-contained chunk .py module.
 
     Promoted params become chunk params; inner node code is generated

@@ -1,8 +1,9 @@
 """Dark neon theme installer for NodeGraphQt — monkey-patches NodeItem, PipeItem, NodeViewer."""
+from __future__ import annotations
 from PySide6 import QtCore, QtGui
 
 
-def install_neon_theme(graph_widget):
+def install_neon_theme(graph_widget) -> None:
     """Apply dark neon visual theme and exec-state painting to the graph.
 
     Monkey-patches NodeItem._paint_horizontal, NodeItem.__init__, hover/click events,
@@ -72,7 +73,7 @@ def install_neon_theme(graph_widget):
         "skipped": (70, 80, 110),
     }
 
-    def _neon_paint(self_node, painter, option, widget):
+    def _neon_paint(self_node, painter: QtGui.QPainter, option: object, widget: object) -> None:
         painter.save()
         try:
             _neon_paint_inner(self_node, painter, option, widget)
@@ -80,7 +81,7 @@ def install_neon_theme(graph_widget):
             pass
         painter.restore()
 
-    def _neon_paint_inner(self_node, painter, option, widget):
+    def _neon_paint_inner(self_node, painter: QtGui.QPainter, option: object, widget: object) -> None:
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(QtCore.Qt.NoBrush)
@@ -370,7 +371,7 @@ def install_neon_theme(graph_widget):
         except Exception:
             return False
 
-    def _state_pipe_paint(self_pipe, painter, option, widget):
+    def _state_pipe_paint(self_pipe, painter: QtGui.QPainter, option: object, widget: object) -> None:
         src_state = ''
         try:
             src_port = getattr(self_pipe, '_output_port', None) or self_pipe.output_port

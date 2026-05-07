@@ -1,23 +1,24 @@
 """Standalone UI helper widgets and dialogs for the node graph."""
+from __future__ import annotations
 from PySide6 import QtWidgets, QtCore, QtGui
 from . import nodes
 
 
 class _LineNumberArea(QtWidgets.QWidget):
-    def __init__(self, editor):
+    def __init__(self, editor: _CodeEditor) -> None:
         super().__init__(editor)
         self._editor = editor
 
-    def sizeHint(self):
+    def sizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(self._editor._line_number_width(), 0)
 
-    def paintEvent(self, event):
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
         self._editor._paint_line_numbers(event)
 
 
 class _CodeEditor(QtWidgets.QPlainTextEdit):
     """PlainTextEdit with line numbers and autocomplete."""
-    def __init__(self, parent=None):
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self._line_area = _LineNumberArea(self)
         self.blockCountChanged.connect(lambda: self._update_margin())
@@ -46,13 +47,13 @@ class _CodeEditor(QtWidgets.QPlainTextEdit):
         self._completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
         self._completer.activated.connect(self._insert_completion)
 
-    def _insert_completion(self, text):
+    def _insert_completion(self, text: str) -> None:
         tc = self.textCursor()
         tc.movePosition(QtGui.QTextCursor.StartOfWord, QtGui.QTextCursor.KeepAnchor)
         tc.insertText(text)
         self.setTextCursor(tc)
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if self._completer.popup().isVisible():
             if event.key() in (QtCore.Qt.Key_Enter, QtCore.Qt.Key_Return,
                                QtCore.Qt.Key_Escape, QtCore.Qt.Key_Tab):
@@ -78,7 +79,7 @@ class _CodeEditor(QtWidgets.QPlainTextEdit):
         cr.setWidth(250)
         self._completer.complete(cr)
 
-    def _request_ai_suggestion(self):
+    def _request_ai_suggestion(self) -> None:
         tc = self.textCursor()
         pos = tc.position()
         full_text = self.toPlainText()
@@ -102,11 +103,11 @@ class _CodeEditor(QtWidgets.QPlainTextEdit):
         from .ai_suggest import suggest_python_completion
         suggest_python_completion(code_before, code_after, inputs_desc, self._on_ai_code)
 
-    def _on_ai_code(self, suggested_code):
+    def _on_ai_code(self, suggested_code: str) -> None:
         self._pending_suggestion = suggested_code
         QtCore.QTimer.singleShot(0, self._apply_ai_code)
 
-    def _apply_ai_code(self):
+    def _apply_ai_code(self) -> None:
         code = getattr(self, '_pending_suggestion', '')
         self.setPlaceholderText("")
         if not code:
@@ -116,25 +117,25 @@ class _CodeEditor(QtWidgets.QPlainTextEdit):
         tc.insertText(code)
         self.setTextCursor(tc)
 
-    def _line_number_width(self):
+    def _line_number_width(self) -> int:
         digits = max(1, len(str(self.blockCount())))
         return 8 + self.fontMetrics().horizontalAdvance("9") * digits
 
-    def _update_margin(self):
+    def _update_margin(self) -> None:
         self.setViewportMargins(self._line_number_width(), 0, 0, 0)
 
-    def _update_line_area(self, rect, dy):
+    def _update_line_area(self, rect: QtCore.QRect, dy: int) -> None:
         if dy:
             self._line_area.scroll(0, dy)
         else:
             self._line_area.update(0, rect.y(), self._line_area.width(), rect.height())
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         cr = self.contentsRect()
         self._line_area.setGeometry(cr.left(), cr.top(), self._line_number_width(), cr.height())
 
-    def _paint_line_numbers(self, event):
+    def _paint_line_numbers(self, event: QtGui.QPaintEvent) -> None:
         painter = QtGui.QPainter(self._line_area)
         painter.fillRect(event.rect(), QtGui.QColor("#21252b"))
         block = self.firstVisibleBlock()
@@ -192,22 +193,22 @@ class _PythonHighlighter(QtGui.QSyntaxHighlighter):
 
 class _ViewportLabel(QtWidgets.QLabel):
     """QLabel that rescales its pixmap instantly on resize."""
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self._raw_px = None
+        self._raw_px: QtGui.QPixmap | None = None
         self.setAlignment(QtCore.Qt.AlignCenter)
 
-    def set_raw_pixmap(self, px):
+    def set_raw_pixmap(self, px: QtGui.QPixmap | QtGui.QImage) -> None:
         if isinstance(px, QtGui.QImage):
             px = QtGui.QPixmap.fromImage(px)
         self._raw_px = px
         self._rescale()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._rescale()
 
-    def _rescale(self):
+    def _rescale(self) -> None:
         px = self._raw_px
         if px and not px.isNull() and self.width() > 0 and self.height() > 0:
             w = max(self.width() - 4, 100)
@@ -216,7 +217,7 @@ class _ViewportLabel(QtWidgets.QLabel):
                                         QtCore.Qt.FastTransformation))
 
 
-def add_field_completer(edit, field_name, node):
+def add_field_completer(edit: QtWidgets.QLineEdit, field_name: str, node: object) -> None:
     """Add context-aware autocomplete to a QLineEdit based on field type."""
     items = []
     try:
@@ -277,7 +278,7 @@ def add_field_completer(edit, field_name, node):
 class _TabSearchDialog(QtWidgets.QDialog):
     """Quick search dialog for nodes — press Tab, type, Enter. AI suggestions appear with ⭐."""
 
-    def __init__(self, parent=None, port_type=None, dragged_dtype=None, dragged_is_output=None):
+    def __init__(self, parent: QtWidgets.QWidget | None = None, port_type: str | None = None, dragged_dtype: str | None = None, dragged_is_output: bool | None = None) -> None:
         super().__init__(parent, QtCore.Qt.Popup)
         self.setStyleSheet(
             "QDialog { background: #0c0e14; border: 1px solid #1e2438; border-radius: 8px; }"
@@ -337,11 +338,11 @@ class _TabSearchDialog(QtWidgets.QDialog):
             except Exception:
                 pass
 
-    def _on_suggestions(self, suggested_names):
+    def _on_suggestions(self, suggested_names: list[str]) -> None:
         self._suggested = suggested_names
         QtCore.QTimer.singleShot(0, self._apply_suggestions)
 
-    def _apply_suggestions(self):
+    def _apply_suggestions(self) -> None:
         if not self._suggested or self._search.text() != "":
             return
         self._search.setPlaceholderText("Search nodes...")
@@ -361,7 +362,7 @@ class _TabSearchDialog(QtWidgets.QDialog):
                 item.setData(QtCore.Qt.UserRole, node_cls)
                 self._list.addItem(item)
 
-    def _filter(self, text):
+    def _filter(self, text: str) -> None:
         text = text.lower()
         self._list.clear()
         for label, node_cls in self._all_items:
@@ -370,11 +371,11 @@ class _TabSearchDialog(QtWidgets.QDialog):
                 item.setData(QtCore.Qt.UserRole, node_cls)
                 self._list.addItem(item)
 
-    def _pick(self, item):
+    def _pick(self, item: QtWidgets.QListWidgetItem) -> None:
         self.selected_node = item.data(QtCore.Qt.UserRole)
         self.accept()
 
-    def _accept_first(self):
+    def _accept_first(self) -> None:
         if self._list.count() > 0:
             item = self._list.item(0)
             self.selected_node = item.data(QtCore.Qt.UserRole)
