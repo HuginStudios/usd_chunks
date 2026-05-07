@@ -28,6 +28,7 @@ PORT_COLORS = {
     "texture": (240, 190, 60),  # gold
     "trigger": (200, 80, 220),  # purple — execution flow only
     "layer": (100, 200, 255),  # light blue — USD layer
+    "data": (180, 220, 130),  # lime — generic data dict
 }
 # Reverse map: color tuple → data type name (used for type enforcement)
 _COLOR_TO_TYPE = {v: k for k, v in PORT_COLORS.items()}

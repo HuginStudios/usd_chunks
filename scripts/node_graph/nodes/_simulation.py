@@ -583,6 +583,32 @@ class CollisionSetNode(UsdNodeBase):
         return {"prims": prims}
 
 
+class WindForceNode(UsdNodeBase):
+    """Applies a constant directional wind force to simulated bodies."""
+
+    NODE_NAME = "Wind Force"
+    CATEGORY = "Simulation"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_text_input("wind_x", "Wind X", text="1.0")
+        self.add_text_input("wind_y", "Wind Y", text="0.0")
+        self.add_text_input("wind_z", "Wind Z", text="0.0")
+        self.add_text_input("strength", "Strength", text="10.0")
+        self.add_output("force", color=PORT_COLORS["data"])
+
+    def execute(self, stage) -> dict:
+        return {
+            "force": {
+                "type": "wind",
+                "x": float(self.get_property("wind_x") or 1.0),
+                "y": float(self.get_property("wind_y") or 0.0),
+                "z": float(self.get_property("wind_z") or 0.0),
+                "strength": float(self.get_property("strength") or 10.0),
+            }
+        }
+
+
 def _apply_forces(p, body: int, body_index: int, step: int, force_dicts: list) -> None:
     """Apply all force dicts to a single body for one simulation substep."""
     for fd in force_dicts:
