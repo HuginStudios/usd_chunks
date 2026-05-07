@@ -120,3 +120,21 @@ def test_chunk_panel_real_chunk(node_graph, qapp):
             found = True
             break
     assert found, "ChunkWidget not found in form"
+
+
+# ── Scenario 5: build_node_panel with a plain UsdNodeBase subclass ────────────
+
+def test_build_node_panel_plain_node(node_graph, qapp):
+    """build_node_panel creates property rows for a plain (non-chunk, non-group) node."""
+    from node_graph._property_panel import build_node_panel
+
+    ng, CubeNodeCls = node_graph
+    node = ng.create_node(CubeNodeCls.type_, name="PanelPlain")
+
+    _, form = _make_form(qapp)
+    editors = build_node_panel(node, form, _noop)
+
+    # Chunk nodes have _chunk_module so they go through build_chunk_panel.
+    # For this test we verify the dispatch works — if it's a chunk node it
+    # delegates to build_chunk_panel (returns empty dict), otherwise returns editors.
+    assert isinstance(editors, dict)

@@ -21,14 +21,10 @@ from .chunk_adapter import ChunkAdapter
 from .graph_executor import GraphExecutor
 from .graph_host import GraphHost
 from .nodes._base import _get_promotions, _get_promoted_outputs, _save_promotions, PORT_COLORS
-from ._graph_ui import (
-    _CodeEditor, _PythonHighlighter, _ViewportLabel, _TabSearchDialog,
-    add_field_completer,
-)
+from ._graph_ui import _ViewportLabel, _TabSearchDialog
 from ._neon_theme import install_neon_theme
 from ._graph_layout import layout_nodes
 from ._graph_export import export_python_script, export_group_as_chunk
-from ._panel_builder import build_group_promo_panel, build_chunk_panel as _build_chunk_panel_fn
 from usd_chunks import chunk_core, chunk_registry as _cr
 from usd_chunks.chunk import Slider, Spinbox, Menu, Checkbox
 
@@ -1074,6 +1070,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 self._props_type_label.hide()
 
     def _on_node_selected(self, node) -> None:
+        from ._property_panel import build_node_panel
+
         while self._props_form.count():
             item = self._props_form.takeAt(0)
             if item.widget():
@@ -1137,173 +1135,14 @@ class NodeGraphWidget(QtWidgets.QWidget):
             except Exception:
                 pass
 
-        if isinstance(node, GroupNode):
-            self._build_group_promo_panel(node)
-            return
-        if hasattr(node, '_chunk_module'):
-            self._build_chunk_panel(node)
-            return
-        skip = {"id", "name", "color", "disabled", "selected", "width", "height",
-                "icon", "pos", "layout_direction", "type_", "promoted_params", "promoted_outputs"}
-        _promoted_params: set = set()
-        try:
-            g = self._active_graph()
-            if isinstance(g, SubGraph):
-                for _pname, _info in _get_promotions(g.node).items():
-                    if _info.get("inner_node_id") == node.id:
-                        _promoted_params.add(_info.get("inner_param", ""))
-        except Exception:
-            pass
-        for name, val in node.model.custom_properties.items():
-            if name in skip:
-                continue
-            if name == "code":
-                code_widget = QtWidgets.QWidget()
-                code_layout = QtWidgets.QVBoxLayout(code_widget)
-                code_layout.setContentsMargins(0, 0, 0, 0)
-                edit = _CodeEditor()
-                edit._node_ref = node
-                edit.setPlainText(str(val) if val else "")
-                edit.setMinimumHeight(120)
-                edit.setFont(QtGui.QFont("Consolas", 9))
-                edit.setStyleSheet(
-                    "QPlainTextEdit { background: #282c34; color: #abb2bf;"
-                    " border: 1px solid #3e4451; border-radius: 4px; padding: 4px; }"
-                )
-                _PythonHighlighter(edit.document())
-                edit.setProperty("prop_name", name)
-                edit.textChanged.connect(lambda e=edit: self._on_code_changed(e))
-                code_layout.addWidget(edit)
-                btn_row = QtWidgets.QHBoxLayout()
-                save_snip = QtWidgets.QPushButton("💾 Save Snippet")
-                load_snip = QtWidgets.QPushButton("📂 Load Snippet")
-
-                def _save_snippet(e=edit):
-                    p, _ = QtWidgets.QFileDialog.getSaveFileName(
-                        self, "Save Snippet", "", "Python (*.py)")
-                    if p:
-                        with open(p, "w", encoding="utf-8") as f:
-                            f.write(e.toPlainText())
-
-                def _load_snippet(e=edit):
-                    p, _ = QtWidgets.QFileDialog.getOpenFileName(
-                        self, "Load Snippet", "", "Python (*.py)")
-                    if p:
-                        with open(p, encoding="utf-8") as f:
-                            e.setPlainText(f.read())
-
-                save_snip.clicked.connect(_save_snippet)
-                load_snip.clicked.connect(_load_snippet)
-                btn_row.addWidget(save_snip)
-                btn_row.addWidget(load_snip)
-                code_layout.addLayout(btn_row)
-                self._props_form.addRow(name, code_widget)
-                self._prop_editors[name] = edit
-                continue
-            elif isinstance(val, bool):
-                cb = QtWidgets.QCheckBox()
-                cb.setChecked(val)
-                cb.setProperty("prop_name", name)
-                cb.toggled.connect(lambda state, n=name: self._on_bool_prop_changed(n, state))
-                if name in _promoted_params:
-                    cb.setEnabled(False)
-                    cb.setToolTip("Promoted to group — change value on the group node")
-                self._props_form.addRow(name, cb)
-                self._prop_editors[name] = cb
-                continue
-            elif name == "file_path" and isinstance(node, nodes.TextureFileNode):
-                row = QtWidgets.QWidget()
-                row_layout = QtWidgets.QVBoxLayout(row)
-                row_layout.setContentsMargins(0, 0, 0, 0)
-                file_row = QtWidgets.QHBoxLayout()
-                edit = QtWidgets.QLineEdit(str(val) if val else "")
-                edit.setProperty("prop_name", name)
-                edit.editingFinished.connect(self._on_prop_changed)
-                self._setup_ref_menu(edit, node, name)
-                browse = QtWidgets.QPushButton("📁")
-                browse.setFixedWidth(30)
-                thumb = QtWidgets.QLabel()
-                thumb.setFixedSize(200, 200)
-                thumb.setStyleSheet("background: #1a1a1a; border: 1px solid #333;")
-                thumb.setAlignment(QtCore.Qt.AlignCenter)
-
-                def _make_browse(ed, th, nd):
-                    def _fn():
-                        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                            self, "Select Texture", "", "Images (*.png *.jpg *.jpeg *.exr *.tga *.bmp)")
-                        if path:
-                            ed.setText(path)
-                            ed.editingFinished.emit()
-                            self._show_thumbnail(th, path)
-                            if hasattr(nd, '_thumb'):
-                                nd._thumb.set_value(path)
-                    return _fn
-
-                browse.clicked.connect(_make_browse(edit, thumb, node))
-                file_row.addWidget(edit)
-                file_row.addWidget(browse)
-                row_layout.addLayout(file_row)
-                row_layout.addWidget(thumb)
-                if val:
-                    self._show_thumbnail(thumb, str(val))
-                self._props_form.addRow(name, row)
-                self._prop_editors[name] = edit
-                continue
-            else:
-                # Check if this property is a combo menu on the node
-                node_widget = node.view._widgets.get(name)
-                if node_widget and getattr(node_widget, 'type_', '') == 'ComboNodeWidget':
-                    inner = node_widget.get_custom_widget()
-                    combo = QtWidgets.QComboBox()
-                    for i in range(inner.count()):
-                        combo.addItem(inner.itemText(i))
-                    if val:
-                        combo.setCurrentText(str(val))
-                    combo.setProperty("prop_name", name)
-                    combo.currentTextChanged.connect(
-                        lambda text, n=name: self._on_combo_changed(n, text))
-                    self._props_form.addRow(name, combo)
-                    self._prop_editors[name] = combo
-                    continue
-                edit = QtWidgets.QLineEdit(str(val) if val else "")
-                edit.setProperty("prop_name", name)
-                edit.editingFinished.connect(self._on_prop_changed)
-                self._setup_ref_menu(edit, node, name)
-                if name in _promoted_params:
-                    edit.setEnabled(False)
-                    edit.setToolTip("Promoted to group — change value on the group node")
-                auto_port = node.get_input(f"_{name}")
-                if auto_port and auto_port.connected_ports():
-                    src_port = auto_port.connected_ports()[0]
-                    src_node = src_port.node()
-                    driven_val = src_node._output_cache.get(src_port.name()) if hasattr(src_node, "_output_cache") else None
-                    if driven_val is not None and not isinstance(driven_val, nodes._TriggerSignal):
-                        edit.setText(str(driven_val))
-                        edit.setReadOnly(True)
-                        edit.setStyleSheet(
-                            "QLineEdit { background: rgba(50,210,220,0.08); color: #32d2dc;"
-                            " border: 1px solid rgba(50,210,220,0.3); border-radius: 4px;"
-                            " padding: 3px 6px; font: 10px 'Consolas'; }")
-                        name = f"⭐ {name}"
-                if name == "attr_name":
-                    combo = QtWidgets.QComboBox()
-                    combo.setEditable(True)
-                    attrs = ["name", "path", "type"] + self._get_prim_attrs(node)
-                    combo.addItems(attrs)
-                    if val:
-                        combo.setCurrentText(str(val))
-                    combo.setProperty("prop_name", name)
-                    combo.currentTextChanged.connect(
-                        lambda text, n=name: self._on_combo_changed(n, text))
-                    self._props_form.addRow(name, combo)
-                    self._prop_editors[name] = combo
-                    continue
-                elif name in ("prim_path", "set_name", "type_filter",
-                              "prim_type", "purpose", "material_path"):
-                    add_field_completer(edit, name, node)
-                edit.setPlaceholderText("Type to search...")
-            self._props_form.addRow(name, edit)
-            self._prop_editors[name] = edit
+        self._prop_editors.update(build_node_panel(
+            node,
+            self._props_form,
+            on_changed=self._executor.mark_dirty,
+            active_graph_fn=self._active_graph,
+            ref_menu_fn=self._setup_ref_menu,
+            get_prim_attrs_fn=self._get_prim_attrs,
+        ))
 
     def _on_ghost_suggestions(self, suggested_names, sid):
         if not getattr(self, '_executor', None):
@@ -1381,11 +1220,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             return
         export_python_script(self._graph, path)
 
-    def _on_combo_changed(self, prop_name, text):
-        if hasattr(self, "_selected_node") and self._selected_node:
-            self._selected_node.set_property(prop_name, text)
-            self._executor.mark_dirty(self._selected_node)
-
     def _get_prim_attrs(self, node):
         """Get attribute names from the prim connected to this node."""
         try:
@@ -1410,37 +1244,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
         except Exception:
             pass
         return []
-
-    def _show_thumbnail(self, label, path):
-        pixmap = QtGui.QPixmap(path)
-        if not pixmap.isNull():
-            label.setPixmap(pixmap.scaled(200, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-        else:
-            label.setText("No preview")
-
-    def _on_code_changed(self, edit):
-        name = edit.property("prop_name")
-        if hasattr(self, "_selected_node") and self._selected_node:
-            self._selected_node.set_property(name, edit.toPlainText())
-            self._executor.mark_dirty(self._selected_node)
-
-    def _build_chunk_panel(self, node):
-        """Build the side panel using the real ChunkWidget from chunk_qt."""
-        _build_chunk_panel_fn(
-            node,
-            self._props_form,
-            on_changed=self._executor.mark_dirty,
-            active_graph_fn=self._active_graph,
-            ref_menu_fn=self._setup_chunk_ref_menu,
-        )
-
-    def _build_group_promo_panel(self, group_node):
-        """Side panel for a GroupNode: editable fields for each promoted param."""
-        build_group_promo_panel(
-            group_node,
-            self._props_form,
-            on_changed=self._executor.mark_dirty,
-        )
 
     def _promote_param_to_group(self, inner_node, param):
         """Promote a chunk param to the enclosing GroupNode as an input port."""
@@ -1587,48 +1390,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
         except Exception as e:
             print(f"[NodeGraph] chunk ref menu err: {e}")
         self._props_form.addRow(label, widget)
-
-    def _on_bool_prop_changed(self, name, state):
-        if hasattr(self, "_selected_node") and self._selected_node:
-            self._selected_node.set_property(name, bool(state))
-            self._executor.mark_dirty(self._selected_node)
-
-    def _on_prop_changed(self):
-        edit = self.sender()
-        name = edit.property("prop_name")
-        if not (hasattr(self, "_selected_node") and self._selected_node):
-            return
-        text = edit.text()
-        node = self._selected_node
-        current = node.model.custom_properties.get(name)
-        if isinstance(current, bool):
-            node.set_property(name, text.strip().lower() in ("true", "1", "yes"))
-        else:
-            node.set_property(name, text)
-
-        try:
-            display = getattr(node, "_chunk_display_name", None)
-            if display is None:
-                return
-            adapter = getattr(node, "_cached_adapter", None)
-            if adapter is None or not getattr(adapter, "chunk", None):
-                my_chunk = None
-                if hasattr(node, "_ensure_chunk"):
-                    try:
-                        my_chunk = node._ensure_chunk()
-                    except Exception:
-                        my_chunk = None
-                if my_chunk is not None:
-                    adapter = ChunkAdapter(display, chunk=my_chunk)
-                else:
-                    adapter = ChunkAdapter(display, auto_create=False)
-                if adapter.chunk:
-                    node._cached_adapter = adapter
-            if adapter and adapter.chunk and adapter.chunk.get_param(name) is not None:
-                adapter.set_param(name, text)
-        except Exception:
-            pass
-        self._executor.mark_dirty(node)
 
     _ref_clipboard = None
 
