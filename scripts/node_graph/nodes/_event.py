@@ -1,5 +1,11 @@
 """Event/trigger nodes — fire downstream execution on USD and UI events."""
+from __future__ import annotations
+
+from collections.abc import Callable
+
 from PySide6 import QtCore
+from pxr import Tf, Usd
+
 from ._base import UsdNodeBase, PORT_COLORS, TRIGGER
 
 
@@ -16,7 +22,7 @@ class _TriggerNodeBase(UsdNodeBase):
         self.add_output("prim", color=PORT_COLORS["prim"])
         self.add_output("event", color=PORT_COLORS["any"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         enabled = (self.get_property("enabled") or "true").lower() in ("true", "1")
         nid = self.id
         if nid in _TriggerNodeBase._active_triggers:
@@ -32,7 +38,7 @@ class _TriggerNodeBase(UsdNodeBase):
                 _TriggerNodeBase._active_triggers[nid] = result
         return {"trigger": TRIGGER, "prim": None, "event": "armed" if enabled else "disabled"}
 
-    def _subscribe(self, stage):
+    def _subscribe(self, stage) -> Callable | None:
         """Override: subscribe to event, return cleanup function."""
         return None
 
@@ -55,8 +61,8 @@ class OnSelectionChangedNode(_TriggerNodeBase):
     def __init__(self):
         super().__init__()
 
-    def _subscribe(self, stage):
-        from usd_chunks import chunk_registry
+    def _subscribe(self, stage) -> Callable | None:
+        from usd_chunks import chunk_registry  # usdview-guarded
         try:
             scene = chunk_registry.ChunkRegistry().scene
             ctrl = scene.usdviewAPI._UsdviewApi__appController
@@ -79,10 +85,10 @@ class OnSelectionChangedNode(_TriggerNodeBase):
         except Exception:
             return None
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         result = super().execute(stage)
         try:
-            from usd_chunks import chunk_registry
+            from usd_chunks import chunk_registry  # usdview-guarded
             scene = chunk_registry.ChunkRegistry().scene
             prims = scene.get_selected_prims() if scene else []
             result["prim"] = prims[0] if prims else None
@@ -100,8 +106,8 @@ class OnFrameChangedNode(_TriggerNodeBase):
         super().__init__()
         self.add_output("frame", color=PORT_COLORS["float"])
 
-    def _subscribe(self, stage):
-        from usd_chunks import chunk_registry
+    def _subscribe(self, stage) -> Callable | None:
+        from usd_chunks import chunk_registry  # usdview-guarded
         try:
             scene = chunk_registry.ChunkRegistry().scene
             ctrl = scene.usdviewAPI._UsdviewApi__appController
@@ -122,11 +128,11 @@ class OnFrameChangedNode(_TriggerNodeBase):
         except Exception:
             return None
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         result = super().execute(stage)
         result["frame"] = 0
         try:
-            from usd_chunks import chunk_registry
+            from usd_chunks import chunk_registry  # usdview-guarded
             scene = chunk_registry.ChunkRegistry().scene
             ctrl = scene.usdviewAPI._UsdviewApi__appController
             result["frame"] = ctrl._dataModel.currentFrame.GetValue()
@@ -145,7 +151,7 @@ class OnTimerNode(_TriggerNodeBase):
         self.add_output("tick", color=PORT_COLORS["float"])
         self._tick_count = 0
 
-    def _subscribe(self, stage):
+    def _subscribe(self, stage) -> Callable | None:
         interval = int(float(self.get_property("interval") or 1) * 1000)
         timer = QtCore.QTimer()
         timer.setInterval(max(100, interval))
@@ -161,7 +167,7 @@ class OnTimerNode(_TriggerNodeBase):
         timer.start()
         return lambda: timer.stop()
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         result = super().execute(stage)
         result["tick"] = self._tick_count
         return result
@@ -174,9 +180,7 @@ class OnStageChangedNode(_TriggerNodeBase):
     def __init__(self):
         super().__init__()
 
-    def _subscribe(self, stage):
-        from pxr import Tf, Usd
-
+    def _subscribe(self, stage) -> Callable | None:
         def _on_notice(notice, sender):
             self._output_cache = {"trigger": TRIGGER, "prim": None, "event": "stage_changed"}
             QtCore.QTimer.singleShot(50, self._trigger_downstream)
@@ -185,7 +189,7 @@ class OnStageChangedNode(_TriggerNodeBase):
         self._notice_key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_notice, stage)
         return lambda: self._notice_key.Revoke()
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         return super().execute(stage)
 
 
@@ -197,8 +201,7 @@ class OnPrimChangedNode(_TriggerNodeBase):
         super().__init__()
         self.add_text_input("prim_path", "Prim Path", text="/")
 
-    def _subscribe(self, stage):
-        from pxr import Tf, Usd
+    def _subscribe(self, stage) -> Callable | None:
         watch_path = self.get_property("prim_path") or "/"
 
         def _on_notice(notice, sender):
@@ -227,7 +230,7 @@ class OnPrimChangedNode(_TriggerNodeBase):
         self._notice_key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_notice, stage)
         return lambda: self._notice_key.Revoke()
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         result = super().execute(stage)
         path = self.get_property("prim_path") or "/"
         prim = stage.GetPrimAtPath(path)
@@ -245,8 +248,7 @@ class OnAttributeChangedNode(_TriggerNodeBase):
         self.add_text_input("attr_name", "Attribute Name", text="")
         self.add_output("value", color=PORT_COLORS["any"])
 
-    def _subscribe(self, stage):
-        from pxr import Tf, Usd
+    def _subscribe(self, stage) -> Callable | None:
         watch_path = self.get_property("prim_path") or "/"
         attr_name = (self.get_property("attr_name") or "").strip()
         if not attr_name:
@@ -284,7 +286,7 @@ class OnAttributeChangedNode(_TriggerNodeBase):
         self._notice_key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_notice, stage)
         return lambda: self._notice_key.Revoke()
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         result = super().execute(stage)
         result["value"] = None
         path = self.get_property("prim_path") or "/"

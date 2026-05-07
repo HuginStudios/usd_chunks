@@ -1,4 +1,8 @@
 """Hierarchy nodes — create, delete, reparent, duplicate, rename prims."""
+from __future__ import annotations
+
+from pxr import Sdf
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -13,7 +17,7 @@ class CreatePrimNode(UsdNodeBase):
         self.add_text_input("prim_type", "Type", text="Xform")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         path = self.get_property("prim_path") or "/NewPrim"
         typ = self.get_property("prim_type") or "Xform"
         prim = stage.DefinePrim(path, typ)
@@ -29,7 +33,7 @@ class DeletePrimNode(UsdNodeBase):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim and prim.IsValid():
             stage.RemovePrim(prim.GetPath())
@@ -47,8 +51,7 @@ class ReparentPrimNode(UsdNodeBase):
         self.add_text_input("new_parent", "New Parent Path", text="/")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import Sdf
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         parent = self.get_property("new_parent") or "/"
         if not prim:
@@ -72,8 +75,7 @@ class DuplicatePrimNode(UsdNodeBase):
         self.add_text_input("dest_path", "Destination Path", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import Sdf
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         dest = self.get_property("dest_path")
         if not prim or not dest:
@@ -95,8 +97,7 @@ class RenamePrimNode(UsdNodeBase):
         self.add_text_input("new_name", "New Name", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import Sdf
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         new_name = (self.get_property("new_name") or "").strip()
         if not prim or not new_name:

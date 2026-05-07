@@ -1,4 +1,8 @@
 """Composition nodes — references, payloads, layer stack, merge layers."""
+from __future__ import annotations
+
+from pxr import Sdf
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -14,8 +18,7 @@ class AddReferenceNode(UsdNodeBase):
         self.add_text_input("prim_path", "Prim Path (optional)", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import Sdf
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
@@ -38,8 +41,7 @@ class AddPayloadNode(UsdNodeBase):
         self.add_text_input("prim_path", "Prim Path (optional)", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import Sdf
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
@@ -59,7 +61,7 @@ class GetLayerStackNode(UsdNodeBase):
         super().__init__()
         self.add_output("layers", color=PORT_COLORS["list"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         layers = [(layer.identifier, layer.realPath) for layer in stage.GetLayerStack()]
         return {"layers": layers}
 
@@ -75,8 +77,7 @@ class MergeLayersNode(UsdNodeBase):
         self.add_input("layer_b", color=PORT_COLORS["layer"])
         self.add_output("layer", color=PORT_COLORS["layer"])
 
-    def execute(self, stage):
-        from pxr import Sdf
+    def execute(self, stage) -> dict:
         layer_a = self._get_input_value("layer_a")
         layer_b = self._get_input_value("layer_b")
         if not layer_a and not layer_b:
@@ -100,7 +101,7 @@ class ReferenceAtNode(UsdNodeBase):
         self.add_text_input("prim_path", "Prim Path", text="/ReferenceAt")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         layer = self._get_input_value("layer")
         path = self.get_property("prim_path") or "/ReferenceAt"
         if not layer:

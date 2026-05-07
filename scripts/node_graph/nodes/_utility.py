@@ -1,4 +1,6 @@
 """Utility/logic nodes — list ops, ForEach, merge, compare, switch, export, counter, strings, booleans, coalesce."""
+from __future__ import annotations
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -13,7 +15,7 @@ class ListIndexNode(UsdNodeBase):
         self.add_text_input("index", "Index", text="0")
         self.add_output("item", color=PORT_COLORS["any"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         lst = self._get_input_value("list") or []
         idx = int(self.get_property("index") or 0)
         return {"item": lst[idx] if 0 <= idx < len(lst) else None}
@@ -29,7 +31,7 @@ class ListLengthNode(UsdNodeBase):
         self.add_input("list", color=PORT_COLORS["list"])
         self.add_output("length", color=PORT_COLORS["float"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         lst = self._get_input_value("list") or []
         return {"length": len(lst)}
 
@@ -47,7 +49,7 @@ class ForEachNode(UsdNodeBase):
         self._iteration_list = []
         self._current_index = 0
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         lst = self._get_input_value("list") or []
         self._iteration_list = lst
         # Default: output first item. Engine calls set_iteration_index() for each.
@@ -73,7 +75,7 @@ class MergeNode(UsdNodeBase):
             self.add_input(f"in_{i}", color=PORT_COLORS["prim"])
         self.add_output("prims", color=PORT_COLORS["list"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         prims = []
         for i in range(6):
             v = self._get_input_value(f"in_{i}")
@@ -97,7 +99,7 @@ class CompareNode(UsdNodeBase):
         self.add_text_input("op", "Operator (==, !=, <, >, <=, >=)", text="==")
         self.add_output("result", color=PORT_COLORS["bool"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         a = self._get_input_value("a")
         b = self._get_input_value("b")
         op = (self.get_property("op") or "==").strip()
@@ -122,7 +124,7 @@ class SwitchNode(UsdNodeBase):
         self.add_input("if_false", color=PORT_COLORS["any"])
         self.add_output("output", color=PORT_COLORS["any"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         cond = self._get_input_value("condition")
         if cond:
             return {"output": self._get_input_value("if_true")}
@@ -140,7 +142,7 @@ class ExportUsdNode(UsdNodeBase):
         self.add_text_input("mode", "Mode (stage/layer)", text="stage")
         self.add_output("path", color=PORT_COLORS["string"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         fp = (self.get_property("file_path") or "").strip()
         if not fp:
             return {"path": ""}
@@ -163,7 +165,7 @@ class CounterNode(UsdNodeBase):
         self.add_text_input("reset_to", "Reset To", text="0")
         self.add_output("count", color=PORT_COLORS["float"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         nid = self.id
         reset = self.get_property("reset_to")
         if nid not in CounterNode._counters:
@@ -184,7 +186,7 @@ class StringFormatNode(UsdNodeBase):
         self.add_input("in_1", color=PORT_COLORS["any"])
         self.add_input("in_2", color=PORT_COLORS["any"])
         self.add_output("string", color=PORT_COLORS["string"])
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         t = self.get_property("template") or "{0}"
         args = [self._get_input_value(f"in_{i}") or "" for i in range(3)]
         try:
@@ -201,7 +203,7 @@ class StringSplitNode(UsdNodeBase):
         self.add_input("string", color=PORT_COLORS["string"])
         self.add_text_input("delimiter", "Delimiter", text="/")
         self.add_output("parts", color=PORT_COLORS["list"])
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         s = str(self._get_input_value("string") or "")
         d = self.get_property("delimiter") or "/"
         return {"parts": s.split(d)}
@@ -215,7 +217,7 @@ class StringJoinNode(UsdNodeBase):
         self.add_input("list", color=PORT_COLORS["list"])
         self.add_text_input("delimiter", "Delimiter", text=", ")
         self.add_output("string", color=PORT_COLORS["string"])
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         lst = self._get_input_value("list") or []
         d = self.get_property("delimiter") or ", "
         return {"string": d.join(str(x) for x in lst)}
@@ -230,7 +232,7 @@ class StringReplaceNode(UsdNodeBase):
         self.add_text_input("find", "Find", text="")
         self.add_text_input("replace", "Replace", text="")
         self.add_output("string", color=PORT_COLORS["string"])
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         s = str(self._get_input_value("string") or "")
         f = self.get_property("find") or ""
         r = self.get_property("replace") or ""
@@ -245,7 +247,7 @@ class BoolAndNode(UsdNodeBase):
         self.add_input("a", color=PORT_COLORS["bool"])
         self.add_input("b", color=PORT_COLORS["bool"])
         self.add_output("result", color=PORT_COLORS["bool"])
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         return {"result": bool(self._get_input_value("a")) and bool(self._get_input_value("b"))}
 
 
@@ -257,7 +259,7 @@ class BoolOrNode(UsdNodeBase):
         self.add_input("a", color=PORT_COLORS["bool"])
         self.add_input("b", color=PORT_COLORS["bool"])
         self.add_output("result", color=PORT_COLORS["bool"])
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         return {"result": bool(self._get_input_value("a")) or bool(self._get_input_value("b"))}
 
 
@@ -268,7 +270,7 @@ class BoolNotNode(UsdNodeBase):
         super().__init__()
         self.add_input("value", color=PORT_COLORS["bool"])
         self.add_output("result", color=PORT_COLORS["bool"])
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         return {"result": not bool(self._get_input_value("value"))}
 
 
@@ -283,7 +285,7 @@ class CoalesceNode(UsdNodeBase):
         self.add_input("c", color=PORT_COLORS["prim"])
         self.add_output("prim", color=PORT_COLORS["prim"])
         self.add_output("index", color=PORT_COLORS["float"])
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         for i, name in enumerate(["a", "b", "c"]):
             v = self._get_input_value(name)
             if v is None:

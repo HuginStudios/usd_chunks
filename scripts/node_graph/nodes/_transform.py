@@ -1,4 +1,10 @@
 """Transform nodes — translate, rotate, scale, bounding box, constraint."""
+from __future__ import annotations
+
+import json
+
+from pxr import Gf, UsdGeom
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -21,8 +27,7 @@ class SetTransformNode(UsdNodeBase):
         self.add_text_input("sz", "Scale Z", text="1")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import UsdGeom, Gf
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
@@ -65,8 +70,7 @@ class GetWorldTransformNode(UsdNodeBase):
         self.add_output("matrix", color=PORT_COLORS["any"])
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import UsdGeom, Gf
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim is None:
             return {"tx": 0, "ty": 0, "tz": 0, "rx": 0, "ry": 0, "rz": 0,
@@ -96,8 +100,7 @@ class ResetTransformNode(UsdNodeBase):
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import UsdGeom
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim:
             UsdGeom.Xformable(prim).ClearXformOpOrder()
@@ -117,8 +120,7 @@ class GetBoundingBoxNode(UsdNodeBase):
         self.add_output("size", color=PORT_COLORS["any"])
         self.add_output("center", color=PORT_COLORS["any"])
 
-    def execute(self, stage):
-        from pxr import UsdGeom
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if not prim:
             return {"min": None, "max": None, "size": None, "center": None}
@@ -148,9 +150,7 @@ class ConstrainTransformNode(UsdNodeBase):
         self.add_output("prim", color=PORT_COLORS["prim"])
         self.add_output("prims", color=PORT_COLORS["list"])
 
-    def execute(self, stage):
-        import json
-        from pxr import UsdGeom, Gf
+    def execute(self, stage) -> dict:
         source = self._get_input_value("source")
         targets = self._get_prims("target")
         if not source or not targets:

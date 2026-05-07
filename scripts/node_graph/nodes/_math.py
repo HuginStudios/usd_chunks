@@ -1,4 +1,6 @@
 """Math nodes — arithmetic on float values."""
+from __future__ import annotations
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -13,7 +15,7 @@ class MathAddNode(UsdNodeBase):
         self.add_text_input("b_val", "B (if no input)", text="0")
         self.add_output("result", color=PORT_COLORS["float"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         a = self._get_input_value("a") or 0
         b = self._get_input_value("b")
         if b is None:
@@ -32,7 +34,7 @@ class MathSubtractNode(UsdNodeBase):
         self.add_text_input("b_val", "B (if no input)", text="0")
         self.add_output("result", color=PORT_COLORS["float"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         a = self._get_input_value("a") or 0
         b = self._get_input_value("b")
         if b is None:
@@ -51,7 +53,7 @@ class MathMultiplyNode(UsdNodeBase):
         self.add_text_input("b_val", "B (if no input)", text="1")
         self.add_output("result", color=PORT_COLORS["float"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         a = self._get_input_value("a") or 0
         b = self._get_input_value("b")
         if b is None:
@@ -70,7 +72,7 @@ class MathDivideNode(UsdNodeBase):
         self.add_text_input("b_val", "B (if no input)", text="1")
         self.add_output("result", color=PORT_COLORS["float"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         a = self._get_input_value("a") or 0
         b = self._get_input_value("b")
         if b is None:
@@ -89,7 +91,7 @@ class MathClampNode(UsdNodeBase):
         self.add_text_input("max_val", "Max", text="1")
         self.add_output("result", color=PORT_COLORS["float"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         v = float(self._get_input_value("value") or 0)
         mn = float(self.get_property("min_val") or 0)
         mx = float(self.get_property("max_val") or 1)
@@ -109,7 +111,7 @@ class MathRemapNode(UsdNodeBase):
         self.add_text_input("out_max", "Out Max", text="100")
         self.add_output("result", color=PORT_COLORS["float"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         v = float(self._get_input_value("value") or 0)
         i0 = float(self.get_property("in_min") or 0)
         i1 = float(self.get_property("in_max") or 1)

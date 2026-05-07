@@ -1,4 +1,8 @@
 """Camera nodes — create camera, set active camera."""
+from __future__ import annotations
+
+from pxr import UsdGeom
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -13,8 +17,7 @@ class CreateCameraNode(UsdNodeBase):
         self.add_text_input("near_clip", "Near Clip", text="0.1")
         self.add_text_input("far_clip", "Far Clip", text="10000")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdGeom
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Camera"
         cam = UsdGeom.Camera.Define(stage, p)
         cam.GetFocalLengthAttr().Set(float(self.get_property("focal_length") or 50))
@@ -33,7 +36,7 @@ class SetActiveCameraNode(UsdNodeBase):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("camera_path", "Camera Path (if no input)", text="")
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if not prim:
             cp = (self.get_property("camera_path") or "").strip()
@@ -41,7 +44,7 @@ class SetActiveCameraNode(UsdNodeBase):
                 prim = stage.GetPrimAtPath(cp)
         if prim and prim.IsValid():
             try:
-                from usd_chunks import chunk_registry
+                from usd_chunks import chunk_registry  # usdview-guarded
                 scene = chunk_registry.ChunkRegistry().scene
                 ctrl = scene.usdviewAPI._UsdviewApi__appController
                 ctrl._dataModel.viewSettings.cameraPrim = prim

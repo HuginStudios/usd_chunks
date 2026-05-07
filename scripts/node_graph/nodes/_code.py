@@ -1,4 +1,6 @@
 """Code nodes — Python scripting inside the graph."""
+from __future__ import annotations
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -22,7 +24,7 @@ class PythonNode(UsdNodeBase):
         self.add_combo_menu("output_type", "Output Type", items=self._OUTPUT_TYPES)
         self.add_output("result", color=PORT_COLORS["any"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         inputs = {}
         for port in self.input_ports():
             inputs[port.name()] = self._get_input_value(port.name())
@@ -49,6 +51,6 @@ class PythonNode(UsdNodeBase):
 
         return {"result": local_vars.get("output")}
 
-    def to_python(self, var_map):
+    def to_python(self, var_map: dict) -> str:
         code = self.get_property("code") or ""
         return f"# Python node\n{code}"

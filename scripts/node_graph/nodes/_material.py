@@ -1,6 +1,12 @@
 """Material/shading nodes — display color, assign material, preview surface, textures, shaders."""
+from __future__ import annotations
+
+import os
+
 from NodeGraphQt.widgets.node_widgets import NodeBaseWidget
-from PySide6 import QtWidgets, QtCore
+from PySide6 import QtWidgets, QtCore, QtGui
+from pxr import Gf, Sdf, UsdGeom, UsdShade, Vt
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -17,8 +23,7 @@ class SetDisplayColorNode(UsdNodeBase):
         self.add_text_input("color_b", "B", text="0.5")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import UsdGeom, Vt, Gf
+    def execute(self, stage) -> dict:
         prims = self._get_prims("prim")
         if not prims:
             return {"prim": None}
@@ -32,7 +37,7 @@ class SetDisplayColorNode(UsdNodeBase):
                 gprim.GetDisplayColorAttr().Set(color)
         return {"prim": prims if len(prims) > 1 else prims[0]}
 
-    def to_python(self, var_map):
+    def to_python(self, var_map: dict) -> str:
         pv = var_map.get("prim", "prim")
         r = self.get_property("color_r") or "0.5"
         g = self.get_property("color_g") or "0.5"
@@ -52,8 +57,7 @@ class AssignMaterialNode(UsdNodeBase):
         self.add_text_input("material_path", "Material Path", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import UsdShade
+    def execute(self, stage) -> dict:
         prims = self._get_prims("prim")
         mat_prim = self._get_input_value("material")
         mat_path = self.get_property("material_path")
@@ -85,8 +89,7 @@ class CreatePreviewSurfaceNode(UsdNodeBase):
         self.add_output("material", color=PORT_COLORS["material"])
         self.add_output("shader", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        from pxr import UsdShade, Sdf, Gf
+    def execute(self, stage) -> dict:
         mat_path = self.get_property("mat_path") or "/Materials/MyMaterial"
         r = float(self.get_property("diffuse_r") or 0.8)
         g = float(self.get_property("diffuse_g") or 0.8)
@@ -148,7 +151,6 @@ class _ThumbnailWidget(NodeBaseWidget):
     def set_value(self, path=""):
         self._path = path
         if path:
-            from PySide6 import QtGui
             pixmap = QtGui.QPixmap(path)
             if not pixmap.isNull():
                 # Keep original quality, let the widget handle display
@@ -180,10 +182,9 @@ class TextureFileNode(UsdNodeBase):
             self._thumb.set_value(fp)
         super()._on_resize(width, height)
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         fp = self.get_property("file_path") or ""
         if fp:
-            import os
             if os.path.isfile(fp):
                 self._thumb.set_value(fp)
                 self.set_icon(fp)
@@ -210,8 +211,7 @@ class CreateUVTextureNode(UsdNodeBase):
         self.add_output("r", color=PORT_COLORS["float"])
         self.add_output("a", color=PORT_COLORS["float"])
         self.add_output("shader_prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdShade, Sdf, Gf
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Materials/MyMaterial/Texture"
         fp = self._get_input_value("file") or (self.get_property("file_path") or "").strip()
         shader = UsdShade.Shader.Define(stage, p)
@@ -261,8 +261,7 @@ class CreatePrimvarReaderNode(UsdNodeBase):
         self.add_text_input("varname", "Primvar Name", text="st")
         self.add_output("result", color=PORT_COLORS["any"])
         self.add_output("shader_prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdShade, Sdf
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Materials/MyMaterial/UVReader"
         shader = UsdShade.Shader.Define(stage, p)
         shader.CreateIdAttr("UsdPrimvarReader_float2")
@@ -283,8 +282,7 @@ class GetMaterialShadersNode(UsdNodeBase):
         self.add_output("surface", color=PORT_COLORS["prim"])
         self.add_output("displacement", color=PORT_COLORS["prim"])
         self.add_output("shader_list", color=PORT_COLORS["list"])
-    def execute(self, stage):
-        from pxr import UsdShade
+    def execute(self, stage) -> dict:
         mat_prim = self._get_input_value("material")
         if mat_prim is None:
             mp = (self.get_property("material_path") or "").strip()
@@ -321,8 +319,7 @@ class GetShaderInputNode(UsdNodeBase):
         self.add_output("value", color=PORT_COLORS["any"])
         self.add_output("connected_source", color=PORT_COLORS["prim"])
         self.add_output("all_inputs", color=PORT_COLORS["list"])
-    def execute(self, stage):
-        from pxr import UsdShade
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("shader")
         if prim is None:
             return {"value": None, "connected_source": None, "all_inputs": []}
@@ -355,8 +352,7 @@ class SetShaderInputNode(UsdNodeBase):
         self.add_text_input("input_name", "Input Name", text="roughness")
         self.add_text_input("manual_value", "Value (if no input)", text="")
         self.add_output("shader", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdShade
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("shader")
         if prim is None:
             return {"shader": None}
@@ -388,8 +384,7 @@ class ConnectShaderNode(UsdNodeBase):
         self.add_input("dest_shader", color=PORT_COLORS["prim"])
         self.add_text_input("dest_input", "Dest Input", text="diffuseColor")
         self.add_output("dest_shader", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdShade
+    def execute(self, stage) -> dict:
         src_prim = self._get_input_value("source_shader")
         dst_prim = self._get_input_value("dest_shader")
         if src_prim is None or dst_prim is None:
@@ -418,8 +413,7 @@ class SetUVTransformNode(UsdNodeBase):
         self.add_text_input("offset_t", "Offset T", text="0.0")
         self.add_text_input("rotation", "Rotation (degrees)", text="0.0")
         self.add_output("shader", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdShade, Sdf, Gf
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("shader")
         if prim is None:
             return {"shader": None}
@@ -474,8 +468,7 @@ class GetPrimMaterialNode(UsdNodeBase):
         self.add_output("shader", color=PORT_COLORS["prim"])
         self.add_output("textures", color=PORT_COLORS["list"])
         self.add_output("mat_path", color=PORT_COLORS["string"])
-    def execute(self, stage):
-        from pxr import UsdShade
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim is None:
             return {"material": None, "shader": None, "textures": [], "mat_path": ""}

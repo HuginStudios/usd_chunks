@@ -1,5 +1,8 @@
 """Physics simulation nodes using PyBullet."""
-import math
+from __future__ import annotations
+
+from pxr import Gf, Usd, UsdGeom, Vt
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -30,10 +33,9 @@ class RBDSolverNode(UsdNodeBase):
         self.add_text_input("start_frame", "Start Frame", text="1")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        import pybullet as p
-        import pybullet_data
-        from pxr import UsdGeom, Vt, Gf, Sdf, Usd
+    def execute(self, stage) -> dict:
+        import pybullet as p        # optional dependency — keep lazy
+        import pybullet_data        # optional dependency — keep lazy
 
         instancer_prim = self._get_input_value("instancer")
         collision_prims = self._get_all_collision_inputs()
@@ -78,7 +80,6 @@ class RBDSolverNode(UsdNodeBase):
         proto_rel = instancer.GetPrototypesRel()
         proto_targets = proto_rel.GetTargets()
         half_extents = [0.5, 0.5, 0.5]
-        radius = 0.5
         if proto_targets:
             proto_prim = stage.GetPrimAtPath(proto_targets[0])
             if proto_prim.IsValid():
@@ -88,10 +89,9 @@ class RBDSolverNode(UsdNodeBase):
                 if not rng.IsEmpty():
                     sz = rng.GetMax() - rng.GetMin()
                     half_extents = [sz[0]/2, sz[1]/2, sz[2]/2]
-                    radius = max(half_extents)
 
         # Setup PyBullet
-        physics_client = p.connect(p.DIRECT)
+        p.connect(p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, gravity)
         p.setTimeStep(dt)
@@ -161,7 +161,7 @@ class RBDSolverNode(UsdNodeBase):
 
         # Refresh usdview timeline so playback works
         try:
-            from usd_chunks import chunk_registry
+            from usd_chunks import chunk_registry  # usdview-guarded
             scene = chunk_registry.ChunkRegistry().scene
             if scene and hasattr(scene, 'usdviewAPI'):
                 ctrl = scene.usdviewAPI._UsdviewApi__appController
@@ -195,8 +195,6 @@ class RBDSolverNode(UsdNodeBase):
 
     def _add_collision_geometry(self, p, stage, collision_prims, friction, restitution):
         """Add collision geometry from collision prim inputs."""
-        from pxr import UsdGeom, Gf, Usd
-
         if not collision_prims:
             # No collision input — add infinite ground at Z=0
             ground_shape = p.createCollisionShape(p.GEOM_PLANE, planeNormal=[0, 0, 1])

@@ -1,4 +1,12 @@
 """Shape/primitive creation nodes."""
+from __future__ import annotations
+
+import bisect
+import math
+import random
+
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -10,8 +18,7 @@ class CreateCubeNode(UsdNodeBase):
         self.add_text_input("path", "Path", text="/Cube")
         self.add_text_input("size", "Size", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdGeom
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Cube"
         prim = UsdGeom.Cube.Define(stage, p)
         prim.GetSizeAttr().Set(float(self.get_property("size") or 1))
@@ -26,8 +33,7 @@ class CreateSphereNode(UsdNodeBase):
         self.add_text_input("path", "Path", text="/Sphere")
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdGeom
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Sphere"
         prim = UsdGeom.Sphere.Define(stage, p)
         prim.GetRadiusAttr().Set(float(self.get_property("radius") or 1))
@@ -43,8 +49,7 @@ class CreateCylinderNode(UsdNodeBase):
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_text_input("h", "Height", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdGeom
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Cylinder"
         prim = UsdGeom.Cylinder.Define(stage, p)
         prim.GetRadiusAttr().Set(float(self.get_property("radius") or 1))
@@ -61,8 +66,7 @@ class CreateConeNode(UsdNodeBase):
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_text_input("h", "Height", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdGeom
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Cone"
         prim = UsdGeom.Cone.Define(stage, p)
         prim.GetRadiusAttr().Set(float(self.get_property("radius") or 1))
@@ -79,8 +83,7 @@ class CreateCapsuleNode(UsdNodeBase):
         self.add_text_input("radius", "Radius", text="0.5")
         self.add_text_input("h", "Height", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdGeom
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Capsule"
         prim = UsdGeom.Capsule.Define(stage, p)
         prim.GetRadiusAttr().Set(float(self.get_property("radius") or 0.5))
@@ -97,8 +100,7 @@ class CreatePlaneNode(UsdNodeBase):
         self.add_text_input("w", "Width", text="10")
         self.add_text_input("length", "Length", text="10")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdGeom, Vt, Gf
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Plane"
         w = float(self.get_property("w") or 10) / 2
         length = float(self.get_property("length") or 10) / 2
@@ -119,8 +121,7 @@ class CreateXformNode(UsdNodeBase):
         super().__init__()
         self.add_text_input("path", "Path", text="/Group")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdGeom
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Group"
         prim = UsdGeom.Xform.Define(stage, p)
         return {"prim": prim.GetPrim()}
@@ -138,8 +139,7 @@ class PointInstancerNode(UsdNodeBase):
         self.add_text_input("grid", "Grid NxN (if no positions)", text="")
         self.add_text_input("spacing", "Grid Spacing", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdGeom, Vt, Gf, Sdf
+    def execute(self, stage) -> dict:
         inst_path = self.get_property("path") or "/Instancer"
         proto_prim = self._get_input_value("prototype")
         positions = self._get_input_value("positions")
@@ -190,7 +190,7 @@ class MakeInstanceableNode(UsdNodeBase):
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("instanceable", "Instanceable (true/false)", text="true")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim:
             v = (self.get_property("instanceable") or "true").lower() in ("true", "1")
@@ -223,11 +223,7 @@ class ScatterPointsNode(UsdNodeBase):
         self.add_text_input("rand_amount", "Random Rotation (deg)", text="360")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
-        import random
-        import math
-        from pxr import UsdGeom, Vt, Gf, Sdf
-
+    def execute(self, stage) -> dict:
         inst_path = self.get_property("path") or "/ScatterInstancer"
         count = int(self.get_property("count") or 100)
         seed = int(self.get_property("seed") or 0)
@@ -308,7 +304,6 @@ class ScatterPointsNode(UsdNodeBase):
 
     def _compute_orientation(self, mode, normal, math):
         """Compute base orientation quaternion based on mode."""
-        from pxr import Gf
         if mode == "Keep Original":
             return Gf.Quath(1, 0, 0, 0)
         elif mode == "Up":
@@ -321,7 +316,6 @@ class ScatterPointsNode(UsdNodeBase):
 
     def _apply_random_rotation(self, base_quat, axis, amount_deg, rng, math):
         """Apply random rotation on top of base orientation."""
-        from pxr import Gf
         if axis == "Off":
             return base_quat
 
@@ -349,7 +343,6 @@ class ScatterPointsNode(UsdNodeBase):
 
     def _quat_mul(self, a, b):
         """Multiply two Quath quaternions."""
-        from pxr import Gf
         aw, ax, ay, az = a.GetReal(), *a.GetImaginary()
         bw, bx, by, bz = b.GetReal(), *b.GetImaginary()
         return Gf.Quath(
@@ -362,14 +355,12 @@ class ScatterPointsNode(UsdNodeBase):
         """Collect all triangulated faces from the prim (and descendants) as world-space triangles.
         Returns list of (p0, p1, p2, normal) tuples.
         Falls back to bounding box if no mesh data found."""
-        from pxr import UsdGeom, Gf, Usd
         if not prim or not prim.IsValid():
             return []
 
         triangles = []
         # Use the prim's own stage (not the passed-in stage) to ensure we see
         # authored data from the same execution pass
-        prim_stage = prim.GetStage()
 
         # Traverse this prim and all descendants for meshes
         for p in Usd.PrimRange(prim):
@@ -433,7 +424,6 @@ class ScatterPointsNode(UsdNodeBase):
 
     def _scatter_on_triangles(self, triangles, count, rng):
         """Area-weighted random point sampling on triangles."""
-        from pxr import Gf
         # Compute areas for weighting
         areas = []
         for v0, v1, v2, _ in triangles:
@@ -458,7 +448,6 @@ class ScatterPointsNode(UsdNodeBase):
 
         positions = []
         normals = []
-        import bisect
         for _ in range(count):
             r = rng.random()
             tri_idx = bisect.bisect_left(cdf, r)
@@ -483,8 +472,6 @@ class ScatterPointsNode(UsdNodeBase):
 
     def _normal_to_quat(self, normal):
         """Convert a surface normal to a quaternion rotation (Z-up → normal)."""
-        from pxr import Gf
-        import math
         up = Gf.Vec3f(0, 0, 1)
         n = Gf.Vec3f(normal[0], normal[1], normal[2])
         ln = Gf.GetLength(n)

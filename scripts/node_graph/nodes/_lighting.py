@@ -1,4 +1,8 @@
 """Lighting nodes — rect, sphere, distant, dome, disk lights."""
+from __future__ import annotations
+
+from pxr import Gf, Sdf, UsdLux
+
 from ._base import UsdNodeBase, PORT_COLORS
 
 
@@ -15,8 +19,7 @@ class CreateRectLightNode(UsdNodeBase):
         self.add_text_input("color_g", "Color G", text="1.0")
         self.add_text_input("color_b", "Color B", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdLux, Gf
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/RectLight"
         light = UsdLux.RectLight.Define(stage, p)
         light.GetWidthAttr().Set(float(self.get_property("w") or 2))
@@ -41,8 +44,7 @@ class CreateSphereLightNode(UsdNodeBase):
         self.add_text_input("color_g", "Color G", text="1.0")
         self.add_text_input("color_b", "Color B", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdLux, Gf
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/SphereLight"
         light = UsdLux.SphereLight.Define(stage, p)
         light.GetRadiusAttr().Set(float(self.get_property("radius") or 0.5))
@@ -66,8 +68,7 @@ class CreateDistantLightNode(UsdNodeBase):
         self.add_text_input("color_g", "Color G", text="1.0")
         self.add_text_input("color_b", "Color B", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdLux, Gf
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/DistantLight"
         light = UsdLux.DistantLight.Define(stage, p)
         light.GetIntensityAttr().Set(float(self.get_property("intensity") or 500))
@@ -88,8 +89,7 @@ class CreateDomeLightNode(UsdNodeBase):
         self.add_text_input("intensity", "Intensity", text="1.0")
         self.add_text_input("texture", "Texture File (HDRI)", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdLux, Sdf
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/DomeLight"
         light = UsdLux.DomeLight.Define(stage, p)
         light.GetIntensityAttr().Set(float(self.get_property("intensity") or 1))
@@ -108,8 +108,7 @@ class CreateDiskLightNode(UsdNodeBase):
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_text_input("intensity", "Intensity", text="500")
         self.add_output("prim", color=PORT_COLORS["prim"])
-    def execute(self, stage):
-        from pxr import UsdLux
+    def execute(self, stage) -> dict:
         p = self.get_property("path") or "/DiskLight"
         light = UsdLux.DiskLight.Define(stage, p)
         light.GetRadiusAttr().Set(float(self.get_property("radius") or 1))

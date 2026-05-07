@@ -1,5 +1,10 @@
 """Input nodes — constant values and prim selection."""
+from __future__ import annotations
+
+import fnmatch
+
 from PySide6 import QtCore
+
 from ._base import UsdNodeBase, PORT_COLORS
 from ._base import _NodePreviewWidget
 
@@ -25,8 +30,7 @@ class PrimPathNode(UsdNodeBase):
         self.add_output("count", color=PORT_COLORS["float"])
         QtCore.QTimer.singleShot(0, lambda: self._on_resize(260))
 
-    def execute(self, stage):
-        import fnmatch
+    def execute(self, stage) -> dict:
         path = self.get_property("prim_path") or ""
         if not path:
             self._preview.set_value("")
@@ -53,7 +57,7 @@ class PrimPathNode(UsdNodeBase):
             self._preview.set_value("✗  no prim")
         return {"prim": prim if valid else None, "prims": [prim] if valid else [], "count": 1 if valid else 0}
 
-    def to_python(self, var_map):
+    def to_python(self, var_map: dict) -> str:
         path = self.get_property("prim_path") or "/"
         v = var_map.get("prim", "prim")
         return f'{v} = stage.GetPrimAtPath("{path}")'
@@ -68,9 +72,9 @@ class SelectedPrimNode(UsdNodeBase):
         super().__init__()
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         try:
-            from ..graph_host import GraphHost
+            from ..graph_host import GraphHost  # usdview-guarded
             prims = GraphHost.current().get_selection()
             return {"prim": prims[0] if prims else None}
         except Exception:
@@ -89,7 +93,7 @@ class StringNode(UsdNodeBase):
         self.add_custom_widget(self._preview)
         self.add_output("string", color=PORT_COLORS["string"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         val = self.get_property("value") or ""
         self._preview.set_value(f'"{val[:36]}"' if val else '""')
         return {"string": val}
@@ -105,7 +109,7 @@ class FloatNode(UsdNodeBase):
         self.add_text_input("value", "Value", text="0.0")
         self.add_output("float", color=PORT_COLORS["float"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         try:
             return {"float": float(self.get_property("value") or 0)}
         except ValueError:
@@ -122,6 +126,6 @@ class BoolNode(UsdNodeBase):
         self.add_text_input("value", "Value (true/false)", text="true")
         self.add_output("bool", color=PORT_COLORS["bool"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         v = (self.get_property("value") or "").lower()
         return {"bool": v in ("true", "1", "yes")}
