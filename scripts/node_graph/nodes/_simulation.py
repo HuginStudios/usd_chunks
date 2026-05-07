@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 
+import numpy as _np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 try:
@@ -13,6 +14,13 @@ try:
     _HAS_PYBULLET = True
 except ImportError:
     _HAS_PYBULLET = False
+
+try:
+    import noise as _noise
+
+    _HAS_NOISE = True
+except ImportError:
+    _HAS_NOISE = False
 
 from ._base import UsdNodeBase, PORT_COLORS
 
@@ -34,6 +42,7 @@ class RBDSolverNode(UsdNodeBase):
         super().__init__()
         self.add_input("instancer", color=PORT_COLORS["prim"])
         self.add_input("collision", multi_input=True, color=PORT_COLORS["prim"])
+        self.add_input("forces", multi_input=True, color=PORT_COLORS["data"])
         self.add_text_input("frames", "Frame Count", text="120")
         self.add_text_input("fps", "FPS", text="24")
         self.add_text_input("gravity", "Gravity", text="-9.81")
@@ -63,6 +72,7 @@ class RBDSolverNode(UsdNodeBase):
 
         input_prim = self._get_input_value("instancer")
         collision_prims = self._get_all_collision_inputs()
+        force_dicts = self._get_all_force_inputs()
 
         if not input_prim or not input_prim.IsValid():
             print("[RBDSolver] No input prim")
@@ -120,6 +130,7 @@ class RBDSolverNode(UsdNodeBase):
                     friction_var,
                     restitution_var,
                     var_seed,
+                    force_dicts,
                 )
             else:
                 self._sim_single_prim(
@@ -145,6 +156,7 @@ class RBDSolverNode(UsdNodeBase):
                     friction_var,
                     restitution_var,
                     var_seed,
+                    force_dicts,
                 )
 
         # Set stage time range
@@ -188,6 +200,7 @@ class RBDSolverNode(UsdNodeBase):
         friction_var,
         restitution_var,
         var_seed,
+        force_dicts=None,
     ) -> None:
         """Simulate a PointInstancer — multiple rigid bodies."""
         positions = instancer.GetPositionsAttr().Get()
@@ -264,11 +277,16 @@ class RBDSolverNode(UsdNodeBase):
             )
             bodies.append(body)
 
+        force_dicts = force_dicts or []
+
         # Simulate — substeps steps per frame
         all_positions = []
         all_orientations = []
         for frame in range(frame_count):
-            for _ in range(substeps):
+            for sub in range(substeps):
+                step = frame * substeps + sub
+                for i, body in enumerate(bodies):
+                    _apply_forces(p, body, i, step, force_dicts)
                 p.stepSimulation()
             frame_pos = []
             frame_orn = []
@@ -312,6 +330,7 @@ class RBDSolverNode(UsdNodeBase):
         friction_var,
         restitution_var,
         var_seed,
+        force_dicts=None,
     ) -> None:
         """Simulate a single prim as one rigid body — writes time-sampled xform."""
         # Get prim's world transform as initial position/orientation
@@ -375,13 +394,17 @@ class RBDSolverNode(UsdNodeBase):
         )
         p.resetBaseVelocity(body, linearVelocity=init_vel, angularVelocity=ang_vel)
 
+        force_dicts = force_dicts or []
+
         # Simulate and write xform per frame
         xformable = UsdGeom.Xformable(prim)
         xformable.ClearXformOpOrder()
         xf_op = xformable.AddTransformOp()
 
         for frame in range(frame_count):
-            for _ in range(substeps):
+            for sub in range(substeps):
+                step = frame * substeps + sub
+                _apply_forces(p, body, 0, step, force_dicts)
                 p.stepSimulation()
             pos, orn = p.getBasePositionAndOrientation(body)
             # Build world-space matrix from sim result
@@ -393,6 +416,20 @@ class RBDSolverNode(UsdNodeBase):
             xf_op.Set(local_mat, Usd.TimeCode(start_frame + frame))
 
         p.disconnect()
+
+    def _get_all_force_inputs(self) -> list:
+        """Get all force dicts connected to the multi-input forces port."""
+        port = self.get_input("forces")
+        if not port:
+            return []
+        force_dicts = []
+        for src_port in port.connected_ports():
+            src_node = src_port.node()
+            if hasattr(src_node, "_output_cache"):
+                val = src_node._output_cache.get(src_port.name())
+                if isinstance(val, dict):
+                    force_dicts.append(val)
+        return force_dicts
 
     def _get_all_collision_inputs(self) -> list:
         """Get all prims connected to the multi-input collision port."""
@@ -460,6 +497,38 @@ class RBDSolverNode(UsdNodeBase):
         if len(parts) >= 3:
             return [float(parts[0]), float(parts[1]), float(parts[2])]
         return [0.0, 0.0, 0.0]
+
+
+def _apply_forces(p, body: int, body_index: int, step: int, force_dicts: list) -> None:
+    """Apply all force dicts to a single body for one simulation substep."""
+    for fd in force_dicts:
+        ftype = fd.get("type")
+        if ftype == "wind":
+            strength = fd.get("strength", 1.0)
+            fx = fd.get("x", 0.0) * strength
+            fy = fd.get("y", 0.0) * strength
+            fz = fd.get("z", 0.0) * strength
+            p.applyExternalForce(body, -1, [fx, fy, fz], [0, 0, 0], p.WORLD_FRAME)
+        elif ftype == "drag":
+            coeff = fd.get("coefficient", 0.5)
+            vel, _ = p.getBaseVelocity(body)
+            drag = [-coeff * v for v in vel]
+            p.applyExternalForce(body, -1, drag, [0, 0, 0], p.WORLD_FRAME)
+        elif ftype == "turbulence":
+            strength = fd.get("strength", 5.0)
+            frequency = fd.get("frequency", 1.0)
+            seed = fd.get("seed", 42)
+            if _HAS_NOISE:
+                t = step * frequency
+                fx = _noise.pnoise1(t + body_index * 31.7 + seed) * strength
+                fy = _noise.pnoise1(t + body_index * 31.7 + seed + 100.3) * strength
+                fz = _noise.pnoise1(t + body_index * 31.7 + seed + 200.7) * strength
+            else:
+                rng = _np.random.default_rng(seed + body_index * 37 + step)
+                fx, fy, fz = (rng.standard_normal(3) * strength).tolist()
+            p.applyExternalForce(body, -1, [fx, fy, fz], [0, 0, 0], p.WORLD_FRAME)
+        else:
+            print(f"[RBDSolver] Unknown force type: {ftype!r}, skipping")
 
 
 def _variance_multiplier(rng: random.Random, variance: float) -> float:
