@@ -2,6 +2,7 @@
 Shared primitives used by all nodes:
 imports, port colors, base classes, UsdNodeBase, thumbnail helpers.
 """
+
 from __future__ import annotations
 
 import inspect as _inspect
@@ -16,22 +17,23 @@ from usd_chunks import chunk_notice, chunk_registry as _chunk_registry
 
 # ─── Port color palette ───
 PORT_COLORS = {
-    "prim":     (230, 120, 40),   # warm orange
-    "string":   (60, 210, 120),   # neon green
-    "bool":     (230, 210, 50),   # neon yellow
-    "list":     (70, 150, 230),   # bright blue
-    "any":      (140, 150, 170),  # cool grey
-    "color":    (230, 60, 80),    # neon red
-    "float":    (50, 210, 220),   # cyan
+    "prim": (230, 120, 40),  # warm orange
+    "string": (60, 210, 120),  # neon green
+    "bool": (230, 210, 50),  # neon yellow
+    "list": (70, 150, 230),  # bright blue
+    "any": (140, 150, 170),  # cool grey
+    "color": (230, 60, 80),  # neon red
+    "float": (50, 210, 220),  # cyan
     "material": (180, 100, 240),  # neon violet
-    "texture":  (240, 190, 60),   # gold
-    "trigger":  (200, 80, 220),   # purple — execution flow only
-    "layer":    (100, 200, 255),  # light blue — USD layer
+    "texture": (240, 190, 60),  # gold
+    "trigger": (200, 80, 220),  # purple — execution flow only
+    "layer": (100, 200, 255),  # light blue — USD layer
 }
 # Reverse map: color tuple → data type name (used for type enforcement)
 _COLOR_TO_TYPE = {v: k for k, v in PORT_COLORS.items()}
 
 _PORT_TYPE_CACHE = {}
+
 
 def _get_node_port_types(node_cls) -> dict[str, set[str]]:
     """Return {"inputs": set, "outputs": set} of port data-type names for a node class.
@@ -54,10 +56,15 @@ def _get_node_port_types(node_cls) -> dict[str, set[str]]:
     _PORT_TYPE_CACHE[node_cls] = result
     return result
 
+
 # Sentinel: when a port carries this value, downstream nodes ignore it as data
 class _TriggerSignal:
     """Sentinel value for trigger ports — causes get_property to skip the connection."""
-    def __repr__(self): return "<trigger>"
+
+    def __repr__(self):
+        return "<trigger>"
+
+
 TRIGGER = _TriggerSignal()
 
 
@@ -75,25 +82,27 @@ def _safe_set_port_visible(port, visible: bool) -> None:
 _EDGE_MARGIN = 8  # pixels from edge to trigger resize
 
 CATEGORY_COLORS = {
-    "Input":       (14, 50, 40),
-    "USD":         (14, 35, 55),
-    "Create":      (14, 45, 30),
-    "Transform":   (14, 45, 35),
-    "Hierarchy":   (30, 20, 50),
+    "Input": (14, 50, 40),
+    "USD": (14, 35, 55),
+    "Create": (14, 45, 30),
+    "Transform": (14, 45, 35),
+    "Hierarchy": (30, 20, 50),
     "Composition": (40, 30, 16),
-    "Material":    (45, 16, 35),
-    "Lighting":    (50, 42, 12),
-    "Camera":      (20, 35, 48),
-    "Animation":   (48, 35, 12),
-    "Utility":     (22, 24, 30),
-    "Math":        (14, 40, 42),
-    "Code":        (18, 18, 22),
-    "Chunks":      (16, 32, 42),
-    "Debug":       (42, 18, 18),
-    "Event":       (50, 20, 50),
+    "Material": (45, 16, 35),
+    "Lighting": (50, 42, 12),
+    "Camera": (20, 35, 48),
+    "Animation": (48, 35, 12),
+    "Utility": (22, 24, 30),
+    "Math": (14, 40, 42),
+    "Code": (18, 18, 22),
+    "Chunks": (16, 32, 42),
+    "Debug": (42, 18, 18),
+    "Event": (50, 20, 50),
+    "Simulation": (45, 20, 14),
 }
 
-def _detect_edge(view, pos):
+
+def _detect_edge(view, pos) -> str | None:
     """Detect if pos is near the right/bottom edge of the node."""
     rect = view.boundingRect()
     near_right = abs(pos.x() - rect.right()) < _EDGE_MARGIN
@@ -109,11 +118,12 @@ def _detect_edge(view, pos):
 
 class UsdNodeBase(BaseNode):
     """Common base for all USD graph nodes."""
+
     __identifier__ = "usd_chunks"
     NODE_NAME = "UsdNodeBase"
     CATEGORY = "Base"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._handle = None
         self._min_w = None
@@ -126,14 +136,14 @@ class UsdNodeBase(BaseNode):
         # without knowing the executor exists.
         self._dirty_callback = None
         self.view._node_type_name = self.NODE_NAME
-        cat = getattr(self, 'CATEGORY', 'Base')
+        cat = getattr(self, "CATEGORY", "Base")
         if cat in CATEGORY_COLORS:
             self.set_color(*CATEGORY_COLORS[cat])
         # Auto-add hidden trigger input — shown only when a trigger wire connects.
         # Deferred because set_visible() requires the node to be in the graph.
         QtCore.QTimer.singleShot(0, self._init_trigger_input)
 
-    def _init_trigger_input(self):
+    def _init_trigger_input(self) -> None:
         try:
             existing = {p.name() for p in self.input_ports()}
             if "trigger" not in existing:
@@ -143,31 +153,55 @@ class UsdNodeBase(BaseNode):
             pass
         QtCore.QTimer.singleShot(500, self._setup_resize)
 
-    def add_input(self, name='input', multi_input=False, display_name=True,
-                  color=None, locked=False, painter_func=None):
-        port = super().add_input(name, multi_input=multi_input,
-                                 display_name=display_name, color=color,
-                                 locked=locked, painter_func=painter_func)
-        dtype = _COLOR_TO_TYPE.get(color, 'any') if color is not None else 'any'
+    def add_input(
+        self,
+        name="input",
+        multi_input=False,
+        display_name=True,
+        color=None,
+        locked=False,
+        painter_func=None,
+    ):
+        port = super().add_input(
+            name,
+            multi_input=multi_input,
+            display_name=display_name,
+            color=color,
+            locked=locked,
+            painter_func=painter_func,
+        )
+        dtype = _COLOR_TO_TYPE.get(color, "any") if color is not None else "any"
         try:
             port.view._data_type = dtype
         except Exception:
             pass
         return port
 
-    def add_output(self, name='output', multi_output=True, display_name=True,
-                   color=None, locked=False, painter_func=None):
-        port = super().add_output(name, multi_output=multi_output,
-                                  display_name=display_name, color=color,
-                                  locked=locked, painter_func=painter_func)
-        dtype = _COLOR_TO_TYPE.get(color, 'any') if color is not None else 'any'
+    def add_output(
+        self,
+        name="output",
+        multi_output=True,
+        display_name=True,
+        color=None,
+        locked=False,
+        painter_func=None,
+    ):
+        port = super().add_output(
+            name,
+            multi_output=multi_output,
+            display_name=display_name,
+            color=color,
+            locked=locked,
+            painter_func=painter_func,
+        )
+        dtype = _COLOR_TO_TYPE.get(color, "any") if color is not None else "any"
         try:
             port.view._data_type = dtype
         except Exception:
             pass
         return port
 
-    def add_text_input(self, name, *args, **kwargs):
+    def add_text_input(self, name, *args, **kwargs) -> None:
         """Override: auto-create a connectable input port for each text input."""
         super().add_text_input(name, *args, **kwargs)
         if name not in ("code",):
@@ -181,7 +215,7 @@ class UsdNodeBase(BaseNode):
             self._hide_scheduled = True
             QtCore.QTimer.singleShot(200, self._batch_hide_widgets)
 
-    def _batch_hide_widgets(self):
+    def _batch_hide_widgets(self) -> None:
         """Hide all collected text-input widgets in one pass, then recompute layout."""
         self._hide_scheduled = False
         changed = False
@@ -206,7 +240,7 @@ class UsdNodeBase(BaseNode):
                 lbl.setText(text)
             self.view.update()
 
-    def _get_prop_value(self, name, cast=None):
+    def _get_prop_value(self, name, cast=None) -> object | None:
         """Get value from connected port '_{name}', fallback to text property.
         Optionally cast to float/int/str."""
         val = self._get_input_value(f"_{name}")
@@ -221,7 +255,7 @@ class UsdNodeBase(BaseNode):
 
     _graph_ref = None  # set by NodeGraphWidget so nodes can find each other
 
-    def get_property(self, name):
+    def get_property(self, name) -> object:
         """Override: check connected port, then @reference, then text value."""
         # Check for connected auto-port first
         port = self.get_input(f"_{name}")
@@ -229,7 +263,11 @@ class UsdNodeBase(BaseNode):
             connected = port.connected_ports()
             if connected:
                 src_node = connected[0].node()
-                val = src_node._output_cache.get(connected[0].name()) if hasattr(src_node, "_output_cache") else None
+                val = (
+                    src_node._output_cache.get(connected[0].name())
+                    if hasattr(src_node, "_output_cache")
+                    else None
+                )
                 if val is not None and not isinstance(val, _TriggerSignal):
                     return str(val) if isinstance(val, (int, float)) else val
         # Check for @reference expression
@@ -238,7 +276,7 @@ class UsdNodeBase(BaseNode):
             return self._resolve_ref(raw)
         return raw
 
-    def _resolve_ref(self, ref_str: str):
+    def _resolve_ref(self, ref_str: str) -> object:
         """Resolve @name.property to a concrete value.
 
         Preferred path: delegate to chunk_core.resolve_reference, which looks the reference up
@@ -282,7 +320,7 @@ class UsdNodeBase(BaseNode):
             pass
         return ref_str
 
-    def _setup_resize(self):
+    def _setup_resize(self) -> None:
         try:
             r = self.view.boundingRect()
             self._min_w = r.width()
@@ -299,7 +337,7 @@ class UsdNodeBase(BaseNode):
             orig_move = view.mouseMoveEvent
             orig_release = view.mouseReleaseEvent
 
-            def _hover(event, _orig=orig_hover):
+            def _hover(event, _orig=orig_hover) -> None:
                 edge = _detect_edge(view, event.pos())
                 if edge:
                     cursors = {
@@ -313,7 +351,7 @@ class UsdNodeBase(BaseNode):
                 if _orig:
                     _orig(event)
 
-            def _press(event, _orig=orig_press):
+            def _press(event, _orig=orig_press) -> None:
                 edge = _detect_edge(view, event.pos())
                 if edge and event.button() == QtCore.Qt.LeftButton:
                     view._resize_dragging = True
@@ -325,19 +363,23 @@ class UsdNodeBase(BaseNode):
                     return
                 _orig(event)
 
-            def _move(event, _orig=orig_move):
+            def _move(event, _orig=orig_move) -> None:
                 if view._resize_dragging:
                     dx = event.scenePos().x() - view._resize_start.x()
                     dy = event.scenePos().y() - view._resize_start.y()
                     edge = view._resize_edge
-                    w = view._resize_start_w + (dx if edge in ("right", "corner") else 0)
-                    h = view._resize_start_h + (dy if edge in ("bottom", "corner") else 0)
+                    w = view._resize_start_w + (
+                        dx if edge in ("right", "corner") else 0
+                    )
+                    h = view._resize_start_h + (
+                        dy if edge in ("bottom", "corner") else 0
+                    )
                     view._resize_node._on_resize(int(w), int(h))
                     event.accept()
                     return
                 _orig(event)
 
-            def _release(event, _orig=orig_release):
+            def _release(event, _orig=orig_release) -> None:
                 if view._resize_dragging:
                     view._resize_dragging = False
                     view._resize_edge = None
@@ -352,7 +394,7 @@ class UsdNodeBase(BaseNode):
         except Exception:
             pass
 
-    def _on_resize(self, width, height=None):
+    def _on_resize(self, width, height=None) -> None:
         w = max(self._min_w or 120, width)
         h = max(self._min_h or 60, height) if height else None
         # Only resize widget max widths (not min) so they can shrink
@@ -362,9 +404,11 @@ class UsdNodeBase(BaseNode):
             for child in wgt.widget().findChildren(QtWidgets.QLineEdit):
                 child.setMaximumWidth(widget_w)
         orig_calc = self.view.calc_size
-        def _forced_size(add_w=0, add_h=0):
+
+        def _forced_size(add_w=0, add_h=0) -> None:
             ow, oh = orig_calc(add_w, add_h)
             return (max(w, ow), max(h or oh, oh))
+
         self.view.calc_size = _forced_size
         self.view.draw_node()
         self.view.calc_size = orig_calc
@@ -376,7 +420,7 @@ class UsdNodeBase(BaseNode):
         """Generate Python code for this node. var_map: {port_name: variable_name}."""
         return f"# {self.NODE_NAME} (no code generation)"
 
-    def _get_input_value(self, port_name):
+    def _get_input_value(self, port_name) -> object | None:
         port = self.get_input(port_name)
         if not port:
             return None
@@ -384,7 +428,11 @@ class UsdNodeBase(BaseNode):
         if not connected:
             return None
         src_node = connected[0].node()
-        val = src_node._output_cache.get(connected[0].name()) if hasattr(src_node, "_output_cache") else None
+        val = (
+            src_node._output_cache.get(connected[0].name())
+            if hasattr(src_node, "_output_cache")
+            else None
+        )
         if isinstance(val, _TriggerSignal):
             return None
         # Auto-unwrap single-item lists for prim ports
@@ -392,9 +440,8 @@ class UsdNodeBase(BaseNode):
             val = val[0]
         return val
 
-
     @property
-    def color(self):
+    def color(self) -> None:
         c = super().color
         return c[:3] if len(c) > 3 else c
 
@@ -407,31 +454,34 @@ class UsdNodeBase(BaseNode):
             return [p for p in v if p is not None]
         return [v]
 
+
 # ────────────────────────────────────────────
 #  Input / Utility nodes
 # ────────────────────────────────────────────
 class _NodePreviewWidget(NodeBaseWidget):
     """One-line dim preview shown at the bottom of a node after execution."""
-    def __init__(self, parent=None, name="preview", label=""):
+
+    def __init__(self, parent=None, name="preview", label="") -> None:
         super().__init__(parent, name, label)
         self._container = QtWidgets.QWidget()
         lay = QtWidgets.QHBoxLayout(self._container)
         lay.setContentsMargins(8, 3, 8, 4)
         self._lbl = QtWidgets.QLabel("")
         self._lbl.setStyleSheet(
-            "color: rgba(140,160,200,0.55); font: 7pt 'Consolas'; background: transparent;")
+            "color: rgba(140,160,200,0.55); font: 7pt 'Consolas'; background: transparent;"
+        )
         self._lbl.setTitleAlign = lambda *a: None
         lay.addWidget(self._lbl)
         self._container.setStyleSheet(
-            "background: rgba(0,0,0,0.18);"
-            " border-top: 1px solid rgba(30,36,56,0.6);")
+            "background: rgba(0,0,0,0.18); border-top: 1px solid rgba(30,36,56,0.6);"
+        )
         self._container.setTitleAlign = lambda *a: None
         self.setWidget(self._container)
 
-    def get_value(self):
+    def get_value(self) -> object:
         return self._lbl.text()
 
-    def set_value(self, val=""):
+    def set_value(self, val="") -> None:
         self._lbl.setText(val or "")
 
 
@@ -445,14 +495,15 @@ class ChunkWrapperBase(UsdNodeBase):
     when the wrapped chunk has notice dependencies, a CHUNK_CHANGED listener is
     installed so that downstream nodes re-execute whenever the chunk reacts.
     """
+
     CATEGORY = "Chunks"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._chunk_notice_conn = None
         self._executing = False
 
-    def _subscribe_to_chunk_notices(self, chunk_obj):
+    def _subscribe_to_chunk_notices(self, chunk_obj) -> None:
         """Install a CHUNK_CHANGED listener. Safe to call repeatedly; created once per node."""
         if self._chunk_notice_conn is not None or chunk_obj is None:
             return
@@ -465,13 +516,13 @@ class ChunkWrapperBase(UsdNodeBase):
         except Exception:
             self._chunk_notice_conn = None
 
-    def _on_chunk_notice_fired(self, notice, sender):
+    def _on_chunk_notice_fired(self, notice, sender) -> None:
         """Defers downstream execution so the chunk finishes its own solve first."""
         if self._executing:
             return
         QtCore.QTimer.singleShot(0, self._trigger_downstream)
 
-    def _trigger_downstream(self):
+    def _trigger_downstream(self) -> None:
         """Re-execute this node and cascade to downstream via executor."""
         if self._dirty_callback is not None:
             self._dirty_callback()
@@ -479,9 +530,10 @@ class ChunkWrapperBase(UsdNodeBase):
 
 class DynamicChunkNode(ChunkWrapperBase):
     """Wraps any loaded chunk. Set chunk_name, then execute fires its first button."""
+
     NODE_NAME = "Chunk (Dynamic)"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("chunk_name", "Chunk Name", text="")
@@ -491,6 +543,7 @@ class DynamicChunkNode(ChunkWrapperBase):
     def execute(self, stage) -> dict:
         from ..chunk_adapter import ChunkAdapter
         from ..graph_host import GraphHost
+
         prim = self._get_input_value("prim")
         chunk_name = (self.get_property("chunk_name") or "").strip()
         if not chunk_name:
@@ -499,7 +552,9 @@ class DynamicChunkNode(ChunkWrapperBase):
 
         adapter = ChunkAdapter(chunk_name)
         if not adapter.chunk:
-            print(f"[DynamicChunkNode] '{chunk_name}' not found. Available: {ChunkAdapter.list_available()}")
+            print(
+                f"[DynamicChunkNode] '{chunk_name}' not found. Available: {ChunkAdapter.list_available()}"
+            )
             return {"prim": prim}
 
         self._subscribe_to_chunk_notices(adapter.chunk)
@@ -524,29 +579,34 @@ class DynamicChunkNode(ChunkWrapperBase):
 
 # ── GroupNode promotion helpers ──────────────────────────────────────────────
 
-def _get_promotions(group_node):
+
+def _get_promotions(group_node) -> dict:
     """Return the _promotions dict for a GroupNode, restoring from JSON if needed."""
-    if not hasattr(group_node, '_promotions'):
+    if not hasattr(group_node, "_promotions"):
         try:
-            raw = group_node.get_property('promoted_params')
-            group_node._promotions = _json.loads(raw) if isinstance(raw, str) and raw else {}
+            raw = group_node.get_property("promoted_params")
+            group_node._promotions = (
+                _json.loads(raw) if isinstance(raw, str) and raw else {}
+            )
         except Exception:
             group_node._promotions = {}
     return group_node._promotions
 
 
-def _get_promoted_outputs(group_node):
+def _get_promoted_outputs(group_node) -> dict:
     """Return the _promoted_outputs dict for a GroupNode, restoring from JSON if needed."""
-    if not hasattr(group_node, '_promoted_outputs'):
+    if not hasattr(group_node, "_promoted_outputs"):
         try:
-            raw = group_node.get_property('promoted_outputs')
-            group_node._promoted_outputs = _json.loads(raw) if isinstance(raw, str) and raw else {}
+            raw = group_node.get_property("promoted_outputs")
+            group_node._promoted_outputs = (
+                _json.loads(raw) if isinstance(raw, str) and raw else {}
+            )
         except Exception:
             group_node._promoted_outputs = {}
     return group_node._promoted_outputs
 
 
-def _save_promotions(group_node):
+def _save_promotions(group_node) -> None:
     """Serialize _promotions/_promoted_outputs into model.custom_properties.
 
     Written directly to the model dict to bypass NodeGraphQt's undo stack —
@@ -554,14 +614,14 @@ def _save_promotions(group_node):
     'promoted_params' is not a registered node property.
     """
     try:
-        group_node.model.custom_properties['promoted_params'] = _json.dumps(
-            getattr(group_node, '_promotions', {})
+        group_node.model.custom_properties["promoted_params"] = _json.dumps(
+            getattr(group_node, "_promotions", {})
         )
     except Exception as e:
         print(f"[NodeGraph] save promotions err: {e}")
     try:
-        group_node.model.custom_properties['promoted_outputs'] = _json.dumps(
-            getattr(group_node, '_promoted_outputs', {})
+        group_node.model.custom_properties["promoted_outputs"] = _json.dumps(
+            getattr(group_node, "_promoted_outputs", {})
         )
     except Exception as e:
         print(f"[NodeGraph] save promoted_outputs err: {e}")
