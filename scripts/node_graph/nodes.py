@@ -3402,7 +3402,7 @@ class _TriggerNodeBase(UsdNodeBase):
         return None
 
     def _trigger_downstream(self):
-        """Called when event fires — executes downstream connected nodes + @ref dependents."""
+        """Called when event fires — schedules downstream execution via executor."""
         if self._min_interval_ms > 0:
             from PySide6 import QtCore
             now = QtCore.QDateTime.currentMSecsSinceEpoch()
@@ -3413,26 +3413,7 @@ class _TriggerNodeBase(UsdNodeBase):
         graph_widget = self._get_graph_widget()
         if not graph_widget or not graph_widget._stage:
             return
-        # Get wired downstream nodes
-        downstream = graph_widget._get_downstream(self)
-        if not downstream:
-            return
-        # Also find nodes that @reference any downstream node by name
-        downstream_names = {n.name() for n in downstream}
-        all_nodes = graph_widget._graph.all_nodes()
-        for n in all_nodes:
-            if n in downstream or isinstance(n, _TriggerNodeBase):
-                continue
-            if not hasattr(n, 'model'):
-                continue
-            for val in n.model.custom_properties.values():
-                if isinstance(val, str) and val.startswith("@"):
-                    ref_node = val[1:].split(".")[0]
-                    if ref_node in downstream_names:
-                        downstream.append(n)
-                        break
-        for node in downstream:
-            graph_widget._execute_node(node)
+        graph_widget._executor.mark_dirty(self)
 
     def _get_graph_widget(self):
         import sys
@@ -3987,7 +3968,6 @@ def _make_chunk_node(module_name, chunk_name):
             # node of this type would bind to the same single chunk (the first hit by
             # display name) and cross-node references would self-reference.
             my_chunk = self._ensure_chunk()
-            print(f"[DBG] {self.name()} execute: _my_chunk={getattr(self,'_my_chunk',None)}, name={getattr(getattr(self,'_my_chunk',None),'name',None)}")
             if not hasattr(self, '_cached_adapter') or not self._cached_adapter.chunk:
                 self._cached_adapter = ChunkAdapter(
                     self._chunk_display_name,
@@ -3995,7 +3975,6 @@ def _make_chunk_node(module_name, chunk_name):
                     chunk=my_chunk,
                 )
             adapter = self._cached_adapter
-            print(f"[DBG] {self.name()} adapter.chunk={getattr(adapter,'chunk',None)}, name={getattr(getattr(adapter,'chunk',None),'name',None)}")
             if not adapter.chunk:
                 return {"prim": prim}
 
@@ -4048,9 +4027,7 @@ def _make_chunk_node(module_name, chunk_name):
                                 existing_ref = getattr(p, "value_reference", None)
                                 prop_val = self.get_property(p.name)
                                 if isinstance(prop_val, str) and prop_val.startswith("@"):
-                                    print(f"[DBG] {self.name()} set_param ref: {p.name} = {prop_val}")
                                     adapter.set_param(p.name, prop_val)
-                                    print(f"[DBG] {self.name()} after set_param, value_reference={getattr(p,'value_reference',None)}, _ref_target={getattr(p,'_ref_target',None)}")
                                 elif existing_ref and not (isinstance(prop_val, str) and prop_val.startswith("@")):
                                     try:
                                         self.set_property(p.name, existing_ref)
@@ -4081,8 +4058,7 @@ def _make_chunk_node(module_name, chunk_name):
                         GROUP_CHANGED notice fires and callbacks like cube_changed() run."""
                         try:
                             my_params = container.get_my_params()
-                        except Exception as _e:
-                            print(f"[DBG] _fire_ref_params get_my_params err: {_e}")
+                        except Exception:
                             return
                         group_had_ref = False
                         for p in my_params:
@@ -4091,15 +4067,13 @@ def _make_chunk_node(module_name, chunk_name):
                             elif isinstance(p, chunk_core.ChunkVectorBase):
                                 for sub in p:
                                     if getattr(sub, "value_reference", None):
-                                        print(f"[DBG] firing INPUT_CHANGED on vector sub {sub.name}, ref={sub.value_reference}")
                                         try:
                                             sub.data_changed(_ic_notice)
                                             group_had_ref = True
-                                        except Exception as _e:
-                                            print(f"[DBG] data_changed err: {_e}")
+                                        except Exception:
+                                            pass
                             else:
                                 if getattr(p, "value_reference", None):
-                                    print(f"[DBG] firing INPUT_CHANGED on {p.name}, ref={p.value_reference}, val_before={getattr(p,'value',None)}")
                                     try:
                                         p.data_changed(_ic_notice)
                                         group_had_ref = True
@@ -4178,7 +4152,6 @@ def _make_chunk_node(module_name, chunk_name):
                     _export_params(adapter.chunk.get_params())
                 except Exception:
                     pass
-                print(f"[chunk-exec] {self.name()} output keys: {[k for k in result.keys() if k.startswith('_')]}")
                 return result
             finally:
                 self._executing = False

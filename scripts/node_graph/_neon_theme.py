@@ -16,6 +16,14 @@ def install_neon_theme(graph_widget):
     from NodeGraphQt.constants import NodeEnum, PortEnum
     from .nodes import CATEGORY_COLORS
 
+    # Guard against NodeGraphQt bug where auto_switch_mode is called with no viewer
+    _orig_auto_switch = NodeItem.auto_switch_mode
+    def _safe_auto_switch(self):
+        if self.viewer() is None:
+            return
+        _orig_auto_switch(self)
+    NodeItem.auto_switch_mode = _safe_auto_switch
+
     graph = graph_widget._graph
 
     graph.set_background_color(8, 9, 12)

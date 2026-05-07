@@ -101,13 +101,15 @@ def export_python_script(graph, path):
     print(f"[NodeGraph] Exported to {path}")
 
 
-def export_group_as_chunk(group_node, out_dir=None):
+def export_group_as_chunk(group_node, out_dir=None, sub=None):
     """Export a GroupNode as a self-contained chunk .py module.
 
-    The group must be expanded (double-click to enter it first).
     Promoted params become chunk params; inner node code is generated
     via each node's to_python().  Writes to out_dir (default:
     ~/.usd_chunks/user_chunks/) and hot-registers with ChunkRegistry.
+
+    ``sub`` is the expanded SubGraph — the caller is responsible for
+    expanding and collapsing the group around this call.
 
     Returns the output Path.
     """
@@ -117,10 +119,12 @@ def export_group_as_chunk(group_node, out_dir=None):
     name = group_node.name()
     snake = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "group_chunk"
 
-    sub = group_node.get_sub_graph()
+    if sub is None:
+        sub = group_node.get_sub_graph()
     if not sub:
         raise RuntimeError(
-            f"Group '{name}' is not expanded. Double-click to enter it, then export."
+            f"Could not access inner nodes of group '{name}'. "
+            f"Try right-clicking again — the group will be expanded automatically."
         )
 
     all_inner = sub.all_nodes()

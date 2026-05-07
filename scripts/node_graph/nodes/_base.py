@@ -2,13 +2,18 @@
 Shared primitives used by all nodes:
 imports, port colors, base classes, UsdNodeBase, thumbnail helpers.
 """
+from __future__ import annotations
+
 import inspect as _inspect
 import json as _json
 import re as _re
+
 from NodeGraphQt import BaseNode
 from NodeGraphQt.widgets.node_widgets import NodeBaseWidget
 from PySide6 import QtWidgets, QtCore
-from usd_chunks import chunk_notice
+from usd_chunks import chunk_core as _chunk_core
+from usd_chunks import chunk_notice, chunk_registry as _chunk_registry
+
 # ─── Port color palette ───
 PORT_COLORS = {
     "prim":     (230, 120, 40),   # warm orange
@@ -28,7 +33,7 @@ _COLOR_TO_TYPE = {v: k for k, v in PORT_COLORS.items()}
 
 _PORT_TYPE_CACHE = {}
 
-def _get_node_port_types(node_cls):
+def _get_node_port_types(node_cls) -> dict[str, set[str]]:
     """Return {"inputs": set, "outputs": set} of port data-type names for a node class.
 
     Uses source introspection to find PORT_COLORS["x"] patterns in __init__.
@@ -56,7 +61,7 @@ class _TriggerSignal:
 TRIGGER = _TriggerSignal()
 
 
-def _safe_set_port_visible(port, visible):
+def _safe_set_port_visible(port, visible: bool) -> None:
     """Set port visibility, silently ignoring errors (e.g. node not yet in graph)."""
     try:
         port.set_visible(visible)
@@ -117,6 +122,9 @@ class UsdNodeBase(BaseNode):
         self._widgets_to_hide = set()
         self._hide_scheduled = False
         self._exec_error_msg = ""
+        # Set by GraphExecutor._exec_node so nodes can request re-execution
+        # without knowing the executor exists.
+        self._dirty_callback = None
         self.view._node_type_name = self.NODE_NAME
         cat = getattr(self, 'CATEGORY', 'Base')
         if cat in CATEGORY_COLORS:
@@ -189,7 +197,7 @@ class UsdNodeBase(BaseNode):
             except Exception:
                 pass
 
-    def set_preview(self, text):
+    def set_preview(self, text: str) -> None:
         """Update the node's preview chip (if it has one) with a compact info string."""
         w = self.view._widgets.get("preview")
         if w:
@@ -230,7 +238,7 @@ class UsdNodeBase(BaseNode):
             return self._resolve_ref(raw)
         return raw
 
-    def _resolve_ref(self, ref_str):
+    def _resolve_ref(self, ref_str: str):
         """Resolve @name.property to a concrete value.
 
         Preferred path: delegate to chunk_core.resolve_reference, which looks the reference up
@@ -242,19 +250,14 @@ class UsdNodeBase(BaseNode):
         """
         # 1. Chunk-core resolution — scene chunks + USD prim attrs.
         try:
-            from usd_chunks import chunk_core
-            # Any loaded chunk has a get_scene(). Use the first chunk in the scene as 'owner'.
-            from usd_chunks import chunk_registry
-            scene = chunk_registry.ChunkRegistry().scene
+            scene = _chunk_registry.ChunkRegistry().scene
             chunks = scene.get_chunks() if scene else ()
             if chunks:
-                target = chunk_core.resolve_reference(chunks[0], ref_str)
+                target = _chunk_core.resolve_reference(chunks[0], ref_str)
                 if target is not None:
-                    # Chunk param — return its current value so callers get a concrete value.
-                    if isinstance(target, chunk_core.ChunkParamBase):
+                    if isinstance(target, _chunk_core.ChunkParamBase):
                         val = target.value
                         return str(val) if isinstance(val, (int, float)) else val
-                    # USD attribute — pull its current time-sample.
                     get_fn = getattr(target, "Get", None)
                     if callable(get_fn):
                         val = get_fn()
@@ -366,10 +369,10 @@ class UsdNodeBase(BaseNode):
         self.view.draw_node()
         self.view.calc_size = orig_calc
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         return {}
 
-    def to_python(self, var_map):
+    def to_python(self, var_map: dict) -> str:
         """Generate Python code for this node. var_map: {port_name: variable_name}."""
         return f"# {self.NODE_NAME} (no code generation)"
 
@@ -395,7 +398,7 @@ class UsdNodeBase(BaseNode):
         c = super().color
         return c[:3] if len(c) > 3 else c
 
-    def _get_prims(self, port_name="prim"):
+    def _get_prims(self, port_name: str = "prim") -> list:
         """Get prim(s) from input — returns list whether single or merged."""
         v = self._get_input_value(port_name)
         if v is None:
@@ -407,11 +410,6 @@ class UsdNodeBase(BaseNode):
 # ────────────────────────────────────────────
 #  Input / Utility nodes
 # ────────────────────────────────────────────
-class _PrimThumbLabel(QtWidgets.QLabel):
-    """QLabel compat shim for NodeGraphQt."""
-    def setTitleAlign(self, *a): pass
-
-
 class _NodePreviewWidget(NodeBaseWidget):
     """One-line dim preview shown at the bottom of a node after execution."""
     def __init__(self, parent=None, name="preview", label=""):
@@ -435,29 +433,6 @@ class _NodePreviewWidget(NodeBaseWidget):
 
     def set_value(self, val=""):
         self._lbl.setText(val or "")
-
-
-class _PrimThumbWidget(NodeBaseWidget):
-    """Thumbnail widget for PrimPathNode — scalable like TextureFileNode."""
-    def __init__(self, parent=None, name="prim_thumb", label=""):
-        super().__init__(parent, name, label)
-        self._widget = _PrimThumbLabel()
-        self._widget.setMinimumSize(180, 120)
-        self._widget.setStyleSheet("background: #0a0c12; border: 1px solid #1e2438; border-radius: 4px;")
-        self._widget.setAlignment(QtCore.Qt.AlignCenter)
-        self._widget.setScaledContents(True)
-        self.setWidget(self._widget)
-        self._pixmap = None
-
-    def get_value(self):
-        return ""
-
-    def set_value(self, val=""):
-        pass
-
-    def set_pixmap(self, pixmap):
-        self._pixmap = pixmap
-        self._widget.setPixmap(pixmap)
 
 
 # ────────────────────────────────────────────
@@ -496,32 +471,10 @@ class ChunkWrapperBase(UsdNodeBase):
             return
         QtCore.QTimer.singleShot(0, self._trigger_downstream)
 
-    def _get_graph_widget(self):
-        import sys
-        ref = sys.modules.get('_node_graph_ref')
-        return ref.widget if ref and hasattr(ref, 'widget') else None
-
     def _trigger_downstream(self):
         """Re-execute this node and cascade to downstream via executor."""
-        widget = self._get_graph_widget()
-        if not widget or not widget._stage:
-            return
-        widget._executor.mark_dirty(self)
-        try:
-            win = widget.window()
-
-            def _refocus():
-                try:
-                    win.raise_()
-                    win.activateWindow()
-                    props = getattr(widget, '_props_widget', None)
-                    if props:
-                        props.setFocus(QtCore.Qt.OtherFocusReason)
-                except Exception:
-                    pass
-            QtCore.QTimer.singleShot(150, _refocus)
-        except Exception:
-            pass
+        if self._dirty_callback is not None:
+            self._dirty_callback()
 
 
 class DynamicChunkNode(ChunkWrapperBase):
@@ -535,8 +488,9 @@ class DynamicChunkNode(ChunkWrapperBase):
         self.add_text_input("button_name", "Button", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
 
-    def execute(self, stage):
+    def execute(self, stage) -> dict:
         from ..chunk_adapter import ChunkAdapter
+        from ..graph_host import GraphHost
         prim = self._get_input_value("prim")
         chunk_name = (self.get_property("chunk_name") or "").strip()
         if not chunk_name:
@@ -552,9 +506,8 @@ class DynamicChunkNode(ChunkWrapperBase):
 
         self._executing = True
         try:
-            old_sel = []
+            old_sel: list = []
             if prim:
-                from ..graph_host import GraphHost
                 host = GraphHost.current()
                 old_sel = host.get_selection()
                 host.set_selection(prim)
@@ -563,7 +516,6 @@ class DynamicChunkNode(ChunkWrapperBase):
             adapter.press_button(btn)
 
             if prim and old_sel:
-                from ..graph_host import GraphHost
                 GraphHost.current().set_selection(old_sel[0])
             return {"prim": prim}
         finally:
@@ -595,14 +547,21 @@ def _get_promoted_outputs(group_node):
 
 
 def _save_promotions(group_node):
-    """Serialize _promotions/_promoted_outputs to custom properties so save/load works."""
+    """Serialize _promotions/_promoted_outputs into model.custom_properties.
+
+    Written directly to the model dict to bypass NodeGraphQt's undo stack —
+    set_property() creates an undoable command that fails on redo because
+    'promoted_params' is not a registered node property.
+    """
     try:
-        promos = getattr(group_node, '_promotions', {})
-        group_node.set_property('promoted_params', _json.dumps(promos))
+        group_node.model.custom_properties['promoted_params'] = _json.dumps(
+            getattr(group_node, '_promotions', {})
+        )
     except Exception as e:
         print(f"[NodeGraph] save promotions err: {e}")
     try:
-        promo_outs = getattr(group_node, '_promoted_outputs', {})
-        group_node.set_property('promoted_outputs', _json.dumps(promo_outs))
+        group_node.model.custom_properties['promoted_outputs'] = _json.dumps(
+            getattr(group_node, '_promoted_outputs', {})
+        )
     except Exception as e:
         print(f"[NodeGraph] save promoted_outputs err: {e}")

@@ -5,9 +5,12 @@ NodeGraphWidget holds one instance and delegates all execution calls here.
 Only PySide6.QtCore.QTimer and PySide6.QtWidgets.QApplication are imported
 from Qt (no widget classes).
 """
+from __future__ import annotations
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from NodeGraphQt import GroupNode
+from NodeGraphQt.nodes.port_node import PortInputNode, PortOutputNode
 from . import nodes as _nodes
 from .nodes._base import _get_promotions, _get_promoted_outputs
 
@@ -19,13 +22,15 @@ class GraphExecutor:
     - widget._stage          (read-only)
     - widget._graph          (read-only)
     - widget._set_exec_state (state badge callback)
-    - widget._prim_thumbs_enabled / widget._capture_prim_thumb (thumbnail)
     """
 
     def __init__(self, widget):
         self._widget = widget
         # node.id → layer_identifier; populated on execution, consumed on deletion
         self._node_layer_registry: dict = {}
+        # Guard: True while run_full/run_from is active — event nodes check this
+        # to avoid re-triggering when their own downstream writes back to the stage.
+        self._is_executing = False
         # Debounce: property changes collapse into a single run 150 ms after last change
         self._debounce_timer = QTimer()
         self._debounce_timer.setSingleShot(True)
@@ -35,7 +40,7 @@ class GraphExecutor:
 
     # ── Public entry points ──────────────────────────────────────────────────
 
-    def run_full(self):
+    def run_full(self) -> None:
         """Execute all nodes in topological order (initial load / undo-redo)."""
         widget = self._widget
         if not widget._stage:
@@ -60,31 +65,35 @@ class GraphExecutor:
         for n in widget._graph.all_nodes():
             _topo(n)
 
-        errored: set = set()
-        for node in order:
-            upstream_errored = any(
-                cp.node().id in errored
-                for port in (node.input_ports() if hasattr(node, 'input_ports') else [])
-                for cp in port.connected_ports()
-            )
-            if upstream_errored:
-                widget._set_exec_state(node, "skipped")
-                errored.add(node.id)
-                node._output_cache = {}
-                continue
-            if self._exec_node(node) is False:
-                errored.add(node.id)
-            # ForEach iteration: re-run downstream nodes per item
-            elif isinstance(node, _nodes.ForEachNode) and node._iteration_list:
-                downstream = self._get_downstream(node)
-                for i in range(len(node._iteration_list)):
-                    if not node.set_iteration_index(i):
-                        break
-                    for dn in downstream:
-                        self._exec_node(dn)
-            QApplication.processEvents()
+        self._is_executing = True
+        try:
+            errored: set = set()
+            for node in order:
+                upstream_errored = any(
+                    cp.node().id in errored
+                    for port in (node.input_ports() if hasattr(node, 'input_ports') else [])
+                    for cp in port.connected_ports()
+                )
+                if upstream_errored:
+                    widget._set_exec_state(node, "skipped")
+                    errored.add(node.id)
+                    node._output_cache = {}
+                    continue
+                if self._exec_node(node) is False:
+                    errored.add(node.id)
+                # ForEach iteration: re-run downstream nodes per item
+                elif isinstance(node, _nodes.ForEachNode) and node._iteration_list:
+                    downstream = self._get_downstream(node)
+                    for i in range(len(node._iteration_list)):
+                        if not node.set_iteration_index(i):
+                            break
+                        for dn in downstream:
+                            self._exec_node(dn)
+                QApplication.processEvents()
+        finally:
+            self._is_executing = False
 
-    def run_from(self, start_node):
+    def run_from(self, start_node) -> None:
         """Re-execute start_node and its downstream nodes only."""
         widget = self._widget
         if not widget._stage:
@@ -124,34 +133,42 @@ class GraphExecutor:
         _downstream(start_node)
         full_order = up_order + [n for n in order if n.id not in up_visited]
 
-        errored: set = set()
-        for node in full_order:
-            upstream_errored = any(
-                cp.node().id in errored
-                for port in (node.input_ports() if hasattr(node, 'input_ports') else [])
-                for cp in port.connected_ports()
-            )
-            if upstream_errored:
-                widget._set_exec_state(node, "skipped")
-                errored.add(node.id)
-                node._output_cache = {}
-                continue
-            if self._exec_node(node) is False:
-                errored.add(node.id)
-        QApplication.processEvents()
+        self._is_executing = True
+        try:
+            errored: set = set()
+            for node in full_order:
+                upstream_errored = any(
+                    cp.node().id in errored
+                    for port in (node.input_ports() if hasattr(node, 'input_ports') else [])
+                    for cp in port.connected_ports()
+                )
+                if upstream_errored:
+                    widget._set_exec_state(node, "skipped")
+                    errored.add(node.id)
+                    node._output_cache = {}
+                    continue
+                if self._exec_node(node) is False:
+                    errored.add(node.id)
+            QApplication.processEvents()
+        finally:
+            self._is_executing = False
 
-    def mark_dirty(self, node=None):
+    def mark_dirty(self, node=None) -> None:
         """Schedule (debounced) re-execution from node.
 
         Called by property-change handlers and trigger nodes.  Multiple rapid
         calls coalesce into a single run 150 ms after the last call.
+        Dropped silently while an execution is in progress — prevents event
+        nodes from re-triggering the graph inside their own downstream writes.
         """
+        if self._is_executing:
+            return
         self._debounce_node = node
         self._debounce_timer.start()  # restart resets the interval
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
-    def _flush_debounce(self):
+    def _flush_debounce(self) -> None:
         node = self._debounce_node
         self._debounce_node = None
         if node is not None:
@@ -159,13 +176,20 @@ class GraphExecutor:
         else:
             self.run_full()
 
-    def _exec_node(self, node):
-        """Execute a single node — handles both UsdNodeBase and GroupNode."""
+    def _exec_node(self, node) -> bool | None:
+        """Execute a single node — handles both UsdNodeBase and GroupNode.
+
+        Returns True on success, False on error, None for GroupNode / disabled pass-through.
+        """
         if isinstance(node, GroupNode):
             self._exec_group(node)
             return
         if not isinstance(node, _nodes.UsdNodeBase):
             return
+        # Give every node a callback so it can request re-execution without
+        # knowing the executor or widget exist.  The lambda captures by name so
+        # mark_dirty's own _is_executing guard still applies at call time.
+        node._dirty_callback = lambda n=node: self.mark_dirty(n)
         widget = self._widget
         if node.disabled():
             node._output_cache = {}
@@ -208,14 +232,6 @@ class GraphExecutor:
                     self._node_layer_registry[node.id] = result["layer"].identifier
             except Exception:
                 pass
-            # Capture thumbnail only when the user has set a real prim path
-            # (skip pseudo-root "/" which is valid but meaningless as a thumbnail)
-            if (isinstance(node, _nodes.PrimPathNode)
-                    and widget._prim_thumbs_enabled
-                    and result and result.get("prim")
-                    and not node._prim_thumb._pixmap
-                    and str(result["prim"].GetPath()) not in ("", "/")):
-                widget._capture_prim_thumb(node, result["prim"])
             return True
         except Exception as e:
             print(f"[NodeGraph] {node.name()} error: {e}")
@@ -223,9 +239,8 @@ class GraphExecutor:
             widget._set_exec_state(node, "error", str(e)[:120])
             return False
 
-    def _exec_group(self, group):
+    def _exec_group(self, group) -> None:
         """Execute a GroupNode by running its inner sub-graph."""
-        from NodeGraphQt.nodes.port_node import PortInputNode, PortOutputNode
         widget = self._widget
         sub = widget._graph.expand_group_node(group)
         if not sub:
@@ -235,6 +250,16 @@ class GraphExecutor:
             if getattr(n, '_folded', False):
                 for w in n.view._widgets.values():
                     w.setVisible(False)
+
+        # Restore persisted chunk instances from the group node so we reuse
+        # the same chunk (and its layer) across expand/collapse cycles.
+        chunk_cache = getattr(group, '_inner_chunk_cache', None)
+        if chunk_cache is None:
+            chunk_cache = {}
+            group._inner_chunk_cache = chunk_cache
+        for n in sub.all_nodes():
+            if hasattr(n, '_ensure_chunk') and n.id in chunk_cache:
+                n._my_chunk = chunk_cache[n.id]
 
         for pin in sub.get_input_port_nodes():
             parent_port = pin.parent_port
@@ -253,8 +278,11 @@ class GraphExecutor:
 
         # Apply promoted input param values to inner nodes before execution
         inner_nodes_by_id = {n.id: n for n in sub.all_nodes()}
-        for port_name, info in _get_promotions(group).items():
+        inner_nodes_by_name = {n.name(): n for n in sub.all_nodes()}
+        promotions = _get_promotions(group)
+        for port_name, info in promotions.items():
             inner_node_id = info.get("inner_node_id")
+            inner_node_name = info.get("inner_node_name")
             inner_param = info.get("inner_param")
             val = info.get("default_value")
             grp_port = group.get_input(port_name)
@@ -269,8 +297,24 @@ class GraphExecutor:
                     )
                     if ext_val is not None:
                         val = ext_val
-            if val is not None and inner_node_id and inner_param:
+            if val is not None and inner_param:
                 inner_node = inner_nodes_by_id.get(inner_node_id)
+                # Fallback: find by name if ID doesn't match (nodes get new IDs on re-expand)
+                if inner_node is None:
+                    if inner_node_name:
+                        inner_node = inner_nodes_by_name.get(inner_node_name)
+                    # Last resort: find any inner node that has this property
+                    if inner_node is None:
+                        for _n in sub.all_nodes():
+                            try:
+                                if _n.has_property(inner_param):
+                                    inner_node = _n
+                                    break
+                            except Exception:
+                                continue
+                    if inner_node:
+                        info["inner_node_id"] = inner_node.id
+                        info["inner_node_name"] = inner_node.name()
                 if inner_node:
                     self._apply_promoted_value(inner_node, inner_param, val)
 
@@ -335,27 +379,25 @@ class GraphExecutor:
             if isinstance(n, _nodes.UsdNodeBase):
                 n.set_color(*_nodes.CATEGORY_COLORS.get(n.CATEGORY, (80, 80, 80)))
 
+        # Persist chunk instances on the group node for reuse on next execution
+        for n in sub.all_nodes():
+            my_chunk = getattr(n, '_my_chunk', None)
+            if my_chunk is not None:
+                chunk_cache[n.id] = my_chunk
+
         widget._graph.collapse_group_node(group)
         widget._set_exec_state(group, "valid")
 
     @staticmethod
     def _apply_promoted_value(inner_node, param_name, value):
-        """Push a promoted param value into an inner node (chunk or regular)."""
+        """Write a promoted value to the inner node's property store."""
         try:
-            adapter = getattr(inner_node, "_cached_adapter", None)
-            if adapter and getattr(adapter, "chunk", None):
-                chunk_param = adapter.chunk.get_param(param_name)
-                if chunk_param is not None:
-                    adapter.set_param(param_name, value)
-                    return
-        except Exception:
-            pass
-        try:
-            inner_node.set_property(param_name, str(value) if not isinstance(value, bool) else value)
+            str_val = str(value) if not isinstance(value, bool) else value
+            inner_node.set_property(param_name, str_val)
         except Exception:
             pass
 
-    def _get_downstream(self, start_node):
+    def _get_downstream(self, start_node) -> list:
         """Collect downstream nodes in topological order from start_node."""
         visited: set = set()
         order: list = []

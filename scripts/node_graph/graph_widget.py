@@ -5,6 +5,21 @@ adds a Tab menu for spawning nodes, and an execution engine.
 from PySide6 import QtWidgets, QtCore, QtGui
 from NodeGraphQt import NodeGraph, GroupNode
 from . import nodes
+
+# NodeGraphQt's deserializer calls model.set_property() which only succeeds for
+# keys already present in custom_properties.  Pre-register the two promo keys on
+# every GroupNode instance so save/load round-trips don't raise NodePropertyError.
+_orig_group_node_init = GroupNode.__init__
+
+
+def _patched_group_node_init(self, *args, **kwargs):
+    _orig_group_node_init(self, *args, **kwargs)
+    self.model.custom_properties.setdefault('promoted_params', '{}')
+    self.model.custom_properties.setdefault('promoted_outputs', '{}')
+
+
+GroupNode.__init__ = _patched_group_node_init
+
 from .graph_executor import GraphExecutor
 from .nodes._base import _get_promotions, _get_promoted_outputs, _save_promotions
 from ._graph_ui import (
@@ -14,6 +29,14 @@ from ._graph_ui import (
 from ._neon_theme import install_neon_theme
 from ._graph_layout import layout_nodes
 from ._graph_export import export_python_script
+from ._panel_builder import build_group_promo_panel, build_chunk_panel as _build_chunk_panel_fn
+
+MENU_STYLE = (
+    "QMenu { background: #0e1016; color: #c8d0e8; border: 1px solid #1e2438; padding: 2px; }"
+    "QMenu::item { padding: 4px 20px 4px 8px; }"
+    "QMenu::item:selected { background: #1e2a40; }"
+    "QMenu::separator { height: 1px; background: #1e2438; margin: 2px 4px; }"
+)
 
 PANEL_STYLE = (
     "QWidget { background: #1e1e1e; color: #ddd; font: 11px 'Consolas'; }"
@@ -134,14 +157,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
         self._viewport_btn.setCheckable(True)
         self._viewport_btn.clicked.connect(self._toggle_viewport_preview)
         toolbar.addWidget(self._viewport_btn)
-        self._thumbs_btn = QtWidgets.QPushButton("📷 Thumbs")
-        self._thumbs_btn.setStyleSheet(_BTN)
-        self._thumbs_btn.setCheckable(True)
-        self._thumbs_btn.setChecked(True)
-        toolbar.addWidget(self._thumbs_btn)
-        self._prim_thumbs_enabled = True
-        self._thumbs_btn.clicked.connect(self._toggle_thumbs)
-        self._thumb_cache = {}
         toolbar.addStretch()
         layout.addLayout(toolbar)
 
@@ -395,6 +410,13 @@ class NodeGraphWidget(QtWidgets.QWidget):
                     pass
             if event.type() == QtCore.QEvent.KeyPress:
                 g = self._active_graph()
+                # Ctrl+Alt activates pipe slicer by remapping to viewer's Alt+Shift state
+                _ctrl_alt = (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier)
+                if event.modifiers() == _ctrl_alt:
+                    v = g.viewer()
+                    v.ALT_state = True
+                    v.SHIFT_state = True
+                    v.setCursor(QtCore.Qt.CrossCursor)
                 if event.key() == QtCore.Qt.Key_Tab:
                     self._show_search_menu()
                     return True
@@ -454,6 +476,27 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 if event.key() == QtCore.Qt.Key_A and event.modifiers() == QtCore.Qt.ControlModifier:
                     g.select_all()
                     return True
+            if event.type() == QtCore.QEvent.KeyRelease:
+                g = self._active_graph()
+                _ctrl_alt = (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier)
+                if event.modifiers() != _ctrl_alt:
+                    v = g.viewer()
+                    if getattr(v, 'SHIFT_state', False) and getattr(v, 'ALT_state', False):
+                        v.ALT_state = False
+                        v.SHIFT_state = False
+                        v.unsetCursor()
+            # Alt+Tab (or any focus loss) while the viewer is panning leaves
+            # ALT_state=True forever because the KeyRelease never arrives.
+            # Reset modifier state whenever the viewer loses keyboard focus.
+            if event.type() == QtCore.QEvent.FocusOut:
+                try:
+                    v = self._active_graph().viewer()
+                    v.ALT_state = False
+                    if hasattr(v, 'SHIFT_state'):
+                        v.SHIFT_state = False
+                    v.unsetCursor()
+                except Exception:
+                    pass
             return super().eventFilter(obj, event)
         except RuntimeError:
             return False
@@ -543,17 +586,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
                     port.set_visible(True)
         node.view.draw_node()
 
-    def _toggle_thumbs(self, checked):
-        self._prim_thumbs_enabled = checked
-        for n in self._graph.all_nodes():
-            if isinstance(n, nodes.PrimPathNode) and hasattr(n, '_prim_thumb'):
-                if checked:
-                    if n._prim_thumb._pixmap:
-                        n._prim_thumb._widget.show()
-                else:
-                    n._prim_thumb._widget.hide()
-                n.view.draw_node()
-
     def _toggle_viewport_preview(self, checked):
         if checked:
             self._viewport_label.show()
@@ -571,6 +603,28 @@ class NodeGraphWidget(QtWidgets.QWidget):
         else:
             self._viewport_label.setText("No viewport")
 
+    def _show_pipe_context_menu(self, graph, pipe_item, pos):
+        """Right-click on a connection wire — offers Delete Connection."""
+        menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet(MENU_STYLE)
+        in_name = pipe_item.input_port.name
+        out_name = pipe_item.output_port.name
+        header = menu.addAction(f"⟶  {out_name} → {in_name}")
+        header.setEnabled(False)
+        menu.addSeparator()
+        del_act = menu.addAction("✂  Delete Connection")
+        action = menu.exec_(QtGui.QCursor.pos())
+        if action == del_act:
+            try:
+                in_node = graph.get_node_by_id(pipe_item.input_port.node.id)
+                out_node = graph.get_node_by_id(pipe_item.output_port.node.id)
+                in_port = in_node.get_input(in_name)
+                out_port = out_node.get_output(out_name)
+                if in_port and out_port:
+                    in_port.disconnect_from(out_port)
+            except Exception as e:
+                print(f"[NodeGraph] disconnect err: {e}")
+
     def _show_port_context_menu(self, graph, viewer, port_item, pos):
         """Port-right-click menu: copy reference from output, paste/clear on input."""
         from NodeGraphQt.constants import PortTypeEnum
@@ -580,6 +634,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
         is_output = port_item.port_type == PortTypeEnum.OUT.value
 
         menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet(MENU_STYLE)
         menu.setTitle(f"{node.name()}.{param_name}")
         header = menu.addAction(f"🔌 {node.name()}.{param_name}")
         header.setEnabled(False)
@@ -677,6 +732,12 @@ class NodeGraphWidget(QtWidgets.QWidget):
         items = viewer.scene().items(scene_pos)
         from NodeGraphQt.qgraphics.node_base import NodeItem
         from NodeGraphQt.qgraphics.port import PortItem
+        from NodeGraphQt.qgraphics.pipe import PipeItem
+        # Check for wire/pipe under cursor first
+        for item in items:
+            if isinstance(item, PipeItem) and item.input_port and item.output_port:
+                self._show_pipe_context_menu(g, item, pos)
+                return
         for item in items:
             if isinstance(item, PortItem):
                 self._show_port_context_menu(g, viewer, item, pos)
@@ -696,6 +757,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
         is_sub = isinstance(g, SubGraph)
 
         menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet(MENU_STYLE)
 
         act_add_in = act_add_out = None
         if is_sub:
@@ -769,14 +831,20 @@ class NodeGraphWidget(QtWidgets.QWidget):
     def _export_group_as_chunk(self, group_node):
         """Export GroupNode as a chunk module and hot-register it."""
         from ._graph_export import export_group_as_chunk
+        g = self._active_graph()
+        already_expanded = group_node.get_sub_graph() is not None
+        sub = group_node.get_sub_graph() if already_expanded else g.expand_group_node(group_node)
         try:
-            out_path = export_group_as_chunk(group_node)
+            out_path = export_group_as_chunk(group_node, sub=sub)
             QtWidgets.QMessageBox.information(
                 self, "Chunk Exported",
                 f"Exported to:\n{out_path}\n\nChunk '{group_node.name()}' is now available in the panel."
             )
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Export Failed", str(e))
+        finally:
+            if not already_expanded and sub:
+                g.collapse_group_node(group_node)
 
     def _set_exec_state(self, node, state, error_msg=""):
         """Set persistent execution state on a node view item."""
@@ -809,28 +877,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
                     self._props_error_label.hide()
         except Exception:
             pass
-
-    def _capture_prim_thumb(self, node, prim):
-        """Frame prim, grab viewport, show thumbnail on node widget."""
-        prim_path = str(prim.GetPath())
-        if prim_path in self._thumb_cache:
-            node._prim_thumb.set_pixmap(self._thumb_cache[prim_path])
-            node._prim_thumb._widget.show()
-            node.view.draw_node()
-            return
-        try:
-            from .graph_host import GraphHost
-
-            def _on_ready(px):
-                if px is not None and not px.isNull():
-                    self._thumb_cache[prim_path] = px
-                    node._prim_thumb.set_pixmap(px)
-                    node._prim_thumb._widget.show()
-                    node.view.draw_node()
-
-            GraphHost.current().frame_prim(prim, on_ready=_on_ready)
-        except Exception as e:
-            print(f"[NodeGraph] thumb err: {e}")
 
     def _setup_sub_graph(self, sub):
         """Install eventFilter and context menu on a sub-graph viewer."""
@@ -1066,10 +1112,13 @@ class NodeGraphWidget(QtWidgets.QWidget):
             self._props_error_label.setText("")
             self._props_error_label.hide()
 
-        try:
-            self._props_label.editingFinished.disconnect()
-        except RuntimeError:
-            pass
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                self._props_label.editingFinished.disconnect()
+            except Exception:
+                pass
 
         def _do_rename(_node=node):
             new_name = self._props_label.text().strip()
@@ -1099,6 +1148,16 @@ class NodeGraphWidget(QtWidgets.QWidget):
             return
         skip = {"id", "name", "color", "disabled", "selected", "width", "height",
                 "icon", "pos", "layout_direction", "type_", "promoted_params", "promoted_outputs"}
+        _promoted_params: set = set()
+        try:
+            from NodeGraphQt.base.graph import SubGraph
+            g = self._active_graph()
+            if isinstance(g, SubGraph):
+                for _pname, _info in _get_promotions(g.node).items():
+                    if _info.get("inner_node_id") == node.id:
+                        _promoted_params.add(_info.get("inner_param", ""))
+        except Exception:
+            pass
         for name, val in node.model.custom_properties.items():
             if name in skip:
                 continue
@@ -1150,6 +1209,9 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 cb.setChecked(val)
                 cb.setProperty("prop_name", name)
                 cb.toggled.connect(lambda state, n=name: self._on_bool_prop_changed(n, state))
+                if name in _promoted_params:
+                    cb.setEnabled(False)
+                    cb.setToolTip("Promoted to group — change value on the group node")
                 self._props_form.addRow(name, cb)
                 self._prop_editors[name] = cb
                 continue
@@ -1192,10 +1254,28 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 self._prop_editors[name] = edit
                 continue
             else:
+                # Check if this property is a combo menu on the node
+                node_widget = node.view._widgets.get(name)
+                if node_widget and getattr(node_widget, 'type_', '') == 'ComboNodeWidget':
+                    inner = node_widget.get_custom_widget()
+                    combo = QtWidgets.QComboBox()
+                    for i in range(inner.count()):
+                        combo.addItem(inner.itemText(i))
+                    if val:
+                        combo.setCurrentText(str(val))
+                    combo.setProperty("prop_name", name)
+                    combo.currentTextChanged.connect(
+                        lambda text, n=name: self._on_combo_changed(n, text))
+                    self._props_form.addRow(name, combo)
+                    self._prop_editors[name] = combo
+                    continue
                 edit = QtWidgets.QLineEdit(str(val) if val else "")
                 edit.setProperty("prop_name", name)
                 edit.editingFinished.connect(self._on_prop_changed)
                 self._setup_ref_menu(edit, node, name)
+                if name in _promoted_params:
+                    edit.setEnabled(False)
+                    edit.setToolTip("Promoted to group — change value on the group node")
                 auto_port = node.get_input(f"_{name}")
                 if auto_port and auto_port.connected_ports():
                     src_port = auto_port.connected_ports()[0]
@@ -1352,103 +1432,21 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
     def _build_chunk_panel(self, node):
         """Build the side panel using the real ChunkWidget from chunk_qt."""
-        try:
-            from plugins.chunk_qt import ChunkWidget
-            from node_graph.chunk_adapter import ChunkAdapter
-            adapter = getattr(node, '_cached_adapter', None)
-            if not adapter or not adapter.chunk:
-                my_chunk = None
-                if hasattr(node, "_ensure_chunk"):
-                    try:
-                        my_chunk = node._ensure_chunk()
-                    except Exception:
-                        my_chunk = None
-                adapter = ChunkAdapter(
-                    node._chunk_display_name,
-                    module_name=node._chunk_module,
-                    auto_create=(my_chunk is None),
-                    chunk=my_chunk,
-                )
-                node._cached_adapter = adapter
-            if not adapter.chunk:
-                self._props_form.addRow(QtWidgets.QLabel("Chunk not loaded"))
-                return
-            if hasattr(node, "_subscribe_to_chunk_notices"):
-                node._subscribe_to_chunk_notices(adapter.chunk)
-            chunk_widget = ChunkWidget(adapter.chunk)
-            _combo_popup_style = (
-                "QAbstractItemView { background: #0e1016; color: #c8d0e8;"
-                " border: 1px solid #1e2438;"
-                " selection-background-color: #1e2a40; selection-color: #c8d0e8;"
-                " outline: none; }"
-            )
-            for _cb in chunk_widget.findChildren(QtWidgets.QComboBox):
-                _cb.view().setStyleSheet(_combo_popup_style)
-                _cb.setStyleSheet(
-                    "QComboBox { background: #111520; color: #c8d0e8;"
-                    " border: 1px solid #1e2438; border-radius: 3px;"
-                    " padding: 2px 6px; font: 10px 'Consolas'; }"
-                    "QComboBox::drop-down { border: none; }"
-                    "QComboBox::down-arrow { image: none; width: 10px; }"
-                )
-            for _pw in chunk_widget.findChildren(QtWidgets.QWidget):
-                _p = getattr(_pw, 'param', None)
-                if _p is not None and hasattr(_p, 'value_reference'):
-                    self._setup_chunk_ref_menu(_pw, node, _p)
-            self._props_form.addRow(chunk_widget)
-            connected_params = set()
-            for port in node.input_ports():
-                if port.name().startswith("_") and port.connected_ports():
-                    connected_params.add(port.name()[1:])
-            if connected_params:
-                for child in chunk_widget.findChildren(QtWidgets.QWidget):
-                    if hasattr(child, 'param') and hasattr(child.param, 'name'):
-                        if child.param.name in connected_params:
-                            child.setEnabled(False)
-                            child.setToolTip(f"Driven by connection on _{child.param.name}")
-        except Exception as e:
-            print(f"[NodeGraph] chunk panel err: {e}")
-            self._props_form.addRow(QtWidgets.QLabel(f"Error: {e}"))
+        _build_chunk_panel_fn(
+            node,
+            self._props_form,
+            on_changed=self._executor.mark_dirty,
+            active_graph_fn=self._active_graph,
+            ref_menu_fn=self._setup_chunk_ref_menu,
+        )
 
     def _build_group_promo_panel(self, group_node):
         """Side panel for a GroupNode: editable fields for each promoted param."""
-        promotions = _get_promotions(group_node)
-        promo_outs = _get_promoted_outputs(group_node)
-
-        if not promotions and not promo_outs:
-            lbl = QtWidgets.QLabel(
-                "No promoted params.\n"
-                "Double-click to enter group,\n"
-                "then right-click a param → Promote to Group."
-            )
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet("color: #666; font: 10px 'Consolas'; padding: 8px 4px;")
-            self._props_form.addRow(lbl)
-            return
-
-        for port_name, info in promotions.items():
-            default_val = info.get("default_value")
-            edit = QtWidgets.QLineEdit(str(default_val) if default_val is not None else "")
-
-            def _make_changed(pname, grp):
-                def _on_finish(e=edit, pn=pname, gn=grp):
-                    promos = _get_promotions(gn)
-                    if pn in promos:
-                        promos[pn]["default_value"] = e.text()
-                        _save_promotions(gn)
-                return _on_finish
-
-            edit.editingFinished.connect(_make_changed(port_name, group_node))
-            self._props_form.addRow(port_name, edit)
-
-        if promo_outs:
-            sep = QtWidgets.QLabel("Promoted Outputs")
-            sep.setStyleSheet("color: #666; font: italic 9px 'Consolas'; padding: 6px 0 2px 0;")
-            self._props_form.addRow(sep)
-            for port_name, info in promo_outs.items():
-                lbl = QtWidgets.QLabel(f"→ {info.get('inner_port', '?')}")
-                lbl.setStyleSheet("color: #888; font: 9px 'Consolas';")
-                self._props_form.addRow(port_name, lbl)
+        build_group_promo_panel(
+            group_node,
+            self._props_form,
+            on_changed=self._executor.mark_dirty,
+        )
 
     def _promote_param_to_group(self, inner_node, param):
         """Promote a chunk param to the enclosing GroupNode as an input port."""
@@ -1493,6 +1491,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
         promotions[param_name] = {
             "inner_node_id": inner_node.id,
+            "inner_node_name": inner_node.name(),
             "inner_param": param_name,
             "port_color": list(port_color),
             "chunk_param_class": chunk_param_class,
@@ -1521,6 +1520,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
         promotions[prop_name] = {
             "inner_node_id": inner_node.id,
+            "inner_node_name": inner_node.name(),
             "inner_param": prop_name,
             "port_color": list(port_color),
             "chunk_param_class": "LineEdit",
@@ -1676,7 +1676,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 self._promote_prop_to_group(n, p, e.text())
                 g2 = self._active_graph()
                 if isinstance(g2, SubGraph):
-                    QtCore.QTimer.singleShot(0, lambda grp=g2.node: self._on_node_selected(grp))
+                    QtCore.QTimer.singleShot(0, lambda _n=n: self._on_node_selected(_n))
 
         edit.customContextMenuRequested.connect(_show_menu)
 
@@ -1715,6 +1715,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             def _show_menu(pos, e=ed, n=node, p=param):
                 from NodeGraphQt.base.graph import SubGraph
                 menu = e.createStandardContextMenu() if isinstance(e, QtWidgets.QLineEdit) else QtWidgets.QMenu(e)
+                menu.setAttribute(QtCore.Qt.WA_TranslucentBackground, False)
                 menu.setStyleSheet(
                     "QMenu { background: #0e1016; color: #c8d0e8;"
                     " border: 1px solid #1e2438; padding: 2px; }"
@@ -1756,7 +1757,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
                     self._promote_param_to_group(n, p)
                     g2 = self._active_graph()
                     if isinstance(g2, SubGraph):
-                        QtCore.QTimer.singleShot(0, lambda grp=g2.node: self._on_node_selected(grp))
+                        QtCore.QTimer.singleShot(0, lambda _n=n: self._on_node_selected(_n))
 
             ed.customContextMenuRequested.connect(_show_menu)
 

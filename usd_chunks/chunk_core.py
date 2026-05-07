@@ -25,7 +25,7 @@ import uuid
 import weakref
 from abc import abstractmethod
 from collections import ChainMap
-from enum import IntEnum, IntFlag, Enum
+from enum import IntEnum, IntFlag, Flag, Enum
 from typing import (
     Any,
     Callable,
@@ -1970,7 +1970,7 @@ class ChunkCommon(AttributesBase):
 
     # Type specific flags, can be used for setting custom flags.
     flags: IntFlag = attrs.field(
-        default=IntFlag(0),
+        default=0,
         metadata=AttributeMetadata(sender_alias=chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED),
     )  # type: ignore
 
@@ -2071,6 +2071,8 @@ class ChunkCommon(AttributesBase):
 
         if inspect.isclass(attr.type) and issubclass(attr.type, Enum):
             if val is not None and not isinstance(val, attr.type):
+                if issubclass(attr.type, Flag) and isinstance(val, int):
+                    return val
                 return attr.type(val)
 
         return super().convert_attr(attr, val)
@@ -2177,7 +2179,7 @@ class ChunkCommon(AttributesBase):
         Returns:
             bool: If the flag is enabled or not
         """
-        return flag in self.flags
+        return bool(self.flags & flag)
 
     def set_state(self, state: ChunkFlags.State):
         """

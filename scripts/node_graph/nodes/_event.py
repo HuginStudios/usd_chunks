@@ -44,15 +44,8 @@ class _TriggerNodeBase(UsdNodeBase):
             if now - last < self._min_interval_ms:
                 return
             self._last_trigger_ms = now
-        graph_widget = self._get_graph_widget()
-        if not graph_widget or not graph_widget._stage:
-            return
-        graph_widget._executor.mark_dirty(self)
-
-    def _get_graph_widget(self):
-        import sys
-        ref = sys.modules.get('_node_graph_ref')
-        return ref.widget if ref and hasattr(ref, 'widget') else None
+        if self._dirty_callback is not None:
+            self._dirty_callback()
 
 
 class OnSelectionChangedNode(_TriggerNodeBase):

@@ -1,7 +1,7 @@
 """Input nodes — constant values and prim selection."""
 from PySide6 import QtCore
 from ._base import UsdNodeBase, PORT_COLORS
-from ._base import _PrimThumbWidget, _NodePreviewWidget
+from ._base import _NodePreviewWidget
 
 
 class PrimPathNode(UsdNodeBase):
@@ -11,11 +11,12 @@ class PrimPathNode(UsdNodeBase):
 
     def __init__(self):
         super().__init__()
-        self.add_text_input("prim_path", "Prim Path", text="/")
-        # Thumbnail (hidden until captured)
-        self._prim_thumb = _PrimThumbWidget(self.view, name="prim_thumb")
-        self._prim_thumb._widget.hide()
-        self.add_custom_widget(self._prim_thumb)
+        self.add_text_input("prim_path", "Prim Path", text="")
+        self.view.setToolTip(
+            "Resolves a prim path to a prim.\n"
+            "Tip: add an OnStageChanged or OnAttributeChanged node\n"
+            "and connect its trigger to re-execute when the prim moves."
+        )
         # Compact preview chip
         self._preview = _NodePreviewWidget(self.view, name="preview")
         self.add_custom_widget(self._preview)
