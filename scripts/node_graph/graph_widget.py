@@ -2,9 +2,35 @@
 NodeGraph widget wrapper — embeds NodeGraphQt into a QWidget,
 adds a Tab menu for spawning nodes, and an execution engine.
 """
+from __future__ import annotations
+
+import os
+import sys
+import warnings
+
+from pxr import Sdf
 from PySide6 import QtWidgets, QtCore, QtGui
 from NodeGraphQt import NodeGraph, GroupNode
+from NodeGraphQt.base.graph import SubGraph
+from NodeGraphQt.constants import PortTypeEnum
+from NodeGraphQt.qgraphics.node_base import NodeItem
+from NodeGraphQt.qgraphics.pipe import PipeItem
+from NodeGraphQt.qgraphics.port import PortItem
 from . import nodes
+from .chunk_adapter import ChunkAdapter
+from .graph_executor import GraphExecutor
+from .graph_host import GraphHost
+from .nodes._base import _get_promotions, _get_promoted_outputs, _save_promotions, PORT_COLORS
+from ._graph_ui import (
+    _CodeEditor, _PythonHighlighter, _ViewportLabel, _TabSearchDialog,
+    add_field_completer,
+)
+from ._neon_theme import install_neon_theme
+from ._graph_layout import layout_nodes
+from ._graph_export import export_python_script, export_group_as_chunk
+from ._panel_builder import build_group_promo_panel, build_chunk_panel as _build_chunk_panel_fn
+from usd_chunks import chunk_core, chunk_registry as _cr
+from usd_chunks.chunk import Slider, Spinbox, Menu, Checkbox
 
 # NodeGraphQt's deserializer calls model.set_property() which only succeeds for
 # keys already present in custom_properties.  Pre-register the two promo keys on
@@ -19,17 +45,6 @@ def _patched_group_node_init(self, *args, **kwargs):
 
 
 GroupNode.__init__ = _patched_group_node_init
-
-from .graph_executor import GraphExecutor
-from .nodes._base import _get_promotions, _get_promoted_outputs, _save_promotions
-from ._graph_ui import (
-    _CodeEditor, _PythonHighlighter, _ViewportLabel, _TabSearchDialog,
-    add_field_completer,
-)
-from ._neon_theme import install_neon_theme
-from ._graph_layout import layout_nodes
-from ._graph_export import export_python_script
-from ._panel_builder import build_group_promo_panel, build_chunk_panel as _build_chunk_panel_fn
 
 MENU_STYLE = (
     "QMenu { background: #0e1016; color: #c8d0e8; border: 1px solid #1e2438; padding: 2px; }"
@@ -53,6 +68,18 @@ PANEL_STYLE = (
     "QPushButton:hover { background: #333; border-color: #666; }"
 )
 
+_BTN_STYLE = (
+    "QPushButton { background:#0e1016; color:#c8d0e8; border:1px solid #1e2438;"
+    "border-radius:6px; padding:5px 12px; font:11px 'Consolas'; }"
+    "QPushButton:hover { background:#161b26; border-color:#2a3550; }"
+    "QPushButton:pressed { background:#0a0d12; }"
+)
+_RUN_STYLE = (
+    "QPushButton { background:#e8533a; color:#fff; border:none;"
+    "border-radius:6px; padding:5px 14px; font:bold 11px 'Consolas'; }"
+    "QPushButton:hover { background:#f06848; }"
+)
+
 
 def _safe_port_visible(port, visible):
     """Set port visibility, silently ignoring errors (node not yet in graph)."""
@@ -68,7 +95,6 @@ def _remove_layer_from_hierarchy(parent_layer, target_layer):
     Prunes empty intermediate layers after removal so the stage's layer
     stack stays tidy (avoids dangling empty graph-group layers).
     """
-    from pxr import Sdf
     paths = list(parent_layer.subLayerPaths)
     if target_layer.identifier in paths:
         paths.remove(target_layer.identifier)
@@ -91,7 +117,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
     _suggestions_ready = QtCore.Signal(list)
     _active_instance = None  # class-level ref to the one open graph
 
-    def __init__(self, parent=None, stage=None):
+    def __init__(self, parent=None, stage=None) -> None:
         if NodeGraphWidget._active_instance is not None:
             raise RuntimeError("A node graph is already open. Close it before opening another.")
         super().__init__(parent)
@@ -123,37 +149,30 @@ class NodeGraphWidget(QtWidgets.QWidget):
         self._executor = GraphExecutor(self)
 
         # Toolbar
-        _BTN = ("QPushButton { background:#0e1016; color:#c8d0e8; border:1px solid #1e2438;"
-                "border-radius:6px; padding:5px 12px; font:11px 'Consolas'; }"
-                "QPushButton:hover { background:#161b26; border-color:#2a3550; }"
-                "QPushButton:pressed { background:#0a0d12; }")
-        _RUN = ("QPushButton { background:#e8533a; color:#fff; border:none;"
-                "border-radius:6px; padding:5px 14px; font:bold 11px 'Consolas'; }"
-                "QPushButton:hover { background:#f06848; }")
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.setContentsMargins(6, 6, 6, 2)
         self._add_node_btn = QtWidgets.QPushButton("+ Add Node")
-        self._add_node_btn.setStyleSheet(_BTN)
+        self._add_node_btn.setStyleSheet(_BTN_STYLE)
         self._add_node_btn.clicked.connect(self._show_add_menu)
         self._exec_btn = QtWidgets.QPushButton("▶ Execute")
-        self._exec_btn.setStyleSheet(_RUN)
+        self._exec_btn.setStyleSheet(_RUN_STYLE)
         self._exec_btn.clicked.connect(self._executor.run_full)
         self._save_btn = QtWidgets.QPushButton("💾 Save")
-        self._save_btn.setStyleSheet(_BTN)
+        self._save_btn.setStyleSheet(_BTN_STYLE)
         self._save_btn.clicked.connect(self._save_graph)
         self._load_btn = QtWidgets.QPushButton("📂 Load")
-        self._load_btn.setStyleSheet(_BTN)
+        self._load_btn.setStyleSheet(_BTN_STYLE)
         self._load_btn.clicked.connect(self._load_graph)
         toolbar.addWidget(self._add_node_btn)
         toolbar.addWidget(self._exec_btn)
         toolbar.addWidget(self._save_btn)
         toolbar.addWidget(self._load_btn)
         self._export_btn = QtWidgets.QPushButton("🐍 Export")
-        self._export_btn.setStyleSheet(_BTN)
+        self._export_btn.setStyleSheet(_BTN_STYLE)
         self._export_btn.clicked.connect(self._export_python)
         toolbar.addWidget(self._export_btn)
         self._viewport_btn = QtWidgets.QPushButton("👁 Viewport")
-        self._viewport_btn.setStyleSheet(_BTN)
+        self._viewport_btn.setStyleSheet(_BTN_STYLE)
         self._viewport_btn.setCheckable(True)
         self._viewport_btn.clicked.connect(self._toggle_viewport_preview)
         toolbar.addWidget(self._viewport_btn)
@@ -321,7 +340,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
     def _patched_apply_live(self, event):
         viewer = self._graph.viewer()
         if viewer._LIVE_PIPE.isVisible():
-            from NodeGraphQt.qgraphics.port import PortItem
             end_port = None
             for item in viewer.scene().items(event.scenePos()):
                 if isinstance(item, PortItem):
@@ -340,7 +358,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
         scene_pos = self._pending_scene_pos
         self._pending_port = None
 
-        from NodeGraphQt.constants import PortTypeEnum
         src_is_output = (port_item.port_type == PortTypeEnum.OUT.value)
         dlg = _TabSearchDialog(
             self,
@@ -390,11 +407,10 @@ class NodeGraphWidget(QtWidgets.QWidget):
         return self._graph
 
     # ── Tab menu ──────────────────────────────
-    def eventFilter(self, obj, event):
+    def eventFilter(self, obj, event) -> bool:
         try:
             if event.type() == QtCore.QEvent.GraphicsSceneMouseMove:
                 try:
-                    from NodeGraphQt.qgraphics.pipe import PipeItem
                     items = self._graph.viewer().scene().items(event.scenePos())
                     for item in items:
                         if isinstance(item, PipeItem):
@@ -538,7 +554,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if hasattr(self, '_minimap'):
             self._minimap.move(5, self.height() - 160)
@@ -595,8 +611,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             self._viewport_timer.stop()
             self._viewport_label.hide()
 
-    def _grab_viewport(self):
-        from .graph_host import GraphHost
+    def _grab_viewport(self) -> None:
         pixmap = GraphHost.current().get_viewport_screenshot()
         if pixmap and not pixmap.isNull():
             self._viewport_label.set_raw_pixmap(pixmap)
@@ -627,7 +642,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
     def _show_port_context_menu(self, graph, viewer, port_item, pos):
         """Port-right-click menu: copy reference from output, paste/clear on input."""
-        from NodeGraphQt.constants import PortTypeEnum
         node = graph.get_node_by_id(port_item.node.id)
         port_name = port_item.name
         param_name = port_name[1:] if port_name.startswith("_") else port_name
@@ -640,7 +654,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
         header.setEnabled(False)
         menu.addSeparator()
 
-        from NodeGraphQt.base.graph import SubGraph
         is_sub = isinstance(graph, SubGraph)
 
         copy_act = paste_act = clear_act = promote_out_act = None
@@ -680,7 +693,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             return
 
         if action == promote_out_act and promote_out_act is not None:
-            from .nodes._base import PORT_COLORS
             dtype = getattr(port_item, '_data_type', 'any')
             color = PORT_COLORS.get(dtype, (140, 150, 170))
             self._promote_output_to_group(node, port_name, color)
@@ -730,9 +742,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
         viewer = g.viewer()
         scene_pos = viewer.mapToScene(pos)
         items = viewer.scene().items(scene_pos)
-        from NodeGraphQt.qgraphics.node_base import NodeItem
-        from NodeGraphQt.qgraphics.port import PortItem
-        from NodeGraphQt.qgraphics.pipe import PipeItem
         # Check for wire/pipe under cursor first
         for item in items:
             if isinstance(item, PipeItem) and item.input_port and item.output_port:
@@ -753,7 +762,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
         selected = g.selected_nodes()
 
-        from NodeGraphQt.base.graph import SubGraph
         is_sub = isinstance(g, SubGraph)
 
         menu = QtWidgets.QMenu(self)
@@ -783,10 +791,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             if isinstance(node, nodes.PrimPathNode):
                 act_frame = menu.addAction("🎯 Frame in Viewport")
             menu.addSeparator()
-            adapter = getattr(node, '_cached_adapter', None)
-            if adapter and hasattr(adapter, 'chunk') and adapter.chunk:
-                print(dir(adapter.chunk))
-                print(adapter.chunk.get_my_params())
         if not menu.actions():
             return
 
@@ -830,7 +834,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
     def _export_group_as_chunk(self, group_node):
         """Export GroupNode as a chunk module and hot-register it."""
-        from ._graph_export import export_group_as_chunk
         g = self._active_graph()
         already_expanded = group_node.get_sub_graph() is not None
         sub = group_node.get_sub_graph() if already_expanded else g.expand_group_node(group_node)
@@ -846,7 +849,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             if not already_expanded and sub:
                 g.collapse_group_node(group_node)
 
-    def _set_exec_state(self, node, state, error_msg=""):
+    def _set_exec_state(self, node, state: str, error_msg: str = "") -> None:
         """Set persistent execution state on a node view item."""
         try:
             view = node.view
@@ -896,7 +899,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
         def _patched(event, _orig=orig, _viewer=viewer):
             if _viewer._LIVE_PIPE.isVisible():
-                from NodeGraphQt.qgraphics.port import PortItem
                 end_port = None
                 for item in _viewer.scene().items(event.scenePos()):
                     if isinstance(item, PortItem):
@@ -932,8 +934,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             return None, None
         leaf_name = port_name[1:]
         try:
-            from .chunk_adapter import ChunkAdapter
-            from usd_chunks import chunk_core
             adapter = getattr(node, "_cached_adapter", None)
             if adapter is None or not getattr(adapter, "chunk", None):
                 my_chunk = None
@@ -979,7 +979,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
         except Exception:
             return None, None
 
-    def _on_ports_connected(self, in_port, out_port):
+    def _on_ports_connected(self, in_port, out_port) -> None:
         if in_port.name() == "trigger":
             QtCore.QTimer.singleShot(0, lambda: _safe_port_visible(in_port, True))
         try:
@@ -997,7 +997,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             pass
         QtCore.QTimer.singleShot(0, lambda: self._refresh_panel_if_selected(in_port.node()))
 
-    def _on_ports_disconnected(self, in_port, out_port):
+    def _on_ports_disconnected(self, in_port, out_port) -> None:
         if in_port.name() == "trigger" and not in_port.connected_ports():
             QtCore.QTimer.singleShot(0, lambda: _safe_port_visible(in_port, False))
         try:
@@ -1021,7 +1021,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
     def _on_nodes_deleted(self, node_list):
         """Remove each deleted chunk node's Sdf.Layer from the stage layer stack."""
-        from pxr import Sdf
         for node_id in node_list:  # signal sends string IDs, not node objects
             layer_id = self._executor._node_layer_registry.pop(node_id, None)
             if not layer_id or not self._stage:
@@ -1046,7 +1045,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             pp = node.get_property("prim_path")
             if pp:
                 try:
-                    from .graph_host import GraphHost
                     host = GraphHost.current()
                     stage = host.get_stage()
                     if stage:
@@ -1075,7 +1073,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             else:
                 self._props_type_label.hide()
 
-    def _on_node_selected(self, node):
+    def _on_node_selected(self, node) -> None:
         while self._props_form.count():
             item = self._props_form.takeAt(0)
             if item.widget():
@@ -1112,7 +1110,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             self._props_error_label.setText("")
             self._props_error_label.hide()
 
-        import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
@@ -1150,7 +1147,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 "icon", "pos", "layout_direction", "type_", "promoted_params", "promoted_outputs"}
         _promoted_params: set = set()
         try:
-            from NodeGraphQt.base.graph import SubGraph
             g = self._active_graph()
             if isinstance(g, SubGraph):
                 for _pname, _info in _get_promotions(g.node).items():
@@ -1316,7 +1312,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             self._suggestions_ready.emit(suggested_names)
 
     def _show_ghost_buttons(self, names):
-        import sys
         print(f"[ghost] showing buttons: {names}", file=sys.stderr)
         if not getattr(self, '_executor', None):
             return
@@ -1366,13 +1361,13 @@ class NodeGraphWidget(QtWidgets.QWidget):
                         except Exception:
                             continue
 
-    def _save_graph(self):
+    def _save_graph(self) -> None:
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Save Graph", "", "Node Graph (*.json)")
         if path:
             self._graph.save_session(path)
 
-    def _load_graph(self):
+    def _load_graph(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Load Graph", "", "Node Graph (*.json)")
         if path:
@@ -1394,7 +1389,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
     def _get_prim_attrs(self, node):
         """Get attribute names from the prim connected to this node."""
         try:
-            from usd_chunks import chunk_registry as _cr
             stage = _cr.ChunkRegistry().scene.get_stage()
             if hasattr(node, '_output_cache') and node._output_cache.get("prim"):
                 prim = node._output_cache["prim"]
@@ -1450,10 +1444,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
     def _promote_param_to_group(self, inner_node, param):
         """Promote a chunk param to the enclosing GroupNode as an input port."""
-        from NodeGraphQt.base.graph import SubGraph
-        from usd_chunks.chunk import Slider, Spinbox, Menu, Checkbox
-        from .nodes._base import PORT_COLORS
-
         g = self._active_graph()
         if not isinstance(g, SubGraph):
             return
@@ -1501,11 +1491,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
         _save_promotions(group)
         print(f"[NodeGraph] promoted '{param_name}' from {inner_node.name()} → {group.name()}")
 
-    def _promote_prop_to_group(self, inner_node, prop_name, value):
+    def _promote_prop_to_group(self, inner_node, prop_name, value) -> None:
         """Promote a regular node property to the enclosing GroupNode as an input port."""
-        from NodeGraphQt.base.graph import SubGraph
-        from .nodes._base import PORT_COLORS
-
         g = self._active_graph()
         if not isinstance(g, SubGraph):
             return
@@ -1530,10 +1517,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
         _save_promotions(group)
         print(f"[NodeGraph] promoted prop '{prop_name}' from {inner_node.name()} → {group.name()}")
 
-    def _promote_output_to_group(self, inner_node, port_name, port_color):
+    def _promote_output_to_group(self, inner_node, port_name, port_color) -> None:
         """Promote an inner output port to the enclosing GroupNode as an output port."""
-        from NodeGraphQt.base.graph import SubGraph
-
         g = self._active_graph()
         if not isinstance(g, SubGraph):
             return
@@ -1552,9 +1537,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
         _save_promotions(group)
         print(f"[NodeGraph] promoted output '{port_name}' from {inner_node.name()} → {group.name()}")
 
-    def _add_chunk_widget(self, factory, param, node):
+    def _add_chunk_widget(self, factory, param, node) -> None:
         """Create a chunk widget for a param and add it to the side panel."""
-        from usd_chunks import chunk_core
         if isinstance(param, chunk_core.ChunkGroupBase):
             for sub in param.get_params():
                 self._add_chunk_widget(factory, sub, node)
@@ -1584,7 +1568,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
         try:
             adapter = getattr(node, "_cached_adapter", None)
             if adapter is None or not getattr(adapter, "chunk", None):
-                from .chunk_adapter import ChunkAdapter
                 display = getattr(node, "_chunk_display_name", None)
                 if display:
                     my_chunk = None
@@ -1629,7 +1612,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 return
             adapter = getattr(node, "_cached_adapter", None)
             if adapter is None or not getattr(adapter, "chunk", None):
-                from .chunk_adapter import ChunkAdapter
                 my_chunk = None
                 if hasattr(node, "_ensure_chunk"):
                     try:
@@ -1661,7 +1643,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             paste_act = menu.addAction("📌 Paste Reference")
             paste_act.setEnabled(NodeGraphWidget._ref_clipboard is not None)
             promote_act = None
-            from NodeGraphQt.base.graph import SubGraph
             g = self._active_graph()
             if isinstance(g, SubGraph):
                 menu.addSeparator()
@@ -1713,7 +1694,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 continue
 
             def _show_menu(pos, e=ed, n=node, p=param):
-                from NodeGraphQt.base.graph import SubGraph
                 menu = e.createStandardContextMenu() if isinstance(e, QtWidgets.QLineEdit) else QtWidgets.QMenu(e)
                 menu.setAttribute(QtCore.Qt.WA_TranslucentBackground, False)
                 menu.setStyleSheet(
@@ -1764,13 +1744,11 @@ class NodeGraphWidget(QtWidgets.QWidget):
     def _viewer_drag_enter(self, event):
         event.acceptProposedAction()
 
-    def _viewer_drop(self, event):
-        import sys
+    def _viewer_drop(self, event) -> None:
         print("[drop] viewer drop fired", file=sys.stderr)
         self._handle_drop(event, use_scene_pos=False)
 
-    def _scene_drop(self, event):
-        import sys
+    def _scene_drop(self, event) -> None:
         print("[drop] scene drop fired", file=sys.stderr)
         self._handle_drop(event, use_scene_pos=True)
 
@@ -1801,7 +1779,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             event.ignore()
             return
 
-        import os
         _IMG_EXTS = {".png", ".jpg", ".jpeg", ".exr", ".tga", ".bmp", ".tif", ".tiff", ".hdr", ".tx"}
         if os.path.isfile(text) and os.path.splitext(text)[1].lower() in _IMG_EXTS:
             if use_scene_pos:
@@ -1818,7 +1795,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
         if not text.startswith("/"):
             try:
-                from .graph_host import GraphHost
                 _host = GraphHost.current()
                 stage = _host.get_stage()
                 sel = _host.get_selection()
@@ -1851,7 +1827,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
                             text = str(p.GetPath())
                             break
             except Exception as e:
-                import sys
                 print(f"[drop] resolve failed: {e}", file=sys.stderr)
 
         if not text:
@@ -1979,7 +1954,6 @@ class NodeGraphWidget(QtWidgets.QWidget):
             viewer = self._active_graph().viewer()
             start_port = getattr(viewer, '_start_port', None)
             if start_port and getattr(viewer, '_LIVE_PIPE', None) and viewer._LIVE_PIPE.isVisible():
-                from NodeGraphQt.constants import PortTypeEnum
                 dragged_dtype = getattr(start_port, '_data_type', 'any')
                 dragged_is_output = (start_port.port_type == PortTypeEnum.OUT.value)
         except Exception:
@@ -2004,17 +1978,17 @@ class NodeGraphWidget(QtWidgets.QWidget):
             kwargs["pos"] = pos
         return g.create_node(identifier, **kwargs)
 
-    def set_stage(self, stage):
+    def set_stage(self, stage) -> None:
         self._stage = stage
 
-    def execute_graph(self):
+    def execute_graph(self) -> None:
         """Delegate to executor.run_full() — kept for external callers."""
         self._executor.run_full()
 
     def _layout_nodes(self, node_list=None):
         layout_nodes(self._active_graph(), node_list)
 
-    def hideEvent(self, event):
+    def hideEvent(self, event) -> None:
         super().hideEvent(event)
         if hasattr(self, '_minimap_timer'):
             self._minimap_timer.stop()
@@ -2028,7 +2002,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
         for t in getattr(self, '_init_timers', []):
             t.stop()
 
-    def showEvent(self, event):
+    def showEvent(self, event) -> None:
         super().showEvent(event)
         if hasattr(self, '_minimap_timer'):
             self._minimap_timer.start(500)
@@ -2039,10 +2013,10 @@ class NodeGraphWidget(QtWidgets.QWidget):
         for t in getattr(self, '_init_timers', []):
             t.start()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         NodeGraphWidget._active_instance = None
         super().closeEvent(event)
 
     @property
-    def graph(self):
+    def graph(self) -> NodeGraph:
         return self._graph
