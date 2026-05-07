@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 try:
@@ -41,12 +43,20 @@ class RBDSolverNode(UsdNodeBase):
         self.add_combo_menu("shape_type", "Collision Shape", items=self._SHAPE_TYPES)
         self.add_text_input("drop_height", "Drop Height", text="50")
         self.add_text_input("start_frame", "Start Frame", text="1")
+        self.add_text_input("substeps", "Substeps", text="4")
+        self.add_text_input("initial_velocity", "Initial Velocity", text="0 0 0")
+        self.add_text_input("angular_velocity", "Angular Velocity", text="0 0 0")
+        self.add_text_input("mass_variance", "Mass Variance", text="0.0")
+        self.add_text_input("friction_variance", "Friction Variance", text="0.0")
+        self.add_text_input("restitution_variance", "Bounce Variance", text="0.0")
+        self.add_text_input("variance_seed", "Variance Seed", text="42")
         self.add_output("prim", color=PORT_COLORS["prim"])
+        self.add_output("layer", color=PORT_COLORS["layer"])
 
     def execute(self, stage) -> dict:
         if not _HAS_PYBULLET:
             print("[RBDSolver] pybullet not installed. Run: pip install pybullet")
-            return {"prim": None}
+            return {"prim": None, "layer": None}
 
         p = _pybullet
         pybullet_data = _pybullet_data
@@ -56,7 +66,7 @@ class RBDSolverNode(UsdNodeBase):
 
         if not input_prim or not input_prim.IsValid():
             print("[RBDSolver] No input prim")
-            return {"prim": None}
+            return {"prim": None, "layer": None}
 
         # Read params
         frame_count = int(self.get_property("frames") or 120)
@@ -68,48 +78,74 @@ class RBDSolverNode(UsdNodeBase):
         shape_type = self.get_property("shape_type") or "Box"
         drop_height = float(self.get_property("drop_height") or 50)
         start_frame = int(self.get_property("start_frame") or 1)
+        substeps = max(1, int(self.get_property("substeps") or 4))
+        init_vel = self._parse_vec3(self.get_property("initial_velocity") or "0 0 0")
+        ang_vel = self._parse_vec3(self.get_property("angular_velocity") or "0 0 0")
+        mass_var = float(self.get_property("mass_variance") or 0.0)
+        friction_var = float(self.get_property("friction_variance") or 0.0)
+        restitution_var = float(self.get_property("restitution_variance") or 0.0)
+        var_seed = int(self.get_property("variance_seed") or 42)
         dt = 1.0 / fps
+
+        # Create anonymous layer to capture all baked time samples
+        bake_layer = Sdf.Layer.CreateAnonymous("rbd_bake")
+        stage.GetRootLayer().subLayerPaths.insert(0, bake_layer.identifier)
 
         # Detect if input is a PointInstancer or a regular prim
         instancer = UsdGeom.PointInstancer(input_prim)
         is_instancer = bool(instancer.GetPositionsAttr().Get())
 
-        if is_instancer:
-            self._sim_instancer(
-                p,
-                pybullet_data,
-                stage,
-                instancer,
-                collision_prims,
-                frame_count,
-                fps,
-                gravity,
-                friction,
-                restitution,
-                mass,
-                shape_type,
-                drop_height,
-                start_frame,
-                dt,
-            )
-        else:
-            self._sim_single_prim(
-                p,
-                pybullet_data,
-                stage,
-                input_prim,
-                collision_prims,
-                frame_count,
-                fps,
-                gravity,
-                friction,
-                restitution,
-                mass,
-                shape_type,
-                drop_height,
-                start_frame,
-                dt,
-            )
+        with Usd.EditContext(stage, bake_layer):
+            if is_instancer:
+                self._sim_instancer(
+                    p,
+                    pybullet_data,
+                    stage,
+                    instancer,
+                    collision_prims,
+                    frame_count,
+                    fps,
+                    gravity,
+                    friction,
+                    restitution,
+                    mass,
+                    shape_type,
+                    drop_height,
+                    start_frame,
+                    dt,
+                    substeps,
+                    init_vel,
+                    ang_vel,
+                    mass_var,
+                    friction_var,
+                    restitution_var,
+                    var_seed,
+                )
+            else:
+                self._sim_single_prim(
+                    p,
+                    pybullet_data,
+                    stage,
+                    input_prim,
+                    collision_prims,
+                    frame_count,
+                    fps,
+                    gravity,
+                    friction,
+                    restitution,
+                    mass,
+                    shape_type,
+                    drop_height,
+                    start_frame,
+                    dt,
+                    substeps,
+                    init_vel,
+                    ang_vel,
+                    mass_var,
+                    friction_var,
+                    restitution_var,
+                    var_seed,
+                )
 
         # Set stage time range
         stage.SetStartTimeCode(start_frame)
@@ -126,7 +162,7 @@ class RBDSolverNode(UsdNodeBase):
             pass
 
         print(f"[RBDSolver] Baked {frame_count} frames")
-        return {"prim": input_prim}
+        return {"prim": input_prim, "layer": bake_layer}
 
     def _sim_instancer(
         self,
@@ -145,6 +181,13 @@ class RBDSolverNode(UsdNodeBase):
         drop_height,
         start_frame,
         dt,
+        substeps,
+        init_vel,
+        ang_vel,
+        mass_var,
+        friction_var,
+        restitution_var,
+        var_seed,
     ) -> None:
         """Simulate a PointInstancer — multiple rigid bodies."""
         positions = instancer.GetPositionsAttr().Get()
@@ -170,12 +213,15 @@ class RBDSolverNode(UsdNodeBase):
                     sz = rng.GetMax() - rng.GetMin()
                     half_extents = [sz[0] / 2, sz[1] / 2, sz[2] / 2]
 
-        # Setup PyBullet
+        # Setup PyBullet — substep timestep so N steps == 1 frame
         p.connect(p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, gravity)
-        p.setTimeStep(dt)
+        p.setTimeStep(dt / substeps)
         self._add_collision_geometry(p, stage, collision_prims, friction, restitution)
+
+        # Per-body variance RNG — seeded for determinism
+        rng_inst = random.Random(var_seed)
 
         # Create rigid bodies
         bodies = []
@@ -195,27 +241,35 @@ class RBDSolverNode(UsdNodeBase):
                 half_extents[2] * sc[2],
             ]
 
+            body_mass = mass * _variance_multiplier(rng_inst, mass_var)
+            body_friction = friction * _variance_multiplier(rng_inst, friction_var)
+            body_restitution = restitution * _variance_multiplier(rng_inst, restitution_var)
+
             if shape_type == "Sphere":
                 col_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=max(he))
             else:
                 col_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=he)
 
             body = p.createMultiBody(
-                baseMass=mass,
+                baseMass=body_mass,
                 baseCollisionShapeIndex=col_shape,
                 basePosition=pos,
                 baseOrientation=orn,
             )
             p.changeDynamics(
-                body, -1, lateralFriction=friction, restitution=restitution
+                body, -1, lateralFriction=body_friction, restitution=body_restitution
+            )
+            p.resetBaseVelocity(
+                body, linearVelocity=init_vel, angularVelocity=ang_vel
             )
             bodies.append(body)
 
-        # Simulate
+        # Simulate — substeps steps per frame
         all_positions = []
         all_orientations = []
         for frame in range(frame_count):
-            p.stepSimulation()
+            for _ in range(substeps):
+                p.stepSimulation()
             frame_pos = []
             frame_orn = []
             for body in bodies:
@@ -251,6 +305,13 @@ class RBDSolverNode(UsdNodeBase):
         drop_height,
         start_frame,
         dt,
+        substeps,
+        init_vel,
+        ang_vel,
+        mass_var,
+        friction_var,
+        restitution_var,
+        var_seed,
     ) -> None:
         """Simulate a single prim as one rigid body — writes time-sampled xform."""
         # Get prim's world transform as initial position/orientation
@@ -284,11 +345,17 @@ class RBDSolverNode(UsdNodeBase):
             sz = rng.GetMax() - rng.GetMin()
             half_extents = [sz[0] / 2, sz[1] / 2, sz[2] / 2]
 
-        # Setup PyBullet
+        # Per-body variance (single body — deterministic from seed)
+        rng_inst = random.Random(var_seed)
+        body_mass = mass * _variance_multiplier(rng_inst, mass_var)
+        body_friction = friction * _variance_multiplier(rng_inst, friction_var)
+        body_restitution = restitution * _variance_multiplier(rng_inst, restitution_var)
+
+        # Setup PyBullet — substep timestep so N steps == 1 frame
         p.connect(p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, gravity)
-        p.setTimeStep(dt)
+        p.setTimeStep(dt / substeps)
         self._add_collision_geometry(p, stage, collision_prims, friction, restitution)
 
         # Create rigid body
@@ -298,12 +365,15 @@ class RBDSolverNode(UsdNodeBase):
             col_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=half_extents)
 
         body = p.createMultiBody(
-            baseMass=mass,
+            baseMass=body_mass,
             baseCollisionShapeIndex=col_shape,
             basePosition=init_pos,
             baseOrientation=init_orn,
         )
-        p.changeDynamics(body, -1, lateralFriction=friction, restitution=restitution)
+        p.changeDynamics(
+            body, -1, lateralFriction=body_friction, restitution=body_restitution
+        )
+        p.resetBaseVelocity(body, linearVelocity=init_vel, angularVelocity=ang_vel)
 
         # Simulate and write xform per frame
         xformable = UsdGeom.Xformable(prim)
@@ -311,7 +381,8 @@ class RBDSolverNode(UsdNodeBase):
         xf_op = xformable.AddTransformOp()
 
         for frame in range(frame_count):
-            p.stepSimulation()
+            for _ in range(substeps):
+                p.stepSimulation()
             pos, orn = p.getBasePositionAndOrientation(body)
             # Build world-space matrix from sim result
             world_mat = Gf.Matrix4d()
@@ -382,3 +453,17 @@ class RBDSolverNode(UsdNodeBase):
                 p.changeDynamics(
                     body, -1, lateralFriction=friction, restitution=restitution
                 )
+
+    @staticmethod
+    def _parse_vec3(s: str) -> list:
+        parts = s.split()
+        if len(parts) >= 3:
+            return [float(parts[0]), float(parts[1]), float(parts[2])]
+        return [0.0, 0.0, 0.0]
+
+
+def _variance_multiplier(rng: random.Random, variance: float) -> float:
+    """Return a random multiplier in [1-variance, 1+variance], or 1.0 if variance==0."""
+    if variance == 0.0:
+        return 1.0
+    return rng.uniform(1.0 - variance, 1.0 + variance)
