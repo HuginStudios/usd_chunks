@@ -609,6 +609,52 @@ class WindForceNode(UsdNodeBase):
         }
 
 
+class DragForceNode(UsdNodeBase):
+    """Applies linear air resistance opposing velocity."""
+
+    NODE_NAME = "Drag Force"
+    CATEGORY = "Simulation"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_text_input("coefficient", "Coefficient", text="0.5")
+        self.add_output("force", color=PORT_COLORS["data"])
+
+    def execute(self, stage) -> dict:
+        return {
+            "force": {
+                "type": "drag",
+                "coefficient": float(self.get_property("coefficient") or 0.5),
+            }
+        }
+
+
+class TurbulenceForceNode(UsdNodeBase):
+    """Applies smoothly-varying random forces using Perlin noise."""
+
+    NODE_NAME = "Turbulence Force"
+    CATEGORY = "Simulation"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_text_input("strength", "Strength", text="5.0")
+        self.add_text_input("frequency", "Frequency", text="1.0")
+        self.add_text_input("seed", "Seed", text="42")
+        self.add_output("force", color=PORT_COLORS["data"])
+
+    def execute(self, stage) -> dict:
+        if not _HAS_NOISE:
+            print("[TurbulenceForce] 'noise' package not installed, using numpy fallback")
+        return {
+            "force": {
+                "type": "turbulence",
+                "strength": float(self.get_property("strength") or 5.0),
+                "frequency": float(self.get_property("frequency") or 1.0),
+                "seed": int(self.get_property("seed") or 42),
+            }
+        }
+
+
 def _apply_forces(p, body: int, body_index: int, step: int, force_dicts: list) -> None:
     """Apply all force dicts to a single body for one simulation substep."""
     for fd in force_dicts:

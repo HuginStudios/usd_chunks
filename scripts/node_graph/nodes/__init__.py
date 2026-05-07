@@ -95,7 +95,7 @@ from ._create import (
 )
 
 # ── Simulation ─────────────────────────────────────────────────────────────
-from ._simulation import RBDSolverNode, CollisionSetNode, WindForceNode
+from ._simulation import RBDSolverNode, CollisionSetNode, WindForceNode, DragForceNode, TurbulenceForceNode
 
 # ── Lighting ───────────────────────────────────────────────────────────────
 from ._lighting import (
@@ -240,6 +240,8 @@ ALL_NODES = [
     RBDSolverNode,
     CollisionSetNode,
     WindForceNode,
+    DragForceNode,
+    TurbulenceForceNode,
     # Lighting
     CreateRectLightNode,
     CreateSphereLightNode,
