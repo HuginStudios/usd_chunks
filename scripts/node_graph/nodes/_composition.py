@@ -1,4 +1,5 @@
 """Composition nodes — references, payloads, layer stack, merge layers."""
+
 from __future__ import annotations
 
 from pxr import Sdf
@@ -8,10 +9,11 @@ from ._base import UsdNodeBase, PORT_COLORS
 
 class AddReferenceNode(UsdNodeBase):
     """Add a reference to a prim from a USD file."""
+
     NODE_NAME = "Add Reference"
     CATEGORY = "Composition"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("file_path", "USD File", text="")
@@ -31,10 +33,11 @@ class AddReferenceNode(UsdNodeBase):
 
 class AddPayloadNode(UsdNodeBase):
     """Add a payload to a prim."""
+
     NODE_NAME = "Add Payload"
     CATEGORY = "Composition"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("file_path", "USD File", text="")
@@ -54,10 +57,11 @@ class AddPayloadNode(UsdNodeBase):
 
 class GetLayerStackNode(UsdNodeBase):
     """List all layers in the stage's layer stack."""
+
     NODE_NAME = "Get Layer Stack"
     CATEGORY = "Composition"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_output("layers", color=PORT_COLORS["list"])
 
@@ -68,10 +72,11 @@ class GetLayerStackNode(UsdNodeBase):
 
 class MergeLayersNode(UsdNodeBase):
     """Sublayers two Sdf.Layers into a new anonymous composite layer."""
+
     NODE_NAME = "Merge Layers"
     CATEGORY = "Composition"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("layer_a", color=PORT_COLORS["layer"])
         self.add_input("layer_b", color=PORT_COLORS["layer"])
@@ -92,10 +97,11 @@ class MergeLayersNode(UsdNodeBase):
 
 class ReferenceAtNode(UsdNodeBase):
     """References a layer onto a prim at a given path — reuse authored content at any scene location."""
+
     NODE_NAME = "Reference At"
     CATEGORY = "Composition"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("layer", color=PORT_COLORS["layer"])
         self.add_text_input("prim_path", "Prim Path", text="/ReferenceAt")

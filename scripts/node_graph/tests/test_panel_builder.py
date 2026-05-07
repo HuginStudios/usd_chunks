@@ -1,9 +1,11 @@
 """Tests for _panel_builder: build_group_promo_panel and build_chunk_panel."""
+
 import pytest
 from PySide6 import QtWidgets
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_form(qapp):
     w = QtWidgets.QWidget()
@@ -16,6 +18,7 @@ def _noop(*_a, **_kw):
 
 
 # ── Scenario 1: build_group_promo_panel with promotions ───────────────────────
+
 
 def test_promo_panel_with_promotions(node_graph, qapp):
     """Form receives one labeled QLineEdit row per promoted param."""
@@ -37,7 +40,7 @@ def test_promo_panel_with_promotions(node_graph, qapp):
         "default_value": "hello",
     }
     _save_promotions(g)
-    if hasattr(g, '_promotions'):
+    if hasattr(g, "_promotions"):
         del g._promotions
 
     _, form = _make_form(qapp)
@@ -50,6 +53,7 @@ def test_promo_panel_with_promotions(node_graph, qapp):
 
 
 # ── Scenario 2: build_group_promo_panel with no promotions ────────────────────
+
 
 def test_promo_panel_empty(node_graph, qapp):
     """Form receives a placeholder QLabel when nothing is promoted."""
@@ -69,6 +73,7 @@ def test_promo_panel_empty(node_graph, qapp):
 
 # ── Scenario 3: build_chunk_panel when plugins.chunk_qt unavailable ───────────
 
+
 def test_chunk_panel_no_plugin(node_graph, qapp, monkeypatch):
     """An error QLabel is added instead of raising when chunk_qt is missing."""
     import builtins
@@ -87,6 +92,7 @@ def test_chunk_panel_no_plugin(node_graph, qapp, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _block_chunk_qt)
     try:
         from node_graph._panel_builder import build_chunk_panel
+
         build_chunk_panel(node, form, _noop)
     finally:
         monkeypatch.undo()
@@ -97,6 +103,7 @@ def test_chunk_panel_no_plugin(node_graph, qapp, monkeypatch):
 
 
 # ── Scenario 4: build_chunk_panel with real chunk ─────────────────────────────
+
 
 def test_chunk_panel_real_chunk(node_graph, qapp):
     """Form receives a ChunkWidget child row when plugins.chunk_qt is available."""
@@ -123,6 +130,7 @@ def test_chunk_panel_real_chunk(node_graph, qapp):
 
 
 # ── Scenario 5: build_node_panel with a plain UsdNodeBase subclass ────────────
+
 
 def test_build_node_panel_plain_node(node_graph, qapp):
     """build_node_panel creates property rows for a plain (non-chunk, non-group) node."""

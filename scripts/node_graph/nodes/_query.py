@@ -1,4 +1,5 @@
 """USD inspection/query nodes."""
+
 from __future__ import annotations
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
@@ -8,10 +9,11 @@ from ._base import UsdNodeBase, PORT_COLORS
 
 class GetVariantsNode(UsdNodeBase):
     """Lists variant sets and their options for a prim."""
+
     NODE_NAME = "Get Variants"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("variant_sets", color=PORT_COLORS["list"])
@@ -34,10 +36,11 @@ class GetVariantsNode(UsdNodeBase):
 
 class SetVariantNode(UsdNodeBase):
     """Sets a variant selection on a prim."""
+
     NODE_NAME = "Set Variant"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("set_name", "Variant Set", text="")
@@ -57,10 +60,11 @@ class SetVariantNode(UsdNodeBase):
 
 class GetPrimInfoNode(UsdNodeBase):
     """Outputs prim type, name, path, and children count."""
+
     NODE_NAME = "Get Prim Info"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("type", color=PORT_COLORS["string"])
@@ -82,10 +86,11 @@ class GetPrimInfoNode(UsdNodeBase):
 
 class GetChildrenNode(UsdNodeBase):
     """Outputs children of a prim."""
+
     NODE_NAME = "Get Children"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("children", color=PORT_COLORS["list"])
@@ -99,10 +104,11 @@ class GetChildrenNode(UsdNodeBase):
 
 class GetAttributeNode(UsdNodeBase):
     """Get any attribute value from a prim."""
+
     NODE_NAME = "Get Attribute"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("attr_name", "Attribute", text="")
@@ -115,7 +121,7 @@ class GetAttributeNode(UsdNodeBase):
         if not prims or not attr_name:
             return {"value": None, "prim": None}
 
-        def _get_val(p):
+        def _get_val(p) -> None:
             # Handle pseudo-attributes
             if attr_name == "name":
                 return p.GetName()
@@ -136,20 +142,21 @@ class GetAttributeNode(UsdNodeBase):
         pv = var_map.get("prim", "prim")
         vv = var_map.get("value", "value")
         if attr == "name":
-            return f'{vv} = {pv}.GetName()'
+            return f"{vv} = {pv}.GetName()"
         if attr == "path":
-            return f'{vv} = str({pv}.GetPath())'
+            return f"{vv} = str({pv}.GetPath())"
         if attr == "type":
-            return f'{vv} = {pv}.GetTypeName()'
+            return f"{vv} = {pv}.GetTypeName()"
         return f'{vv} = {pv}.GetAttribute("{attr}").Get()'
 
 
 class SetAttributeNode(UsdNodeBase):
     """Set any attribute value on a prim."""
+
     NODE_NAME = "Set Attribute"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_input("value", color=PORT_COLORS["any"])
@@ -175,10 +182,18 @@ class SetAttributeNode(UsdNodeBase):
                     # Convert value to match attribute's expected type
                     type_name = attr.GetTypeName()
                     try:
-                        if type_name == Sdf.ValueTypeNames.Float3Array or type_name == Sdf.ValueTypeNames.Color3fArray:
+                        if (
+                            type_name == Sdf.ValueTypeNames.Float3Array
+                            or type_name == Sdf.ValueTypeNames.Color3fArray
+                        ):
                             if isinstance(val, (tuple, list)):
-                                val = Vt.Vec3fArray([Gf.Vec3f(*[float(x) for x in val])])
-                        elif type_name == Sdf.ValueTypeNames.Float3 or type_name == Sdf.ValueTypeNames.Color3f:
+                                val = Vt.Vec3fArray(
+                                    [Gf.Vec3f(*[float(x) for x in val])]
+                                )
+                        elif (
+                            type_name == Sdf.ValueTypeNames.Float3
+                            or type_name == Sdf.ValueTypeNames.Color3f
+                        ):
                             if isinstance(val, (tuple, list)):
                                 val = Gf.Vec3f(*[float(x) for x in val])
                         elif type_name == Sdf.ValueTypeNames.Double3:
@@ -192,10 +207,11 @@ class SetAttributeNode(UsdNodeBase):
 
 class SelectPrimNode(UsdNodeBase):
     """Select the input prim in usdview viewport."""
+
     NODE_NAME = "Select in Viewport"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
 
@@ -204,6 +220,7 @@ class SelectPrimNode(UsdNodeBase):
         if prim:
             try:
                 from ..graph_host import GraphHost  # usdview-guarded
+
                 GraphHost.current().set_selection(prim)
             except Exception:
                 pass
@@ -212,10 +229,11 @@ class SelectPrimNode(UsdNodeBase):
 
 class FilterChildrenNode(UsdNodeBase):
     """Filter children of a prim by type name."""
+
     NODE_NAME = "Filter Children"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("type_filter", "Type (e.g. Mesh)", text="Mesh")
@@ -226,17 +244,21 @@ class FilterChildrenNode(UsdNodeBase):
         type_filter = self.get_property("type_filter") or ""
         if not prim:
             return {"children": []}
-        children = [c for c in prim.GetChildren()
-                    if not type_filter or c.GetTypeName() == type_filter]
+        children = [
+            c
+            for c in prim.GetChildren()
+            if not type_filter or c.GetTypeName() == type_filter
+        ]
         return {"children": children}
 
 
 class SetVisibilityNode(UsdNodeBase):
     """Set visibility on a prim (inherited/invisible)."""
+
     NODE_NAME = "Set Visibility"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("visible", "Visible (true/false)", text="true")
@@ -257,10 +279,11 @@ class SetVisibilityNode(UsdNodeBase):
 
 class SetPurposeNode(UsdNodeBase):
     """Set purpose on a prim (default/render/proxy/guide)."""
+
     NODE_NAME = "Set Purpose"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("purpose", "Purpose", text="default")
@@ -270,16 +293,19 @@ class SetPurposeNode(UsdNodeBase):
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
-        UsdGeom.Imageable(prim).GetPurposeAttr().Set(self.get_property("purpose") or "default")
+        UsdGeom.Imageable(prim).GetPurposeAttr().Set(
+            self.get_property("purpose") or "default"
+        )
         return {"prim": prim}
 
 
 class IsVisibleNode(UsdNodeBase):
     """Check if a prim is visible."""
+
     NODE_NAME = "Is Visible"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("visible", color=PORT_COLORS["bool"])
@@ -295,13 +321,16 @@ class IsVisibleNode(UsdNodeBase):
 
 class IsPrimValidNode(UsdNodeBase):
     """Check if a prim exists and is valid."""
+
     NODE_NAME = "Is Prim Valid"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("valid", color=PORT_COLORS["bool"])
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         valid = prim is not None and hasattr(prim, "IsValid") and prim.IsValid()
@@ -310,14 +339,17 @@ class IsPrimValidNode(UsdNodeBase):
 
 class HasVariantsNode(UsdNodeBase):
     """Check if prim has variant sets. Outputs prim on true or false branch."""
+
     NODE_NAME = "Has Variants"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
         self.add_output("names", color=PORT_COLORS["list"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim is None or not hasattr(prim, "GetVariantSets"):
@@ -330,14 +362,17 @@ class HasVariantsNode(UsdNodeBase):
 
 class HasChildrenNode(UsdNodeBase):
     """Check if prim has children."""
+
     NODE_NAME = "Has Children"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
         self.add_output("count", color=PORT_COLORS["float"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim is None:
@@ -350,14 +385,17 @@ class HasChildrenNode(UsdNodeBase):
 
 class HasMaterialNode(UsdNodeBase):
     """Check if prim has a material binding."""
+
     NODE_NAME = "Has Material"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
         self.add_output("material", color=PORT_COLORS["material"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim is None:
@@ -366,21 +404,28 @@ class HasMaterialNode(UsdNodeBase):
         mat_path = binding.GetMaterialPath() if binding else None
         if mat_path and str(mat_path) != "":
             mat_prim = stage.GetPrimAtPath(mat_path)
-            return {"true": prim, "false": None, "material": mat_prim if mat_prim.IsValid() else None}
+            return {
+                "true": prim,
+                "false": None,
+                "material": mat_prim if mat_prim.IsValid() else None,
+            }
         return {"true": None, "false": prim, "material": None}
 
 
 class HasAttributeNode(UsdNodeBase):
     """Check if prim has a specific attribute."""
+
     NODE_NAME = "Has Attribute"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("attr_name", "Attribute Name", text="")
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
         self.add_output("value", color=PORT_COLORS["any"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         attr_name = (self.get_property("attr_name") or "").strip()
@@ -394,30 +439,37 @@ class HasAttributeNode(UsdNodeBase):
 
 class HasReferenceNode(UsdNodeBase):
     """Check if prim has references or payloads."""
+
     NODE_NAME = "Has Reference"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim is None:
             return {"true": None, "false": None}
         has = bool(prim.GetPrimStack()) and any(
-            s.referenceList.prependedItems or s.referenceList.appendedItems
-            or s.payloadList.prependedItems or s.payloadList.appendedItems
-            for s in prim.GetPrimStack())
+            s.referenceList.prependedItems
+            or s.referenceList.appendedItems
+            or s.payloadList.prependedItems
+            or s.payloadList.appendedItems
+            for s in prim.GetPrimStack()
+        )
         return {"true": prim if has else None, "false": None if has else prim}
 
 
 class FindByTypeNode(UsdNodeBase):
     """Find all prims of a given type."""
+
     NODE_NAME = "Find by Type"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("type_name", "Type (e.g. Mesh)", text="Mesh")
         self.add_output("prims", color=PORT_COLORS["list"])
@@ -430,10 +482,11 @@ class FindByTypeNode(UsdNodeBase):
 
 class FindByPatternNode(UsdNodeBase):
     """Find prims whose path contains a substring."""
+
     NODE_NAME = "Find by Pattern"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("pattern", "Pattern", text="")
         self.add_output("prims", color=PORT_COLORS["list"])
@@ -446,10 +499,11 @@ class FindByPatternNode(UsdNodeBase):
 
 class StageInfoNode(UsdNodeBase):
     """Output stage metadata: up axis, meters per unit, default prim."""
+
     NODE_NAME = "Stage Info"
     CATEGORY = "USD"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_output("up_axis", color=PORT_COLORS["string"])
         self.add_output("meters_per_unit", color=PORT_COLORS["float"])
@@ -459,21 +513,26 @@ class StageInfoNode(UsdNodeBase):
         return {
             "up_axis": UsdGeom.GetStageUpAxis(stage),
             "meters_per_unit": UsdGeom.GetStageMetersPerUnit(stage),
-            "default_prim": stage.GetDefaultPrim().GetName() if stage.HasDefaultPrim() else "",
+            "default_prim": stage.GetDefaultPrim().GetName()
+            if stage.HasDefaultPrim()
+            else "",
         }
 
 
 class GetRelationshipsNode(UsdNodeBase):
     """List relationships and their targets on a prim."""
+
     NODE_NAME = "Get Relationships"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("rel_name", "Relationship (empty=all)", text="")
         self.add_output("targets", color=PORT_COLORS["list"])
         self.add_output("names", color=PORT_COLORS["list"])
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if not prim:
@@ -502,14 +561,17 @@ class GetRelationshipsNode(UsdNodeBase):
 
 class GetMetadataNode(UsdNodeBase):
     """Get metadata from a prim. Leave Key empty to get ALL metadata as a dict."""
+
     NODE_NAME = "Get Metadata"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("key", "Key (empty=all)", text="")
         self.add_output("value", color=PORT_COLORS["any"])
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if not prim:
@@ -531,15 +593,18 @@ class GetMetadataNode(UsdNodeBase):
 
 class SetMetadataNode(UsdNodeBase):
     """Set metadata on a prim."""
+
     NODE_NAME = "Set Metadata"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_input("value", color=PORT_COLORS["any"])
         self.add_text_input("key", "Key", text="")
         self.add_text_input("manual_value", "Value (if no input)", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         key = (self.get_property("key") or "").strip()
@@ -561,13 +626,16 @@ class SetMetadataNode(UsdNodeBase):
 
 class GetPrimLayerStackNode(UsdNodeBase):
     """Get which layers have opinions about a specific prim."""
+
     NODE_NAME = "Get Prim Layers"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("layers", color=PORT_COLORS["list"])
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if not prim:
@@ -579,9 +647,11 @@ class GetPrimLayerStackNode(UsdNodeBase):
 
 class ListPrimsNode(UsdNodeBase):
     """Traverse stage with combined filters: type, purpose, visibility, name pattern."""
+
     NODE_NAME = "List Prims"
     CATEGORY = "USD"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("root", color=PORT_COLORS["prim"])
         self.add_text_input("type_filter", "Type (empty=any)", text="")
@@ -589,6 +659,7 @@ class ListPrimsNode(UsdNodeBase):
         self.add_text_input("purpose_filter", "Purpose (empty=any)", text="")
         self.add_output("prims", color=PORT_COLORS["list"])
         self.add_output("count", color=PORT_COLORS["float"])
+
     def execute(self, stage) -> dict:
         root = self._get_input_value("root")
         type_f = (self.get_property("type_filter") or "").strip()
@@ -614,10 +685,11 @@ class ListPrimsNode(UsdNodeBase):
 
 class PrintNode(UsdNodeBase):
     """Debug node — prints whatever comes in."""
+
     NODE_NAME = "Print"
     CATEGORY = "Debug"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("value", color=PORT_COLORS["any"])
 

@@ -95,7 +95,13 @@ from ._create import (
 )
 
 # ── Simulation ─────────────────────────────────────────────────────────────
-from ._simulation import RBDSolverNode, CollisionSetNode, WindForceNode, DragForceNode, TurbulenceForceNode
+from ._simulation import (
+    RBDSolverNode,
+    CollisionSetNode,
+    WindForceNode,
+    DragForceNode,
+    TurbulenceForceNode,
+)
 
 # ── Lighting ───────────────────────────────────────────────────────────────
 from ._lighting import (

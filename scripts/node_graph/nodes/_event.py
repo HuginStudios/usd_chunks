@@ -1,4 +1,5 @@
 """Event/trigger nodes — fire downstream execution on USD and UI events."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -11,11 +12,14 @@ from ._base import UsdNodeBase, PORT_COLORS, TRIGGER
 
 class _TriggerNodeBase(UsdNodeBase):
     """Base for event-driven trigger nodes. Subclasses set the event type."""
+
     CATEGORY = "Event"
     _active_triggers = {}  # node_id -> (cleanup_fn, refs_to_keep_alive)
-    _min_interval_ms = 0  # 0 = no rate limit; subclasses override for high-frequency events
+    _min_interval_ms = (
+        0  # 0 = no rate limit; subclasses override for high-frequency events
+    )
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("enabled", "Enabled (true/false)", text="true")
         self.add_output("trigger", color=PORT_COLORS["trigger"])
@@ -36,17 +40,21 @@ class _TriggerNodeBase(UsdNodeBase):
             result = self._subscribe(stage)
             if result:
                 _TriggerNodeBase._active_triggers[nid] = result
-        return {"trigger": TRIGGER, "prim": None, "event": "armed" if enabled else "disabled"}
+        return {
+            "trigger": TRIGGER,
+            "prim": None,
+            "event": "armed" if enabled else "disabled",
+        }
 
     def _subscribe(self, stage) -> Callable | None:
         """Override: subscribe to event, return cleanup function."""
         return None
 
-    def _trigger_downstream(self):
+    def _trigger_downstream(self) -> None:
         """Called when event fires — schedules downstream execution via executor."""
         if self._min_interval_ms > 0:
             now = QtCore.QDateTime.currentMSecsSinceEpoch()
-            last = getattr(self, '_last_trigger_ms', 0)
+            last = getattr(self, "_last_trigger_ms", 0)
             if now - last < self._min_interval_ms:
                 return
             self._last_trigger_ms = now
@@ -56,41 +64,37 @@ class _TriggerNodeBase(UsdNodeBase):
 
 class OnSelectionChangedNode(_TriggerNodeBase):
     """Triggers when prim selection changes in usdview. Outputs the newly selected prim."""
+
     NODE_NAME = "On Selection Changed"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
     def _subscribe(self, stage) -> Callable | None:
-        from usd_chunks import chunk_registry  # usdview-guarded
-        try:
-            scene = chunk_registry.ChunkRegistry().scene
-            ctrl = scene.usdviewAPI._UsdviewApi__appController
-            model = ctrl._dataModel
+        from ..graph_host import GraphHost
 
-            def _on_sel_changed(*args):
-                try:
-                    prims = scene.get_selected_prims()
-                    self._output_cache = {
-                        "trigger": TRIGGER,
-                        "prim": prims[0] if prims else None,
-                        "event": "selection_changed",
-                    }
-                    QtCore.QTimer.singleShot(0, self._trigger_downstream)
-                except Exception:
-                    pass
+        host = GraphHost.current()
 
-            model.selection.signalPrimSelectionChanged.connect(_on_sel_changed)
-            return lambda: model.selection.signalPrimSelectionChanged.disconnect(_on_sel_changed)
-        except Exception:
-            return None
+        def _on_sel_changed(*args) -> None:
+            try:
+                prims = host.get_selection()
+                self._output_cache = {
+                    "trigger": TRIGGER,
+                    "prim": prims[0] if prims else None,
+                    "event": "selection_changed",
+                }
+                QtCore.QTimer.singleShot(0, self._trigger_downstream)
+            except Exception:
+                pass
+
+        return host.subscribe_selection_changed(_on_sel_changed)
 
     def execute(self, stage) -> dict:
         result = super().execute(stage)
         try:
-            from usd_chunks import chunk_registry  # usdview-guarded
-            scene = chunk_registry.ChunkRegistry().scene
-            prims = scene.get_selected_prims() if scene else []
+            from ..graph_host import GraphHost
+
+            prims = GraphHost.current().get_selection()
             result["prim"] = prims[0] if prims else None
         except Exception:
             pass
@@ -99,43 +103,41 @@ class OnSelectionChangedNode(_TriggerNodeBase):
 
 class OnFrameChangedNode(_TriggerNodeBase):
     """Triggers when the timeline frame changes."""
+
     NODE_NAME = "On Frame Changed"
     _min_interval_ms = 33  # ~30 fps cap — frame events fire on every scrub tick
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_output("frame", color=PORT_COLORS["float"])
 
     def _subscribe(self, stage) -> Callable | None:
-        from usd_chunks import chunk_registry  # usdview-guarded
-        try:
-            scene = chunk_registry.ChunkRegistry().scene
-            ctrl = scene.usdviewAPI._UsdviewApi__appController
-            model = ctrl._dataModel
+        from ..graph_host import GraphHost
 
-            def _on_frame(*args):
-                try:
-                    frame = model.currentFrame.GetValue()
-                    self._output_cache = {
-                        "trigger": TRIGGER, "prim": None, "event": "frame_changed", "frame": frame,
-                    }
-                    QtCore.QTimer.singleShot(0, self._trigger_downstream)
-                except Exception:
-                    pass
+        host = GraphHost.current()
 
-            model.signalCurrentFrameChanged.connect(_on_frame)
-            return lambda: model.signalCurrentFrameChanged.disconnect(_on_frame)
-        except Exception:
-            return None
+        def _on_frame(*args) -> None:
+            try:
+                frame = host.get_current_frame()
+                self._output_cache = {
+                    "trigger": TRIGGER,
+                    "prim": None,
+                    "event": "frame_changed",
+                    "frame": frame,
+                }
+                QtCore.QTimer.singleShot(0, self._trigger_downstream)
+            except Exception:
+                pass
+
+        return host.subscribe_frame_changed(_on_frame)
 
     def execute(self, stage) -> dict:
         result = super().execute(stage)
         result["frame"] = 0
         try:
-            from usd_chunks import chunk_registry  # usdview-guarded
-            scene = chunk_registry.ChunkRegistry().scene
-            ctrl = scene.usdviewAPI._UsdviewApi__appController
-            result["frame"] = ctrl._dataModel.currentFrame.GetValue()
+            from ..graph_host import GraphHost
+
+            result["frame"] = GraphHost.current().get_current_frame()
         except Exception:
             pass
         return result
@@ -143,9 +145,10 @@ class OnFrameChangedNode(_TriggerNodeBase):
 
 class OnTimerNode(_TriggerNodeBase):
     """Triggers on a repeating timer interval."""
+
     NODE_NAME = "On Timer"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("interval", "Interval (seconds)", text="1.0")
         self.add_output("tick", color=PORT_COLORS["float"])
@@ -156,10 +159,13 @@ class OnTimerNode(_TriggerNodeBase):
         timer = QtCore.QTimer()
         timer.setInterval(max(100, interval))
 
-        def _on_tick():
+        def _on_tick() -> None:
             self._tick_count += 1
             self._output_cache = {
-                "trigger": TRIGGER, "prim": None, "event": "timer", "tick": self._tick_count,
+                "trigger": TRIGGER,
+                "prim": None,
+                "event": "timer",
+                "tick": self._tick_count,
             }
             self._trigger_downstream()
 
@@ -175,18 +181,25 @@ class OnTimerNode(_TriggerNodeBase):
 
 class OnStageChangedNode(_TriggerNodeBase):
     """Triggers when the USD stage is edited (any prim/attribute change)."""
+
     NODE_NAME = "On Stage Changed"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
     def _subscribe(self, stage) -> Callable | None:
-        def _on_notice(notice, sender):
-            self._output_cache = {"trigger": TRIGGER, "prim": None, "event": "stage_changed"}
+        def _on_notice(notice, sender) -> None:
+            self._output_cache = {
+                "trigger": TRIGGER,
+                "prim": None,
+                "event": "stage_changed",
+            }
             QtCore.QTimer.singleShot(50, self._trigger_downstream)
 
         self._notice_cb = _on_notice
-        self._notice_key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_notice, stage)
+        self._notice_key = Tf.Notice.Register(
+            Usd.Notice.ObjectsChanged, _on_notice, stage
+        )
         return lambda: self._notice_key.Revoke()
 
     def execute(self, stage) -> dict:
@@ -195,16 +208,17 @@ class OnStageChangedNode(_TriggerNodeBase):
 
 class OnPrimChangedNode(_TriggerNodeBase):
     """Triggers when a specific prim is modified (any property/child change)."""
+
     NODE_NAME = "On Prim Changed"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("prim_path", "Prim Path", text="/")
 
     def _subscribe(self, stage) -> Callable | None:
         watch_path = self.get_property("prim_path") or "/"
 
-        def _on_notice(notice, sender):
+        def _on_notice(notice, sender) -> None:
             for p in notice.GetChangedInfoOnlyPaths():
                 if str(p).startswith(watch_path):
                     prim = stage.GetPrimAtPath(watch_path)
@@ -227,7 +241,9 @@ class OnPrimChangedNode(_TriggerNodeBase):
                     return
 
         self._notice_cb = _on_notice
-        self._notice_key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_notice, stage)
+        self._notice_key = Tf.Notice.Register(
+            Usd.Notice.ObjectsChanged, _on_notice, stage
+        )
         return lambda: self._notice_key.Revoke()
 
     def execute(self, stage) -> dict:
@@ -240,9 +256,10 @@ class OnPrimChangedNode(_TriggerNodeBase):
 
 class OnAttributeChangedNode(_TriggerNodeBase):
     """Triggers when a specific attribute value changes."""
+
     NODE_NAME = "On Attribute Changed"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("prim_path", "Prim Path", text="/")
         self.add_text_input("attr_name", "Attribute Name", text="")
@@ -262,7 +279,7 @@ class OnAttributeChangedNode(_TriggerNodeBase):
             if attr and attr.IsValid():
                 self._last_value = attr.Get()
 
-        def _on_notice(notice, sender):
+        def _on_notice(notice, sender) -> None:
             for p in notice.GetChangedInfoOnlyPaths():
                 if str(p) == full_path or str(p).startswith(watch_path):
                     prim = stage.GetPrimAtPath(watch_path)
@@ -276,14 +293,17 @@ class OnAttributeChangedNode(_TriggerNodeBase):
                         self._last_value = new_val
                         self._output_cache = {
                             "trigger": TRIGGER,
-                            "prim": prim, "event": f"{attr_name}_changed",
+                            "prim": prim,
+                            "event": f"{attr_name}_changed",
                             "value": new_val,
                         }
                         QtCore.QTimer.singleShot(50, self._trigger_downstream)
                     return
 
         self._notice_cb = _on_notice
-        self._notice_key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_notice, stage)
+        self._notice_key = Tf.Notice.Register(
+            Usd.Notice.ObjectsChanged, _on_notice, stage
+        )
         return lambda: self._notice_key.Revoke()
 
     def execute(self, stage) -> dict:

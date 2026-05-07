@@ -4,6 +4,7 @@ Base helper tests — behavior 2.5.
 Tests verify _get_promotions, _save_promotions, _get_node_port_types, and the
 TRIGGER sentinel — the small utility functions that multiple modules depend on.
 """
+
 import json
 import pytest
 
@@ -21,6 +22,7 @@ from node_graph.nodes._base import (
 
 
 # ── Behavior 1: GroupNode promotion helpers ───────────────────────────────────
+
 
 def test_get_promotions_returns_empty_for_fresh_group(node_graph):
     """A newly-created GroupNode has no promotions."""
@@ -74,6 +76,7 @@ def test_get_promoted_outputs_returns_empty_for_fresh_group(node_graph):
 
 # ── Behavior 2: port-type introspection ──────────────────────────────────────
 
+
 def test_get_node_port_types_returns_dict_with_expected_keys(node_graph):
     """_get_node_port_types returns a dict with 'inputs' and 'outputs' sets."""
     from node_graph.nodes._input import PrimPathNode
@@ -106,6 +109,7 @@ def test_get_node_port_types_is_cached(node_graph):
 
 # ── Behavior 3: TRIGGER sentinel ─────────────────────────────────────────────
 
+
 def test_trigger_sentinel_is_instance_of_trigger_signal():
     """TRIGGER is a _TriggerSignal, used to distinguish trigger from data ports."""
     assert isinstance(TRIGGER, _TriggerSignal)
@@ -117,6 +121,7 @@ def test_trigger_sentinel_has_readable_repr():
 
 
 # ── Behavior 4: PORT_COLORS completeness ─────────────────────────────────────
+
 
 def test_port_colors_contains_required_types():
     """PORT_COLORS must define at minimum: prim, string, bool, float, trigger, layer."""

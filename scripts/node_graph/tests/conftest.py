@@ -7,6 +7,7 @@ against a real Usd.Stage. Per-test fixtures create fresh NodeGraph instances.
 Injection seam: GraphHost.set_current(TestGraphHost(stage)) lets the node
 execute() path get the test stage without usdview.
 """
+
 import sys
 from pathlib import Path
 
@@ -23,13 +24,14 @@ from pxr import Usd
 # ('promoted_params', 'promoted_outputs') are always initialised without importing
 # the full graph_widget module.
 from NodeGraphQt.nodes.group_node import GroupNode as _GroupNode
+
 _orig_gn_init = _GroupNode.__init__
 
 
 def _patched_gn_init(self, *args, **kwargs):
     _orig_gn_init(self, *args, **kwargs)
-    self.model.custom_properties.setdefault('promoted_params', '{}')
-    self.model.custom_properties.setdefault('promoted_outputs', '{}')
+    self.model.custom_properties.setdefault("promoted_params", "{}")
+    self.model.custom_properties.setdefault("promoted_outputs", "{}")
 
 
 _GroupNode.__init__ = _patched_gn_init
@@ -37,6 +39,7 @@ _GroupNode.__init__ = _patched_gn_init
 
 # ── Test doubles ─────────────────────────────────────────────────────────────
 # Defined as factories to avoid circular-import issues at module load time.
+
 
 def _make_test_scene_sender(stage):
     from usd_chunks.chunk_core import SceneSender
@@ -73,9 +76,11 @@ def _make_test_graph_host(stage):
 
 # ── Session-scoped fixtures ───────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="session")
 def qapp():
     from PySide6.QtWidgets import QApplication
+
     app = QApplication.instance() or QApplication([])
     yield app
 
@@ -84,6 +89,7 @@ def qapp():
 def stage(tmp_path_factory, qapp):
     """One real Usd.Stage for the entire test session."""
     from node_graph.graph_host import GraphHost
+
     p = tmp_path_factory.mktemp("usd") / "test.usda"
     s = Usd.Stage.CreateNew(str(p))
     GraphHost.set_current(_make_test_graph_host(s))
@@ -113,6 +119,7 @@ def setup_registry(stage):
 
 
 # ── Per-test fixtures ─────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def node_graph(qapp, setup_registry):

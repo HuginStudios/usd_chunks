@@ -8,6 +8,7 @@ Dispatches on node type:
   - Chunk node → build_chunk_panel
   - Otherwise → property-type rows (code, file_path, bool, combo, line edit)
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -42,15 +43,19 @@ def build_node_panel(
         build_group_promo_panel(node, form, on_changed)
         return {}
 
-    if hasattr(node, '_chunk_module'):
+    if hasattr(node, "_chunk_module"):
         build_chunk_panel(
-            node, form, on_changed,
+            node,
+            form,
+            on_changed,
             active_graph_fn=active_graph_fn,
             ref_menu_fn=ref_menu_fn,
         )
         return {}
 
-    return _build_property_rows(node, form, on_changed, active_graph_fn, ref_menu_fn, get_prim_attrs_fn)
+    return _build_property_rows(
+        node, form, on_changed, active_graph_fn, ref_menu_fn, get_prim_attrs_fn
+    )
 
 
 def _build_property_rows(
@@ -65,8 +70,19 @@ def _build_property_rows(
     from . import nodes  # local to avoid circular import
 
     skip = {
-        "id", "name", "color", "disabled", "selected", "width", "height",
-        "icon", "pos", "layout_direction", "type_", "promoted_params", "promoted_outputs",
+        "id",
+        "name",
+        "color",
+        "disabled",
+        "selected",
+        "width",
+        "height",
+        "icon",
+        "pos",
+        "layout_direction",
+        "type_",
+        "promoted_params",
+        "promoted_outputs",
     }
 
     promoted_params: set[str] = set()
@@ -94,8 +110,15 @@ def _build_property_rows(
             _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors)
         else:
             _add_generic_row(
-                node, name, val, form, on_changed,
-                promoted_params, ref_menu_fn, get_prim_attrs_fn, editors,
+                node,
+                name,
+                val,
+                form,
+                on_changed,
+                promoted_params,
+                ref_menu_fn,
+                get_prim_attrs_fn,
+                editors,
             )
 
     return editors
@@ -127,14 +150,18 @@ def _add_code_row(node, name, val, form, on_changed, editors):
     save_snip = QtWidgets.QPushButton("💾 Save Snippet")
     load_snip = QtWidgets.QPushButton("📂 Load Snippet")
 
-    def _save_snippet(e=edit):
-        p, _ = QtWidgets.QFileDialog.getSaveFileName(None, "Save Snippet", "", "Python (*.py)")
+    def _save_snippet(e=edit) -> None:
+        p, _ = QtWidgets.QFileDialog.getSaveFileName(
+            None, "Save Snippet", "", "Python (*.py)"
+        )
         if p:
             with open(p, "w", encoding="utf-8") as f:
                 f.write(e.toPlainText())
 
-    def _load_snippet(e=edit):
-        p, _ = QtWidgets.QFileDialog.getOpenFileName(None, "Load Snippet", "", "Python (*.py)")
+    def _load_snippet(e=edit) -> None:
+        p, _ = QtWidgets.QFileDialog.getOpenFileName(
+            None, "Load Snippet", "", "Python (*.py)"
+        )
         if p:
             with open(p, encoding="utf-8") as f:
                 e.setPlainText(f.read())
@@ -152,7 +179,9 @@ def _add_bool_row(node, name, val, form, on_changed, promoted_params, editors):
     cb = QtWidgets.QCheckBox()
     cb.setChecked(val)
     cb.setProperty("prop_name", name)
-    cb.toggled.connect(lambda state, n=name, nd=node: _on_bool_changed(nd, n, state, on_changed))
+    cb.toggled.connect(
+        lambda state, n=name, nd=node: _on_bool_changed(nd, n, state, on_changed)
+    )
     if name in promoted_params:
         cb.setEnabled(False)
         cb.setToolTip("Promoted to group — change value on the group node")
@@ -168,7 +197,9 @@ def _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors):
     file_row = QtWidgets.QHBoxLayout()
     edit = QtWidgets.QLineEdit(str(val) if val else "")
     edit.setProperty("prop_name", name)
-    edit.editingFinished.connect(lambda nd=node, e=edit: _on_prop_committed(nd, e, on_changed))
+    edit.editingFinished.connect(
+        lambda nd=node, e=edit: _on_prop_committed(nd, e, on_changed)
+    )
     if ref_menu_fn:
         ref_menu_fn(edit, node, name)
 
@@ -179,16 +210,21 @@ def _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors):
     thumb.setStyleSheet("background: #1a1a1a; border: 1px solid #333;")
     thumb.setAlignment(QtCore.Qt.AlignCenter)
 
-    def _make_browse(ed, th, nd):
-        def _fn():
+    def _make_browse(ed, th, nd) -> None:
+        def _fn() -> None:
             path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                None, "Select Texture", "", "Images (*.png *.jpg *.jpeg *.exr *.tga *.bmp)")
+                None,
+                "Select Texture",
+                "",
+                "Images (*.png *.jpg *.jpeg *.exr *.tga *.bmp)",
+            )
             if path:
                 ed.setText(path)
                 ed.editingFinished.emit()
                 _show_thumbnail(th, path)
-                if hasattr(nd, '_thumb'):
+                if hasattr(nd, "_thumb"):
                     nd._thumb.set_value(path)
+
         return _fn
 
     browse.clicked.connect(_make_browse(edit, thumb, node))
@@ -202,10 +238,24 @@ def _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors):
     editors[name] = edit
 
 
-def _add_generic_row(node, name, val, form, on_changed, promoted_params, ref_menu_fn, get_prim_attrs_fn, editors):
+def _add_generic_row(
+    node,
+    name,
+    val,
+    form,
+    on_changed,
+    promoted_params,
+    ref_menu_fn,
+    get_prim_attrs_fn,
+    editors,
+):
     # Check if this property is a combo menu on the node
-    node_widget = node.view._widgets.get(name) if hasattr(node, 'view') and hasattr(node.view, '_widgets') else None
-    if node_widget and getattr(node_widget, 'type_', '') == 'ComboNodeWidget':
+    node_widget = (
+        node.view._widgets.get(name)
+        if hasattr(node, "view") and hasattr(node.view, "_widgets")
+        else None
+    )
+    if node_widget and getattr(node_widget, "type_", "") == "ComboNodeWidget":
         inner = node_widget.get_custom_widget()
         combo = QtWidgets.QComboBox()
         for i in range(inner.count()):
@@ -213,14 +263,18 @@ def _add_generic_row(node, name, val, form, on_changed, promoted_params, ref_men
         if val:
             combo.setCurrentText(str(val))
         combo.setProperty("prop_name", name)
-        combo.currentTextChanged.connect(lambda text, n=name, nd=node: _on_combo_changed(nd, n, text, on_changed))
+        combo.currentTextChanged.connect(
+            lambda text, n=name, nd=node: _on_combo_changed(nd, n, text, on_changed)
+        )
         form.addRow(name, combo)
         editors[name] = combo
         return
 
     edit = QtWidgets.QLineEdit(str(val) if val else "")
     edit.setProperty("prop_name", name)
-    edit.editingFinished.connect(lambda nd=node, e=edit: _on_prop_committed(nd, e, on_changed))
+    edit.editingFinished.connect(
+        lambda nd=node, e=edit: _on_prop_committed(nd, e, on_changed)
+    )
     if ref_menu_fn:
         ref_menu_fn(edit, node, name)
 
@@ -234,7 +288,11 @@ def _add_generic_row(node, name, val, form, on_changed, promoted_params, ref_men
     if auto_port and auto_port.connected_ports():
         src_port = auto_port.connected_ports()[0]
         src_node = src_port.node()
-        driven_val = src_node._output_cache.get(src_port.name()) if hasattr(src_node, "_output_cache") else None
+        driven_val = (
+            src_node._output_cache.get(src_port.name())
+            if hasattr(src_node, "_output_cache")
+            else None
+        )
         if driven_val is not None and not isinstance(driven_val, _TriggerSignal):
             edit.setText(str(driven_val))
             edit.setReadOnly(True)
@@ -255,12 +313,21 @@ def _add_generic_row(node, name, val, form, on_changed, promoted_params, ref_men
         if val:
             combo.setCurrentText(str(val))
         combo.setProperty("prop_name", name)
-        combo.currentTextChanged.connect(lambda text, n=name, nd=node: _on_combo_changed(nd, n, text, on_changed))
+        combo.currentTextChanged.connect(
+            lambda text, n=name, nd=node: _on_combo_changed(nd, n, text, on_changed)
+        )
         form.addRow(name, combo)
         editors[name] = combo
         return
 
-    if name in ("prim_path", "set_name", "type_filter", "prim_type", "purpose", "material_path"):
+    if name in (
+        "prim_path",
+        "set_name",
+        "type_filter",
+        "prim_type",
+        "purpose",
+        "material_path",
+    ):
         add_field_completer(edit, name, node)
     edit.setPlaceholderText("Type to search...")
 
@@ -301,6 +368,10 @@ def _on_prop_committed(node, edit, on_changed):
 def _show_thumbnail(label, path):
     pixmap = QtGui.QPixmap(path)
     if not pixmap.isNull():
-        label.setPixmap(pixmap.scaled(200, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        label.setPixmap(
+            pixmap.scaled(
+                200, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+            )
+        )
     else:
         label.setText("No preview")

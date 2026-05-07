@@ -4,6 +4,7 @@ GraphHost — thin abstraction over the host application (usdview, Kraken, etc.)
 Nodes and widgets call GraphHost.current() instead of importing usdview
 internals directly, so the node graph runs in any host.
 """
+
 from __future__ import annotations
 from typing import Callable
 from PySide6 import QtCore, QtGui
@@ -59,6 +60,32 @@ class GraphHost:
         """Force a viewport redraw."""
         pass
 
+    # ── Camera ─────────────────────────────────────────────────────────────
+
+    def set_camera_prim(self, prim: object) -> None:
+        """Set the active camera to the given prim."""
+        pass
+
+    # ── Timeline ───────────────────────────────────────────────────────────
+
+    def get_current_frame(self) -> float:
+        """Return the current frame/time code."""
+        return 0.0
+
+    def refresh_timeline(self, start: float, end: float) -> None:
+        """Update the host's timeline range and enable playback."""
+        pass
+
+    # ── Subscriptions ──────────────────────────────────────────────────────
+
+    def subscribe_selection_changed(self, callback: Callable) -> Callable | None:
+        """Subscribe to selection changes. Returns an unsubscribe callable, or None."""
+        return None
+
+    def subscribe_frame_changed(self, callback: Callable) -> Callable | None:
+        """Subscribe to frame/time changes. Returns an unsubscribe callable, or None."""
+        return None
+
 
 class UsdviewGraphHost(GraphHost):
     """Usdview implementation of GraphHost."""
@@ -66,6 +93,7 @@ class UsdviewGraphHost(GraphHost):
     def _get_scene_ctrl(self) -> tuple[object, object]:
         try:
             from usd_chunks import chunk_registry
+
             scene = chunk_registry.ChunkRegistry().scene
             if not scene:
                 return None, None
@@ -125,7 +153,7 @@ class UsdviewGraphHost(GraphHost):
             ctrl._dataModel.selection.setPrim(prim)
             ctrl._frameSelection()
 
-            def _do_grab():
+            def _do_grab() -> None:
                 px = None
                 try:
                     px = sv.grab()
@@ -151,3 +179,62 @@ class UsdviewGraphHost(GraphHost):
                 ctrl._stageView.updateView(resetCam=False, forceComputeBBox=True)
             except Exception:
                 pass
+
+    def set_camera_prim(self, prim: object) -> None:
+        _scene, ctrl = self._get_scene_ctrl()
+        if ctrl and prim:
+            try:
+                ctrl._dataModel.viewSettings.cameraPrim = prim
+            except Exception:
+                pass
+
+    def get_current_frame(self) -> float:
+        _scene, ctrl = self._get_scene_ctrl()
+        if ctrl:
+            try:
+                return ctrl._dataModel.currentFrame.GetValue()
+            except Exception:
+                pass
+        return 0.0
+
+    def refresh_timeline(self, start: float, end: float) -> None:
+        _scene, ctrl = self._get_scene_ctrl()
+        if ctrl:
+            try:
+                ctrl.realStartTimeCode = start
+                ctrl.realEndTimeCode = end
+                ctrl._UpdateTimeSamples()
+            except Exception:
+                pass
+
+    def subscribe_selection_changed(self, callback: Callable) -> Callable | None:
+        _scene, ctrl = self._get_scene_ctrl()
+        if not ctrl:
+            return None
+        try:
+            model = ctrl._dataModel
+
+            def _on_sel_changed(*args):
+                callback()
+
+            model.selection.signalPrimSelectionChanged.connect(_on_sel_changed)
+            return lambda: model.selection.signalPrimSelectionChanged.disconnect(
+                _on_sel_changed
+            )
+        except Exception:
+            return None
+
+    def subscribe_frame_changed(self, callback: Callable) -> Callable | None:
+        _scene, ctrl = self._get_scene_ctrl()
+        if not ctrl:
+            return None
+        try:
+            model = ctrl._dataModel
+
+            def _on_frame(*args):
+                callback()
+
+            model.signalCurrentFrameChanged.connect(_on_frame)
+            return lambda: model.signalCurrentFrameChanged.disconnect(_on_frame)
+        except Exception:
+            return None

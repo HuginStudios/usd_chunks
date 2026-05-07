@@ -1,6 +1,7 @@
 """
 GraphExecutor integration tests — error propagation, run_from scoping, group promoted values.
 """
+
 import pytest
 
 
@@ -14,6 +15,7 @@ class _StubWidget:
 
 
 # ── 1. Error propagation ─────────────────────────────────────────────────────
+
 
 def test_error_propagation_skips_downstream(node_graph, stage, qapp):
     """When _exec_node returns False, downstream nodes are skipped with empty cache."""
@@ -41,6 +43,7 @@ def test_error_propagation_skips_downstream(node_graph, stage, qapp):
 
 
 # ── 2. run_from subtree scoping ──────────────────────────────────────────────
+
 
 def test_run_from_does_not_execute_unrelated_nodes(node_graph, stage, qapp):
     """run_from(B) does not re-execute node A when A is not upstream of B."""
@@ -76,6 +79,7 @@ def test_run_from_does_not_execute_unrelated_nodes(node_graph, stage, qapp):
 
 
 # ── 3. Group promoted value flow ─────────────────────────────────────────────
+
 
 def test_promoted_default_value_applied_in_exec_group(node_graph, stage, qapp):
     """_exec_group applies promoted default_value to inner node's property."""

@@ -4,10 +4,12 @@ ChunkAdapter tests — behavior 2.4.
 Tests verify ChunkAdapter param filtering, value setting, and reference handling
 without a live usdview scene (scene is None → graceful no-ops).
 """
+
 import pytest
 
 
 # ── Behavior 1: graceful no-scene handling ────────────────────────────────────
+
 
 def test_adapter_with_no_scene_has_no_chunk(setup_registry):
     """ChunkAdapter returns chunk=None when the scene has no matching chunk."""
@@ -43,6 +45,7 @@ def test_press_button_is_noop_for_missing_chunk(setup_registry):
 
 # ── Behavior 2: get_params excludes non-drivable types ───────────────────────
 
+
 def test_get_params_excludes_button_params(node_graph, stage, setup_registry):
     """get_params() never returns Button params — they are not drivable via ports."""
     from node_graph.chunk_adapter import ChunkAdapter
@@ -70,11 +73,12 @@ def test_get_params_includes_lineedit(node_graph, stage, setup_registry):
     assert my_chunk is not None
 
     adapter = ChunkAdapter(my_chunk.name, chunk=my_chunk)
-    param_names = [p.name for p in adapter.get_params() if hasattr(p, 'name')]
+    param_names = [p.name for p in adapter.get_params() if hasattr(p, "name")]
     assert "prim_path" in param_names, f"Expected prim_path in {param_names}"
 
 
 # ── Behavior 3: set_param value handling ─────────────────────────────────────
+
 
 def test_set_param_updates_chunk_value(node_graph, stage, setup_registry):
     """set_param() writes a concrete value into the named chunk param."""
@@ -93,7 +97,9 @@ def test_set_param_updates_chunk_value(node_graph, stage, setup_registry):
     assert str(param.value) == "/AdapterTest"
 
 
-def test_set_param_with_at_reference_installs_binding(node_graph, stage, setup_registry):
+def test_set_param_with_at_reference_installs_binding(
+    node_graph, stage, setup_registry
+):
     """set_param('@...') installs a value_reference, not a concrete value."""
     from node_graph.chunk_adapter import ChunkAdapter
 
@@ -104,7 +110,7 @@ def test_set_param_with_at_reference_installs_binding(node_graph, stage, setup_r
 
     adapter = ChunkAdapter(my_chunk.name, chunk=my_chunk)
     param = my_chunk.get_param("prim_path")
-    if param is None or not hasattr(param, 'value_reference'):
+    if param is None or not hasattr(param, "value_reference"):
         pytest.skip("prim_path param has no value_reference support")
 
     adapter.set_param("prim_path", "@SomeNode.output")
@@ -112,6 +118,7 @@ def test_set_param_with_at_reference_installs_binding(node_graph, stage, setup_r
 
 
 # ── Behavior 4: list_available ────────────────────────────────────────────────
+
 
 def test_list_available_returns_list(setup_registry):
     """list_available() always returns a list (empty or populated)."""

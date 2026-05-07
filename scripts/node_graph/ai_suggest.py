@@ -2,6 +2,7 @@
 AI suggestions for the node graph using ollama.
 Runs queries in background threads, returns suggestions async.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,6 +16,7 @@ def _call_ollama(prompt: str, max_tokens: int = 200) -> str:
     """Blocking ollama call. Run in a background thread."""
     try:
         import ollama
+
         resp = ollama.chat(
             model=_OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
@@ -39,16 +41,19 @@ def _strip_code_fences(text: str) -> str:
 
 def _get_node_names() -> list[str]:
     from . import nodes
+
     return [n.NODE_NAME for n in nodes.ALL_NODES]
 
 
-def suggest_next_nodes(graph_context: str, callback: Callable[[list[str]], None]) -> None:
+def suggest_next_nodes(
+    graph_context: str, callback: Callable[[list[str]], None]
+) -> None:
     """Suggest next nodes based on current graph. Calls callback(list[str]) on completion."""
     node_names = _get_node_names()
 
     prompt = f"""You are a USD node graph assistant. Given the current graph state, suggest 3-5 nodes the user should add next.
 
-Available nodes: {', '.join(node_names)}
+Available nodes: {", ".join(node_names)}
 
 Current graph:
 {graph_context}
@@ -72,7 +77,9 @@ Reply with ONLY a JSON list of node names, e.g. ["Set Display Color", "Get Prim 
     threading.Thread(target=_run, daemon=True).start()
 
 
-def suggest_for_prim(prim_path: str, prim_type: str, callback: Callable[[list[str]], None]) -> None:
+def suggest_for_prim(
+    prim_path: str, prim_type: str, callback: Callable[[list[str]], None]
+) -> None:
     """Suggest what to do with a specific prim."""
     node_names = _get_node_names()
 
@@ -81,7 +88,7 @@ Path: {prim_path}
 Type: {prim_type}
 
 Suggest 3 nodes they'd most likely want to connect next.
-Available nodes: {', '.join(node_names)}
+Available nodes: {", ".join(node_names)}
 
 Reply with ONLY a JSON list of node names. No explanation."""
 
@@ -109,7 +116,7 @@ def suggest_python_completion(
     prompt = f"""Complete this Python code at the cursor position marked with <CURSOR>.
 Available variables: stage (Usd.Stage), inputs (dict with keys: in_1, in_2, in_3).
 Set 'output' to return a value.
-{f'Connected inputs: {inputs_desc}' if inputs_desc else ''}
+{f"Connected inputs: {inputs_desc}" if inputs_desc else ""}
 
 ```python
 {code_before}<CURSOR>{code_after}
@@ -133,7 +140,7 @@ def suggest_python_code(
 Available variables: stage (Usd.Stage), inputs (dict with keys: in_1, in_2, in_3).
 Set 'output' to return a value downstream.
 
-{f'Connected inputs: {inputs_desc}' if inputs_desc else 'No inputs connected.'}
+{f"Connected inputs: {inputs_desc}" if inputs_desc else "No inputs connected."}
 
 Current code:
 ```python
@@ -152,12 +159,12 @@ def get_graph_context(graph) -> str:
     """Serialize current graph state into a text description for the AI."""
     lines = []
     for node in graph.all_nodes():
-        if not hasattr(node, 'input_ports'):
+        if not hasattr(node, "input_ports"):
             continue
         name = node.name()
-        node_type = getattr(node, 'NODE_NAME', type(node).__name__)
+        node_type = getattr(node, "NODE_NAME", type(node).__name__)
         props = {}
-        if hasattr(node, 'model') and hasattr(node.model, 'custom_properties'):
+        if hasattr(node, "model") and hasattr(node.model, "custom_properties"):
             props = {k: v for k, v in node.model.custom_properties.items() if v}
         connections = []
         for port in node.output_ports():

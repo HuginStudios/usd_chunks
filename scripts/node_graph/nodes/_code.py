@@ -1,4 +1,5 @@
 """Code nodes — Python scripting inside the graph."""
+
 from __future__ import annotations
 
 from ._base import UsdNodeBase, PORT_COLORS
@@ -10,12 +11,13 @@ class PythonNode(UsdNodeBase):
 
     REMEMBER: THE "inputs" IS A DICT OF ALL INPUT PORT VALUES, {"in_1": value1, "in_2": value2, ...}
     """
+
     NODE_NAME = "Python"
     CATEGORY = "Code"
 
     _OUTPUT_TYPES = ["any", "prim", "layer", "string", "float", "list", "bool"]
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("in_1", color=PORT_COLORS["any"])
         self.add_input("in_2", color=PORT_COLORS["any"])
@@ -41,8 +43,10 @@ class PythonNode(UsdNodeBase):
         if port:
             new_color = PORT_COLORS.get(dtype, PORT_COLORS["any"])
             if port.connected_ports() and dtype != "any":
-                print(f"[PythonNode] Warning: output type changed to '{dtype}' "
-                      "while connections exist — existing wires are not re-validated")
+                print(
+                    f"[PythonNode] Warning: output type changed to '{dtype}' "
+                    "while connections exist — existing wires are not re-validated"
+                )
             try:
                 port.view.color = new_color
                 port.view._data_type = dtype

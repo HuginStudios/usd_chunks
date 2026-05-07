@@ -1,4 +1,5 @@
 """Shape/primitive creation nodes."""
+
 from __future__ import annotations
 
 import bisect
@@ -13,11 +14,13 @@ from ._base import UsdNodeBase, PORT_COLORS
 class CreateCubeNode(UsdNodeBase):
     NODE_NAME = "Create Cube"
     CATEGORY = "Create"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Path", text="/Cube")
         self.add_text_input("size", "Size", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Cube"
         prim = UsdGeom.Cube.Define(stage, p)
@@ -28,11 +31,13 @@ class CreateCubeNode(UsdNodeBase):
 class CreateSphereNode(UsdNodeBase):
     NODE_NAME = "Create Sphere"
     CATEGORY = "Create"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Path", text="/Sphere")
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Sphere"
         prim = UsdGeom.Sphere.Define(stage, p)
@@ -43,12 +48,14 @@ class CreateSphereNode(UsdNodeBase):
 class CreateCylinderNode(UsdNodeBase):
     NODE_NAME = "Create Cylinder"
     CATEGORY = "Create"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Path", text="/Cylinder")
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_text_input("h", "Height", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Cylinder"
         prim = UsdGeom.Cylinder.Define(stage, p)
@@ -60,12 +67,14 @@ class CreateCylinderNode(UsdNodeBase):
 class CreateConeNode(UsdNodeBase):
     NODE_NAME = "Create Cone"
     CATEGORY = "Create"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Path", text="/Cone")
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_text_input("h", "Height", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Cone"
         prim = UsdGeom.Cone.Define(stage, p)
@@ -77,12 +86,14 @@ class CreateConeNode(UsdNodeBase):
 class CreateCapsuleNode(UsdNodeBase):
     NODE_NAME = "Create Capsule"
     CATEGORY = "Create"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Path", text="/Capsule")
         self.add_text_input("radius", "Radius", text="0.5")
         self.add_text_input("h", "Height", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Capsule"
         prim = UsdGeom.Capsule.Define(stage, p)
@@ -94,20 +105,29 @@ class CreateCapsuleNode(UsdNodeBase):
 class CreatePlaneNode(UsdNodeBase):
     NODE_NAME = "Create Plane"
     CATEGORY = "Create"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Path", text="/Plane")
         self.add_text_input("w", "Width", text="10")
         self.add_text_input("length", "Length", text="10")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Plane"
         w = float(self.get_property("w") or 10) / 2
         length = float(self.get_property("length") or 10) / 2
         mesh = UsdGeom.Mesh.Define(stage, p)
-        mesh.GetPointsAttr().Set(Vt.Vec3fArray([
-            Gf.Vec3f(-w, -length, 0), Gf.Vec3f(w, -length, 0),
-            Gf.Vec3f(w, length, 0), Gf.Vec3f(-w, length, 0)]))
+        mesh.GetPointsAttr().Set(
+            Vt.Vec3fArray(
+                [
+                    Gf.Vec3f(-w, -length, 0),
+                    Gf.Vec3f(w, -length, 0),
+                    Gf.Vec3f(w, length, 0),
+                    Gf.Vec3f(-w, length, 0),
+                ]
+            )
+        )
         mesh.GetFaceVertexCountsAttr().Set([4])
         mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
         mesh.GetNormalsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(0, 0, 1)] * 4))
@@ -117,10 +137,12 @@ class CreatePlaneNode(UsdNodeBase):
 class CreateXformNode(UsdNodeBase):
     NODE_NAME = "Create Xform"
     CATEGORY = "Create"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Path", text="/Group")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Group"
         prim = UsdGeom.Xform.Define(stage, p)
@@ -129,9 +151,11 @@ class CreateXformNode(UsdNodeBase):
 
 class PointInstancerNode(UsdNodeBase):
     """Create a PointInstancer that scatters prototypes at given positions."""
+
     NODE_NAME = "Point Instancer"
     CATEGORY = "Create"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Instancer Path", text="/Instancer")
         self.add_input("prototype", color=PORT_COLORS["prim"])
@@ -139,6 +163,7 @@ class PointInstancerNode(UsdNodeBase):
         self.add_text_input("grid", "Grid NxN (if no positions)", text="")
         self.add_text_input("spacing", "Grid Spacing", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         inst_path = self.get_property("path") or "/Instancer"
         proto_prim = self._get_input_value("prototype")
@@ -174,8 +199,12 @@ class PointInstancerNode(UsdNodeBase):
                         positions.append((x * sp - off, y * sp - off, 0))
 
         if positions:
-            pts = Vt.Vec3fArray([Gf.Vec3f(*p) if isinstance(p, (list, tuple))
-                                 else Gf.Vec3f(p, 0, 0) for p in positions])
+            pts = Vt.Vec3fArray(
+                [
+                    Gf.Vec3f(*p) if isinstance(p, (list, tuple)) else Gf.Vec3f(p, 0, 0)
+                    for p in positions
+                ]
+            )
             instancer.GetPositionsAttr().Set(pts)
             instancer.GetProtoIndicesAttr().Set(Vt.IntArray([0] * len(pts)))
         return {"prim": instancer.GetPrim()}
@@ -183,13 +212,16 @@ class PointInstancerNode(UsdNodeBase):
 
 class MakeInstanceableNode(UsdNodeBase):
     """Mark a prim as instanceable (native instancing)."""
+
     NODE_NAME = "Make Instanceable"
     CATEGORY = "Create"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("instanceable", "Instanceable (true/false)", text="true")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim:
@@ -204,13 +236,14 @@ class ScatterPointsNode(UsdNodeBase):
     Like Houdini's Scatter SOP: distributes points across the surface of the
     input mesh with roughly uniform density, then creates a UsdGeom.PointInstancer.
     """
+
     NODE_NAME = "Scatter Points"
     CATEGORY = "Create"
 
     _ORIENT_MODES = ["Align to Normal", "Keep Original", "Up", "Random"]
     _RAND_AXES = ["Off", "X", "Y", "Z", "All"]
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Instancer Path", text="/ScatterInstancer")
         self.add_input("surface", color=PORT_COLORS["prim"])
@@ -218,6 +251,7 @@ class ScatterPointsNode(UsdNodeBase):
         self.add_text_input("count", "Point Count", text="100")
         self.add_text_input("seed", "Seed", text="0")
         self.add_text_input("scale", "Instance Scale", text="1.0")
+        self.add_text_input("min_distance", "Min Distance", text="0")
         self.add_combo_menu("orient_mode", "Orientation", items=self._ORIENT_MODES)
         self.add_combo_menu("rand_axis", "Random Rotation Axis", items=self._RAND_AXES)
         self.add_text_input("rand_amount", "Random Rotation (deg)", text="360")
@@ -228,6 +262,7 @@ class ScatterPointsNode(UsdNodeBase):
         count = int(self.get_property("count") or 100)
         seed = int(self.get_property("seed") or 0)
         scale = float(self.get_property("scale") or 1.0)
+        min_dist = float(self.get_property("min_distance") or 0)
         orient_mode = self.get_property("orient_mode") or "Align to Normal"
         rand_axis = self.get_property("rand_axis") or "Off"
         rand_amount = float(self.get_property("rand_amount") or 360)
@@ -257,7 +292,9 @@ class ScatterPointsNode(UsdNodeBase):
             normals = [Gf.Vec3f(0, 0, 1)] * len(positions)
         else:
             rng = random.Random(seed)
-            positions, normals = self._scatter_on_triangles(triangles, count, rng)
+            positions, normals = self._scatter_on_triangles(
+                triangles, count, rng, min_dist
+            )
 
         # Create the PointInstancer
         instancer = UsdGeom.PointInstancer.Define(stage, inst_path)
@@ -290,7 +327,9 @@ class ScatterPointsNode(UsdNodeBase):
         instancer.GetScalesAttr().Set(scales)
 
         # Orientations
-        rng2 = random.Random(seed + 7)  # separate rng so seed changes don't shift positions
+        rng2 = random.Random(
+            seed + 7
+        )  # separate rng so seed changes don't shift positions
         orientations = []
         for i, n in enumerate(normals):
             q = self._compute_orientation(orient_mode, n, math)
@@ -302,7 +341,7 @@ class ScatterPointsNode(UsdNodeBase):
 
         return {"prim": instancer.GetPrim()}
 
-    def _compute_orientation(self, mode, normal, math):
+    def _compute_orientation(self, mode, normal, math) -> object:
         """Compute base orientation quaternion based on mode."""
         if mode == "Keep Original":
             return Gf.Quath(1, 0, 0, 0)
@@ -314,7 +353,7 @@ class ScatterPointsNode(UsdNodeBase):
         else:  # Align to Normal
             return self._normal_to_quat(normal)
 
-    def _apply_random_rotation(self, base_quat, axis, amount_deg, rng, math):
+    def _apply_random_rotation(self, base_quat, axis, amount_deg, rng, math) -> object:
         """Apply random rotation on top of base orientation."""
         if axis == "Off":
             return base_quat
@@ -330,28 +369,33 @@ class ScatterPointsNode(UsdNodeBase):
             ax = ax / ln
             angle = rng.uniform(-amount_rad, amount_rad)
         else:
-            ax_map = {"X": Gf.Vec3f(1, 0, 0), "Y": Gf.Vec3f(0, 1, 0), "Z": Gf.Vec3f(0, 0, 1)}
+            ax_map = {
+                "X": Gf.Vec3f(1, 0, 0),
+                "Y": Gf.Vec3f(0, 1, 0),
+                "Z": Gf.Vec3f(0, 0, 1),
+            }
             ax = ax_map[axis]
             angle = rng.uniform(-amount_rad, amount_rad)
 
         half = angle * 0.5
         s = math.sin(half)
-        rand_q = Gf.Quath(math.cos(half), ax[0]*s, ax[1]*s, ax[2]*s)
+        rand_q = Gf.Quath(math.cos(half), ax[0] * s, ax[1] * s, ax[2] * s)
 
         # Multiply: rand_q * base_quat
         return self._quat_mul(rand_q, base_quat)
 
-    def _quat_mul(self, a, b):
+    def _quat_mul(self, a, b) -> object:
         """Multiply two Quath quaternions."""
         aw, ax, ay, az = a.GetReal(), *a.GetImaginary()
         bw, bx, by, bz = b.GetReal(), *b.GetImaginary()
         return Gf.Quath(
-            aw*bw - ax*bx - ay*by - az*bz,
-            aw*bx + ax*bw + ay*bz - az*by,
-            aw*by - ax*bz + ay*bw + az*bx,
-            aw*bz + ax*by - ay*bx + az*bw)
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        )
 
-    def _collect_triangles(self, stage, prim):
+    def _collect_triangles(self, stage, prim) -> list:
         """Collect all triangulated faces from the prim (and descendants) as world-space triangles.
         Returns list of (p0, p1, p2, normal) tuples.
         Falls back to bounding box if no mesh data found."""
@@ -394,9 +438,10 @@ class ScatterPointsNode(UsdNodeBase):
                         e1 = v1 - v0
                         e2 = v2 - v0
                         n = Gf.Vec3f(
-                            e1[1]*e2[2] - e1[2]*e2[1],
-                            e1[2]*e2[0] - e1[0]*e2[2],
-                            e1[0]*e2[1] - e1[1]*e2[0])
+                            e1[1] * e2[2] - e1[2] * e2[1],
+                            e1[2] * e2[0] - e1[0] * e2[2],
+                            e1[0] * e2[1] - e1[1] * e2[0],
+                        )
                         ln = Gf.GetLength(n)
                         if ln > 1e-8:
                             n = n / ln
@@ -422,17 +467,18 @@ class ScatterPointsNode(UsdNodeBase):
 
         return triangles
 
-    def _scatter_on_triangles(self, triangles, count, rng):
-        """Area-weighted random point sampling on triangles."""
+    def _scatter_on_triangles(self, triangles, count, rng, min_dist=0) -> tuple:
+        """Area-weighted random point sampling with optional min distance rejection."""
         # Compute areas for weighting
         areas = []
         for v0, v1, v2, _ in triangles:
             e1 = v1 - v0
             e2 = v2 - v0
             cross = Gf.Vec3f(
-                e1[1]*e2[2] - e1[2]*e2[1],
-                e1[2]*e2[0] - e1[0]*e2[2],
-                e1[0]*e2[1] - e1[1]*e2[0])
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            )
             areas.append(0.5 * Gf.GetLength(cross))
 
         total_area = sum(areas)
@@ -448,7 +494,12 @@ class ScatterPointsNode(UsdNodeBase):
 
         positions = []
         normals = []
-        for _ in range(count):
+        min_dist_sq = min_dist * min_dist
+        max_attempts = count * 20
+
+        attempts = 0
+        while len(positions) < count and attempts < max_attempts:
+            attempts += 1
             r = rng.random()
             tri_idx = bisect.bisect_left(cdf, r)
             tri_idx = min(tri_idx, len(triangles) - 1)
@@ -462,15 +513,30 @@ class ScatterPointsNode(UsdNodeBase):
                 v = 1.0 - v
             w = 1.0 - u - v
             pt = Gf.Vec3f(
-                w*v0[0] + u*v1[0] + v*v2[0],
-                w*v0[1] + u*v1[1] + v*v2[1],
-                w*v0[2] + u*v1[2] + v*v2[2])
+                w * v0[0] + u * v1[0] + v * v2[0],
+                w * v0[1] + u * v1[1] + v * v2[1],
+                w * v0[2] + u * v1[2] + v * v2[2],
+            )
+
+            # Reject if too close to an existing point
+            if min_dist_sq > 0:
+                too_close = False
+                for ex in positions:
+                    dx = pt[0] - ex[0]
+                    dy = pt[1] - ex[1]
+                    dz = pt[2] - ex[2]
+                    if dx * dx + dy * dy + dz * dz < min_dist_sq:
+                        too_close = True
+                        break
+                if too_close:
+                    continue
+
             positions.append(pt)
             normals.append(n)
 
         return positions, normals
 
-    def _normal_to_quat(self, normal):
+    def _normal_to_quat(self, normal) -> object:
         """Convert a surface normal to a quaternion rotation (Z-up → normal)."""
         up = Gf.Vec3f(0, 0, 1)
         n = Gf.Vec3f(normal[0], normal[1], normal[2])
@@ -494,4 +560,4 @@ class ScatterPointsNode(UsdNodeBase):
         angle = math.acos(max(-1.0, min(1.0, dot)))
         half = angle * 0.5
         s = math.sin(half)
-        return Gf.Quath(math.cos(half), axis[0]*s, axis[1]*s, axis[2]*s)
+        return Gf.Quath(math.cos(half), axis[0] * s, axis[1] * s, axis[2] * s)

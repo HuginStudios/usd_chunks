@@ -72,7 +72,9 @@ def test_append_prim_path_newline_separated(collision_graph, qapp):
     node = ng.create_node(CollisionSetNode.type_)
     node.append_prim_path("/A")
     node.append_prim_path("/B")
-    lines = [l.strip() for l in node.get_property("prim_paths").splitlines() if l.strip()]
+    lines = [
+        l.strip() for l in node.get_property("prim_paths").splitlines() if l.strip()
+    ]
     assert lines == ["/A", "/B"]
 
 

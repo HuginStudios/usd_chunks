@@ -5,6 +5,7 @@ NodeGraphWidget holds one instance and delegates all execution calls here.
 Only PySide6.QtCore.QTimer and PySide6.QtWidgets.QApplication are imported
 from Qt (no widget classes).
 """
+
 from __future__ import annotations
 
 from PySide6.QtCore import QTimer
@@ -24,7 +25,7 @@ class GraphExecutor:
     - widget._set_exec_state (state badge callback)
     """
 
-    def __init__(self, widget):
+    def __init__(self, widget) -> None:
         self._widget = widget
         # node.id → layer_identifier; populated on execution, consumed on deletion
         self._node_layer_registry: dict = {}
@@ -50,8 +51,8 @@ class GraphExecutor:
         visited: set = set()
         order: list = []
 
-        def _topo(node):
-            if not hasattr(node, 'input_ports'):
+        def _topo(node) -> None:
+            if not hasattr(node, "input_ports"):
                 return
             nid = node.id
             if nid in visited:
@@ -71,7 +72,9 @@ class GraphExecutor:
             for node in order:
                 upstream_errored = any(
                     cp.node().id in errored
-                    for port in (node.input_ports() if hasattr(node, 'input_ports') else [])
+                    for port in (
+                        node.input_ports() if hasattr(node, "input_ports") else []
+                    )
                     for cp in port.connected_ports()
                 )
                 if upstream_errored:
@@ -102,8 +105,8 @@ class GraphExecutor:
         up_visited: set = set()
         up_order: list = []
 
-        def _upstream(node):
-            if not hasattr(node, 'input_ports'):
+        def _upstream(node) -> None:
+            if not hasattr(node, "input_ports"):
                 return
             nid = node.id
             if nid in up_visited:
@@ -117,8 +120,8 @@ class GraphExecutor:
         visited: set = set()
         order: list = []
 
-        def _downstream(node):
-            if not hasattr(node, 'output_ports'):
+        def _downstream(node) -> None:
+            if not hasattr(node, "output_ports"):
                 return
             nid = node.id
             if nid in visited:
@@ -139,7 +142,9 @@ class GraphExecutor:
             for node in full_order:
                 upstream_errored = any(
                     cp.node().id in errored
-                    for port in (node.input_ports() if hasattr(node, 'input_ports') else [])
+                    for port in (
+                        node.input_ports() if hasattr(node, "input_ports") else []
+                    )
                     for cp in port.connected_ports()
                 )
                 if upstream_errored:
@@ -201,8 +206,8 @@ class GraphExecutor:
                     src_port = in_port.connected_ports()[0]
                     src_node = src_port.node()
                     if hasattr(src_node, "_output_cache"):
-                        node._output_cache[out_port.name()] = src_node._output_cache.get(
-                            src_port.name()
+                        node._output_cache[out_port.name()] = (
+                            src_node._output_cache.get(src_port.name())
                         )
                 if out_port.name() not in node._output_cache and node.input_ports():
                     first_in = node.input_ports()[0]
@@ -210,8 +215,8 @@ class GraphExecutor:
                         src_port = first_in.connected_ports()[0]
                         src_node = src_port.node()
                         if hasattr(src_node, "_output_cache"):
-                            node._output_cache[out_port.name()] = src_node._output_cache.get(
-                                src_port.name()
+                            node._output_cache[out_port.name()] = (
+                                src_node._output_cache.get(src_port.name())
                             )
             return
         widget._set_exec_state(node, "running")
@@ -223,7 +228,7 @@ class GraphExecutor:
             widget._set_exec_state(node, "none" if all_null else "valid")
             # Track chunk layer so we can remove it from the stage on node deletion.
             try:
-                chunk = getattr(node, '_my_chunk', None)
+                chunk = getattr(node, "_my_chunk", None)
                 if chunk is not None:
                     layer = chunk.get_edit_context()
                     if layer:
@@ -247,18 +252,18 @@ class GraphExecutor:
             return
 
         for n in sub.all_nodes():
-            if getattr(n, '_folded', False):
+            if getattr(n, "_folded", False):
                 for w in n.view._widgets.values():
                     w.setVisible(False)
 
         # Restore persisted chunk instances from the group node so we reuse
         # the same chunk (and its layer) across expand/collapse cycles.
-        chunk_cache = getattr(group, '_inner_chunk_cache', None)
+        chunk_cache = getattr(group, "_inner_chunk_cache", None)
         if chunk_cache is None:
             chunk_cache = {}
             group._inner_chunk_cache = chunk_cache
         for n in sub.all_nodes():
-            if hasattr(n, '_ensure_chunk') and n.id in chunk_cache:
+            if hasattr(n, "_ensure_chunk") and n.id in chunk_cache:
                 n._my_chunk = chunk_cache[n.id]
 
         for pin in sub.get_input_port_nodes():
@@ -270,10 +275,13 @@ class GraphExecutor:
                     src_node = src_port.node()
                     val = (
                         src_node._output_cache.get(src_port.name())
-                        if hasattr(src_node, "_output_cache") else None
+                        if hasattr(src_node, "_output_cache")
+                        else None
                     )
                     pin._output_cache = (
-                        {pin.output_ports()[0].name(): val} if pin.output_ports() else {}
+                        {pin.output_ports()[0].name(): val}
+                        if pin.output_ports()
+                        else {}
                     )
 
         # Apply promoted input param values to inner nodes before execution
@@ -293,7 +301,8 @@ class GraphExecutor:
                     src_node = src_port.node()
                     ext_val = (
                         src_node._output_cache.get(src_port.name())
-                        if hasattr(src_node, "_output_cache") else None
+                        if hasattr(src_node, "_output_cache")
+                        else None
                     )
                     if ext_val is not None:
                         val = ext_val
@@ -321,7 +330,7 @@ class GraphExecutor:
         visited: set = set()
         order: list = []
 
-        def _topo(n):
+        def _topo(n) -> None:
             nid = n.id
             if nid in visited:
                 return
@@ -340,7 +349,8 @@ class GraphExecutor:
             self._exec_node(n)
             if isinstance(n, _nodes.ForEachNode) and n._iteration_list:
                 downstream_inner = [
-                    x for x in order[idx + 1:]
+                    x
+                    for x in order[idx + 1 :]
                     if not isinstance(x, (PortInputNode, PortOutputNode))
                 ]
                 for i in range(len(n._iteration_list)):
@@ -360,7 +370,8 @@ class GraphExecutor:
                     src_node = src_port.node()
                     val = (
                         src_node._output_cache.get(src_port.name())
-                        if hasattr(src_node, "_output_cache") else None
+                        if hasattr(src_node, "_output_cache")
+                        else None
                     )
                     group._output_cache[parent_port.name()] = val
 
@@ -371,7 +382,11 @@ class GraphExecutor:
             inner_port = info.get("inner_port")
             inner_node = inner_nodes_by_id.get(inner_node_id)
             if inner_node and inner_port:
-                val = inner_node._output_cache.get(inner_port) if hasattr(inner_node, "_output_cache") else None
+                val = (
+                    inner_node._output_cache.get(inner_port)
+                    if hasattr(inner_node, "_output_cache")
+                    else None
+                )
                 if val is not None:
                     group._output_cache[port_name] = val
 
@@ -381,7 +396,7 @@ class GraphExecutor:
 
         # Persist chunk instances on the group node for reuse on next execution
         for n in sub.all_nodes():
-            my_chunk = getattr(n, '_my_chunk', None)
+            my_chunk = getattr(n, "_my_chunk", None)
             if my_chunk is not None:
                 chunk_cache[n.id] = my_chunk
 
@@ -389,7 +404,7 @@ class GraphExecutor:
         widget._set_exec_state(group, "valid")
 
     @staticmethod
-    def _apply_promoted_value(inner_node, param_name, value):
+    def _apply_promoted_value(inner_node, param_name, value) -> None:
         """Write a promoted value to the inner node's property store."""
         try:
             str_val = str(value) if not isinstance(value, bool) else value
@@ -402,7 +417,7 @@ class GraphExecutor:
         visited: set = set()
         order: list = []
 
-        def _walk(node):
+        def _walk(node) -> None:
             nid = node.id
             if nid in visited:
                 return

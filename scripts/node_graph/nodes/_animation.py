@@ -1,4 +1,5 @@
 """Animation nodes — set keys, get time range, set time codes."""
+
 from __future__ import annotations
 
 from pxr import Usd
@@ -8,10 +9,11 @@ from ._base import UsdNodeBase, PORT_COLORS
 
 class SetKeyNode(UsdNodeBase):
     """Set an attribute value at a specific timecode."""
+
     NODE_NAME = "Set Key"
     CATEGORY = "Animation"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("attr_name", "Attribute", text="xformOp:translate")
@@ -37,10 +39,11 @@ class SetKeyNode(UsdNodeBase):
 
 class GetTimeRangeNode(UsdNodeBase):
     """Get stage start/end frame."""
+
     NODE_NAME = "Get Time Range"
     CATEGORY = "Animation"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_output("start", color=PORT_COLORS["float"])
         self.add_output("end", color=PORT_COLORS["float"])
@@ -51,10 +54,11 @@ class GetTimeRangeNode(UsdNodeBase):
 
 class SetTimeCodeNode(UsdNodeBase):
     """Set stage start and end time codes."""
+
     NODE_NAME = "Set Time Codes"
     CATEGORY = "Animation"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("start", "Start Frame", text="0")
         self.add_text_input("end", "End Frame", text="100")

@@ -1,4 +1,5 @@
 """Math nodes — arithmetic on float values."""
+
 from __future__ import annotations
 
 from ._base import UsdNodeBase, PORT_COLORS
@@ -8,7 +9,7 @@ class MathAddNode(UsdNodeBase):
     NODE_NAME = "Add"
     CATEGORY = "Math"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("a", color=PORT_COLORS["float"])
         self.add_input("b", color=PORT_COLORS["float"])
@@ -27,7 +28,7 @@ class MathSubtractNode(UsdNodeBase):
     NODE_NAME = "Subtract"
     CATEGORY = "Math"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("a", color=PORT_COLORS["float"])
         self.add_input("b", color=PORT_COLORS["float"])
@@ -46,7 +47,7 @@ class MathMultiplyNode(UsdNodeBase):
     NODE_NAME = "Multiply"
     CATEGORY = "Math"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("a", color=PORT_COLORS["float"])
         self.add_input("b", color=PORT_COLORS["float"])
@@ -65,7 +66,7 @@ class MathDivideNode(UsdNodeBase):
     NODE_NAME = "Divide"
     CATEGORY = "Math"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("a", color=PORT_COLORS["float"])
         self.add_input("b", color=PORT_COLORS["float"])
@@ -84,7 +85,7 @@ class MathClampNode(UsdNodeBase):
     NODE_NAME = "Clamp"
     CATEGORY = "Math"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("value", color=PORT_COLORS["float"])
         self.add_text_input("min_val", "Min", text="0")
@@ -102,7 +103,7 @@ class MathRemapNode(UsdNodeBase):
     NODE_NAME = "Remap"
     CATEGORY = "Math"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("value", color=PORT_COLORS["float"])
         self.add_text_input("in_min", "In Min", text="0")

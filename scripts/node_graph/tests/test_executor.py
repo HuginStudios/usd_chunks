@@ -4,10 +4,12 @@ GraphExecutor tests — behavior 2.3.
 Tests verify GraphExecutor's dirty tracking, debounce, and execution ordering
 without requiring a full NodeGraphWidget — a minimal stub widget is injected.
 """
+
 import pytest
 
 
 # ── Stub widget ───────────────────────────────────────────────────────────────
+
 
 class _StubWidget:
     """Minimal stand-in for NodeGraphWidget used by GraphExecutor."""
@@ -21,6 +23,7 @@ class _StubWidget:
 
 
 # ── Behavior 1: dirty tracking respects the executing guard ──────────────────
+
 
 def test_mark_dirty_is_dropped_while_executing(node_graph, stage, qapp):
     """mark_dirty() is silently dropped when _is_executing is True (prevents loops)."""
@@ -51,6 +54,7 @@ def test_mark_dirty_sets_debounce_node(node_graph, stage, qapp):
 
 # ── Behavior 2: topo-sort visits all nodes ────────────────────────────────────
 
+
 def test_run_full_executes_on_non_empty_graph(node_graph, stage, qapp):
     """run_full() runs without error when the graph has nodes."""
     from node_graph.graph_executor import GraphExecutor
@@ -71,6 +75,7 @@ def test_run_full_on_empty_graph_is_a_noop(node_graph, stage, qapp):
 
 
 # ── Behavior 3: downstream collection ────────────────────────────────────────
+
 
 def test_get_downstream_returns_connected_nodes(node_graph, stage, qapp):
     """_get_downstream returns nodes wired downstream of start_node."""
@@ -111,6 +116,7 @@ def test_get_downstream_returns_empty_for_isolated_node(node_graph, stage, qapp)
 
 
 # ── Behavior 4: node layer registry ──────────────────────────────────────────
+
 
 def test_exec_node_registers_layer_on_success(node_graph, stage, qapp):
     """After a successful execute, the node's layer is tracked in _node_layer_registry."""

@@ -1,4 +1,5 @@
 """Connection-aware auto-layout algorithm for the node graph."""
+
 from __future__ import annotations
 from typing import Any
 
@@ -8,7 +9,7 @@ def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
     if node_list:
         expanded = set()
 
-        def _collect(node):
+        def _collect(node) -> None:
             if node.id in expanded:
                 return
             expanded.add(node.id)
@@ -31,14 +32,14 @@ def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
     node_set = set(n.id for n in all_n)
     node_by_id = {n.id: n for n in all_n}
 
-    def _node_size(n):
+    def _node_size(n) -> None:
         try:
             r = n.view.boundingRect()
             return r.width(), r.height()
         except Exception:
             return 160, 80
 
-    def _upstream_ids(node):
+    def _upstream_ids(node) -> None:
         ids = []
         for port in node.input_ports():
             for cp in port.connected_ports():
@@ -46,7 +47,7 @@ def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
                     ids.append(cp.node().id)
         return ids
 
-    def _downstream_ids(node):
+    def _downstream_ids(node) -> None:
         ids = []
         for port in node.output_ports():
             for cp in port.connected_ports():
@@ -56,7 +57,7 @@ def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
 
     depth = {}
 
-    def _get_depth(node):
+    def _get_depth(node) -> None:
         if node.id in depth:
             return depth[node.id]
         depth[node.id] = 0
@@ -94,7 +95,7 @@ def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
 
     placed = {}
 
-    def _target_y(n):
+    def _target_y(n) -> None:
         ups = [placed[uid][1] for uid in _upstream_ids(n) if uid in placed]
         if ups:
             return sum(ups) / len(ups)
@@ -103,7 +104,7 @@ def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
             return sum(ds) / len(ds)
         return 0
 
-    def _place_column(col_nodes, cx):
+    def _place_column(col_nodes, cx) -> None:
         targets = []
         for n in col_nodes:
             ty = _target_y(n)

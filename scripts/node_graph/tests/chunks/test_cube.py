@@ -1,4 +1,5 @@
 """Minimal test chunk — creates a single Xform prim at a configurable path."""
+
 from usd_chunks import chunk
 from pxr import Usd, UsdGeom
 

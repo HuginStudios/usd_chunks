@@ -1,6 +1,7 @@
 """
 ChunkAdapter — bridges chunks into the node graph.
 """
+
 from __future__ import annotations
 
 from usd_chunks import chunk, chunk_core, chunk_notice, chunk_registry
@@ -9,7 +10,9 @@ from usd_chunks import chunk, chunk_core, chunk_notice, chunk_registry
 class ChunkAdapter:
     """Wraps a loaded chunk so it can be driven from the node graph."""
 
-    def __init__(self, name: str, module_name: str = "", auto_create: bool = False, chunk=None):
+    def __init__(
+        self, name: str, module_name: str = "", auto_create: bool = False, chunk=None
+    ) -> None:
         # ``chunk`` lets callers bind a specific chunk instance directly, bypassing the
         # name-based scene lookup. This is how node-graph chunk nodes give each node its
         # own distinct chunk instead of all sharing one-per-type (the first hit by name).
@@ -44,7 +47,7 @@ class ChunkAdapter:
                 self._chunk = created[0]
 
     @property
-    def chunk(self):
+    def chunk(self) -> None:
         return self._chunk
 
     def get_params(self) -> list:
@@ -56,7 +59,9 @@ class ChunkAdapter:
             if isinstance(p, chunk_core.ChunkVectorBase):
                 result.append(p)
             elif isinstance(p, chunk_core.ChunkParamBase):
-                if not isinstance(p, (chunk.Button, chunk.Separator, chunk.Label, chunk.Custom)):
+                if not isinstance(
+                    p, (chunk.Button, chunk.Separator, chunk.Label, chunk.Custom)
+                ):
                     result.append(p)
         return result
 
@@ -74,7 +79,11 @@ class ChunkAdapter:
         if p is None:
             return
 
-        if isinstance(value, str) and value.startswith("@") and hasattr(p, "value_reference"):
+        if (
+            isinstance(value, str)
+            and value.startswith("@")
+            and hasattr(p, "value_reference")
+        ):
             try:
                 p.value_reference = value
             except Exception:
@@ -87,7 +96,9 @@ class ChunkAdapter:
             except Exception:
                 pass
 
-        if isinstance(p, chunk_core.ChunkVectorBase) and isinstance(value, (list, tuple)):
+        if isinstance(p, chunk_core.ChunkVectorBase) and isinstance(
+            value, (list, tuple)
+        ):
             for i, v in enumerate(value):
                 if i < p.length:
                     p[i].value = v
@@ -114,8 +125,7 @@ class ChunkAdapter:
                     break
         if btn:
             chunk_notice.send_notice(
-                chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
-                sender=btn, data=btn
+                chunk_notice.ChunkNoticeAlias.PARAM_CHANGED, sender=btn, data=btn
             )
 
     @staticmethod

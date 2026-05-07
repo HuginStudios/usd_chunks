@@ -9,6 +9,7 @@ Each test builds up a GroupNode manually via the public NodeGraphQt API
 through the widget's keyboard shortcuts, which are not available in headless
 tests.
 """
+
 import json
 import pytest
 
@@ -16,6 +17,7 @@ from NodeGraphQt.nodes.group_node import GroupNode
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_group(ng, CubeNodeCls, name="MyGroup"):
     """Create and return a collapsed GroupNode with one inner CubeNode."""
@@ -34,8 +36,11 @@ def _add_promotion(g, inner_name, port_name, default_value):
     # We need the inner node's id from the stored sub-graph session.
     session = g.get_sub_graph_session()
     inner_id = next(
-        (nid for nid, nd in session.get("nodes", {}).items()
-         if nd.get("name") == inner_name),
+        (
+            nid
+            for nid, nd in session.get("nodes", {}).items()
+            if nd.get("name") == inner_name
+        ),
         None,
     )
 
@@ -53,6 +58,7 @@ def _add_promotion(g, inner_name, port_name, default_value):
 
 
 # ── Behavior 1: grouping ──────────────────────────────────────────────────────
+
 
 def test_grouping_selected_nodes_creates_group_node(node_graph):
     """A GroupNode can be created and its inner nodes are accessible via expand."""
@@ -72,6 +78,7 @@ def test_grouping_selected_nodes_creates_group_node(node_graph):
 
 # ── Behavior 2: promotion ─────────────────────────────────────────────────────
 
+
 def test_promoting_param_adds_port_on_group_node(node_graph):
     """Promoting a param from inside the group adds an input port on GroupNode."""
     from node_graph.nodes._base import _get_promotions
@@ -86,6 +93,7 @@ def test_promoting_param_adds_port_on_group_node(node_graph):
 
 
 # ── Behavior 3: value flow through promotion ──────────────────────────────────
+
 
 def test_promoted_port_value_flows_into_inner_chunk(node_graph, stage):
     """The default_value on the promotion dict flows into the inner chunk on execute."""
@@ -112,6 +120,7 @@ def test_promoted_port_value_flows_into_inner_chunk(node_graph, stage):
 
 
 # ── Behavior 4: serialization round-trip ─────────────────────────────────────
+
 
 def test_serialize_reload_preserves_group_and_promotions(node_graph):
     """Saving and reloading the session preserves the GroupNode and its promotions."""
@@ -147,6 +156,7 @@ def test_serialize_reload_preserves_group_and_promotions(node_graph):
 
 # ── Behavior 5: export as chunk module ───────────────────────────────────────
 
+
 def test_export_group_node_as_chunk_produces_loadable_chunk(node_graph, tmp_path):
     """Exporting a GroupNode as a chunk module writes a .py file with the promoted param."""
     from node_graph._graph_export import export_group_as_chunk
@@ -173,4 +183,6 @@ def test_export_group_node_as_chunk_produces_loadable_chunk(node_graph, tmp_path
 
     chunk_obj = chunks[0]
     param_names = {p.name for p in chunk_obj.get_params() if hasattr(p, "name")}
-    assert "prim_path" in param_names, f"Promoted param 'prim_path' missing from exported chunk; got {param_names}"
+    assert "prim_path" in param_names, (
+        f"Promoted param 'prim_path' missing from exported chunk; got {param_names}"
+    )

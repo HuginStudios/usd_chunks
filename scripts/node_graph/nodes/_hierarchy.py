@@ -1,4 +1,5 @@
 """Hierarchy nodes — create, delete, reparent, duplicate, rename prims."""
+
 from __future__ import annotations
 
 from pxr import Sdf
@@ -8,10 +9,11 @@ from ._base import UsdNodeBase, PORT_COLORS
 
 class CreatePrimNode(UsdNodeBase):
     """Create/define a prim at a path with a type."""
+
     NODE_NAME = "Create Prim"
     CATEGORY = "Hierarchy"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("prim_path", "Prim Path", text="/NewPrim")
         self.add_text_input("prim_type", "Type", text="Xform")
@@ -26,10 +28,11 @@ class CreatePrimNode(UsdNodeBase):
 
 class DeletePrimNode(UsdNodeBase):
     """Remove a prim from the stage."""
+
     NODE_NAME = "Delete Prim"
     CATEGORY = "Hierarchy"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
 
@@ -42,10 +45,11 @@ class DeletePrimNode(UsdNodeBase):
 
 class ReparentPrimNode(UsdNodeBase):
     """Move a prim under a new parent (via rename)."""
+
     NODE_NAME = "Reparent Prim"
     CATEGORY = "Hierarchy"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("new_parent", "New Parent Path", text="/")
@@ -66,10 +70,11 @@ class ReparentPrimNode(UsdNodeBase):
 
 class DuplicatePrimNode(UsdNodeBase):
     """Duplicate a prim to a new path."""
+
     NODE_NAME = "Duplicate Prim"
     CATEGORY = "Hierarchy"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("dest_path", "Destination Path", text="")
@@ -80,18 +85,22 @@ class DuplicatePrimNode(UsdNodeBase):
         dest = self.get_property("dest_path")
         if not prim or not dest:
             return {"prim": None}
-        Sdf.CopySpec(stage.GetEditTarget().GetLayer(),
-                      prim.GetPath(), stage.GetEditTarget().GetLayer(),
-                      Sdf.Path(dest))
+        Sdf.CopySpec(
+            stage.GetEditTarget().GetLayer(),
+            prim.GetPath(),
+            stage.GetEditTarget().GetLayer(),
+            Sdf.Path(dest),
+        )
         return {"prim": stage.GetPrimAtPath(dest)}
 
 
 class RenamePrimNode(UsdNodeBase):
     """Rename a prim (change its name, keep same parent)."""
+
     NODE_NAME = "Rename Prim"
     CATEGORY = "Hierarchy"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("new_name", "New Name", text="")

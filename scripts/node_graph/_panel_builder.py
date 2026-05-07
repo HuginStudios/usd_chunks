@@ -8,11 +8,13 @@ Interface:
     build_group_promo_panel(group_node, form, on_changed)
     build_chunk_panel(node, form, on_changed, active_graph_fn=None, ref_menu_fn=None)
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
 
 from PySide6 import QtWidgets, QtCore
+from NodeGraphQt.base.graph import SubGraph
 
 from .chunk_adapter import ChunkAdapter
 from .nodes._base import _get_promotions, _get_promoted_outputs, _save_promotions
@@ -34,7 +36,9 @@ _COMBO_ITEM_STYLE = (
 )
 
 
-def build_group_promo_panel(group_node, form: QtWidgets.QFormLayout, on_changed: Callable) -> None:
+def build_group_promo_panel(
+    group_node, form: QtWidgets.QFormLayout, on_changed: Callable
+) -> None:
     """Populate *form* with editable fields for each promoted param on *group_node*.
 
     on_changed(group_node) is called after a value is committed so callers can
@@ -45,9 +49,7 @@ def build_group_promo_panel(group_node, form: QtWidgets.QFormLayout, on_changed:
 
     if not promotions and not promo_outs:
         lbl = QtWidgets.QLabel(
-            "No promoted params.\n"
-            "Double-click to enter group,\n"
-            "then right-click a param → Promote to Group."
+            "No promoted params.\nDouble-click to enter group,\nthen right-click a param → Promote to Group."
         )
         lbl.setWordWrap(True)
         lbl.setStyleSheet("color: #666; font: 10px 'Consolas'; padding: 8px 4px;")
@@ -59,13 +61,14 @@ def build_group_promo_panel(group_node, form: QtWidgets.QFormLayout, on_changed:
         edit = QtWidgets.QLineEdit(str(default_val) if default_val is not None else "")
         edit.setPlaceholderText("Enter value or tab away")
 
-        def _make_commit(pname, grp, e=edit):
-            def _on_commit(pn=pname, gn=grp, ed=e):
+        def _make_commit(pname, grp, e=edit) -> None:
+            def _on_commit(pn=pname, gn=grp, ed=e) -> None:
                 promos = _get_promotions(gn)
                 if pn in promos:
                     promos[pn]["default_value"] = ed.text()
                     _save_promotions(gn)
                     QtCore.QTimer.singleShot(0, lambda: on_changed(gn))
+
             return _on_commit
 
         edit.editingFinished.connect(_make_commit(port_name, group_node))
@@ -73,7 +76,9 @@ def build_group_promo_panel(group_node, form: QtWidgets.QFormLayout, on_changed:
 
     if promo_outs:
         sep = QtWidgets.QLabel("Promoted Outputs")
-        sep.setStyleSheet("color: #666; font: italic 9px 'Consolas'; padding: 6px 0 2px 0;")
+        sep.setStyleSheet(
+            "color: #666; font: italic 9px 'Consolas'; padding: 6px 0 2px 0;"
+        )
         form.addRow(sep)
         for port_name, info in promo_outs.items():
             lbl = QtWidgets.QLabel(f"→ {info.get('inner_port', '?')}")
@@ -98,7 +103,8 @@ def build_chunk_panel(
     """
     try:
         from plugins.chunk_qt import ChunkWidget  # optional: not available in tests
-        adapter = getattr(node, '_cached_adapter', None)
+
+        adapter = getattr(node, "_cached_adapter", None)
         if not adapter or not adapter.chunk:
             my_chunk = None
             if hasattr(node, "_ensure_chunk"):
@@ -124,8 +130,8 @@ def build_chunk_panel(
             _cb.setStyleSheet(_COMBO_ITEM_STYLE)
         if ref_menu_fn:
             for _pw in chunk_widget.findChildren(QtWidgets.QWidget):
-                _p = getattr(_pw, 'param', None)
-                if _p is not None and hasattr(_p, 'value_reference'):
+                _p = getattr(_pw, "param", None)
+                if _p is not None and hasattr(_p, "value_reference"):
                     ref_menu_fn(_pw, node, _p)
         form.addRow(chunk_widget)
 
@@ -136,21 +142,21 @@ def build_chunk_panel(
                 connected_params.add(port.name()[1:])
         if active_graph_fn:
             try:
-                from NodeGraphQt.base.graph import SubGraph
-                from .nodes._base import _get_promotions as _gp
                 g = active_graph_fn()
                 if isinstance(g, SubGraph):
-                    for pname, info in _gp(g.node).items():
+                    for pname, info in _get_promotions(g.node).items():
                         if info.get("inner_node_id") == node.id:
                             connected_params.add(info.get("inner_param", ""))
             except Exception:
                 pass
         if connected_params:
             for child in chunk_widget.findChildren(QtWidgets.QWidget):
-                if hasattr(child, 'param') and hasattr(child.param, 'name'):
+                if hasattr(child, "param") and hasattr(child.param, "name"):
                     if child.param.name in connected_params:
                         child.setEnabled(False)
-                        child.setToolTip("Promoted to group — change value on the group node")
+                        child.setToolTip(
+                            "Promoted to group — change value on the group node"
+                        )
     except Exception as e:
         print(f"[NodeGraph] chunk panel err: {e}")
         form.addRow(QtWidgets.QLabel(f"Error: {e}"))

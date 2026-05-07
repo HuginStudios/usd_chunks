@@ -1,4 +1,5 @@
 """Python script exporter for the node graph."""
+
 from __future__ import annotations
 import re
 import sys
@@ -17,8 +18,8 @@ def export_python_script(graph: Any, path: str | Path) -> None:
     visited = set()
     order = []
 
-    def _topo(node):
-        if not hasattr(node, 'input_ports'):
+    def _topo(node) -> None:
+        if not hasattr(node, "input_ports"):
             return
         nid = node.id
         if nid in visited:
@@ -34,26 +35,35 @@ def export_python_script(graph: Any, path: str | Path) -> None:
 
     lines = [
         '"""Auto-generated from Node Graph.',
-        '',
-        'Chunk bootstrap sections require usd_chunks + a running ChunkRegistry',
-        '(i.e. run inside usdview or an equivalent host).',
+        "",
+        "Chunk bootstrap sections require usd_chunks + a running ChunkRegistry",
+        "(i.e. run inside usdview or an equivalent host).",
         '"""',
-        'from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf, Vt',
-        'from usd_chunks import chunk',
-        '',
-        'stage = Usd.Stage.CreateInMemory()',
-        '',
+        "from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf, Vt",
+        "from usd_chunks import chunk",
+        "",
+        "stage = Usd.Stage.CreateInMemory()",
+        "",
     ]
 
     _INTERNAL_PROPS = {
-        "id", "name", "color", "disabled", "selected",
-        "width", "height", "icon", "pos", "type_", "thumb",
+        "id",
+        "name",
+        "color",
+        "disabled",
+        "selected",
+        "width",
+        "height",
+        "icon",
+        "pos",
+        "type_",
+        "thumb",
     }
 
     var_counter = [0]
     node_vars = {}
 
-    def _var(node, port_name):
+    def _var(node, port_name) -> None:
         key = (node.id, port_name)
         if key not in node_vars:
             var_counter[0] += 1
@@ -78,8 +88,7 @@ def export_python_script(graph: Any, path: str | Path) -> None:
                 if k in _INTERNAL_PROPS:
                     continue
                 lines.append(
-                    f"if _c and _c.get_param('{k}'): "
-                    f"_c.get_param('{k}').value = {v!r}"
+                    f"if _c and _c.get_param('{k}'): _c.get_param('{k}').value = {v!r}"
                 )
         else:
             var_map = {}
@@ -103,7 +112,9 @@ def export_python_script(graph: Any, path: str | Path) -> None:
     print(f"[NodeGraph] Exported to {path}")
 
 
-def export_group_as_chunk(group_node: Any, out_dir: str | Path | None = None, sub: Any = None) -> Path:
+def export_group_as_chunk(
+    group_node: Any, out_dir: str | Path | None = None, sub: Any = None
+) -> Path:
     """Export a GroupNode as a self-contained chunk .py module.
 
     Promoted params become chunk params; inner node code is generated
@@ -131,13 +142,13 @@ def export_group_as_chunk(group_node: Any, out_dir: str | Path | None = None, su
 
     all_inner = sub.all_nodes()
 
-    def is_port_node(n):
+    def is_port_node(n) -> None:
         return isinstance(n, (PortInputNode, PortOutputNode))
 
     # Topo-sort (skip port boundary nodes)
     visited, order = set(), []
 
-    def _topo(n):
+    def _topo(n) -> None:
         if n.id in visited:
             return
         visited.add(n.id)
@@ -226,8 +237,11 @@ def export_group_as_chunk(group_node: Any, out_dir: str | Path | None = None, su
         else:
             code = n.to_python(var_map)
             indented = "\n".join(f"        {ln}" for ln in code.splitlines())
-            block = (f"        # {n.name()}\n{indented}"
-                     if not code.startswith("#") else indented)
+            block = (
+                f"        # {n.name()}\n{indented}"
+                if not code.startswith("#")
+                else indented
+            )
 
         # Restore overridden properties
         for pname, orig in overrides.items():

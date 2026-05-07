@@ -232,7 +232,9 @@ class RBDSolverNode(UsdNodeBase):
                 if shape_type == "Convex Hull":
                     proto_mesh_pts, proto_mesh_idx = _extract_mesh_data(proto_prim)
         if shape_type == "Convex Hull" and proto_mesh_pts is None:
-            print("[RBDSolver] Convex Hull: no mesh points in prototype, falling back to Box")
+            print(
+                "[RBDSolver] Convex Hull: no mesh points in prototype, falling back to Box"
+            )
 
         # Setup PyBullet — substep timestep so N steps == 1 frame
         p.connect(p.DIRECT)
@@ -264,12 +266,17 @@ class RBDSolverNode(UsdNodeBase):
 
             body_mass = mass * _variance_multiplier(rng_inst, mass_var)
             body_friction = friction * _variance_multiplier(rng_inst, friction_var)
-            body_restitution = restitution * _variance_multiplier(rng_inst, restitution_var)
+            body_restitution = restitution * _variance_multiplier(
+                rng_inst, restitution_var
+            )
 
             if shape_type == "Sphere":
                 col_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=max(he))
             elif shape_type == "Convex Hull" and proto_mesh_pts is not None:
-                kwargs = {"meshScale": [sc[0], sc[1], sc[2]], "vertices": proto_mesh_pts}
+                kwargs = {
+                    "meshScale": [sc[0], sc[1], sc[2]],
+                    "vertices": proto_mesh_pts,
+                }
                 if proto_mesh_idx is not None:
                     kwargs["indices"] = proto_mesh_idx
                 col_shape = p.createCollisionShape(p.GEOM_MESH, **kwargs)
@@ -285,9 +292,7 @@ class RBDSolverNode(UsdNodeBase):
             p.changeDynamics(
                 body, -1, lateralFriction=body_friction, restitution=body_restitution
             )
-            p.resetBaseVelocity(
-                body, linearVelocity=init_vel, angularVelocity=ang_vel
-            )
+            p.resetBaseVelocity(body, linearVelocity=init_vel, angularVelocity=ang_vel)
             bodies.append(body)
 
         force_dicts = force_dicts or []
@@ -389,7 +394,9 @@ class RBDSolverNode(UsdNodeBase):
         if shape_type == "Convex Hull":
             single_mesh_pts, single_mesh_idx = _extract_mesh_data(prim)
             if single_mesh_pts is None:
-                print("[RBDSolver] Convex Hull: no mesh points found, falling back to Box")
+                print(
+                    "[RBDSolver] Convex Hull: no mesh points found, falling back to Box"
+                )
 
         # Setup PyBullet — substep timestep so N steps == 1 frame
         p.connect(p.DIRECT)
@@ -644,7 +651,9 @@ class TurbulenceForceNode(UsdNodeBase):
 
     def execute(self, stage) -> dict:
         if not _HAS_NOISE:
-            print("[TurbulenceForce] 'noise' package not installed, using numpy fallback")
+            print(
+                "[TurbulenceForce] 'noise' package not installed, using numpy fallback"
+            )
         return {
             "force": {
                 "type": "turbulence",

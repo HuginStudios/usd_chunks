@@ -3,6 +3,7 @@ Node definitions for the USD node graph.
 Each node has typed ports (prim, string, variant_list, bool, etc.)
 and an execute() method that runs when inputs change.
 """
+
 import inspect as _inspect
 import re as _re
 from NodeGraphQt import BaseNode
@@ -11,24 +12,26 @@ from PySide6 import QtWidgets, QtCore
 from usd_chunks import chunk_core, chunk_notice, chunk_registry
 from usd_chunks.chunk import Button
 from usd_chunks import chunk
+
 # ─── Port color palette ───
 PORT_COLORS = {
-    "prim":     (230, 120, 40),   # warm orange
-    "string":   (60, 210, 120),   # neon green
-    "bool":     (230, 210, 50),   # neon yellow
-    "list":     (70, 150, 230),   # bright blue
-    "any":      (140, 150, 170),  # cool grey
-    "color":    (230, 60, 80),    # neon red
-    "float":    (50, 210, 220),   # cyan
+    "prim": (230, 120, 40),  # warm orange
+    "string": (60, 210, 120),  # neon green
+    "bool": (230, 210, 50),  # neon yellow
+    "list": (70, 150, 230),  # bright blue
+    "any": (140, 150, 170),  # cool grey
+    "color": (230, 60, 80),  # neon red
+    "float": (50, 210, 220),  # cyan
     "material": (180, 100, 240),  # neon violet
-    "texture":  (240, 190, 60),   # gold
-    "trigger":  (200, 80, 220),   # purple — execution flow only
-    "layer":    (100, 200, 255),  # light blue — USD layer
+    "texture": (240, 190, 60),  # gold
+    "trigger": (200, 80, 220),  # purple — execution flow only
+    "layer": (100, 200, 255),  # light blue — USD layer
 }
 # Reverse map: color tuple → data type name (used for type enforcement)
 _COLOR_TO_TYPE = {v: k for k, v in PORT_COLORS.items()}
 
 _PORT_TYPE_CACHE = {}
+
 
 def _get_node_port_types(node_cls):
     """Return {"inputs": set, "outputs": set} of port data-type names for a node class.
@@ -51,10 +54,15 @@ def _get_node_port_types(node_cls):
     _PORT_TYPE_CACHE[node_cls] = result
     return result
 
+
 # Sentinel: when a port carries this value, downstream nodes ignore it as data
 class _TriggerSignal:
     """Sentinel value for trigger ports — causes get_property to skip the connection."""
-    def __repr__(self): return "<trigger>"
+
+    def __repr__(self):
+        return "<trigger>"
+
+
 TRIGGER = _TriggerSignal()
 
 
@@ -72,23 +80,24 @@ def _safe_set_port_visible(port, visible):
 _EDGE_MARGIN = 8  # pixels from edge to trigger resize
 
 CATEGORY_COLORS = {
-    "Input":       (14, 50, 40),
-    "USD":         (14, 35, 55),
-    "Create":      (14, 45, 30),
-    "Transform":   (14, 45, 35),
-    "Hierarchy":   (30, 20, 50),
+    "Input": (14, 50, 40),
+    "USD": (14, 35, 55),
+    "Create": (14, 45, 30),
+    "Transform": (14, 45, 35),
+    "Hierarchy": (30, 20, 50),
     "Composition": (40, 30, 16),
-    "Material":    (45, 16, 35),
-    "Lighting":    (50, 42, 12),
-    "Camera":      (20, 35, 48),
-    "Animation":   (48, 35, 12),
-    "Utility":     (22, 24, 30),
-    "Math":        (14, 40, 42),
-    "Code":        (18, 18, 22),
-    "Chunks":      (16, 32, 42),
-    "Debug":       (42, 18, 18),
-    "Event":       (50, 20, 50),
+    "Material": (45, 16, 35),
+    "Lighting": (50, 42, 12),
+    "Camera": (20, 35, 48),
+    "Animation": (48, 35, 12),
+    "Utility": (22, 24, 30),
+    "Math": (14, 40, 42),
+    "Code": (18, 18, 22),
+    "Chunks": (16, 32, 42),
+    "Debug": (42, 18, 18),
+    "Event": (50, 20, 50),
 }
+
 
 def _detect_edge(view, pos):
     """Detect if pos is near the right/bottom edge of the node."""
@@ -106,6 +115,7 @@ def _detect_edge(view, pos):
 
 class UsdNodeBase(BaseNode):
     """Common base for all USD graph nodes."""
+
     __identifier__ = "usd_chunks"
     NODE_NAME = "UsdNodeBase"
     CATEGORY = "Base"
@@ -119,7 +129,7 @@ class UsdNodeBase(BaseNode):
         self._widgets_to_hide = set()
         self._hide_scheduled = False
         self.view._node_type_name = self.NODE_NAME
-        cat = getattr(self, 'CATEGORY', 'Base')
+        cat = getattr(self, "CATEGORY", "Base")
         if cat in CATEGORY_COLORS:
             self.set_color(*CATEGORY_COLORS[cat])
         # Auto-add hidden trigger input — shown only when a trigger wire connects.
@@ -136,24 +146,48 @@ class UsdNodeBase(BaseNode):
             pass
         QtCore.QTimer.singleShot(500, self._setup_resize)
 
-    def add_input(self, name='input', multi_input=False, display_name=True,
-                  color=None, locked=False, painter_func=None):
-        port = super().add_input(name, multi_input=multi_input,
-                                 display_name=display_name, color=color,
-                                 locked=locked, painter_func=painter_func)
-        dtype = _COLOR_TO_TYPE.get(color, 'any') if color is not None else 'any'
+    def add_input(
+        self,
+        name="input",
+        multi_input=False,
+        display_name=True,
+        color=None,
+        locked=False,
+        painter_func=None,
+    ):
+        port = super().add_input(
+            name,
+            multi_input=multi_input,
+            display_name=display_name,
+            color=color,
+            locked=locked,
+            painter_func=painter_func,
+        )
+        dtype = _COLOR_TO_TYPE.get(color, "any") if color is not None else "any"
         try:
             port.view._data_type = dtype
         except Exception:
             pass
         return port
 
-    def add_output(self, name='output', multi_output=True, display_name=True,
-                   color=None, locked=False, painter_func=None):
-        port = super().add_output(name, multi_output=multi_output,
-                                  display_name=display_name, color=color,
-                                  locked=locked, painter_func=painter_func)
-        dtype = _COLOR_TO_TYPE.get(color, 'any') if color is not None else 'any'
+    def add_output(
+        self,
+        name="output",
+        multi_output=True,
+        display_name=True,
+        color=None,
+        locked=False,
+        painter_func=None,
+    ):
+        port = super().add_output(
+            name,
+            multi_output=multi_output,
+            display_name=display_name,
+            color=color,
+            locked=locked,
+            painter_func=painter_func,
+        )
+        dtype = _COLOR_TO_TYPE.get(color, "any") if color is not None else "any"
         try:
             port.view._data_type = dtype
         except Exception:
@@ -222,7 +256,11 @@ class UsdNodeBase(BaseNode):
             connected = port.connected_ports()
             if connected:
                 src_node = connected[0].node()
-                val = src_node._output_cache.get(connected[0].name()) if hasattr(src_node, "_output_cache") else None
+                val = (
+                    src_node._output_cache.get(connected[0].name())
+                    if hasattr(src_node, "_output_cache")
+                    else None
+                )
                 if val is not None and not isinstance(val, _TriggerSignal):
                     return str(val) if isinstance(val, (int, float)) else val
         # Check for @reference expression
@@ -244,8 +282,10 @@ class UsdNodeBase(BaseNode):
         # 1. Chunk-core resolution — scene chunks + USD prim attrs.
         try:
             from usd_chunks import chunk_core
+
             # Any loaded chunk has a get_scene(). Use the first chunk in the scene as 'owner'.
             from usd_chunks import chunk_registry
+
             scene = chunk_registry.ChunkRegistry().scene
             chunks = scene.get_chunks() if scene else ()
             if chunks:
@@ -328,8 +368,12 @@ class UsdNodeBase(BaseNode):
                     dx = event.scenePos().x() - view._resize_start.x()
                     dy = event.scenePos().y() - view._resize_start.y()
                     edge = view._resize_edge
-                    w = view._resize_start_w + (dx if edge in ("right", "corner") else 0)
-                    h = view._resize_start_h + (dy if edge in ("bottom", "corner") else 0)
+                    w = view._resize_start_w + (
+                        dx if edge in ("right", "corner") else 0
+                    )
+                    h = view._resize_start_h + (
+                        dy if edge in ("bottom", "corner") else 0
+                    )
                     view._resize_node._on_resize(int(w), int(h))
                     event.accept()
                     return
@@ -360,9 +404,11 @@ class UsdNodeBase(BaseNode):
             for child in wgt.widget().findChildren(QtWidgets.QLineEdit):
                 child.setMaximumWidth(widget_w)
         orig_calc = self.view.calc_size
+
         def _forced_size(add_w=0, add_h=0):
             ow, oh = orig_calc(add_w, add_h)
             return (max(w, ow), max(h or oh, oh))
+
         self.view.calc_size = _forced_size
         self.view.draw_node()
         self.view.calc_size = orig_calc
@@ -382,14 +428,17 @@ class UsdNodeBase(BaseNode):
         if not connected:
             return None
         src_node = connected[0].node()
-        val = src_node._output_cache.get(connected[0].name()) if hasattr(src_node, "_output_cache") else None
+        val = (
+            src_node._output_cache.get(connected[0].name())
+            if hasattr(src_node, "_output_cache")
+            else None
+        )
         if isinstance(val, _TriggerSignal):
             return None
         # Auto-unwrap single-item lists for prim ports
         if isinstance(val, list) and len(val) == 1:
             val = val[0]
         return val
-
 
     @property
     def color(self):
@@ -405,16 +454,20 @@ class UsdNodeBase(BaseNode):
             return [p for p in v if p is not None]
         return [v]
 
+
 # ────────────────────────────────────────────
 #  Input / Utility nodes
 # ────────────────────────────────────────────
 class _PrimThumbLabel(QtWidgets.QLabel):
     """QLabel compat shim for NodeGraphQt."""
-    def setTitleAlign(self, *a): pass
+
+    def setTitleAlign(self, *a):
+        pass
 
 
 class _NodePreviewWidget(NodeBaseWidget):
     """One-line dim preview shown at the bottom of a node after execution."""
+
     def __init__(self, parent=None, name="preview", label=""):
         super().__init__(parent, name, label)
         self._container = QtWidgets.QWidget()
@@ -422,12 +475,13 @@ class _NodePreviewWidget(NodeBaseWidget):
         lay.setContentsMargins(8, 3, 8, 4)
         self._lbl = QtWidgets.QLabel("")
         self._lbl.setStyleSheet(
-            "color: rgba(140,160,200,0.55); font: 7pt 'Consolas'; background: transparent;")
+            "color: rgba(140,160,200,0.55); font: 7pt 'Consolas'; background: transparent;"
+        )
         self._lbl.setTitleAlign = lambda *a: None
         lay.addWidget(self._lbl)
         self._container.setStyleSheet(
-            "background: rgba(0,0,0,0.18);"
-            " border-top: 1px solid rgba(30,36,56,0.6);")
+            "background: rgba(0,0,0,0.18); border-top: 1px solid rgba(30,36,56,0.6);"
+        )
         self._container.setTitleAlign = lambda *a: None
         self.setWidget(self._container)
 
@@ -440,11 +494,14 @@ class _NodePreviewWidget(NodeBaseWidget):
 
 class _PrimThumbWidget(NodeBaseWidget):
     """Thumbnail widget for PrimPathNode — scalable like TextureFileNode."""
+
     def __init__(self, parent=None, name="prim_thumb", label=""):
         super().__init__(parent, name, label)
         self._widget = _PrimThumbLabel()
         self._widget.setMinimumSize(180, 120)
-        self._widget.setStyleSheet("background: #0a0c12; border: 1px solid #1e2438; border-radius: 4px;")
+        self._widget.setStyleSheet(
+            "background: #0a0c12; border: 1px solid #1e2438; border-radius: 4px;"
+        )
         self._widget.setAlignment(QtCore.Qt.AlignCenter)
         self._widget.setScaledContents(True)
         self.setWidget(self._widget)
@@ -463,6 +520,7 @@ class _PrimThumbWidget(NodeBaseWidget):
 
 class PrimPathNode(UsdNodeBase):
     """Resolves a prim path to a Usd.Prim. Supports glob patterns (* ?) to match multiple prims."""
+
     NODE_NAME = "Prim Path"
     CATEGORY = "Input"
 
@@ -483,15 +541,19 @@ class PrimPathNode(UsdNodeBase):
 
     def execute(self, stage):
         import fnmatch
+
         path = self.get_property("prim_path") or ""
         if not path:
             self._preview.set_value("")
             return {"prim": None, "prims": [], "count": 0}
         # Glob mode: */ChairB_* or /Kitchen_set/**/Mesh*
         if "*" in path or "?" in path:
-            matched = [p for p in stage.Traverse()
-                       if fnmatch.fnmatch(str(p.GetPath()), path)
-                       or fnmatch.fnmatch(p.GetName(), path.split("/")[-1])]
+            matched = [
+                p
+                for p in stage.Traverse()
+                if fnmatch.fnmatch(str(p.GetPath()), path)
+                or fnmatch.fnmatch(p.GetName(), path.split("/")[-1])
+            ]
             count = len(matched)
             name = path.split("/")[-1] or path
             self._preview.set_value(f"● {name}  ×{count}" if count else "✗  no match")
@@ -507,14 +569,21 @@ class PrimPathNode(UsdNodeBase):
             self._preview.set_value(f"● {name}")
         else:
             self._preview.set_value("✗  no prim")
-        return {"prim": prim if valid else None, "prims": [prim] if valid else [], "count": 1 if valid else 0}
+        return {
+            "prim": prim if valid else None,
+            "prims": [prim] if valid else [],
+            "count": 1 if valid else 0,
+        }
 
     def to_python(self, var_map):
         path = self.get_property("prim_path") or "/"
         v = var_map.get("prim", "prim")
         return f'{v} = stage.GetPrimAtPath("{path}")'
+
+
 class SelectedPrimNode(UsdNodeBase):
     """Outputs the currently selected prim(s) from usdview."""
+
     NODE_NAME = "Selected Prim"
     CATEGORY = "Input"
 
@@ -525,6 +594,7 @@ class SelectedPrimNode(UsdNodeBase):
     def execute(self, stage):
         try:
             from .graph_host import GraphHost
+
             prims = GraphHost.current().get_selection()
             return {"prim": prims[0] if prims else None}
         except Exception:
@@ -533,6 +603,7 @@ class SelectedPrimNode(UsdNodeBase):
 
 class StringNode(UsdNodeBase):
     """A simple string constant."""
+
     NODE_NAME = "String"
     CATEGORY = "Input"
 
@@ -554,6 +625,7 @@ class StringNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class GetVariantsNode(UsdNodeBase):
     """Lists variant sets and their options for a prim."""
+
     NODE_NAME = "Get Variants"
     CATEGORY = "USD"
 
@@ -580,6 +652,7 @@ class GetVariantsNode(UsdNodeBase):
 
 class SetVariantNode(UsdNodeBase):
     """Sets a variant selection on a prim."""
+
     NODE_NAME = "Set Variant"
     CATEGORY = "USD"
 
@@ -603,6 +676,7 @@ class SetVariantNode(UsdNodeBase):
 
 class GetPrimInfoNode(UsdNodeBase):
     """Outputs prim type, name, path, and children count."""
+
     NODE_NAME = "Get Prim Info"
     CATEGORY = "USD"
 
@@ -626,9 +700,9 @@ class GetPrimInfoNode(UsdNodeBase):
         }
 
 
-
 class GetChildrenNode(UsdNodeBase):
     """Outputs children of a prim."""
+
     NODE_NAME = "Get Children"
     CATEGORY = "USD"
 
@@ -644,13 +718,14 @@ class GetChildrenNode(UsdNodeBase):
         return {"children": list(prim.GetChildren())}
 
 
-
 # ────────────────────────────────────────────
 #  Action nodes
 # ────────────────────────────────────────────
 
+
 class PrintNode(UsdNodeBase):
     """Debug node — prints whatever comes in."""
+
     NODE_NAME = "Print"
     CATEGORY = "Debug"
 
@@ -664,13 +739,13 @@ class PrintNode(UsdNodeBase):
         return {}
 
 
-
 class PythonNode(UsdNodeBase):
     """Execute custom Python code. Available variables: stage, inputs (dict of all input values).
     Set 'output' variable to pass a result downstream.
 
     REMEMBER: THE "inputs" IS A DICT OF ALL INPUT PORT VALUES, {"in_1": value1, "in_2": value2, ...}
     """
+
     NODE_NAME = "Python"
     CATEGORY = "Code"
 
@@ -702,8 +777,10 @@ class PythonNode(UsdNodeBase):
         if port:
             new_color = PORT_COLORS.get(dtype, PORT_COLORS["any"])
             if port.connected_ports() and dtype != "any":
-                print(f"[PythonNode] Warning: output type changed to '{dtype}' "
-                      "while connections exist — existing wires are not re-validated")
+                print(
+                    f"[PythonNode] Warning: output type changed to '{dtype}' "
+                    "while connections exist — existing wires are not re-validated"
+                )
             try:
                 port.view.color = new_color
                 port.view._data_type = dtype
@@ -722,6 +799,7 @@ class PythonNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class SetDisplayColorNode(UsdNodeBase):
     """Set displayColor on a mesh prim."""
+
     NODE_NAME = "Set Display Color"
     CATEGORY = "Material"
 
@@ -735,6 +813,7 @@ class SetDisplayColorNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdGeom, Vt, Gf
+
         prims = self._get_prims("prim")
         if not prims:
             return {"prim": None}
@@ -753,11 +832,12 @@ class SetDisplayColorNode(UsdNodeBase):
         r = self.get_property("color_r") or "0.5"
         g = self.get_property("color_g") or "0.5"
         b = self.get_property("color_b") or "0.5"
-        return f'UsdGeom.Gprim({pv}).GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f({r}, {g}, {b})]))'
+        return f"UsdGeom.Gprim({pv}).GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f({r}, {g}, {b})]))"
 
 
 class AssignMaterialNode(UsdNodeBase):
     """Bind an existing material to a prim."""
+
     NODE_NAME = "Assign Material"
     CATEGORY = "Material"
 
@@ -770,6 +850,7 @@ class AssignMaterialNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdShade
+
         prims = self._get_prims("prim")
         mat_prim = self._get_input_value("material")
         mat_path = self.get_property("material_path")
@@ -786,6 +867,7 @@ class AssignMaterialNode(UsdNodeBase):
 
 class CreatePreviewSurfaceNode(UsdNodeBase):
     """Create a UsdPreviewSurface material."""
+
     NODE_NAME = "Create PreviewSurface"
     CATEGORY = "Material"
 
@@ -803,6 +885,7 @@ class CreatePreviewSurfaceNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdShade, Sdf, Gf
+
         mat_path = self.get_property("mat_path") or "/Materials/MyMaterial"
         r = float(self.get_property("diffuse_r") or 0.8)
         g = float(self.get_property("diffuse_g") or 0.8)
@@ -821,7 +904,9 @@ class CreatePreviewSurfaceNode(UsdNodeBase):
         if tex_path:
             tex_reader = UsdShade.Shader.Define(stage, f"{mat_path}/DiffuseTexture")
             tex_reader.CreateIdAttr("UsdUVTexture")
-            tex_reader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(tex_path))
+            tex_reader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(
+                Sdf.AssetPath(tex_path)
+            )
             tex_reader.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
             tex_reader.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
             tex_reader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
@@ -831,11 +916,15 @@ class CreatePreviewSurfaceNode(UsdNodeBase):
             uv_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
             uv_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
             tex_reader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
-                uv_reader.ConnectableAPI(), "result")
-            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
-                tex_reader.ConnectableAPI(), "rgb")
+                uv_reader.ConnectableAPI(), "result"
+            )
+            shader.CreateInput(
+                "diffuseColor", Sdf.ValueTypeNames.Color3f
+            ).ConnectToSource(tex_reader.ConnectableAPI(), "rgb")
         else:
-            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(r, g, b))
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+                Gf.Vec3f(r, g, b)
+            )
 
         mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
         return {"material": mat_prim, "shader": shader.GetPrim()}
@@ -843,6 +932,7 @@ class CreatePreviewSurfaceNode(UsdNodeBase):
 
 class _ThumbnailWidget(NodeBaseWidget):
     """Embeds a resizable thumbnail image inside a node."""
+
     def __init__(self, parent=None, name="thumbnail", label=""):
         super().__init__(parent, name, label)
         self._widget = _ThumbnailLabel()
@@ -860,6 +950,7 @@ class _ThumbnailWidget(NodeBaseWidget):
         self._path = path
         if path:
             from PySide6 import QtGui
+
             pixmap = QtGui.QPixmap(path)
             if not pixmap.isNull():
                 # Keep original quality, let the widget handle display
@@ -870,13 +961,14 @@ class _ThumbnailWidget(NodeBaseWidget):
 
 class _ThumbnailLabel(QtWidgets.QLabel):
     """QLabel with setTitleAlign for NodeGraphQt compat."""
-    def setTitleAlign(self, *a): pass
 
-
+    def setTitleAlign(self, *a):
+        pass
 
 
 class TextureFileNode(UsdNodeBase):
     """Load a texture file path. Shows preview on the node. Drag corner to resize."""
+
     NODE_NAME = "Texture File"
     CATEGORY = "Material"
     _thumb_size = 180
@@ -902,6 +994,7 @@ class TextureFileNode(UsdNodeBase):
         fp = self.get_property("file_path") or ""
         if fp:
             import os
+
             if os.path.isfile(fp):
                 self._thumb.set_value(fp)
                 self.set_icon(fp)
@@ -914,8 +1007,10 @@ class TextureFileNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class CreateUVTextureNode(UsdNodeBase):
     """Create a UsdUVTexture shader with tiling controls."""
+
     NODE_NAME = "Create UV Texture"
     CATEGORY = "Material"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Shader Path", text="/Materials/MyMaterial/Texture")
@@ -931,18 +1026,25 @@ class CreateUVTextureNode(UsdNodeBase):
         self.add_output("r", color=PORT_COLORS["float"])
         self.add_output("a", color=PORT_COLORS["float"])
         self.add_output("shader_prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdShade, Sdf, Gf
+
         p = self.get_property("path") or "/Materials/MyMaterial/Texture"
-        fp = self._get_input_value("file") or (self.get_property("file_path") or "").strip()
+        fp = (
+            self._get_input_value("file")
+            or (self.get_property("file_path") or "").strip()
+        )
         shader = UsdShade.Shader.Define(stage, p)
         shader.CreateIdAttr("UsdUVTexture")
         if fp:
             shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(fp))
         shader.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set(
-            self.get_property("wrap_s") or "repeat")
+            self.get_property("wrap_s") or "repeat"
+        )
         shader.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set(
-            self.get_property("wrap_t") or "repeat")
+            self.get_property("wrap_t") or "repeat"
+        )
         # ST transform via UsdTransform2d
         ss = float(self.get_property("scale_s") or 1)
         st = float(self.get_property("scale_t") or 1)
@@ -959,44 +1061,61 @@ class CreateUVTextureNode(UsdNodeBase):
             xform = UsdShade.Shader.Define(stage, f"{parent}/UVTransform")
             xform.CreateIdAttr("UsdTransform2d")
             xform.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(
-                uv_reader.ConnectableAPI(), "result")
+                uv_reader.ConnectableAPI(), "result"
+            )
             xform.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(ss, st))
-            xform.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(os_, ot))
+            xform.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set(
+                Gf.Vec2f(os_, ot)
+            )
             xform.CreateOutput("result", Sdf.ValueTypeNames.Float2)
             shader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
-                xform.ConnectableAPI(), "result")
+                xform.ConnectableAPI(), "result"
+            )
         shader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
         shader.CreateOutput("r", Sdf.ValueTypeNames.Float)
         shader.CreateOutput("a", Sdf.ValueTypeNames.Float)
-        return {"rgb": f"{p}.rgb", "r": f"{p}.r", "a": f"{p}.a",
-                "shader_prim": shader.GetPrim()}
+        return {
+            "rgb": f"{p}.rgb",
+            "r": f"{p}.r",
+            "a": f"{p}.a",
+            "shader_prim": shader.GetPrim(),
+        }
 
 
 class CreatePrimvarReaderNode(UsdNodeBase):
     """Create a UsdPrimvarReader_float2 for UV coordinates."""
+
     NODE_NAME = "Create Primvar Reader"
     CATEGORY = "Material"
+
     def __init__(self):
         super().__init__()
-        self.add_text_input("path", "Shader Path", text="/Materials/MyMaterial/UVReader")
+        self.add_text_input(
+            "path", "Shader Path", text="/Materials/MyMaterial/UVReader"
+        )
         self.add_text_input("varname", "Primvar Name", text="st")
         self.add_output("result", color=PORT_COLORS["any"])
         self.add_output("shader_prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdShade, Sdf
+
         p = self.get_property("path") or "/Materials/MyMaterial/UVReader"
         shader = UsdShade.Shader.Define(stage, p)
         shader.CreateIdAttr("UsdPrimvarReader_float2")
         shader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set(
-            self.get_property("varname") or "st")
+            self.get_property("varname") or "st"
+        )
         shader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
         return {"result": f"{p}.result", "shader_prim": shader.GetPrim()}
 
 
 class GetMaterialShadersNode(UsdNodeBase):
     """Get the surface and displacement shaders from a material."""
+
     NODE_NAME = "Get Material Shaders"
     CATEGORY = "Material"
+
     def __init__(self):
         super().__init__()
         self.add_input("material", color=PORT_COLORS["material"])
@@ -1004,8 +1123,10 @@ class GetMaterialShadersNode(UsdNodeBase):
         self.add_output("surface", color=PORT_COLORS["prim"])
         self.add_output("displacement", color=PORT_COLORS["prim"])
         self.add_output("shader_list", color=PORT_COLORS["list"])
+
     def execute(self, stage):
         from pxr import UsdShade
+
         mat_prim = self._get_input_value("material")
         if mat_prim is None:
             mp = (self.get_property("material_path") or "").strip()
@@ -1026,15 +1147,18 @@ class GetMaterialShadersNode(UsdNodeBase):
             if src and src[0]:
                 disp = src[0][0].source.GetPrim()
         # List all shader children
-        shaders = [c for c in mat_prim.GetChildren()
-                   if UsdShade.Shader(c).GetShaderId()]
+        shaders = [
+            c for c in mat_prim.GetChildren() if UsdShade.Shader(c).GetShaderId()
+        ]
         return {"surface": surf, "displacement": disp, "shader_list": shaders}
 
 
 class GetShaderInputNode(UsdNodeBase):
     """Read an input value from a shader (roughness, diffuseColor, file, etc.)."""
+
     NODE_NAME = "Get Shader Input"
     CATEGORY = "Material"
+
     def __init__(self):
         super().__init__()
         self.add_input("shader", color=PORT_COLORS["prim"])
@@ -1042,8 +1166,10 @@ class GetShaderInputNode(UsdNodeBase):
         self.add_output("value", color=PORT_COLORS["any"])
         self.add_output("connected_source", color=PORT_COLORS["prim"])
         self.add_output("all_inputs", color=PORT_COLORS["list"])
+
     def execute(self, stage):
         from pxr import UsdShade
+
         prim = self._get_input_value("shader")
         if prim is None:
             return {"value": None, "connected_source": None, "all_inputs": []}
@@ -1067,8 +1193,10 @@ class GetShaderInputNode(UsdNodeBase):
 
 class SetShaderInputNode(UsdNodeBase):
     """Set an input value on a shader."""
+
     NODE_NAME = "Set Shader Input"
     CATEGORY = "Material"
+
     def __init__(self):
         super().__init__()
         self.add_input("shader", color=PORT_COLORS["prim"])
@@ -1076,8 +1204,10 @@ class SetShaderInputNode(UsdNodeBase):
         self.add_text_input("input_name", "Input Name", text="roughness")
         self.add_text_input("manual_value", "Value (if no input)", text="")
         self.add_output("shader", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdShade
+
         prim = self._get_input_value("shader")
         if prim is None:
             return {"shader": None}
@@ -1100,8 +1230,10 @@ class SetShaderInputNode(UsdNodeBase):
 
 class ConnectShaderNode(UsdNodeBase):
     """Connect a shader output to another shader's input."""
+
     NODE_NAME = "Connect Shaders"
     CATEGORY = "Material"
+
     def __init__(self):
         super().__init__()
         self.add_input("source_shader", color=PORT_COLORS["prim"])
@@ -1109,8 +1241,10 @@ class ConnectShaderNode(UsdNodeBase):
         self.add_input("dest_shader", color=PORT_COLORS["prim"])
         self.add_text_input("dest_input", "Dest Input", text="diffuseColor")
         self.add_output("dest_shader", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdShade
+
         src_prim = self._get_input_value("source_shader")
         dst_prim = self._get_input_value("dest_shader")
         if src_prim is None or dst_prim is None:
@@ -1128,8 +1262,10 @@ class ConnectShaderNode(UsdNodeBase):
 class SetUVTransformNode(UsdNodeBase):
     """Set UV tiling by inserting/updating a UsdTransform2d between UV reader and texture.
     Connect the texture shader prim — it will find the st source and insert a transform."""
+
     NODE_NAME = "Set UV Transform"
     CATEGORY = "Material"
+
     def __init__(self):
         super().__init__()
         self.add_input("shader", color=PORT_COLORS["prim"])
@@ -1139,8 +1275,10 @@ class SetUVTransformNode(UsdNodeBase):
         self.add_text_input("offset_t", "Offset T", text="0.0")
         self.add_text_input("rotation", "Rotation (degrees)", text="0.0")
         self.add_output("shader", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdShade, Sdf, Gf
+
         prim = self._get_input_value("shader")
         if prim is None:
             return {"shader": None}
@@ -1170,16 +1308,19 @@ class SetUVTransformNode(UsdNodeBase):
         xform_shader = UsdShade.Shader.Define(stage, xform_path)
         xform_shader.CreateIdAttr("UsdTransform2d")
         xform_shader.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(
-            Gf.Vec2f(ss, st_val))
+            Gf.Vec2f(ss, st_val)
+        )
         xform_shader.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set(
-            Gf.Vec2f(os_, ot))
+            Gf.Vec2f(os_, ot)
+        )
         xform_shader.CreateInput("rotation", Sdf.ValueTypeNames.Float).Set(rot)
         xform_shader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
 
         # Wire: UV reader → Transform2d → Texture st
         if uv_source_shader:
             xform_shader.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(
-                uv_source_shader, uv_source_output)
+                uv_source_shader, uv_source_output
+            )
         st_inp.ConnectToSource(xform_shader.ConnectableAPI(), "result")
         return {"shader": prim}
 
@@ -1189,6 +1330,7 @@ class SetUVTransformNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class GetAttributeNode(UsdNodeBase):
     """Get any attribute value from a prim."""
+
     NODE_NAME = "Get Attribute"
     CATEGORY = "USD"
 
@@ -1226,16 +1368,17 @@ class GetAttributeNode(UsdNodeBase):
         pv = var_map.get("prim", "prim")
         vv = var_map.get("value", "value")
         if attr == "name":
-            return f'{vv} = {pv}.GetName()'
+            return f"{vv} = {pv}.GetName()"
         if attr == "path":
-            return f'{vv} = str({pv}.GetPath())'
+            return f"{vv} = str({pv}.GetPath())"
         if attr == "type":
-            return f'{vv} = {pv}.GetTypeName()'
+            return f"{vv} = {pv}.GetTypeName()"
         return f'{vv} = {pv}.GetAttribute("{attr}").Get()'
 
 
 class SetAttributeNode(UsdNodeBase):
     """Set any attribute value on a prim."""
+
     NODE_NAME = "Set Attribute"
     CATEGORY = "USD"
 
@@ -1264,12 +1407,21 @@ class SetAttributeNode(UsdNodeBase):
                 if attr and attr.IsValid():
                     # Convert value to match attribute's expected type
                     from pxr import Vt, Gf, Sdf
+
                     type_name = attr.GetTypeName()
                     try:
-                        if type_name == Sdf.ValueTypeNames.Float3Array or type_name == Sdf.ValueTypeNames.Color3fArray:
+                        if (
+                            type_name == Sdf.ValueTypeNames.Float3Array
+                            or type_name == Sdf.ValueTypeNames.Color3fArray
+                        ):
                             if isinstance(val, (tuple, list)):
-                                val = Vt.Vec3fArray([Gf.Vec3f(*[float(x) for x in val])])
-                        elif type_name == Sdf.ValueTypeNames.Float3 or type_name == Sdf.ValueTypeNames.Color3f:
+                                val = Vt.Vec3fArray(
+                                    [Gf.Vec3f(*[float(x) for x in val])]
+                                )
+                        elif (
+                            type_name == Sdf.ValueTypeNames.Float3
+                            or type_name == Sdf.ValueTypeNames.Color3f
+                        ):
                             if isinstance(val, (tuple, list)):
                                 val = Gf.Vec3f(*[float(x) for x in val])
                         elif type_name == Sdf.ValueTypeNames.Double3:
@@ -1283,6 +1435,7 @@ class SetAttributeNode(UsdNodeBase):
 
 class SelectPrimNode(UsdNodeBase):
     """Select the input prim in usdview viewport."""
+
     NODE_NAME = "Select in Viewport"
     CATEGORY = "USD"
 
@@ -1295,6 +1448,7 @@ class SelectPrimNode(UsdNodeBase):
         if prim:
             try:
                 from .graph_host import GraphHost
+
                 GraphHost.current().set_selection(prim)
             except Exception:
                 pass
@@ -1303,6 +1457,7 @@ class SelectPrimNode(UsdNodeBase):
 
 class FilterChildrenNode(UsdNodeBase):
     """Filter children of a prim by type name."""
+
     NODE_NAME = "Filter Children"
     CATEGORY = "USD"
 
@@ -1317,8 +1472,11 @@ class FilterChildrenNode(UsdNodeBase):
         type_filter = self.get_property("type_filter") or ""
         if not prim:
             return {"children": []}
-        children = [c for c in prim.GetChildren()
-                    if not type_filter or c.GetTypeName() == type_filter]
+        children = [
+            c
+            for c in prim.GetChildren()
+            if not type_filter or c.GetTypeName() == type_filter
+        ]
         return {"children": children}
 
 
@@ -1334,6 +1492,7 @@ class ChunkWrapperBase(UsdNodeBase):
     whenever the chunk reacts — effectively turning the chunk node into a live
     trigger, just like an Event node.
     """
+
     CATEGORY = "Chunks"
 
     def __init__(self):
@@ -1377,8 +1536,9 @@ class ChunkWrapperBase(UsdNodeBase):
 
     def _get_graph_widget(self):
         import sys
-        ref = sys.modules.get('_node_graph_ref')
-        return ref.widget if ref and hasattr(ref, 'widget') else None
+
+        ref = sys.modules.get("_node_graph_ref")
+        return ref.widget if ref and hasattr(ref, "widget") else None
 
     def _trigger_downstream(self):
         """Re-execute this node then cascade to its downstream connected nodes.
@@ -1404,7 +1564,7 @@ class ChunkWrapperBase(UsdNodeBase):
             for n in widget._graph.all_nodes():
                 if n in downstream or n is self:
                     continue
-                if not hasattr(n, 'model'):
+                if not hasattr(n, "model"):
                     continue
                 for val in n.model.custom_properties.values():
                     if isinstance(val, str) and val.startswith("@"):
@@ -1423,116 +1583,26 @@ class ChunkWrapperBase(UsdNodeBase):
         # Use two back-to-back timers so we fire after usdview's notice callbacks settle.
         try:
             win = widget.window()
+
             def _refocus():
                 try:
                     win.raise_()
                     win.activateWindow()
                     # Also focus the props panel so keyboard events stay in node graph
-                    props = getattr(widget, '_props_widget', None)
+                    props = getattr(widget, "_props_widget", None)
                     if props:
                         props.setFocus(QtCore.Qt.OtherFocusReason)
                 except Exception:
                     pass
+
             QtCore.QTimer.singleShot(150, _refocus)
         except Exception:
             pass
 
 
-# class UVCheckerNode(ChunkWrapperBase):
-#     """Apply UV checker material to a prim. Drives the live UV Checker chunk."""
-#     NODE_NAME = "UV Checker"
-
-#     def __init__(self):
-#         super().__init__()
-#         self.add_input("prim", color=PORT_COLORS["prim"])
-#         # Read params from live chunk if already loaded
-#         from .chunk_adapter import ChunkAdapter
-#         adapter = ChunkAdapter("UV Checker")  # no auto_create
-#         if adapter.chunk:
-#             for p in adapter.get_params():
-#                 if isinstance(p, chunk_core.ChunkVectorBase):
-#                     for sub in p:
-#                         self.add_input(f"in_{sub.name}", color=PORT_COLORS["float"])
-#                         self.add_text_input(sub.name, sub.name,
-#                                             text=str(sub.value if sub.value else 0))
-#                 elif isinstance(p, Button):
-#                     pass
-#                 elif hasattr(p, "value"):
-#                     self.add_input(f"in_{p.name}", color=PORT_COLORS["any"])
-#                     self.add_text_input(p.name, p.name,
-#                                         text=str(p.value) if p.value else "")
-#         else:
-#             self.add_input("in_u_scale", color=PORT_COLORS["float"])
-#             self.add_text_input("u_scale", "U Scale", text="1.0")
-#             self.add_input("in_v_scale", color=PORT_COLORS["float"])
-#             self.add_text_input("v_scale", "V Scale", text="1.0")
-#             self.add_input("in_browse", color=PORT_COLORS["string"])
-#             self.add_text_input("browse", "Texture", text="")
-#         self.add_output("prim", color=PORT_COLORS["prim"])
-
-#     def execute(self, stage):
-#         from .chunk_adapter import ChunkAdapter
-#         prim = self._get_input_value("prim")
-#         if not prim:
-#             return {"prim": None}
-
-#         # Reuse or create adapter (only auto_create once)
-#         if not hasattr(self, '_cached_adapter') or not self._cached_adapter.chunk:
-#             self._cached_adapter = ChunkAdapter("UV Checker", auto_create=True)
-#         adapter = self._cached_adapter
-#         if not adapter.chunk:
-#             print(f"[UVCheckerNode] Not found. Available: {ChunkAdapter.list_available()}")
-#             return {"prim": prim}
-
-#         scene = chunk_registry.ChunkRegistry().scene
-#         ctrl = scene.usdviewAPI._UsdviewApi__appController
-#         old_sel = scene.get_selected_prims()
-#         ctrl._dataModel.selection.setPrim(prim)
-
-#         # Push values: try input port first, then text field
-#         # Collect all our node properties
-#         def _get_val(name):
-#             """Try input port in_{name}, then property {name}."""
-#             v = self._get_input_value(f"in_{name}")
-#             if v is not None:
-#                 return v
-#             v = self.get_property(name)
-#             return v
-
-#         # Get all node property names (excluding standard ones)
-#         prop_names = list(self.model.custom_properties.keys())
-
-#         for p in adapter.get_params():
-#             if isinstance(p, chunk_core.ChunkVectorBase):
-#                 vals = []
-#                 for i, sub in enumerate(p):
-#                     # Try matching: in_{sub.name} port, then sub.name prop, then by index from our props
-#                     v = _get_val(sub.name)
-#                     if v is None and i < len(prop_names):
-#                         v = _get_val(prop_names[i])
-#                     if v is None:
-#                         v = sub.value
-#                     vals.append(float(v) if v else 0)
-#                 adapter.set_param(p.name, vals)
-#             elif isinstance(p, Button):
-#                 pass
-#             elif hasattr(p, "value"):
-#                 v = _get_val(p.name)
-#                 if v is not None and v != "":
-#                     adapter.set_param(p.name, v)
-
-#         print(f"[UVCheckerNode] params set: {[(p.name, p.value if hasattr(p,'value') else '?') for p in adapter.get_params() if not isinstance(p, Button)]}")
-
-#         adapter.press_button("clear")
-#         adapter.press_button("apply")
-
-#         if old_sel:
-#             ctrl._dataModel.selection.setPrim(old_sel[0])
-#         return {"prim": prim}
-
-
 class DynamicChunkNode(ChunkWrapperBase):
     """Wraps any loaded chunk. Set chunk_name, then execute fires its first button."""
+
     NODE_NAME = "Chunk (Dynamic)"
 
     def __init__(self):
@@ -1544,6 +1614,7 @@ class DynamicChunkNode(ChunkWrapperBase):
 
     def execute(self, stage):
         from .chunk_adapter import ChunkAdapter
+
         prim = self._get_input_value("prim")
         chunk_name = (self.get_property("chunk_name") or "").strip()
         if not chunk_name:
@@ -1552,7 +1623,9 @@ class DynamicChunkNode(ChunkWrapperBase):
 
         adapter = ChunkAdapter(chunk_name)
         if not adapter.chunk:
-            print(f"[DynamicChunkNode] '{chunk_name}' not found. Available: {ChunkAdapter.list_available()}")
+            print(
+                f"[DynamicChunkNode] '{chunk_name}' not found. Available: {ChunkAdapter.list_available()}"
+            )
             return {"prim": prim}
 
         # Arm the notice-dependency listener so this node behaves like an
@@ -1565,6 +1638,7 @@ class DynamicChunkNode(ChunkWrapperBase):
             old_sel = []
             if prim:
                 from .graph_host import GraphHost
+
                 host = GraphHost.current()
                 old_sel = host.get_selection()
                 host.set_selection(prim)
@@ -1574,6 +1648,7 @@ class DynamicChunkNode(ChunkWrapperBase):
 
             if prim and old_sel:
                 from .graph_host import GraphHost
+
                 GraphHost.current().set_selection(old_sel[0])
             return {"prim": prim}
         finally:
@@ -1585,6 +1660,7 @@ class DynamicChunkNode(ChunkWrapperBase):
 # ────────────────────────────────────────────
 class SetTransformNode(UsdNodeBase):
     """Set translate/rotate/scale on a prim."""
+
     NODE_NAME = "Set Transform"
     CATEGORY = "Transform"
 
@@ -1604,23 +1680,31 @@ class SetTransformNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdGeom, Gf
+
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
         xform = UsdGeom.Xformable(prim)
         xform.ClearXformOpOrder()
-        xform.AddTranslateOp().Set(Gf.Vec3d(
-            float(self.get_property("tx") or 0),
-            float(self.get_property("ty") or 0),
-            float(self.get_property("tz") or 0)))
-        xform.AddRotateXYZOp().Set(Gf.Vec3f(
-            float(self.get_property("rx") or 0),
-            float(self.get_property("ry") or 0),
-            float(self.get_property("rz") or 0)))
+        xform.AddTranslateOp().Set(
+            Gf.Vec3d(
+                float(self.get_property("tx") or 0),
+                float(self.get_property("ty") or 0),
+                float(self.get_property("tz") or 0),
+            )
+        )
+        xform.AddRotateXYZOp().Set(
+            Gf.Vec3f(
+                float(self.get_property("rx") or 0),
+                float(self.get_property("ry") or 0),
+                float(self.get_property("rz") or 0),
+            )
+        )
         s = Gf.Vec3f(
             float(self.get_property("sx") or 1),
             float(self.get_property("sy") or 1),
-            float(self.get_property("sz") or 1))
+            float(self.get_property("sz") or 1),
+        )
         if s != Gf.Vec3f(1, 1, 1):
             xform.AddScaleOp().Set(Gf.Vec3f(s))
         return {"prim": prim}
@@ -1628,6 +1712,7 @@ class SetTransformNode(UsdNodeBase):
 
 class GetWorldTransformNode(UsdNodeBase):
     """Get world-space transform of a prim — individual components for easy referencing."""
+
     NODE_NAME = "Get World Transform"
     CATEGORY = "Transform"
 
@@ -1648,10 +1733,22 @@ class GetWorldTransformNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdGeom, Gf
+
         prim = self._get_input_value("prim")
         if prim is None:
-            return {"tx": 0, "ty": 0, "tz": 0, "rx": 0, "ry": 0, "rz": 0,
-                    "sx": 1, "sy": 1, "sz": 1, "matrix": None, "prim": None}
+            return {
+                "tx": 0,
+                "ty": 0,
+                "tz": 0,
+                "rx": 0,
+                "ry": 0,
+                "rz": 0,
+                "sx": 1,
+                "sy": 1,
+                "sz": 1,
+                "matrix": None,
+                "prim": None,
+            }
         xf = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0)
         t = xf.ExtractTranslation()
         r = xf.ExtractRotation()
@@ -1661,14 +1758,24 @@ class GetWorldTransformNode(UsdNodeBase):
         sx = Gf.Vec3d(m[0][0], m[0][1], m[0][2]).GetLength()
         sy = Gf.Vec3d(m[1][0], m[1][1], m[1][2]).GetLength()
         sz = Gf.Vec3d(m[2][0], m[2][1], m[2][2]).GetLength()
-        return {"tx": t[0], "ty": t[1], "tz": t[2],
-                "rx": rot[0], "ry": rot[1], "rz": rot[2],
-                "sx": sx, "sy": sy, "sz": sz,
-                "matrix": xf, "prim": prim}
+        return {
+            "tx": t[0],
+            "ty": t[1],
+            "tz": t[2],
+            "rx": rot[0],
+            "ry": rot[1],
+            "rz": rot[2],
+            "sx": sx,
+            "sy": sy,
+            "sz": sz,
+            "matrix": xf,
+            "prim": prim,
+        }
 
 
 class ResetTransformNode(UsdNodeBase):
     """Clear all xform ops on a prim."""
+
     NODE_NAME = "Reset Transform"
     CATEGORY = "Transform"
 
@@ -1679,6 +1786,7 @@ class ResetTransformNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdGeom
+
         prim = self._get_input_value("prim")
         if prim:
             UsdGeom.Xformable(prim).ClearXformOpOrder()
@@ -1687,6 +1795,7 @@ class ResetTransformNode(UsdNodeBase):
 
 class GetBoundingBoxNode(UsdNodeBase):
     """Get bounding box of a prim."""
+
     NODE_NAME = "Get Bounding Box"
     CATEGORY = "Transform"
 
@@ -1700,6 +1809,7 @@ class GetBoundingBoxNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdGeom
+
         prim = self._get_input_value("prim")
         if not prim:
             return {"min": None, "max": None, "size": None, "center": None}
@@ -1708,7 +1818,12 @@ class GetBoundingBoxNode(UsdNodeBase):
         mn, mx = r.GetMin(), r.GetMax()
         sz = mx - mn
         ct = (mn + mx) / 2
-        return {"min": tuple(mn), "max": tuple(mx), "size": tuple(sz), "center": tuple(ct)}
+        return {
+            "min": tuple(mn),
+            "max": tuple(mx),
+            "size": tuple(sz),
+            "center": tuple(ct),
+        }
 
 
 class ConstrainTransformNode(UsdNodeBase):
@@ -1716,6 +1831,7 @@ class ConstrainTransformNode(UsdNodeBase):
     Unchecked: snap all targets to source. Checked: each target maintains
     its own relative offset, captured automatically on first execute.
     Clear the offset_data field to force a re-capture on all targets."""
+
     NODE_NAME = "Constrain Transform"
     CATEGORY = "Transform"
 
@@ -1723,7 +1839,12 @@ class ConstrainTransformNode(UsdNodeBase):
         super().__init__()
         self.add_input("source", color=PORT_COLORS["prim"])
         self.add_input("target", color=PORT_COLORS["list"])
-        self.add_checkbox("maintain_offset", label="Maintain Offset", text="Maintain Offset", state=False)
+        self.add_checkbox(
+            "maintain_offset",
+            label="Maintain Offset",
+            text="Maintain Offset",
+            state=False,
+        )
         # JSON dict: {"/prim/path": [tx, ty, tz, rx, ry, rz], ...} — one entry per target
         self.add_text_input("offset_data", "Offsets (auto)", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
@@ -1732,6 +1853,7 @@ class ConstrainTransformNode(UsdNodeBase):
     def execute(self, stage):
         import json
         from pxr import UsdGeom, Gf
+
         source = self._get_input_value("source")
         targets = self._get_prims("target")
         if not source or not targets:
@@ -1742,7 +1864,8 @@ class ConstrainTransformNode(UsdNodeBase):
         src_xf = UsdGeom.Xformable(source).ComputeLocalToWorldTransform(0)
         src_t = src_xf.ExtractTranslation()
         src_rot = src_xf.ExtractRotation().Decompose(
-            Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis())
+            Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis()
+        )
 
         if maintain:
             raw = self.get_property("offset_data") or ""
@@ -1759,7 +1882,8 @@ class ConstrainTransformNode(UsdNodeBase):
                     tgt_xf = UsdGeom.Xformable(target).ComputeLocalToWorldTransform(0)
                     tgt_t = tgt_xf.ExtractTranslation()
                     tgt_rot = tgt_xf.ExtractRotation().Decompose(
-                        Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis())
+                        Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis()
+                    )
                     offsets[path] = [
                         round(tgt_t[0] - src_t[0], 4),
                         round(tgt_t[1] - src_t[1], 4),
@@ -1777,17 +1901,24 @@ class ConstrainTransformNode(UsdNodeBase):
                 o = offsets.get(path, [0, 0, 0, 0, 0, 0])
                 xform = UsdGeom.Xformable(target)
                 xform.ClearXformOpOrder()
-                xform.AddTranslateOp().Set(Gf.Vec3d(
-                    src_t[0] + o[0], src_t[1] + o[1], src_t[2] + o[2]))
-                xform.AddRotateXYZOp().Set(Gf.Vec3f(
-                    float(src_rot[0] + o[3]), float(src_rot[1] + o[4]), float(src_rot[2] + o[5])))
+                xform.AddTranslateOp().Set(
+                    Gf.Vec3d(src_t[0] + o[0], src_t[1] + o[1], src_t[2] + o[2])
+                )
+                xform.AddRotateXYZOp().Set(
+                    Gf.Vec3f(
+                        float(src_rot[0] + o[3]),
+                        float(src_rot[1] + o[4]),
+                        float(src_rot[2] + o[5]),
+                    )
+                )
         else:
             for target in targets:
                 xform = UsdGeom.Xformable(target)
                 xform.ClearXformOpOrder()
                 xform.AddTranslateOp().Set(Gf.Vec3d(src_t[0], src_t[1], src_t[2]))
-                xform.AddRotateXYZOp().Set(Gf.Vec3f(
-                    float(src_rot[0]), float(src_rot[1]), float(src_rot[2])))
+                xform.AddRotateXYZOp().Set(
+                    Gf.Vec3f(float(src_rot[0]), float(src_rot[1]), float(src_rot[2]))
+                )
 
         return {"prim": targets[0], "prims": targets}
 
@@ -1797,6 +1928,7 @@ class ConstrainTransformNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class CreatePrimNode(UsdNodeBase):
     """Create/define a prim at a path with a type."""
+
     NODE_NAME = "Create Prim"
     CATEGORY = "Hierarchy"
 
@@ -1815,6 +1947,7 @@ class CreatePrimNode(UsdNodeBase):
 
 class DeletePrimNode(UsdNodeBase):
     """Remove a prim from the stage."""
+
     NODE_NAME = "Delete Prim"
     CATEGORY = "Hierarchy"
 
@@ -1831,6 +1964,7 @@ class DeletePrimNode(UsdNodeBase):
 
 class ReparentPrimNode(UsdNodeBase):
     """Move a prim under a new parent (via rename)."""
+
     NODE_NAME = "Reparent Prim"
     CATEGORY = "Hierarchy"
 
@@ -1842,6 +1976,7 @@ class ReparentPrimNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import Sdf
+
         prim = self._get_input_value("prim")
         parent = self.get_property("new_parent") or "/"
         if not prim:
@@ -1856,6 +1991,7 @@ class ReparentPrimNode(UsdNodeBase):
 
 class DuplicatePrimNode(UsdNodeBase):
     """Duplicate a prim to a new path."""
+
     NODE_NAME = "Duplicate Prim"
     CATEGORY = "Hierarchy"
 
@@ -1867,13 +2003,17 @@ class DuplicatePrimNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import Sdf
+
         prim = self._get_input_value("prim")
         dest = self.get_property("dest_path")
         if not prim or not dest:
             return {"prim": None}
-        Sdf.CopySpec(stage.GetEditTarget().GetLayer(),
-                      prim.GetPath(), stage.GetEditTarget().GetLayer(),
-                      Sdf.Path(dest))
+        Sdf.CopySpec(
+            stage.GetEditTarget().GetLayer(),
+            prim.GetPath(),
+            stage.GetEditTarget().GetLayer(),
+            Sdf.Path(dest),
+        )
         return {"prim": stage.GetPrimAtPath(dest)}
 
 
@@ -1882,6 +2022,7 @@ class DuplicatePrimNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class AddReferenceNode(UsdNodeBase):
     """Add a reference to a prim from a USD file."""
+
     NODE_NAME = "Add Reference"
     CATEGORY = "Composition"
 
@@ -1894,6 +2035,7 @@ class AddReferenceNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import Sdf
+
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
@@ -1906,6 +2048,7 @@ class AddReferenceNode(UsdNodeBase):
 
 class AddPayloadNode(UsdNodeBase):
     """Add a payload to a prim."""
+
     NODE_NAME = "Add Payload"
     CATEGORY = "Composition"
 
@@ -1918,6 +2061,7 @@ class AddPayloadNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import Sdf
+
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
@@ -1930,6 +2074,7 @@ class AddPayloadNode(UsdNodeBase):
 
 class GetLayerStackNode(UsdNodeBase):
     """List all layers in the stage's layer stack."""
+
     NODE_NAME = "Get Layer Stack"
     CATEGORY = "Composition"
 
@@ -1944,6 +2089,7 @@ class GetLayerStackNode(UsdNodeBase):
 
 class MergeLayersNode(UsdNodeBase):
     """Sublayers two Sdf.Layers into a new anonymous composite layer."""
+
     NODE_NAME = "Merge Layers"
     CATEGORY = "Composition"
 
@@ -1955,6 +2101,7 @@ class MergeLayersNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import Sdf
+
         layer_a = self._get_input_value("layer_a")
         layer_b = self._get_input_value("layer_b")
         if not layer_a and not layer_b:
@@ -1969,6 +2116,7 @@ class MergeLayersNode(UsdNodeBase):
 
 class ReferenceAtNode(UsdNodeBase):
     """References a layer onto a prim at a given path — reuse authored content at any scene location."""
+
     NODE_NAME = "Reference At"
     CATEGORY = "Composition"
 
@@ -1993,6 +2141,7 @@ class ReferenceAtNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class SetVisibilityNode(UsdNodeBase):
     """Set visibility on a prim (inherited/invisible)."""
+
     NODE_NAME = "Set Visibility"
     CATEGORY = "USD"
 
@@ -2004,6 +2153,7 @@ class SetVisibilityNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdGeom
+
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
@@ -2018,6 +2168,7 @@ class SetVisibilityNode(UsdNodeBase):
 
 class SetPurposeNode(UsdNodeBase):
     """Set purpose on a prim (default/render/proxy/guide)."""
+
     NODE_NAME = "Set Purpose"
     CATEGORY = "USD"
 
@@ -2029,10 +2180,13 @@ class SetPurposeNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdGeom
+
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
-        UsdGeom.Imageable(prim).GetPurposeAttr().Set(self.get_property("purpose") or "default")
+        UsdGeom.Imageable(prim).GetPurposeAttr().Set(
+            self.get_property("purpose") or "default"
+        )
         return {"prim": prim}
 
 
@@ -2041,6 +2195,7 @@ class SetPurposeNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class FindByTypeNode(UsdNodeBase):
     """Find all prims of a given type."""
+
     NODE_NAME = "Find by Type"
     CATEGORY = "USD"
 
@@ -2057,6 +2212,7 @@ class FindByTypeNode(UsdNodeBase):
 
 class FindByPatternNode(UsdNodeBase):
     """Find prims whose path contains a substring."""
+
     NODE_NAME = "Find by Pattern"
     CATEGORY = "USD"
 
@@ -2073,6 +2229,7 @@ class FindByPatternNode(UsdNodeBase):
 
 class IsVisibleNode(UsdNodeBase):
     """Check if a prim is visible."""
+
     NODE_NAME = "Is Visible"
     CATEGORY = "USD"
 
@@ -2084,6 +2241,7 @@ class IsVisibleNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdGeom
+
         prim = self._get_input_value("prim")
         if not prim:
             return {"visible": False, "prim": None}
@@ -2096,6 +2254,7 @@ class IsVisibleNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class SetKeyNode(UsdNodeBase):
     """Set an attribute value at a specific timecode."""
+
     NODE_NAME = "Set Key"
     CATEGORY = "Animation"
 
@@ -2109,6 +2268,7 @@ class SetKeyNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import Usd
+
         prim = self._get_input_value("prim")
         if not prim:
             return {"prim": None}
@@ -2126,6 +2286,7 @@ class SetKeyNode(UsdNodeBase):
 
 class GetTimeRangeNode(UsdNodeBase):
     """Get stage start/end frame."""
+
     NODE_NAME = "Get Time Range"
     CATEGORY = "Animation"
 
@@ -2143,6 +2304,7 @@ class GetTimeRangeNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class ListIndexNode(UsdNodeBase):
     """Get item at index from a list."""
+
     NODE_NAME = "List Index"
     CATEGORY = "Utility"
 
@@ -2160,6 +2322,7 @@ class ListIndexNode(UsdNodeBase):
 
 class ListLengthNode(UsdNodeBase):
     """Get length of a list."""
+
     NODE_NAME = "List Length"
     CATEGORY = "Utility"
 
@@ -2175,6 +2338,7 @@ class ListLengthNode(UsdNodeBase):
 
 class ForEachNode(UsdNodeBase):
     """Iterate a list — the execution engine re-runs downstream nodes per item."""
+
     NODE_NAME = "For Each"
     CATEGORY = "Utility"
 
@@ -2203,6 +2367,7 @@ class ForEachNode(UsdNodeBase):
 
 class MergeNode(UsdNodeBase):
     """Merge multiple prims into a list. Connect prim nodes to inputs."""
+
     NODE_NAME = "Merge"
     CATEGORY = "Utility"
 
@@ -2229,6 +2394,7 @@ class MergeNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class FloatNode(UsdNodeBase):
     """A simple float constant."""
+
     NODE_NAME = "Float"
     CATEGORY = "Input"
 
@@ -2246,6 +2412,7 @@ class FloatNode(UsdNodeBase):
 
 class BoolNode(UsdNodeBase):
     """A boolean toggle constant."""
+
     NODE_NAME = "Bool"
     CATEGORY = "Input"
 
@@ -2264,6 +2431,7 @@ class BoolNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class RenamePrimNode(UsdNodeBase):
     """Rename a prim (change its name, keep same parent)."""
+
     NODE_NAME = "Rename Prim"
     CATEGORY = "Hierarchy"
 
@@ -2275,6 +2443,7 @@ class RenamePrimNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import Sdf
+
         prim = self._get_input_value("prim")
         new_name = (self.get_property("new_name") or "").strip()
         if not prim or not new_name:
@@ -2292,6 +2461,7 @@ class RenamePrimNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class CompareNode(UsdNodeBase):
     """Compare two values. Outputs bool result."""
+
     NODE_NAME = "Compare"
     CATEGORY = "Utility"
 
@@ -2306,9 +2476,14 @@ class CompareNode(UsdNodeBase):
         a = self._get_input_value("a")
         b = self._get_input_value("b")
         op = (self.get_property("op") or "==").strip()
-        ops = {"==": lambda x, y: x == y, "!=": lambda x, y: x != y,
-               "<": lambda x, y: x < y, ">": lambda x, y: x > y,
-               "<=": lambda x, y: x <= y, ">=": lambda x, y: x >= y}
+        ops = {
+            "==": lambda x, y: x == y,
+            "!=": lambda x, y: x != y,
+            "<": lambda x, y: x < y,
+            ">": lambda x, y: x > y,
+            "<=": lambda x, y: x <= y,
+            ">=": lambda x, y: x >= y,
+        }
         try:
             return {"result": ops.get(op, ops["=="])(a, b)}
         except Exception:
@@ -2317,6 +2492,7 @@ class CompareNode(UsdNodeBase):
 
 class SwitchNode(UsdNodeBase):
     """Route one of two inputs based on a bool condition."""
+
     NODE_NAME = "Switch"
     CATEGORY = "Utility"
 
@@ -2339,6 +2515,7 @@ class SwitchNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class StageInfoNode(UsdNodeBase):
     """Output stage metadata: up axis, meters per unit, default prim."""
+
     NODE_NAME = "Stage Info"
     CATEGORY = "USD"
 
@@ -2350,15 +2527,19 @@ class StageInfoNode(UsdNodeBase):
 
     def execute(self, stage):
         from pxr import UsdGeom
+
         return {
             "up_axis": UsdGeom.GetStageUpAxis(stage),
             "meters_per_unit": UsdGeom.GetStageMetersPerUnit(stage),
-            "default_prim": stage.GetDefaultPrim().GetName() if stage.HasDefaultPrim() else "",
+            "default_prim": stage.GetDefaultPrim().GetName()
+            if stage.HasDefaultPrim()
+            else "",
         }
 
 
 class ExportUsdNode(UsdNodeBase):
     """Export the current stage (or edit target layer) to a USD file."""
+
     NODE_NAME = "Export USD"
     CATEGORY = "Utility"
 
@@ -2385,6 +2566,7 @@ class ExportUsdNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class SetTimeCodeNode(UsdNodeBase):
     """Set stage start and end time codes."""
+
     NODE_NAME = "Set Time Codes"
     CATEGORY = "Animation"
 
@@ -2407,12 +2589,14 @@ class SetTimeCodeNode(UsdNodeBase):
 class MathAddNode(UsdNodeBase):
     NODE_NAME = "Add"
     CATEGORY = "Math"
+
     def __init__(self):
         super().__init__()
         self.add_input("a", color=PORT_COLORS["float"])
         self.add_input("b", color=PORT_COLORS["float"])
         self.add_text_input("b_val", "B (if no input)", text="0")
         self.add_output("result", color=PORT_COLORS["float"])
+
     def execute(self, stage):
         a = self._get_input_value("a") or 0
         b = self._get_input_value("b")
@@ -2424,12 +2608,14 @@ class MathAddNode(UsdNodeBase):
 class MathSubtractNode(UsdNodeBase):
     NODE_NAME = "Subtract"
     CATEGORY = "Math"
+
     def __init__(self):
         super().__init__()
         self.add_input("a", color=PORT_COLORS["float"])
         self.add_input("b", color=PORT_COLORS["float"])
         self.add_text_input("b_val", "B (if no input)", text="0")
         self.add_output("result", color=PORT_COLORS["float"])
+
     def execute(self, stage):
         a = self._get_input_value("a") or 0
         b = self._get_input_value("b")
@@ -2441,12 +2627,14 @@ class MathSubtractNode(UsdNodeBase):
 class MathMultiplyNode(UsdNodeBase):
     NODE_NAME = "Multiply"
     CATEGORY = "Math"
+
     def __init__(self):
         super().__init__()
         self.add_input("a", color=PORT_COLORS["float"])
         self.add_input("b", color=PORT_COLORS["float"])
         self.add_text_input("b_val", "B (if no input)", text="1")
         self.add_output("result", color=PORT_COLORS["float"])
+
     def execute(self, stage):
         a = self._get_input_value("a") or 0
         b = self._get_input_value("b")
@@ -2458,12 +2646,14 @@ class MathMultiplyNode(UsdNodeBase):
 class MathDivideNode(UsdNodeBase):
     NODE_NAME = "Divide"
     CATEGORY = "Math"
+
     def __init__(self):
         super().__init__()
         self.add_input("a", color=PORT_COLORS["float"])
         self.add_input("b", color=PORT_COLORS["float"])
         self.add_text_input("b_val", "B (if no input)", text="1")
         self.add_output("result", color=PORT_COLORS["float"])
+
     def execute(self, stage):
         a = self._get_input_value("a") or 0
         b = self._get_input_value("b")
@@ -2475,12 +2665,14 @@ class MathDivideNode(UsdNodeBase):
 class MathClampNode(UsdNodeBase):
     NODE_NAME = "Clamp"
     CATEGORY = "Math"
+
     def __init__(self):
         super().__init__()
         self.add_input("value", color=PORT_COLORS["float"])
         self.add_text_input("min_val", "Min", text="0")
         self.add_text_input("max_val", "Max", text="1")
         self.add_output("result", color=PORT_COLORS["float"])
+
     def execute(self, stage):
         v = float(self._get_input_value("value") or 0)
         mn = float(self.get_property("min_val") or 0)
@@ -2491,6 +2683,7 @@ class MathClampNode(UsdNodeBase):
 class MathRemapNode(UsdNodeBase):
     NODE_NAME = "Remap"
     CATEGORY = "Math"
+
     def __init__(self):
         super().__init__()
         self.add_input("value", color=PORT_COLORS["float"])
@@ -2499,6 +2692,7 @@ class MathRemapNode(UsdNodeBase):
         self.add_text_input("out_min", "Out Min", text="0")
         self.add_text_input("out_max", "Out Max", text="100")
         self.add_output("result", color=PORT_COLORS["float"])
+
     def execute(self, stage):
         v = float(self._get_input_value("value") or 0)
         i0 = float(self.get_property("in_min") or 0)
@@ -2516,8 +2710,10 @@ class MathRemapNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class StringFormatNode(UsdNodeBase):
     """Format string with {0}, {1}, {2} placeholders from inputs."""
+
     NODE_NAME = "String Format"
     CATEGORY = "Utility"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("template", "Template", text="{0}")
@@ -2525,6 +2721,7 @@ class StringFormatNode(UsdNodeBase):
         self.add_input("in_1", color=PORT_COLORS["any"])
         self.add_input("in_2", color=PORT_COLORS["any"])
         self.add_output("string", color=PORT_COLORS["string"])
+
     def execute(self, stage):
         t = self.get_property("template") or "{0}"
         args = [self._get_input_value(f"in_{i}") or "" for i in range(3)]
@@ -2537,11 +2734,13 @@ class StringFormatNode(UsdNodeBase):
 class StringSplitNode(UsdNodeBase):
     NODE_NAME = "String Split"
     CATEGORY = "Utility"
+
     def __init__(self):
         super().__init__()
         self.add_input("string", color=PORT_COLORS["string"])
         self.add_text_input("delimiter", "Delimiter", text="/")
         self.add_output("parts", color=PORT_COLORS["list"])
+
     def execute(self, stage):
         s = str(self._get_input_value("string") or "")
         d = self.get_property("delimiter") or "/"
@@ -2551,11 +2750,13 @@ class StringSplitNode(UsdNodeBase):
 class StringJoinNode(UsdNodeBase):
     NODE_NAME = "String Join"
     CATEGORY = "Utility"
+
     def __init__(self):
         super().__init__()
         self.add_input("list", color=PORT_COLORS["list"])
         self.add_text_input("delimiter", "Delimiter", text=", ")
         self.add_output("string", color=PORT_COLORS["string"])
+
     def execute(self, stage):
         lst = self._get_input_value("list") or []
         d = self.get_property("delimiter") or ", "
@@ -2565,12 +2766,14 @@ class StringJoinNode(UsdNodeBase):
 class StringReplaceNode(UsdNodeBase):
     NODE_NAME = "String Replace"
     CATEGORY = "Utility"
+
     def __init__(self):
         super().__init__()
         self.add_input("string", color=PORT_COLORS["string"])
         self.add_text_input("find", "Find", text="")
         self.add_text_input("replace", "Replace", text="")
         self.add_output("string", color=PORT_COLORS["string"])
+
     def execute(self, stage):
         s = str(self._get_input_value("string") or "")
         f = self.get_property("find") or ""
@@ -2584,42 +2787,56 @@ class StringReplaceNode(UsdNodeBase):
 class BoolAndNode(UsdNodeBase):
     NODE_NAME = "And"
     CATEGORY = "Utility"
+
     def __init__(self):
         super().__init__()
         self.add_input("a", color=PORT_COLORS["bool"])
         self.add_input("b", color=PORT_COLORS["bool"])
         self.add_output("result", color=PORT_COLORS["bool"])
+
     def execute(self, stage):
-        return {"result": bool(self._get_input_value("a")) and bool(self._get_input_value("b"))}
+        return {
+            "result": bool(self._get_input_value("a"))
+            and bool(self._get_input_value("b"))
+        }
 
 
 class BoolOrNode(UsdNodeBase):
     NODE_NAME = "Or"
     CATEGORY = "Utility"
+
     def __init__(self):
         super().__init__()
         self.add_input("a", color=PORT_COLORS["bool"])
         self.add_input("b", color=PORT_COLORS["bool"])
         self.add_output("result", color=PORT_COLORS["bool"])
+
     def execute(self, stage):
-        return {"result": bool(self._get_input_value("a")) or bool(self._get_input_value("b"))}
+        return {
+            "result": bool(self._get_input_value("a"))
+            or bool(self._get_input_value("b"))
+        }
 
 
 class BoolNotNode(UsdNodeBase):
     NODE_NAME = "Not"
     CATEGORY = "Utility"
+
     def __init__(self):
         super().__init__()
         self.add_input("value", color=PORT_COLORS["bool"])
         self.add_output("result", color=PORT_COLORS["bool"])
+
     def execute(self, stage):
         return {"result": not bool(self._get_input_value("value"))}
 
 
 class CoalesceNode(UsdNodeBase):
     """Returns the first non-null / valid input. For prims, checks IsValid()."""
+
     NODE_NAME = "Coalesce"
     CATEGORY = "Utility"
+
     def __init__(self):
         super().__init__()
         self.add_input("a", color=PORT_COLORS["prim"])
@@ -2627,6 +2844,7 @@ class CoalesceNode(UsdNodeBase):
         self.add_input("c", color=PORT_COLORS["prim"])
         self.add_output("prim", color=PORT_COLORS["prim"])
         self.add_output("index", color=PORT_COLORS["float"])
+
     def execute(self, stage):
         for i, name in enumerate(["a", "b", "c"]):
             v = self._get_input_value(name)
@@ -2640,13 +2858,16 @@ class CoalesceNode(UsdNodeBase):
 
 class IsPrimValidNode(UsdNodeBase):
     """Check if a prim exists and is valid."""
+
     NODE_NAME = "Is Prim Valid"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("valid", color=PORT_COLORS["bool"])
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         valid = prim is not None and hasattr(prim, "IsValid") and prim.IsValid()
@@ -2658,14 +2879,17 @@ class IsPrimValidNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class HasVariantsNode(UsdNodeBase):
     """Check if prim has variant sets. Outputs prim on true or false branch."""
+
     NODE_NAME = "Has Variants"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
         self.add_output("names", color=PORT_COLORS["list"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         if prim is None or not hasattr(prim, "GetVariantSets"):
@@ -2678,14 +2902,17 @@ class HasVariantsNode(UsdNodeBase):
 
 class HasChildrenNode(UsdNodeBase):
     """Check if prim has children."""
+
     NODE_NAME = "Has Children"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
         self.add_output("count", color=PORT_COLORS["float"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         if prim is None:
@@ -2698,16 +2925,20 @@ class HasChildrenNode(UsdNodeBase):
 
 class HasMaterialNode(UsdNodeBase):
     """Check if prim has a material binding."""
+
     NODE_NAME = "Has Material"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
         self.add_output("material", color=PORT_COLORS["material"])
+
     def execute(self, stage):
         from pxr import UsdShade
+
         prim = self._get_input_value("prim")
         if prim is None:
             return {"true": None, "false": None, "material": None}
@@ -2715,14 +2946,20 @@ class HasMaterialNode(UsdNodeBase):
         mat_path = binding.GetMaterialPath() if binding else None
         if mat_path and str(mat_path) != "":
             mat_prim = stage.GetPrimAtPath(mat_path)
-            return {"true": prim, "false": None, "material": mat_prim if mat_prim.IsValid() else None}
+            return {
+                "true": prim,
+                "false": None,
+                "material": mat_prim if mat_prim.IsValid() else None,
+            }
         return {"true": None, "false": prim, "material": None}
 
 
 class HasAttributeNode(UsdNodeBase):
     """Check if prim has a specific attribute."""
+
     NODE_NAME = "Has Attribute"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
@@ -2730,6 +2967,7 @@ class HasAttributeNode(UsdNodeBase):
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
         self.add_output("value", color=PORT_COLORS["any"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         attr_name = (self.get_property("attr_name") or "").strip()
@@ -2743,21 +2981,27 @@ class HasAttributeNode(UsdNodeBase):
 
 class HasReferenceNode(UsdNodeBase):
     """Check if prim has references or payloads."""
+
     NODE_NAME = "Has Reference"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("true", color=PORT_COLORS["prim"])
         self.add_output("false", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         if prim is None:
             return {"true": None, "false": None}
         has = bool(prim.GetPrimStack()) and any(
-            s.referenceList.prependedItems or s.referenceList.appendedItems
-            or s.payloadList.prependedItems or s.payloadList.appendedItems
-            for s in prim.GetPrimStack())
+            s.referenceList.prependedItems
+            or s.referenceList.appendedItems
+            or s.payloadList.prependedItems
+            or s.payloadList.appendedItems
+            for s in prim.GetPrimStack()
+        )
         return {"true": prim if has else None, "false": None if has else prim}
 
 
@@ -2766,8 +3010,10 @@ class HasReferenceNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class GetRelationshipsNode(UsdNodeBase):
     """List relationships and their targets on a prim."""
+
     NODE_NAME = "Get Relationships"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
@@ -2775,6 +3021,7 @@ class GetRelationshipsNode(UsdNodeBase):
         self.add_output("targets", color=PORT_COLORS["list"])
         self.add_output("names", color=PORT_COLORS["list"])
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         if not prim:
@@ -2803,14 +3050,17 @@ class GetRelationshipsNode(UsdNodeBase):
 
 class GetMetadataNode(UsdNodeBase):
     """Get metadata from a prim. Leave Key empty to get ALL metadata as a dict."""
+
     NODE_NAME = "Get Metadata"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("key", "Key (empty=all)", text="")
         self.add_output("value", color=PORT_COLORS["any"])
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         if not prim:
@@ -2832,8 +3082,10 @@ class GetMetadataNode(UsdNodeBase):
 
 class SetMetadataNode(UsdNodeBase):
     """Set metadata on a prim."""
+
     NODE_NAME = "Set Metadata"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
@@ -2841,6 +3093,7 @@ class SetMetadataNode(UsdNodeBase):
         self.add_text_input("key", "Key", text="")
         self.add_text_input("manual_value", "Value (if no input)", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         key = (self.get_property("key") or "").strip()
@@ -2862,13 +3115,16 @@ class SetMetadataNode(UsdNodeBase):
 
 class GetPrimLayerStackNode(UsdNodeBase):
     """Get which layers have opinions about a specific prim."""
+
     NODE_NAME = "Get Prim Layers"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("layers", color=PORT_COLORS["list"])
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         if not prim:
@@ -2880,8 +3136,10 @@ class GetPrimLayerStackNode(UsdNodeBase):
 
 class ListPrimsNode(UsdNodeBase):
     """Traverse stage with combined filters: type, purpose, visibility, name pattern."""
+
     NODE_NAME = "List Prims"
     CATEGORY = "USD"
+
     def __init__(self):
         super().__init__()
         self.add_input("root", color=PORT_COLORS["prim"])
@@ -2890,8 +3148,10 @@ class ListPrimsNode(UsdNodeBase):
         self.add_text_input("purpose_filter", "Purpose (empty=any)", text="")
         self.add_output("prims", color=PORT_COLORS["list"])
         self.add_output("count", color=PORT_COLORS["float"])
+
     def execute(self, stage):
         from pxr import UsdGeom
+
         root = self._get_input_value("root")
         type_f = (self.get_property("type_filter") or "").strip()
         name_f = (self.get_property("name_pattern") or "").strip().lower()
@@ -2900,6 +3160,7 @@ class ListPrimsNode(UsdNodeBase):
         if root:
             # Recursive traversal from root
             from pxr import Usd
+
             it = Usd.PrimRange(root)
         result = []
         for p in it:
@@ -2920,6 +3181,7 @@ class ListPrimsNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class CounterNode(UsdNodeBase):
     """Increments each time the graph executes. Reset via the text field."""
+
     NODE_NAME = "Counter"
     CATEGORY = "Utility"
     _counters = {}  # node_id -> count
@@ -2945,13 +3207,16 @@ class CounterNode(UsdNodeBase):
 class CreateCubeNode(UsdNodeBase):
     NODE_NAME = "Create Cube"
     CATEGORY = "Create"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/Cube")
         self.add_text_input("size", "Size", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdGeom
+
         p = self.get_property("path") or "/Cube"
         prim = UsdGeom.Cube.Define(stage, p)
         prim.GetSizeAttr().Set(float(self.get_property("size") or 1))
@@ -2961,13 +3226,16 @@ class CreateCubeNode(UsdNodeBase):
 class CreateSphereNode(UsdNodeBase):
     NODE_NAME = "Create Sphere"
     CATEGORY = "Create"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/Sphere")
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdGeom
+
         p = self.get_property("path") or "/Sphere"
         prim = UsdGeom.Sphere.Define(stage, p)
         prim.GetRadiusAttr().Set(float(self.get_property("radius") or 1))
@@ -2977,14 +3245,17 @@ class CreateSphereNode(UsdNodeBase):
 class CreateCylinderNode(UsdNodeBase):
     NODE_NAME = "Create Cylinder"
     CATEGORY = "Create"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/Cylinder")
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_text_input("h", "Height", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdGeom
+
         p = self.get_property("path") or "/Cylinder"
         prim = UsdGeom.Cylinder.Define(stage, p)
         prim.GetRadiusAttr().Set(float(self.get_property("radius") or 1))
@@ -2995,14 +3266,17 @@ class CreateCylinderNode(UsdNodeBase):
 class CreateConeNode(UsdNodeBase):
     NODE_NAME = "Create Cone"
     CATEGORY = "Create"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/Cone")
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_text_input("h", "Height", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdGeom
+
         p = self.get_property("path") or "/Cone"
         prim = UsdGeom.Cone.Define(stage, p)
         prim.GetRadiusAttr().Set(float(self.get_property("radius") or 1))
@@ -3013,14 +3287,17 @@ class CreateConeNode(UsdNodeBase):
 class CreateCapsuleNode(UsdNodeBase):
     NODE_NAME = "Create Capsule"
     CATEGORY = "Create"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/Capsule")
         self.add_text_input("radius", "Radius", text="0.5")
         self.add_text_input("h", "Height", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdGeom
+
         p = self.get_property("path") or "/Capsule"
         prim = UsdGeom.Capsule.Define(stage, p)
         prim.GetRadiusAttr().Set(float(self.get_property("radius") or 0.5))
@@ -3031,21 +3308,31 @@ class CreateCapsuleNode(UsdNodeBase):
 class CreatePlaneNode(UsdNodeBase):
     NODE_NAME = "Create Plane"
     CATEGORY = "Create"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/Plane")
         self.add_text_input("w", "Width", text="10")
         self.add_text_input("length", "Length", text="10")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdGeom, Vt, Gf
+
         p = self.get_property("path") or "/Plane"
         w = float(self.get_property("w") or 10) / 2
         length = float(self.get_property("length") or 10) / 2
         mesh = UsdGeom.Mesh.Define(stage, p)
-        mesh.GetPointsAttr().Set(Vt.Vec3fArray([
-            Gf.Vec3f(-w, -length, 0), Gf.Vec3f(w, -length, 0),
-            Gf.Vec3f(w, length, 0), Gf.Vec3f(-w, length, 0)]))
+        mesh.GetPointsAttr().Set(
+            Vt.Vec3fArray(
+                [
+                    Gf.Vec3f(-w, -length, 0),
+                    Gf.Vec3f(w, -length, 0),
+                    Gf.Vec3f(w, length, 0),
+                    Gf.Vec3f(-w, length, 0),
+                ]
+            )
+        )
         mesh.GetFaceVertexCountsAttr().Set([4])
         mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
         mesh.GetNormalsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(0, 0, 1)] * 4))
@@ -3055,12 +3342,15 @@ class CreatePlaneNode(UsdNodeBase):
 class CreateXformNode(UsdNodeBase):
     NODE_NAME = "Create Xform"
     CATEGORY = "Create"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/Group")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdGeom
+
         p = self.get_property("path") or "/Group"
         prim = UsdGeom.Xform.Define(stage, p)
         return {"prim": prim.GetPrim()}
@@ -3071,8 +3361,10 @@ class CreateXformNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class PointInstancerNode(UsdNodeBase):
     """Create a PointInstancer that scatters prototypes at given positions."""
+
     NODE_NAME = "Point Instancer"
     CATEGORY = "Create"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Instancer Path", text="/Instancer")
@@ -3081,8 +3373,10 @@ class PointInstancerNode(UsdNodeBase):
         self.add_text_input("grid", "Grid NxN (if no positions)", text="")
         self.add_text_input("spacing", "Grid Spacing", text="2.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdGeom, Vt, Gf, Sdf
+
         inst_path = self.get_property("path") or "/Instancer"
         proto_prim = self._get_input_value("prototype")
         positions = self._get_input_value("positions")
@@ -3117,8 +3411,12 @@ class PointInstancerNode(UsdNodeBase):
                         positions.append((x * sp - off, y * sp - off, 0))
 
         if positions:
-            pts = Vt.Vec3fArray([Gf.Vec3f(*p) if isinstance(p, (list, tuple))
-                                 else Gf.Vec3f(p, 0, 0) for p in positions])
+            pts = Vt.Vec3fArray(
+                [
+                    Gf.Vec3f(*p) if isinstance(p, (list, tuple)) else Gf.Vec3f(p, 0, 0)
+                    for p in positions
+                ]
+            )
             instancer.GetPositionsAttr().Set(pts)
             instancer.GetProtoIndicesAttr().Set(Vt.IntArray([0] * len(pts)))
         return {"prim": instancer.GetPrim()}
@@ -3126,13 +3424,16 @@ class PointInstancerNode(UsdNodeBase):
 
 class MakeInstanceableNode(UsdNodeBase):
     """Mark a prim as instanceable (native instancing)."""
+
     NODE_NAME = "Make Instanceable"
     CATEGORY = "Create"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("instanceable", "Instanceable (true/false)", text="true")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         if prim:
@@ -3147,6 +3448,7 @@ class MakeInstanceableNode(UsdNodeBase):
 class CreateRectLightNode(UsdNodeBase):
     NODE_NAME = "Create Rect Light"
     CATEGORY = "Lighting"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/RectLight")
@@ -3157,8 +3459,10 @@ class CreateRectLightNode(UsdNodeBase):
         self.add_text_input("color_g", "Color G", text="1.0")
         self.add_text_input("color_b", "Color B", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdLux, Gf
+
         p = self.get_property("path") or "/RectLight"
         light = UsdLux.RectLight.Define(stage, p)
         light.GetWidthAttr().Set(float(self.get_property("w") or 2))
@@ -3174,6 +3478,7 @@ class CreateRectLightNode(UsdNodeBase):
 class CreateSphereLightNode(UsdNodeBase):
     NODE_NAME = "Create Sphere Light"
     CATEGORY = "Lighting"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/SphereLight")
@@ -3183,8 +3488,10 @@ class CreateSphereLightNode(UsdNodeBase):
         self.add_text_input("color_g", "Color G", text="1.0")
         self.add_text_input("color_b", "Color B", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdLux, Gf
+
         p = self.get_property("path") or "/SphereLight"
         light = UsdLux.SphereLight.Define(stage, p)
         light.GetRadiusAttr().Set(float(self.get_property("radius") or 0.5))
@@ -3199,6 +3506,7 @@ class CreateSphereLightNode(UsdNodeBase):
 class CreateDistantLightNode(UsdNodeBase):
     NODE_NAME = "Create Distant Light"
     CATEGORY = "Lighting"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/DistantLight")
@@ -3208,8 +3516,10 @@ class CreateDistantLightNode(UsdNodeBase):
         self.add_text_input("color_g", "Color G", text="1.0")
         self.add_text_input("color_b", "Color B", text="1.0")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdLux, Gf
+
         p = self.get_property("path") or "/DistantLight"
         light = UsdLux.DistantLight.Define(stage, p)
         light.GetIntensityAttr().Set(float(self.get_property("intensity") or 500))
@@ -3224,14 +3534,17 @@ class CreateDistantLightNode(UsdNodeBase):
 class CreateDomeLightNode(UsdNodeBase):
     NODE_NAME = "Create Dome Light"
     CATEGORY = "Lighting"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/DomeLight")
         self.add_text_input("intensity", "Intensity", text="1.0")
         self.add_text_input("texture", "Texture File (HDRI)", text="")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdLux, Sdf
+
         p = self.get_property("path") or "/DomeLight"
         light = UsdLux.DomeLight.Define(stage, p)
         light.GetIntensityAttr().Set(float(self.get_property("intensity") or 1))
@@ -3244,14 +3557,17 @@ class CreateDomeLightNode(UsdNodeBase):
 class CreateDiskLightNode(UsdNodeBase):
     NODE_NAME = "Create Disk Light"
     CATEGORY = "Lighting"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/DiskLight")
         self.add_text_input("radius", "Radius", text="1.0")
         self.add_text_input("intensity", "Intensity", text="500")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdLux
+
         p = self.get_property("path") or "/DiskLight"
         light = UsdLux.DiskLight.Define(stage, p)
         light.GetRadiusAttr().Set(float(self.get_property("radius") or 1))
@@ -3265,6 +3581,7 @@ class CreateDiskLightNode(UsdNodeBase):
 class CreateCameraNode(UsdNodeBase):
     NODE_NAME = "Create Camera"
     CATEGORY = "Camera"
+
     def __init__(self):
         super().__init__()
         self.add_text_input("path", "Path", text="/Camera")
@@ -3273,26 +3590,36 @@ class CreateCameraNode(UsdNodeBase):
         self.add_text_input("near_clip", "Near Clip", text="0.1")
         self.add_text_input("far_clip", "Far Clip", text="10000")
         self.add_output("prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage):
         from pxr import UsdGeom
+
         p = self.get_property("path") or "/Camera"
         cam = UsdGeom.Camera.Define(stage, p)
         cam.GetFocalLengthAttr().Set(float(self.get_property("focal_length") or 50))
-        cam.GetHorizontalApertureAttr().Set(float(self.get_property("h_aperture") or 36))
-        cam.GetClippingRangeAttr().Set((
-            float(self.get_property("near_clip") or 0.1),
-            float(self.get_property("far_clip") or 10000)))
+        cam.GetHorizontalApertureAttr().Set(
+            float(self.get_property("h_aperture") or 36)
+        )
+        cam.GetClippingRangeAttr().Set(
+            (
+                float(self.get_property("near_clip") or 0.1),
+                float(self.get_property("far_clip") or 10000),
+            )
+        )
         return {"prim": cam.GetPrim()}
 
 
 class SetActiveCameraNode(UsdNodeBase):
     """Set the active camera in usdview viewport."""
+
     NODE_NAME = "Set Active Camera"
     CATEGORY = "Camera"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("camera_path", "Camera Path (if no input)", text="")
+
     def execute(self, stage):
         prim = self._get_input_value("prim")
         if not prim:
@@ -3302,6 +3629,7 @@ class SetActiveCameraNode(UsdNodeBase):
         if prim and prim.IsValid():
             try:
                 from usd_chunks import chunk_registry
+
                 scene = chunk_registry.ChunkRegistry().scene
                 ctrl = scene.usdviewAPI._UsdviewApi__appController
                 ctrl._dataModel.viewSettings.cameraPrim = prim
@@ -3315,8 +3643,10 @@ class SetActiveCameraNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class GetPrimMaterialNode(UsdNodeBase):
     """Get the material bound to a prim, its surface shader, and all texture file paths."""
+
     NODE_NAME = "Get Prim Material"
     CATEGORY = "Material"
+
     def __init__(self):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
@@ -3324,8 +3654,10 @@ class GetPrimMaterialNode(UsdNodeBase):
         self.add_output("shader", color=PORT_COLORS["prim"])
         self.add_output("textures", color=PORT_COLORS["list"])
         self.add_output("mat_path", color=PORT_COLORS["string"])
+
     def execute(self, stage):
         from pxr import UsdShade
+
         prim = self._get_input_value("prim")
         if prim is None:
             return {"material": None, "shader": None, "textures": [], "mat_path": ""}
@@ -3352,7 +3684,7 @@ class GetPrimMaterialNode(UsdNodeBase):
             if file_inp:
                 val = file_inp.Get()
                 if val:
-                    path = val.path if hasattr(val, 'path') else str(val)
+                    path = val.path if hasattr(val, "path") else str(val)
                     if path:
                         textures.append({"shader": str(child.GetPath()), "file": path})
         return {
@@ -3368,9 +3700,12 @@ class GetPrimMaterialNode(UsdNodeBase):
 # ────────────────────────────────────────────
 class _TriggerNodeBase(UsdNodeBase):
     """Base for event-driven trigger nodes. Subclasses set the event type."""
+
     CATEGORY = "Event"
     _active_triggers = {}  # node_id -> (cleanup_fn, refs_to_keep_alive)
-    _min_interval_ms = 0  # 0 = no rate limit; subclasses override for high-frequency events
+    _min_interval_ms = (
+        0  # 0 = no rate limit; subclasses override for high-frequency events
+    )
 
     def __init__(self):
         super().__init__()
@@ -3395,7 +3730,11 @@ class _TriggerNodeBase(UsdNodeBase):
             if result:
                 # Store as (cleanup_fn, [refs_to_keep_alive])
                 _TriggerNodeBase._active_triggers[nid] = result
-        return {"trigger": TRIGGER, "prim": None, "event": "armed" if enabled else "disabled"}
+        return {
+            "trigger": TRIGGER,
+            "prim": None,
+            "event": "armed" if enabled else "disabled",
+        }
 
     def _subscribe(self, stage):
         """Override: subscribe to event, return cleanup function."""
@@ -3405,8 +3744,9 @@ class _TriggerNodeBase(UsdNodeBase):
         """Called when event fires — schedules downstream execution via executor."""
         if self._min_interval_ms > 0:
             from PySide6 import QtCore
+
             now = QtCore.QDateTime.currentMSecsSinceEpoch()
-            last = getattr(self, '_last_trigger_ms', 0)
+            last = getattr(self, "_last_trigger_ms", 0)
             if now - last < self._min_interval_ms:
                 return
             self._last_trigger_ms = now
@@ -3417,12 +3757,14 @@ class _TriggerNodeBase(UsdNodeBase):
 
     def _get_graph_widget(self):
         import sys
-        ref = sys.modules.get('_node_graph_ref')
-        return ref.widget if ref and hasattr(ref, 'widget') else None
+
+        ref = sys.modules.get("_node_graph_ref")
+        return ref.widget if ref and hasattr(ref, "widget") else None
 
 
 class OnSelectionChangedNode(_TriggerNodeBase):
     """Triggers when prim selection changes in usdview. Outputs the newly selected prim."""
+
     NODE_NAME = "On Selection Changed"
 
     def __init__(self):
@@ -3430,6 +3772,7 @@ class OnSelectionChangedNode(_TriggerNodeBase):
 
     def _subscribe(self, stage):
         from usd_chunks import chunk_registry
+
         try:
             scene = chunk_registry.ChunkRegistry().scene
             ctrl = scene.usdviewAPI._UsdviewApi__appController
@@ -3448,7 +3791,9 @@ class OnSelectionChangedNode(_TriggerNodeBase):
                     pass
 
             model.selection.signalPrimSelectionChanged.connect(_on_sel_changed)
-            return lambda: model.selection.signalPrimSelectionChanged.disconnect(_on_sel_changed)
+            return lambda: model.selection.signalPrimSelectionChanged.disconnect(
+                _on_sel_changed
+            )
         except Exception:
             return None
 
@@ -3457,6 +3802,7 @@ class OnSelectionChangedNode(_TriggerNodeBase):
         # On first execute, output current selection
         try:
             from usd_chunks import chunk_registry
+
             scene = chunk_registry.ChunkRegistry().scene
             prims = scene.get_selected_prims() if scene else []
             result["prim"] = prims[0] if prims else None
@@ -3467,6 +3813,7 @@ class OnSelectionChangedNode(_TriggerNodeBase):
 
 class OnFrameChangedNode(_TriggerNodeBase):
     """Triggers when the timeline frame changes."""
+
     NODE_NAME = "On Frame Changed"
     _min_interval_ms = 33  # ~30 fps cap — frame events fire on every scrub tick
 
@@ -3476,6 +3823,7 @@ class OnFrameChangedNode(_TriggerNodeBase):
 
     def _subscribe(self, stage):
         from usd_chunks import chunk_registry
+
         try:
             scene = chunk_registry.ChunkRegistry().scene
             ctrl = scene.usdviewAPI._UsdviewApi__appController
@@ -3485,7 +3833,10 @@ class OnFrameChangedNode(_TriggerNodeBase):
                 try:
                     frame = model.currentFrame.GetValue()
                     self._output_cache = {
-                        "trigger": TRIGGER, "prim": None, "event": "frame_changed", "frame": frame,
+                        "trigger": TRIGGER,
+                        "prim": None,
+                        "event": "frame_changed",
+                        "frame": frame,
                     }
                     QtCore.QTimer.singleShot(0, self._trigger_downstream)
                 except Exception:
@@ -3501,6 +3852,7 @@ class OnFrameChangedNode(_TriggerNodeBase):
         result["frame"] = 0
         try:
             from usd_chunks import chunk_registry
+
             scene = chunk_registry.ChunkRegistry().scene
             ctrl = scene.usdviewAPI._UsdviewApi__appController
             result["frame"] = ctrl._dataModel.currentFrame.GetValue()
@@ -3511,6 +3863,7 @@ class OnFrameChangedNode(_TriggerNodeBase):
 
 class OnTimerNode(_TriggerNodeBase):
     """Triggers on a repeating timer interval."""
+
     NODE_NAME = "On Timer"
 
     def __init__(self):
@@ -3527,7 +3880,10 @@ class OnTimerNode(_TriggerNodeBase):
         def _on_tick():
             self._tick_count += 1
             self._output_cache = {
-                "trigger": TRIGGER, "prim": None, "event": "timer", "tick": self._tick_count,
+                "trigger": TRIGGER,
+                "prim": None,
+                "event": "timer",
+                "tick": self._tick_count,
             }
             self._trigger_downstream()
 
@@ -3543,6 +3899,7 @@ class OnTimerNode(_TriggerNodeBase):
 
 class OnStageChangedNode(_TriggerNodeBase):
     """Triggers when the USD stage is edited (any prim/attribute change)."""
+
     NODE_NAME = "On Stage Changed"
 
     def __init__(self):
@@ -3552,11 +3909,17 @@ class OnStageChangedNode(_TriggerNodeBase):
         from pxr import Tf, Usd
 
         def _on_notice(notice, sender):
-            self._output_cache = {"trigger": TRIGGER, "prim": None, "event": "stage_changed"}
+            self._output_cache = {
+                "trigger": TRIGGER,
+                "prim": None,
+                "event": "stage_changed",
+            }
             QtCore.QTimer.singleShot(50, self._trigger_downstream)
 
         self._notice_cb = _on_notice  # prevent GC
-        self._notice_key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_notice, stage)
+        self._notice_key = Tf.Notice.Register(
+            Usd.Notice.ObjectsChanged, _on_notice, stage
+        )
         return lambda: self._notice_key.Revoke()
 
     def execute(self, stage):
@@ -3565,6 +3928,7 @@ class OnStageChangedNode(_TriggerNodeBase):
 
 class OnPrimChangedNode(_TriggerNodeBase):
     """Triggers when a specific prim is modified (any property/child change)."""
+
     NODE_NAME = "On Prim Changed"
 
     def __init__(self):
@@ -3573,6 +3937,7 @@ class OnPrimChangedNode(_TriggerNodeBase):
 
     def _subscribe(self, stage):
         from pxr import Tf, Usd
+
         watch_path = self.get_property("prim_path") or "/"
 
         def _on_notice(notice, sender):
@@ -3598,7 +3963,9 @@ class OnPrimChangedNode(_TriggerNodeBase):
                     return
 
         self._notice_cb = _on_notice
-        self._notice_key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_notice, stage)
+        self._notice_key = Tf.Notice.Register(
+            Usd.Notice.ObjectsChanged, _on_notice, stage
+        )
         return lambda: self._notice_key.Revoke()
 
     def execute(self, stage):
@@ -3611,6 +3978,7 @@ class OnPrimChangedNode(_TriggerNodeBase):
 
 class OnAttributeChangedNode(_TriggerNodeBase):
     """Triggers when a specific attribute value changes."""
+
     NODE_NAME = "On Attribute Changed"
 
     def __init__(self):
@@ -3621,6 +3989,7 @@ class OnAttributeChangedNode(_TriggerNodeBase):
 
     def _subscribe(self, stage):
         from pxr import Tf, Usd
+
         watch_path = self.get_property("prim_path") or "/"
         attr_name = (self.get_property("attr_name") or "").strip()
         if not attr_name:
@@ -3649,14 +4018,17 @@ class OnAttributeChangedNode(_TriggerNodeBase):
                         self._last_value = new_val
                         self._output_cache = {
                             "trigger": TRIGGER,
-                            "prim": prim, "event": f"{attr_name}_changed",
+                            "prim": prim,
+                            "event": f"{attr_name}_changed",
                             "value": new_val,
                         }
                         QtCore.QTimer.singleShot(50, self._trigger_downstream)
                     return
 
         self._notice_cb = _on_notice
-        self._notice_key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_notice, stage)
+        self._notice_key = Tf.Notice.Register(
+            Usd.Notice.ObjectsChanged, _on_notice, stage
+        )
         return lambda: self._notice_key.Revoke()
 
     def execute(self, stage):
@@ -3813,8 +4185,15 @@ for _n in ALL_NODES:
 # ────────────────────────────────────────────
 #  Auto-generate chunk nodes from loaded modules
 # ────────────────────────────────────────────
-_SKIP_MODULES = {"node_graph_chunk", "usd_mcp_server", "kiro_chunk_web", "kiro_chunk",
-                 "render_preview", "ai_chat.chunk"}
+_SKIP_MODULES = {
+    "node_graph_chunk",
+    "usd_mcp_server",
+    "kiro_chunk_web",
+    "kiro_chunk",
+    "render_preview",
+    "ai_chat.chunk",
+}
+
 
 def _make_chunk_node(module_name, chunk_name):
     """Dynamically create a node class that wraps a chunk module."""
@@ -3885,28 +4264,39 @@ def _make_chunk_node(module_name, chunk_name):
                             _F.STRING: PORT_COLORS["string"],
                             _F.BOOL: PORT_COLORS["bool"],
                         }
+
                         def _walk_params(params):
                             for p in params:
                                 if isinstance(p, chunk_core.ChunkGroupBase):
                                     _walk_params(p.get_params())
                                 elif isinstance(p, chunk_core.ChunkVectorBase):
                                     for sub in p:
-                                        self.add_text_input(sub.name, sub.name,
-                                                            text=str(sub.value if sub.value else 0))
+                                        self.add_text_input(
+                                            sub.name,
+                                            sub.name,
+                                            text=str(sub.value if sub.value else 0),
+                                        )
                                         ap = self.get_input(f"_{sub.name}")
                                         if ap:
                                             ap.color = PORT_COLORS["float"]
                                         out_name = f"_{sub.name}"
-                                        existing_out = {op.name() for op in self.output_ports()}
+                                        existing_out = {
+                                            op.name() for op in self.output_ports()
+                                        }
                                         if out_name not in existing_out:
-                                            self.add_output(out_name, color=PORT_COLORS["float"])
+                                            self.add_output(
+                                                out_name, color=PORT_COLORS["float"]
+                                            )
                                 elif isinstance(p, Button):
                                     pass
                                 elif isinstance(p, chunk_core.ChunkParamBase):
                                     self._add_chunk_port(p, _TYPE_COLORS)
-                                    if hasattr(p, 'has_flag') and p.has_flag(chunk_core.ChunkFlags.ParamFlags.PRIM_SELECTION):
+                                    if hasattr(p, "has_flag") and p.has_flag(
+                                        chunk_core.ChunkFlags.ParamFlags.PRIM_SELECTION
+                                    ):
                                         nonlocal _needs_prim
                                         _needs_prim = True
+
                         _walk_params(tmp.get_params())
             except Exception:
                 pass
@@ -3918,6 +4308,7 @@ def _make_chunk_node(module_name, chunk_name):
             # Start folded — defer hiding ports until node is in the graph
             self._folded = True
             self.view._folded_state = True
+
             def _fold_ports():
                 try:
                     for port in self.input_ports():
@@ -3929,20 +4320,34 @@ def _make_chunk_node(module_name, chunk_name):
                     self.view.draw_node()
                 except Exception:
                     pass
+
             QtCore.QTimer.singleShot(0, _fold_ports)
 
         def _add_chunk_port(self, p, type_colors):
             """Add a text input + colored auto-port (in+out) for a chunk param."""
-            if isinstance(p, (Button, chunk_core.ChunkGroupBase, chunk_core.ChunkVectorBase)):
+            if isinstance(
+                p, (Button, chunk_core.ChunkGroupBase, chunk_core.ChunkVectorBase)
+            ):
                 return
             # Skip names that clash with NodeGraphQt reserved properties
-            _RESERVED = {"width", "height", "name", "color", "icon", "id",
-                         "selected", "disabled", "visible", "pos"}
+            _RESERVED = {
+                "width",
+                "height",
+                "name",
+                "color",
+                "icon",
+                "id",
+                "selected",
+                "disabled",
+                "visible",
+                "pos",
+            }
             if p.name in _RESERVED:
                 return
             try:
-                self.add_text_input(p.name, p.name,
-                                    text=str(p.value) if p.value else "")
+                self.add_text_input(
+                    p.name, p.name, text=str(p.value) if p.value else ""
+                )
                 port_color = PORT_COLORS.get("any", (140, 150, 170))
                 pt = p.evaluate_type()
                 for base_type, color in type_colors.items():
@@ -3962,13 +4367,14 @@ def _make_chunk_node(module_name, chunk_name):
 
         def execute(self, stage):
             from .chunk_adapter import ChunkAdapter
+
             prim = self._get_input_value("prim")
 
             # Force-create a private chunk per node on first execute — otherwise every
             # node of this type would bind to the same single chunk (the first hit by
             # display name) and cross-node references would self-reference.
             my_chunk = self._ensure_chunk()
-            if not hasattr(self, '_cached_adapter') or not self._cached_adapter.chunk:
+            if not hasattr(self, "_cached_adapter") or not self._cached_adapter.chunk:
                 self._cached_adapter = ChunkAdapter(
                     self._chunk_display_name,
                     module_name=self._chunk_module,
@@ -4026,9 +4432,14 @@ def _make_chunk_node(module_name, chunk_name):
                                 # mirror it into the node property so the side panel shows "@...".
                                 existing_ref = getattr(p, "value_reference", None)
                                 prop_val = self.get_property(p.name)
-                                if isinstance(prop_val, str) and prop_val.startswith("@"):
+                                if isinstance(prop_val, str) and prop_val.startswith(
+                                    "@"
+                                ):
                                     adapter.set_param(p.name, prop_val)
-                                elif existing_ref and not (isinstance(prop_val, str) and prop_val.startswith("@")):
+                                elif existing_ref and not (
+                                    isinstance(prop_val, str)
+                                    and prop_val.startswith("@")
+                                ):
                                     try:
                                         self.set_property(p.name, existing_ref)
                                     except Exception:
@@ -4049,6 +4460,7 @@ def _make_chunk_node(module_name, chunk_name):
                 # trigger rebuild callbacks like cube_changed with the correctly pulled value.
                 try:
                     from usd_chunks import chunk_notice as _cn
+
                     _ic_notice = _cn.get_notice(_cn.ChunkNoticeAlias.INPUT_CHANGED)()
 
                     def _fire_ref_params(container):
@@ -4106,6 +4518,7 @@ def _make_chunk_node(module_name, chunk_name):
                     pass
                 # Fallback: scan params for prim paths
                 if out_prim is prim:
+
                     def _find_output_prim(params):
                         for p in params:
                             if isinstance(p, chunk_core.ChunkGroupBase):
@@ -4113,7 +4526,7 @@ def _make_chunk_node(module_name, chunk_name):
                                 if r:
                                     return r
                                 continue
-                            if not hasattr(p, 'value') or not p.value:
+                            if not hasattr(p, "value") or not p.value:
                                 continue
                             sval = str(p.value)
                             if sval.startswith("/") and not sval.startswith("//"):
@@ -4121,6 +4534,7 @@ def _make_chunk_node(module_name, chunk_name):
                                 if resolved and resolved.IsValid():
                                     return resolved
                         return None
+
                     found = _find_output_prim(adapter.chunk.get_params())
                     if found:
                         out_prim = found
@@ -4139,16 +4553,18 @@ def _make_chunk_node(module_name, chunk_name):
                 # Export all chunk param values so they can be wired to other nodes
                 # via auto-ports (e.g. Mesh A._dimx → Mesh B._dimx)
                 try:
+
                     def _export_params(params):
                         for p in params:
                             if isinstance(p, chunk_core.ChunkGroupBase):
                                 _export_params(p.get_params())
                             elif isinstance(p, chunk_core.ChunkVectorBase):
                                 for sub in p:
-                                    if hasattr(sub, 'value'):
+                                    if hasattr(sub, "value"):
                                         result[f"_{sub.name}"] = sub.value
-                            elif hasattr(p, 'name') and hasattr(p, 'value'):
+                            elif hasattr(p, "name") and hasattr(p, "value"):
                                 result[f"_{p.name}"] = p.value
+
                     _export_params(adapter.chunk.get_params())
                 except Exception:
                     pass
@@ -4175,7 +4591,9 @@ def discover_chunk_nodes():
             if not cm.module or not hasattr(cm.module, "main"):
                 continue
             # Skip if we already have a manual node for it
-            if any(cm.module_name in getattr(n, '_chunk_module', '') for n in ALL_NODES):
+            if any(
+                cm.module_name in getattr(n, "_chunk_module", "") for n in ALL_NODES
+            ):
                 continue
             # Get chunk name from module without calling main() (avoids side effects)
             try:
@@ -4184,12 +4602,12 @@ def discover_chunk_nodes():
                 chunk_name = None
                 if scene:
                     for ch in scene.get_chunks():
-                        if cm.module_name in str(getattr(ch, '_module_name', '')):
+                        if cm.module_name in str(getattr(ch, "_module_name", "")):
                             chunk_name = ch.name
                             break
                 if not chunk_name:
                     # Use module name as fallback display name
-                    chunk_name = cm.module_name.split('.')[-1].replace('_', ' ').title()
+                    chunk_name = cm.module_name.split(".")[-1].replace("_", " ").title()
                 node_cls = _make_chunk_node(cm.module_name, chunk_name)
                 discovered.append(node_cls)
             except Exception:

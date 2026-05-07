@@ -1,4 +1,5 @@
 """Material/shading nodes — display color, assign material, preview surface, textures, shaders."""
+
 from __future__ import annotations
 
 import os
@@ -12,10 +13,11 @@ from ._base import UsdNodeBase, PORT_COLORS
 
 class SetDisplayColorNode(UsdNodeBase):
     """Set displayColor on a mesh prim."""
+
     NODE_NAME = "Set Display Color"
     CATEGORY = "Material"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_text_input("color_r", "R", text="0.5")
@@ -42,15 +44,16 @@ class SetDisplayColorNode(UsdNodeBase):
         r = self.get_property("color_r") or "0.5"
         g = self.get_property("color_g") or "0.5"
         b = self.get_property("color_b") or "0.5"
-        return f'UsdGeom.Gprim({pv}).GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f({r}, {g}, {b})]))'
+        return f"UsdGeom.Gprim({pv}).GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f({r}, {g}, {b})]))"
 
 
 class AssignMaterialNode(UsdNodeBase):
     """Bind an existing material to a prim."""
+
     NODE_NAME = "Assign Material"
     CATEGORY = "Material"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_input("material", color=PORT_COLORS["material"])
@@ -74,10 +77,11 @@ class AssignMaterialNode(UsdNodeBase):
 
 class CreatePreviewSurfaceNode(UsdNodeBase):
     """Create a UsdPreviewSurface material."""
+
     NODE_NAME = "Create PreviewSurface"
     CATEGORY = "Material"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("mat_path", "Material Path", text="/Materials/MyMaterial")
         self.add_text_input("diffuse_r", "Diffuse R", text="0.8")
@@ -108,7 +112,9 @@ class CreatePreviewSurfaceNode(UsdNodeBase):
         if tex_path:
             tex_reader = UsdShade.Shader.Define(stage, f"{mat_path}/DiffuseTexture")
             tex_reader.CreateIdAttr("UsdUVTexture")
-            tex_reader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(tex_path))
+            tex_reader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(
+                Sdf.AssetPath(tex_path)
+            )
             tex_reader.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
             tex_reader.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
             tex_reader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
@@ -118,11 +124,15 @@ class CreatePreviewSurfaceNode(UsdNodeBase):
             uv_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
             uv_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
             tex_reader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
-                uv_reader.ConnectableAPI(), "result")
-            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
-                tex_reader.ConnectableAPI(), "rgb")
+                uv_reader.ConnectableAPI(), "result"
+            )
+            shader.CreateInput(
+                "diffuseColor", Sdf.ValueTypeNames.Color3f
+            ).ConnectToSource(tex_reader.ConnectableAPI(), "rgb")
         else:
-            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(r, g, b))
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+                Gf.Vec3f(r, g, b)
+            )
 
         mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
         return {"material": mat_prim, "shader": shader.GetPrim()}
@@ -130,12 +140,15 @@ class CreatePreviewSurfaceNode(UsdNodeBase):
 
 class _ThumbnailLabel(QtWidgets.QLabel):
     """QLabel with setTitleAlign for NodeGraphQt compat."""
-    def setTitleAlign(self, *a): pass
+
+    def setTitleAlign(self, *a):
+        pass
 
 
 class _ThumbnailWidget(NodeBaseWidget):
     """Embeds a resizable thumbnail image inside a node."""
-    def __init__(self, parent=None, name="thumbnail", label=""):
+
+    def __init__(self, parent=None, name="thumbnail", label="") -> None:
         super().__init__(parent, name, label)
         self._widget = _ThumbnailLabel()
         self._widget.setMinimumSize(180, 180)
@@ -145,10 +158,10 @@ class _ThumbnailWidget(NodeBaseWidget):
         self.setWidget(self._widget)
         self._path = ""
 
-    def get_value(self):
+    def get_value(self) -> object:
         return self._path
 
-    def set_value(self, path=""):
+    def set_value(self, path="") -> None:
         self._path = path
         if path:
             pixmap = QtGui.QPixmap(path)
@@ -161,11 +174,12 @@ class _ThumbnailWidget(NodeBaseWidget):
 
 class TextureFileNode(UsdNodeBase):
     """Load a texture file path. Shows preview on the node. Drag corner to resize."""
+
     NODE_NAME = "Texture File"
     CATEGORY = "Material"
     _thumb_size = 180
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("file_path", "File Path", text="")
         self._thumb = _ThumbnailWidget(self.view, name="thumb")
@@ -173,7 +187,7 @@ class TextureFileNode(UsdNodeBase):
         self.add_output("texture", color=PORT_COLORS["texture"])
         self.set_property("width", 220)
 
-    def _on_resize(self, width, height=None):
+    def _on_resize(self, width, height=None) -> None:
         self._thumb_size = max(80, width - 40)
         self._thumb._widget.setMinimumSize(self._thumb_size, self._thumb_size)
         self._thumb._widget.setMaximumSize(self._thumb_size, self._thumb_size)
@@ -194,9 +208,11 @@ class TextureFileNode(UsdNodeBase):
 
 class CreateUVTextureNode(UsdNodeBase):
     """Create a UsdUVTexture shader with tiling controls."""
+
     NODE_NAME = "Create UV Texture"
     CATEGORY = "Material"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("path", "Shader Path", text="/Materials/MyMaterial/Texture")
         self.add_input("file", color=PORT_COLORS["texture"])
@@ -211,17 +227,23 @@ class CreateUVTextureNode(UsdNodeBase):
         self.add_output("r", color=PORT_COLORS["float"])
         self.add_output("a", color=PORT_COLORS["float"])
         self.add_output("shader_prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Materials/MyMaterial/Texture"
-        fp = self._get_input_value("file") or (self.get_property("file_path") or "").strip()
+        fp = (
+            self._get_input_value("file")
+            or (self.get_property("file_path") or "").strip()
+        )
         shader = UsdShade.Shader.Define(stage, p)
         shader.CreateIdAttr("UsdUVTexture")
         if fp:
             shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(fp))
         shader.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set(
-            self.get_property("wrap_s") or "repeat")
+            self.get_property("wrap_s") or "repeat"
+        )
         shader.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set(
-            self.get_property("wrap_t") or "repeat")
+            self.get_property("wrap_t") or "repeat"
+        )
         # ST transform via UsdTransform2d
         ss = float(self.get_property("scale_s") or 1)
         st = float(self.get_property("scale_t") or 1)
@@ -238,50 +260,67 @@ class CreateUVTextureNode(UsdNodeBase):
             xform = UsdShade.Shader.Define(stage, f"{parent}/UVTransform")
             xform.CreateIdAttr("UsdTransform2d")
             xform.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(
-                uv_reader.ConnectableAPI(), "result")
+                uv_reader.ConnectableAPI(), "result"
+            )
             xform.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(ss, st))
-            xform.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(os_, ot))
+            xform.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set(
+                Gf.Vec2f(os_, ot)
+            )
             xform.CreateOutput("result", Sdf.ValueTypeNames.Float2)
             shader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
-                xform.ConnectableAPI(), "result")
+                xform.ConnectableAPI(), "result"
+            )
         shader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
         shader.CreateOutput("r", Sdf.ValueTypeNames.Float)
         shader.CreateOutput("a", Sdf.ValueTypeNames.Float)
-        return {"rgb": f"{p}.rgb", "r": f"{p}.r", "a": f"{p}.a",
-                "shader_prim": shader.GetPrim()}
+        return {
+            "rgb": f"{p}.rgb",
+            "r": f"{p}.r",
+            "a": f"{p}.a",
+            "shader_prim": shader.GetPrim(),
+        }
 
 
 class CreatePrimvarReaderNode(UsdNodeBase):
     """Create a UsdPrimvarReader_float2 for UV coordinates."""
+
     NODE_NAME = "Create Primvar Reader"
     CATEGORY = "Material"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
-        self.add_text_input("path", "Shader Path", text="/Materials/MyMaterial/UVReader")
+        self.add_text_input(
+            "path", "Shader Path", text="/Materials/MyMaterial/UVReader"
+        )
         self.add_text_input("varname", "Primvar Name", text="st")
         self.add_output("result", color=PORT_COLORS["any"])
         self.add_output("shader_prim", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         p = self.get_property("path") or "/Materials/MyMaterial/UVReader"
         shader = UsdShade.Shader.Define(stage, p)
         shader.CreateIdAttr("UsdPrimvarReader_float2")
         shader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set(
-            self.get_property("varname") or "st")
+            self.get_property("varname") or "st"
+        )
         shader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
         return {"result": f"{p}.result", "shader_prim": shader.GetPrim()}
 
 
 class GetMaterialShadersNode(UsdNodeBase):
     """Get the surface and displacement shaders from a material."""
+
     NODE_NAME = "Get Material Shaders"
     CATEGORY = "Material"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("material", color=PORT_COLORS["material"])
         self.add_text_input("material_path", "Material Path (if no input)", text="")
         self.add_output("surface", color=PORT_COLORS["prim"])
         self.add_output("displacement", color=PORT_COLORS["prim"])
         self.add_output("shader_list", color=PORT_COLORS["list"])
+
     def execute(self, stage) -> dict:
         mat_prim = self._get_input_value("material")
         if mat_prim is None:
@@ -303,22 +342,26 @@ class GetMaterialShadersNode(UsdNodeBase):
             if src and src[0]:
                 disp = src[0][0].source.GetPrim()
         # List all shader children
-        shaders = [c for c in mat_prim.GetChildren()
-                   if UsdShade.Shader(c).GetShaderId()]
+        shaders = [
+            c for c in mat_prim.GetChildren() if UsdShade.Shader(c).GetShaderId()
+        ]
         return {"surface": surf, "displacement": disp, "shader_list": shaders}
 
 
 class GetShaderInputNode(UsdNodeBase):
     """Read an input value from a shader (roughness, diffuseColor, file, etc.)."""
+
     NODE_NAME = "Get Shader Input"
     CATEGORY = "Material"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("shader", color=PORT_COLORS["prim"])
         self.add_text_input("input_name", "Input Name", text="diffuseColor")
         self.add_output("value", color=PORT_COLORS["any"])
         self.add_output("connected_source", color=PORT_COLORS["prim"])
         self.add_output("all_inputs", color=PORT_COLORS["list"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("shader")
         if prim is None:
@@ -343,15 +386,18 @@ class GetShaderInputNode(UsdNodeBase):
 
 class SetShaderInputNode(UsdNodeBase):
     """Set an input value on a shader."""
+
     NODE_NAME = "Set Shader Input"
     CATEGORY = "Material"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("shader", color=PORT_COLORS["prim"])
         self.add_input("value", color=PORT_COLORS["any"])
         self.add_text_input("input_name", "Input Name", text="roughness")
         self.add_text_input("manual_value", "Value (if no input)", text="")
         self.add_output("shader", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("shader")
         if prim is None:
@@ -375,15 +421,18 @@ class SetShaderInputNode(UsdNodeBase):
 
 class ConnectShaderNode(UsdNodeBase):
     """Connect a shader output to another shader's input."""
+
     NODE_NAME = "Connect Shaders"
     CATEGORY = "Material"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("source_shader", color=PORT_COLORS["prim"])
         self.add_text_input("source_output", "Source Output", text="rgb")
         self.add_input("dest_shader", color=PORT_COLORS["prim"])
         self.add_text_input("dest_input", "Dest Input", text="diffuseColor")
         self.add_output("dest_shader", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         src_prim = self._get_input_value("source_shader")
         dst_prim = self._get_input_value("dest_shader")
@@ -402,9 +451,11 @@ class ConnectShaderNode(UsdNodeBase):
 class SetUVTransformNode(UsdNodeBase):
     """Set UV tiling by inserting/updating a UsdTransform2d between UV reader and texture.
     Connect the texture shader prim — it will find the st source and insert a transform."""
+
     NODE_NAME = "Set UV Transform"
     CATEGORY = "Material"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("shader", color=PORT_COLORS["prim"])
         self.add_text_input("scale_s", "Scale S (tile U)", text="1.0")
@@ -413,6 +464,7 @@ class SetUVTransformNode(UsdNodeBase):
         self.add_text_input("offset_t", "Offset T", text="0.0")
         self.add_text_input("rotation", "Rotation (degrees)", text="0.0")
         self.add_output("shader", color=PORT_COLORS["prim"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("shader")
         if prim is None:
@@ -443,31 +495,37 @@ class SetUVTransformNode(UsdNodeBase):
         xform_shader = UsdShade.Shader.Define(stage, xform_path)
         xform_shader.CreateIdAttr("UsdTransform2d")
         xform_shader.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(
-            Gf.Vec2f(ss, st_val))
+            Gf.Vec2f(ss, st_val)
+        )
         xform_shader.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set(
-            Gf.Vec2f(os_, ot))
+            Gf.Vec2f(os_, ot)
+        )
         xform_shader.CreateInput("rotation", Sdf.ValueTypeNames.Float).Set(rot)
         xform_shader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
 
         # Wire: UV reader → Transform2d → Texture st
         if uv_source_shader:
             xform_shader.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(
-                uv_source_shader, uv_source_output)
+                uv_source_shader, uv_source_output
+            )
         st_inp.ConnectToSource(xform_shader.ConnectableAPI(), "result")
         return {"shader": prim}
 
 
 class GetPrimMaterialNode(UsdNodeBase):
     """Get the material bound to a prim, its surface shader, and all texture file paths."""
+
     NODE_NAME = "Get Prim Material"
     CATEGORY = "Material"
-    def __init__(self):
+
+    def __init__(self) -> None:
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_output("material", color=PORT_COLORS["material"])
         self.add_output("shader", color=PORT_COLORS["prim"])
         self.add_output("textures", color=PORT_COLORS["list"])
         self.add_output("mat_path", color=PORT_COLORS["string"])
+
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
         if prim is None:
@@ -495,7 +553,7 @@ class GetPrimMaterialNode(UsdNodeBase):
             if file_inp:
                 val = file_inp.Get()
                 if val:
-                    path = val.path if hasattr(val, 'path') else str(val)
+                    path = val.path if hasattr(val, "path") else str(val)
                     if path:
                         textures.append({"shader": str(child.GetPath()), "file": path})
         return {

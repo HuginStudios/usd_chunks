@@ -1,4 +1,5 @@
 """Input nodes — constant values and prim selection."""
+
 from __future__ import annotations
 
 import fnmatch
@@ -11,10 +12,11 @@ from ._base import _NodePreviewWidget
 
 class PrimPathNode(UsdNodeBase):
     """Resolves a prim path to a Usd.Prim. Supports glob patterns (* ?) to match multiple prims."""
+
     NODE_NAME = "Prim Path"
     CATEGORY = "Input"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("prim_path", "Prim Path", text="")
         self.view.setToolTip(
@@ -37,9 +39,12 @@ class PrimPathNode(UsdNodeBase):
             return {"prim": None, "prims": [], "count": 0}
         # Glob mode: */ChairB_* or /Kitchen_set/**/Mesh*
         if "*" in path or "?" in path:
-            matched = [p for p in stage.Traverse()
-                       if fnmatch.fnmatch(str(p.GetPath()), path)
-                       or fnmatch.fnmatch(p.GetName(), path.split("/")[-1])]
+            matched = [
+                p
+                for p in stage.Traverse()
+                if fnmatch.fnmatch(str(p.GetPath()), path)
+                or fnmatch.fnmatch(p.GetName(), path.split("/")[-1])
+            ]
             count = len(matched)
             name = path.split("/")[-1] or path
             self._preview.set_value(f"● {name}  ×{count}" if count else "✗  no match")
@@ -55,7 +60,11 @@ class PrimPathNode(UsdNodeBase):
             self._preview.set_value(f"● {name}")
         else:
             self._preview.set_value("✗  no prim")
-        return {"prim": prim if valid else None, "prims": [prim] if valid else [], "count": 1 if valid else 0}
+        return {
+            "prim": prim if valid else None,
+            "prims": [prim] if valid else [],
+            "count": 1 if valid else 0,
+        }
 
     def to_python(self, var_map: dict) -> str:
         path = self.get_property("prim_path") or "/"
@@ -65,16 +74,18 @@ class PrimPathNode(UsdNodeBase):
 
 class SelectedPrimNode(UsdNodeBase):
     """Outputs the currently selected prim(s) from usdview."""
+
     NODE_NAME = "Selected Prim"
     CATEGORY = "Input"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_output("prim", color=PORT_COLORS["prim"])
 
     def execute(self, stage) -> dict:
         try:
             from ..graph_host import GraphHost  # usdview-guarded
+
             prims = GraphHost.current().get_selection()
             return {"prim": prims[0] if prims else None}
         except Exception:
@@ -83,10 +94,11 @@ class SelectedPrimNode(UsdNodeBase):
 
 class StringNode(UsdNodeBase):
     """A simple string constant."""
+
     NODE_NAME = "String"
     CATEGORY = "Input"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("value", "Value", text="")
         self._preview = _NodePreviewWidget(self.view, name="preview")
@@ -101,10 +113,11 @@ class StringNode(UsdNodeBase):
 
 class FloatNode(UsdNodeBase):
     """A simple float constant."""
+
     NODE_NAME = "Float"
     CATEGORY = "Input"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("value", "Value", text="0.0")
         self.add_output("float", color=PORT_COLORS["float"])
@@ -118,10 +131,11 @@ class FloatNode(UsdNodeBase):
 
 class BoolNode(UsdNodeBase):
     """A boolean toggle constant."""
+
     NODE_NAME = "Bool"
     CATEGORY = "Input"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.add_text_input("value", "Value (true/false)", text="true")
         self.add_output("bool", color=PORT_COLORS["bool"])
