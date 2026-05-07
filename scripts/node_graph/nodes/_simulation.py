@@ -5,6 +5,8 @@ from __future__ import annotations
 import random
 
 import numpy as _np
+from NodeGraphQt.widgets.node_widgets import NodeBaseWidget
+from PySide6 import QtCore, QtWidgets
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 try:
@@ -497,6 +499,64 @@ class RBDSolverNode(UsdNodeBase):
         if len(parts) >= 3:
             return [float(parts[0]), float(parts[1]), float(parts[2])]
         return [0.0, 0.0, 0.0]
+
+
+class _PrimPathsWidget(NodeBaseWidget):
+    """Multi-line text area for prim paths — one per line."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent, name="prim_paths", label="")
+        self._editor = QtWidgets.QPlainTextEdit()
+        self._editor.setPlaceholderText("/World/Floor\n/World/WallA")
+        self._editor.setFixedHeight(80)
+        self._editor.setStyleSheet(
+            "background: #181828; color: #c0c8e8; font: 8pt Consolas; "
+            "border: 1px solid #3a3a5a; border-radius: 2px;"
+        )
+        self._editor.setTitleAlign = lambda *a: None
+        self._editor.textChanged.connect(self.on_value_changed)
+        self.setWidget(self._editor)
+
+    def get_value(self) -> str:
+        return self._editor.toPlainText()
+
+    def set_value(self, text: str) -> None:
+        self._editor.blockSignals(True)
+        self._editor.setPlainText(text or "")
+        self._editor.blockSignals(False)
+
+
+class CollisionSetNode(UsdNodeBase):
+    """Specifies multiple collision prims, outputting list[Usd.Prim] for RBDSolverNode."""
+
+    NODE_NAME = "Collision Set"
+    CATEGORY = "Simulation"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._paths_widget = _PrimPathsWidget(self.view)
+        self.add_custom_widget(self._paths_widget)
+        self.add_output("prims", color=PORT_COLORS["prim"])
+        QtCore.QTimer.singleShot(0, lambda: self._on_resize(260))
+
+    def append_prim_path(self, path: str) -> None:
+        """Append a prim path line (called by the graph drop handler)."""
+        current = (self.get_property("prim_paths") or "").strip()
+        self.set_property("prim_paths", (current + "\n" + path) if current else path)
+
+    def execute(self, stage) -> dict:
+        text = self.get_property("prim_paths") or ""
+        prims = []
+        for line in text.splitlines():
+            path = line.strip()
+            if not path:
+                continue
+            prim = stage.GetPrimAtPath(path)
+            if prim and prim.IsValid():
+                prims.append(prim)
+            else:
+                print(f"[CollisionSet] Invalid or non-existent path {path!r}, skipping")
+        return {"prims": prims}
 
 
 def _apply_forces(p, body: int, body_index: int, step: int, force_dicts: list) -> None:
