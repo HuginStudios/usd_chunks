@@ -314,6 +314,16 @@ class CacheNode(UsdNodeBase):
 
     When locked, the GraphExecutor skips all upstream nodes entirely; they never
     enter the execution order.  Unlock to update the cache from live inputs again.
+
+    The 'layer' port caches USD layer content (e.g. RBD animation baked to the
+    session layer).  When locked, the stored layer text is re-applied to the
+    session layer so downstream nodes and viewport see the correct USD state even
+    though the expensive upstream nodes were skipped.
+
+    Workflow for caching a heavy simulation:
+      1. Wire RBD.prim → Cache.prim and RBD.layer → Cache.layer
+      2. Run with locked=False  →  simulation bakes, cache fills
+      3. Toggle locked=True     →  upstream never runs again; cache replays
     """
 
     NODE_NAME = "Cache"
@@ -324,24 +334,45 @@ class CacheNode(UsdNodeBase):
         super().__init__()
         self.add_input("prim", color=PORT_COLORS["prim"])
         self.add_input("data", color=PORT_COLORS["any"])
+        self.add_input("layer", color=PORT_COLORS["layer"])
         self.add_output("prim", color=PORT_COLORS["prim"])
         self.add_output("data", color=PORT_COLORS["any"])
+        self.add_output("layer", color=PORT_COLORS["layer"])
         self.create_property("locked", False)
         self._cache: dict = {}
+        self._cached_layer_usda: str | None = None
 
     def execute(self, stage) -> dict:
         if self.get_property("locked"):
-            return {"prim": self._cache.get("prim"), "data": self._cache.get("data")}
+            # Re-apply stored layer content so USD state (e.g. animation) is intact
+            if self._cached_layer_usda:
+                try:
+                    stage.GetSessionLayer().ImportFromString(self._cached_layer_usda)
+                except Exception:
+                    pass
+            return {
+                "prim": self._cache.get("prim"),
+                "data": self._cache.get("data"),
+                "layer": self._cache.get("layer"),
+            }
         prim = self._get_input_value("prim")
         data = self._get_input_value("data")
+        layer = self._get_input_value("layer")
         if prim is not None:
             self._cache["prim"] = prim
         if data is not None:
             self._cache["data"] = data
-        return {"prim": prim, "data": data}
+        if layer is not None:
+            self._cache["layer"] = layer
+            try:
+                self._cached_layer_usda = layer.ExportToString()
+            except Exception:
+                self._cached_layer_usda = None
+        return {"prim": prim, "data": data, "layer": layer}
 
     def clear_cache(self) -> None:
         self._cache.clear()
+        self._cached_layer_usda = None
 
 
 class CoalesceNode(UsdNodeBase):

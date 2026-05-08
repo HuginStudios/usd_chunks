@@ -105,6 +105,70 @@ def test_clear_cache_wipes_stored_values(qapp, node_graph, stage):
 
     assert result["prim"] is None
     assert result["data"] is None
+    assert result["layer"] is None
+    assert node._cached_layer_usda is None
+
+
+# ── Behavior 6 (extended): layer port caches USD content ─────────────────────
+
+
+def test_unlocked_stores_layer_usda(qapp, node_graph, stage):
+    """Unlocked execute stores the layer's USD text for later replay."""
+    from pxr import Sdf
+    from node_graph.nodes._utility import CacheNode
+
+    ng, _ = node_graph
+    ng.register_node(CacheNode)
+    node = ng.create_node(CacheNode.type_)
+
+    # Build a small anonymous layer with some data
+    fake_layer = Sdf.Layer.CreateAnonymous()
+    Sdf.CreatePrimInLayer(fake_layer, Sdf.Path("/CachedPrim"))
+
+    node._get_input_value = lambda name: fake_layer if name == "layer" else None
+    node.execute(stage)
+
+    assert node._cached_layer_usda is not None
+    assert "CachedPrim" in node._cached_layer_usda
+
+
+def test_locked_restores_layer_to_session(qapp, node_graph, stage):
+    """Locked CacheNode replays stored layer content into the session layer."""
+    from pxr import Sdf, Usd
+    from node_graph.nodes._utility import CacheNode
+
+    ng, _ = node_graph
+    ng.register_node(CacheNode)
+    node = ng.create_node(CacheNode.type_)
+
+    # Build layer content that looks like a baked sim result
+    sim_layer = Sdf.Layer.CreateAnonymous()
+    prim_spec = Sdf.CreatePrimInLayer(sim_layer, Sdf.Path("/SimResult"))
+    attr = Sdf.AttributeSpec(prim_spec, "baked", Sdf.ValueTypeNames.Float)
+    attr.default = 42.0
+
+    prim = object()
+
+    def _fake_input(name):
+        if name == "prim":
+            return prim
+        if name == "layer":
+            return sim_layer
+        return None
+
+    node._get_input_value = _fake_input
+    node.execute(stage)  # fills cache
+
+    node.set_property("locked", True)
+    node._get_input_value = lambda name: None  # upstream gone
+
+    result = node.execute(stage)
+
+    # Prim reference restored from cache
+    assert result["prim"] is prim
+    # Session layer should now contain the replayed content
+    session_text = stage.GetSessionLayer().ExportToString()
+    assert "SimResult" in session_text or "baked" in session_text
 
 
 # ── Behavior 5: executor skips upstream of a locked CacheNode ─────────────────

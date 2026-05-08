@@ -641,8 +641,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
                             except Exception:
                                 pass
                     raw = tmp.ExportToString()
-                    # Only treat as non-empty if there are actual prim defs
-                    text = raw if "def " in raw else None
+                    # Session-layer edits use 'over', not 'def' — accept both
+                    text = raw if ("def " in raw or "over " in raw) else None
 
             dlg = QtWidgets.QDialog(self)
             dlg.setWindowTitle(f"Layer Edits — {node.name()}")

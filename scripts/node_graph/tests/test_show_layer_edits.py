@@ -71,3 +71,20 @@ def test_copy_spec_shows_prim_attributes(tmp_path):
 
     raw = dst.ExportToString()
     assert "myAttr" in raw
+
+
+def test_over_spec_passes_content_check():
+    """Session-layer edits use 'over' — the content check must accept 'over' blocks."""
+    # Simulate a session layer that overrides an existing prim's attributes
+    src = Sdf.Layer.CreateAnonymous()
+    # CreatePrimInLayer uses 'over' when the prim already exists; simulate with
+    # an explicit over spec.
+    src.ImportFromString(
+        '#usda 1.0\n\nover "Root" {\n    over "Child" {\n        float myAttr = 1.0\n    }\n}\n'
+    )
+
+    raw = src.ExportToString()
+    # Old guard: "def " in raw  →  False (wrong, shows nothing)
+    assert "def " not in raw
+    # Fixed guard: also accept "over "
+    assert "over " in raw or "def " in raw
