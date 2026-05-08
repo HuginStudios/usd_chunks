@@ -172,7 +172,9 @@ def test_run_full_reports_status_per_node(node_graph, stage, qapp):
     executor = GraphExecutor(stub)
     executor.run_full()
 
-    assert "Alpha" in stub.status_calls, "_set_exec_status must be called with node name"
+    assert "Alpha" in stub.status_calls, (
+        "_set_exec_status must be called with node name"
+    )
 
 
 def test_run_from_reports_progress(node_graph, stage, qapp):

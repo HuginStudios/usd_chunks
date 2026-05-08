@@ -12,7 +12,6 @@ through the widget's keyboard shortcuts, which are not available in headless
 tests.
 """
 
-
 from NodeGraphQt.nodes.group_node import GroupNode
 
 
@@ -341,7 +340,9 @@ def test_layer_edits_visible_on_inner_node_from_subgraph(node_graph, stage):
     _add_promotion(g, inner_name, "prim_path", "/LayerEditsInnerPrim")
 
     executor = GraphExecutor(_StubWidget(ng, stage))
-    executor._exec_group(g)  # sets _my_chunk on inner nodes, persists in cache, collapses
+    executor._exec_group(
+        g
+    )  # sets _my_chunk on inner nodes, persists in cache, collapses
 
     chunk_cache = getattr(g, "_inner_chunk_cache", {})
     assert chunk_cache, "_inner_chunk_cache empty — Fix B restoration has no source"
