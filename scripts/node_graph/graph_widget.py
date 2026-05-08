@@ -1122,7 +1122,10 @@ class NodeGraphWidget(QtWidgets.QWidget):
             pass
 
     def _on_undo_index_changed(self, index) -> None:
-        QtCore.QTimer.singleShot(0, self._executor.run_full)
+        # Skip re-execution during graph load or if already debouncing
+        if getattr(self, "_loading", False):
+            return
+        self._executor.mark_dirty()
 
     def _on_node_double_clicked(self, node) -> None:
         if isinstance(node, GroupNode):
@@ -1312,7 +1315,9 @@ class NodeGraphWidget(QtWidgets.QWidget):
             self, "Load Graph", "", "Node Graph (*.json)"
         )
         if path:
+            self._loading = True
             self._graph.load_session(path)
+            self._loading = False
             QtCore.QTimer.singleShot(0, self._executor.run_full)
 
     def _export_python(self) -> None:

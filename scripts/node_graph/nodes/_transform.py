@@ -30,9 +30,28 @@ class SetTransformNode(UsdNodeBase):
         self.add_output("prim", color=PORT_COLORS["prim"])
 
     def execute(self, stage) -> dict:
+        from pxr import Sdf
+
         prim = self._get_input_value("prim")
         if not prim:
+            # Clean up previous edits if we had a prim before
+            if hasattr(self, "_last_prim_path") and self._last_prim_path:
+                session = stage.GetSessionLayer()
+                spec = session.GetPrimAtPath(self._last_prim_path)
+                if spec:
+                    for prop_name in [
+                        "xformOp:translate",
+                        "xformOp:rotateXYZ",
+                        "xformOp:scale",
+                        "xformOpOrder",
+                    ]:
+                        if session.GetPropertyAtPath(
+                            self._last_prim_path.AppendProperty(prop_name)
+                        ):
+                            spec.RemoveProperty(spec.properties[prop_name])
+                self._last_prim_path = None
             return {"prim": None}
+        self._last_prim_path = prim.GetPath()
         xform = UsdGeom.Xformable(prim)
         xform.ClearXformOpOrder()
         xform.AddTranslateOp().Set(
