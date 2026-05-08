@@ -17,9 +17,20 @@ class _StubWidget:
     def __init__(self, ng, stage):
         self._graph = ng
         self._stage = stage
+        self.progress_calls: list = []
+        self.status_calls: list = []
 
     def _set_exec_state(self, node, state, msg=""):
         pass
+
+    def _set_exec_progress(self, current, total):
+        self.progress_calls.append((current, total))
+
+    def _set_exec_status(self, name):
+        self.status_calls.append(name)
+
+    def _exec_progress_done(self):
+        self.progress_calls.append(("done",))
 
 
 # ── Behavior 1: dirty tracking respects the executing guard ──────────────────
@@ -129,3 +140,50 @@ def test_exec_node_registers_layer_on_success(node_graph, stage, qapp):
     executor._exec_node(node)
 
     assert node.id in executor._node_layer_registry
+
+
+# ── Behavior 5: execution progress reporting ──────────────────────────────────
+
+
+def test_run_full_reports_progress(node_graph, stage, qapp):
+    """run_full() calls _set_exec_progress(0, N) before the loop and (N, N) after all nodes."""
+    from node_graph.graph_executor import GraphExecutor
+
+    ng, CubeNodeCls = node_graph
+    ng.create_node(CubeNodeCls.type_)
+    ng.create_node(CubeNodeCls.type_)
+    stub = _StubWidget(ng, stage)
+    executor = GraphExecutor(stub)
+    executor.run_full()
+
+    progress_values = [c for c in stub.progress_calls if c != ("done",)]
+    assert progress_values[0] == (0, 2), "must start at (0, total)"
+    assert progress_values[-1] == (2, 2), "must reach (total, total) when done"
+    assert ("done",) in stub.progress_calls, "_exec_progress_done must be called"
+
+
+def test_run_full_reports_status_per_node(node_graph, stage, qapp):
+    """run_full() calls _set_exec_status with the node name for each executed node."""
+    from node_graph.graph_executor import GraphExecutor
+
+    ng, CubeNodeCls = node_graph
+    ng.create_node(CubeNodeCls.type_, name="Alpha")
+    stub = _StubWidget(ng, stage)
+    executor = GraphExecutor(stub)
+    executor.run_full()
+
+    assert "Alpha" in stub.status_calls, "_set_exec_status must be called with node name"
+
+
+def test_run_from_reports_progress(node_graph, stage, qapp):
+    """run_from() also calls _set_exec_progress and _exec_progress_done."""
+    from node_graph.graph_executor import GraphExecutor
+
+    ng, CubeNodeCls = node_graph
+    node = ng.create_node(CubeNodeCls.type_)
+    stub = _StubWidget(ng, stage)
+    executor = GraphExecutor(stub)
+    executor.run_from(node)
+
+    assert stub.progress_calls[0][0] == 0, "must start at 0"
+    assert ("done",) in stub.progress_calls, "_exec_progress_done must be called"

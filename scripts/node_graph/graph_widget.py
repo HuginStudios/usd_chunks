@@ -185,6 +185,27 @@ class NodeGraphWidget(QtWidgets.QWidget):
         self._viewport_btn.clicked.connect(self._toggle_viewport_preview)
         toolbar.addWidget(self._viewport_btn)
         toolbar.addStretch()
+        self._progress_label = QtWidgets.QLabel("")
+        self._progress_label.setStyleSheet(
+            "color: #7a86a8; font-size: 11px; padding: 0 4px; min-width: 120px;"
+        )
+        self._progress_label.hide()
+        toolbar.addWidget(self._progress_label)
+        self._progress_bar = QtWidgets.QProgressBar()
+        self._progress_bar.setFixedWidth(120)
+        self._progress_bar.setFixedHeight(14)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setStyleSheet(
+            "QProgressBar { background: #1e2438; border: 1px solid #2a3050;"
+            " border-radius: 3px; }"
+            "QProgressBar::chunk { background: #4fa3ff; border-radius: 2px; }"
+        )
+        self._progress_bar.hide()
+        toolbar.addWidget(self._progress_bar)
+        self._progress_hide_timer = QtCore.QTimer(self)
+        self._progress_hide_timer.setSingleShot(True)
+        self._progress_hide_timer.setInterval(1500)
+        self._progress_hide_timer.timeout.connect(self._hide_exec_progress)
         layout.addLayout(toolbar)
 
         # Splitter: graph canvas (left) + properties panel (right)
@@ -1017,6 +1038,36 @@ class NodeGraphWidget(QtWidgets.QWidget):
                     self._props_error_label.hide()
         except Exception:
             pass
+
+    def _set_exec_progress(self, current: int, total: int) -> None:
+        """Update toolbar progress bar during execution."""
+        try:
+            self._progress_hide_timer.stop()
+            self._progress_bar.setMaximum(max(total, 1))
+            self._progress_bar.setValue(current)
+            self._progress_bar.show()
+        except Exception:
+            pass
+
+    def _set_exec_status(self, name: str) -> None:
+        """Update toolbar status label with currently-executing node name."""
+        try:
+            self._progress_label.setText(name)
+            self._progress_label.show()
+        except Exception:
+            pass
+
+    def _exec_progress_done(self) -> None:
+        """Schedule progress bar and status label to hide after 1.5 s."""
+        try:
+            self._progress_hide_timer.start()
+        except Exception:
+            pass
+
+    def _hide_exec_progress(self) -> None:
+        self._progress_bar.hide()
+        self._progress_label.setText("")
+        self._progress_label.hide()
 
     def _setup_sub_graph(self, sub) -> None:
         """Install eventFilter and context menu on a sub-graph viewer."""

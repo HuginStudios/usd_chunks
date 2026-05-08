@@ -70,10 +70,14 @@ class GraphExecutor:
         if cache_shielded:
             order = [n for n in order if n.id not in cache_shielded]
 
+        _total = len(order)
+        _progress = getattr(widget, "_set_exec_progress", lambda *a: None)
+        _done = getattr(widget, "_exec_progress_done", lambda: None)
+        _progress(0, _total)
         self._is_executing = True
         try:
             errored: set = set()
-            for node in order:
+            for _idx, node in enumerate(order):
                 upstream_errored = any(
                     cp.node().id in errored
                     for port in (
@@ -85,6 +89,7 @@ class GraphExecutor:
                     widget._set_exec_state(node, "skipped")
                     errored.add(node.id)
                     node._output_cache = {}
+                    _progress(_idx + 1, _total)
                     continue
                 if self._exec_node(node) is False:
                     errored.add(node.id)
@@ -96,9 +101,11 @@ class GraphExecutor:
                             break
                         for dn in downstream:
                             self._exec_node(dn)
+                _progress(_idx + 1, _total)
                 QApplication.processEvents()
         finally:
             self._is_executing = False
+            _done()
 
     def run_from(self, start_node) -> None:
         """Re-execute start_node and its downstream nodes only."""
@@ -144,10 +151,14 @@ class GraphExecutor:
         if cache_shielded:
             full_order = [n for n in full_order if n.id not in cache_shielded]
 
+        _total = len(full_order)
+        _progress = getattr(widget, "_set_exec_progress", lambda *a: None)
+        _done = getattr(widget, "_exec_progress_done", lambda: None)
+        _progress(0, _total)
         self._is_executing = True
         try:
             errored: set = set()
-            for node in full_order:
+            for _idx, node in enumerate(full_order):
                 upstream_errored = any(
                     cp.node().id in errored
                     for port in (
@@ -159,12 +170,15 @@ class GraphExecutor:
                     widget._set_exec_state(node, "skipped")
                     errored.add(node.id)
                     node._output_cache = {}
+                    _progress(_idx + 1, _total)
                     continue
                 if self._exec_node(node) is False:
                     errored.add(node.id)
-            QApplication.processEvents()
+                _progress(_idx + 1, _total)
+                QApplication.processEvents()
         finally:
             self._is_executing = False
+            _done()
 
     def mark_dirty(self, node=None) -> None:
         """Schedule (debounced) re-execution from node.
@@ -227,6 +241,7 @@ class GraphExecutor:
                                 src_node._output_cache.get(src_port.name())
                             )
             return
+        getattr(widget, "_set_exec_status", lambda *a: None)(node.name())
         widget._set_exec_state(node, "running")
         try:
             result = node.execute(widget._stage)
