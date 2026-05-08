@@ -226,6 +226,19 @@ class GraphExecutor:
             vals = list((result or {}).values())
             all_null = vals and all(v is None for v in vals)
             widget._set_exec_state(node, "none" if all_null else "valid")
+            # Collect prim paths this node touched so "Show Layer Edits" can filter.
+            try:
+                paths: set = set()
+                for val in (result or {}).values():
+                    if hasattr(val, "GetPath"):
+                        paths.add(str(val.GetPath()))
+                    elif isinstance(val, (list, tuple)):
+                        for v in val:
+                            if hasattr(v, "GetPath"):
+                                paths.add(str(v.GetPath()))
+                node._edited_paths = paths
+            except Exception:
+                node._edited_paths = set()
             # Track chunk layer so we can remove it from the stage on node deletion.
             try:
                 chunk = getattr(node, "_my_chunk", None)

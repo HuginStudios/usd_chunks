@@ -606,18 +606,38 @@ class NodeGraphWidget(QtWidgets.QWidget):
             self._minimap.move(5, self.height() - 160)
 
     def _show_layer_edits(self, node) -> None:
-        """Show the chunk's edit layer as USD text in a popup."""
+        """Show layer edits for a node as USD text in a popup.
+
+        Chunk nodes: shows their dedicated chunk layer.
+        Other nodes: shows session layer content filtered to prim paths they touched.
+        """
         try:
+            from pxr import Sdf
+
+            text: str | None = None
+
             adapter = getattr(node, "_cached_adapter", None)
-            if not adapter or not adapter.chunk:
-                return
-            layer = adapter.chunk.get_edit_context()
-            if not layer:
-                QtWidgets.QMessageBox.information(
-                    self, "Layer Edits", "No layer edits found."
-                )
-                return
-            text = layer.ExportToString()
+            if adapter and adapter.chunk:
+                # Chunk node path — use the dedicated chunk layer
+                layer = adapter.chunk.get_edit_context()
+                text = layer.ExportToString() if layer else None
+            else:
+                # Non-chunk node — filter session layer to paths this node touched
+                paths = getattr(node, "_edited_paths", set())
+                if not paths and self._stage:
+                    # Node has never been executed or returned no prims
+                    text = None
+                elif self._stage:
+                    session_layer = self._stage.GetSessionLayer()
+                    tmp = Sdf.Layer.CreateAnonymous()
+                    for path_str in paths:
+                        sdf_path = Sdf.Path(path_str)
+                        if session_layer.GetPrimAtPath(sdf_path):
+                            Sdf.CopySpec(session_layer, sdf_path, tmp, sdf_path)
+                    raw = tmp.ExportToString()
+                    # Only treat as non-empty if there are actual prim defs
+                    text = raw if "def " in raw else None
+
             dlg = QtWidgets.QDialog(self)
             dlg.setWindowTitle(f"Layer Edits — {node.name()}")
             dlg.resize(600, 500)
@@ -626,7 +646,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
             layout.setContentsMargins(8, 8, 8, 8)
             edit = QtWidgets.QPlainTextEdit()
             edit.setReadOnly(True)
-            edit.setPlainText(text or "(empty layer)")
+            edit.setPlainText(text or "(no edits)")
             edit.setStyleSheet(
                 "QPlainTextEdit { background: #14161e; color: #c8d0e8;"
                 " font: 10px 'Consolas'; border: 1px solid #1e2438; border-radius: 6px; }"
@@ -847,7 +867,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 act_fold = menu.addAction(
                     "📂 Expand Ports" if is_folded else "📁 Collapse Ports"
                 )
-                act_layer = menu.addAction("📄 Show Layer Edits")
+            act_layer = menu.addAction("📄 Show Layer Edits")
             if isinstance(node, GroupNode):
                 act_export_chunk = menu.addAction("📦 Export as Chunk")
             act_dup = menu.addAction("📋 Duplicate")
@@ -892,7 +912,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
                 self._on_node_double_clicked(node)
             elif action == act_fold and hasattr(node, "_chunk_module"):
                 self._toggle_chunk_fold(node)
-            elif action == act_layer and hasattr(node, "_chunk_module"):
+            elif action == act_layer:
                 self._show_layer_edits(node)
             elif action == act_export_chunk and isinstance(node, GroupNode):
                 self._export_group_as_chunk(node)
