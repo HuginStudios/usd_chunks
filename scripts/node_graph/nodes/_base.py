@@ -130,8 +130,6 @@ class UsdNodeBase(BaseNode):
         self._min_w = None
         self._min_h = None
         self._auto_ports_done = False
-        self._widgets_to_hide = set()
-        self._hide_scheduled = False
         self._exec_error_msg = ""
         # Set by GraphExecutor._exec_node so nodes can request re-execution
         # without knowing the executor exists.
@@ -202,35 +200,21 @@ class UsdNodeBase(BaseNode):
             pass
         return port
 
-    def add_text_input(self, name, *args, **kwargs) -> None:
-        """Override: auto-create a connectable input port for each text input."""
-        super().add_text_input(name, *args, **kwargs)
+    def add_text_input(self, name, label="", text="", **kwargs) -> None:
+        """Store as a custom property only — never creates an inline NodeGraphQt widget.
+
+        The original super().add_text_input() creates a LineEditNodeWidget that shows
+        a '+' icon directly on the node body; hiding it via a timer was racy.  Calling
+        create_property() directly registers the value in model.custom_properties so
+        the side panel can build a row for it, without any inline widget at all.
+        """
+        if name not in self.model.custom_properties:
+            self.create_property(name, text)
         if name not in ("code",):
             port_name = f"_{name}"
             existing = {p.name() for p in self.input_ports()}
             if port_name not in existing:
                 self.add_input(port_name, color=PORT_COLORS.get("any", (140, 150, 170)))
-        # Collect widget name; one batched hide fires after all add_text_input calls settle
-        self._widgets_to_hide.add(name)
-        if not self._hide_scheduled:
-            self._hide_scheduled = True
-            QtCore.QTimer.singleShot(200, self._batch_hide_widgets)
-
-    def _batch_hide_widgets(self) -> None:
-        """Hide all collected text-input widgets in one pass, then recompute layout."""
-        self._hide_scheduled = False
-        changed = False
-        for name in self._widgets_to_hide:
-            w = self.view._widgets.get(name)
-            if w and w.isVisible():
-                w.setVisible(False)
-                changed = True
-        self._widgets_to_hide.clear()
-        if changed:
-            try:
-                self.view.draw_node()
-            except Exception:
-                pass
 
     def set_preview(self, text: str) -> None:
         """Update the node's preview chip (if it has one) with a compact info string."""

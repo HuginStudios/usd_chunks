@@ -200,11 +200,6 @@ def _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors):
     file_row = QtWidgets.QHBoxLayout()
     edit = QtWidgets.QLineEdit(str(val) if val else "")
     edit.setProperty("prop_name", name)
-    edit.editingFinished.connect(
-        lambda nd=node, e=edit: _on_prop_committed(nd, e, on_changed)
-    )
-    if ref_menu_fn:
-        ref_menu_fn(edit, node, name)
 
     browse = QtWidgets.QPushButton("📁")
     browse.setFixedWidth(30)
@@ -212,6 +207,19 @@ def _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors):
     thumb.setFixedSize(200, 200)
     thumb.setStyleSheet("background: #1a1a1a; border: 1px solid #333;")
     thumb.setAlignment(QtCore.Qt.AlignCenter)
+
+    def _commit_path(nd, e, th):
+        path = e.text().strip()
+        e.setText(path)
+        nd.set_property(name, path)
+        _show_thumbnail(th, path)
+        if hasattr(nd, "_thumb"):
+            nd._thumb.set_value(path)
+        on_changed(nd)
+
+    edit.editingFinished.connect(lambda nd=node, e=edit, th=thumb: _commit_path(nd, e, th))
+    if ref_menu_fn:
+        ref_menu_fn(edit, node, name)
 
     def _make_browse(ed, th, nd) -> None:
         def _fn() -> None:
@@ -223,10 +231,7 @@ def _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors):
             )
             if path:
                 ed.setText(path)
-                ed.editingFinished.emit()
-                _show_thumbnail(th, path)
-                if hasattr(nd, "_thumb"):
-                    nd._thumb.set_value(path)
+                _commit_path(nd, ed, th)
 
         return _fn
 
