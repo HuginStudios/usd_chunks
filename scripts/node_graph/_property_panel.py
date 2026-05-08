@@ -43,6 +43,9 @@ def build_node_panel(
         build_group_promo_panel(node, form, on_changed)
         return {}
 
+    if not hasattr(node, "get_input"):
+        return {}
+
     if hasattr(node, "_chunk_module"):
         build_chunk_panel(
             node,

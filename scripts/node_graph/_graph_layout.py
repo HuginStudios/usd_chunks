@@ -13,6 +13,8 @@ def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
             if node.id in expanded:
                 return
             expanded.add(node.id)
+            if not hasattr(node, "input_ports"):
+                return
             for port in node.input_ports():
                 for cp in port.connected_ports():
                     _collect(cp.node())
@@ -40,6 +42,8 @@ def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
             return 160, 80
 
     def _upstream_ids(node) -> None:
+        if not hasattr(node, "input_ports"):
+            return []
         ids = []
         for port in node.input_ports():
             for cp in port.connected_ports():
@@ -48,6 +52,8 @@ def layout_nodes(graph: Any, node_list: list[Any] | None = None) -> None:
         return ids
 
     def _downstream_ids(node) -> None:
+        if not hasattr(node, "output_ports"):
+            return []
         ids = []
         for port in node.output_ports():
             for cp in port.connected_ports():

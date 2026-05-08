@@ -18,7 +18,11 @@ class ListIndexNode(UsdNodeBase):
         self.add_output("item", color=PORT_COLORS["any"])
 
     def execute(self, stage) -> dict:
-        lst = self._get_input_value("list") or []
+        lst = self._get_input_value("list")
+        if lst is None:
+            lst = []
+        elif not isinstance(lst, list):
+            lst = [lst]
         idx = int(self.get_property("index") or 0)
         return {"item": lst[idx] if 0 <= idx < len(lst) else None}
 
@@ -35,7 +39,11 @@ class ListLengthNode(UsdNodeBase):
         self.add_output("length", color=PORT_COLORS["float"])
 
     def execute(self, stage) -> dict:
-        lst = self._get_input_value("list") or []
+        lst = self._get_input_value("list")
+        if lst is None:
+            lst = []
+        elif not isinstance(lst, list):
+            lst = [lst]
         return {"length": len(lst)}
 
 
@@ -54,7 +62,11 @@ class ForEachNode(UsdNodeBase):
         self._current_index = 0
 
     def execute(self, stage) -> dict:
-        lst = self._get_input_value("list") or []
+        lst = self._get_input_value("list")
+        if lst is None:
+            lst = []
+        elif not isinstance(lst, list):
+            lst = [lst]
         self._iteration_list = lst
         # Default: output first item. Engine calls set_iteration_index() for each.
         if lst:
