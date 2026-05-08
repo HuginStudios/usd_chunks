@@ -66,6 +66,10 @@ class GraphExecutor:
         for n in widget._graph.all_nodes():
             _topo(n)
 
+        cache_shielded = self._collect_cache_shielded(widget._graph)
+        if cache_shielded:
+            order = [n for n in order if n.id not in cache_shielded]
+
         self._is_executing = True
         try:
             errored: set = set()
@@ -135,6 +139,10 @@ class GraphExecutor:
         _upstream(start_node)
         _downstream(start_node)
         full_order = up_order + [n for n in order if n.id not in up_visited]
+
+        cache_shielded = self._collect_cache_shielded(widget._graph)
+        if cache_shielded:
+            full_order = [n for n in full_order if n.id not in cache_shielded]
 
         self._is_executing = True
         try:
@@ -415,6 +423,48 @@ class GraphExecutor:
 
         widget._graph.collapse_group_node(group)
         widget._set_exec_state(group, "valid")
+
+    @staticmethod
+    def _is_locked_cache(node) -> bool:
+        """Return True if node is a locked CacheNode (duck-typed via _is_cache_node)."""
+        return getattr(node, "_is_cache_node", False) and bool(
+            node.get_property("locked")
+        )
+
+    @staticmethod
+    def _collect_cache_shielded(graph) -> set:
+        """Return IDs of nodes exclusively feeding into locked CacheNodes.
+
+        Uses an iterative absorber expansion: locked CacheNodes are absorbers;
+        any node whose every output connection leads into an absorber also becomes
+        one.  Returns only the *upstream* nodes — the CacheNodes themselves still
+        execute (they serve their frozen outputs).
+        """
+        absorbers = {
+            n.id
+            for n in graph.all_nodes()
+            if getattr(n, "_is_cache_node", False) and bool(n.get_property("locked"))
+        }
+        if not absorbers:
+            return set()
+
+        locked_cache_ids = set(absorbers)
+        changed = True
+        while changed:
+            changed = False
+            for node in graph.all_nodes():
+                if node.id in absorbers or not hasattr(node, "output_ports"):
+                    continue
+                out_ids = [
+                    cp.node().id
+                    for port in node.output_ports()
+                    for cp in port.connected_ports()
+                ]
+                if out_ids and all(cid in absorbers for cid in out_ids):
+                    absorbers.add(node.id)
+                    changed = True
+
+        return absorbers - locked_cache_ids
 
     @staticmethod
     def _apply_promoted_value(inner_node, param_name, value) -> None:

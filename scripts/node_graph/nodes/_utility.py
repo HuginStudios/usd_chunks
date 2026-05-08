@@ -309,6 +309,41 @@ class BoolNotNode(UsdNodeBase):
         return {"result": not bool(self._get_input_value("value"))}
 
 
+class CacheNode(UsdNodeBase):
+    """Houdini-style freeze node — stores upstream values and replays them when locked.
+
+    When locked, the GraphExecutor skips all upstream nodes entirely; they never
+    enter the execution order.  Unlock to update the cache from live inputs again.
+    """
+
+    NODE_NAME = "Cache"
+    CATEGORY = "Utility"
+    _is_cache_node = True  # duck-type marker consumed by GraphExecutor
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_input("prim", color=PORT_COLORS["prim"])
+        self.add_input("data", color=PORT_COLORS["any"])
+        self.add_output("prim", color=PORT_COLORS["prim"])
+        self.add_output("data", color=PORT_COLORS["any"])
+        self.create_property("locked", False)
+        self._cache: dict = {}
+
+    def execute(self, stage) -> dict:
+        if self.get_property("locked"):
+            return {"prim": self._cache.get("prim"), "data": self._cache.get("data")}
+        prim = self._get_input_value("prim")
+        data = self._get_input_value("data")
+        if prim is not None:
+            self._cache["prim"] = prim
+        if data is not None:
+            self._cache["data"] = data
+        return {"prim": prim, "data": data}
+
+    def clear_cache(self) -> None:
+        self._cache.clear()
+
+
 class CoalesceNode(UsdNodeBase):
     """Returns the first non-null / valid input. For prims, checks IsValid()."""
 

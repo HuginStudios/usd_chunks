@@ -153,6 +153,7 @@ from ._utility import (
     BoolOrNode,
     BoolNotNode,
     CoalesceNode,
+    CacheNode,
 )
 
 # ── Math ───────────────────────────────────────────────────────────────────
@@ -293,6 +294,7 @@ ALL_NODES = [
     BoolOrNode,
     BoolNotNode,
     CoalesceNode,
+    CacheNode,
     # Math
     MathAddNode,
     MathSubtractNode,
