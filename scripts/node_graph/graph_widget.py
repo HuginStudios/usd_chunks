@@ -609,6 +609,7 @@ class NodeGraphWidget(QtWidgets.QWidget):
         """Show layer edits for a node as USD text in a popup.
 
         Chunk nodes: shows their dedicated chunk layer.
+        GroupNodes: merges layers from all inner chunk nodes.
         Other nodes: shows session layer content filtered to prim paths they touched.
         """
         try:
@@ -616,10 +617,46 @@ class NodeGraphWidget(QtWidgets.QWidget):
 
             text: str | None = None
 
+            # Fix A — GroupNode: aggregate layers from all inner chunk instances
+            if isinstance(node, GroupNode):
+                chunk_cache = getattr(node, "_inner_chunk_cache", {})
+                parts = []
+                for chunk_inst in chunk_cache.values():
+                    try:
+                        layer = chunk_inst.get_edit_context()
+                        if layer:
+                            raw = layer.ExportToString()
+                            if "def " in raw or "over " in raw:
+                                parts.append(raw)
+                    except Exception:
+                        pass
+                text = "\n\n".join(parts) if parts else None
+                dlg = QtWidgets.QDialog(self)
+                dlg.setWindowTitle(f"Layer Edits — {node.name()}")
+                dlg.resize(600, 500)
+                dlg.setStyleSheet("QDialog { background: #0c0e14; }")
+                layout = QtWidgets.QVBoxLayout(dlg)
+                layout.setContentsMargins(8, 8, 8, 8)
+                edit = QtWidgets.QPlainTextEdit()
+                edit.setReadOnly(True)
+                edit.setPlainText(text or "(no edits)")
+                edit.setStyleSheet(
+                    "QPlainTextEdit { background: #14161e; color: #c8d0e8;"
+                    " font: 10px 'Consolas'; border: 1px solid #1e2438; border-radius: 6px; }"
+                )
+                layout.addWidget(edit)
+                dlg.exec_()
+                return
+
             adapter = getattr(node, "_cached_adapter", None)
             if adapter and adapter.chunk:
                 # Chunk node path — use the dedicated chunk layer
                 layer = adapter.chunk.get_edit_context()
+                text = layer.ExportToString() if layer else None
+            elif getattr(node, "_my_chunk", None) is not None:
+                # Fix B — inner node in SubGraph: _cached_adapter may be absent
+                # but _my_chunk was restored from _inner_chunk_cache by _exec_group
+                layer = node._my_chunk.get_edit_context()
                 text = layer.ExportToString() if layer else None
             else:
                 # Non-chunk node — filter session layer to paths this node touched
@@ -1840,6 +1877,8 @@ class NodeGraphWidget(QtWidgets.QWidget):
         ext_inputs = []
         ext_outputs = []
         for node in selected:
+            if not hasattr(node, "input_ports"):
+                continue
             for port in node.input_ports():
                 for cp in port.connected_ports():
                     if cp.node().id not in sel_ids:

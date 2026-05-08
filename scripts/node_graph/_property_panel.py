@@ -217,7 +217,9 @@ def _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors):
             nd._thumb.set_value(path)
         on_changed(nd)
 
-    edit.editingFinished.connect(lambda nd=node, e=edit, th=thumb: _commit_path(nd, e, th))
+    edit.editingFinished.connect(
+        lambda nd=node, e=edit, th=thumb: _commit_path(nd, e, th)
+    )
     if ref_menu_fn:
         ref_menu_fn(edit, node, name)
 
