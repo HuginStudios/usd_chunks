@@ -146,3 +146,47 @@ def test_executor_skips_upstream_when_cache_locked(qapp, node_graph, stage):
 
     assert "Upstream" not in executed
     assert "Cache" in executed
+
+
+# ── Behavior 6: real port wiring — prim flows through unlocked CacheNode ──────
+
+
+def test_unlocked_passes_real_prim_through_wired_port(qapp, node_graph, stage):
+    """Unlocked CacheNode propagates a real Usd.Prim via actual port connections."""
+    from node_graph.nodes._utility import CacheNode
+    from node_graph.nodes._input import PrimPathNode
+    from node_graph.graph_executor import GraphExecutor
+
+    ng, _ = node_graph
+    ng.register_node(CacheNode)
+    ng.register_node(PrimPathNode)
+
+    prim_node = ng.create_node(PrimPathNode.type_, name="Src")
+    cache_node = ng.create_node(CacheNode.type_, name="Cache")
+
+    out_port = prim_node.get_output("prim")
+    in_port = cache_node.get_input("prim")
+    assert out_port is not None, "PrimPathNode has no 'prim' output"
+    assert in_port is not None, "CacheNode has no 'prim' input"
+    out_port.connect_to(in_port)
+
+    # Define the target prim and point PrimPathNode at it
+    stage.DefinePrim("/CacheTest")
+    prim_node.set_property("prim_path", "/CacheTest")
+
+    class _W:
+        _graph = ng
+        _stage = stage
+
+        def _set_exec_state(self, node, state, msg=""):
+            pass
+
+    executor = GraphExecutor(_W())
+    executor.run_full()
+
+    cached_prim = cache_node._output_cache.get("prim")
+    assert cached_prim is not None, (
+        "CacheNode output 'prim' is None — port connection or upstream execution failed. "
+        f"cache._output_cache={cache_node._output_cache!r}, "
+        f"src._output_cache={prim_node._output_cache!r}"
+    )

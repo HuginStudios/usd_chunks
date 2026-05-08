@@ -633,7 +633,13 @@ class NodeGraphWidget(QtWidgets.QWidget):
                     for path_str in paths:
                         sdf_path = Sdf.Path(path_str)
                         if session_layer.GetPrimAtPath(sdf_path):
-                            Sdf.CopySpec(session_layer, sdf_path, tmp, sdf_path)
+                            try:
+                                # Ensure ancestor prim specs exist before CopySpec
+                                # (CopySpec fails if the parent path is absent in dst)
+                                Sdf.CreatePrimInLayer(tmp, sdf_path)
+                                Sdf.CopySpec(session_layer, sdf_path, tmp, sdf_path)
+                            except Exception:
+                                pass
                     raw = tmp.ExportToString()
                     # Only treat as non-empty if there are actual prim defs
                     text = raw if "def " in raw else None
