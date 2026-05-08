@@ -8,3 +8,11 @@ _installed_deps
 dist
 build
 *.egg-info
+
+# AI tool working directories (local only)
+.scratch/
+.claude/
+.kilocode/
+.kiro/
+.planning/
+.vexp/
