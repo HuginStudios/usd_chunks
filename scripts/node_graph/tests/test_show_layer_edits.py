@@ -20,8 +20,8 @@ def test_copy_nested_prim_spec_does_not_raise(tmp_path):
 
     # This is the fixed pattern from _show_layer_edits
     assert src.GetPrimAtPath(path)
-    Sdf.CreatePrimInLayer(dst, path)          # ensures parents exist in dst
-    Sdf.CopySpec(src, path, dst, path)        # was raising before the fix
+    Sdf.CreatePrimInLayer(dst, path)  # ensures parents exist in dst
+    Sdf.CopySpec(src, path, dst, path)  # was raising before the fix
 
     raw = dst.ExportToString()
     assert "Leaf" in raw
@@ -44,12 +44,12 @@ def test_copy_shallow_prim_spec_still_works(tmp_path):
 
 def test_copy_skips_missing_prim_gracefully(tmp_path):
     """Paths absent from the source layer are silently skipped (no crash)."""
-    src = Sdf.Layer.CreateAnonymous()          # empty — nothing defined
+    src = Sdf.Layer.CreateAnonymous()  # empty — nothing defined
     dst = Sdf.Layer.CreateAnonymous()
     path = Sdf.Path("/DoesNotExist/Child")
 
     # Guard matches _show_layer_edits: skip if not in source
-    if src.GetPrimAtPath(path):               # False — so block is skipped
+    if src.GetPrimAtPath(path):  # False — so block is skipped
         Sdf.CreatePrimInLayer(dst, path)
         Sdf.CopySpec(src, path, dst, path)
 
