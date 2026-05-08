@@ -56,6 +56,7 @@ from ._query import (
 # ── Transform ──────────────────────────────────────────────────────────────
 from ._transform import (
     SetTransformNode,
+    OffsetTransformNode,
     GetWorldTransformNode,
     ResetTransformNode,
     GetBoundingBoxNode,
@@ -215,6 +216,7 @@ ALL_NODES = [
     ListPrimsNode,
     # Transform
     SetTransformNode,
+    OffsetTransformNode,
     GetWorldTransformNode,
     ResetTransformNode,
     GetBoundingBoxNode,

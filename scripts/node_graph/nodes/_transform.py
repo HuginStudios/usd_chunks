@@ -30,8 +30,6 @@ class SetTransformNode(UsdNodeBase):
         self.add_output("prim", color=PORT_COLORS["prim"])
 
     def execute(self, stage) -> dict:
-        from pxr import Sdf
-
         prim = self._get_input_value("prim")
         if not prim:
             # Clean up previous edits if we had a prim before
@@ -75,6 +73,88 @@ class SetTransformNode(UsdNodeBase):
         )
         if s != Gf.Vec3f(1, 1, 1):
             xform.AddScaleOp().Set(Gf.Vec3f(s))
+        return {"prim": prim}
+
+
+class OffsetTransformNode(UsdNodeBase):
+    """Add translate/rotate/scale offset to a prim's existing local transform.
+
+    Reads the current xform ops and adds/multiplies the given deltas on top.
+    In a chained graph (Offset → Offset → ...) each node adds its own delta
+    to whatever the upstream node wrote, yielding correct cumulative results
+    when the graph executes top-down.
+    """
+
+    NODE_NAME = "Offset Transform"
+    CATEGORY = "Transform"
+
+    _ROTATE_TYPES = frozenset(
+        [
+            UsdGeom.XformOp.TypeRotateXYZ,
+            UsdGeom.XformOp.TypeRotateXZY,
+            UsdGeom.XformOp.TypeRotateYXZ,
+            UsdGeom.XformOp.TypeRotateYZX,
+            UsdGeom.XformOp.TypeRotateZXY,
+            UsdGeom.XformOp.TypeRotateZYX,
+        ]
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_input("prim", color=PORT_COLORS["prim"])
+        self.add_text_input("tx", "Translate X", text="0")
+        self.add_text_input("ty", "Translate Y", text="0")
+        self.add_text_input("tz", "Translate Z", text="0")
+        self.add_text_input("rx", "Rotate X", text="0")
+        self.add_text_input("ry", "Rotate Y", text="0")
+        self.add_text_input("rz", "Rotate Z", text="0")
+        self.add_text_input("sx", "Scale X", text="1")
+        self.add_text_input("sy", "Scale Y", text="1")
+        self.add_text_input("sz", "Scale Z", text="1")
+        self.add_output("prim", color=PORT_COLORS["prim"])
+
+    def execute(self, stage) -> dict:
+        prim = self._get_input_value("prim")
+        if not prim:
+            return {"prim": None}
+
+        xformable = UsdGeom.Xformable(prim)
+
+        cur_t = Gf.Vec3d(0.0, 0.0, 0.0)
+        cur_r = Gf.Vec3f(0.0, 0.0, 0.0)
+        cur_s = Gf.Vec3f(1.0, 1.0, 1.0)
+        for op in xformable.GetOrderedXformOps():
+            v = op.Get(0)
+            if v is None:
+                continue
+            op_type = op.GetOpType()
+            if op_type == UsdGeom.XformOp.TypeTranslate:
+                cur_t = Gf.Vec3d(float(v[0]), float(v[1]), float(v[2]))
+            elif op_type in self._ROTATE_TYPES:
+                cur_r = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+            elif op_type == UsdGeom.XformOp.TypeScale:
+                cur_s = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+
+        otx = float(self.get_property("tx") or 0)
+        oty = float(self.get_property("ty") or 0)
+        otz = float(self.get_property("tz") or 0)
+        orx = float(self.get_property("rx") or 0)
+        ory = float(self.get_property("ry") or 0)
+        orz = float(self.get_property("rz") or 0)
+        osx = float(self.get_property("sx") or 1)
+        osy = float(self.get_property("sy") or 1)
+        osz = float(self.get_property("sz") or 1)
+
+        new_t = Gf.Vec3d(cur_t[0] + otx, cur_t[1] + oty, cur_t[2] + otz)
+        new_r = Gf.Vec3f(cur_r[0] + orx, cur_r[1] + ory, cur_r[2] + orz)
+        new_s = Gf.Vec3f(cur_s[0] * osx, cur_s[1] * osy, cur_s[2] * osz)
+
+        xformable.ClearXformOpOrder()
+        xformable.AddTranslateOp().Set(new_t)
+        xformable.AddRotateXYZOp().Set(new_r)
+        if new_s != Gf.Vec3f(1.0, 1.0, 1.0):
+            xformable.AddScaleOp().Set(new_s)
+
         return {"prim": prim}
 
 
