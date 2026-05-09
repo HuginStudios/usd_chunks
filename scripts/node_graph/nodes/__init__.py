@@ -111,7 +111,8 @@ from ._lighting import (
     CreateDistantLightNode,
     CreateDomeLightNode,
     CreateDiskLightNode,
-    BackplateLightingNode,
+    EstimateLightingNode,
+    GeneratePanoramaNode,
 )
 
 # ── Camera ─────────────────────────────────────────────────────────────────
@@ -258,7 +259,8 @@ ALL_NODES = [
     CreateDistantLightNode,
     CreateDomeLightNode,
     CreateDiskLightNode,
-    BackplateLightingNode,
+    EstimateLightingNode,
+    GeneratePanoramaNode,
     # Camera
     CreateCameraNode,
     SetActiveCameraNode,

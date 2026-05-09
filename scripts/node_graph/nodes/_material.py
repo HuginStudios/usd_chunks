@@ -186,6 +186,17 @@ class TextureFileNode(UsdNodeBase):
         self.add_custom_widget(self._thumb)
         self.add_output("texture", color=PORT_COLORS["texture"])
         self.set_property("width", 220)
+        # Hide the _file_path auto-port — TextureFileNode's path is set via
+        # the file browser, not by wiring. A stray connection silently overrides
+        # the browse value with no visible indication in the panel.
+        QtCore.QTimer.singleShot(0, self._hide_file_path_port)
+
+    def _hide_file_path_port(self) -> None:
+        from ._base import _safe_set_port_visible
+
+        port = self.get_input("_file_path")
+        if port:
+            _safe_set_port_visible(port, False)
 
     def _on_resize(self, width, height=None) -> None:
         self._thumb_size = max(80, width - 40)

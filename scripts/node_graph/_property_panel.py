@@ -100,9 +100,12 @@ def _build_property_rows(
             pass
 
     editors: dict[str, QtWidgets.QWidget] = {}
+    has_generate_btn = hasattr(node, "_generate_button_label")
 
     for name, val in node.model.custom_properties.items():
         if name in skip:
+            continue
+        if name == "locked" and has_generate_btn:
             continue
 
         if name == "code":
@@ -123,6 +126,9 @@ def _build_property_rows(
                 get_prim_attrs_fn,
                 editors,
             )
+
+    if has_generate_btn:
+        _add_generate_button_row(node, form, on_changed)
 
     return editors
 
@@ -197,9 +203,41 @@ def _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors):
     row_layout = QtWidgets.QVBoxLayout(row)
     row_layout.setContentsMargins(0, 0, 0, 0)
 
+    # Check if the auto-port (_file_path) is wired — if so the stored value is
+    # overridden at execution time but nothing in the panel makes that visible.
+    driven_val = None
+    auto_port = node.get_input(f"_{name}")
+    if auto_port and auto_port.connected_ports():
+        src_port = auto_port.connected_ports()[0]
+        src_node = src_port.node()
+        from .nodes._base import _TriggerSignal
+
+        driven_val = (
+            src_node._output_cache.get(src_port.name())
+            if hasattr(src_node, "_output_cache")
+            else None
+        )
+        if isinstance(driven_val, _TriggerSignal):
+            driven_val = None
+
     file_row = QtWidgets.QHBoxLayout()
     edit = QtWidgets.QLineEdit(str(val) if val else "")
     edit.setProperty("prop_name", name)
+
+    if driven_val is not None:
+        driven_path = str(driven_val)
+        edit.setText(driven_path)
+        edit.setReadOnly(True)
+        edit.setStyleSheet(
+            "QLineEdit { background: rgba(220,80,80,0.12); color: #f08080;"
+            " border: 1px solid rgba(220,80,80,0.4); border-radius: 4px;"
+            " padding: 3px 6px; font: 10px 'Consolas'; }"
+        )
+        edit.setToolTip(
+            f"⚠ Overridden by connected port — stored value '{val}' is ignored.\n"
+            "Disconnect the wire to the _file_path port to use the Browse button."
+        )
+        val = driven_path
 
     browse = QtWidgets.QPushButton("📁")
     browse.setFixedWidth(30)
@@ -238,13 +276,17 @@ def _add_file_path_row(node, name, val, form, on_changed, ref_menu_fn, editors):
         return _fn
 
     browse.clicked.connect(_make_browse(edit, thumb, node))
+    if driven_val is not None:
+        browse.setEnabled(False)
+        browse.setToolTip("Disconnect the _file_path port wire to enable Browse")
     file_row.addWidget(edit)
     file_row.addWidget(browse)
     row_layout.addLayout(file_row)
     row_layout.addWidget(thumb)
     if val:
         _show_thumbnail(thumb, str(val))
-    form.addRow(name, row)
+    display_name = f"⚠ {name}" if driven_val is not None else name
+    form.addRow(display_name, row)
     editors[name] = edit
 
 
@@ -373,6 +415,23 @@ def _on_prop_committed(node, edit, on_changed):
     else:
         node.set_property(name, text)
     on_changed(node)
+
+
+def _add_generate_button_row(node, form, on_changed):
+    btn = QtWidgets.QPushButton(node._generate_button_label)
+    btn.setStyleSheet(
+        "QPushButton { background: #1a3a1a; color: #6fcf6f; border: 1px solid #3a7a3a;"
+        " border-radius: 4px; padding: 5px 10px; font: bold 10px 'Consolas'; }"
+        "QPushButton:hover { background: #2a5a2a; border-color: #5aaf5a; }"
+        "QPushButton:pressed { background: #0f220f; }"
+    )
+
+    def _on_click():
+        node.set_property("locked", False)
+        on_changed(node)
+
+    btn.clicked.connect(_on_click)
+    form.addRow("", btn)
 
 
 def _show_thumbnail(label, path):
