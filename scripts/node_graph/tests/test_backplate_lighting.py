@@ -471,6 +471,42 @@ def test_distant_light_no_rotation_when_empty(node_graph, stage, qapp):
     assert not any("rotateXYZ" in op.GetOpName() for op in ops)
 
 
+def test_panorama_blocked_when_connected_port_empty(panorama_node, stage):
+    """GeneratePanoramaNode must not call Imagen when a connected port returns ''."""
+    panorama_node.set_property("locked", False)
+
+    mock_port = MagicMock()
+    mock_port.connected_ports.return_value = [MagicMock()]
+
+    def _fake_get_input(name):
+        return mock_port if name == "azimuth" else None
+
+    with (
+        patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"}),
+        patch.object(panorama_node, "get_input", side_effect=_fake_get_input),
+        patch.object(panorama_node, "_get_input_value", return_value=""),
+        patch.object(panorama_node, "_generate_panorama") as mock_gen,
+    ):
+        result = panorama_node.execute(stage)
+
+    assert result == {"image_path": ""}
+    mock_gen.assert_not_called()
+
+
+def test_panorama_allowed_when_no_ports_connected(panorama_node, stage):
+    """GeneratePanoramaNode may proceed with defaults when no ports are wired."""
+    panorama_node.set_property("locked", False)
+
+    with (
+        patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"}),
+        patch.object(panorama_node, "get_input", return_value=None),
+        patch.object(panorama_node, "_generate_panorama", return_value="/tmp/pano.png"),
+    ):
+        result = panorama_node.execute(stage)
+
+    assert result["image_path"] == "/tmp/pano.png"
+
+
 def test_dome_light_rotation_inputs(node_graph, stage, qapp):
     import uuid
     from node_graph.nodes._lighting import CreateDomeLightNode

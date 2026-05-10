@@ -54,16 +54,7 @@ class ChunkAdapter:
         """Return all drivable params (excludes Button, Separator, Label, Custom)."""
         if not self.chunk:
             return []
-        result = []
-        for p in self.chunk.get_params():
-            if isinstance(p, chunk_core.ChunkVectorBase):
-                result.append(p)
-            elif isinstance(p, chunk_core.ChunkParamBase):
-                if not isinstance(
-                    p, (chunk.Button, chunk.Separator, chunk.Label, chunk.Custom)
-                ):
-                    result.append(p)
-        return result
+        return list(self.chunk.get_params(chunk.is_param_drivable))
 
     def set_param(self, name: str, value) -> None:
         """Write *value* into the named chunk param.
@@ -124,9 +115,7 @@ class ChunkAdapter:
                     btn = p
                     break
         if btn:
-            chunk_notice.send_notice(
-                chunk_notice.ChunkNoticeAlias.PARAM_CHANGED, sender=btn, data=btn
-            )
+            btn.execute()
 
     @staticmethod
     def list_available() -> list[str]:

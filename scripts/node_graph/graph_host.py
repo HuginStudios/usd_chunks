@@ -7,7 +7,7 @@ internals directly, so the node graph runs in any host.
 
 from __future__ import annotations
 from typing import Callable
-from PySide6 import QtCore, QtGui
+from PySide6 import QtGui
 
 
 class GraphHost:
@@ -88,153 +88,73 @@ class GraphHost:
 
 
 class UsdviewGraphHost(GraphHost):
-    """Usdview implementation of GraphHost."""
+    """Usdview implementation of GraphHost — delegates all calls to UsdviewScene.
 
-    def _get_scene_ctrl(self) -> tuple[object, object]:
+    UsdviewScene (a SceneSender subclass in plugins/chunk_usdview) owns all
+    DCC-specific logic. This class is a thin bridge so the node graph can call
+    GraphHost.current() without importing usdview internals directly.
+    """
+
+    def _scene(self):
         try:
             from usd_chunks import chunk_registry
 
-            scene = chunk_registry.ChunkRegistry().scene
-            if not scene:
-                return None, None
-            ctrl = scene.usdviewAPI._UsdviewApi__appController
-            return scene, ctrl
+            return chunk_registry.ChunkRegistry().scene
         except Exception:
-            return None, None
+            return None
 
     def get_stage(self) -> object | None:
-        scene, _ctrl = self._get_scene_ctrl()
-        if scene:
-            try:
-                return scene.get_stage()
-            except Exception:
-                pass
-        return None
+        s = self._scene()
+        try:
+            return s.get_stage() if s else None
+        except Exception:
+            return None
 
     def get_selection(self) -> list:
-        scene, _ctrl = self._get_scene_ctrl()
-        if scene:
-            try:
-                return scene.get_selected_prims() or []
-            except Exception:
-                pass
-        return []
+        s = self._scene()
+        try:
+            return s.get_selected_prims() or [] if s else []
+        except Exception:
+            return []
 
     def set_selection(self, prim: object) -> None:
-        _scene, ctrl = self._get_scene_ctrl()
-        if ctrl and prim:
-            try:
-                ctrl._dataModel.selection.setPrim(prim)
-            except Exception:
-                pass
+        if s := self._scene():
+            s.set_selection(prim)
 
     def get_viewport_screenshot(self) -> QtGui.QPixmap | None:
-        _scene, ctrl = self._get_scene_ctrl()
-        if not ctrl:
-            return None
-        try:
-            sv = ctrl._stageView
-            try:
-                return sv.grabFramebuffer()
-            except Exception:
-                return sv.grab()
-        except Exception:
-            return None
+        if s := self._scene():
+            return s.get_viewport_screenshot()
+        return None
 
     def frame_prim(self, prim: object, on_ready: Callable | None = None) -> None:
-        _scene, ctrl = self._get_scene_ctrl()
-        if not ctrl or not prim:
-            if on_ready:
-                on_ready(None)
-            return
-        try:
-            sv = ctrl._stageView
-            old_state = sv.copyViewState()
-            ctrl._dataModel.selection.setPrim(prim)
-            ctrl._frameSelection()
-
-            def _do_grab() -> None:
-                px = None
-                try:
-                    px = sv.grab()
-                except Exception:
-                    pass
-                try:
-                    sv.restoreViewState(old_state)
-                    sv.updateView()
-                except Exception:
-                    pass
-                if on_ready:
-                    on_ready(px)
-
-            QtCore.QTimer.singleShot(250, _do_grab)
-        except Exception:
-            if on_ready:
-                on_ready(None)
+        if s := self._scene():
+            s.frame_prim(prim, on_ready)
+        elif on_ready:
+            on_ready(None)
 
     def update_viewport(self) -> None:
-        _scene, ctrl = self._get_scene_ctrl()
-        if ctrl:
-            try:
-                ctrl._stageView.updateView(resetCam=False, forceComputeBBox=True)
-            except Exception:
-                pass
+        if s := self._scene():
+            s.update_viewport()
 
     def set_camera_prim(self, prim: object) -> None:
-        _scene, ctrl = self._get_scene_ctrl()
-        if ctrl and prim:
-            try:
-                ctrl._dataModel.viewSettings.cameraPrim = prim
-            except Exception:
-                pass
+        if s := self._scene():
+            s.set_camera_prim(prim)
 
     def get_current_frame(self) -> float:
-        _scene, ctrl = self._get_scene_ctrl()
-        if ctrl:
-            try:
-                return ctrl._dataModel.currentFrame.GetValue()
-            except Exception:
-                pass
+        if s := self._scene():
+            return s.get_current_frame()
         return 0.0
 
     def refresh_timeline(self, start: float, end: float) -> None:
-        _scene, ctrl = self._get_scene_ctrl()
-        if ctrl:
-            try:
-                ctrl.realStartTimeCode = start
-                ctrl.realEndTimeCode = end
-                ctrl._UpdateTimeSamples()
-            except Exception:
-                pass
+        if s := self._scene():
+            s.refresh_timeline(start, end)
 
     def subscribe_selection_changed(self, callback: Callable) -> Callable | None:
-        _scene, ctrl = self._get_scene_ctrl()
-        if not ctrl:
-            return None
-        try:
-            model = ctrl._dataModel
-
-            def _on_sel_changed(*args):
-                callback()
-
-            model.selection.signalPrimSelectionChanged.connect(_on_sel_changed)
-            return lambda: model.selection.signalPrimSelectionChanged.disconnect(
-                _on_sel_changed
-            )
-        except Exception:
-            return None
+        if s := self._scene():
+            return s.subscribe_selection_changed(callback)
+        return None
 
     def subscribe_frame_changed(self, callback: Callable) -> Callable | None:
-        _scene, ctrl = self._get_scene_ctrl()
-        if not ctrl:
-            return None
-        try:
-            model = ctrl._dataModel
-
-            def _on_frame(*args):
-                callback()
-
-            model.signalCurrentFrameChanged.connect(_on_frame)
-            return lambda: model.signalCurrentFrameChanged.disconnect(_on_frame)
-        except Exception:
-            return None
+        if s := self._scene():
+            return s.subscribe_frame_changed(callback)
+        return None

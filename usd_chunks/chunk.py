@@ -274,6 +274,11 @@ class Button(ChunkParamBase):
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.BUTTON
 
+    def execute(self) -> None:
+        """Fire this button by sending a PARAM_CHANGED notice."""
+        from usd_chunks import chunk_notice as _cn
+        _cn.send_notice(ChunkNoticeAlias.PARAM_CHANGED, sender=self, data=self)
+
 
 class Checkbox(ChunkParamBase[bool]):
     """
@@ -561,6 +566,19 @@ def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]:
         return t in ChunkFlags.ParamTypeToTypes(v.evaluate_type())
 
     return _fn
+
+
+def is_param_drivable(v: Any) -> bool:
+    """Predicate for get_params(): True for params that can be driven from the node graph.
+
+    Includes ChunkVectorBase and all ChunkParamBase subclasses except
+    Button, Separator, Label, and Custom.
+    """
+    if isinstance(v, ChunkVectorBase):
+        return True
+    if isinstance(v, ChunkParamBase):
+        return not isinstance(v, (Button, Separator, Label, Custom))
+    return False
 
 
 def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:

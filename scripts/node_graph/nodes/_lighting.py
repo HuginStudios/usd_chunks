@@ -400,10 +400,43 @@ class GeneratePanoramaNode(UsdNodeBase):
         self.create_property("locked", True)
         self._cached_result: dict = {}
 
+    _SUN_PARAM_PORTS = (
+        "azimuth",
+        "elevation",
+        "color_r",
+        "color_g",
+        "color_b",
+        "intensity",
+        "ambient",
+    )
+
+    def _upstream_ready(self) -> bool:
+        """Return False if any connected sun-param port has no value yet.
+
+        An empty value on a connected port means the upstream EstimateLightingNode
+        has not been executed (or was locked without a result), so calling Imagen
+        would waste tokens generating a generic default sky.
+        Unconnected ports are fine — they use _SUN_DEFAULTS intentionally.
+        """
+        for name in self._SUN_PARAM_PORTS:
+            port = self.get_input(name)
+            if port and port.connected_ports():
+                val = self._get_input_value(name)
+                if val is None or str(val).strip() == "":
+                    return False
+        return True
+
     def execute(self, stage) -> dict:
         """Generate panorama from wired sun params and return image_path string output."""
         if self.get_property("locked"):
             return self._cached_result if self._cached_result else {"image_path": ""}
+
+        if not self._upstream_ready():
+            _log.warning(
+                "GeneratePanoramaNode: upstream has not produced sun params yet — "
+                "run EstimateLightingNode first to avoid wasting API tokens"
+            )
+            return {"image_path": ""}
 
         api_key = os.environ.get("GEMINI_API_KEY", "")
         if not api_key:
