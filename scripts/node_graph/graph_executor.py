@@ -48,23 +48,7 @@ class GraphExecutor:
             print("[NodeGraph] No stage set — cannot execute.")
             return
 
-        visited: set = set()
-        order: list = []
-
-        def _topo(node) -> None:
-            if not hasattr(node, "input_ports"):
-                return
-            nid = node.id
-            if nid in visited:
-                return
-            visited.add(nid)
-            for port in node.input_ports():
-                for connected in port.connected_ports():
-                    _topo(connected.node())
-            order.append(node)
-
-        for n in widget._graph.all_nodes():
-            _topo(n)
+        order = self._topo_sort(widget._graph.all_nodes())
 
         cache_shielded = self._collect_cache_shielded(widget._graph)
         if cache_shielded:
@@ -113,39 +97,11 @@ class GraphExecutor:
         if not widget._stage:
             return
 
-        up_visited: set = set()
-        up_order: list = []
-
-        def _upstream(node) -> None:
-            if not hasattr(node, "input_ports"):
-                return
-            nid = node.id
-            if nid in up_visited:
-                return
-            up_visited.add(nid)
-            for port in node.input_ports():
-                for cp in port.connected_ports():
-                    _upstream(cp.node())
-            up_order.append(node)
-
-        visited: set = set()
-        order: list = []
-
-        def _downstream(node) -> None:
-            if not hasattr(node, "output_ports"):
-                return
-            nid = node.id
-            if nid in visited:
-                return
-            visited.add(nid)
-            order.append(node)
-            for port in node.output_ports():
-                for cp in port.connected_ports():
-                    _downstream(cp.node())
-
-        _upstream(start_node)
-        _downstream(start_node)
-        full_order = up_order + [n for n in order if n.id not in up_visited]
+        up_order = self._topo_sort([start_node])
+        up_ids = {n.id for n in up_order}
+        full_order = up_order + [
+            n for n in self._get_downstream(start_node) if n.id not in up_ids
+        ]
 
         cache_shielded = self._collect_cache_shielded(widget._graph)
         if cache_shielded:
@@ -363,21 +319,7 @@ class GraphExecutor:
                 if inner_node:
                     self._apply_promoted_value(inner_node, inner_param, val)
 
-        visited: set = set()
-        order: list = []
-
-        def _topo(n) -> None:
-            nid = n.id
-            if nid in visited:
-                return
-            visited.add(nid)
-            for p in n.input_ports():
-                for cp in p.connected_ports():
-                    _topo(cp.node())
-            order.append(n)
-
-        for n in sub.all_nodes():
-            _topo(n)
+        order = self._topo_sort(sub.all_nodes())
 
         for idx, n in enumerate(order):
             if isinstance(n, (PortInputNode, PortOutputNode)):
@@ -438,6 +380,28 @@ class GraphExecutor:
 
         widget._graph.collapse_group_node(group)
         widget._set_exec_state(group, "valid")
+
+    @staticmethod
+    def _topo_sort(seed_nodes) -> list:
+        """DFS post-order topological sort following input_ports."""
+        visited: set = set()
+        order: list = []
+
+        def _walk(node) -> None:
+            if not hasattr(node, "input_ports"):
+                return
+            nid = node.id
+            if nid in visited:
+                return
+            visited.add(nid)
+            for port in node.input_ports():
+                for cp in port.connected_ports():
+                    _walk(cp.node())
+            order.append(node)
+
+        for n in seed_nodes:
+            _walk(n)
+        return order
 
     @staticmethod
     def _is_locked_cache(node) -> bool:

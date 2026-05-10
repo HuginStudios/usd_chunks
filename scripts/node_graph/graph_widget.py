@@ -537,7 +537,18 @@ class NodeGraphWidget(QtWidgets.QWidget):
                     event.key() == QtCore.Qt.Key_V
                     and event.modifiers() == QtCore.Qt.ControlModifier
                 ):
-                    g.paste_nodes()
+                    clipboard_text = QtWidgets.QApplication.clipboard().text().strip()
+                    if clipboard_text.startswith("/"):
+                        viewer = g.viewer()
+                        scene_pos = viewer.mapToScene(
+                            viewer.mapFromGlobal(QtGui.QCursor.pos())
+                        )
+                        node = self._create_node(
+                            nodes.PrimPathNode, pos=(scene_pos.x(), scene_pos.y())
+                        )
+                        node.set_property("prim_path", clipboard_text)
+                    else:
+                        g.paste_nodes()
                     return True
                 if (
                     event.key() == QtCore.Qt.Key_X
