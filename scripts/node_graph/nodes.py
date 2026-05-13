@@ -1535,50 +1535,20 @@ class ChunkWrapperBase(UsdNodeBase):
         QtCore.QTimer.singleShot(0, self._trigger_downstream)
 
     def _get_graph_widget(self):
-        import sys
-
-        ref = sys.modules.get("_node_graph_ref")
-        return ref.widget if ref and hasattr(ref, "widget") else None
+        from .graph_widget import NodeGraphWidget
+        return NodeGraphWidget._active_instance
 
     def _trigger_downstream(self):
-        """Re-execute this node then cascade to its downstream connected nodes.
+        """Re-execute this node and its downstream nodes via the executor.
 
-        Mirrors _TriggerNodeBase._trigger_downstream, but also re-runs self so
-        the output cache (``prim``, ``layer``) reflects the chunk's new state
-        before downstream nodes pull from it.
+        Called when the underlying chunk fires CHUNK_CHANGED (e.g. a param
+        edited in the chunk panel). Routes through mark_dirty so debouncing
+        applies and the execution path is identical to a graph-side change.
         """
         widget = self._get_graph_widget()
         if not widget or not widget._stage:
             return
-        try:
-            widget._execute_node(self)
-        except Exception:
-            pass
-        try:
-            downstream = widget._get_downstream(self)
-        except Exception:
-            return
-        # Also pull in @ref dependants, matching _TriggerNodeBase behavior.
-        downstream_names = {n.name() for n in downstream}
-        try:
-            for n in widget._graph.all_nodes():
-                if n in downstream or n is self:
-                    continue
-                if not hasattr(n, "model"):
-                    continue
-                for val in n.model.custom_properties.values():
-                    if isinstance(val, str) and val.startswith("@"):
-                        ref_node = val[1:].split(".")[0]
-                        if ref_node in downstream_names:
-                            downstream.append(n)
-                            break
-        except Exception:
-            pass
-        for n in downstream:
-            try:
-                widget._execute_node(n)
-            except Exception:
-                pass
+        widget._executor.mark_dirty(self)
         # Re-assert focus on the node graph after usdview updates may have stolen it.
         # Use two back-to-back timers so we fire after usdview's notice callbacks settle.
         try:
