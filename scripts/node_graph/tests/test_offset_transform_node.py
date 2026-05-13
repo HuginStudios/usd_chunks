@@ -251,3 +251,61 @@ def test_offset_chaining(node_graph, qapp, stage):
     t = _get_translate(prim)
     assert abs(t[0] - 10.0) < 1e-5
     assert abs(t[1] - 50.0) < 1e-5
+
+
+# ── re-execution correctness ──────────────────────────────────────────────────
+
+
+def test_offset_reset_to_zero_restores_original(node_graph, qapp, stage):
+    """Setting an offset back to 0 after a non-zero run restores the original transform."""
+    prim = _make_cube(stage, "/World/OffsetResetCube")
+
+    ng, _ = node_graph
+    node = _make_node(ng)
+    _inject_prim(node, prim)
+
+    node.set_property("ry", "45")
+    node.execute(stage)
+    assert abs(_get_rotate(prim)[1] - 45.0) < 1e-5
+
+    node.set_property("ry", "0")
+    node.execute(stage)
+    assert abs(_get_rotate(prim)[1] - 0.0) < 1e-5
+
+
+def test_offset_wire_cut_restores_original(node_graph, qapp, stage):
+    """Cutting the wire (prim=None) removes the session-layer edits."""
+    prim = _make_cube(stage, "/World/OffsetWireCutCube")
+
+    ng, _ = node_graph
+    node = _make_node(ng)
+    _inject_prim(node, prim)
+
+    node.set_property("ty", "99")
+    node.execute(stage)
+    assert abs(_get_translate(prim)[1] - 99.0) < 1e-5
+
+    # Simulate wire cut: prim input returns None
+    node._get_input_value = lambda name: None
+    node.execute(stage)
+
+    t = _get_translate(prim)
+    assert abs(t[1] - 0.0) < 1e-5
+
+
+def test_offset_re_execute_with_changed_value(node_graph, qapp, stage):
+    """Changing the offset value re-executes correctly without accumulation."""
+    prim = _make_cube(stage, "/World/OffsetChangeCube")
+
+    ng, _ = node_graph
+    node = _make_node(ng)
+    _inject_prim(node, prim)
+
+    node.set_property("tx", "10")
+    node.execute(stage)
+
+    node.set_property("tx", "20")
+    node.execute(stage)
+
+    # Should be 20, not 30 (10+20 accumulated)
+    assert abs(_get_translate(prim)[0] - 20.0) < 1e-5

@@ -115,9 +115,30 @@ class OffsetTransformNode(UsdNodeBase):
 
     def execute(self, stage) -> dict:
         prim = self._get_input_value("prim")
+
         if not prim:
+            # Wire cut: remove our edits from whichever layer we wrote to
+            if getattr(self, "_last_prim_path", None):
+                _XFORM_PROPS = (
+                    "xformOp:translate",
+                    "xformOp:rotateXYZ",
+                    "xformOp:scale",
+                    "xformOpOrder",
+                )
+                for layer in stage.GetLayerStack(includeSessionLayers=True):
+                    spec = layer.GetPrimAtPath(self._last_prim_path)
+                    if spec and any(p in spec.properties for p in _XFORM_PROPS):
+                        for prop_name in _XFORM_PROPS:
+                            prop = spec.properties.get(prop_name)
+                            if prop:
+                                spec.RemoveProperty(prop)
+                        break
+                self._last_prim_path = None
+            self._last_applied = None
             return {"prim": None}
 
+        prim_path = prim.GetPath()
+        prim_path_str = str(prim_path)
         xformable = UsdGeom.Xformable(prim)
 
         cur_t = Gf.Vec3d(0.0, 0.0, 0.0)
@@ -135,6 +156,21 @@ class OffsetTransformNode(UsdNodeBase):
             elif op_type == UsdGeom.XformOp.TypeScale:
                 cur_s = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
 
+        # Subtract what we applied last run to recover the upstream base transform.
+        # Without this, re-execution accumulates our own previous writes.
+        last = getattr(self, "_last_applied", None)
+        if last and last["path"] == prim_path_str:
+            lt, lr, ls = last["t"], last["r"], last["s"]
+            base_t = Gf.Vec3d(cur_t[0] - lt[0], cur_t[1] - lt[1], cur_t[2] - lt[2])
+            base_r = Gf.Vec3f(cur_r[0] - lr[0], cur_r[1] - lr[1], cur_r[2] - lr[2])
+            base_s = Gf.Vec3f(
+                cur_s[0] / ls[0] if ls[0] else cur_s[0],
+                cur_s[1] / ls[1] if ls[1] else cur_s[1],
+                cur_s[2] / ls[2] if ls[2] else cur_s[2],
+            )
+        else:
+            base_t, base_r, base_s = cur_t, cur_r, cur_s
+
         otx = float(self.get_property("tx") or 0)
         oty = float(self.get_property("ty") or 0)
         otz = float(self.get_property("tz") or 0)
@@ -145,9 +181,12 @@ class OffsetTransformNode(UsdNodeBase):
         osy = float(self.get_property("sy") or 1)
         osz = float(self.get_property("sz") or 1)
 
-        new_t = Gf.Vec3d(cur_t[0] + otx, cur_t[1] + oty, cur_t[2] + otz)
-        new_r = Gf.Vec3f(cur_r[0] + orx, cur_r[1] + ory, cur_r[2] + orz)
-        new_s = Gf.Vec3f(cur_s[0] * osx, cur_s[1] * osy, cur_s[2] * osz)
+        new_t = Gf.Vec3d(base_t[0] + otx, base_t[1] + oty, base_t[2] + otz)
+        new_r = Gf.Vec3f(base_r[0] + orx, base_r[1] + ory, base_r[2] + orz)
+        new_s = Gf.Vec3f(base_s[0] * osx, base_s[1] * osy, base_s[2] * osz)
+
+        self._last_applied = {"path": prim_path_str, "t": (otx, oty, otz), "r": (orx, ory, orz), "s": (osx, osy, osz)}
+        self._last_prim_path = prim_path
 
         xformable.ClearXformOpOrder()
         xformable.AddTranslateOp().Set(new_t)
