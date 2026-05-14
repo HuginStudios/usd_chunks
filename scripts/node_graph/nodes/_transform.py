@@ -144,6 +144,7 @@ class OffsetTransformNode(UsdNodeBase):
         cur_t = Gf.Vec3d(0.0, 0.0, 0.0)
         cur_r = Gf.Vec3f(0.0, 0.0, 0.0)
         cur_s = Gf.Vec3f(1.0, 1.0, 1.0)
+        _found_trs = False
         for op in xformable.GetOrderedXformOps():
             v = op.Get(0)
             if v is None:
@@ -151,10 +152,34 @@ class OffsetTransformNode(UsdNodeBase):
             op_type = op.GetOpType()
             if op_type == UsdGeom.XformOp.TypeTranslate:
                 cur_t = Gf.Vec3d(float(v[0]), float(v[1]), float(v[2]))
+                _found_trs = True
             elif op_type in self._ROTATE_TYPES:
                 cur_r = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+                _found_trs = True
             elif op_type == UsdGeom.XformOp.TypeScale:
                 cur_s = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+                _found_trs = True
+
+        if not _found_trs and getattr(self, "_last_prim_path", None) == prim_path:
+            # xformOpOrder has been taken over by a matrix-based op (e.g. RBDSolverNode
+            # wrote xformOp:transform after we ran). Our own translate/rotateXYZ are still
+            # in the session layer but are bypassed by the current xformOpOrder. Read them
+            # directly from the session layer so the _last_applied subtraction stays correct.
+            _session = stage.GetSessionLayer()
+            _spec = _session.GetPrimAtPath(prim_path)
+            if _spec:
+                _t = _spec.properties.get("xformOp:translate")
+                _r = _spec.properties.get("xformOp:rotateXYZ")
+                _s = _spec.properties.get("xformOp:scale")
+                if _t is not None and _t.default is not None:
+                    v = _t.default
+                    cur_t = Gf.Vec3d(float(v[0]), float(v[1]), float(v[2]))
+                if _r is not None and _r.default is not None:
+                    v = _r.default
+                    cur_r = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+                if _s is not None and _s.default is not None:
+                    v = _s.default
+                    cur_s = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
 
         # Subtract what we applied last run to recover the upstream base transform.
         # Without this, re-execution accumulates our own previous writes.
@@ -185,7 +210,12 @@ class OffsetTransformNode(UsdNodeBase):
         new_r = Gf.Vec3f(base_r[0] + orx, base_r[1] + ory, base_r[2] + orz)
         new_s = Gf.Vec3f(base_s[0] * osx, base_s[1] * osy, base_s[2] * osz)
 
-        self._last_applied = {"path": prim_path_str, "t": (otx, oty, otz), "r": (orx, ory, orz), "s": (osx, osy, osz)}
+        self._last_applied = {
+            "path": prim_path_str,
+            "t": (otx, oty, otz),
+            "r": (orx, ory, orz),
+            "s": (osx, osy, osz),
+        }
         self._last_prim_path = prim_path
 
         xformable.ClearXformOpOrder()

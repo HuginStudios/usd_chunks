@@ -1536,6 +1536,7 @@ class ChunkWrapperBase(UsdNodeBase):
 
     def _get_graph_widget(self):
         from .graph_widget import NodeGraphWidget
+
         return NodeGraphWidget._active_instance
 
     def _trigger_downstream(self):
