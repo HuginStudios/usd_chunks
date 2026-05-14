@@ -78,7 +78,7 @@ def main():
     )
     myChunk.add_param(primSel)
     myChunk.add_param(dynGroup)
-    myChunk.add_callback(build, sender=primSel)
+    myChunk.add_callback(build, sender=primSel, send_on_create=True)
 
     return myChunk
 

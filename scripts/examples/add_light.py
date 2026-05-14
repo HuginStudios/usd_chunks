@@ -86,6 +86,8 @@ def main():
     attribute_group = chunk.Group("attr_grp", flags=chunk.ChunkFlags.GroupFlags.FRAMED)
     chunk_api.add_param(attribute_group)
 
+    chunk_api.add_callback(execute, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
+
     return chunk_api
 
 
