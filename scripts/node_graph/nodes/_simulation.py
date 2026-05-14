@@ -361,8 +361,15 @@ class RBDSolverNode(UsdNodeBase):
         force_dicts=None,
     ) -> None:
         """Simulate a single prim as one rigid body — writes time-sampled xform."""
-        # Clear only our previous sim time samples (xformOp:transform)
-        # but leave other xform ops (from SetTransform etc.) intact for reading
+        # Read world transform FIRST, before any cleanup — the cleanup removes
+        # xformOpOrder from the session layer which would cause USD to ignore any
+        # upstream offset ops (e.g. from OffsetTransformNode) during the read.
+        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        world_xf = xform_cache.GetLocalToWorldTransform(prim)
+        translate = world_xf.ExtractTranslation()
+        rot = world_xf.ExtractRotation()
+
+        # Clear our previous sim time samples from the session layer
         session = stage.GetSessionLayer()
         prim_path = prim.GetPath()
         prim_spec = session.GetPrimAtPath(prim_path)
@@ -370,13 +377,6 @@ class RBDSolverNode(UsdNodeBase):
             for prop_name in ["xformOp:transform", "xformOpOrder"]:
                 if session.GetPropertyAtPath(prim_path.AppendProperty(prop_name)):
                     prim_spec.RemoveProperty(prim_spec.properties[prop_name])
-
-        # Read the prim's composed world transform (includes SetTransform, parent hierarchy)
-        # Use a fresh XformCache at default time to get the non-animated pose
-        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
-        world_xf = xform_cache.GetLocalToWorldTransform(prim)
-        translate = world_xf.ExtractTranslation()
-        rot = world_xf.ExtractRotation()
 
         # Get parent's world transform for local-space conversion
         parent = prim.GetParent()
