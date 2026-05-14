@@ -183,8 +183,8 @@ def create_camera(owner: chunk.LineEdit, notice, sender):
 def build_model_group(turntabler: chunk.Chunk):
     model_grp = chunk.Group("model")
     path_param = chunk.LineEdit("prim")
-    path_param.add_callback(build_pedestal)
-    path_param.add_callback(refererence_geom)
+    path_param.add_callback(build_pedestal, send_on_create=True)
+    path_param.add_callback(refererence_geom, send_on_create=True)
 
     path_param.user_data["bbox_cache"] = UsdGeom.BBoxCache(0, ["render", "default"], True)
 
@@ -198,7 +198,7 @@ def build_camera_group(turntabler):
     turntabler.add_param(camera_grp)
 
     path_param = turntabler.get_param("prim")
-    path_param.add_callback(create_camera)
+    path_param.add_callback(create_camera, send_on_create=True)
 
     return camera_grp
 

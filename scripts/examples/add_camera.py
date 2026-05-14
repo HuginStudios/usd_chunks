@@ -36,10 +36,11 @@ def set_format_list(owner, notice, sender):
     _chunk = param.get_chunk()
     selected_model = param.value
     cam_data = next((c for c in param.cameras if c.get("model") == selected_model), None)
+    if cam_data is None:
+        return
     sensor_size = cam_data.get("sensorSize")
     formats = _chunk.get_param("formats")
-    format_list = [format.get("format") for format in sensor_size]
-    formats.menu_items = format_list
+    formats.menu_items = [f.get("format") for f in sensor_size]
     set_preset_values(owner, notice, sender)
 
 
@@ -48,19 +49,15 @@ def set_preset_values(owner, notice, sender):
     _chunk = param.get_chunk()
     camera_presets = _chunk.get_param("camera_preset")
     selected_model = camera_presets.value
-
     cam_data = next((c for c in camera_presets.cameras if c.get("model") == selected_model), None)
-    # pprint.pprint(cam_data)
-
-    focal_param = _chunk.get_param("focalLength")
-    sensor_size = cam_data.get("sensorSize")
+    if cam_data is None:
+        return
     formats = _chunk.get_param("formats")
-    horizontal_param = _chunk.get_param("horizontalAperture")
-    vertical_param = _chunk.get_param("verticalAperture")
-
-    focal_param.value = sensor_size[formats.get_selected_index()].get("focalLength", [50.0])[0]
-    horizontal_param.value = sensor_size[formats.get_selected_index()].get("size")[0]
-    vertical_param.value = sensor_size[formats.get_selected_index()].get("size")[1]
+    idx = formats.get_selected_index()
+    sensor = cam_data["sensorSize"][idx]
+    _chunk.get_param("focalLength").value = sensor.get("focalLength", [50.0])[0]
+    _chunk.get_param("horizontalAperture").value = sensor["size"][0]
+    _chunk.get_param("verticalAperture").value = sensor["size"][1]
 
 
 def _apply_freecam_transform(_chunk):
@@ -76,6 +73,18 @@ def _apply_freecam_transform(_chunk):
     UsdGeom.Xformable(prim).MakeMatrixXform().Set(gf_cam.transform)
     if not prim.GetAttribute("focusDistance").Get():
         _chunk.get_param("focusDistance").value = gf_cam.focusDistance
+    scene.schedule_viewport_camera(prim)
+
+
+def _set_as_viewport_camera(owner, notice, sender):
+    param = notice.data
+    _chunk = param.get_chunk()
+    scene = _chunk.get_scene()
+    stage = _chunk.get_stage()
+    prim_path = _chunk.get_param("primpath_location").value
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return
     scene.schedule_viewport_camera(prim)
 
 
@@ -109,7 +118,7 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
     )
     chunk_api.add_param(primpath)
-    primpath.add_callback(execute)
+    primpath.add_callback(execute, send_on_create=False)
 
     # add camera type
     cameras = _get_camera_data()
@@ -118,15 +127,13 @@ def main():
     menu.cameras = cameras
     # Default to Fuji X-T5.
     menu.value = "X-T5"
-    menu.add_callback(set_format_list)
+    menu.add_callback(set_format_list, send_on_create=False)
     chunk_api.add_param(menu)
     formats = chunk.Menu("formats", "Formats")
-    formats.add_callback(set_preset_values)
+    formats.add_callback(set_preset_values, send_on_create=False)
     chunk_api.add_param(formats)
 
-    default_cam = next((c for c in cameras if c.get("model") == menu.value), cameras[0])
-    formats.menu_items = [f.get("format") for f in default_cam.get("sensorSize", [])]
-
+    
     chunk_api.add_param(chunk.Slider("focalLength", "Focal Length", min_value=1.0, max_value=800.0))
     chunk_api.add_param(chunk.Slider("horizontalAperture", "Horizontal Aperture", min_value=1.0, max_value=100.0))
     chunk_api.add_param(chunk.Slider("horizontalApertureOffset", "Horizontal Aperture Offset", min_value=-50.0, max_value=50.0))
@@ -134,16 +141,26 @@ def main():
     chunk_api.add_param(chunk.Slider("verticalApertureOffset", "Vertical Aperture Offset", min_value=-50.0, max_value=50.0))
     chunk_api.add_param(chunk.Slider("fStop", "f-Stop", min_value=0.7, max_value=64.0))
     chunk_api.add_param(chunk.Slider("focusDistance", "Focus Distance", min_value=0.0, max_value=1000.0))
+    
+    default_cam = next((c for c in cameras if c.get("model") == menu.value), cameras[0])
+    formats.menu_items = [f.get("format") for f in default_cam.get("sensorSize", [])]
+
+
+    lock_cam = chunk.Checkbox("lock_to_freecam", "Lock to Free Camera")
+    lock_cam.add_callback(_on_lock_changed, send_on_create=False)
+    chunk_api.add_param(lock_cam)
+
+    set_cam_btn = chunk.Button("set_viewport_camera", "Set as Viewport Camera")
+    set_cam_btn.add_callback(_set_as_viewport_camera)
+    chunk_api.add_param(set_cam_btn)
 
     chunk_api.add_callback(execute, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
-    lock_cam = chunk.Checkbox("lock_to_freecam", "Lock to Free Camera")
-    lock_cam.add_callback(_on_lock_changed)
-    chunk_api.add_param(lock_cam)
 
     return chunk_api
 
 
 def execute(owner, notice, sender):
+    
     param = notice.data
     _chunk = param.get_chunk()
     stage = owner.get_stage()

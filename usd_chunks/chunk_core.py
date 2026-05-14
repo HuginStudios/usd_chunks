@@ -2484,7 +2484,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 When a signal with sender and ATTRIBUTE_CHANGED notice is sent, the method
                 update_usd_attrib() of this class is called
         """
-        self._usd_prop_path = prop_path
+        self._usd_prop_path = prop_path.GetPath() if isinstance(prop_path, Usd.Property) else prop_path
 
         if self._usd_prop_connection:
             self._usd_prop_connection.disconnect()
@@ -3266,6 +3266,8 @@ class ChunkBase(ChunkGroupBase):
         """
         for _, child in self.iter_hierarchy():
             for cb in child.get_on_create_callbacks():
+                if cb.alias == chunk_notice.ChunkNoticeAlias.CHUNK_LOADED:
+                    continue
                 cb.trigger()
 
     def get_config(self) -> Optional["ChunkConfig"]:
