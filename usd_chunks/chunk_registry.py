@@ -984,11 +984,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not (parent := self.graph_layers.get(graph_layer_id)):
             parent = Sdf.Layer.CreateAnonymous(graph_layer_id)
             self.graph_layers[graph_layer_id] = parent
-            root.subLayerPaths.append(parent.identifier)
+            root.subLayerPaths.insert(0, parent.identifier)
 
         # If the root has been detatched from the stage's root, reapply it
         if parent.identifier not in root.subLayerPaths:
-            root.subLayerPaths.append(parent.identifier)
+            root.subLayerPaths.insert(0, parent.identifier)
 
         # The sort_key is used to determine the order of the chunk sublayers
         index = c.get_dag_node().get_sort_key()

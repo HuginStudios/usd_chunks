@@ -3442,6 +3442,31 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._modified = False
         self._scene_file = Path()
 
+    @abstractmethod
+    def get_current_frame(self) -> float:
+        raise NotImplementedError
+
+
+    @abstractmethod
+    def get_end_frame(self) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_start_frame(self) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_current_frame(self, frame: float):
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_end_frame(self, frame: float):
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_start_frame(self, frame: float):
+        raise NotImplementedError
+
     def export_scene(self, path: str | Path):
         """
         Export the current scene. The result will be written to path, if path is a chunk_serial.FileExtensions.SCENE file path.
