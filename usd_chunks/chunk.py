@@ -266,6 +266,12 @@ class Menu(ChunkParamBase[str]):
                 return self.menu_items[0]
 
         return super().convert_attr(attr, val)
+    
+    def get_selected_index(self):
+        try:
+            return self.menu_items.index(self.value)
+        except ValueError:
+            return 0
 
 
 class Button(ChunkParamBase):

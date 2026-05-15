@@ -504,6 +504,17 @@ class ChunkScrollArea(QtWidgets.QScrollArea):
         return QtCore.QSize(0, 0)
 
 
+class ChunkScrollArea(QtWidgets.QScrollArea):
+    def sizeHint(self):
+        if w := self.widget():
+            h = min(w.sizeHint().height(), self.maximumHeight())
+            return QtCore.QSize(super().sizeHint().width(), h)
+        return super().sizeHint()
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(0, 0)
+
+
 class ContainerWidget(
     Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QWidget
 ):
@@ -578,11 +589,6 @@ class ContainerWidget(
             f"QFrame {{ background-color: {bg};}}"
             f"border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
-        if hasattr(self, 'content_scroll'):
-            self.content_scroll.setStyleSheet(
-                f"QScrollArea#chunk_content_scroll {{ background-color: {bg}; border: none; }}"
-                f"QScrollArea#chunk_content_scroll > QWidget {{ background-color: {bg}; }}"
-            )
 
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
@@ -596,34 +602,15 @@ class ContainerWidget(
         self._animation_value = val
         scale = max(self._animation_value / self.animation_duration, 0)
 
-        if hasattr(self, 'content_scroll'):
-            h = min(self.content_layout.sizeHint().height(), self._scroll_max_height)
-            self.content_scroll.setFixedHeight(int(h * scale))
-        else:
-            h = self.content_layout.sizeHint().height()
-            self.content.setFixedHeight(int(h * scale))
-            self._update_ancestor_scroll()
+        h = self.content_layout.sizeHint().height()
+        self.content.setFixedHeight(int(h * scale))
 
     def animation_finished(self):
         """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
         if self.is_collapsed():
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
-            if hasattr(self, 'content_scroll'):
-                self.content_scroll.setFixedHeight(0)
         else:
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
-            if hasattr(self, 'content_scroll'):
-                self.content_scroll.setMinimumHeight(0)
-                self.content_scroll.setMaximumHeight(self._scroll_max_height)
-        self._update_ancestor_scroll()
-
-    def _update_ancestor_scroll(self):
-        w = self.parentWidget()
-        while w is not None:
-            if hasattr(w, 'content_scroll'):
-                w.content_scroll.updateGeometry()
-                return
-            w = w.parentWidget()
 
     def get_widget_factory(self) -> chunk_core.ChunkWidgetFactoryBase:
         if factory := self.group.widget_factory:
@@ -790,24 +777,6 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if not isinstance(self.group, chunk.ChunkBase):
             return
 
-        self.__layout__.removeWidget(self.content)
-
-        self.content_scroll = ChunkScrollArea()
-        self.content_scroll.setObjectName("chunk_content_scroll")
-        self.content_scroll.setWidget(self.content)
-        self.content_scroll.setWidgetResizable(True)
-        self.content_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.content_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll_max_height = 16777215
-        self.content_scroll.setMaximumHeight(self._scroll_max_height)
-        self.content_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.content_scroll.setViewportMargins(2, 2, 2, 0)
-        self.content_scroll.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
-        self.content_scroll.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-        self.__layout__.addWidget(self.content_scroll)
         self.__layout__.setContentsMargins(2, 1, 2, 0)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
@@ -857,7 +826,11 @@ class ChunkArea(QtWidgets.QScrollArea):
         self.flow = QtWidgets.QVBoxLayout()
         self.flow.setContentsMargins(6, 0, 10, 0)
         self.flow.setSpacing(40)
+        self.flow.setContentsMargins(6, 0, 10, 0)
+        self.flow.setSpacing(40)
         self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
+
         self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
 
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)

@@ -1226,7 +1226,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         sender: Optional["ChunkNoticePropagator"] = None,
         listen_globally: bool = False,
         notice_alias: ChunkNoticeAlias = ChunkNoticeAlias.NONE,
-        send_on_create=True,
+        send_on_create=False,
         private=False,
     ):
         """Subscribe to a notice. When the notice is sent, the supplied method will be called, by default, with three arguments:

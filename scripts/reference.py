@@ -1,6 +1,7 @@
 import os
 from pxr import Sdf
 from usd_chunks import chunk
+from usd_chunks.chunk_utils import get_unique_path
 
 
 def file_changed(owner, notice, sender):
@@ -19,12 +20,7 @@ def file_changed(owner, notice, sender):
     unique_path = prim_path
     stage = param.get_stage()
 
-    prim = stage.GetPrimAtPath(prim_path)
-    counter = 1
-    while prim.IsValid():
-        unique_path = prim_path + f"{counter}"
-        prim = stage.GetPrimAtPath(prim_path)
-        counter += 1
+    unique_path = get_unique_path(stage, prim_path)
     param.get_chunk().get_param("primpath_location").value = unique_path
 
 
@@ -35,10 +31,12 @@ def import_callback(owner, notice, sender):
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
+
     reference_path = param.get_chunk().get_param("file_path").value
     prim_path = param.get_chunk().get_param("primpath_location").value
     prim = stage.GetPrimAtPath(prim_path)
     prim_type = "Xform"
+
     if not prim.IsValid():
         prim = stage.DefinePrim(prim_path, prim_type)
     import_path = param.get_chunk().get_param("import_primpath").value
@@ -53,7 +51,7 @@ def main():
     referenceChunk = chunk.Chunk("Reference")
 
     # import
-    reference_fb = chunk.FileBrowser("file_path", extensions=[".usd", ".usda", ".usdc", ".usdz"])
+    reference_fb = chunk.FileBrowser("file_path", extensions=[".usd*", ".usd", ".usda", ".usdc", ".usdz"])
     reference_fb.add_callback(file_changed)
     import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     import_primpath.add_callback(import_callback)

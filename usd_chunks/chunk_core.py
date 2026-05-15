@@ -2484,7 +2484,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 When a signal with sender and ATTRIBUTE_CHANGED notice is sent, the method
                 update_usd_attrib() of this class is called
         """
-        self._usd_prop_path = prop_path
+        self._usd_prop_path = prop_path.GetPath() if isinstance(prop_path, Usd.Property) else prop_path
 
         if self._usd_prop_connection:
             self._usd_prop_connection.disconnect()
@@ -2504,6 +2504,19 @@ class ChunkUsdAttributeSupport(AttributesBase):
         stage = self.get_stage()
         if stage and self._usd_prop_path:
             return stage.GetPropertyAtPath(self._usd_prop_path)
+
+    def connect_usd_attr(self, attr: Usd.Property):
+        """
+        Connect this parameter to a UsdProperty so changes to the param update the attribute.
+
+        Args:
+            attr (Usd.Property): The UsdAttribute or UsdRelationship to connect to
+        """
+        try:
+            if sender := self.get_attribute_sender("value"):
+                self.set_usd_prop(attr, sender)
+        except AttributeError:
+            pass
 
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> "ChunkUsdAttributeSupport":
@@ -2533,11 +2546,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
             param.default_value = default_value  # type: ignore
 
-        try:
-            if sender := param.get_attribute_sender("value"):
-                param.set_usd_prop(str(attr.GetPath()), sender)
-        except AttributeError:
-            pass
+        param.connect_usd_attr(attr)
 
         return param
 
@@ -3257,6 +3266,8 @@ class ChunkBase(ChunkGroupBase):
         """
         for _, child in self.iter_hierarchy():
             for cb in child.get_on_create_callbacks():
+                if cb.alias == chunk_notice.ChunkNoticeAlias.CHUNK_LOADED:
+                    continue
                 cb.trigger()
 
     def get_config(self) -> Optional["ChunkConfig"]:
@@ -3703,6 +3714,26 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             Usd.Property: Selected property
         """
         return None
+
+    def get_active_camera(self):
+        """Return the current viewport camera as a Gf.Camera, or None if unsupported."""
+        return None
+
+    def connect_active_camera_changed(self, _callback) -> None:
+        """Connect callback to fire whenever the active viewport camera moves."""
+        pass
+
+    def disconnect_active_camera_changed(self, _callback) -> None:
+        """Disconnect a previously connected active camera callback."""
+        pass
+
+    def set_viewport_camera(self, _prim) -> None:
+        """Set the viewport to look through the given camera prim."""
+        pass
+
+    def schedule_viewport_camera(self, _prim, _delay_ms: int = 150) -> None:
+        """Switch viewport to the given camera prim after a short idle delay."""
+        pass
 
     def primSelectionChangedCallback(self, *args, **kwargs):
         chunk_notice.send_notice(
