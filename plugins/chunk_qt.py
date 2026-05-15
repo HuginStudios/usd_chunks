@@ -84,6 +84,8 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
 
         if min_val is not None:
             self.setMinimum(min_val * self._step)
+        else:
+            self.setMinimum(-999999999.0)
 
         if max_val is not None:
             self.setMaximum(max_val * self._step)
@@ -114,6 +116,8 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
 
         if min_val is not None:
             self.setMinimum(int(min_val * self._step))
+        else:
+            self.setMinimum(-999999999)
 
         if max_val is not None:
             self.setMaximum(int(max_val * self._step))
@@ -343,6 +347,7 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
     def set_value(self, value: bool):
         return self.setChecked(value)
 
+
 class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushButton):
     def __init__(self, param: chunk.Button):
         super().__init__(param)
@@ -493,17 +498,6 @@ class LabeledWidget(QtWidgets.QWidget):
         return super().leaveEvent(event)
 
 
-class ChunkScrollArea(QtWidgets.QScrollArea):
-    def sizeHint(self):
-        if w := self.widget():
-            h = min(w.sizeHint().height(), self.maximumHeight())
-            return QtCore.QSize(super().sizeHint().width(), h)
-        return super().sizeHint()
-
-    def minimumSizeHint(self):
-        return QtCore.QSize(0, 0)
-
-
 class ContainerWidget(
     Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QWidget
 ):
@@ -564,25 +558,17 @@ class ContainerWidget(
         self.setLayout(self.__layout__)
         self._update_group_depth()
 
-    _GROUP_COLORS = ("#303030","#333333")
+    _GROUP_COLORS = ("#303030", "#333333")
 
     def _update_group_depth(self):
         depth = len(self.group.get_identifier().split("."))
         bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
         self._group_bg = bg
 
-        self.minimize_button.setStyleSheet(
-            f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
-        )
+        self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
         self.content.setStyleSheet(
-            f"QFrame {{ background-color: {bg};}}"
-            f"border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
+            f"QFrame {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
-        if hasattr(self, 'content_scroll'):
-            self.content_scroll.setStyleSheet(
-                f"QScrollArea#chunk_content_scroll {{ background-color: {bg}; border: none; }}"
-                f"QScrollArea#chunk_content_scroll > QWidget {{ background-color: {bg}; }}"
-            )
 
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
@@ -596,34 +582,15 @@ class ContainerWidget(
         self._animation_value = val
         scale = max(self._animation_value / self.animation_duration, 0)
 
-        if hasattr(self, 'content_scroll'):
-            h = min(self.content_layout.sizeHint().height(), self._scroll_max_height)
-            self.content_scroll.setFixedHeight(int(h * scale))
-        else:
-            h = self.content_layout.sizeHint().height()
-            self.content.setFixedHeight(int(h * scale))
-            self._update_ancestor_scroll()
+        h = self.content_layout.sizeHint().height()
+        self.content.setFixedHeight(int(h * scale))
 
     def animation_finished(self):
         """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
         if self.is_collapsed():
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
-            if hasattr(self, 'content_scroll'):
-                self.content_scroll.setFixedHeight(0)
         else:
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
-            if hasattr(self, 'content_scroll'):
-                self.content_scroll.setMinimumHeight(0)
-                self.content_scroll.setMaximumHeight(self._scroll_max_height)
-        self._update_ancestor_scroll()
-
-    def _update_ancestor_scroll(self):
-        w = self.parentWidget()
-        while w is not None:
-            if hasattr(w, 'content_scroll'):
-                w.content_scroll.updateGeometry()
-                return
-            w = w.parentWidget()
 
     def get_widget_factory(self) -> chunk_core.ChunkWidgetFactoryBase:
         if factory := self.group.widget_factory:
@@ -649,7 +616,7 @@ class ContainerWidget(
             # The layout should update min and max size. When Collapsable, this is handled in animation_finished, as collapsed groups should set NoConstraint
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
 
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
+        if self.group.has_flag(ChunkFlags.GroupFlags.LABELED):
             self.minimize_button.setText(self.group.get_label())
             self.minimize_button.setHidden(False)
         else:
@@ -657,13 +624,13 @@ class ContainerWidget(
             if not self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
                 self.minimize_button.setHidden(True)
 
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
+        if self.group.has_flag(ChunkFlags.GroupFlags.FRAMED):
             self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
             self.content.setLineWidth(2)
         else:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
 
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LIST in self.group.flags:
+        if self.group.has_flag(ChunkFlags.GroupFlags.LIST):
             self.list_expand_button.setHidden(False)
 
             icon = QtGui.QIcon(str(chunk_resources.get_icon("add")))
@@ -672,7 +639,7 @@ class ContainerWidget(
             self.list_expand_button.clicked.connect(self.list_expand)
 
     def update_label(self, text: str):
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
+        if self.group.has_flag(ChunkFlags.GroupFlags.LABELED):
             self.minimize_button.setText(text)
 
     def list_expand(self):
@@ -707,7 +674,7 @@ class ContainerWidget(
         self.toggle_anim.setDirection(direction)
         self.toggle_anim.start()
 
-        if hasattr(self, '_group_bg'):
+        if hasattr(self, "_group_bg"):
             bg = self._group_bg
             if checked:
                 self.minimize_button.setStyleSheet(
@@ -716,9 +683,7 @@ class ContainerWidget(
                     f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }}"
                 )
             else:
-                self.minimize_button.setStyleSheet(
-                    f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
-                )
+                self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
 
     def delete_self(self):
         self.setParent(None)
@@ -790,24 +755,6 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if not isinstance(self.group, chunk.ChunkBase):
             return
 
-        self.__layout__.removeWidget(self.content)
-
-        self.content_scroll = ChunkScrollArea()
-        self.content_scroll.setObjectName("chunk_content_scroll")
-        self.content_scroll.setWidget(self.content)
-        self.content_scroll.setWidgetResizable(True)
-        self.content_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.content_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll_max_height = 16777215
-        self.content_scroll.setMaximumHeight(self._scroll_max_height)
-        self.content_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.content_scroll.setViewportMargins(2, 2, 2, 0)
-        self.content_scroll.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
-        self.content_scroll.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-        self.__layout__.addWidget(self.content_scroll)
         self.__layout__.setContentsMargins(2, 1, 2, 0)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
@@ -857,7 +804,11 @@ class ChunkArea(QtWidgets.QScrollArea):
         self.flow = QtWidgets.QVBoxLayout()
         self.flow.setContentsMargins(6, 0, 10, 0)
         self.flow.setSpacing(40)
+        self.flow.setContentsMargins(6, 0, 10, 0)
+        self.flow.setSpacing(40)
         self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
+
         self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
 
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1337,6 +1288,7 @@ def file_dial(name_filter: Optional[str] = None, create_new=False, directory=Fal
         res = QtWidgets.QFileDialog.getOpenFileName(None, "Open File", "", _filter, "")
 
     return res[0]
+
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
     # Create an empty dock widget to hold the modules
