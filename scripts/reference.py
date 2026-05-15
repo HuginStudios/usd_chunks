@@ -28,16 +28,15 @@ def import_callback(owner, notice, sender):
     param = notice.data
     stage = param.get_stage()
     # Clear any edits in this layer before importing a reference again.
-    #chunk_layer = stage.GetEditTarget().GetLayer()
-    #chunk_layer.Clear()
+    chunk_layer = stage.GetEditTarget().GetLayer()
+    chunk_layer.Clear()
 
-    print("AAA")
 
     reference_path = param.get_chunk().get_param("file_path").value
     prim_path = param.get_chunk().get_param("primpath_location").value
     prim = stage.GetPrimAtPath(prim_path)
     prim_type = "Xform"
-    print("BBB")
+
     if not prim.IsValid():
         prim = stage.DefinePrim(prim_path, prim_type)
     import_path = param.get_chunk().get_param("import_primpath").value
@@ -45,7 +44,6 @@ def import_callback(owner, notice, sender):
         ref_path = Sdf.Reference(reference_path, import_path)
     else:
         ref_path = Sdf.Reference(reference_path)
-    print("CCC")
     prim.GetReferences().AddReference(ref_path)
 
 

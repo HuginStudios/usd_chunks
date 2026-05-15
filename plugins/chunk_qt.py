@@ -589,11 +589,6 @@ class ContainerWidget(
             f"QFrame {{ background-color: {bg};}}"
             f"border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
-        if hasattr(self, 'content_scroll'):
-            self.content_scroll.setStyleSheet(
-                f"QScrollArea#chunk_content_scroll {{ background-color: {bg}; border: none; }}"
-                f"QScrollArea#chunk_content_scroll > QWidget {{ background-color: {bg}; }}"
-            )
 
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
@@ -614,22 +609,8 @@ class ContainerWidget(
         """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
         if self.is_collapsed():
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
-            if hasattr(self, 'content_scroll'):
-                self.content_scroll.setFixedHeight(0)
         else:
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
-            if hasattr(self, 'content_scroll'):
-                self.content_scroll.setMinimumHeight(0)
-                self.content_scroll.setMaximumHeight(self._scroll_max_height)
-        self._update_ancestor_scroll()
-
-    def _update_ancestor_scroll(self):
-        w = self.parentWidget()
-        while w is not None:
-            if hasattr(w, 'content_scroll'):
-                w.content_scroll.updateGeometry()
-                return
-            w = w.parentWidget()
 
     def get_widget_factory(self) -> chunk_core.ChunkWidgetFactoryBase:
         if factory := self.group.widget_factory:
