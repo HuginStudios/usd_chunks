@@ -1,9 +1,9 @@
-from usd_chunks import chunk, chunk_notice, chunk_utils
-from pxr import UsdGeom
-import http.client
-import json
 import os
+import json
+import http.client
+from pxr import UsdGeom
 from functools import partial
+from usd_chunks import chunk, chunk_notice, chunk_utils
 
 
 def _download_camera_types_cache(camera_cache):
