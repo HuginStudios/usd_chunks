@@ -1,4 +1,4 @@
-from enum import IntFlag, auto
+from enum import IntFlag, IntEnum, auto
 from typing import List
 from pxr import Sdf
 
@@ -11,7 +11,7 @@ class _FlagRepr(IntFlag):
 class ChunkFlags:
     """Hold common flags for chunks"""
 
-    class LayoutFlags(_FlagRepr):
+    class LayoutFlags(IntEnum):
         """Flags for layout hinting parameters and groups
 
         Attributes:
@@ -47,7 +47,8 @@ class ChunkFlags:
             LIST: Parameters on this group is treated as a list that can be extended and shrinked
         """
 
-        LABELED = 1
+        NONE = 0
+        LABELED = auto()
         COLLAPSABLE = auto()
         FRAMED = auto()
         LIST = auto()
@@ -62,8 +63,8 @@ class ChunkFlags:
             PRIM_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdPrim selections
             PROP_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdProperty selections
         """
-
-        LABELED = 1
+        NONE = 0
+        LABELED = auto()
 
         # FILE
         FILE_EXISTING = auto()
@@ -72,6 +73,10 @@ class ChunkFlags:
         # LINEEDIT
         PRIM_SELECTION = auto()
         PROP_SELECTION = auto()
+
+        # TEXTEDIT
+        PY_SYNTAX_HIGHLIGHT = auto()
+        USD_SYNTAX_HIGHLIGHT = auto()
 
     class ParamType(_FlagRepr):
         """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
@@ -127,8 +132,9 @@ class ChunkFlags:
         # String
         LABEL = STRING | (1 << 0)
         LINEEDIT = STRING | (1 << 1)
-        FILE = STRING | (1 << 2)
-        STRING_MENU = STRING | (1 << 3)
+        TEXTEDIT = STRING | (1 << 2)
+        FILE = STRING | (1 << 3)
+        STRING_MENU = STRING | (1 << 4)
 
         # Bool
         CHECKBOX = BOOL | (1 << 0)

@@ -15,7 +15,7 @@ In this case, the -e flag is unessesary as the chunk D is already solved after A
 """
 
 from usd_chunks import chunk_registry, chunk_core, chunk
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentError
 
 from pxr import Usd
 
@@ -31,9 +31,13 @@ class HeadlessScene(chunk_core.SceneSender):
 
     def get_stage(self) -> Usd.Stage:
         return self.stage
+    
+    def should_install_package(self, package_name: str) -> bool:
+        inp = input(f"Install package: {package_name}? Y or N... ").lower()
+        return inp in ["y", "1"]
 
 
-def initialize(module_names, usdFile=None):
+def initialize_modules(module_names, usdFile=None):
     scene = HeadlessScene(usdFile)
 
     creg = chunk_registry.ChunkRegistry()
@@ -43,6 +47,15 @@ def initialize(module_names, usdFile=None):
     for name in module_names:
         chunk.create_chunks(name)
 
+    return scene.get_chunks()
+
+def initialize_scene(scene_path, usdFile=None):
+    scene = HeadlessScene(usdFile)
+
+    creg = chunk_registry.ChunkRegistry()
+    creg.initialize(scene, "cli", scene_path)
+
+    chunk_registry.ChunkLayerManager().initialize(scene.get_stage())
     return scene.get_chunks()
 
 
@@ -57,11 +70,9 @@ def parse_params(chunks, args):
             print(f"Could not find chunk {cname}")
             continue
 
-        if not (param := c.get_param(parampath)):
+        if not (param := c.get_param(parampath, chunk.is_param)):
             print(f"Param '{parampath}' is invalid for chunk '{c.name}'")
             continue
-
-        assert isinstance(param, chunk.ChunkParamBase)
 
         types = chunk.ChunkFlags.ParamTypeToTypes(param.evaluate_type())
         if not types:
@@ -70,21 +81,45 @@ def parse_params(chunks, args):
         cast = types[0](value)
         param.value = cast
 
+def execute_chunks(chunk_names):
+    scene = chunk.get_scene()
+    if not scene:
+        return
+
+    if "*" in chunk_names:
+        for c in scene.get_chunks():
+            c.execute()
+        return
+
+    for m in chunk_names:
+        if not (c := scene.get_chunk(m)):
+            continue
+        c.execute()
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument(
         "--file", required=False, help="A path to a usd file. Supported formats: (.usda, .usd, .usdc, .usdz)"
     )
-    parser.add_argument("--modules", nargs="+", help="The chunk module to load")
+    parser.add_argument("--scene", help="Load a scene")
+    parser.add_argument("--modules", nargs="+", help="The chunk modules to load")
     parser.add_argument("--args", nargs="+", help="Arguments to the chunk loaded from the module")
-    parser.add_argument("-e", action="store_true", help="Should the last loaded chunk from the module call execute")
+    parser.add_argument("--execute", "-e", nargs="+", help="Should the last loaded chunk from the module call execute")
 
     args = parser.parse_args()
 
-    if chunks := initialize(args.modules, args.file):
-        parse_params(chunks, args.args)
+    if args.scene:
+        chunks = initialize_scene(args.scene, args.file)
+    elif args.modules:
+        chunks = initialize_modules(args.modules, args.file)
+    else:
+        raise ArgumentError(None, "Missing scene or module argument")
 
-    if args.e:
-        for c in chunks:
-            c.execute()
+    try:
+        parse_params(chunks, args.args)
+    except Exception as e:
+        print(e)
+        raise
+
+    if args.execute:
+        execute_chunks(args.execute)

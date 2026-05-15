@@ -18,7 +18,7 @@ def main(api):
     button.add_callback(clickedButton)
 
     # Create the chunk and add the button parameter
-    myChunk = chunk.Chunk("My Chunk", category="Examples")
+    myChunk = chunk.Chunk("My Chunk")
     myChunk.add_param(button)
 
     # main returns the chunk object for the ChunkRegistry to use

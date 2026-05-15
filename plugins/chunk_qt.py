@@ -15,6 +15,22 @@ import os
 import re
 
 
+class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
+    def __init__(self, parent, chunk_highlighter: chunk_core.SyntaxHighlightMapping):
+        super().__init__(parent)
+        self._hl = chunk_highlighter
+
+    def highlightBlock(self, text):
+        for start, end, style in self._hl.match_text(text):
+            fmt = QtGui.QTextCharFormat()
+            if style.get("bold"):
+                fmt.setFontWeight(QtGui.QFont.Weight.Bold)
+
+            fmt.setFontItalic(style.get("italic", False))
+            fmt.setForeground(QtGui.QColor(style.get("color")))
+            self.setFormat(start, end - start, fmt)
+
+
 class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
     def __init__(self, param: chunk.Slider):
         super().__init__(param)
@@ -46,7 +62,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
         # self.blockSignals(False)
 
     def set_param_layout(self, layout_flags: usd_chunks.chunk_flags.ChunkFlags.LayoutFlags):
-        is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL in layout_flags
+        is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL == layout_flags
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
         self.setOrientation(orient)
@@ -71,6 +87,8 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
 
         if max_val is not None:
             self.setMaximum(max_val * self._step)
+        else:
+            self.setMaximum(999999999.0)
 
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
@@ -99,6 +117,8 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
 
         if max_val is not None:
             self.setMaximum(int(max_val * self._step))
+        else:
+            self.setMaximum(999999999)
 
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
@@ -168,6 +188,47 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         return self.text.setText(str(value))
 
 
+class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidget):
+    def __init__(self, param: chunk.TextEdit):
+        super().__init__(param)
+
+        self.text = QtWidgets.QPlainTextEdit(parent=self)
+        self.text.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.Maximum)
+        self.text.textChanged.connect(self.value_changed)
+        self.text.setTabStopDistance(QtGui.QFontMetricsF(self.text.font()).horizontalAdvance(" ") * 4)
+        self.text.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+
+        hlm = None
+        self.hl = None
+        if param.has_flag(ChunkFlags.ParamFlags.PY_SYNTAX_HIGHLIGHT):
+            hlm = chunk_core.PySyntaxHighlightMapping()
+        elif param.has_flag(ChunkFlags.ParamFlags.USD_SYNTAX_HIGHLIGHT):
+            hlm = chunk_core.UsdSyntaxHighlightMapping()
+        if hlm:
+            self.hl = SyntaxHighlighter(self.text.document(), hlm)
+
+        font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+        self.text.setFont(font)
+
+        self.main_layout = QtWidgets.QHBoxLayout()
+
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.addWidget(self.text)
+        self.setLayout(self.main_layout)
+        self.setup_chunk_widget()
+
+    def focusOutEvent(self, event: QtGui.QFocusEvent) -> None:
+        self.value_changed(self.get_value())
+        return super().focusOutEvent(event)
+
+    def get_value(self):
+        return self.text.document().toPlainText()
+
+    def set_value(self, value):
+        if value != self.get_value():
+            self.text.setPlainText(str(value))
+
+
 class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
     ValueChanged = QtCore.Signal(str)
 
@@ -201,8 +262,11 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         if self.param.extensions:
             pattern = " ".join([pattern + x for x in self.param.extensions])
 
-        create_new = not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
         directory = self.param.has_flag(ChunkFlags.ParamFlags.DIRECTORY)
+
+        create_new = False
+        if directory:
+            create_new = not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
 
         if file := file_dial(pattern, create_new, directory):
             self.set_value(file)
@@ -218,7 +282,7 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         self.button.setIcon(QtGui.QIcon(icon))
 
     def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
-        if ChunkFlags.LayoutFlags.VERTICAL in layout_flags:
+        if ChunkFlags.LayoutFlags.VERTICAL == layout_flags:
             self.main_layout = QtWidgets.QVBoxLayout()
         else:
             self.main_layout = QtWidgets.QHBoxLayout()
@@ -279,7 +343,6 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
     def set_value(self, value: bool):
         return self.setChecked(value)
 
-
 class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushButton):
     def __init__(self, param: chunk.Button):
         super().__init__(param)
@@ -303,7 +366,7 @@ class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
     def __init__(self, param: chunk.Separator):
         super().__init__(param)
 
-        is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL in param.layout
+        is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL == param.layout
         shape = QtWidgets.QFrame.Shape.HLine if is_horizontal else QtWidgets.QFrame.Shape.VLine
         self.setFrameShape(shape)
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
@@ -319,6 +382,7 @@ class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
         ChunkFlags.ParamType.INT_SPINBOX: ChunkIntSpinboxWidget,
         ChunkFlags.ParamType.LABEL: ChunkLabelWidget,
         ChunkFlags.ParamType.LINEEDIT: ChunkLineEditWidget,
+        ChunkFlags.ParamType.TEXTEDIT: ChunkTextEditWidget,
         ChunkFlags.ParamType.FILE: ChunkFileWidget,
         ChunkFlags.ParamType.STRING_MENU: ChunkComboBoxWidget,
         ChunkFlags.ParamType.CHECKBOX: ChunkCheckBoxWidget,
@@ -355,10 +419,10 @@ class LabeledWidget(QtWidgets.QWidget):
     def __init__(self, widget, parent=None):
         super().__init__(parent)
 
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
         self.vlayout = QtWidgets.QVBoxLayout()
         self.vlayout.setContentsMargins(0, 0, 0, 0)
         self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-
         self.widget: ChunkParamWidgetBase = widget
         self.label = QtWidgets.QLabel()
         self.label.setHidden(True)
@@ -429,6 +493,17 @@ class LabeledWidget(QtWidgets.QWidget):
         return super().leaveEvent(event)
 
 
+class ChunkScrollArea(QtWidgets.QScrollArea):
+    def sizeHint(self):
+        if w := self.widget():
+            h = min(w.sizeHint().height(), self.maximumHeight())
+            return QtCore.QSize(super().sizeHint().width(), h)
+        return super().sizeHint()
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(0, 0)
+
+
 class ContainerWidget(
     Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QWidget
 ):
@@ -446,16 +521,16 @@ class ContainerWidget(
     ):
         self.animation_duration = 300
         self._animation_value = 0
+        self._depth = 0
         super().__init__(group, parent=parent)
 
     def build_collapsable(self):
         self.content = QtWidgets.QFrame()
         self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
 
-        self.content_layout = QtWidgets.QFormLayout()
-        self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
-        self.content_layout.setContentsMargins(2, 1, 2, 1)
-        self.content_layout.setHorizontalSpacing(0)
+        self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
+        self.content_layout.setContentsMargins(2, 2, 2, 10)
+        self.content_layout.setSpacing(1)
         self.content.setLayout(self.content_layout)
 
         # Setup minimize/maximize button
@@ -487,6 +562,27 @@ class ContainerWidget(
         self.__layout__.addWidget(self.content)
 
         self.setLayout(self.__layout__)
+        self._update_group_depth()
+
+    _GROUP_COLORS = ("#303030","#333333")
+
+    def _update_group_depth(self):
+        depth = len(self.group.get_identifier().split("."))
+        bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
+        self._group_bg = bg
+
+        self.minimize_button.setStyleSheet(
+            f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
+        )
+        self.content.setStyleSheet(
+            f"QFrame {{ background-color: {bg};}}"
+            f"border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
+        )
+        if hasattr(self, 'content_scroll'):
+            self.content_scroll.setStyleSheet(
+                f"QScrollArea#chunk_content_scroll {{ background-color: {bg}; border: none; }}"
+                f"QScrollArea#chunk_content_scroll > QWidget {{ background-color: {bg}; }}"
+            )
 
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
@@ -500,21 +596,47 @@ class ContainerWidget(
         self._animation_value = val
         scale = max(self._animation_value / self.animation_duration, 0)
 
-        h = self.content_layout.sizeHint().height()
-        self.content.setFixedHeight(h * scale)
+        if hasattr(self, 'content_scroll'):
+            h = min(self.content_layout.sizeHint().height(), self._scroll_max_height)
+            self.content_scroll.setFixedHeight(int(h * scale))
+        else:
+            h = self.content_layout.sizeHint().height()
+            self.content.setFixedHeight(int(h * scale))
+            self._update_ancestor_scroll()
 
     def animation_finished(self):
         """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
         if self.is_collapsed():
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
+            if hasattr(self, 'content_scroll'):
+                self.content_scroll.setFixedHeight(0)
         else:
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
+            if hasattr(self, 'content_scroll'):
+                self.content_scroll.setMinimumHeight(0)
+                self.content_scroll.setMaximumHeight(self._scroll_max_height)
+        self._update_ancestor_scroll()
+
+    def _update_ancestor_scroll(self):
+        w = self.parentWidget()
+        while w is not None:
+            if hasattr(w, 'content_scroll'):
+                w.content_scroll.updateGeometry()
+                return
+            w = w.parentWidget()
 
     def get_widget_factory(self) -> chunk_core.ChunkWidgetFactoryBase:
         if factory := self.group.widget_factory:
             return factory
         else:
             return ChunkQTWidgetFactory()
+
+    def update_from_layout(self):
+        if ChunkFlags.LayoutFlags.HORIZONTAL == self.group.layout:
+            self.content_layout.setDirection(QtWidgets.QBoxLayout.Direction.LeftToRight)
+        elif ChunkFlags.LayoutFlags.VERTICAL == self.group.layout:
+            self.content_layout.setDirection(QtWidgets.QBoxLayout.Direction.TopToBottom)
+        return super().update_from_layout()
 
     def update_from_flags(self):
         if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
@@ -585,20 +707,33 @@ class ContainerWidget(
         self.toggle_anim.setDirection(direction)
         self.toggle_anim.start()
 
+        if hasattr(self, '_group_bg'):
+            bg = self._group_bg
+            if checked:
+                self.minimize_button.setStyleSheet(
+                    f"QToolButton {{ background-color: {bg}; "
+                    f"border-top-left-radius: 4px; border-top-right-radius: 4px; "
+                    f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }}"
+                )
+            else:
+                self.minimize_button.setStyleSheet(
+                    f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
+                )
+
     def delete_self(self):
         self.setParent(None)
         self.deleteLater()
 
     def remove_widget(self, widget: QtWidgets.QWidget):
-        count = self.content_layout.rowCount()
+        count = self.content_layout.count()
         for i in reversed(range(count)):
-            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
+            item = self.content_layout.itemAt(i)
             if not item:
                 continue
             iw = item.widget()
 
             if isinstance(iw, LabeledWidget) and iw.widget == widget:
-                self.content_layout.removeRow(i)
+                self.content_layout.removeItem(item)
 
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
@@ -607,31 +742,21 @@ class ContainerWidget(
         if label is not None:
             labeled.update_label(label)
 
-        self.content_layout.addWidget(labeled)
-
         if self.group.has_flag(ChunkFlags.GroupFlags.LIST):
             del_icon = QtGui.QIcon(str(chunk_resources.get_icon("remove")))
 
-            i = self.content_layout.rowCount() - 1
-            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-            if not item or not (w := item.widget()):
-                return
+            del_btn = QtWidgets.QToolButton()
+            del_btn.setIcon(del_icon)
+            del_btn.setIconSize(QtCore.QSize(15, 15))
+            del_btn.clicked.connect(partial(self.remove_from_list_group, widget))
+            labeled.vlayout.insertWidget(0, del_btn)
 
-            label = self.content_layout.labelForField(w)
-
-            if label is None:
-                del_btn = QtWidgets.QToolButton()
-                del_btn.setIcon(del_icon)
-                del_btn.setIconSize(QtCore.QSize(15, 15))
-                del_btn.clicked.connect(partial(self.remove_from_list_group, widget))
-
-                self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.LabelRole, del_btn)
-                self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, w)
+        self.content_layout.addWidget(labeled)
 
     def remove_from_list_group(self, widget: QtWidgets.QWidget):
         if isinstance(self.group, chunk_core.ChunkListGroupBase):
-            for i in range(self.content_layout.rowCount()):
-                item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
+            for i in range(self.content_layout.count()):
+                item = self.content_layout.itemAt(i)
                 if not item:
                     continue
 
@@ -658,6 +783,37 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         parent=None,
     ):
         super().__init__(group, parent)
+
+    def build_collapsable(self):
+        super().build_collapsable()
+
+        if not isinstance(self.group, chunk.ChunkBase):
+            return
+
+        self.__layout__.removeWidget(self.content)
+
+        self.content_scroll = ChunkScrollArea()
+        self.content_scroll.setObjectName("chunk_content_scroll")
+        self.content_scroll.setWidget(self.content)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_max_height = 16777215
+        self.content_scroll.setMaximumHeight(self._scroll_max_height)
+        self.content_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.content_scroll.setViewportMargins(2, 2, 2, 0)
+        self.content_scroll.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
+        self.content_scroll.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        self.__layout__.addWidget(self.content_scroll)
+        self.__layout__.setContentsMargins(2, 1, 2, 0)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+        )
+        self._update_group_depth()
 
     def contextMenuEvent(self, event):
         menu = QtWidgets.QMenu()
@@ -699,9 +855,11 @@ class ChunkArea(QtWidgets.QScrollArea):
         super().__init__(parent)
 
         self.flow = QtWidgets.QVBoxLayout()
-        self.flow.setContentsMargins(0, 0, 0, 0)
-
+        self.flow.setContentsMargins(6, 0, 10, 0)
+        self.flow.setSpacing(40)
         self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
+
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self.widget_holder = QtWidgets.QWidget(self)
@@ -734,54 +892,8 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         return self._tabPosition
 
     def contextMenuEvent(self, event):
-        items = dict()
-        items["menu"] = QtWidgets.QMenu("chunks")
-
-        for mod in chunk_registry.ChunkRegistry().get_chunk_modules(sort_result=True):
-            cat = mod.config.category
-            if isinstance(cat, Enum):
-                cat = cat.value
-
-            namespace = mod.module_name.split(".")
-            if namespace[0].lower() == cat.lower():
-                namespace.pop(0)
-
-            if cat:
-                namespace.insert(0, cat)
-
-            d = items
-            for ns in namespace:
-                if ns == namespace[-1]:
-                    if m := d.get("menu"):
-                        action = m.addAction(ns)
-                        action.setData(mod)
-                    break
-                elif ns not in d:
-                    d[ns] = {"menu": d.get("menu").addMenu(ns)}
-                d = d[ns]
-
-        items["menu"].addSeparator()
-
-        import_action = QtGui.QAction("import")
-        import_action.setData("import")
-        items["menu"].addAction(import_action)
-
-        exc = items["menu"].exec_(event.globalPos())
-
-        if not exc:
-            return
-
-        if exc.data() == "import":
-            ext = (
-                chunk_serial.FileExtensions.PY_MODULE,
-                chunk_serial.FileExtensions.CHUNK_MODULE,
-            )
-            flt = " ".join(f"*{x}" for x in ext)
-            if file := file_dial(flt):
-                chunk_registry.ChunkRegistry().import_chunk(file)
-            return
-
-        if not (mod := exc.data()) or not isinstance(mod, chunk_registry.ChunkModule):
+        mod = FilterableChunkMenu().select_module(event.globalPos())
+        if not mod:
             return
 
         if mod.loaded:
@@ -821,12 +933,18 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
         registry = chunk_registry.ChunkRegistry()
-
         self.setStyleSheet("""
+        QCheckBox {
+            background: transparent;
+        }
         QFrame{
             background-color: #333333;
+            border: none;
         }
         QComboBox{
+            background-color: #202020;
+        }
+        QLineEdit{
             background-color: #202020;
         }
         QToolButton{
@@ -875,14 +993,14 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         }
 
         QSlider::handle {
-            background: #808080;
+            background: #eeeeee;
             height: 10px;
             width: 10px;
             border-radius: 5px;
             margin: -3px 0px;
         }
         QSlider::handle:hover {
-            background: #999999;
+            background: #ffffff;
             height: 10px;
             width: 10px;
             border-radius: 5px;
@@ -939,30 +1057,22 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             self.tab_widget.addTab(self.chunk_tabs[category], category)
 
         self.chunk_tabs[category].flow.addWidget(widget)
+
+        # When a chunk is created, switch to the relevant tab category
+        tab_bar = self.tab_widget.tabBar()
+        for i in range(tab_bar.count()):
+            if tab_bar.tabText(i) == category:
+                tab_bar.setCurrentIndex(i)
+                break
+
         return widget
-
-
-class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
-    def __init__(self, parent):
-        super().__init__(parent)
-
-        self._mappings = {}
-
-    def add_mapping(self, pattern, format):
-        self._mappings[pattern] = format
-
-    def highlightBlock(self, text):
-        for pattern, format in self._mappings.items():
-            for match in re.finditer(pattern, text):
-                start, end = match.span()
-                self.setFormat(start, end - start, format)
 
 
 class ChunkModuleLoader(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.content = QtWidgets.QTableWidget(rowCount=0, columnCount=4, parent=self)
+        self.content = QtWidgets.QTableWidget(rowCount=0, columnCount=3, parent=self)
 
         self.content.setSelectionMode(QtWidgets.QTableWidget.SelectionMode.ExtendedSelection)
         self.content.setSelectionBehavior(QtWidgets.QTableWidget.SelectionBehavior.SelectRows)
@@ -986,11 +1096,11 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         menu = QtWidgets.QMenu()
 
-        # actions: Dict[QtGui.QAction, chunk_registry.ChunkModule] = {}
+        create_action = QtGui.QAction("create")
         export_action = QtGui.QAction("export")
         inspect_action = QtGui.QAction("inspect")
 
-        menu.addActions([export_action, inspect_action])
+        menu.addActions([create_action, export_action, inspect_action])
 
         res = menu.exec_(event.globalPos())
 
@@ -1003,8 +1113,18 @@ class ChunkModuleLoader(QtWidgets.QDialog):
             if file := file_dial(flt, True):
                 mod.export(file)
         elif res == inspect_action and mod.module:
-            src = chunk_serial.serialize_source(mod.module)
+            if isinstance(mod.module, chunk_serial.RuntimeModule):
+                src = mod.module._code
+            else:
+                src = chunk_serial.serialize_source(mod.module)
             python_source_dial(src)
+        elif res == create_action:
+            if not mod.loaded:
+                cs = mod.load()
+            else:
+                cs = mod.create()
+            if cs:
+                chunk_registry.ChunkRegistry().scene.add_chunks(cs)
 
         return super().contextMenuEvent(event)
 
@@ -1014,16 +1134,16 @@ class ChunkModuleLoader(QtWidgets.QDialog):
     def new_row(self, row, mod: chunk_registry.ChunkModule):
         self.content.insertRow(row)
 
-        c0 = QtWidgets.QTableWidgetItem()
-        c0.setCheckState(self.get_check_state(mod.loaded))
-
         c1 = QtWidgets.QTableWidgetItem(mod.module_name)
+        c1.setToolTip(mod.config.description)
 
-        c2 = QtWidgets.QTableWidgetItem(mod.config.category)
+        c2 = QtWidgets.QTableWidgetItem(mod.module_file.as_posix() if mod.module_file.exists() else "Not Found")
 
-        self.content.setItem(row, 0, c0)
-        self.content.setItem(row, 1, c1)
-        self.content.setItem(row, 3, c2)
+        c3 = QtWidgets.QTableWidgetItem(mod.config.category)
+
+        self.content.setItem(row, 0, c1)
+        self.content.setItem(row, 1, c2)
+        self.content.setItem(row, 2, c3)
 
     def load_chunks(self):
         reg = chunk_registry.ChunkRegistry()
@@ -1084,23 +1204,8 @@ def confirm_dial(msg) -> bool:
 
 def python_source_dial(src: str):
     _editor = QtWidgets.QPlainTextEdit(src, readOnly=True)
-    hl = PythonSyntaxHighlighter(_editor.document())
 
-    class_format = QtGui.QTextCharFormat()
-    class_format.setFontWeight(QtGui.QFont.Weight.Bold)
-    class_format.setForeground(QtCore.Qt.GlobalColor.blue)
-    pattern = r"^\s*class\s+\w+\(.*$"
-    hl.add_mapping(pattern, class_format)
-
-    function_format = QtGui.QTextCharFormat()
-    function_format.setFontItalic(True)
-    function_format.setForeground(QtCore.Qt.GlobalColor.blue)
-    pattern = r"^\s*def\s+\w+\s*\(.*\)\s*:\s*$"
-    hl.add_mapping(pattern, function_format)
-
-    comment_format = QtGui.QTextCharFormat()
-    comment_format.setBackground(QtGui.QColor("#77ff77"))
-    hl.add_mapping(r"^\s*#.*$", comment_format)
+    SyntaxHighlighter(_editor.document(), chunk_core.PySyntaxHighlightMapping())
 
     font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
     _editor.setFont(font)
@@ -1112,39 +1217,126 @@ def python_source_dial(src: str):
     return dial.exec()
 
 
-def file_dial(filter: Optional[str] = None, create_new=False, directory=False):
-    dial = QtWidgets.QFileDialog()
+class FilterableChunkMenu(QtWidgets.QMenu):
+    def __init__(self):
+        super().__init__("Chunks")
+        self.filter_widget = QtWidgets.QLineEdit(placeholderText="Search...")
+        self.filter_widget.textChanged.connect(self._filter_actions)
+        self.filter_widget.installEventFilter(self)
+        self.filterable = dict()
 
-    accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptOpen
-    file_mode = QtWidgets.QFileDialog.FileMode.AnyFile
+    def _filter_menus(self, menu: QtWidgets.QMenu):
+        c = 0
+        for a in menu.actions():
+            if not a.isVisible():
+                c += 1
 
-    # if create_new:
-    #     accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptSave
+            if m := menu.menuInAction(a):
+                hide = self._filter_menus(m)
+                if hide:
+                    m.menuAction().setVisible(False)
+                else:
+                    m.menuAction().setVisible(True)
 
+        if c == len(menu.actions()):
+            return 1
+
+        return 0
+
+    def _filter_actions(self, text: str):
+        term = text.strip().lower()
+
+        if not term:
+            for action in self.filterable:
+                action.setVisible(True)
+            self._filter_menus(self)
+
+            return
+
+        for action, path_elems in self.filterable.items():
+            action.setVisible(any(term in x for x in path_elems))
+
+        self._filter_menus(self)
+
+    def eventFilter(self, obj, event):
+        """Keep arrow/return key presses inside the QLineEdit."""
+        if obj is self.filter_widget:
+            if event.type() == event.Type.KeyPress:
+                key = event.key()
+                if key in (
+                    QtCore.Qt.Key.Key_Return,
+                    QtCore.Qt.Key.Key_Escape,
+                ):
+                    return True  # prevent menu navigation stealing focus
+        return super().eventFilter(obj, event)
+
+    def select_module(self, pos):
+        items = dict()
+        items["menu"] = self
+
+        filter_action = QtWidgets.QWidgetAction(items["menu"])
+        filter_action.setDefaultWidget(self.filter_widget)
+
+        items["menu"].addAction(filter_action)
+        items["menu"].addSeparator()
+
+        for mod in chunk_registry.ChunkRegistry().get_chunk_modules(sort_result=True):
+            namespace = mod.get_menu_name().split(os.pathsep)
+            search_term = set([x.lower() for x in namespace])
+
+            d = items
+            for ns in namespace:
+                if ns is namespace[-1]:
+                    if m := d.get("menu"):
+                        action = m.addAction(ns)
+                        action.setData(mod)
+                        self.filterable[action] = search_term
+                    break
+                elif ns not in d:
+                    d[ns] = {"menu": d.get("menu").addMenu(ns)}
+                d = d[ns]
+
+        self.addSeparator()
+
+        import_action = QtGui.QAction("import")
+        import_action.setData("import")
+        self.addAction(import_action)
+
+        self.filter_widget.setFocus()
+        exc = self.exec_(pos)
+
+        if not exc:
+            return
+
+        if exc.data() == "import":
+            ext = (
+                chunk_serial.FileExtensions.PY_MODULE,
+                chunk_serial.FileExtensions.CHUNK_MODULE,
+            )
+            flt = " ".join(f"*{x}" for x in ext)
+            if file := file_dial(flt):
+                chunk_registry.ChunkRegistry().import_chunk(file)
+            return
+
+        if not (mod := exc.data()) or not isinstance(mod, chunk_registry.ChunkModule):
+            return
+
+        return mod
+
+
+def file_dial(name_filter: Optional[str] = None, create_new=False, directory=False):
     if directory:
-        file_mode = QtWidgets.QFileDialog.FileMode.Directory
+        return QtWidgets.QFileDialog.getExistingDirectory(None, "Open Directory", "")
 
-    elif not create_new:
-        file_mode = QtWidgets.QFileDialog.FileMode.ExistingFile
-        dial.setOption(QtWidgets.QFileDialog.Option.ReadOnly)
-
-    dial.setFileMode(file_mode)
-    dial.setAcceptMode(accept_mode)
-
-    if filter and not directory:
-        dial.setNameFilter(filter)
-
-    if not dial.exec():
-        return None
-
-    res = dial.selectedFiles()[0]
-
+    _filter = ""
+    if name_filter:
+        _filter = ";;".join(name_filter.split())
     if create_new:
-        if os.path.exists(res) and not confirm_dial(f"Override {res}?"):
-            return None
+        res = QtWidgets.QFileDialog.getSaveFileName(None, "Save File", "", _filter, "")
+    else:
+        res = QtWidgets.QFileDialog.getOpenFileName(None, "Open File", "", _filter, "")
 
-    return res
-
+    return res[0]
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
     # Create an empty dock widget to hold the modules
@@ -1156,3 +1348,4 @@ def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
 
     module_dock.setWidget(ChunkWidgetDocker(parent=module_dock))
     parent_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, module_dock)
+    parent_window.resizeDocks([module_dock], [300], QtCore.Qt.Orientation.Horizontal)
