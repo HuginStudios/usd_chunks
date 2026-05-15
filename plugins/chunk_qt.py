@@ -343,6 +343,7 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
     def set_value(self, value: bool):
         return self.setChecked(value)
 
+
 class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushButton):
     def __init__(self, param: chunk.Button):
         super().__init__(param)
@@ -493,28 +494,6 @@ class LabeledWidget(QtWidgets.QWidget):
         return super().leaveEvent(event)
 
 
-class ChunkScrollArea(QtWidgets.QScrollArea):
-    def sizeHint(self):
-        if w := self.widget():
-            h = min(w.sizeHint().height(), self.maximumHeight())
-            return QtCore.QSize(super().sizeHint().width(), h)
-        return super().sizeHint()
-
-    def minimumSizeHint(self):
-        return QtCore.QSize(0, 0)
-
-
-class ChunkScrollArea(QtWidgets.QScrollArea):
-    def sizeHint(self):
-        if w := self.widget():
-            h = min(w.sizeHint().height(), self.maximumHeight())
-            return QtCore.QSize(super().sizeHint().width(), h)
-        return super().sizeHint()
-
-    def minimumSizeHint(self):
-        return QtCore.QSize(0, 0)
-
-
 class ContainerWidget(
     Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QWidget
 ):
@@ -575,19 +554,16 @@ class ContainerWidget(
         self.setLayout(self.__layout__)
         self._update_group_depth()
 
-    _GROUP_COLORS = ("#303030","#333333")
+    _GROUP_COLORS = ("#303030", "#333333")
 
     def _update_group_depth(self):
         depth = len(self.group.get_identifier().split("."))
         bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
         self._group_bg = bg
 
-        self.minimize_button.setStyleSheet(
-            f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
-        )
+        self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
         self.content.setStyleSheet(
-            f"QFrame {{ background-color: {bg};}}"
-            f"border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
+            f"QFrame {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
 
     def supports_widget(self, widget: Any) -> bool:
@@ -694,7 +670,7 @@ class ContainerWidget(
         self.toggle_anim.setDirection(direction)
         self.toggle_anim.start()
 
-        if hasattr(self, '_group_bg'):
+        if hasattr(self, "_group_bg"):
             bg = self._group_bg
             if checked:
                 self.minimize_button.setStyleSheet(
@@ -703,9 +679,7 @@ class ContainerWidget(
                     f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }}"
                 )
             else:
-                self.minimize_button.setStyleSheet(
-                    f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
-                )
+                self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
 
     def delete_self(self):
         self.setParent(None)
@@ -1310,6 +1284,7 @@ def file_dial(name_filter: Optional[str] = None, create_new=False, directory=Fal
         res = QtWidgets.QFileDialog.getOpenFileName(None, "Open File", "", _filter, "")
 
     return res[0]
+
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
     # Create an empty dock widget to hold the modules
