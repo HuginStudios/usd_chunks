@@ -1,8 +1,6 @@
-import re
-from usd_chunks import chunk, chunk_notice, chunk_core, chunk_utils
+from usd_chunks import chunk, chunk_notice, chunk_utils
 from pxr import UsdGeom
 import http.client
-import pprint
 import json
 import os
 from functools import partial
