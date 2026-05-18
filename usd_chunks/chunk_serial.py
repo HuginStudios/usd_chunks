@@ -1053,7 +1053,7 @@ class CallableConstructor:
 
         res = decodeCallable(self.glb, self.data)
         if isinstance(res, ClassConstructor):
-            raise ValueError(f"Failed to decode callable {self.data}")
+            return res.construct()
 
         if isinstance(res, CallableConstructor):
             raise ValueError(f"Failed to decode callable {self.data}")
