@@ -1643,17 +1643,9 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     will have the NameSyncedContainer as owner. Any concrete chunk object who holds an instance of this class should therefore not
     manage ownership of params, instead, it should own the NameSyncedContainer only. This class will not send any notices though, only propagate
     notices from children.
-
-    Attributes:
-        last_added: The last item that was added to the container
-        las_removed: The last item that was removed from the container
-
-        params (ChainMap[ChunkHash, ChunkCommon]): A mapping with access to nested children
-        names (ChainMap[str, ChunkHash]): A mapping from parameter names to the params map. A param with
-            name "myParam" may be accessed as params[names["myParam"]]
     """
 
-    def __init__(self, params: Optional[Sequence[ChunkT]] = None):
+    def __init__(self):
         super().__init__()
 
         self._last_added: Optional[HashVal] = None
@@ -1661,16 +1653,6 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
 
         self._params: ChainMap[ChunkHash, ChunkT] = ChainMap()
         self._names: ChainMap[str, ChunkHash] = ChainMap()
-
-        if params is not None:
-            for i in params:
-                self.add(i)
-
-                if isinstance(i, ChunkContainerBase):
-                    self.add_nested(i.children)  # type: ignore
-
-    def __bool__(self):
-        return bool(self._params)
 
     def __copy__(self):
         copied = NameSyncedContainer()
@@ -1683,9 +1665,27 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
 
     def serialize(self, glb):
         if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
-            res.kwargs["params"] = list(self.get_my_params())
+            # Serialize params as a temp 'params' attribute. This will be de-serialized in post_serial_setattr
+            res.attributes["params"] = list(self.get_my_params())
 
         return res
+
+    def post_serial_setattr(self, name, value):
+        if name == "params":
+            # Add the params to this container by calling add. Previously we created the params in place and passed them to 
+            # the NameSyncedContainer constructor. The reason for the change is to be able to modify the container before 
+            # adding the parameters; Owner is set on the params in add(), but this sets the graph_id as well, which is wrong
+            # on the scene 'chunks' container. The graph_id should ideally be smarter, but for now this solves the issue. 
+            # TODO: Rework graph_id
+            for i in value:
+                if self.get_param(i):
+                    continue
+
+                self.add(i)
+                if isinstance(i, ChunkContainerBase):
+                    self.add_nested(i.children)  # type: ignore
+            return
+        return super().post_serial_setattr(name, value)
 
     def get_notice_data(self) -> Self:
         return self
@@ -3442,7 +3442,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     @abstractmethod
     def get_current_frame(self) -> float:
         raise NotImplementedError
-
 
     @abstractmethod
     def get_end_frame(self) -> float:
