@@ -2454,13 +2454,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice.data.SetTargets(targets)
 
     @abstractmethod
-    def usd_prop_changed(self, prop_path: str):
+    def usd_prop_changed(self):
         """
         A callback for when the UsdAttribute member was changed. This will update the value of
-        the AttributeSender passed to set_usd_attr().
-
-        Args:
-            prop_path (str): Path to the updated UsdAttribute.
+        the AttributeSender passed to set_usd_attr()..
         """
         if not self._usd_prop_connection:
             return
@@ -2473,7 +2470,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         elif isinstance(attr, Usd.Relationship):
             self._usd_prop_connection.sender.value = ",".join([str(x) for x in attr.GetForwardedTargets()])
 
-    def set_usd_prop(self, prop_path: str, sender: AttributeSender):
+    def set_usd_prop(self, prop_path: str | Usd.Property, sender: AttributeSender):
         """
         Connect the UsdAttribute at prop_path to self. Any changes to the param will
         update the attribute
@@ -2484,7 +2481,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 When a signal with sender and ATTRIBUTE_CHANGED notice is sent, the method
                 update_usd_attrib() of this class is called
         """
-        self._usd_prop_path = prop_path.GetPath() if isinstance(prop_path, Usd.Property) else prop_path
+        self._usd_prop_path = str(prop_path.GetPath()) if isinstance(prop_path, Usd.Property) else prop_path
 
         if self._usd_prop_connection:
             self._usd_prop_connection.disconnect()
@@ -2492,7 +2489,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         self._usd_prop_connection = chunk_notice.NoticeConnection(
             self.update_usd_prop, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender, owner=self
         )
-        self.usd_prop_changed(prop_path)
+        self.usd_prop_changed()
 
     def get_usd_prop(self) -> Usd.Property | None:
         """
