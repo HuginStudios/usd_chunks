@@ -360,7 +360,7 @@ class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushB
     def value_changed(self, value: Any = None):
         """Override for buttons as the param do not have a value. Better to just send the param notice directly"""
         if self.param:
-            self.param.execute()
+            self.param.click()
 
 
 class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
