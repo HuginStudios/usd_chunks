@@ -156,7 +156,10 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         self.index = 0
 
         self.add_callback(
-            self.handle_param_changed, param, notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED
+            self.handle_param_changed,
+            param,
+            notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+            send_on_create=True,
         )
 
     @property
@@ -1663,6 +1666,9 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         copied._copy_callbacks(self)
         return copied
 
+    def empty(self):
+        return not bool(self._params)
+
     def serialize(self, glb):
         if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
             # Serialize params as a temp 'params' attribute. This will be de-serialized in post_serial_setattr
@@ -1672,10 +1678,10 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
 
     def post_serial_setattr(self, name, value):
         if name == "params":
-            # Add the params to this container by calling add. Previously we created the params in place and passed them to 
-            # the NameSyncedContainer constructor. The reason for the change is to be able to modify the container before 
+            # Add the params to this container by calling add. Previously we created the params in place and passed them to
+            # the NameSyncedContainer constructor. The reason for the change is to be able to modify the container before
             # adding the parameters; Owner is set on the params in add(), but this sets the graph_id as well, which is wrong
-            # on the scene 'chunks' container. The graph_id should ideally be smarter, but for now this solves the issue. 
+            # on the scene 'chunks' container. The graph_id should ideally be smarter, but for now this solves the issue.
             # TODO: Rework graph_id
             for i in value:
                 if self.get_param(i):
@@ -3316,7 +3322,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         super().__attrs_post_init__()
         self._attr_senders["value"] = AttributeSender(self, "value", chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
 
-        if self.children or not self.param:
+        if not self.children.empty() or not self.param:
             # __attrs_post_init__ was called when copied, so no need to reinitialize the children as they
             # have already been initialized
             return
@@ -3568,7 +3574,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         # Construct the chunks
         if chunks := data.get("chunks"):
-            if nsc := chunks.construct():
+            if nsc := chunks.construct(False):
+                nsc: NameSyncedContainer
+                nsc.get_dag_node()._part_of_graph = False
+                chunks.post_constuct()
+
                 self.set_chunks(nsc)
 
         self._modified = False

@@ -870,7 +870,6 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     def serialize(self, glb):
         if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
             res.attributes["dependencies"] = [node for _, node in self.get_dependencies()]
-            res.attributes["part_of_graph"] = self.get_dag_node()._part_of_graph
         return res
 
     def post_serial(self, owner):
@@ -887,10 +886,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
 
     def post_serial_setattr(self, name, value):
         self.set_blocked(True)
-        if name == "part_of_graph":
-            self.get_dag_node()._part_of_graph = value
-
-        elif name == "dependencies":
+        if name == "dependencies":
             # Since the _dependencies is an attribute of the DagNode, calling setattr(self, '_dependencies', value)
             # would set the _dependencies on the AttributesBase instance. So instead we make sure the dependencies goes to the
             # DagNode. The dependencies are serialized to the AttributesBase
@@ -1412,19 +1408,12 @@ class NoticeConnection(chunk_serial.Serializeable):
         # No attributes should be serialized as the attributes are serialized by kwargs
         return False, None
 
-    def trigger(self) -> ChunkNotice | None:
+    def trigger(self):
         """
-        Trigger the connection by sending the notice together with the sender (if specified).
-        Because other connections may listen to the same notice + sender, this may trigger other connections
-        as well
-
-        Returns:
-            ChunkNotice | None: The notice that was sent, or None if failed
+        Trigger the connection by calling the callback with the alias and sender members as arguments.
+        This will not send any TfNotice.
         """
-
-        if self.sender and isinstance(self.sender, ChunkNoticePropagator):
-            return self.sender.send_self(alias=self.alias)
-        return send_notice(self.alias, self.sender, self.sender)
+        self.handle_callback(get_notice(self.alias), self.sender)
 
     def handle_callback(self, notice, sender=None, context=True):
         """
