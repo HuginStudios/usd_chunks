@@ -192,6 +192,12 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         elif attrname == "icon" and isinstance(value, str):
             self.set_icon(value)
 
+        elif attrname == "state":
+            self.update_from_state()
+
+        elif attrname == "layout" and isinstance(value, ChunkFlags.LayoutFlags):
+            self.set_param_layout(value)
+
         self.send_self(data=notice.data)
 
     def setup_chunk_widget(self):
@@ -263,6 +269,40 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
             layout_flags (ChunkFlags.LayoutFlags): The LayoutFlags of the parameter which the widget should respect
         """
         pass
+
+    @abstractmethod
+    def set_hidden(self, val: bool):
+        """
+        Set the ui widget hidden based on the value of val
+
+        Args:
+            val (bool): Whether to hide or show the widget
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_enabled(self, val: bool):
+        """
+        Set the ui widget enabled or disabled based on value of val
+
+        Args:
+            val (bool): Whether to enable or disable the widget
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_from_state(self):
+        """
+        Called when state of the group has changed
+        """
+        self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
+        self.set_enabled(not self.param.has_state(ChunkFlags.State.DISABLED))
 
     def value_changed(self, value: Optional[Any] = None):
         """
@@ -2595,7 +2635,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             if val is None:
                 return type_default()
 
-            if type(val) is not type_default:
+            if type(val) not in supported:
                 # When the value does not match the type_default, we can try to convert it. If failed, use the type default
                 try:
                     # Try casting the type_default to val
