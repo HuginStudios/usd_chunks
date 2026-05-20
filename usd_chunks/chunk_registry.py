@@ -971,7 +971,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
 
         root = self.get_root_layer()
-        sesh = self.stage.GetRootLayer()
+        sesh = self.stage.GetSessionLayer()
 
         # If the root has been detatched from the stage's root, reapply it
         if root.identifier not in sesh.subLayerPaths:
