@@ -578,6 +578,8 @@ class DagNode:
         if owner == self.get_owner():
             return
 
+        assert isinstance(owner, ChunkNoticePropagator) or owner is None
+
         if owner is None:
             self._connections.owner = None
         else:
@@ -870,12 +872,11 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     def serialize(self, glb):
         if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
             res.attributes["dependencies"] = [node for _, node in self.get_dependencies()]
-        return res
 
-    def post_serial(self, owner):
-        if isinstance(owner, ChunkNoticePropagator):
-            self.set_owner(owner)
-        return super().post_serial(owner)
+            if self.get_dag_node()._part_of_graph and (owner := self.get_owner()):
+                # The owner should always be serialized as a reference. This ensures no circular dependencies
+                res.attributes["owner"] = chunk_serial.SerializedReference(hash(owner)).as_dict()
+        return res
 
     def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
         if name == "_callbacks":
@@ -897,6 +898,8 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             # An example of this is the ChunkBase class that creates some callbacks in __init__, but as they are private, they are not serialized, therefore
             # if we were to do self._callbacks = value, those initial callbacks would be deleted
             self._callbacks.extend(value)
+        elif name == "owner":
+            self.set_owner(value)
         else:
             super().post_serial_setattr(name, value)
         self.set_blocked(False)

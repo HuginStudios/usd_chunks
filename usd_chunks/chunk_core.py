@@ -3509,6 +3509,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def set_start_frame(self, frame: float):
         raise NotImplementedError
 
+    def serialize(self, glb):
+        return None
+
     def export_scene(self, path: str | Path):
         """
         Export the current scene. The result will be written to path, if path is a chunk_serial.FileExtensions.SCENE file path.
@@ -3675,7 +3678,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 c.check_hierarchy()
             except Exception as e:
                 logger.exception(e)
-                return
+                c.print_hierarchy()
+                continue
 
             # TODO: The chunk may have been loaded before, so dumb to send CHUNK_LOADED here perhaps? CHUNK_LOADED should
             # just be called when a new chunk instance is created, but after initialization

@@ -530,7 +530,7 @@ def serialize_function(func: Callable, glb) -> SerializedFunction | SerializedMe
 
     if func.__name__ == "<lambda>":
         closure = {}
-        # If the lambda expression is a closure, we need to store the closure cell_contents 
+        # If the lambda expression is a closure, we need to store the closure cell_contents
         # in order to recreate them at de-serialization. The cell_contents will be serialized
         # individually.
         if func.__closure__:
