@@ -168,6 +168,23 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         return self.text.setText(str(value))
 
 
+class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QPlainTextEdit):
+    def __init__(self, param: chunk.TextEdit):
+        super().__init__(param)
+        self.setPlaceholderText("")
+        self.setMinimumHeight(60)
+        self.textChanged.connect(self.value_changed)
+        self.setup_chunk_widget()
+
+    def get_value(self):
+        return self.toPlainText()
+
+    def set_value(self, value):
+        self.blockSignals(True)
+        self.setPlainText(str(value) if value is not None else "")
+        self.blockSignals(False)
+
+
 class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
     ValueChanged = QtCore.Signal(str)
 
@@ -319,6 +336,7 @@ class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
         ChunkFlags.ParamType.INT_SPINBOX: ChunkIntSpinboxWidget,
         ChunkFlags.ParamType.LABEL: ChunkLabelWidget,
         ChunkFlags.ParamType.LINEEDIT: ChunkLineEditWidget,
+        ChunkFlags.ParamType.TEXTEDIT: ChunkTextEditWidget,
         ChunkFlags.ParamType.FILE: ChunkFileWidget,
         ChunkFlags.ParamType.STRING_MENU: ChunkComboBoxWidget,
         ChunkFlags.ParamType.CHECKBOX: ChunkCheckBoxWidget,

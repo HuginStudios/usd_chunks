@@ -129,6 +129,7 @@ class ChunkFlags:
         LINEEDIT = STRING | (1 << 1)
         FILE = STRING | (1 << 2)
         STRING_MENU = STRING | (1 << 3)
+        TEXTEDIT = STRING | (1 << 4)
 
         # Bool
         CHECKBOX = BOOL | (1 << 0)
