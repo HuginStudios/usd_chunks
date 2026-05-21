@@ -58,7 +58,7 @@ def main():
     myChunk = chunk.Chunk("Apply Schema")
     myChunk.add_params([primSel, menu, btn])
 
-    myChunk.add_callback(update, sender=primSel, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+    myChunk.add_callback(update, sender=primSel, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED, send_on_create=True)
     myChunk.add_callback(apply, sender=btn)
 
     return myChunk

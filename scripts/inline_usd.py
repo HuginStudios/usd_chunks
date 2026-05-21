@@ -24,7 +24,7 @@ def main():
     text.set_flag(chunk.ChunkFlags.ParamFlags.USD_SYNTAX_HIGHLIGHT)
 
     myChunk.add_param(text)
-    text.add_callback(text_changed)
+    text.add_callback(text_changed, send_on_create=True)
 
     return myChunk
 
