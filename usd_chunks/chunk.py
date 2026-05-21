@@ -56,7 +56,15 @@ from attr import Attribute as Attribute
 from attrs import field
 
 from enum import IntFlag, Enum
-from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast, TypeGuard, TypeVar
+from typing import (
+    Any,
+    List,
+    Optional,
+    Sequence,
+    TYPE_CHECKING,
+    cast,
+    TypeGuard,
+)
 
 from pxr import Usd, Sdf
 
@@ -121,7 +129,9 @@ class Chunk(ChunkBase):
 
     # Override defaults
     flags: IntFlag = field(
-        default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
+        default=ChunkFlags.GroupFlags.COLLAPSABLE
+        | ChunkFlags.GroupFlags.LABELED
+        | ChunkFlags.GroupFlags.FRAMED
     )
 
 
@@ -129,7 +139,9 @@ class Group(ChunkGroupBase):
     """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
 
     # Override defaults
-    flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+    flags: IntFlag = field(
+        default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
+    )
 
 
 class ListGroup(ChunkListGroupBase):
@@ -137,7 +149,9 @@ class ListGroup(ChunkListGroupBase):
 
     # Override defaults
     flags: IntFlag = field(
-        default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED | ChunkFlags.GroupFlags.LIST
+        default=ChunkFlags.GroupFlags.LABELED
+        | ChunkFlags.GroupFlags.FRAMED
+        | ChunkFlags.GroupFlags.LIST
     )
 
 
@@ -145,7 +159,9 @@ class Vector(ChunkVectorBase):
     """A Vector is basically a group which holds a set number of parameters"""
 
     # Override defaults
-    flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+    flags: IntFlag = field(
+        default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
+    )
 
 
 class Slider(ChunkParamBase[int | float]):
@@ -168,15 +184,21 @@ class Slider(ChunkParamBase[int | float]):
         return ChunkFlags.ParamType.INT_SLIDER | ChunkFlags.ParamType.FLOAT_SLIDER
 
     def evaluate_type(self) -> ChunkFlags.ParamType:
-        return ChunkFlags.ParamType.INT_SLIDER if self.is_int else ChunkFlags.ParamType.FLOAT_SLIDER
+        return (
+            ChunkFlags.ParamType.INT_SLIDER
+            if self.is_int
+            else ChunkFlags.ParamType.FLOAT_SLIDER
+        )
 
     @classmethod
-    def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
+    def from_usd_attr(
+        cls, attr: Usd.Attribute, *args, **kwargs
+    ) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)
 
         try:
             limits = attr.GetLimits()
-        except Exception as e:
+        except Exception:
             limits = None
         if limits:
             if hard := limits.get("hard"):
@@ -214,8 +236,21 @@ class Spinbox(ChunkParamBase[float | int]):
             return ChunkFlags.ParamType.INT_SPINBOX
         return ChunkFlags.ParamType.FLOAT_SPINBOX
 
+    def convert_attr(self, attr, val):
+        if attr.name in ("default_value", "value"):
+            if val is None:
+                return super().convert_attr(attr, val)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                # is_int may not be set yet during attrs __init__ (default_value initialises
+                # first), so fall back to float — the safe choice for values like 0.6.
+                t = int if getattr(self, "is_int", False) else float
+                return t(val)
+        return super().convert_attr(attr, val)
+
     @classmethod
-    def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
+    def from_usd_attr(
+        cls, attr: Usd.Attribute, *args, **kwargs
+    ) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)
 
         if limits := attr.GetLimits():  # type: ignore
@@ -264,6 +299,12 @@ class Menu(ChunkParamBase[str]):
 
         return super().convert_attr(attr, val)
 
+    def get_selected_index(self):
+        try:
+            return self.menu_items.index(self.value)
+        except ValueError:
+            return 0
+
 
 class Button(ChunkParamBase):
     """
@@ -277,6 +318,7 @@ class Button(ChunkParamBase):
     def execute(self) -> None:
         """Fire this button by sending a PARAM_CHANGED notice."""
         from usd_chunks import chunk_notice as _cn
+
         _cn.send_notice(ChunkNoticeAlias.PARAM_CHANGED, sender=self, data=self)
 
 
@@ -348,6 +390,21 @@ class LineEdit(ChunkParamBase[str]):
         except AttributeError:
             pass
         return param
+
+
+class TextEdit(ChunkParamBase[str]):
+    """
+    A multi-line editable string parameter.
+    """
+
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.TEXTEDIT
 
 
 class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
