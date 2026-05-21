@@ -217,6 +217,19 @@ class Spinbox(ChunkParamBase[float | int]):
             return ChunkFlags.ParamType.INT_SPINBOX
         return ChunkFlags.ParamType.FLOAT_SPINBOX
 
+    def convert_attr(self, attr, val):
+        if attr.name in ("default_value", "value"):
+            if val is None:
+                # Let the base class handle None→default_value substitution
+                return super().convert_attr(attr, val)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                # Use is_int to pick the right type. is_int may not be set yet
+                # during attrs __init__ (default_value is initialised first), so
+                # fall back to float — the safe choice for values like 0.6.
+                t = int if getattr(self, "is_int", False) else float
+                return t(val)
+        return super().convert_attr(attr, val)
+
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)

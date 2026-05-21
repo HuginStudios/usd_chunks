@@ -1,12 +1,28 @@
-"""Export USD chunk — exports the current stage or chunk layer to disk."""
+"""Export USD chunk — exports the current stage or a specific layer to disk."""
 
 from __future__ import annotations
 
 import os
 
 from usd_chunks import chunk
+from usd_chunks.chunk_flags import ChunkFlags
 
-_MODES = ["Stage", "Layer"]
+
+def _refresh_layers(owner, notice, sender):
+    """Rebuild the layer menu from the current stage."""
+    _chunk = owner.get_chunk()
+    stage = owner.get_stage()
+    if not stage:
+        return
+
+    items = ["Stage (Flattened)"]
+    items.append(f"Session Layer")
+    for layer in stage.GetLayerStack(includeSessionLayers=False):
+        items.append(layer.identifier)
+
+    menu = _chunk.get_param("layer")
+    menu.menu_items = items
+    menu.value = items[0]
 
 
 def export(owner, notice, sender):
@@ -24,18 +40,22 @@ def export(owner, notice, sender):
     if ext.lower() not in (".usd", ".usda", ".usdc", ".usdz"):
         output_path += ".usda"
 
-    mode = _chunk.get_param("mode").value or "Stage"
+    selection = _chunk.get_param("layer").value or "Stage (Flattened)"
 
-    if mode == "Layer":
-        layer = owner.get_edit_context()
-        if not layer:
-            print("[ExportUSD] No edit layer available.")
-            return
-        layer.Export(output_path)
-        print(f"[ExportUSD] Layer exported to {output_path}")
-    else:
+    if selection == "Stage (Flattened)":
         stage.Export(output_path)
         print(f"[ExportUSD] Stage exported to {output_path}")
+    elif selection == "Session Layer":
+        stage.GetSessionLayer().Export(output_path)
+        print(f"[ExportUSD] Session layer exported to {output_path}")
+    else:
+        from pxr import Sdf
+        layer = Sdf.Layer.Find(selection)
+        if layer:
+            layer.Export(output_path)
+            print(f"[ExportUSD] Layer '{selection}' exported to {output_path}")
+        else:
+            print(f"[ExportUSD] Could not find layer: {selection}")
 
 
 def main():
@@ -49,14 +69,17 @@ def main():
         )
     )
 
-    chunk_api.add_param(
-        chunk.Menu(
-            "mode",
-            "Export Mode",
-            menu_items=_MODES,
-            default_value="Stage",
-        )
+    layer_menu = chunk.Menu(
+        "layer",
+        "Layer",
+        menu_items=["Stage (Flattened)"],
+        default_value="Stage (Flattened)",
     )
+    chunk_api.add_param(layer_menu)
+
+    refresh_btn = chunk.Button("refresh", "↻ Refresh Layers")
+    refresh_btn.add_callback(_refresh_layers)
+    chunk_api.add_param(refresh_btn)
 
     export_btn = chunk.Button("export", "Export")
     export_btn.add_callback(export)

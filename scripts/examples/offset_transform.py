@@ -14,53 +14,31 @@ _ROTATE_TYPES = frozenset([
 _last_applied: dict = {}
 
 
+def _clear_chunk_xform(owner):
+    layer = owner.get_edit_context()
+    if layer and (lreg := chunk.get_layer_manager()):
+        lreg.clear_layer(layer.identifier)
+
+
 def execute(owner, notice, sender):
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage:
         return
 
-    prims = _chunk.get_param("prim_path").get_prims()
-    if not prims:
-        return
-    prim = prims[0]
-
     layer = owner.get_edit_context()
     if not layer:
         return
 
-    prim_path = prim.GetPath()
-    prim_path_str = str(prim_path)
+    prims = _chunk.get_param("prim_path").get_prims()
+    if not prims:
+        return
+    prim = prims[0]
+    if not prim.IsValid() or prim.GetPath() == prim.GetPath().absoluteRootPath:
+        return
+
+    prim_path_str = str(prim.GetPath())
     chunk_id = id(_chunk)
-
-    xformable = UsdGeom.Xformable(prim)
-    cur_t = Gf.Vec3d(0.0, 0.0, 0.0)
-    cur_r = Gf.Vec3f(0.0, 0.0, 0.0)
-    cur_s = Gf.Vec3f(1.0, 1.0, 1.0)
-    for op in xformable.GetOrderedXformOps():
-        v = op.Get(0)
-        if v is None:
-            continue
-        op_type = op.GetOpType()
-        if op_type == UsdGeom.XformOp.TypeTranslate:
-            cur_t = Gf.Vec3d(float(v[0]), float(v[1]), float(v[2]))
-        elif op_type in _ROTATE_TYPES:
-            cur_r = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
-        elif op_type == UsdGeom.XformOp.TypeScale:
-            cur_s = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
-
-    last = _last_applied.get(chunk_id)
-    if last and last["path"] == prim_path_str:
-        lt, lr, ls = last["t"], last["r"], last["s"]
-        base_t = Gf.Vec3d(cur_t[0] - lt[0], cur_t[1] - lt[1], cur_t[2] - lt[2])
-        base_r = Gf.Vec3f(cur_r[0] - lr[0], cur_r[1] - lr[1], cur_r[2] - lr[2])
-        base_s = Gf.Vec3f(
-            cur_s[0] / ls[0] if ls[0] else cur_s[0],
-            cur_s[1] / ls[1] if ls[1] else cur_s[1],
-            cur_s[2] / ls[2] if ls[2] else cur_s[2],
-        )
-    else:
-        base_t, base_r, base_s = cur_t, cur_r, cur_s
 
     otx = float(_chunk.get_param("tx").value or 0)
     oty = float(_chunk.get_param("ty").value or 0)
@@ -72,15 +50,59 @@ def execute(owner, notice, sender):
     osy = float(_chunk.get_param("sy").value or 1)
     osz = float(_chunk.get_param("sz").value or 1)
 
+    no_offset = (otx == oty == otz == orx == ory == orz == 0.0 and osx == osy == osz == 1.0)
+    last = _last_applied.get(chunk_id)
+
+    if last and last["path"] != prim_path_str:
+        _clear_chunk_xform(owner)
+        last = None
+        _last_applied.pop(chunk_id, None)
+
+    if no_offset:
+        if last:
+            _clear_chunk_xform(owner)
+            _last_applied.pop(chunk_id, None)
+        return
+
+    if last:
+        # Use the stored scene base — robust against the solver or any other chunk
+        # overwriting xformOpOrder in the session layer between our runs.
+        base_t = Gf.Vec3d(*last["base_t"])
+        base_r = Gf.Vec3f(*last["base_r"])
+        base_s = Gf.Vec3f(*last["base_s"])
+    else:
+        # First run for this prim — read the current scene transform before we
+        # write anything to the session layer.
+        xformable = UsdGeom.Xformable(prim)
+        base_t = Gf.Vec3d(0.0, 0.0, 0.0)
+        base_r = Gf.Vec3f(0.0, 0.0, 0.0)
+        base_s = Gf.Vec3f(1.0, 1.0, 1.0)
+        for op in xformable.GetOrderedXformOps():
+            v = op.Get(0)
+            if v is None:
+                continue
+            op_type = op.GetOpType()
+            if op_type == UsdGeom.XformOp.TypeTranslate:
+                base_t = Gf.Vec3d(float(v[0]), float(v[1]), float(v[2]))
+            elif op_type == UsdGeom.XformOp.TypeRotateX:
+                base_r = Gf.Vec3f(float(v), base_r[1], base_r[2])
+            elif op_type == UsdGeom.XformOp.TypeRotateY:
+                base_r = Gf.Vec3f(base_r[0], float(v), base_r[2])
+            elif op_type == UsdGeom.XformOp.TypeRotateZ:
+                base_r = Gf.Vec3f(base_r[0], base_r[1], float(v))
+            elif op_type in _ROTATE_TYPES:
+                base_r = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+            elif op_type == UsdGeom.XformOp.TypeScale:
+                base_s = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+
     new_t = Gf.Vec3d(base_t[0] + otx, base_t[1] + oty, base_t[2] + otz)
     new_r = Gf.Vec3f(base_r[0] + orx, base_r[1] + ory, base_r[2] + orz)
     new_s = Gf.Vec3f(base_s[0] * osx, base_s[1] * osy, base_s[2] * osz)
 
-    if lreg := chunk.get_layer_manager():
-        lreg.clear_layer(layer.identifier)
-
+    xformable = UsdGeom.Xformable(prim)
+    _clear_chunk_xform(owner)
     with Usd.EditContext(stage, layer):
-        xformable.ClearXformOpOrder()
+        xformable.GetXformOpOrderAttr().Set([])
         xformable.AddTranslateOp().Set(new_t)
         xformable.AddRotateXYZOp().Set(new_r)
         if new_s != Gf.Vec3f(1.0, 1.0, 1.0):
@@ -88,9 +110,9 @@ def execute(owner, notice, sender):
 
     _last_applied[chunk_id] = {
         "path": prim_path_str,
-        "t": (otx, oty, otz),
-        "r": (orx, ory, orz),
-        "s": (osx, osy, osz),
+        "base_t": (base_t[0], base_t[1], base_t[2]),
+        "base_r": (base_r[0], base_r[1], base_r[2]),
+        "base_s": (base_s[0], base_s[1], base_s[2]),
     }
 
 

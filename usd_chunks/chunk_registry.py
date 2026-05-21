@@ -971,11 +971,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
 
         root = self.get_root_layer()
-        sesh = self.stage.GetRootLayer()
+        sesh = self.stage.GetSessionLayer()
 
         # If the root has been detatched from the stage's root, reapply it
         if root.identifier not in sesh.subLayerPaths:
-            sesh.subLayerPaths.append(root.identifier)
+            sesh.subLayerPaths.insert(0, root.identifier)
 
         # Create a graph layer - these are mosult for orginizing the layers. When chunks are part of
         # the same graph, they will become siblings in the same graph layer
@@ -984,11 +984,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not (parent := self.graph_layers.get(graph_layer_id)):
             parent = Sdf.Layer.CreateAnonymous(graph_layer_id)
             self.graph_layers[graph_layer_id] = parent
-            root.subLayerPaths.append(parent.identifier)
+            root.subLayerPaths.insert(0, parent.identifier)
 
         # If the root has been detatched from the stage's root, reapply it
         if parent.identifier not in root.subLayerPaths:
-            root.subLayerPaths.append(parent.identifier)
+            root.subLayerPaths.insert(0, parent.identifier)
 
         # The sort_key is used to determine the order of the chunk sublayers
         index = c.get_dag_node().get_sort_key()
@@ -1117,7 +1117,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             root = self.get_root_layer().identifier
             sesh = stage.GetRootLayer()
             if root not in sesh.subLayerPaths:
-                sesh.subLayerPaths.append(root)
+                sesh.subLayerPaths.insert(0, root)
 
     def _iter_sublayers(self, layer: Sdf.Layer):
         for lname in layer.subLayerPaths:
