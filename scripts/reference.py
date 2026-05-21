@@ -1,6 +1,6 @@
 import os
 from pxr import Sdf
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 from usd_chunks.chunk_utils import get_unique_path
 
 
@@ -27,24 +27,28 @@ def file_changed(owner, notice, sender):
 def import_callback(owner, notice, sender):
     param = notice.data
     stage = param.get_stage()
-    # Clear any edits in this layer before importing a reference again.
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-
     reference_path = param.get_chunk().get_param("file_path").value
-    prim_path = param.get_chunk().get_param("primpath_location").value
-    prim = stage.GetPrimAtPath(prim_path)
-    prim_type = "Xform"
-
-    if not prim.IsValid():
-        prim = stage.DefinePrim(prim_path, prim_type)
+    raw_path = param.get_chunk().get_param("primpath_location").value
     import_path = param.get_chunk().get_param("import_primpath").value
+
     if import_path:
-        ref_path = Sdf.Reference(reference_path, import_path)
+        ref = Sdf.Reference(reference_path, import_path)
     else:
-        ref_path = Sdf.Reference(reference_path)
-    prim.GetReferences().AddReference(ref_path)
+        layer = Sdf.Layer.FindOrOpen(reference_path)
+        if layer and not layer.defaultPrim:
+            roots = list(layer.rootPrims)
+            ref = Sdf.Reference(reference_path, f"/{roots[0].name}") if len(roots) == 1 else Sdf.Reference(reference_path)
+        else:
+            ref = Sdf.Reference(reference_path)
+
+    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+        prim = stage.GetPrimAtPath(target_path)
+        if not prim.IsValid():
+            prim = stage.DefinePrim(target_path, "Xform")
+        prim.GetReferences().AddReference(ref)
 
 
 def main():
@@ -73,4 +77,23 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)
+    return chunk.DefaulConfig(
+        category=chunk.StandardCategory.UTILS,
+        description="""
+        Reference chunk — lets the user pick an external USD file and insert it as a
+        Usd.Reference into the active stage.
+
+        When a file is selected, the asset name is extracted and used to suggest a
+        unique prim path (e.g. /MyAsset) under which the reference will live.
+        On import, the chunk creates an Xform prim at that location (if it doesn't
+        already exist) and calls AddReference on it.
+
+        The target prim inside the referenced file is resolved in order:
+          1. The explicit "Import Prim Path" field, if filled in.
+          2. The layer's defaultPrim, if one is set.
+          3. The single root prim, if the layer has exactly one.
+          4. No prim path (USD picks the defaultPrim at runtime).
+
+        Import is also variant-context-aware via author_in_variant_context, so the
+        reference is authored inside any active variant selection on the stage.
+        """)
