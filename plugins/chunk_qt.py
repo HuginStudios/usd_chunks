@@ -12,6 +12,7 @@ from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
 from enum import Enum
 import os
+import weakref
 
 
 class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
@@ -878,99 +879,168 @@ class ChunkArea(QtWidgets.QScrollArea):
         self.setWidget(self.widget_holder)
         self.setWidgetResizable(True)
 
+    def add_widget(self, w):
+        self.flow.addWidget(w)
+
+    def delete_chunks(self):
+        # Deletes all chunks in this ScrollArea. Currently undoable: TODO: add undo/redo
+        for i in range(self.flow.count()):
+            if item := self.flow.itemAt(i):
+                w = item.widget()
+                if isinstance(w, ChunkWidget):
+                    w.group.request_delete()
+
 
 class EditableTabBar(QtWidgets.QTabBar):
-    tabAdded = QtCore.Signal(int)
+    request_delete = QtCore.Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # self._editor = QtWidgets.QLineEdit(self)
-        # self._editor.setWindowFlags(QtCore.Qt.WindowType.Popup)
-        # self._editor.setFocusProxy(self)
-        # self._editor.editingFinished.connect(self.handleEditingFinished)
-        # self._editor.installEventFilter(self)
+        self._editor = QtWidgets.QLineEdit(self)
+        self._editor.setWindowFlags(QtCore.Qt.WindowType.Popup)
+        self._editor.setFocusProxy(self)
+        self._editor.editingFinished.connect(self.handleEditingFinished)
+        self._editor.installEventFilter(self)
 
-        self._btn = QtWidgets.QPushButton("+", self)
-        self._btn.clicked.connect(self.add_tab_clicked)
+    def mousePressEvent(self, event):
+        if self.tabAt(event.pos()) == 0:
+            return
+        super().mousePressEvent(event)
 
-        self._btn.show()
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+        idx = self.tabAt(event.pos())
+        if idx == 0:
+            return
 
-    def add_tab_clicked(self):
-        self.tabAdded.emit(self.addTab(f"Tab{self.count()}"))
+        menu = QtWidgets.QMenu()
 
-    def tabInserted(self, index: int) -> None:
-        super().tabInserted(index)
+        remove_action = QtGui.QAction("remove")
+        menu.addActions([remove_action])
+
+        res = menu.exec_(event.globalPos())
+
+        if not res:
+            return
+
+        if res == remove_action:
+            self.request_delete.emit(idx)
+
+    def eventFilter(self, widget, event):
+        if (
+            event.type() == QtCore.QEvent.Type.MouseButtonPress
+            and not self._editor.geometry().contains(event.globalPos())
+        ) or (event.type() == QtCore.QEvent.Type.KeyPress and event.key() == QtCore.Qt.Key.Key_Escape):
+            self._editor.hide()
+            return True
+
+        return super().eventFilter(widget, event)
+
+    def mouseDoubleClickEvent(self, event):
+        index = self.tabAt(event.pos())
         if index > 0:
-            print(index)
-            self.setTabButton(index-1, self.ButtonPosition.RightSide, None)
+            self.editTab(index)
 
-        self.setTabButton(index, self.ButtonPosition.RightSide, self._btn)
-        self.move_btn()
-    
-    def move_btn(self):
-        self._btn.move(self.mapToGlobal(self.rect().bottomRight()))
+    def editTab(self, index):
+        if self.shape() in [
+            QtWidgets.QTabBar.Shape.RoundedEast,
+            QtWidgets.QTabBar.Shape.RoundedWest,
+            QtWidgets.QTabBar.Shape.TriangularEast,
+            QtWidgets.QTabBar.Shape.TriangularWest,
+        ]:
+            rect = self.tabRect(index)
+            h = rect.height()
+            rect.setHeight(rect.width())
+            rect.setWidth(h)
 
-    # def eventFilter(self, widget, event):
-    #     if (
-    #         event.type() == QtCore.QEvent.Type.MouseButtonPress
-    #         and not self._editor.geometry().contains(event.globalPos())
-    #     ) or (event.type() == QtCore.QEvent.Type.KeyPress and event.key() == QtCore.Qt.Key.Key_Escape):
-    #         self._editor.hide()
-    #         return True
+        else:
+            rect = self.tabRect(index)
 
-    #     return super().eventFilter(widget, event)
+        self._editor.move(self.mapToGlobal(rect.topLeft()))
+        self._editor.setText(self.tabText(index))
 
-    # def mouseDoubleClickEvent(self, event):
-    #     index = self.tabAt(event.pos())
-    #     if index >= 0:
-    #         self.editTab(index)
+        self._editor.setFixedSize(rect.size())
+        if not self._editor.isVisible():
+            self._editor.show()
 
-    # def editTab(self, index):
-    #     if self.shape() in [
-    #         QtWidgets.QTabBar.Shape.RoundedEast,
-    #         QtWidgets.QTabBar.Shape.RoundedWest,
-    #         QtWidgets.QTabBar.Shape.TriangularEast,
-    #         QtWidgets.QTabBar.Shape.TriangularWest,
-    #     ]:
-    #         rect = self.tabRect(index)
-    #         h = rect.height()
-    #         rect.setHeight(rect.width())
-    #         rect.setWidth(h)
-
-    #     else:
-    #         rect = self.tabRect(index)
-
-    #     self._editor.move(self.mapToGlobal(rect.topLeft()))
-    #     self._editor.setText(self.tabText(index))
-
-    #     self._editor.setFixedSize(rect.size())
-    #     if not self._editor.isVisible():
-    #         self._editor.show()
-
-    # def handleEditingFinished(self):
-    #     index = self.currentIndex()
-    #     if index >= 0:
-    #         self._editor.hide()
-    #         self.setTabText(index, self._editor.text())
-
-    
+    def handleEditingFinished(self):
+        index = self.currentIndex()
+        if index >= 0:
+            self._editor.hide()
+            self.setTabText(index, self._editor.text())
 
 
 class ChunkTabWidget(QtWidgets.QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._tabs: weakref.WeakValueDictionary[int, ChunkArea] = weakref.WeakValueDictionary()
 
         self.tab_bar = EditableTabBar(self)
         self.setTabBar(self.tab_bar)
-        # self.tab_bar.tabAdded.connect(self.tab_added_callback)
-        
+
+        self.tab_bar.request_delete.connect(self.delete_tab)
+
+        self._btn = QtWidgets.QPushButton("+", self)
+        self._btn.clicked.connect(self.add_new_tab)
+
         self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
         self.setMinimumWidth(200)
-        self.addTab(ChunkArea(self), "chunks")
-    
-    # def tab_added_callback(self, idx):
 
+        self.add_tab_button()
+        self.add_new_tab()
+
+        self.setStyleSheet("""
+        QTabBar::tab {
+            border-color: #4A4A4A;
+            border: 1px solid transparent;
+        }
+        QTabBar::tab:right {
+            padding: 12 0px;
+            border-top-right-radius: 8px;
+            border-bottom-right-radius: 8px;
+        }
+        QTabBar::tab:top {
+            padding: 0 12px;
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+        }
+
+        QTabBar::tab:hover:!selected:!first {
+            background: #868686;
+        }
+
+        QTabBar::tab:selected {
+            border-color: #c4c7cc;
+        }
+
+        QTabBar::tab:first {
+            background: transparent;
+            border: none;
+            padding: 0 0px;
+        }
+        QTabBar::tab:first:hover {
+            background: transparent;
+        }
+        """)
+
+    def delete_tab(self, idx):
+        self._tabs[idx].delete_chunks()
+        self.removeTab(idx)
+
+    def add_new_tab(self):
+        w = ChunkArea(self)
+        idx = self.addTab(w, f"Tab {self.tabBar().count()}")
+        self._tabs[idx] = w
+
+        self.setCurrentIndex(idx)  # Switch to the new tab
+        return idx
+
+    def add_tab_button(self):
+        w = ChunkArea(self)
+        idx = self.addTab(w, "")
+
+        self.tabBar().setTabButton(idx, QtWidgets.QTabBar.ButtonPosition.LeftSide, self._btn)
+        return idx
 
     def update_tab_position(self):
         if self.height() > self.width():
@@ -998,8 +1068,12 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
         chunk_registry.ChunkRegistry().scene.add_chunks(chunks)
 
-    def add_widget_to_tab(self, widget, tabidx=-1):
-        self.tabBar()
+    def add_widget_to_tab(self, widget, tabidx=None):
+        if tabidx is None:
+            tabidx = self.tabBar().currentIndex()
+
+        if t := self._tabs.get(tabidx):
+            t.add_widget(widget)
 
 
 class ChunkWidgetDocker(QtWidgets.QWidget):
@@ -1142,16 +1216,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             widget = loaded_chunk
         else:
             return None
-
-        # category = widget.get_category()
-        # if category not in self.chunk_tabs.keys():
-
-        # idx = self.tab_widget.currentIndex()
-        # print(idx)
-
-        # self.chunk_tabs[idx].flow.addWidget(widget)
         self.tab_widget.add_widget_to_tab(widget)
-
         return widget
 
 
