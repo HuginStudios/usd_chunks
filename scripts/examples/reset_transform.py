@@ -1,0 +1,44 @@
+from pxr import Usd, UsdGeom
+from usd_chunks import chunk
+
+
+def execute(owner, notice, sender):
+    _chunk = owner.get_chunk()
+    stage = owner.get_stage()
+    if not stage:
+        return
+
+    prims = _chunk.get_param("prim_path").get_prims()
+    if not prims:
+        return
+    prim = prims[0]
+
+    layer = owner.get_edit_context()
+    if not layer:
+        return
+    if lreg := chunk.get_layer_manager():
+        lreg.clear_layer(layer.identifier)
+
+    with Usd.EditContext(stage, layer):
+        UsdGeom.Xformable(prim).ClearXformOpOrder()
+
+
+def main():
+    chunk_api = chunk.Chunk("Reset Transform")
+
+    prim_path = chunk.LineEdit(
+        "prim_path",
+        "Prim",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+    )
+    chunk_api.add_param(prim_path)
+
+    run_btn = chunk.Button("run", "Reset Transform")
+    chunk_api.add_param(run_btn)
+    run_btn.add_callback(execute)
+
+    return chunk_api
+
+
+def config():
+    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)
