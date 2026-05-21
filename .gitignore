@@ -8,3 +8,5 @@ _installed_deps
 dist
 build
 *.egg-info
+
+scripts/examples/cameras.json

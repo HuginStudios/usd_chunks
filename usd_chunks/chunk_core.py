@@ -156,7 +156,10 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         self.index = 0
 
         self.add_callback(
-            self.handle_param_changed, param, notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED
+            self.handle_param_changed,
+            param,
+            notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+            send_on_create=True,
         )
 
     @property
@@ -188,6 +191,12 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
         elif attrname == "icon" and isinstance(value, str):
             self.set_icon(value)
+
+        elif attrname == "state":
+            self.update_from_state()
+
+        elif attrname == "layout" and isinstance(value, ChunkFlags.LayoutFlags):
+            self.set_param_layout(value)
 
         self.send_self(data=notice.data)
 
@@ -260,6 +269,40 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
             layout_flags (ChunkFlags.LayoutFlags): The LayoutFlags of the parameter which the widget should respect
         """
         pass
+
+    @abstractmethod
+    def set_hidden(self, val: bool):
+        """
+        Set the ui widget hidden based on the value of val
+
+        Args:
+            val (bool): Whether to hide or show the widget
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_enabled(self, val: bool):
+        """
+        Set the ui widget enabled or disabled based on value of val
+
+        Args:
+            val (bool): Whether to enable or disable the widget
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_from_state(self):
+        """
+        Called when state of the group has changed
+        """
+        self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
+        self.set_enabled(not self.param.has_state(ChunkFlags.State.DISABLED))
 
     def value_changed(self, value: Optional[Any] = None):
         """
@@ -1643,17 +1686,9 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     will have the NameSyncedContainer as owner. Any concrete chunk object who holds an instance of this class should therefore not
     manage ownership of params, instead, it should own the NameSyncedContainer only. This class will not send any notices though, only propagate
     notices from children.
-
-    Attributes:
-        last_added: The last item that was added to the container
-        las_removed: The last item that was removed from the container
-
-        params (ChainMap[ChunkHash, ChunkCommon]): A mapping with access to nested children
-        names (ChainMap[str, ChunkHash]): A mapping from parameter names to the params map. A param with
-            name "myParam" may be accessed as params[names["myParam"]]
     """
 
-    def __init__(self, params: Optional[Sequence[ChunkT]] = None):
+    def __init__(self):
         super().__init__()
 
         self._last_added: Optional[HashVal] = None
@@ -1661,16 +1696,6 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
 
         self._params: ChainMap[ChunkHash, ChunkT] = ChainMap()
         self._names: ChainMap[str, ChunkHash] = ChainMap()
-
-        if params is not None:
-            for i in params:
-                self.add(i)
-
-                if isinstance(i, ChunkContainerBase):
-                    self.add_nested(i.children)  # type: ignore
-
-    def __bool__(self):
-        return bool(self._params)
 
     def __copy__(self):
         copied = NameSyncedContainer()
@@ -1681,11 +1706,32 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         copied._copy_callbacks(self)
         return copied
 
+    def empty(self):
+        return not bool(self._params)
+
     def serialize(self, glb):
         if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
-            res.kwargs["params"] = list(self.get_my_params())
+            # Serialize params as a temp 'params' attribute. This will be de-serialized in post_serial_setattr
+            res.attributes["params"] = list(self.get_my_params())
 
         return res
+
+    def post_serial_setattr(self, name, value):
+        if name == "params":
+            # Add the params to this container by calling add. Previously we created the params in place and passed them to
+            # the NameSyncedContainer constructor. The reason for the change is to be able to modify the container before
+            # adding the parameters; Owner is set on the params in add(), but this sets the graph_id as well, which is wrong
+            # on the scene 'chunks' container. The graph_id should ideally be smarter, but for now this solves the issue.
+            # TODO: Rework graph_id
+            for i in value:
+                if self.get_param(i):
+                    continue
+
+                self.add(i)
+                if isinstance(i, ChunkContainerBase):
+                    self.add_nested(i.children)  # type: ignore
+            return
+        return super().post_serial_setattr(name, value)
 
     def get_notice_data(self) -> Self:
         return self
@@ -2454,13 +2500,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice.data.SetTargets(targets)
 
     @abstractmethod
-    def usd_prop_changed(self, prop_path: str):
+    def usd_prop_changed(self):
         """
         A callback for when the UsdAttribute member was changed. This will update the value of
-        the AttributeSender passed to set_usd_attr().
-
-        Args:
-            prop_path (str): Path to the updated UsdAttribute.
+        the AttributeSender passed to set_usd_attr()..
         """
         if not self._usd_prop_connection:
             return
@@ -2473,7 +2516,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         elif isinstance(attr, Usd.Relationship):
             self._usd_prop_connection.sender.value = ",".join([str(x) for x in attr.GetForwardedTargets()])
 
-    def set_usd_prop(self, prop_path: str, sender: AttributeSender):
+    def set_usd_prop(self, prop_path: str | Usd.Property, sender: AttributeSender):
         """
         Connect the UsdAttribute at prop_path to self. Any changes to the param will
         update the attribute
@@ -2484,7 +2527,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 When a signal with sender and ATTRIBUTE_CHANGED notice is sent, the method
                 update_usd_attrib() of this class is called
         """
-        self._usd_prop_path = prop_path.GetPath() if isinstance(prop_path, Usd.Property) else prop_path
+        self._usd_prop_path = str(prop_path.GetPath()) if isinstance(prop_path, Usd.Property) else prop_path
 
         if self._usd_prop_connection:
             self._usd_prop_connection.disconnect()
@@ -2492,7 +2535,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         self._usd_prop_connection = chunk_notice.NoticeConnection(
             self.update_usd_prop, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender, owner=self
         )
-        self.usd_prop_changed(prop_path)
+        self.usd_prop_changed()
 
     def get_usd_prop(self) -> Usd.Property | None:
         """
@@ -2592,7 +2635,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             if val is None:
                 return type_default()
 
-            if type(val) is not type_default:
+            if type(val) not in supported:
                 # When the value does not match the type_default, we can try to convert it. If failed, use the type default
                 try:
                     # Try casting the type_default to val
@@ -3319,7 +3362,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         super().__attrs_post_init__()
         self._attr_senders["value"] = AttributeSender(self, "value", chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
 
-        if self.children or not self.param:
+        if not self.children.empty() or not self.param:
             # __attrs_post_init__ was called when copied, so no need to reinitialize the children as they
             # have already been initialized
             return
@@ -3442,6 +3485,33 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._modified = False
         self._scene_file = Path()
 
+    @abstractmethod
+    def get_current_frame(self) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_end_frame(self) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_start_frame(self) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_current_frame(self, frame: float):
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_end_frame(self, frame: float):
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_start_frame(self, frame: float):
+        raise NotImplementedError
+
+    def serialize(self, glb):
+        return None
+
     def export_scene(self, path: str | Path):
         """
         Export the current scene. The result will be written to path, if path is a chunk_serial.FileExtensions.SCENE file path.
@@ -3547,7 +3617,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         # Construct the chunks
         if chunks := data.get("chunks"):
-            if nsc := chunks.construct():
+            if nsc := chunks.construct(False):
+                nsc: NameSyncedContainer
+                nsc.get_dag_node()._part_of_graph = False
+                chunks.post_constuct()
+
                 self.set_chunks(nsc)
 
         self._modified = False
@@ -3604,7 +3678,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 c.check_hierarchy()
             except Exception as e:
                 logger.exception(e)
-                return
+                c.print_hierarchy()
+                continue
 
             # TODO: The chunk may have been loaded before, so dumb to send CHUNK_LOADED here perhaps? CHUNK_LOADED should
             # just be called when a new chunk instance is created, but after initialization

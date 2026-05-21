@@ -283,6 +283,9 @@ class Button(ChunkParamBase):
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.BUTTON
 
+    def click(self):
+        self.get_attribute_sender("value").execute()
+
 
 class Checkbox(ChunkParamBase[bool]):
     """

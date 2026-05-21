@@ -8,6 +8,8 @@ from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
+from PySide6 import QtCore
+
 from usd_chunks import chunk_registry, chunk_core, chunk_serial
 from plugins import chunk_qt
 
@@ -41,6 +43,44 @@ class UsdviewScene(chunk_core.SceneSender):
         )
 
         super().__init__()
+
+    def get_current_frame(self) -> float:
+        return self.usdviewAPI.dataModel.currentFrame
+
+    def get_end_frame(self) -> float:
+        return self.usdviewAPI.dataModel.frameRangeEnd
+
+    def get_start_frame(self) -> float:
+        return self.usdviewAPI.dataModel.frameRangeBegin
+
+    def set_current_frame(self, frame: float):
+        appCtrl = self.usdviewAPI._UsdviewApi__appController
+        appCtrl.setFrame(frame)
+        QtCore.QCoreApplication.processEvents()
+
+    def set_end_frame(self, frame: float):
+        stage = self.get_stage()
+        if not stage:
+            return
+
+        appCtrl = getattr(self.usdviewAPI, "_UsdviewApi__appController")
+        with Usd.EditContext(self.get_stage(), stage.GetSessionLayer()):
+            stage.SetMetadata("endFrame", frame)
+            self.usdviewAPI.dataModel.frameRangeEnd = frame
+            appCtrl.realEndTimeCode = frame
+        appCtrl._UpdateTimeSamples()
+
+    def set_start_frame(self, frame: float):
+        stage = self.get_stage()
+        if not stage:
+            return
+
+        appCtrl = getattr(self.usdviewAPI, "_UsdviewApi__appController")
+        with Usd.EditContext(self.get_stage(), stage.GetSessionLayer()):
+            stage.SetMetadata("startFrame", frame)
+            self.usdviewAPI.dataModel.frameRangeBegin = frame
+            appCtrl.realStartTimeCode = frame
+        appCtrl._UpdateTimeSamples()
 
     def request_save(self) -> bool:
         reg = chunk_registry.ChunkRegistry().scene

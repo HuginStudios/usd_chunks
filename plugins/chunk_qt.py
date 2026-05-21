@@ -12,7 +12,6 @@ from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
 from enum import Enum
 import os
-import re
 
 
 class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
@@ -57,9 +56,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
         return self.value() / self._step
 
     def set_value(self, value):
-        # self.blockSignals(True)
         self.setValue(value * self._step)
-        # self.blockSignals(False)
 
     def set_param_layout(self, layout_flags: usd_chunks.chunk_flags.ChunkFlags.LayoutFlags):
         is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL == layout_flags
@@ -71,6 +68,12 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
         if not self.param or value is None:
             return
         super().value_changed(value / float(self._step))
+
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
 
 
 class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
@@ -102,6 +105,12 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
+
 
 class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpinBox):
     def __init__(self, param: chunk.Spinbox):
@@ -132,6 +141,12 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
+
 
 class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
     def __init__(self, param: chunk.Label):
@@ -146,6 +161,12 @@ class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
 
     def set_label(self, text):
         return self.setText(text)
+
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
 
 
 class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidget):
@@ -187,6 +208,12 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
     def set_value(self, value):
         return self.text.setText(str(value))
 
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
+
 
 class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidget):
     def __init__(self, param: chunk.TextEdit):
@@ -227,6 +254,12 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
     def set_value(self, value):
         if value != self.get_value():
             self.text.setPlainText(str(value))
+
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
 
 
 class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
@@ -293,6 +326,12 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
 
         self.setLayout(self.main_layout)
 
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
+
 
 class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox):
     def __init__(self, param: chunk.Menu):
@@ -329,6 +368,12 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
+
 
 class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheckBox):
     def __init__(self, param: chunk.Checkbox):
@@ -342,6 +387,12 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
 
     def set_value(self, value: bool):
         return self.setChecked(value)
+
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
 
 
 class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushButton):
@@ -360,7 +411,13 @@ class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushB
     def value_changed(self, value: Any = None):
         """Override for buttons as the param do not have a value. Better to just send the param notice directly"""
         if self.param:
-            self.param.execute()
+            self.param.click()
+
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
 
 
 class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
@@ -373,6 +430,12 @@ class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
 
         self.setup_chunk_widget()
+
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
 
 
 class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):

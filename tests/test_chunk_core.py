@@ -277,3 +277,27 @@ def test_scene_sender_serialization_roundtrip_preserves_connections_and_values(t
 
     loaded_source.value = 11
     assert loaded_target.value == 22
+
+
+class _AChunk(chunk.Chunk):
+    def __init__(self):
+        super().__init__(name="_TEST")
+
+        grp = self.add_param(chunk.Group("grp"))
+        self.slider = grp.add_param(chunk.Slider("slider"))
+        
+def test_serialize_custom_chunk_with_member(tmp_path):
+    scene_src = _DummyScene()
+    registry = chunk_registry.ChunkRegistry()
+    registry.initialize(scene_src, "pytest")
+    scene_src.add_chunk(_AChunk())
+
+    scene_file = tmp_path / "scene_member.chsc"
+    scene_src.export_scene(scene_file)
+
+    scene_dst = _DummyScene()
+    registry.initialize(scene_dst, "pytest")
+    scene_dst.open_scene(scene_file)
+
+    for c in scene_dst.get_chunks():
+        c.check_hierarchy()

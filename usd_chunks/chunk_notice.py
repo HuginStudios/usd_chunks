@@ -547,7 +547,7 @@ class DagNode:
             self.dirty = True
 
         self._sort_key += 1 + node._sort_key
-        for o in self.get_outputs():
+        for _, o in self.get_outputs():
             o._sort_key += 1 + node._sort_key
 
         owner = self.get_owner_node()
@@ -577,6 +577,8 @@ class DagNode:
         """
         if owner == self.get_owner():
             return
+
+        assert isinstance(owner, ChunkNoticePropagator) or owner is None
 
         if owner is None:
             self._connections.owner = None
@@ -615,14 +617,14 @@ class DagNode:
         except KeyError:
             raise
 
-    def get_outputs(self) -> Iterator["DagNode"]:
+    def get_outputs(self) -> Iterator[Tuple[int, "DagNode"]]:
         """
         Get the output (dependant) nodes of this node
 
         Returns:
             Iterator[DagNode]: An iterator for the output nodes
         """
-        return self._connections.outputs.values()
+        return self._connections.outputs.items()
 
     def get_output(self, index: int) -> "DagNode":
         """
@@ -701,7 +703,7 @@ class DagNode:
         self._dirty = True
         searched.add(self)
 
-        for node in self.get_outputs():
+        for _, node in self.get_outputs():
             node._index += 1
             node._input_data.add((ChunkNoticeAlias.INPUT_CHANGED, self))
             node.dirty_dependants(searched.copy())
@@ -765,7 +767,7 @@ class DagNode:
         self.dirty = False
         yield self
 
-        for node in self.get_outputs():
+        for _, node in self.get_outputs():
             yield from node.solve_outputs()
 
         if node := self.get_owner_node():
@@ -870,12 +872,11 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
     def serialize(self, glb):
         if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
             res.attributes["dependencies"] = [node for _, node in self.get_dependencies()]
-        return res
 
-    def post_serial(self, owner):
-        if isinstance(owner, ChunkNoticePropagator):
-            self.set_owner(owner)
-        return super().post_serial(owner)
+            if self.get_dag_node()._part_of_graph and (owner := self.get_owner()):
+                # The owner should always be serialized as a reference. This ensures no circular dependencies
+                res.attributes["owner"] = chunk_serial.SerializedReference(hash(owner)).as_dict()
+        return res
 
     def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
         if name == "_callbacks":
@@ -897,6 +898,8 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             # An example of this is the ChunkBase class that creates some callbacks in __init__, but as they are private, they are not serialized, therefore
             # if we were to do self._callbacks = value, those initial callbacks would be deleted
             self._callbacks.extend(value)
+        elif name == "owner":
+            self.set_owner(value)
         else:
             super().post_serial_setattr(name, value)
         self.set_blocked(False)
@@ -1150,11 +1153,11 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         raise ValueError(f"Predicate {predicate} failed for get_dependency({index})")
 
     @overload
-    def get_dependents(self) -> List["ChunkNoticePropagator"]: ...
+    def get_dependents(self) -> List[Tuple[int, "ChunkNoticePropagator"]]: ...
     @overload
-    def get_dependents(self, predicate: Optional[Predicate[_T]] = None) -> List[_T]: ...
+    def get_dependents(self, predicate: Optional[Predicate[_T]] = None) -> List[Tuple[int, _T]]: ...
 
-    def get_dependents(self, predicate: Optional[Predicate[_T]] = None) -> List["ChunkNoticePropagator"] | List[_T]:
+    def get_dependents(self, predicate: Optional[Predicate[_T]] = None):
         """
         Get all propagators that depend on this propagator (nodes connected to the output of this node)
 
@@ -1166,8 +1169,8 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             List[_T]: Dependents matching the predicate
         """
         if not predicate:
-            return [x.propagator for x in self.get_dag_node().get_outputs() if x.propagator]
-        return [x.propagator for x in self.get_dag_node().get_outputs() if predicate(x.propagator)]
+            return [(x, y.propagator) for x, y in self.get_dag_node().get_outputs() if y.propagator]
+        return [(x, y.propagator) for x, y in self.get_dag_node().get_outputs() if predicate(y.propagator)]
 
     def get_callbacks(self) -> List["NoticeConnection"]:
         """
@@ -1408,19 +1411,12 @@ class NoticeConnection(chunk_serial.Serializeable):
         # No attributes should be serialized as the attributes are serialized by kwargs
         return False, None
 
-    def trigger(self) -> ChunkNotice | None:
+    def trigger(self):
         """
-        Trigger the connection by sending the notice together with the sender (if specified).
-        Because other connections may listen to the same notice + sender, this may trigger other connections
-        as well
-
-        Returns:
-            ChunkNotice | None: The notice that was sent, or None if failed
+        Trigger the connection by calling the callback with the alias and sender members as arguments.
+        This will not send any TfNotice.
         """
-
-        if self.sender and isinstance(self.sender, ChunkNoticePropagator):
-            return self.sender.send_self(alias=self.alias)
-        return send_notice(self.alias, self.sender, self.sender)
+        self.handle_callback(get_notice(self.alias), self.sender)
 
     def handle_callback(self, notice, sender=None, context=True):
         """
