@@ -81,7 +81,6 @@ def _build_collision_mjcf(stage, collision_prims):
 
     Returns (asset_xml_str, body_xml_str, temp_dirs_to_cleanup).
     """
-    # Consolidate all STLs into a single temp dir
     shared_dir = tempfile.mkdtemp(prefix="usd_mjcf_")
     temp_dirs = [shared_dir]
     asset_lines = []
@@ -91,7 +90,6 @@ def _build_collision_mjcf(stage, collision_prims):
         src_dir, stl_name = _export_mesh_stl(cprim)
         if src_dir is None:
             continue
-        # Move STL into shared dir with unique name
         unique_name = f"col{i}.stl"
         shutil.move(os.path.join(src_dir, stl_name), os.path.join(shared_dir, unique_name))
         shutil.rmtree(src_dir, ignore_errors=True)
@@ -112,6 +110,22 @@ def _build_collision_mjcf(stage, collision_prims):
 def _cleanup_temp_dirs(dirs):
     for d in dirs:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _map_friction(friction_value: float) -> str:
+    slide = max(friction_value, 0.001)
+    torsional = friction_value * 0.005
+    rolling = friction_value * 0.001
+    return f"{slide} {torsional} {rolling}"
+
+
+def _map_bounce(bounce_value: float) -> str:
+    dampratio = 1.0 - max(0.0, min(1.0, bounce_value)) * 0.9
+    return f"0.02 {dampratio}"
+
+
+def _map_damping(lin_damping: float, ang_damping: float) -> tuple[str, str]:
+    return f"{lin_damping}", f"{ang_damping}"
 
 
 def simulate_mujoco(
@@ -136,6 +150,10 @@ def simulate_mujoco(
     ory,
     orz,
     collision_prims=None,
+    friction=0.5,
+    restitution=0.1,
+    lin_damping=0.0,
+    ang_damping=0.05,
 ):
     """Run a MuJoCo sphere simulation and bake keyframes onto the USD prim.
 
@@ -177,6 +195,11 @@ def simulate_mujoco(
     # Timestep
     dt = 1.0 / fps
 
+    # Map material parameters
+    friction_3 = _map_friction(friction)
+    solref = _map_bounce(restitution)
+    lin_damp, ang_damp = _map_damping(lin_damping, ang_damping)
+
     # Build MJCF XML
     temp_dirs = []
     compiler_line = ""
@@ -193,7 +216,11 @@ def simulate_mujoco(
 
     xml = f"""<mujoco>
 {compiler_line}
-  <option gravity="0 0 {gravity}" timestep="{dt / substeps}"/>
+  <option gravity="0 0 {gravity}" timestep="{dt / substeps}" viscosity="{lin_damp}"/>
+  <default>
+    <geom solref="{solref}" friction="{friction_3}"/>
+    <joint damping="{ang_damp}"/>
+  </default>
 {asset_block}
   <worldbody>
     <geom type="plane" size="100 100 0.1" contype="1" conaffinity="1"/>
