@@ -12,6 +12,22 @@ except ImportError:
     _HAS_MUJOCO = False
 
 
+def _map_friction(friction_value: float) -> str:
+    slide = max(friction_value, 0.001)
+    torsional = friction_value * 0.005
+    rolling = friction_value * 0.001
+    return f"{slide} {torsional} {rolling}"
+
+
+def _map_bounce(bounce_value: float) -> str:
+    dampratio = 1.0 - max(0.0, min(1.0, bounce_value)) * 0.9
+    return f"0.02 {dampratio}"
+
+
+def _map_damping(lin_damping: float, ang_damping: float) -> tuple[str, str]:
+    return f"{lin_damping}", f"{ang_damping}"
+
+
 def simulate_mujoco(
     stage,
     prim,
@@ -33,6 +49,10 @@ def simulate_mujoco(
     orx,
     ory,
     orz,
+    friction=0.5,
+    restitution=0.1,
+    lin_damping=0.0,
+    ang_damping=0.05,
 ):
     """Run a MuJoCo sphere simulation and bake keyframes onto the USD prim.
 
@@ -74,9 +94,18 @@ def simulate_mujoco(
     # Timestep
     dt = 1.0 / fps
 
+    # Map material parameters
+    friction_3 = _map_friction(friction)
+    solref = _map_bounce(restitution)
+    lin_damp, ang_damp = _map_damping(lin_damping, ang_damping)
+
     # Build MJCF XML
     xml = f"""<mujoco>
-  <option gravity="0 0 {gravity}" timestep="{dt / substeps}"/>
+  <option gravity="0 0 {gravity}" timestep="{dt / substeps}" viscosity="{lin_damp}"/>
+  <default>
+    <geom solref="{solref}" friction="{friction_3}"/>
+    <joint damping="{ang_damp}"/>
+  </default>
   <worldbody>
     <geom type="plane" size="100 100 0.1"/>
     <body name="dynamic" pos="{px} {py} {pz}" quat="{w} {x} {y} {z}">
