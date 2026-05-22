@@ -2,14 +2,116 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import struct
+import tempfile
+
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 try:
     import mujoco as _mj
+    import numpy as np
 
     _HAS_MUJOCO = True
 except ImportError:
     _HAS_MUJOCO = False
+
+
+def _export_mesh_stl(prim):
+    """Export all meshes under *prim* to a single binary STL in a temp dir.
+
+    Returns (temp_dir, stl_filename) or (None, None) if no mesh found.
+    """
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    all_triangles = []
+
+    for p in Usd.PrimRange(prim):
+        mesh = UsdGeom.Mesh(p)
+        if not mesh:
+            continue
+        points = mesh.GetPointsAttr().Get()
+        indices = mesh.GetFaceVertexIndicesAttr().Get()
+        counts = mesh.GetFaceVertexCountsAttr().Get()
+        if not points or not indices or not counts:
+            continue
+
+        world_xf = xform_cache.GetLocalToWorldTransform(p)
+        xf_points = [Gf.Vec3f(world_xf.Transform(Gf.Vec3d(pt))) for pt in points]
+
+        idx = 0
+        for fc in counts:
+            for t in range(fc - 2):
+                v0 = xf_points[indices[idx]]
+                v1 = xf_points[indices[idx + t + 1]]
+                v2 = xf_points[indices[idx + t + 2]]
+                all_triangles.append((v0, v1, v2))
+            idx += fc
+
+    if not all_triangles:
+        return None, None
+
+    temp_dir = tempfile.mkdtemp(prefix="usd_stl_")
+    stl_name = "collision.stl"
+    stl_path = os.path.join(temp_dir, stl_name)
+
+    num_tri = len(all_triangles)
+    with open(stl_path, "wb") as f:
+        f.write(b"\x00" * 80)
+        f.write(struct.pack("<I", num_tri))
+        for v0, v1, v2 in all_triangles:
+            e1 = Gf.Vec3f(v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2])
+            e2 = Gf.Vec3f(v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2])
+            n = Gf.Vec3f(
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            )
+            f.write(struct.pack("<3f", n[0], n[1], n[2]))
+            f.write(struct.pack("<3f", v0[0], v0[1], v0[2]))
+            f.write(struct.pack("<3f", v1[0], v1[1], v1[2]))
+            f.write(struct.pack("<3f", v2[0], v2[1], v2[2]))
+            f.write(struct.pack("<H", 0))
+
+    return temp_dir, stl_name
+
+
+def _build_collision_mjcf(stage, collision_prims):
+    """Build MJCF asset/body XML for concave mesh colliders.
+
+    Returns (asset_xml_str, body_xml_str, temp_dirs_to_cleanup).
+    """
+    # Consolidate all STLs into a single temp dir
+    shared_dir = tempfile.mkdtemp(prefix="usd_mjcf_")
+    temp_dirs = [shared_dir]
+    asset_lines = []
+    body_lines = []
+
+    for i, cprim in enumerate(collision_prims):
+        src_dir, stl_name = _export_mesh_stl(cprim)
+        if src_dir is None:
+            continue
+        # Move STL into shared dir with unique name
+        unique_name = f"col{i}.stl"
+        shutil.move(os.path.join(src_dir, stl_name), os.path.join(shared_dir, unique_name))
+        shutil.rmtree(src_dir, ignore_errors=True)
+
+        mesh_id = f"col{i}"
+        asset_lines.append(f'    <mesh name="{mesh_id}" file="{unique_name}"/>')
+        body_lines.append(
+            f'    <body name="collider_{i}" pos="0 0 0">'
+            f'<geom type="mesh" mesh="{mesh_id}" contype="1" conaffinity="1"/>'
+            f"</body>"
+        )
+
+    asset_xml = "\n".join(asset_lines)
+    body_xml = "\n".join(body_lines)
+    return asset_xml, body_xml, temp_dirs
+
+
+def _cleanup_temp_dirs(dirs):
+    for d in dirs:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def simulate_mujoco(
@@ -33,6 +135,7 @@ def simulate_mujoco(
     orx,
     ory,
     orz,
+    collision_prims=None,
 ):
     """Run a MuJoCo sphere simulation and bake keyframes onto the USD prim.
 
@@ -75,18 +178,35 @@ def simulate_mujoco(
     dt = 1.0 / fps
 
     # Build MJCF XML
+    temp_dirs = []
+    compiler_line = ""
+    asset_block = ""
+    collision_bodies = ""
+
+    if collision_prims:
+        asset_xml, body_xml, temp_dirs = _build_collision_mjcf(stage, collision_prims)
+        if asset_xml:
+            meshdir = temp_dirs[0].replace("\\", "/")
+            compiler_line = f'  <compiler meshdir="{meshdir}"/>'
+            asset_block = f"  <asset>\n{asset_xml}\n  </asset>"
+            collision_bodies = body_xml
+
     xml = f"""<mujoco>
+{compiler_line}
   <option gravity="0 0 {gravity}" timestep="{dt / substeps}"/>
+{asset_block}
   <worldbody>
-    <geom type="plane" size="100 100 0.1"/>
+    <geom type="plane" size="100 100 0.1" contype="1" conaffinity="1"/>
     <body name="dynamic" pos="{px} {py} {pz}" quat="{w} {x} {y} {z}">
       <freejoint/>
-      <geom type="sphere" size="{radius}" mass="{mass}"/>
+      <geom type="sphere" size="{radius}" mass="{mass}" contype="1" conaffinity="1"/>
     </body>
+{collision_bodies}
   </worldbody>
 </mujoco>"""
 
     model = _mj.MjModel.from_xml_string(xml)
+    _cleanup_temp_dirs(temp_dirs)
     data = _mj.MjData(model)
 
     # Set initial velocities (linear: qvel[0:3], angular: qvel[3:6])
