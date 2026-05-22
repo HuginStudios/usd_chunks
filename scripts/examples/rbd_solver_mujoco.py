@@ -9,6 +9,8 @@ import tempfile
 
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
+from usd_chunks import chunk
+
 try:
     import mujoco as _mj
     import numpy as np
@@ -446,3 +448,173 @@ def simulate_mujoco_instancer(
         stage.SetEndTimeCode(start_frame + frame_count - 1)
 
     print(f"[MuJoCoSolver] Baked {frame_count} frames on PointInstancer {prim.GetPath()} ({num_instances} bodies)")
+
+
+# ---------------------------------------------------------------------------
+# Chunk UI
+# ---------------------------------------------------------------------------
+
+
+def _parse_vec3(s: str) -> list[float]:
+    parts = (s or "").split()
+    if len(parts) >= 3:
+        return [float(parts[0]), float(parts[1]), float(parts[2])]
+    return [0.0, 0.0, 0.0]
+
+
+def _clear_chunk_bake(owner):
+    layer = owner.get_edit_context()
+    if layer and (lreg := chunk.get_layer_manager()):
+        lreg.clear_layer(layer.identifier)
+
+
+def reset(owner, notice, sender):
+    _clear_chunk_bake(owner)
+    print("[MuJoCoSolver] Reset — bake cleared.")
+
+
+def execute(owner, notice, sender):
+    if not _HAS_MUJOCO:
+        print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
+        return
+
+    _chunk = owner.get_chunk()
+    stage = owner.get_stage()
+    if not stage:
+        return
+
+    prims = _chunk.get_param("prim_path").get_prims()
+    if not prims:
+        print("[MuJoCoSolver] No target prim selected")
+        return
+    prim = prims[0]
+    if not prim.IsValid() or prim.GetPath() == Sdf.Path("/"):
+        return
+
+    collision_prims = _chunk.get_param("collision_path").get_prims()
+
+    frame_count = int(_chunk.get_param("frame_count").value or 120)
+    fps = float(_chunk.get_param("fps").value or 24)
+    gravity = float(_chunk.get_param("gravity").value or -981)
+    substeps = max(1, int(_chunk.get_param("substeps").value or 4))
+    start_frame = int(_chunk.get_param("start_frame").value or 1)
+    friction = float(_chunk.get_param("friction").value or 0.5)
+    restitution = float(_chunk.get_param("restitution").value or 0.1)
+    mass = float(_chunk.get_param("mass").value or 1.0)
+    lin_damping = float(_chunk.get_param("lin_damping").value or 0.0)
+    ang_damping = float(_chunk.get_param("ang_damping").value or 0.05)
+    otx = float(_chunk.get_param("off_tx").value or 0)
+    oty = float(_chunk.get_param("off_ty").value or 0)
+    otz = float(_chunk.get_param("off_tz").value or 0)
+    orx = float(_chunk.get_param("off_rx").value or 0)
+    ory = float(_chunk.get_param("off_ry").value or 0)
+    orz = float(_chunk.get_param("off_rz").value or 0)
+    init_vel = _parse_vec3(_chunk.get_param("initial_velocity").value)
+    ang_vel = _parse_vec3(_chunk.get_param("angular_velocity").value)
+
+    layer = owner.get_edit_context()
+    if not layer:
+        return
+    if lreg := chunk.get_layer_manager():
+        lreg.clear_layer(layer.identifier)
+
+    if UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
+        simulate_mujoco_instancer(
+            stage, prim, layer, collision_prims,
+            frame_count, fps, gravity, mass, substeps,
+            init_vel, ang_vel, start_frame,
+            otx, oty, otz, orx, ory, orz,
+        )
+    else:
+        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        parent = prim.GetParent()
+        parent_world_inv = Gf.Matrix4d(1.0)
+        if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
+            parent_world_inv = xform_cache.GetLocalToWorldTransform(parent).GetInverse()
+
+        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        rng = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        half_extents = [0.5, 0.5, 0.5]
+        z_offset = 0.0
+        if not rng.IsEmpty():
+            sz = rng.GetMax() - rng.GetMin()
+            half_extents = [sz[0] / 2, sz[1] / 2, sz[2] / 2]
+            translate = xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation()
+            z_offset = ((rng.GetMin()[2] + rng.GetMax()[2]) / 2) - translate[2]
+
+        simulate_mujoco(
+            stage, prim, layer, frame_count, fps, gravity, mass, substeps,
+            init_vel, ang_vel, start_frame, parent_world_inv, half_extents, z_offset,
+            otx, oty, otz, orx, ory, orz,
+            collision_prims=collision_prims,
+            friction=friction, restitution=restitution,
+            lin_damping=lin_damping, ang_damping=ang_damping,
+        )
+
+    try:
+        from scripts.node_graph.graph_host import GraphHost
+        GraphHost.current().refresh_timeline(start_frame, start_frame + frame_count - 1)
+    except Exception:
+        pass
+
+
+def main():
+    chunk_api = chunk.Chunk("RBD Solver (MuJoCo)")
+
+    prim_path = chunk.LineEdit(
+        "prim_path", "Target Prim",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+    )
+    chunk_api.add_param(prim_path)
+
+    collision_path = chunk.LineEdit(
+        "collision_path", "Collision Prim",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+    )
+    chunk_api.add_param(collision_path)
+
+    _GF = chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED | chunk.ChunkFlags.GroupFlags.FRAMED
+
+    sim_grp = chunk.Group("Simulation", flags=_GF)
+    sim_grp.add_param(chunk.Spinbox("frame_count", "Frame Count", default_value=120, is_int=True))
+    sim_grp.add_param(chunk.Spinbox("fps", "FPS", default_value=24.0))
+    sim_grp.add_param(chunk.Spinbox("gravity", "Gravity", default_value=-981.0))
+    sim_grp.add_param(chunk.Spinbox("substeps", "Substeps", default_value=4, is_int=True))
+    sim_grp.add_param(chunk.Spinbox("start_frame", "Start Frame", default_value=1, is_int=True))
+    chunk_api.add_param(sim_grp)
+
+    physics_grp = chunk.Group("Physics", flags=_GF)
+    physics_grp.add_param(chunk.Spinbox("friction", "Friction", default_value=0.5))
+    physics_grp.add_param(chunk.Spinbox("restitution", "Bounce", default_value=0.1))
+    physics_grp.add_param(chunk.Spinbox("mass", "Mass", default_value=1.0))
+    physics_grp.add_param(chunk.Spinbox("lin_damping", "Linear Damping", default_value=0.0))
+    physics_grp.add_param(chunk.Spinbox("ang_damping", "Angular Damping", default_value=0.05))
+    chunk_api.add_param(physics_grp)
+
+    offset_grp = chunk.Group("Offsets", flags=_GF)
+    offset_grp.add_param(chunk.Spinbox("off_tx", "Offset X", default_value=0.0))
+    offset_grp.add_param(chunk.Spinbox("off_ty", "Offset Y", default_value=0.0))
+    offset_grp.add_param(chunk.Spinbox("off_tz", "Offset Z", default_value=0.0))
+    offset_grp.add_param(chunk.Spinbox("off_rx", "Rotate X", default_value=0.0))
+    offset_grp.add_param(chunk.Spinbox("off_ry", "Rotate Y", default_value=0.0))
+    offset_grp.add_param(chunk.Spinbox("off_rz", "Rotate Z", default_value=0.0))
+    chunk_api.add_param(offset_grp)
+
+    vel_grp = chunk.Group("Velocity", flags=_GF)
+    vel_grp.add_param(chunk.LineEdit("initial_velocity", "Linear Velocity", default_value="0 0 0"))
+    vel_grp.add_param(chunk.LineEdit("angular_velocity", "Angular Velocity", default_value="0 0 0"))
+    chunk_api.add_param(vel_grp)
+
+    run_btn = chunk.Button("run_sim", "Run Simulation")
+    run_btn.add_callback(execute)
+    chunk_api.add_param(run_btn)
+
+    reset_btn = chunk.Button("reset_sim", "Reset")
+    reset_btn.add_callback(reset)
+    chunk_api.add_param(reset_btn)
+
+    return chunk_api
+
+
+def config():
+    return chunk.DefaulConfig(category="Simulation")
