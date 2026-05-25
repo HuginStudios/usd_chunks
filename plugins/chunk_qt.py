@@ -1128,7 +1128,12 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             chunks = mod.load()
 
         for c in chunks:
-            self.add_chunk_to_tab(c)
+            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT) and (scene := chunk.get_scene()):
+                # If the chunk has the context flag, we should just add it to the scene and let ChunkWidgetDocker 
+                # manage the adding of the context (from CHUNK_LOADED)
+                scene.add_chunk(c)
+            else:
+                self.add_chunk_to_tab(c)
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
         w = self.widget(idx)
