@@ -613,12 +613,23 @@ class ContainerWidget(
         super().__init__(group, parent=parent)
 
     def build_collapsable(self):
-        self.content = QtWidgets.QFrame()
+        if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            # Context chunks are scrollable
+            self.content = QtWidgets.QScrollArea(self)
+            self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
+            self.content_layout.setContentsMargins(2, 2, 2, 10)
+            self.content_layout.setSpacing(20)
+            wid = QtWidgets.QWidget(self)
+            wid.setLayout(self.content_layout)
+            self.content.setWidget(wid)
+            self.content.setWidgetResizable(True)
 
-        self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
-        self.content_layout.setContentsMargins(2, 2, 2, 10)
-        self.content_layout.setSpacing(1)
-        self.content.setLayout(self.content_layout)
+        else:
+            self.content = QtWidgets.QFrame()
+            self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
+            self.content_layout.setContentsMargins(2, 2, 2, 10)
+            self.content_layout.setSpacing(1)
+            self.content.setLayout(self.content_layout)
 
         # Setup minimize/maximize button
         self.minimize_button = QtWidgets.QToolButton()
@@ -660,7 +671,8 @@ class ContainerWidget(
 
         self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
         self.content.setStyleSheet(
-            f"QFrame {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
+            f"QFrame {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;" \
+            f"QScrollArea {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
 
     def supports_widget(self, widget: Any) -> bool:
@@ -753,6 +765,9 @@ class ContainerWidget(
         if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
             self.minimize_button.setChecked(not self.group.has_state(ChunkFlags.State.COLLAPSED))
 
+            if self.is_collapsed():
+                self.content.setFixedHeight(0)
+    
     def set_expanded(self, checked):
         arrow_type = QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
         direction = (
@@ -853,7 +868,6 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             QtWidgets.QSizePolicy.Policy.Preferred,
             QtWidgets.QSizePolicy.Policy.Minimum,
         )
-        self._update_group_depth()
 
     def contextMenuEvent(self, event):
         if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):

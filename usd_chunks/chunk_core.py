@@ -3726,7 +3726,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self.get_dag_node()._part_of_graph = False
         self.chunks.set_owner(self)
 
-        for c in self.get_chunks():
+        for c in self.chunks.get_my_params():
             try:
                 c.check_hierarchy()
             except Exception as e:
