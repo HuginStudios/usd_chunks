@@ -8,9 +8,7 @@ from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
-from PySide6 import QtCore
-
-from usd_chunks import chunk_registry, chunk_core, chunk_serial
+from usd_chunks import chunk_registry, chunk_core, chunk_serial, chunk_notice
 from plugins import chunk_qt
 
 from typing import List
@@ -32,16 +30,16 @@ class UsdviewScene(chunk_core.SceneSender):
         selection_model.signalPrimSelectionChanged.connect(self.primSelectionChangedCallback)
         selection_model.signalPropSelectionChanged.connect(self.propSelectionChangedCallback)
 
-        self._snap_prim = None
-        self._snap_timer = QtCore.QTimer()
-        self._snap_timer.setSingleShot(True)
-        self._snap_timer.timeout.connect(self._on_snap_timer)
+        view_settings = data_model.viewSettings  # type: ignore
+        view_settings.signalSettingChanged.connect(self._on_view_settings_changed)
 
-        self._cam_callbacks: dict = {}
-        data_model.viewSettings.signalSettingChanged.connect(  # type: ignore
-            self._on_view_settings_changed
-        )
+        self._current_cam = None
 
+        # Adds a delay to the set_viewport_camera as a workaround to remove thread racing
+        self._camera_prim = None
+        self._camera_snap_timer = QtCore.QTimer()
+        self._camera_snap_timer.setSingleShot(True)
+        self._camera_snap_timer.timeout.connect(self._on_snap_timer)
         super().__init__()
 
     def get_current_frame(self) -> float:
@@ -122,47 +120,30 @@ class UsdviewScene(chunk_core.SceneSender):
             return None
         return free_cam.computeGfCamera(Gf.BBox3d())
 
-    def connect_active_camera_changed(self, callback) -> None:
-        free_cam = self._get_free_camera()
-        if free_cam is not None:
-            free_cam.signalFrustumChanged.connect(callback)
-        self._cam_callbacks[id(callback)] = (callback, free_cam)
-
-    def disconnect_active_camera_changed(self, callback) -> None:
-        entry = self._cam_callbacks.pop(id(callback), None)
-        if entry:
-            _, connected_cam = entry
-            if connected_cam is not None:
-                try:
-                    connected_cam.signalFrustumChanged.disconnect(callback)
-                except RuntimeError:
-                    pass
-
-    def _on_view_settings_changed(self):
-        current_cam = self._get_free_camera()
-        for key, (callback, connected_cam) in list(self._cam_callbacks.items()):
-            if current_cam is connected_cam:
-                continue
-            if connected_cam is not None:
-                try:
-                    connected_cam.signalFrustumChanged.disconnect(callback)
-                except RuntimeError:
-                    pass
-            if current_cam is not None:
-                current_cam.signalFrustumChanged.connect(callback)
-            self._cam_callbacks[key] = (callback, current_cam)
-
-    def set_viewport_camera(self, prim) -> None:
+    def _set_viewport_camera(self, prim):
         app = self.usdviewAPI._UsdviewApi__appController
         app._dataModel.viewSettings.cameraPrim = prim
 
-    def schedule_viewport_camera(self, prim, delay_ms: int = 150) -> None:
+    def set_viewport_camera(self, prim) -> None:
         self._snap_prim = prim
-        self._snap_timer.start(delay_ms)
+        self._camera_snap_timer.start(150)
+
+    def _on_view_settings_changed(self):
+        current_cam = self._get_free_camera()
+
+        if current_cam == self._current_cam:
+            return
+
+        if self._current_cam is not None:
+            self._current_cam.signalFrustumChanged.disconnect(self.activeCameraChangedCallback)
+
+        if current_cam is not None:
+            self._current_cam = current_cam
+            self._current_cam.signalFrustumChanged.connect(self.activeCameraChangedCallback)
 
     def _on_snap_timer(self):
         if self._snap_prim is not None:
-            self.set_viewport_camera(self._snap_prim)
+            self._set_viewport_camera(self._snap_prim)
 
 
 def launch_chunks(usdviewApi) -> None:

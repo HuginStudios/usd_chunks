@@ -50,7 +50,7 @@ from typing import (
 from pathlib import Path
 import attrs
 from attr import _make as attrMake
-from pxr import Sdf, Usd
+from pxr import Sdf, Usd, UsdGeom, Gf
 from typing_extensions import Self, dataclass_transform, Required
 
 from usd_chunks.chunk_notice import Predicate
@@ -2709,6 +2709,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             self.value = value
         return super().value_changed(attrname, old_value, value)
 
+
 class ChunkContainerBase(ChunkCommon):
     """
     A base class for container type parameters such as Vectors, Groups and Chunks. The container can hold
@@ -3330,12 +3331,20 @@ class ChunkBase(ChunkGroupBase):
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
-    
+
     def add_param(self, param: ChunkT, force_unique: bool = True) -> ChunkT:
         res = super().add_param(param, force_unique)
         if self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(param, ChunkBase):
             chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, param, data=param)
         return res
+
+    def get_context(self) -> Optional["ChunkBase"]:
+        owner = self
+        while owner:
+            if isinstance(owner, ChunkBase) and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                return owner
+            owner = owner.get_owner()
+        return None
 
 
 class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
@@ -3362,7 +3371,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
     """
 
     param: ChunkParamBase = attrs.field(default=None, repr=False, metadata=AttributeMetadata(serialize=False))
-    length: int = attrs.field(default=3)
+    length: int = attrs.field(default=0)
     suffixes: Optional[Sequence[str] | str] = attrs.field(default=None)
     _default_value: Optional[Sequence[Any]] = attrs.field(default=None, alias="default_value")
 
@@ -3383,6 +3392,17 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             # have already been initialized
             return
 
+        if self.length and self._default_value and (self.length != len(self._default_value)):
+            raise ValueError(f"Length and default_value of vector {self.name} does not match")
+
+        if not self.length and self._default_value:
+            self.length = len(self._default_value)
+        elif not self.length and self.suffixes:
+            self.length = len(self.suffixes)
+
+        if not self.suffixes:
+            self.suffixes = "abcdefghijklmnopqrstuvwxyz"[: self.length]
+
         for i in range(self.length):
             # Clone the self.param length times, and add the clones to the clildren container
             np = self.param.clone()
@@ -3391,7 +3411,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                 np.name += self.suffixes[i]
 
             self.children.add(np)
-        
+
         if self._default_value:
             self.default_value = self._default_value
 
@@ -3533,7 +3553,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def serialize(self, glb):
         # Ensure that the scene is not serialized. For now, we only serialize the chunks NameSyncedContainer
         return None
-  
+
     def export_scene(self, path: str | Path):
         """
         Export the current scene. The result will be written to path, if path is a chunk_serial.FileExtensions.SCENE file path.
@@ -3726,6 +3746,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             # TODO: The chunk may have been loaded before, so dumb to send CHUNK_LOADED here perhaps? CHUNK_LOADED should
             # just be called when a new chunk instance is created, but after initialization
             chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+
+            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                for i in c.get_my_params(is_inst(ChunkBase)):
+                    chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, i, data=i)
+
         self._modified = True
 
     def add_chunk(self, c: ChunkBase) -> ChunkBase | None:
@@ -3751,6 +3776,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             self._current_context = weakref.ref(c)
             self.chunks.add(c, False)
+            chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
 
         elif self._current_context and (ctx := self._current_context()):
             ctx.add_param(c)
@@ -3759,8 +3785,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         else:
             logger.error(f"Failed to add chunk {c}")
             return
-
-        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
 
         self._modified = True
         return c
@@ -3861,24 +3885,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return None
 
-    def get_active_camera(self):
+    def get_active_camera(self) -> Gf.Camera | None:
         """Return the current viewport camera as a Gf.Camera, or None if unsupported."""
         return None
 
-    def connect_active_camera_changed(self, _callback) -> None:
-        """Connect callback to fire whenever the active viewport camera moves."""
-        pass
-
-    def disconnect_active_camera_changed(self, _callback) -> None:
-        """Disconnect a previously connected active camera callback."""
-        pass
-
-    def set_viewport_camera(self, _prim) -> None:
+    def set_viewport_camera(self, prim: UsdGeom.Camera) -> None:
         """Set the viewport to look through the given camera prim."""
-        pass
-
-    def schedule_viewport_camera(self, _prim, _delay_ms: int = 150) -> None:
-        """Switch viewport to the given camera prim after a short idle delay."""
         pass
 
     def primSelectionChangedCallback(self, *args, **kwargs):
@@ -3889,6 +3901,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def propSelectionChangedCallback(self, *args, **kwargs):
         chunk_notice.send_notice(
             chunk_notice.ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property()
+        )
+
+    def activeCameraChangedCallback(self, *args, **kwargs):
+        chunk_notice.send_notice(
+            chunk_notice.ChunkNoticeAlias.CAMERA_CHANGED, sender=self, data=self.get_active_camera()
         )
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:

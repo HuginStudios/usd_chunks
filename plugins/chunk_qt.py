@@ -1135,6 +1135,13 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         assert w is None or isinstance(w, ChunkWidget)
         return w
 
+    def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
+        for i in range(self.count()):
+            w = self.widget(i)
+            if isinstance(w, ChunkWidget) and w.group == ctx:
+                return i
+        return None
+
     def add_chunk_context(self, c: chunk.ChunkBase):
         w = ChunkWidget(c, self)
         idx = self.addTab(w, c.name)
@@ -1177,8 +1184,9 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
     def create_chunk_widget(self, loaded_chunk: chunk.ChunkBase):
         if loaded_chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             self.tab_widget.add_chunk_context(loaded_chunk)
-        else:
-            self.tab_widget.add_chunk_to_tab(loaded_chunk)
+        elif ctx := loaded_chunk.get_context():
+            idx = self.tab_widget.get_chunk_context_index(ctx)
+            self.tab_widget.add_chunk_to_tab(loaded_chunk, idx)
 
     def build(self):
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.MinimumExpanding)
