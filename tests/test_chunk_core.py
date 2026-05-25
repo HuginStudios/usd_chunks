@@ -18,6 +18,19 @@ reg = chunk_registry.ChunkRegistry()
 reg.initialize(_DummyScene(), "pytest")
 
 
+class _LayerContext:
+    def __init__(self, mgr):
+        self._mgr = mgr
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc, tb):
+        self._mgr.get_root_layer().Clear()
+        self._mgr.chunk_layers.clear()
+        self._mgr.initialized = False
+
+
 def _double_first_dependency(owner: chunk.Slider, sender):
     dep = owner.get_dependency(0, chunk.is_param)
     return dep.value * 2
@@ -204,6 +217,37 @@ def test_list_group_remove_index_updates_size_and_proxies():
     assert tuple(g.name for g in list_group.proxy_params) == ("0", "1")
 
 
+def test_remove_chunk_with_layers():
+    from pxr import Usd
+
+    scene = _DummyScene()
+    stage = Usd.Stage.CreateInMemory()
+
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+
+    lreg = chunk_registry.ChunkLayerManager()
+    lreg.initialize(stage)
+
+    with _LayerContext(lreg):
+        c = chunk.Chunk("test")
+        ctx = scene.add_context("acontext")
+
+        if not ctx:
+            raise ValueError
+        ctx.add_param(c)
+
+        assert lreg.get_or_create_layer(c)
+
+        ctx.request_delete()
+
+        h = c.get_hash()
+
+        del ctx
+        del c
+        assert lreg.get_layer(h) is None
+
+
 def test_sender_scoped_callback_triggers_only_for_matching_sender():
     received: list[str] = []
     root = chunk.Chunk("root")
@@ -285,7 +329,8 @@ class _AChunk(chunk.Chunk):
 
         grp = self.add_param(chunk.Group("grp"))
         self.slider = grp.add_param(chunk.Slider("slider"))
-        
+
+
 def test_serialize_custom_chunk_with_member(tmp_path):
     scene_src = _DummyScene()
     registry = chunk_registry.ChunkRegistry()
@@ -301,3 +346,39 @@ def test_serialize_custom_chunk_with_member(tmp_path):
 
     for c in scene_dst.get_chunks():
         c.check_hierarchy()
+
+
+def test_serialize_example_chunk(tmp_path):
+    scene_src = _DummyScene()
+    registry = chunk_registry.ChunkRegistry()
+    registry.initialize(scene_src, "pytest")
+
+    mod = registry.get_chunk_module("examples.example")
+    assert mod
+
+    scene_src.add_chunks(mod.load())
+    scene_file = tmp_path / "scene_examples.chsc"
+    scene_src.export_scene(scene_file)
+
+    scene_dst = _DummyScene()
+    registry.initialize(scene_dst, "pytest")
+    scene_dst.open_scene(scene_file)
+
+    for c in scene_dst.get_chunks():
+        c.check_hierarchy()
+
+
+def test_get_param_by_path_with_duplicate_names():
+    ctx = chunk.ChunkBase("ctx", flags=chunk.ChunkFlags.GroupFlags.CONTEXT)
+
+    A = chunk.Chunk("A")
+    P = chunk.Slider("P")
+    A.add_param(P)
+    A1 = A.clone()
+
+    ctx.add_params([A, A1])
+
+    assert ctx.get_param("A") == A
+    assert ctx.get_param("A1") == A1
+    assert ctx.get_param("A.P") == P
+    assert ctx.get_param("A1.P") == A1.get_param("P")

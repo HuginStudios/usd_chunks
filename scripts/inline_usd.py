@@ -3,6 +3,7 @@ from pxr import Sdf, Tf
 
 
 def text_changed(owner: chunk.TextEdit, notice, sender):
+    print("HELOOOO")
     layer = owner.get_edit_context()
     if not layer:
         return
@@ -22,9 +23,9 @@ def main():
 
     text = chunk.TextEdit("code", default_value=default)
     text.set_flag(chunk.ChunkFlags.ParamFlags.USD_SYNTAX_HIGHLIGHT)
+    text.add_callback(text_changed, send_on_create=True)
 
     myChunk.add_param(text)
-    text.add_callback(text_changed, send_on_create=True)
 
     return myChunk
 
