@@ -375,9 +375,6 @@ class TextEdit(ChunkParamBase[str]):
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
-    def __attrs_post_init__(self):
-        super().__attrs_post_init__()
-
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.TEXTEDIT
