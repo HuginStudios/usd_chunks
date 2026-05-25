@@ -1387,7 +1387,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         count = 0
         while len(self._failed_converters) > 0:
             failed_attrs = tuple(self._failed_converters.keys())
-            for attr in failed_attrs:
+            for attr in reversed(failed_attrs):
                 setattr(self, attr, self._failed_converters[attr])
 
             count += 1
@@ -2165,7 +2165,7 @@ class ChunkCommon(AttributesBase):
 
     def get_layer_identifier(self) -> str:
         """
-        Implements the ChunkUsdLayerSupport protocol
+        Get the layer identifier used by the ChunkLayerManager
 
         Returns:
             str: the layer identifier for this param
@@ -2191,7 +2191,8 @@ class ChunkCommon(AttributesBase):
 
     def get_hash(self) -> HashVal:
         """
-        Implements the ChunkUsdLayerSupport protocol
+        Get the HasVal associated with the chunk object. Can be useful to not increase the ref
+        count when storing this object is a hash map
 
         Returns:
             ChunkHash: The hashval of this object
@@ -2200,8 +2201,6 @@ class ChunkCommon(AttributesBase):
 
     def get_edit_context(self) -> Sdf.Layer | None:
         """
-        Implements the ChunkUsdLayerSupport protocol.
-
         Use when modifying the stage and the changes should be added to the local
         Sdf.Layer corresponding to this chunk object. Will traverse up the hierarchy
         to find the nearest ChunkBase parent and use the layer from it, instead of having
@@ -2469,18 +2468,6 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
         return super().post_serial_setattr(name, value)
 
-    def get_stage(self) -> Usd.Stage | None:
-        raise NotImplementedError
-
-    def get_layer_identifier(self) -> str:
-        raise NotImplementedError
-
-    def get_hash(self) -> ChunkHash:
-        raise NotImplementedError
-
-    def get_edit_context(self) -> Sdf.Layer | None:
-        raise NotImplementedError
-
     @abstractmethod
     def update_usd_prop(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
         """
@@ -2717,6 +2704,10 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             idx = self.add_dependency(other)
         self.set_function("value", lambda x, _: x.get_dependency(idx, is_inst(type(other))).value)
 
+    def value_changed(self, attrname: str, old_value: Any, value: Any):
+        if attrname == "default_value" and hasattr(self, "value") and (self.value is None or self.value == old_value):
+            self.value = value
+        return super().value_changed(attrname, old_value, value)
 
 class ChunkContainerBase(ChunkCommon):
     """
@@ -3299,12 +3290,6 @@ class ChunkBase(ChunkGroupBase):
             private=True,
         )
         self.add_callback(
-            self.start_gizmo,
-            notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE,
-            send_on_create=False,
-            private=True,
-        )
-        self.add_callback(
             self.trigger_on_create_callbacks,
             notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED,
             send_on_create=False,
@@ -3379,6 +3364,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
     param: ChunkParamBase = attrs.field(default=None, repr=False, metadata=AttributeMetadata(serialize=False))
     length: int = attrs.field(default=3)
     suffixes: Optional[Sequence[str] | str] = attrs.field(default=None)
+    _default_value: Optional[Sequence[Any]] = attrs.field(default=None, alias="default_value")
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "suffixes" and val is not None:
@@ -3405,6 +3391,9 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                 np.name += self.suffixes[i]
 
             self.children.add(np)
+        
+        if self._default_value:
+            self.default_value = self._default_value
 
     def __getitem__(self, key: str | int) -> ChunkParamBase:
         """Allows for Vector[0] or Vector['paramName'] access to the vector values
@@ -3449,7 +3438,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         return tuple(x.value for x in self.get_my_params() if isinstance(x, ChunkParamBase))
 
     @value.setter
-    def value(self, val: Tuple[Any, ...]):
+    def value(self, val: Sequence[Any]):
         if not len(val) == self.length:
             raise ValueError(
                 f"Trying to set value {val} on vector param {self.name} with wring size. Size should be {self.length}"
@@ -3463,7 +3452,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         return tuple(x.default_value for x in self.get_my_params() if isinstance(x, ChunkParamBase))
 
     @default_value.setter
-    def default_value(self, val: Tuple[Any, ...]):
+    def default_value(self, val: Sequence[Any]):
         if val is None:
             return
 

@@ -185,7 +185,7 @@ def main():
     # A vector is an extension of the group, with a single param repeated length times. The suffix replace the default
     # numbered suffix for duplicated params.
     # Accessing params on a vector can be done through __setitem__ (vec["X"] or vec[0]) as well as get_param and similar group functions
-    sliderVec = chunk.Vector("SliderVec", param=chunk.Slider(), length=3, suffixes="XYZ")
+    sliderVec = chunk.Vector("SliderVec", param=chunk.Slider(), length=3, suffixes="XYZ", default_value=[0, 1, 2])
 
     # Modifying valus on a Vector can be dome like so:
     #    sliderVec[0] = 10

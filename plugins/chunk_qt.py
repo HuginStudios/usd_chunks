@@ -10,9 +10,7 @@ from usd_chunks import chunk_core
 
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
-from enum import Enum
 import os
-import weakref
 
 
 class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
@@ -43,7 +41,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
         if min_val is not None:
             self.setMinimum(int(min_val * self._step))
         else:
-            self.setMinimum(0)
+            self.setMinimum(10 * (1-self._step))
 
         if max_val is not None:
             self.setMaximum(int(max_val * self._step))
@@ -671,7 +669,7 @@ class ContainerWidget(
 
         self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
         self.content.setStyleSheet(
-            f"QFrame {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;" \
+            f"QFrame {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
             f"QScrollArea {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
 
@@ -767,7 +765,7 @@ class ContainerWidget(
 
             if self.is_collapsed():
                 self.content.setFixedHeight(0)
-    
+
     def set_expanded(self, checked):
         arrow_type = QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
         direction = (
@@ -883,7 +881,13 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
             actions[QtGui.QAction(meth.__name__)] = conn
 
-        menu.addActions(list(actions.keys()))
+        act_names = list(actions.keys())
+
+        # Custom UI actions
+        inspect_layer_action = QtGui.QAction("inspect layer")
+
+        act_names.append(inspect_layer_action)
+        menu.addActions(act_names)
 
         if parent := self.parentWidget():
             res = menu.exec_(parent.mapToGlobal(self.geometry().topLeft()))
@@ -896,6 +900,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
         if conn := actions.get(res):
             conn.handle_callback(chunk_notice.MenuActionNotice(self.group.get_notice_data()), self.group, False)
+
+        elif res == inspect_layer_action:
+            layer = self.group.get_edit_context()
+            if layer:
+                source_code_dial(layer.ExportToString(), chunk_core.UsdSyntaxHighlightMapping())
 
     def get_category(self) -> str:
         """Get the category of this Chunk
@@ -1324,7 +1333,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
                 src = mod.module._code
             else:
                 src = chunk_serial.serialize_source(mod.module)
-            python_source_dial(src)
+            source_code_dial(src, chunk_core.PySyntaxHighlightMapping())
         elif res == create_action:
             if not mod.loaded:
                 cs = mod.load()
@@ -1409,10 +1418,10 @@ def confirm_dial(msg) -> bool:
     return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
 
 
-def python_source_dial(src: str):
+def source_code_dial(src: str, highlighter: chunk_core.SyntaxHighlightMapping):
     _editor = QtWidgets.QPlainTextEdit(src, readOnly=True)
 
-    SyntaxHighlighter(_editor.document(), chunk_core.PySyntaxHighlightMapping())
+    SyntaxHighlighter(_editor.document(), highlighter)
 
     font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
     _editor.setFont(font)
