@@ -1,5 +1,5 @@
 from pxr import Usd, UsdGeom, Sdf, UsdShade
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 import itertools
 import numpy as np
 import os
@@ -369,11 +369,12 @@ def cube_changed(owner: chunk.Group, notice, sender):
     height = owner.get_param("height", chunk.is_param_t(float))
     depth = owner.get_param("depth", chunk.is_param_t(float))
 
-    path = "/cube"
+    raw_path = "/cube"
     if c := owner.get_chunk():
-        path = c.get_param("prim_path", chunk.is_param_t(str)).value
+        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
 
-    build_cube(stage, path, xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        build_cube(stage, path, xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
 
 
 def tube_changed(owner: chunk.Group, notice, sender):
@@ -394,11 +395,12 @@ def tube_changed(owner: chunk.Group, notice, sender):
     height = owner.get_param("height1", chunk.is_param_t(float))
     caps = owner.get_param("caps", chunk.is_param_t(bool))
 
-    path = "/tube"
+    raw_path = "/tube"
     if c := owner.get_chunk():
-        path = c.get_param("prim_path", chunk.is_param_t(str)).value
+        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
 
-    build_tube(owner.get_stage(), path, rows.value, cols.value, radius.value, height.value, caps.value)
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        build_tube(stage, path, rows.value, cols.value, radius.value, height.value, caps.value)
 
 
 def grid_changed(owner: chunk.Group, notice, sender):
@@ -423,13 +425,14 @@ def grid_changed(owner: chunk.Group, notice, sender):
     if topo.value == "tris":
         topo_val = Topo.TRIS
 
-    path = "/plane"
+    raw_path = "/plane"
     if c := owner.get_chunk():
-        path = c.get_param("prim_path", chunk.is_param_t(str)).value
+        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
 
-    grid = build_plane(owner.get_stage(), path, dimx.value, dimy.value, width.value, height.value, topo=topo_val)
-    if grid:
-        add_texture(grid.GetPrim())
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        grid = build_plane(stage, path, dimx.value, dimy.value, width.value, height.value, topo=topo_val)
+        if grid:
+            add_texture(grid.GetPrim())
 
 
 def main():

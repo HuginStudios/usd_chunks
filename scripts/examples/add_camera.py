@@ -158,38 +158,69 @@ def main():
 
 
 def execute(owner, notice, sender):
-    
     param = notice.data
     _chunk = param.get_chunk()
     stage = owner.get_stage()
-    # Clear any edits in this layer before importing a reference again.
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
-    prim_path = _chunk.get_param("primpath_location").value
 
-    prim_path = chunk_utils.get_unique_path(stage, prim_path)
-    prim = stage.DefinePrim(prim_path, "Camera")
+    raw_path = _chunk.get_param("primpath_location").value
+    _, _, var_selections = chunk_utils.split_variant_path(raw_path)
+    if not var_selections:
+        raw_path = chunk_utils.get_unique_path(stage, raw_path)
 
-    focal_attr = prim.GetAttribute("focalLength")
-    focal_param = _chunk.get_param("focalLength")
-    focal_param.connect_usd_attr(focal_attr)
+    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+        prim = stage.DefinePrim(target_path, "Camera")
 
-    _chunk.get_param("horizontalAperture").connect_usd_attr(prim.GetAttribute("horizontalAperture"))
-    _chunk.get_param("horizontalApertureOffset").connect_usd_attr(prim.GetAttribute("horizontalApertureOffset"))
-    _chunk.get_param("verticalAperture").connect_usd_attr(prim.GetAttribute("verticalAperture"))
-    _chunk.get_param("verticalApertureOffset").connect_usd_attr(prim.GetAttribute("verticalApertureOffset"))
-    _chunk.get_param("fStop").connect_usd_attr(prim.GetAttribute("fStop"))
-    _chunk.get_param("focusDistance").connect_usd_attr(prim.GetAttribute("focusDistance"))
+        _chunk.get_param("focalLength").connect_usd_attr(prim.GetAttribute("focalLength"))
+        _chunk.get_param("horizontalAperture").connect_usd_attr(prim.GetAttribute("horizontalAperture"))
+        _chunk.get_param("horizontalApertureOffset").connect_usd_attr(prim.GetAttribute("horizontalApertureOffset"))
+        _chunk.get_param("verticalAperture").connect_usd_attr(prim.GetAttribute("verticalAperture"))
+        _chunk.get_param("verticalApertureOffset").connect_usd_attr(prim.GetAttribute("verticalApertureOffset"))
+        _chunk.get_param("fStop").connect_usd_attr(prim.GetAttribute("fStop"))
+        _chunk.get_param("focusDistance").connect_usd_attr(prim.GetAttribute("focusDistance"))
 
-    attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
-    attr.Set(UsdGeom.Tokens.inherited)
+        attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
+        attr.Set(UsdGeom.Tokens.inherited)
 
-    if prim.GetPath().pathString != prim_path:
-        _chunk.get_param("primpath_location").value = prim.GetPath().pathString
+        if not var_selections and prim.GetPath().pathString != target_path:
+            _chunk.get_param("primpath_location").value = prim.GetPath().pathString
 
     if _chunk.get_param("lock_to_freecam").value:
         _apply_freecam_transform(_chunk)
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaulConfig(
+        category=chunk.StandardCategory.EXAMPLES,
+        description="""
+        Camera chunk — creates a UsdGeom.Camera prim and exposes its lens
+        parameters as live sliders, with optional real-world camera presets
+        and freecam lock for DCC viewport alignment.
+
+        Parameters:
+          - Prim Path: stage path for the camera prim. Auto-initialised to a
+            unique /cameras/camera1 path. Updated in-place when taken (outside
+            variant contexts).
+          - Camera Preset: real-world camera body fetched from physicallybased.info
+            (cached locally as cameras.json). Defaults to Fuji X-T5. Changing
+            the preset repopulates the Formats menu and applies the first sensor
+            size as the default aperture values.
+          - Formats: sensor format for the selected camera body. Changing the
+            format updates Focal Length, Horizontal Aperture, and Vertical
+            Aperture to match the physical sensor dimensions.
+          - Focal Length / Apertures / Offsets / f-Stop / Focus Distance: USD
+            camera attributes wired as live sliders via connect_usd_attr, so
+            slider changes write directly to the prim attribute.
+          - Lock to Free Camera: when checked, the chunk subscribes to the
+            scene's active-camera-changed signal and continuously syncs the
+            prim's transform and focus distance from the DCC freecam. The
+            prim is also scheduled as the active viewport camera.
+          - Set as Viewport Camera: one-shot button that makes the camera prim
+            the active viewport camera without enabling the lock.
+
+        GuideVisibility is set to inherited so the camera frustum is visible
+        in DCC guide modes. Variant-path authoring is supported — uniqueness
+        checks are skipped when the path contains an embedded variant selection.
+        """,
+    )
