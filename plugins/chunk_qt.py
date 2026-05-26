@@ -10,7 +10,6 @@ from usd_chunks import chunk_core
 
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
-from enum import Enum
 import os
 
 
@@ -42,7 +41,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
         if min_val is not None:
             self.setMinimum(int(min_val * self._step))
         else:
-            self.setMinimum(0)
+            self.setMinimum(10 * (1-self._step))
 
         if max_val is not None:
             self.setMaximum(int(max_val * self._step))
@@ -557,6 +556,40 @@ class LabeledWidget(QtWidgets.QWidget):
         return super().leaveEvent(event)
 
 
+class ChunkArea(QtWidgets.QScrollArea):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.flow = QtWidgets.QVBoxLayout()
+        self.flow.setContentsMargins(6, 0, 10, 0)
+        self.flow.setSpacing(40)
+        self.flow.setContentsMargins(6, 0, 10, 0)
+        self.flow.setSpacing(40)
+        self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
+
+        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
+
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self.widget_holder = QtWidgets.QWidget(self)
+        self.widget_holder.setLayout(self.flow)
+
+        self.setWidget(self.widget_holder)
+        self.setWidgetResizable(True)
+
+    def add_widget(self, w):
+        self.flow.addWidget(w)
+
+    def delete_chunks(self):
+        # Deletes all chunks in this ScrollArea. Currently undoable: TODO: add undo/redo
+        for i in range(self.flow.count()):
+            if item := self.flow.itemAt(i):
+                w = item.widget()
+                if isinstance(w, ChunkWidget):
+                    w.group.request_delete()
+
+
 class ContainerWidget(
     Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QWidget
 ):
@@ -578,13 +611,23 @@ class ContainerWidget(
         super().__init__(group, parent=parent)
 
     def build_collapsable(self):
-        self.content = QtWidgets.QFrame()
-        self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
+        if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            # Context chunks are scrollable
+            self.content = QtWidgets.QScrollArea(self)
+            self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
+            self.content_layout.setContentsMargins(2, 2, 2, 10)
+            self.content_layout.setSpacing(20)
+            wid = QtWidgets.QWidget(self)
+            wid.setLayout(self.content_layout)
+            self.content.setWidget(wid)
+            self.content.setWidgetResizable(True)
 
-        self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
-        self.content_layout.setContentsMargins(2, 2, 2, 10)
-        self.content_layout.setSpacing(1)
-        self.content.setLayout(self.content_layout)
+        else:
+            self.content = QtWidgets.QFrame()
+            self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
+            self.content_layout.setContentsMargins(2, 2, 2, 10)
+            self.content_layout.setSpacing(1)
+            self.content.setLayout(self.content_layout)
 
         # Setup minimize/maximize button
         self.minimize_button = QtWidgets.QToolButton()
@@ -627,6 +670,7 @@ class ContainerWidget(
         self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
         self.content.setStyleSheet(
             f"QFrame {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
+            f"QScrollArea {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
 
     def supports_widget(self, widget: Any) -> bool:
@@ -718,6 +762,9 @@ class ContainerWidget(
 
         if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
             self.minimize_button.setChecked(not self.group.has_state(ChunkFlags.State.COLLAPSED))
+
+            if self.is_collapsed():
+                self.content.setFixedHeight(0)
 
     def set_expanded(self, checked):
         arrow_type = QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
@@ -819,9 +866,12 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             QtWidgets.QSizePolicy.Policy.Preferred,
             QtWidgets.QSizePolicy.Policy.Minimum,
         )
-        self._update_group_depth()
 
     def contextMenuEvent(self, event):
+        if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            event.ignore()
+            return
+
         menu = QtWidgets.QMenu()
         actions: Dict[QtGui.QAction, chunk_notice.NoticeConnection] = {}
         for conn in self.group.find_callbacks(notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE):
@@ -831,7 +881,13 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
             actions[QtGui.QAction(meth.__name__)] = conn
 
-        menu.addActions(list(actions.keys()))
+        act_names = list(actions.keys())
+
+        # Custom UI actions
+        inspect_layer_action = QtGui.QAction("inspect layer")
+
+        act_names.append(inspect_layer_action)
+        menu.addActions(act_names)
 
         if parent := self.parentWidget():
             res = menu.exec_(parent.mapToGlobal(self.geometry().topLeft()))
@@ -839,10 +895,16 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             res = menu.exec_(event.globalPos())
 
         if not res:
+            event.ignore()
             return
 
         if conn := actions.get(res):
             conn.handle_callback(chunk_notice.MenuActionNotice(self.group.get_notice_data()), self.group, False)
+
+        elif res == inspect_layer_action:
+            layer = self.group.get_edit_context()
+            if layer:
+                source_code_dial(layer.ExportToString(), chunk_core.UsdSyntaxHighlightMapping())
 
     def get_category(self) -> str:
         """Get the category of this Chunk
@@ -856,36 +918,190 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         return chunk.DefaulConfig().category
 
 
-class ChunkArea(QtWidgets.QScrollArea):
+class EditableTabBar(QtWidgets.QTabBar):
+    request_delete = QtCore.Signal(int)
+    request_toggle_disable = QtCore.Signal(int)
+    tab_name_changed = QtCore.Signal(str, int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.flow = QtWidgets.QVBoxLayout()
-        self.flow.setContentsMargins(6, 0, 10, 0)
-        self.flow.setSpacing(40)
-        self.flow.setContentsMargins(6, 0, 10, 0)
-        self.flow.setSpacing(40)
-        self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
+        self._editor = QtWidgets.QLineEdit(self)
+        self._editor.setWindowFlags(QtCore.Qt.WindowType.Popup)
+        self._editor.setFocusProxy(self)
+        self._editor.editingFinished.connect(self.handleEditingFinished)
+        self._editor.installEventFilter(self)
 
-        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
+    def mousePressEvent(self, event):
+        if self.tabAt(event.pos()) == 0:
+            return
+        super().mousePressEvent(event)
 
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+        idx = self.tabAt(event.pos())
+        if idx == 0:
+            return
 
-        self.widget_holder = QtWidgets.QWidget(self)
-        self.widget_holder.setLayout(self.flow)
+        menu = QtWidgets.QMenu()
 
-        self.setWidget(self.widget_holder)
-        self.setWidgetResizable(True)
+        remove_action = QtGui.QAction("remove")
+        disable_action = QtGui.QAction("toggle enabled")
+
+        menu.addActions([remove_action, disable_action])
+        res = menu.exec_(event.globalPos())
+
+        if not res:
+            return
+
+        if res == remove_action:
+            self.request_delete.emit(idx)
+        elif res == disable_action:
+            self.request_toggle_disable.emit(idx)
+
+    def eventFilter(self, widget, event):
+        if (
+            event.type() == QtCore.QEvent.Type.MouseButtonPress
+            and not self._editor.geometry().contains(event.globalPos())
+        ) or (event.type() == QtCore.QEvent.Type.KeyPress and event.key() == QtCore.Qt.Key.Key_Escape):
+            self._editor.hide()
+            return True
+
+        return super().eventFilter(widget, event)
+
+    def mouseDoubleClickEvent(self, event):
+        index = self.tabAt(event.pos())
+        if index > 0:
+            self.editTab(index)
+
+    def editTab(self, index):
+        if self.shape() in [
+            QtWidgets.QTabBar.Shape.RoundedEast,
+            QtWidgets.QTabBar.Shape.RoundedWest,
+            QtWidgets.QTabBar.Shape.TriangularEast,
+            QtWidgets.QTabBar.Shape.TriangularWest,
+        ]:
+            rect = self.tabRect(index)
+            h = rect.height()
+            rect.setHeight(rect.width())
+            rect.setWidth(h)
+
+        else:
+            rect = self.tabRect(index)
+
+        self._editor.move(self.mapToGlobal(rect.topLeft()))
+        self._editor.setText(self.tabText(index))
+
+        self._editor.setFixedSize(rect.size())
+        if not self._editor.isVisible():
+            self._editor.show()
+
+    def handleEditingFinished(self):
+        index = self.currentIndex()
+        if index >= 0:
+            self._editor.hide()
+            self.setTabText(index, self._editor.text())
+            self.tab_name_changed.emit(self._editor.text(), index)
 
 
 class ChunkTabWidget(QtWidgets.QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
+        self.tab_bar = EditableTabBar(self)
+        self.setTabBar(self.tab_bar)
 
+        self.tab_bar.request_delete.connect(self.delete_tab)
+        self.tab_bar.request_toggle_disable.connect(self.toggle_disabled_tab)
+        self.tab_bar.tab_name_changed.connect(self.update_context_name)
+
+        self._btn = QtWidgets.QPushButton("+", self)
+        self._btn.clicked.connect(self.add_new_tab)
+
+        self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
         self.setMinimumWidth(200)
+
+        self.add_tab_button()
+        self.update_stylesheet()
+
+    def update_stylesheet(self):
+        code = ""
+
+        if self.count() > 1:
+            code = """
+                QTabBar::tab {
+                    border-color: #4A4A4A;
+                    border: 1px solid transparent;
+                }
+                QTabBar::tab:right {
+                    padding: 12 0px;
+                    border-top-right-radius: 8px;
+                    border-bottom-right-radius: 8px;
+                }
+                QTabBar::tab:top {
+                    padding: 0 12px;
+                    border-top-left-radius: 8px;
+                    border-top-right-radius: 8px;
+                }
+
+                QTabBar::tab:hover:!selected {
+                    background: #868686;
+                }
+
+                QTabBar::tab:selected:!first {
+                    border-color: #c4c7cc;
+                }
+
+                QTabBar::tab:first {
+                    background: transparent;
+                    border: none;
+                    padding: 0 0px;
+                }
+                QTabBar::tab:first:hover {
+                    background: transparent;
+                }
+                """
+        else:
+            code = """
+                QTabBar::tab {
+                    background: transparent;
+                    border: none;
+                    padding: 0 0px;
+                }
+                """
+        self.setStyleSheet(code)
+
+    def toggle_disabled_tab(self, idx):
+        if t := self.get_chunk_context(idx):
+            if t.group.has_state(ChunkFlags.State.DISABLED):
+                t.group.enable()
+            else:
+                t.group.disable()
+
+    def delete_tab(self, idx):
+        if t := self.get_chunk_context(idx):
+            t.group.request_delete()
+        self.update_stylesheet()
+
+    def update_context_name(self, name, idx):
+        if tab := self.get_chunk_context(idx):
+            tab.group.name = name
+
+    def add_new_tab(self):
+        # Create a new context chunk which will be displayed as the current tab
+        name = f"Tab {self.tabBar().count()}"
+
+        if scene := chunk.get_scene():
+            scene.add_context(name)
+        else:
+            c = chunk.Chunk(name, flags=ChunkFlags.GroupFlags.CONTEXT)
+            self.add_chunk_context(c)
+
+    def add_tab_button(self):
+        w = ChunkArea(self)
+        idx = self.addTab(w, "")
+
+        self.tabBar().setTabButton(idx, QtWidgets.QTabBar.ButtonPosition.LeftSide, self._btn)
+        return idx
 
     def update_tab_position(self):
         if self.height() > self.width():
@@ -911,23 +1127,55 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         else:
             chunks = mod.load()
 
-        chunk_registry.ChunkRegistry().scene.add_chunks(chunks)
+        for c in chunks:
+            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT) and (scene := chunk.get_scene()):
+                # If the chunk has the context flag, we should just add it to the scene and let ChunkWidgetDocker 
+                # manage the adding of the context (from CHUNK_LOADED)
+                scene.add_chunk(c)
+            else:
+                self.add_chunk_to_tab(c)
+
+    def get_chunk_context(self, idx) -> ChunkWidget | None:
+        w = self.widget(idx)
+        assert w is None or isinstance(w, ChunkWidget)
+        return w
+
+    def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
+        for i in range(self.count()):
+            w = self.widget(i)
+            if isinstance(w, ChunkWidget) and w.group == ctx:
+                return i
+        return None
+
+    def add_chunk_context(self, c: chunk.ChunkBase):
+        w = ChunkWidget(c, self)
+        idx = self.addTab(w, c.name)
+        self.setCurrentIndex(idx)
+        self.update_stylesheet()
+
+    def add_chunk_to_tab(self, param: chunk_core.ChunkBase, tabidx=None):
+        if tabidx is None:
+            tabidx = self.tabBar().currentIndex()
+        if tabidx == 0:
+            self.add_new_tab()
+            tabidx = 1
+
+        if t := self.get_chunk_context(tabidx):
+            if param in t.group.get_my_params():
+                return
+
+            # This will add the chunk to the Context chunk (tab) and display it in the tab widget
+            t.group.add_param(param)
 
 
 class ChunkWidgetDocker(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.build()
 
         self._chunk_loaded_listener = chunk_notice.NoticeConnection(
             self._loaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
         )
-        self._chunk_unloaded_listener = chunk_notice.NoticeConnection(
-            self._unloaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_UNLOADED, globally=True
-        )
-
-    def _unloaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
-        pass
+        self.build()
 
     def _loaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
         """Called whenever CHUNK_LOADED notice was recieved - will in turn add a new chunk widget
@@ -936,12 +1184,19 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             notice (chunk_notice.ChunkLoadedNotice): The notice sent from the registry
             sender (chunk.Chunk): The new chunk that was added
         """
-        self.add_chunk_widget(sender)
+        self.create_chunk_widget(sender)
+
+    def create_chunk_widget(self, loaded_chunk: chunk.ChunkBase):
+        if loaded_chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            self.tab_widget.add_chunk_context(loaded_chunk)
+        elif ctx := loaded_chunk.get_context():
+            idx = self.tab_widget.get_chunk_context_index(ctx)
+            self.tab_widget.add_chunk_to_tab(loaded_chunk, idx)
 
     def build(self):
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.MinimumExpanding)
-        self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
+
         registry = chunk_registry.ChunkRegistry()
         self.setStyleSheet("""
         QCheckBox {
@@ -1032,7 +1287,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
         if registry.initialized:
             for c in registry.scene.get_chunks():
-                self.add_chunk_widget(c)
+                self.create_chunk_widget(c)
 
         self.main_layout = QtWidgets.QVBoxLayout()
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -1040,42 +1295,6 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
         self.setLayout(self.main_layout)
         self.show()
-
-    def add_chunk_widget(self, loaded_chunk: chunk.ChunkBase | ChunkWidget) -> ChunkWidget:
-        """Adds a ChunkWidget to the docker
-
-        Args:
-            loaded_chunk (chunk.Chunk | ChunkWidget): The chunk to add as a widget
-
-        Returns:
-            ChunkWidget: The new ChunkWidget created for the loaded_chunk
-        """
-        widget = None
-
-        if isinstance(loaded_chunk, chunk.ChunkBase):
-            # If the returned value is a Chunk, we need to create the widget here as well
-            widget = ChunkWidget(loaded_chunk, self)
-        elif isinstance(loaded_chunk, ChunkWidget):
-            # If main returned a ChunkWidget, we can use it directly
-            widget = loaded_chunk
-        else:
-            return None
-
-        category = widget.get_category()
-        if category not in self.chunk_tabs.keys():
-            self.chunk_tabs[category] = ChunkArea(self)
-            self.tab_widget.addTab(self.chunk_tabs[category], category)
-
-        self.chunk_tabs[category].flow.addWidget(widget)
-
-        # When a chunk is created, switch to the relevant tab category
-        tab_bar = self.tab_widget.tabBar()
-        for i in range(tab_bar.count()):
-            if tab_bar.tabText(i) == category:
-                tab_bar.setCurrentIndex(i)
-                break
-
-        return widget
 
 
 class ChunkModuleLoader(QtWidgets.QDialog):
@@ -1127,7 +1346,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
                 src = mod.module._code
             else:
                 src = chunk_serial.serialize_source(mod.module)
-            python_source_dial(src)
+            source_code_dial(src, chunk_core.PySyntaxHighlightMapping())
         elif res == create_action:
             if not mod.loaded:
                 cs = mod.load()
@@ -1212,10 +1431,10 @@ def confirm_dial(msg) -> bool:
     return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
 
 
-def python_source_dial(src: str):
+def source_code_dial(src: str, highlighter: chunk_core.SyntaxHighlightMapping):
     _editor = QtWidgets.QPlainTextEdit(src, readOnly=True)
 
-    SyntaxHighlighter(_editor.document(), chunk_core.PySyntaxHighlightMapping())
+    SyntaxHighlighter(_editor.document(), highlighter)
 
     font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
     _editor.setFont(font)

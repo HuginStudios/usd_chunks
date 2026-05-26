@@ -2,7 +2,6 @@ import os
 import json
 import http.client
 from pxr import UsdGeom
-from functools import partial
 from usd_chunks import chunk, chunk_notice, chunk_utils
 
 
@@ -58,7 +57,12 @@ def set_preset_values(owner, notice, sender):
     _chunk.get_param("verticalAperture").value = sensor["size"][1]
 
 
-def _apply_freecam_transform(_chunk):
+def _apply_freecam_transform(owner, notice, sender):
+    _chunk = owner.get_chunk()
+    do_lock = _chunk.get_param("lock_to_freecam").value
+    if not do_lock:
+        return
+
     scene = _chunk.get_scene()
     gf_cam = scene.get_active_camera()
     if gf_cam is None:
@@ -71,36 +75,18 @@ def _apply_freecam_transform(_chunk):
     UsdGeom.Xformable(prim).MakeMatrixXform().Set(gf_cam.transform)
     if not prim.GetAttribute("focusDistance").Get():
         _chunk.get_param("focusDistance").value = gf_cam.focusDistance
-    scene.schedule_viewport_camera(prim)
+    scene.set_viewport_camera(prim)
 
 
 def _set_as_viewport_camera(owner, notice, sender):
-    param = notice.data
-    _chunk = param.get_chunk()
+    _chunk = owner.get_chunk()
     scene = _chunk.get_scene()
     stage = _chunk.get_stage()
     prim_path = _chunk.get_param("primpath_location").value
     prim = stage.GetPrimAtPath(prim_path)
     if not prim.IsValid():
         return
-    scene.schedule_viewport_camera(prim)
-
-
-def _on_lock_changed(owner, notice, sender):
-    param = notice.data
-    _chunk = param.get_chunk()
-    scene = _chunk.get_scene()
-    if param.value:
-
-        _cb = partial(_apply_freecam_transform, _chunk)
-        _chunk._freecam_callback = _cb
-        scene.connect_active_camera_changed(_cb)
-        _apply_freecam_transform(_chunk)
-    else:
-        freecam_cb_attr = getattr(_chunk, "_freecam_callback", None)
-        if freecam_cb_attr:
-            scene.disconnect_active_camera_changed(freecam_cb_attr)
-            _chunk._freecam_callback = None
+    scene.set_viewport_camera(prim)
 
 
 def main():
@@ -143,10 +129,12 @@ def main():
     default_cam = next((c for c in cameras if c.get("model") == menu.value), cameras[0])
     formats.menu_items = [f.get("format") for f in default_cam.get("sensorSize", [])]
 
-
     lock_cam = chunk.Checkbox("lock_to_freecam", "Lock to Free Camera")
-    lock_cam.add_callback(_on_lock_changed, send_on_create=False)
+    lock_cam.add_callback(_apply_freecam_transform)
     chunk_api.add_param(lock_cam)
+    chunk_api.add_callback(
+        _apply_freecam_transform, notice_alias=chunk.ChunkNoticeAlias.CAMERA_CHANGED, listen_globally=True
+    )
 
     set_cam_btn = chunk.Button("set_viewport_camera", "Set as Viewport Camera")
     set_cam_btn.add_callback(_set_as_viewport_camera)
@@ -187,7 +175,7 @@ def execute(owner, notice, sender):
             _chunk.get_param("primpath_location").value = prim.GetPath().pathString
 
     if _chunk.get_param("lock_to_freecam").value:
-        _apply_freecam_transform(_chunk)
+        _set_as_viewport_camera(_chunk, None, None)
 
 
 def config():

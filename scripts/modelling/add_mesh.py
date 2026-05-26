@@ -272,14 +272,9 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, c
 
 
 def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
-    groups = owner.get_my_params(chunk.is_group)
     selected = sender.value
 
-    # ctx = owner.get_edit_context()
-    # if ctx and (lreg := chunk.get_layer_manager()):
-    #     lreg.clear_layer(ctx.identifier)
-
-    for g in groups:
+    for g in owner.get_my_params(chunk.is_group):
         if g.name == selected:
             g.unset_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
         else:

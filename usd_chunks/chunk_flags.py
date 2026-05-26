@@ -45,6 +45,8 @@ class ChunkFlags:
             COLLAPSABLE: If the group should be able to collapse
             FRAMED: A simple style flag
             LIST: Parameters on this group is treated as a list that can be extended and shrinked
+            CONTEXT: The group should be displayed as a context rather than a node/chunk. A chunk 
+                context only displays the children of said chunk. In the QT plugin, this is a tab
         """
 
         NONE = 0
@@ -52,6 +54,7 @@ class ChunkFlags:
         COLLAPSABLE = auto()
         FRAMED = auto()
         LIST = auto()
+        CONTEXT = auto()
 
     class ParamFlags(_FlagRepr):
         """Flags for chunk params
@@ -63,6 +66,7 @@ class ChunkFlags:
             PRIM_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdPrim selections
             PROP_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdProperty selections
         """
+
         NONE = 0
         LABELED = auto()
 

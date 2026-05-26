@@ -22,9 +22,9 @@ def main():
 
     text = chunk.TextEdit("code", default_value=default)
     text.set_flag(chunk.ChunkFlags.ParamFlags.USD_SYNTAX_HIGHLIGHT)
+    text.add_callback(text_changed, send_on_create=True)
 
     myChunk.add_param(text)
-    text.add_callback(text_changed)
 
     return myChunk
 

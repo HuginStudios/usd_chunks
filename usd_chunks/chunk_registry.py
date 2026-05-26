@@ -942,6 +942,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self._root_layer = Sdf.Layer.CreateAnonymous("chunks")
         return Sdf.Find(self._root_layer.identifier)
 
+    def get_stage_root(self) -> Sdf.Layer:
+        # if self.stage:
+        return self.stage.GetRootLayer()
+
     def get_layer(self, c: "core.ChunkHash") -> Sdf.Layer | None:
         """
         Get a layer associated with the a chunk
@@ -970,8 +974,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             AttributeError: If the stage has not been initialized
         """
 
+        if not self.stage:
+            return
+
         root = self.get_root_layer()
-        sesh = self.stage.GetSessionLayer()
+        sesh = self.get_stage_root()
 
         # If the root has been detatched from the stage's root, reapply it
         if root.identifier not in sesh.subLayerPaths:
@@ -1115,7 +1122,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self.stage = stage
 
             root = self.get_root_layer().identifier
-            sesh = stage.GetRootLayer()
+            sesh = self.get_stage_root()
             if root not in sesh.subLayerPaths:
                 sesh.subLayerPaths.append(root)
 
@@ -1161,6 +1168,5 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         if c.has_state(ChunkFlags.State.DISABLED):
             layer.SetMuted(True)
-
         elif self.is_muted(c):
             layer.SetMuted(False)

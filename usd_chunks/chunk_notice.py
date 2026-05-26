@@ -44,7 +44,7 @@ from typing import (
 )
 
 from attrs import define, field
-from pxr import Sdf, Tf, Usd
+from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self
 from usd_chunks import chunk_serial
 
@@ -128,9 +128,15 @@ class ChunkNoticeAlias(IntEnum):
     MENU_ACTION_NOTICE = auto()
     WIDGET_CHANGED = auto()
 
+    # Gizmo notices
+    GIZMO_START = auto()
+    GIZMO_STOP = auto()
+    GIZMO_CHNAGED = auto()
+
     # Stage notices
     PRIM_SELECTION_CHANGED = auto()
     PROP_SELECTION_CHANGED = auto()
+    CAMERA_CHANGED = auto()
     OBJECT_CHANGED = auto()  # Something was changed on the stage
     STAGE_CHANGED = auto()
     STAGE_CONTENTS_CHANGED = auto()
@@ -264,19 +270,16 @@ class ChunkChangeNotice(ChunkNotice):
 
 ### Create / Delete notices
 @chunk_notice(ChunkNoticeAlias.PARAM_ADDED)
-# class ParamAddedNotice(ParamChangeNotice):
 class ParamAddedNotice(ChunkNotice):
     data: "chunk_core.ChunkCommon"
 
 
 @chunk_notice(ChunkNoticeAlias.PARAM_REMOVED)
-# class ParamRemovedNotice(ParamChangeNotice):
 class ParamRemovedNotice(ChunkNotice):
     data: "chunk_core.ChunkCommon"
 
 
 @chunk_notice(ChunkNoticeAlias.CHUNK_DELETED)
-# class ChunkDeletedNotice(ChunkChangeNotice):
 class ChunkDeletedNotice(ChunkNotice):
     data: "chunk_core.ChunkCommon"
 
@@ -299,6 +302,22 @@ class AttributeFlagsChangeNotice(AttributeChangeNotice):
 
 @chunk_notice(ChunkNoticeAlias.STATE_CHANGED)
 class AttributeStateChangeNotice(AttributeChangeNotice):
+    pass
+
+
+### Gizmo notices
+@chunk_notice(ChunkNoticeAlias.GIZMO_START)
+class GizmoStartedNotice(ChunkNotice):
+    pass
+
+
+@chunk_notice(ChunkNoticeAlias.GIZMO_STOP)
+class GizmoStoppedNotice(ChunkNotice):
+    pass
+
+
+@chunk_notice(ChunkNoticeAlias.GIZMO_CHNAGED)
+class GizmoChangedNotice(ChunkNotice):
     pass
 
 
@@ -338,6 +357,11 @@ class PrimSelectionChangedNotice(ChunkNotice):
 @chunk_notice(ChunkNoticeAlias.PROP_SELECTION_CHANGED)
 class PropSelectionChangedNotice(ChunkNotice):
     data: Usd.Property
+
+
+@chunk_notice(ChunkNoticeAlias.CAMERA_CHANGED)
+class CameraChangedNotice(ChunkNotice):
+    data: Gf.Camera
 
 
 # Register externally manages notice just to map to the custom enum

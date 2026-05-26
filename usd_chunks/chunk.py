@@ -42,7 +42,7 @@ a simple chunk with a button is as simple as:
 
 
     def main():
-        myChunk = chunk.Chunk("myChunk", category="example")
+        myChunk = chunk.Chunk("myChunk")
         btnParam = chunk.Button("myButton")
 
         myChunk.add_param(btnParam)
@@ -73,6 +73,7 @@ from usd_chunks.chunk_core import (
     ChunkUsdAttributeSupport,
     ChunkCommon,
     ChunkListGroupBase,
+    SceneSender,
     Predicate,
     ValueT,
     is_inst,
@@ -266,7 +267,7 @@ class Menu(ChunkParamBase[str]):
                 return self.menu_items[0]
 
         return super().convert_attr(attr, val)
-    
+
     def get_selected_index(self):
         try:
             return self.menu_items.index(self.value)
@@ -284,6 +285,9 @@ class Button(ChunkParamBase):
         return ChunkFlags.ParamType.BUTTON
 
     def click(self):
+        """
+        Click the button, triggering connected callbacks to called
+        """
         self.get_attribute_sender("value").execute()
 
 
@@ -301,7 +305,8 @@ class Checkbox(ChunkParamBase[bool]):
 
 class LineEdit(ChunkParamBase[str]):
     """
-    An editable string parameter
+    An editable string parameter for a single line. May set the ParamFlags.PRIM_SELECTION flag if the param is used for
+    Usd.Prim selection
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
@@ -365,13 +370,10 @@ class LineEdit(ChunkParamBase[str]):
 
 class TextEdit(ChunkParamBase[str]):
     """
-    An editable string parameter
+    An editable string parameter with multiple lines
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
-
-    def __attrs_post_init__(self):
-        super().__attrs_post_init__()
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -408,7 +410,7 @@ class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
 
 class Label(ChunkParamBase[str]):
     """
-    A label parameter. Should not be editable
+    A label parameter. Should not be editable in the UI. The name or label param attribute controls the displayed text
     """
 
     @classmethod
@@ -496,25 +498,62 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
 
 
 def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | None:
+    """
+    Similar to param_from_attr but for a Usd.Relationship. Will create a LineEdit.
+
+    Args:
+        attr (Usd.Relationship): The relationship to connect with a param
+
+    Returns:
+        ChunkCommon | None: The resulting param if created successfully
+    """
     return LineEdit.from_usd_rel(attr, *args, **kwargs)
 
 
-def get_chunk_registry():
+def get_chunk_registry() -> ChunkRegistry | None:
+    """
+    Get the ChunkRegistry instance. This can be used to find / register loaded chunk modules
+
+    Returns:
+        ChunkRegistry | None: The registry if it has been initialized. Otherwise None
+    """
     res = ChunkRegistry()
     return res if res.initialized else None
 
 
-def get_scene():
+def get_scene() -> SceneSender | None:
+    """
+    Return the current SceneSender object. The SceneSender can be used to find / add chunks to the scene, as well as saving / loading the current scene
+
+    Returns:
+        SceneSender | None: The current scene or None if the scene does not exists
+    """
     if reg := get_chunk_registry():
         return reg.scene
 
 
-def get_layer_manager():
+def get_layer_manager() -> ChunkLayerManager | None:
+    """
+    Return the ChunkLayerManager. This can be used to manage the chunk layers. Useful for layer management such as clearing, muting, removing, etc.
+
+    Returns:
+        ChunkLayerManager | None: The ChunkLayerManager if found, otherwise None
+    """
     res = ChunkLayerManager()
     return res if res.initialized else None
 
 
 def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
+    """
+    Find a ChunkModule in the registry and run it's main() function, then add the resulting chunk(s) to the scene if not anonymous.
+
+    Args:
+        module_name (str): The name of the module to load, relative to USD_CHUNK_DIRS
+        anonymous (bool, optional): If set to True, the resulting chunks will be added to the scene directly. Defaults to False.
+
+    Returns:
+        Sequence[Chunk]: The created chunks
+    """
     if not (reg := get_chunk_registry()):
         return []
 
@@ -536,6 +575,15 @@ def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
 
 
 def get_chunk(chunk_name: str):
+    """
+    A simple method to find a chunk in the current scene.
+
+    Args:
+        chunk_name (str): The name of the chunk to find. Note that this should be the current chunk instance name
+
+    Returns:
+        Chunk: The found chunk, or None if not found
+    """
     if not (reg := get_chunk_registry()):
         return None
     return reg.scene.get_chunk(chunk_name)

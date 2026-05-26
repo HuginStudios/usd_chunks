@@ -1249,8 +1249,17 @@ def decodeCallable(glb: _Glb, data) -> Callable | CallableConstructor | _Failed:
         if serial.closure:
             for x in serial.closure.values():
                 obj = x
-                if isinstance(obj, (ClassConstructor, CallableConstructor)):
-                    obj = obj.construct()
+                try:
+                    if isinstance(obj, ClassConstructor):
+                        # Assume the lambda closure does not own the object, then the owner is responsible
+                        # for calling post_construct. This will surely break at some point.. but TODO: be smarter
+                        obj = obj.construct(post_constuct=False)
+                    if isinstance(obj, CallableConstructor):
+                        obj = obj.construct()
+                except ValueError:
+                    logger.error("Failed to decode lambda")
+                    return _Failed
+
                 closure.append(types.CellType(obj))
 
         return types.FunctionType(res, mod.__dict__, "<lambda>", closure=tuple(closure))
