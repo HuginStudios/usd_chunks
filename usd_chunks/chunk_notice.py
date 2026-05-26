@@ -383,7 +383,7 @@ def get_notice(alias: ChunkNoticeAlias) -> Type[ChunkNotice]:
     return ChunkNoticeRegistry().get_from_alias(alias)
 
 
-def is_notice_type(notice: Tf.Notice, alias: ChunkNoticeAlias) -> bool:
+def is_notice_type(notice: Tf.Notice, alias: ChunkNoticeAlias) -> TypeGuard[ChunkNotice]:
     """Check if the alias stands for the specific Tf.Notice class
 
     Args:

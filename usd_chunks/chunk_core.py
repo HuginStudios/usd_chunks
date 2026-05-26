@@ -574,12 +574,24 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         raise NotImplementedError
 
     @abstractmethod
+    def set_selected(self, val: bool):
+        """
+        Called when the SELECTED state is changed. Should display the selection on the widget. By default,
+        this does nothing
+
+        Args:
+            val (bool): Whether to enable or disable the widget
+        """
+        pass
+
+    @abstractmethod
     def update_from_state(self):
         """
         Called when state of the group has changed
         """
         self.set_hidden(self.group.has_state(ChunkFlags.State.HIDDEN))
         self.set_enabled(not self.group.has_state(ChunkFlags.State.DISABLED))
+        self.set_selected(self.group.has_state(ChunkFlags.State.SELECTED))
 
     @abstractmethod
     def update_from_layout(self):
@@ -2373,6 +2385,12 @@ class ChunkCommon(AttributesBase):
         """
         return state in self.state
 
+    def set_selected(self, val: bool):
+        if val:
+            self.set_state(ChunkFlags.State.SELECTED)
+        else:
+            self.unset_state(ChunkFlags.State.SELECTED)
+
     def __hash__(self) -> int:
         return hash(self._hashable)
 
@@ -3525,6 +3543,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._scene_file = Path()
 
         self._current_context: Optional[weakref.ReferenceType[ChunkBase]] = None
+        self._selected_chunks: weakref.WeakSet[ChunkCommon] = weakref.WeakSet()
 
     @abstractmethod
     def get_current_frame(self) -> float:
@@ -3804,15 +3823,30 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return self.chunks.get_param(chunk)
 
     def get_chunks(self) -> Tuple[ChunkBase, ...]:
+        def _pred(val) -> TypeGuard[ChunkBase]:
+            return isinstance(val, ChunkBase)
+
         res = set()
-        for i in self.chunks.get_my_params():
+        for i in self.chunks.get_my_params(_pred):
             if isinstance(i, ChunkBase):
                 if i.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-                    res |= set(i.get_my_params())
+                    res |= set(i.get_my_params(_pred))
                 else:
                     res |= set((i,))
 
         return tuple(res)
+
+    def clear_chunk_selection(self):
+        for i in self.get_selected_chunks():
+            i.set_selected(False)
+
+    def get_selected_chunks(self):
+        return tuple(self._selected_chunks)
+
+    def set_selected_chunks(self, selection: Sequence[ChunkBase]):
+        self.clear_chunk_selection()
+        for c in selection:
+            c.set_selected(True)
 
     def get_chunk_names(self):
         return self.chunks.get_my_names()
@@ -3822,6 +3856,15 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
         self._modified = True
+
+        if notice and chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.STATE_CHANGED):
+            old_state = ChunkFlags.State(notice.data.old_value)
+            new_state = ChunkFlags.State(notice.data.value)
+            added = new_state ^ (new_state & old_state)
+            removed = old_state ^ (new_state & old_state)
+            if ChunkFlags.State.SELECTED in (added | removed):
+                self._selected_chunks ^= set((notice.data.get_owner(),))
+
         return super().data_changed(notice)
 
     def send_self(

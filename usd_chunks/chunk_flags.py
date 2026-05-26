@@ -36,6 +36,7 @@ class ChunkFlags:
         HIDDEN = auto()
         DISABLED = auto()
         COLLAPSED = auto()
+        SELECTED = auto()
 
     class GroupFlags(_FlagRepr):
         """Flags for chunk constainer type objects (Chunk, Group)

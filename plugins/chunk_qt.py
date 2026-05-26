@@ -41,7 +41,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
         if min_val is not None:
             self.setMinimum(int(min_val * self._step))
         else:
-            self.setMinimum(10 * (1-self._step))
+            self.setMinimum(10 * (1 - self._step))
 
         if max_val is not None:
             self.setMaximum(int(max_val * self._step))
@@ -523,6 +523,9 @@ class LabeledWidget(QtWidgets.QWidget):
         self._value_tooltip.move(self.tooltip_pos())
         self._value_tooltip.setHidden(False)
         self._value_tooltip.setText(str(self.widget.param.value))
+        self._value_tooltip.resize(
+            QtCore.QSize(self._value_tooltip.font().pointSize() * len(str(self.widget.param.value)), 20)
+        )
         self._tooltip_timer.start(3000)
 
     def hide_tooltip(self):
@@ -554,6 +557,9 @@ class LabeledWidget(QtWidgets.QWidget):
     def leaveEvent(self, event: QtCore.QEvent) -> None:
         self.hide_tooltip()
         return super().leaveEvent(event)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        event.accept()
 
 
 class ChunkArea(QtWidgets.QScrollArea):
@@ -591,7 +597,7 @@ class ChunkArea(QtWidgets.QScrollArea):
 
 
 class ContainerWidget(
-    Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QWidget
+    Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QFrame
 ):
     """
     Chunk is a base class for creating UI components.
@@ -757,6 +763,12 @@ class ContainerWidget(
     def set_enabled(self, val: bool):
         self.content.setEnabled(val)
 
+    def set_selected(self, val: bool):
+        pass
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        event.accept()
+
     def update_from_state(self):
         super().update_from_state()
 
@@ -810,6 +822,9 @@ class ContainerWidget(
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
         labeled = LabeledWidget(widget, self)
+        widget.installEventFilter(self)
+        labeled.label.installEventFilter(self)
+
         if label is not None:
             labeled.update_label(label)
 
@@ -848,12 +863,16 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     It provides a structure for initializing the API and creating UI Chunks.
     """
 
+    SELECTED_COLOR = "#cab46a"
+
     def __init__(
         self,
         group: chunk.ChunkBase,
         parent=None,
     ):
         super().__init__(group, parent)
+
+        self.installEventFilter(self)
 
     def build_collapsable(self):
         super().build_collapsable()
@@ -916,6 +935,39 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             if config := self.group.get_config():
                 return config.category
         return chunk.DefaulConfig().category
+
+    def set_selected(self, val: bool):
+        if val and not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            col = self.SELECTED_COLOR
+            pxs = 1
+        else:
+            col = "transparent"
+            pxs = 0
+
+        self.setStyleSheet(
+            f""".ChunkWidget {{
+                border: {pxs}px solid {col};
+                border-radius: {pxs}px;
+                }}
+            """
+        )
+        return super().set_selected(val)
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if isinstance(event, QtGui.QMouseEvent) and event.type() is event.Type.MouseButtonPress and event.isAccepted():
+            if not (c := self.group.get_chunk()):
+                event.ignore()
+            elif (
+                QtCore.Qt.MouseButton.LeftButton in event.buttons()
+                and (scene := chunk.get_scene())
+                and c not in scene.get_selected_chunks()
+            ):
+                if QtCore.Qt.KeyboardModifier.ShiftModifier in event.modifiers():
+                    c.set_selected(True)
+                else:
+                    scene.set_selected_chunks([c])
+
+        return super().eventFilter(watched, event)
 
 
 class EditableTabBar(QtWidgets.QTabBar):
@@ -1027,38 +1079,38 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         code = ""
 
         if self.count() > 1:
-            code = """
-                QTabBar::tab {
+            code = f"""
+                QTabBar::tab {{
                     border-color: #4A4A4A;
                     border: 1px solid transparent;
-                }
-                QTabBar::tab:right {
+                }}
+                QTabBar::tab:right {{
                     padding: 12 0px;
                     border-top-right-radius: 8px;
                     border-bottom-right-radius: 8px;
-                }
-                QTabBar::tab:top {
+                }}
+                QTabBar::tab:top {{
                     padding: 0 12px;
                     border-top-left-radius: 8px;
                     border-top-right-radius: 8px;
-                }
+                }}
 
-                QTabBar::tab:hover:!selected {
+                QTabBar::tab:hover:!selected {{
                     background: #868686;
-                }
+                }}
 
-                QTabBar::tab:selected:!first {
-                    border-color: #c4c7cc;
-                }
+                QTabBar::tab:selected:!first {{
+                    border-color: {ChunkWidget.SELECTED_COLOR};
+                }}
 
-                QTabBar::tab:first {
+                QTabBar::tab:first {{
                     background: transparent;
                     border: none;
                     padding: 0 0px;
-                }
-                QTabBar::tab:first:hover {
+                }}
+                QTabBar::tab:first:hover {{
                     background: transparent;
-                }
+                }}
                 """
         else:
             code = """
@@ -1129,7 +1181,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
         for c in chunks:
             if c.has_flag(ChunkFlags.GroupFlags.CONTEXT) and (scene := chunk.get_scene()):
-                # If the chunk has the context flag, we should just add it to the scene and let ChunkWidgetDocker 
+                # If the chunk has the context flag, we should just add it to the scene and let ChunkWidgetDocker
                 # manage the adding of the context (from CHUNK_LOADED)
                 scene.add_chunk(c)
             else:
