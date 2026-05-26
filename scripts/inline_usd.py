@@ -3,7 +3,6 @@ from pxr import Sdf, Tf
 
 
 def text_changed(owner: chunk.TextEdit, notice, sender):
-    print("HELOOOO")
     layer = owner.get_edit_context()
     if not layer:
         return
