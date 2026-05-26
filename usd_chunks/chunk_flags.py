@@ -30,6 +30,7 @@ class ChunkFlags:
             HIDDEN: Hint the ui to not draw this param or group
             DISABLED: Hint the ui to disable this param or group
             COLLAPSED: For COLLAPSABLE groups, this should collapse the group if set
+            SELECTED: The chunk is selected
         """
 
         NONE = 0
