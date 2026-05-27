@@ -640,6 +640,7 @@ class ContainerWidget(
         self.minimize_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.minimize_button.setIconSize(QtCore.QSize(6, 6))
         self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
+        self.minimize_button.installEventFilter(self)
 
         self.list_expand_button = QtWidgets.QToolButton()
         self.list_expand_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
@@ -653,6 +654,9 @@ class ContainerWidget(
         self.toggle_anim = QtCore.QPropertyAnimation(self, b"animation_value")
         self.toggle_anim.setStartValue(0)
         self.toggle_anim.setEndValue(self.animation_duration)
+
+        self.toggle_anim_curve = QtCore.QEasingCurve(QtCore.QEasingCurve.Type.OutExpo)
+        self.toggle_anim.setEasingCurve(self.toggle_anim_curve)
 
         self.__layout__ = QtWidgets.QVBoxLayout()
         self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
@@ -958,7 +962,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             if not (c := self.group.get_chunk()):
                 event.ignore()
             elif (
-                QtCore.Qt.MouseButton.LeftButton in event.buttons()
+                (QtCore.Qt.MouseButton.LeftButton | QtCore.Qt.MouseButton.RightButton) & event.buttons()
                 and (scene := chunk.get_scene())
                 and c not in scene.get_selected_chunks()
             ):
