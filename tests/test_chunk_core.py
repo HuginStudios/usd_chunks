@@ -382,3 +382,25 @@ def test_get_param_by_path_with_duplicate_names():
     assert ctx.get_param("A1") == A1
     assert ctx.get_param("A.P") == P
     assert ctx.get_param("A1.P") == A1.get_param("P")
+
+def test_select_deselect_chunk():
+    scene = _DummyScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+
+    A = chunk.Chunk("A")
+    B = chunk.Chunk("B")
+
+    reg.scene.add_chunks([A, B])
+
+    A.set_state(chunk.ChunkFlags.State.SELECTED)
+    sel = scene.get_selected_chunks()
+    assert len(sel) == 1 and sel[0] == A
+
+    scene.set_selected_chunks([B])
+    sel = scene.get_selected_chunks()
+    assert len(sel) == 1 and sel[0] == B
+
+    B.unset_state(chunk.ChunkFlags.State.SELECTED)
+    sel = scene.get_selected_chunks()
+    assert len(sel) == 0

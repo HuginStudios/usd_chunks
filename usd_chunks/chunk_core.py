@@ -574,12 +574,24 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         raise NotImplementedError
 
     @abstractmethod
+    def set_selected(self, val: bool):
+        """
+        Called when the SELECTED state is changed. Should display the selection on the widget. By default,
+        this does nothing
+
+        Args:
+            val (bool): Whether to enable or disable the widget
+        """
+        pass
+
+    @abstractmethod
     def update_from_state(self):
         """
         Called when state of the group has changed
         """
         self.set_hidden(self.group.has_state(ChunkFlags.State.HIDDEN))
         self.set_enabled(not self.group.has_state(ChunkFlags.State.DISABLED))
+        self.set_selected(self.group.has_state(ChunkFlags.State.SELECTED))
 
     @abstractmethod
     def update_from_layout(self):
@@ -2373,6 +2385,12 @@ class ChunkCommon(AttributesBase):
         """
         return state in self.state
 
+    def set_selected(self, val: bool):
+        if val:
+            self.set_state(ChunkFlags.State.SELECTED)
+        else:
+            self.unset_state(ChunkFlags.State.SELECTED)
+
     def __hash__(self) -> int:
         return hash(self._hashable)
 
@@ -3525,30 +3543,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._scene_file = Path()
 
         self._current_context: Optional[weakref.ReferenceType[ChunkBase]] = None
-
-    @abstractmethod
-    def get_current_frame(self) -> float:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_end_frame(self) -> float:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_start_frame(self) -> float:
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_current_frame(self, frame: float):
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_end_frame(self, frame: float):
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_start_frame(self, frame: float):
-        raise NotImplementedError
+        self._selected_chunks: weakref.WeakSet[ChunkBase] = weakref.WeakSet()
 
     def serialize(self, glb):
         # Ensure that the scene is not serialized. For now, we only serialize the chunks NameSyncedContainer
@@ -3755,7 +3750,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def add_chunk(self, c: ChunkBase) -> ChunkBase | None:
         """
-        Adds a chunk to the root of the scene
+        Adds a chunk to the root of the scene.
 
         Args:
             c (ChunkBase): The chunk to add. Ideally this should be a context chunk, and nested chunks should live underneath
@@ -3764,7 +3759,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             ChunkBase | None: The added chunk
         """
 
-        names = self.get_chunk_names()
+        names = self.chunks.get_my_names()
         if c.name in names:
             c.name = c.get_valid_child_name(c.name, set(names))
         try:
@@ -3790,37 +3785,128 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return c
 
     def add_chunks(self, chunks: Sequence[ChunkBase]):
+        """
+        Add all chunks in the sequence
+
+        Args:
+            chunks (Sequence[ChunkBase]): The chunks to add to the scene
+        """
         for c in chunks:
             self.add_chunk(c)
 
     def clear(self):
+        """
+        Clear the chunk container. This may not delete the chunks if string references to the chunks
+        are maintained elsewhere
+        """
         self.chunks.clear()
         self._modified = True
 
     def holds_chunk(self, chunk: str | ChunkHash) -> bool:
+        """
+        Check if the scene holds a chunk with name or hash
+
+        Args:
+            chunk (str | ChunkHash): The name or hash of the chunk to find
+
+        Returns:
+            bool: True if the scene holds the chunk, False otherwise
+        """
         return self.get_chunk(chunk) is not None
 
     def get_chunk(self, chunk: str | ChunkHash) -> ChunkBase | None:
-        return self.chunks.get_param(chunk)
+        """
+        Return a single chunk held by the scene. If no chunk is found, None is returned.
+        Contrary to get_chunks, this may return context chunks as well
+
+        Args:
+            chunk (str | ChunkHash): The name or hash of the chunk to find
+
+        Returns:
+            ChunkBase | None: The found chunk or None
+        """
+        return self.chunks.get_param(chunk, is_inst(ChunkBase))
 
     def get_chunks(self) -> Tuple[ChunkBase, ...]:
+        """
+        Get all top level chunks. Chunks with the CONTEXT flag is ignored and instead their
+        respective chunk children are returned
+
+        Returns:
+            Tuple[ChunkBase, ...]: All, non-context, chunks in the scene
+        """
+
+        def _pred(val) -> TypeGuard[ChunkBase]:
+            return isinstance(val, ChunkBase)
+
         res = set()
-        for i in self.chunks.get_my_params():
+        for i in self.chunks.get_my_params(_pred):
             if isinstance(i, ChunkBase):
                 if i.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-                    res |= set(i.get_my_params())
+                    res |= set(i.get_my_params(_pred))
                 else:
                     res |= set((i,))
 
         return tuple(res)
 
-    def get_chunk_names(self):
-        return self.chunks.get_my_names()
+    def clear_chunk_selection(self):
+        """
+        Clear the chunk selection
+        """
+        for i in self.get_selected_chunks():
+            i.set_selected(False)
 
-    def is_modified(self):
+    def get_selected_chunks(self) -> Tuple[ChunkBase, ...]:
+        """
+        get the currently selected chunks
+
+        Returns:
+            Tuple[ChunkBase, ...]: The selected chunks
+        """
+        return tuple(self._selected_chunks)
+
+    def set_selected_chunks(self, selection: Sequence[ChunkBase]):
+        """
+        Deselects the currently selected chunks and sets the selection to the sequence of
+        chunks passed as selection
+
+        Args:
+            selection (Sequence[ChunkBase]): The new selection to set
+        """
+        old_selection = self.get_selected_chunks()
+        for c in old_selection:
+            if c not in selection:
+                c.set_selected(False)
+
+        for c in selection:
+            if c not in old_selection:
+                c.set_selected(True)
+
+    def is_modified(self) -> bool:
+        """
+        Returns whether the scene has been modified since created
+
+        Returns:
+            bool: True if the scene has been modified, False otherwise
+        """
         return self._modified
 
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
+        if (
+            notice
+            and chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.STATE_CHANGED)
+            and isinstance(notice.data.get_owner(), ChunkBase)
+        ):
+            # Toggle the selected chunk in self._selected_chunks
+            old_state = ChunkFlags.State(notice.data.old_value)
+            new_state = ChunkFlags.State(notice.data.value)
+            added = new_state ^ (new_state & old_state)
+            removed = old_state ^ (new_state & old_state)
+            if ChunkFlags.State.SELECTED in (added | removed):
+                self._selected_chunks ^= set((notice.data.get_owner(),))
+                # Return early to skip changing self._modified
+                return super().data_changed(notice)
+
         self._modified = True
         return super().data_changed(notice)
 
@@ -3885,9 +3971,70 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return None
 
+    @abstractmethod
     def get_active_camera(self) -> Gf.Camera | None:
         """Return the current viewport camera as a Gf.Camera, or None if unsupported."""
         return None
+
+    @abstractmethod
+    def get_current_frame(self) -> float:
+        """
+        Get the current
+
+        Returns:
+            float: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_end_frame(self) -> float:
+        """
+        Get the current end frame
+
+        Returns:
+            float: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_start_frame(self) -> float:
+        """
+        Get the current start frame
+
+        Returns:
+            float: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_current_frame(self, frame: float):
+        """
+        In the plugin implementation, set the current frame
+
+        Args:
+            frame (float): The frame to set
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_end_frame(self, frame: float):
+        """
+        In the plugin implementation, set the end frame
+
+        Args:
+            frame (float): The frame to set
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_start_frame(self, frame: float):
+        """
+        In the plugin implementation, set the start frame
+
+        Args:
+            frame (float): The frame to set
+        """
+        raise NotImplementedError
 
     def set_viewport_camera(self, prim: UsdGeom.Camera) -> None:
         """Set the viewport to look through the given camera prim."""
