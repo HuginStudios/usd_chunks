@@ -66,11 +66,8 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
         min_val = param.min_value
         max_val = param.max_value
 
-        if min_val is not None:
-            self.setMinimum(min_val * self._step)
-
-        if max_val is not None:
-            self.setMaximum(max_val * self._step)
+        self.setMinimum(min_val if min_val is not None else -1e9)
+        self.setMaximum(max_val if max_val is not None else 1e9)
 
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
@@ -94,11 +91,8 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
         min_val = param.min_value
         max_val = param.max_value
 
-        if min_val is not None:
-            self.setMinimum(int(min_val * self._step))
-
-        if max_val is not None:
-            self.setMaximum(int(max_val * self._step))
+        self.setMinimum(int(min_val) if min_val is not None else -2_147_483_647)
+        self.setMaximum(int(max_val) if max_val is not None else 2_147_483_647)
 
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
