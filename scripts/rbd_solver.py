@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import struct
@@ -296,6 +297,235 @@ def _debug_update_frame(stage, model, data, frame, start_frame):
                     ops[0].Set(_geom_world_matrix(model, data, gi), tc)
 
 
+def _build_heightfield(cprim, up_idx, resolution=64, min_cell=0.0):
+    """Sample the top surface of *cprim*'s meshes into a MuJoCo heightfield.
+
+    A bowl/plate/terrain inner surface is single-valued in height, so a
+    heightfield gives stable, smooth *concave* collision — unlike a mesh geom,
+    which MuJoCo only ever collides as its convex hull (this build has no
+    generic mesh-SDF collider).
+
+    *min_cell* caps the grid resolution so a cell never gets much smaller than
+    the dynamic body: a sphere resting in a sub-cell-sized concave pit at the
+    bowl bottom produces a singular/over-constrained contact that explodes
+    (empirically once cell size drops below ~0.1x the body radius). Pass the
+    body radius * ~0.15 so the bottom stays gentle.
+
+    Returns a dict for spec.add_hfield() / a static body, or None if the prim
+    can't be represented as a heightfield (degenerate / flat / no mesh).
+
+    Limitation: only the upper surface is captured (no overhangs), and for
+    Y-up the grid's lateral axis maps to world -Z (a harmless mirror for a
+    roughly symmetric bowl). Falls back to a box collider when None.
+    """
+    if _np is None:
+        return None
+
+    xc = UsdGeom.XformCache()
+    pts_world = []
+    for p in Usd.PrimRange(cprim):
+        mesh = UsdGeom.Mesh(p)
+        if not mesh:
+            continue
+        points = mesh.GetPointsAttr().Get()
+        if not points:
+            continue
+        wxf = xc.GetLocalToWorldTransform(p)
+        for pt in points:
+            w = wxf.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
+            pts_world.append((w[0], w[1], w[2]))
+
+    if len(pts_world) < 16:
+        return None
+
+    V = _np.asarray(pts_world, dtype=_np.float64)
+    lat = [j for j in range(3) if j != up_idx]
+    a0, a1 = lat[0], lat[1]
+    min0, max0 = float(V[:, a0].min()), float(V[:, a0].max())
+    min1, max1 = float(V[:, a1].min()), float(V[:, a1].max())
+    if (max0 - min0) < 1e-6 or (max1 - min1) < 1e-6:
+        return None
+
+    # Resolution: clamp to a hard cap, then to a cell-size floor for stability.
+    N = max(8, min(int(resolution), 72))
+    if min_cell > 1e-6:
+        span = min(max0 - min0, max1 - min1)
+        N = max(8, min(N, int(span / min_cell) + 1))
+    col = _np.clip(((V[:, a0] - min0) / (max0 - min0) * (N - 1)).round().astype(int), 0, N - 1)
+    row = _np.clip(((V[:, a1] - min1) / (max1 - min1) * (N - 1)).round().astype(int), 0, N - 1)
+
+    H = _np.full((N, N), -_np.inf)
+    up = V[:, up_idx]
+    # Top surface = highest sampled point per cell.
+    _np.maximum.at(H, (row, col), up)
+
+    filled = _np.isfinite(H)
+    if not filled.any():
+        return None
+    if not filled.all():
+        # Fill empty cells from the nearest sampled cell so the grid is dense.
+        try:
+            from scipy.ndimage import distance_transform_edt
+
+            idx = distance_transform_edt(~filled, return_distances=False, return_indices=True)
+            H = H[tuple(idx)]
+        except Exception:
+            H[~filled] = float(H[filled].min())
+
+    # Light smoothing removes binning staircase so the body rolls cleanly.
+    try:
+        from scipy.ndimage import gaussian_filter
+
+        H = gaussian_filter(H, sigma=0.6, mode="nearest")
+    except Exception:
+        pass
+
+    h0 = float(H.min())
+    elev = float(H.max() - h0)
+    if elev < 1e-6:
+        return None
+    heights = ((H - h0) / elev).astype(_np.float32).flatten()
+
+    pos = [0.0, 0.0, 0.0]
+    pos[a0] = (min0 + max0) / 2.0
+    pos[a1] = (min1 + max1) / 2.0
+    pos[up_idx] = h0
+
+    # Orient the hfield so its local +Z (height axis) points along world up.
+    if up_idx == 1:  # Y-up: -90° about X
+        a = math.pi / 4
+        quat = [math.cos(a), -math.sin(a), 0.0, 0.0]
+    else:  # Z-up: identity (X-up falls back to box before reaching here)
+        quat = [1.0, 0.0, 0.0, 0.0]
+
+    size = [(max0 - min0) / 2.0, (max1 - min1) / 2.0, elev, 1.0]
+    return {"nrow": N, "ncol": N, "size": size, "heights": heights, "pos": pos, "quat": quat}
+
+
+def _add_colliders(spec, collision_prims, up_idx, friction, contact_tc, dyn_radius, hfield_res):
+    """Add static/kinematic collision bodies to *spec*.
+
+    No collision prims → infinite ground plane. Otherwise each prim becomes a
+    concave heightfield collider (+ flat backstop) when possible, else a
+    bbox-fitted box (animated prims fall back to a mocap-driven box).
+
+    *dyn_radius* sizes the heightfield cell-size cap to the dynamic body.
+    Returns mocap_col_names: list of (body_name, prim) needing per-frame updates.
+    """
+    mocap_col_names = []
+
+    if not collision_prims:
+        # Infinite ground plane, oriented to the scene's up axis.
+        plane_body = spec.worldbody.add_body()
+        plane_body.name = "ground"
+        if up_idx == 1:  # Y-up: rotate plane so its normal points +Y
+            a = math.pi / 4  # half-angle of -90° rotation around X
+            plane_body.quat = [math.cos(a), -math.sin(a), 0.0, 0.0]
+        pg = plane_body.add_geom()
+        pg.type = _mj.mjtGeom.mjGEOM_PLANE
+        pg.size = [0.0, 0.0, 0.01]
+        pg.friction = [friction, 0.005, 0.0001]
+        pg.condim = 3
+        return mocap_col_names
+
+    # Catch-all ground plane at the lowest point of the colliders — the "table"
+    # the bowl sits on. An infinite plane is a rock-solid (non-singular) contact,
+    # so it reliably catches anything the concave heightfield bottom ejects AND
+    # any body that rolls/spills off the rim, instead of letting it fall forever.
+    bc = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    ground_up = None
+    for cp in collision_prims:
+        cr = bc.ComputeWorldBound(cp).ComputeAlignedRange()
+        if not cr.IsEmpty():
+            b = float(cr.GetMin()[up_idx])
+            ground_up = b if ground_up is None else min(ground_up, b)
+    if ground_up is not None:
+        gp_body = spec.worldbody.add_body()
+        gp_body.name = "catch_ground"
+        gpos = [0.0, 0.0, 0.0]
+        gpos[up_idx] = ground_up
+        gp_body.pos = gpos
+        if up_idx == 1:  # Y-up: orient plane normal to +Y
+            a = math.pi / 4
+            gp_body.quat = [math.cos(a), -math.sin(a), 0.0, 0.0]
+        gpg = gp_body.add_geom()
+        gpg.type = _mj.mjtGeom.mjGEOM_PLANE
+        gpg.size = [0.0, 0.0, 0.01]
+        gpg.friction = [friction, 0.005, 0.0001]
+        gpg.solref = [contact_tc, 1.0]
+        gpg.condim = 3
+
+    for i, cp in enumerate(collision_prims):
+        xfc = UsdGeom.XformCache()
+        world_xf = xfc.GetLocalToWorldTransform(cp)
+        col_t = world_xf.ExtractTranslation()
+
+        is_anim = any(
+            op.GetNumTimeSamples() > 1
+            for op in UsdGeom.Xformable(cp).GetOrderedXformOps()
+        )
+
+        # Concave collision via heightfield (static, non-X-up prims only).
+        # MuJoCo collides mesh geoms as their convex hull, so a bowl would be
+        # a solid dome with no interior — the apple just rolls off. A
+        # heightfield captures the actual concave dip and is numerically
+        # stable (a flat high-vertex mesh hull explodes).
+        hf = None
+        if not is_anim and up_idx != 0:
+            # Keep hfield cells from getting much smaller than the body, or
+            # the contact at the bowl bottom goes singular and explodes.
+            hf = _build_heightfield(cp, up_idx, hfield_res, min_cell=0.15 * dyn_radius)
+
+        if hf is not None:
+            hname = f"hf_{i}"
+            mh = spec.add_hfield()
+            mh.name = hname
+            mh.nrow = hf["nrow"]
+            mh.ncol = hf["ncol"]
+            mh.size = hf["size"]
+            mh.userdata = hf["heights"]
+
+            col_body = spec.worldbody.add_body()
+            col_body.name = f"col_{i}"
+            col_body.pos = hf["pos"]
+            col_body.quat = hf["quat"]
+            bg = col_body.add_geom()
+            bg.type = _mj.mjtGeom.mjGEOM_HFIELD
+            bg.hfieldname = hname
+            bg.friction = [friction, 0.005, 0.0001]
+            bg.solref = [contact_tc, 1.0]
+            bg.solimp = [0.95, 0.99, 0.001, 0.5, 2]
+            # condim=3 (normal + sliding friction). condim=6 adds torsional/
+            # rolling constraints that over-constrain the singular contact at
+            # a bowl's concave bottom vertex and explode. The catch-all ground
+            # plane above backstops anything the concave bottom ejects.
+            bg.condim = 3
+            continue
+
+        # Fallback: bbox-fitted box (animated prims, or non-heightfieldable).
+        bname = f"col_{i}"
+        col_body = spec.worldbody.add_body()
+        col_body.name = bname
+        col_body.pos = [float(col_t[0]), float(col_t[1]), float(col_t[2])]
+        if is_anim:
+            # Mocap body: MuJoCo updates its pose each frame via data.mocap_pos/quat.
+            col_body.mocap = True
+            mocap_col_names.append((bname, cp))
+
+        fb = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        cr = fb.ComputeWorldBound(cp).ComputeAlignedRange()
+        if not cr.IsEmpty():
+            csz = cr.GetMax() - cr.GetMin()
+            bg = col_body.add_geom()
+            bg.type = _mj.mjtGeom.mjGEOM_BOX
+            bg.size = [csz[0] / 2, csz[1] / 2, csz[2] / 2]
+            bg.friction = [friction, 0.005, 0.0001]
+            bg.solref = [contact_tc, 1.0]
+            bg.condim = 3
+
+    return mocap_col_names
+
+
 def _sim_prim_gen_mj(
     stage,
     prim,
@@ -325,11 +555,13 @@ def _sim_prim_gen_mj(
     lin_damping=0.0,
     ang_damping=0.05,
     hull_max_verts=0,
+    hfield_res=96,
 ):
     """MuJoCo rigid body simulation — yields frame index, returns all_mats.
 
     Uses MjSpec to build the scene programmatically from USD mesh data (no file I/O).
-    Static mesh geoms with needsdf=True give exact concave collision without VHACD.
+    Concave static colliders use heightfields (see _build_heightfield); this
+    build of MuJoCo has no generic mesh-SDF collider.
     MuJoCo quaternions are [w,x,y,z] matching USD — no reordering needed.
     """
     # --- bbox / body centre (same as PyBullet version) ---
@@ -345,13 +577,36 @@ def _sim_prim_gen_mj(
     body_ctr = list(translate)
     body_ctr[up_idx] += z_offset
 
+    # --- apply the initial rotation offset up front, so the hull, the body
+    # quaternion and the geom offset are all built in the same final frame ---
+    if orx != 0.0 or ory != 0.0 or orz != 0.0:
+        rot = (
+            rot
+            * Gf.Rotation(Gf.Vec3d(1, 0, 0), orx)
+            * Gf.Rotation(Gf.Vec3d(0, 1, 0), ory)
+            * Gf.Rotation(Gf.Vec3d(0, 0, 1), orz)
+        )
+
+    # The body frame is placed at the prim's transform origin (not the bbox
+    # centre), so the body rotates about exactly the same point as the USD
+    # xform and the collision shape stays locked to the visual mesh while
+    # tumbling. The geometry centre sits z_offset above the origin along world
+    # up; express that offset in the body's local frame to place the geom.
+    _rmat = Gf.Matrix4d(1.0)
+    _rmat.SetRotate(rot.GetQuat())
+    _up_world = [0.0, 0.0, 0.0]
+    _up_world[up_idx] = z_offset
+    _c_local = _rmat.GetInverse().TransformDir(Gf.Vec3d(*_up_world))
+    geom_offset = [float(_c_local[0]), float(_c_local[1]), float(_c_local[2])]
+
     # --- collect convex hull vertices if needed ---
     mesh_pts = None
     if shape_type == "Convex Hull":
-        # Build the body's world transform matrix to compute its inverse
+        # Hull verts in the body-local frame, relative to the PRIM ORIGIN
+        # (so they already include the geom offset; geom pos stays 0).
         _body_mat = Gf.Matrix4d(1.0)
         _body_mat.SetRotate(rot.GetQuat())
-        _body_mat.SetTranslateOnly(Gf.Vec3d(*body_ctr))
+        _body_mat.SetTranslateOnly(Gf.Vec3d(translate[0], translate[1], translate[2]))
         _body_inv = _body_mat.GetInverse()
 
         _xc = UsdGeom.XformCache()
@@ -377,92 +632,37 @@ def _sim_prim_gen_mj(
 
     # --- build MjSpec scene ---
     spec = _mj.MjSpec()
-    spec.option.timestep = dt / substeps
+    sub_dt = dt / substeps  # per-step timestep
+    spec.option.timestep = sub_dt
     grav = [0.0, 0.0, 0.0]
     grav[up_idx] = gravity
     spec.option.gravity = grav
     spec.option.iterations = solver_iters
     spec.option.noslip_iterations = 3
+    # implicitfast integrates contacts/damping more stably than the default Euler.
+    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
+
+    # Contact stiffness timeconst: must be >= 2*timestep for stability. A stiff
+    # 0.01 floor keeps impact penetration tiny (~0.1cm vs ~1.4cm at 0.04), so
+    # fast impacts at -981 don't visibly clip. Stability under pile-ups comes
+    # from the catch-all ground plane (see _add_colliders), not from softening.
+    contact_tc = max(2.0 * sub_dt, 0.01)
 
     # --- static / kinematic collision bodies ---
-    mocap_col_names = []  # (body_name, cprim) for bodies needing per-frame kinematic updates
+    dyn_radius = max(half_extents) + max(collision_margin, 0.0)
+    mocap_col_names = _add_colliders(
+        spec, collision_prims, up_idx, friction, contact_tc, dyn_radius, hfield_res
+    )
 
-    if not collision_prims:
-        # Infinite ground plane, oriented to the scene's up axis.
-        plane_body = spec.worldbody.add_body()
-        plane_body.name = "ground"
-        if up_idx == 1:  # Y-up: rotate plane so its normal points +Y
-            import math as _math
-            a = _math.pi / 4  # half-angle of -90° rotation around X
-            plane_body.quat = [_math.cos(a), -_math.sin(a), 0.0, 0.0]
-        pg = plane_body.add_geom()
-        pg.type = _mj.mjtGeom.mjGEOM_PLANE
-        pg.size = [0.0, 0.0, 0.01]
-        pg.friction = [friction, 0.005, 0.0001]
-    else:
-        for i, cp in enumerate(collision_prims):
-            xfc = UsdGeom.XformCache()
-            world_xf = xfc.GetLocalToWorldTransform(cp)
-            col_t = world_xf.ExtractTranslation()
-
-            is_anim = any(
-                op.GetNumTimeSamples() > 1
-                for op in UsdGeom.Xformable(cp).GetOrderedXformOps()
-            )
-
-            bname = f"col_{i}"
-            col_body = spec.worldbody.add_body()
-            col_body.name = bname
-            col_body.pos = [float(col_t[0]), float(col_t[1]), float(col_t[2])]
-            if is_anim:
-                # Mocap body: MuJoCo updates its pose each frame via data.mocap_pos/quat.
-                col_body.mocap = True
-                mocap_col_names.append((bname, cp))
-
-            vertices, indices = _extract_mesh_data(cp)
-            if vertices is not None and indices is not None:
-                ma = spec.add_mesh()
-                ma.name = f"mesh_{bname}"
-                ma.needsdf = True
-                ma.uservert = vertices.astype(_np.float32).flatten()
-                ma.userface = _np.array(indices, dtype=_np.int32).flatten()
-                bg = col_body.add_geom()
-                bg.type = _mj.mjtGeom.mjGEOM_MESH
-                bg.meshname = ma.name
-                bg.friction = [friction, 0.005, 0.0001]
-                bg.solref = [0.002, 1.0]
-                bg.solimp = [0.9, 0.95, 0.001, 0.5, 2]
-                bg.condim = 6
-                # margin: detect contact before surfaces touch.
-                # For thin shells this prevents punch-through.
-                bg.margin = max(half_extents) * 1.5
-            else:
-                # Fallback: bbox-fitted box for collision prims without direct mesh data.
-                fb = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
-                cr = fb.ComputeWorldBound(cp).ComputeAlignedRange()
-                if not cr.IsEmpty():
-                    csz = cr.GetMax() - cr.GetMin()
-                    bg = col_body.add_geom()
-                    bg.type = _mj.mjtGeom.mjGEOM_BOX
-                    bg.size = [csz[0] / 2, csz[1] / 2, csz[2] / 2]
-                    bg.friction = [friction, 0.005, 0.0001]
-
-    # --- initial rotation ---
-    if orx != 0.0 or ory != 0.0 or orz != 0.0:
-        rot = (
-            rot
-            * Gf.Rotation(Gf.Vec3d(1, 0, 0), orx)
-            * Gf.Rotation(Gf.Vec3d(0, 1, 0), ory)
-            * Gf.Rotation(Gf.Vec3d(0, 0, 1), orz)
-        )
+    # --- initial orientation (offset already applied above) ---
     gq = rot.GetQuat()
     gi = gq.GetImaginary()
     # MuJoCo quaternion convention matches USD: [w, x, y, z]
     init_quat_mj = [gq.GetReal(), float(gi[0]), float(gi[1]), float(gi[2])]
 
-    # --- initial position ---
+    # --- initial position: body origin == prim transform origin (no z_offset;
+    # the geometry offset is carried by the geom, see geom_offset) ---
     init_pos = [translate[0] + otx, translate[1] + oty, translate[2] + otz]
-    init_pos[up_idx] += z_offset
 
     lat = [j for j in range(3) if j != up_idx]
 
@@ -479,18 +679,21 @@ def _sim_prim_gen_mj(
     dyn_geom = dyn_body.add_geom()
     dyn_geom.friction = [friction, 0.005, 0.0001]
     dyn_geom.mass = mass
-    # Map restitution (0-1) to solref: lower dampratio = bouncier
-    # solref[0] = timeconst (smaller = stiffer), solref[1] = dampratio
-    dyn_geom.solref = [0.004, 1.0 - max(0.0, min(1.0, restitution)) * 0.9]
+    # Map restitution (0-1) to solref: lower dampratio = bouncier.
+    # solref[0] = timeconst (kept >= 2*timestep for stability), solref[1] = dampratio
+    dyn_geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, restitution)) * 0.9]
     # solimp: [dmin, dmax, width, midpoint, power]
     dyn_geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
-    dyn_geom.condim = 6
+    # condim=3 (normal + sliding friction); condim=6's torsional/rolling
+    # constraints destabilise the singular contact at a bowl's concave bottom.
+    dyn_geom.condim = 3
 
     if shape_type == "Sphere":
         sphere_r = max(half_extents[lat[0]], half_extents[lat[1]])
         radius = max(sphere_r + collision_margin, 0.001)
         dyn_geom.type = _mj.mjtGeom.mjGEOM_SPHERE
         dyn_geom.size = [radius, 0.0, 0.0]
+        dyn_geom.pos = geom_offset  # centre on geometry, not the prim origin
 
     elif shape_type == "Convex Hull" and mesh_pts is not None:
         hull_ma = spec.add_mesh()
@@ -510,6 +713,7 @@ def _sim_prim_gen_mj(
         adj = [max(h + collision_margin, 0.001) for h in half_extents]
         dyn_geom.type = _mj.mjtGeom.mjGEOM_BOX
         dyn_geom.size = adj
+        dyn_geom.pos = geom_offset  # centre on geometry, not the prim origin
 
     # --- compile ---
     try:
@@ -558,7 +762,7 @@ def _sim_prim_gen_mj(
             kc = UsdGeom.XformCache(tc)
             kxf = kc.GetLocalToWorldTransform(cprim)
             kt = kxf.ExtractTranslation()
-            kq = kxf.ExtractRotation().GetQuat()
+            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()  # strip scale, see note above
             ki = kq.GetImaginary()
             data.mocap_pos[mid] = [float(kt[0]), float(kt[1]), float(kt[2])]
             data.mocap_quat[mid] = [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]
@@ -571,9 +775,9 @@ def _sim_prim_gen_mj(
         world_mat.SetRotate(
             Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3]))
         )
-        corrected = list(pos)
-        corrected[up_idx] -= z_offset
-        world_mat.SetTranslateOnly(Gf.Vec3d(*corrected))
+        # Body origin coincides with the prim origin, so xpos maps directly to
+        # the prim transform — the geometry offset is baked into the geom/hull.
+        world_mat.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
         all_mats.append(world_mat)
 
         for _ in range(substeps):
@@ -654,6 +858,7 @@ def simulate_mujoco(
     shape_type="Convex Hull",
     collision_margin=0.0,
     solver_iters=30,
+    hfield_res=96,
 ):
     """Run MuJoCo simulation."""
     if not _HAS_MUJOCO:
@@ -663,7 +868,11 @@ def simulate_mujoco(
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     world_xf = xform_cache.GetLocalToWorldTransform(prim)
     translate = world_xf.ExtractTranslation()
-    rot = world_xf.ExtractRotation()
+    # Strip scale/shear first: ExtractRotation() on a scaled matrix returns
+    # garbage (e.g. a 100x-scaled -90deg matrix decodes as a 360deg identity),
+    # which would bake the wrong orientation onto the prim and desync the
+    # collision shape from the visual mesh.
+    rot = world_xf.RemoveScaleShear().ExtractRotation()
 
     up_idx = 1 if UsdGeom.GetStageUpAxis(stage).upper() == "Y" else 2
     dt = 1.0 / fps
@@ -675,6 +884,7 @@ def simulate_mujoco(
         start_frame, dt, otx, oty, otz, orx, ory, orz,
         up_idx, shape_type, collision_margin, solver_iters,
         translate, rot, lin_damping, ang_damping,
+        hfield_res=hfield_res,
     )
 
     # Exhaust the generator to get all_mats
@@ -700,8 +910,16 @@ def simulate_mujoco_instancer(
     frame_count, fps, gravity, mass, substeps,
     init_vel, ang_vel, start_frame,
     otx, oty, otz, orx, ory, orz,
+    friction=0.5, restitution=0.1,
+    lin_damping=0.0, ang_damping=0.05,
+    solver_iters=30, hfield_res=96,
 ):
-    """Run MuJoCo multi-body simulation for a UsdGeom.PointInstancer using MjSpec."""
+    """Run MuJoCo multi-body simulation for a UsdGeom.PointInstancer using MjSpec.
+
+    Each instance is a sphere with a free joint; they collide with each other
+    and with the same collider stack as the single-prim path (concave
+    heightfield + backstop for the bowl, else a ground plane).
+    """
     if not _HAS_MUJOCO:
         print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
         return
@@ -721,38 +939,70 @@ def simulate_mujoco_instancer(
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     world_xf = xform_cache.GetLocalToWorldTransform(prim)
     world_inv = world_xf.GetInverse()
+    # Instancer orientations are in instancer-local space; convert to/from world
+    # with the instancer's own rotation (scale stripped — see note in simulate_mujoco).
+    inst_rot = world_xf.RemoveScaleShear().ExtractRotation()
+    inst_rot_inv = inst_rot.GetInverse()
 
-    # Derive sphere radius from first prototype's bounding box
+    # Prototype's UNSCALED bound (extents + centre). The scatter tool clears the
+    # prototype's transform and bakes the real scale into per-instance scales, so
+    # the collider must multiply the proto extent by each instance's scale —
+    # otherwise the spheres are ~100x too small and the instances clip straight
+    # through everything.
     proto_targets = instancer.GetPrototypesRel().GetTargets()
-    radius = 0.5
+    proto_ext = Gf.Vec3d(1.0, 1.0, 1.0)
+    proto_ctr = Gf.Vec3d(0.0, 0.0, 0.0)
     if proto_targets:
         proto_prim = stage.GetPrimAtPath(proto_targets[0])
         if proto_prim:
             bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
             rng = bbox_cache.ComputeWorldBound(proto_prim).ComputeAlignedRange()
             if not rng.IsEmpty():
-                ext = rng.GetMax() - rng.GetMin()
-                radius = max(float(ext[0]), float(ext[1]), float(ext[2])) / 2.0
+                proto_ext = rng.GetMax() - rng.GetMin()
+                proto_ctr = (rng.GetMin() + rng.GetMax()) * 0.5
+
+    scales = instancer.GetScalesAttr().Get()
+
+    def _instance_scale(idx):
+        if scales and idx < len(scales):
+            s = scales[idx]
+            return float(s[0]), float(s[1]), float(s[2])
+        return 1.0, 1.0, 1.0
+
+    def _instance_radius(idx):
+        sx, sy, sz = _instance_scale(idx)
+        return max(
+            float(proto_ext[0]) * sx,
+            float(proto_ext[1]) * sy,
+            float(proto_ext[2]) * sz,
+        ) / 2.0
+
+    # Representative radius (largest instance) for the heightfield cell-size cap.
+    max_radius = max([0.5] + [_instance_radius(i) for i in range(num_instances)])
 
     dt = 1.0 / fps
 
     # --- Build MjSpec ---
     spec = _mj.MjSpec()
-    spec.option.timestep = dt / substeps
+    # Many piled bodies generate many contacts/constraints; the default solver
+    # arena (~16 MB) overflows. Scale the allocation with the instance count.
+    spec.memory = max(64 * 1024 * 1024, num_instances * 2 * 1024 * 1024)
+    sub_dt = dt / substeps
+    spec.option.timestep = sub_dt
     grav = [0.0, 0.0, 0.0]
     grav[up_idx] = gravity
     spec.option.gravity = grav
+    spec.option.iterations = solver_iters
+    spec.option.noslip_iterations = 3
+    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
+    contact_tc = max(2.0 * sub_dt, 0.01)
 
-    # Ground plane
-    plane_body = spec.worldbody.add_body()
-    plane_body.name = "ground"
-    if up_idx == 1:
-        import math
-        a = math.pi / 4
-        plane_body.quat = [math.cos(a), -math.sin(a), 0.0, 0.0]
-    pg = plane_body.add_geom()
-    pg.type = _mj.mjtGeom.mjGEOM_PLANE
-    pg.size = [0.0, 0.0, 0.01]
+    # Same colliders as the single-prim path (bowl heightfield + backstop, etc.)
+    mocap_col_names = _add_colliders(
+        spec, collision_prims, up_idx, friction, contact_tc, max_radius, hfield_res
+    )
+
+    dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
 
     # Per-instance bodies
     for i in range(num_instances):
@@ -764,22 +1014,39 @@ def simulate_mujoco_instancer(
 
         if orientations and i < len(orientations):
             q = orientations[i]
-            qw = float(q.GetReal())
             qi = q.GetImaginary()
-            qx, qy, qz = float(qi[0]), float(qi[1]), float(qi[2])
+            local_q = Gf.Quatd(float(q.GetReal()), float(qi[0]), float(qi[1]), float(qi[2]))
         else:
-            qw, qx, qy, qz = 1.0, 0.0, 0.0, 0.0
+            local_q = Gf.Quatd(1.0, 0.0, 0.0, 0.0)
+        # to world: instancer rotation * instance-local orientation
+        wq = (inst_rot * Gf.Rotation(local_q)).GetQuat()
+        wqi = wq.GetImaginary()
+
+        sx, sy, sz = _instance_scale(i)
+        radius_i = max(_instance_radius(i), 1e-4)
+        # Centre the sphere on the prototype geometry (scaled, in body-local), so
+        # the collider tracks the visual instance instead of its origin.
+        gpos = [
+            float(proto_ctr[0]) * sx,
+            float(proto_ctr[1]) * sy,
+            float(proto_ctr[2]) * sz,
+        ]
 
         body = spec.worldbody.add_body()
         body.name = f"b{i}"
         body.pos = [px, py, pz]
-        body.quat = [qw, qx, qy, qz]
+        body.quat = [wq.GetReal(), float(wqi[0]), float(wqi[1]), float(wqi[2])]
         jnt = body.add_joint()
         jnt.type = _mj.mjtJoint.mjJNT_FREE
         g = body.add_geom()
         g.type = _mj.mjtGeom.mjGEOM_SPHERE
-        g.size = [radius, 0.0, 0.0]
+        g.size = [radius_i, 0.0, 0.0]
+        g.pos = gpos
         g.mass = mass
+        g.friction = [friction, 0.005, 0.0001]
+        g.solref = [contact_tc, dyn_dampratio]
+        g.solimp = [0.95, 0.99, 0.001, 0.5, 2]
+        g.condim = 3
 
     # Compile
     try:
@@ -790,31 +1057,58 @@ def simulate_mujoco_instancer(
 
     data = _mj.MjData(model)
 
-    # Set initial velocities — 6 DOF per freejointed body
+    # Resolve body ids by name (collider bodies precede the instances now) and
+    # apply damping + initial velocity on each instance's own DOFs.
+    bids = []
     for i in range(num_instances):
-        dof0 = i * 6
+        bid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, f"b{i}")
+        bids.append(bid)
+        dof0 = int(model.jnt_dofadr[int(model.body_jntadr[bid])])
+        model.dof_damping[dof0: dof0 + 3] = lin_damping
+        model.dof_damping[dof0 + 3: dof0 + 6] = ang_damping
         if init_vel:
             data.qvel[dof0: dof0 + 3] = init_vel[:3]
         if ang_vel:
             data.qvel[dof0 + 3: dof0 + 6] = ang_vel[:3]
+
+    # Resolve mocap collider ids for per-frame kinematic updates
+    mocap_ids = []
+    for bname, cprim in mocap_col_names:
+        mbid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, bname)
+        mocap_ids.append((int(model.body_mocapid[mbid]), cprim))
 
     _mj.mj_forward(model, data)
 
     # Simulate
     all_positions = []
     all_orientations = []
-    for _ in range(frame_count):
+    for frame in range(frame_count):
+        # Update kinematic (mocap) collision bodies from USD time samples
+        for mid, cprim in mocap_ids:
+            tc = Usd.TimeCode(start_frame + frame)
+            kc = UsdGeom.XformCache(tc)
+            kxf = kc.GetLocalToWorldTransform(cprim)
+            kt = kxf.ExtractTranslation()
+            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()
+            ki = kq.GetImaginary()
+            data.mocap_pos[mid] = [float(kt[0]), float(kt[1]), float(kt[2])]
+            data.mocap_quat[mid] = [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]
+
         frame_pos = Vt.Vec3fArray(num_instances)
         frame_ori = Vt.QuathArray(num_instances)
         for i in range(num_instances):
-            bid = i + 1  # body 0 is world
+            bid = bids[i]
             pos = data.xpos[bid]
             qmj = data.xquat[bid]
 
             world_pos = Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2]))
             local_pos = world_inv.Transform(world_pos)
             frame_pos[i] = Gf.Vec3f(float(local_pos[0]), float(local_pos[1]), float(local_pos[2]))
-            frame_ori[i] = Gf.Quath(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3]))
+            # world orientation back to instancer-local
+            wq = Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3]))
+            lq = (inst_rot_inv * Gf.Rotation(wq)).GetQuat()
+            li = lq.GetImaginary()
+            frame_ori[i] = Gf.Quath(float(lq.GetReal()), float(li[0]), float(li[1]), float(li[2]))
 
         all_positions.append(frame_pos)
         all_orientations.append(frame_ori)
@@ -848,6 +1142,21 @@ def _parse_vec3(s: str) -> list[float]:
     return [0.0, 0.0, 0.0]
 
 
+def _parse_collision_prims(value, stage):
+    """Parse a newline-or-comma-separated path list into valid Usd.Prim objects."""
+    result = []
+    if not stage:
+        return result
+    for path in (value or "").replace(",", "\n").split("\n"):
+        path = path.strip()
+        if not path:
+            continue
+        prim = stage.GetPrimAtPath(path)
+        if prim and prim.IsValid():
+            result.append(prim)
+    return result
+
+
 def _clear_chunk_bake(owner):
     layer = owner.get_edit_context()
     if layer and (lreg := chunk.get_layer_manager()):
@@ -857,6 +1166,37 @@ def _clear_chunk_bake(owner):
 def reset(owner, notice, sender):
     _clear_chunk_bake(owner)
     print("[MuJoCoSolver] Reset — bake cleared.")
+
+
+def add_collision(owner, notice, sender):
+    """Append the viewport-selected prim(s) to the collision list (comma-joined
+    so get_prims() picks them all up)."""
+    from usd_chunks import chunk_registry
+
+    param = owner.get_chunk().get_param("collision_path")
+    scene = chunk_registry.ChunkRegistry().scene
+    if not scene:
+        return
+    selected = scene.get_selected_prims()
+    if not selected:
+        print("[MuJoCoSolver] No prim selected in viewport")
+        return
+    existing = [
+        p.strip() for p in (param.value or "").replace(",", "\n").split("\n") if p.strip()
+    ]
+    added = 0
+    for prim in selected:
+        path = str(prim.GetPath())
+        if path and path != "/" and path not in existing:
+            existing.append(path)
+            added += 1
+    param.value = "\n".join(existing)
+    print(f"[MuJoCoSolver] Added {added} collision prim(s); {len(existing)} total")
+
+
+def clear_collision(owner, notice, sender):
+    owner.get_chunk().get_param("collision_path").value = ""
+    print("[MuJoCoSolver] Cleared collision prims")
 
 
 def execute(owner, notice, sender):
@@ -877,7 +1217,9 @@ def execute(owner, notice, sender):
     if not prim.IsValid() or prim.GetPath() == Sdf.Path("/"):
         return
 
-    collision_prims = _chunk.get_param("collision_path").get_prims()
+    collision_prims = _parse_collision_prims(
+        _chunk.get_param("collision_path").value, stage
+    )
 
     frame_count = int(_chunk.get_param("frame_count").value or 120)
     fps = float(_chunk.get_param("fps").value or 24)
@@ -911,6 +1253,10 @@ def execute(owner, notice, sender):
             frame_count, fps, gravity, mass, substeps,
             init_vel, ang_vel, start_frame,
             otx, oty, otz, orx, ory, orz,
+            friction=friction, restitution=restitution,
+            lin_damping=lin_damping, ang_damping=ang_damping,
+            solver_iters=30,
+            hfield_res=int(_chunk.get_param("hfield_res").value or 96),
         )
     else:
         xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
@@ -952,6 +1298,7 @@ def execute(owner, notice, sender):
             shape_type=shape_type,
             collision_margin=float(_chunk.get_param("collision_margin").value or 0.0),
             solver_iters=30,
+            hfield_res=int(_chunk.get_param("hfield_res").value or 96),
         )
 
     try:
@@ -962,7 +1309,7 @@ def execute(owner, notice, sender):
 
 
 def main():
-    chunk_api = chunk.Chunk("RBD Solver (MuJoCo)")
+    chunk_api = chunk.Chunk("RBD Solver")
 
     prim_path = chunk.LineEdit(
         "prim_path", "Target Prim",
@@ -970,25 +1317,46 @@ def main():
     )
     chunk_api.add_param(prim_path)
 
-    collision_path = chunk.LineEdit(
-        "collision_path", "Collision Prim",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-    )
-    chunk_api.add_param(collision_path)
-
     _GF = chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED | chunk.ChunkFlags.GroupFlags.FRAMED
+
+    col_grp = chunk.Group("Collision", flags=_GF)
+    col_grp.add_param(
+        chunk.TextEdit(
+            "collision_path",
+            "Collider Prims",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            tooltip="Static collision geometry — one prim path per line. Use 'Add "
+            "Selected' to append, or edit/delete lines directly to remove.",
+        )
+    )
+    add_col_btn = chunk.Button(
+        "add_collision", "Add Selected",
+        tooltip="Append the prim(s) selected in the usdview hierarchy to the list.",
+    )
+    add_col_btn.add_callback(add_collision)
+    col_grp.add_param(add_col_btn)
+
+    clear_col_btn = chunk.Button(
+        "clear_collision", "Clear", tooltip="Remove all collider prims.",
+    )
+    clear_col_btn.add_callback(clear_collision)
+    col_grp.add_param(clear_col_btn)
+    chunk_api.add_param(col_grp)
 
     sim_grp = chunk.Group("Simulation", flags=_GF)
     sim_grp.add_param(chunk.Spinbox("frame_count", "Frame Count", default_value=120, is_int=True))
     sim_grp.add_param(chunk.Spinbox("fps", "FPS", default_value=24.0))
     sim_grp.add_param(chunk.Spinbox("gravity", "Gravity", default_value=-981.0))
-    sim_grp.add_param(chunk.Spinbox("substeps", "Substeps", default_value=4, is_int=True))
+    sim_grp.add_param(chunk.Spinbox("substeps", "Substeps", default_value=8, is_int=True))
     sim_grp.add_param(chunk.Spinbox("start_frame", "Start Frame", default_value=1, is_int=True))
     chunk_api.add_param(sim_grp)
 
     physics_grp = chunk.Group("Physics", flags=_GF)
+    # Sphere is the most stable shape against the heightfield collider; Convex
+    # Hull is more accurate on flat ground but can be unstable on heightfields.
     physics_grp.add_param(chunk.Menu("shape_type", "Collision Shape", menu_items=["Sphere", "Box", "Convex Hull"], default_value="Sphere"))
     physics_grp.add_param(chunk.Spinbox("collision_margin", "Collision Margin", default_value=0.0))
+    physics_grp.add_param(chunk.Spinbox("hfield_res", "Collider Resolution", default_value=64, is_int=True))
     physics_grp.add_param(chunk.Spinbox("friction", "Friction", default_value=0.5))
     physics_grp.add_param(chunk.Spinbox("restitution", "Bounce", default_value=0.1))
     physics_grp.add_param(chunk.Spinbox("mass", "Mass", default_value=1.0))
