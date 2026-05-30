@@ -1,4 +1,4 @@
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, UsdGeom
 from usd_chunks import chunk
 
 
@@ -19,24 +19,25 @@ def execute(owner, notice, sender):
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
 
-    tx = float(_chunk.get_param("tx").value or 0)
-    ty = float(_chunk.get_param("ty").value or 0)
-    tz = float(_chunk.get_param("tz").value or 0)
-    rx = float(_chunk.get_param("rx").value or 0)
-    ry = float(_chunk.get_param("ry").value or 0)
-    rz = float(_chunk.get_param("rz").value or 0)
-    sx = float(_chunk.get_param("sx").value or 1)
-    sy = float(_chunk.get_param("sy").value or 1)
-    sz = float(_chunk.get_param("sz").value or 1)
+    f = chunk.is_param_t(float)
+    tx = _chunk.get_param("tx", f).value
+    ty = _chunk.get_param("ty", f).value
+    tz = _chunk.get_param("tz", f).value
+    rx = _chunk.get_param("rx", f).value
+    ry = _chunk.get_param("ry", f).value
+    rz = _chunk.get_param("rz", f).value
+    sx = _chunk.get_param("sx", f).value
+    sy = _chunk.get_param("sy", f).value
+    sz = _chunk.get_param("sz", f).value
 
-    with Usd.EditContext(stage, layer):
-        xform = UsdGeom.Xformable(prim)
-        xform.ClearXformOpOrder()
-        xform.AddTranslateOp().Set(Gf.Vec3d(tx, ty, tz))
-        xform.AddRotateXYZOp().Set(Gf.Vec3f(rx, ry, rz))
-        s = Gf.Vec3f(sx, sy, sz)
-        if s != Gf.Vec3f(1.0, 1.0, 1.0):
-            xform.AddScaleOp().Set(s)
+    # Callbacks already run inside the chunk's edit context (NoticeConnection).
+    xform = UsdGeom.Xformable(prim)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(tx, ty, tz))
+    xform.AddRotateXYZOp().Set(Gf.Vec3f(rx, ry, rz))
+    s = Gf.Vec3f(sx, sy, sz)
+    if s != Gf.Vec3f(1.0, 1.0, 1.0):
+        xform.AddScaleOp().Set(s)
 
 
 def main():

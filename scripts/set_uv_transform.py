@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pxr import Gf, Sdf, Usd, UsdShade
+from pxr import Gf, Sdf, UsdShade
 
 from usd_chunks import chunk
 
@@ -32,33 +32,33 @@ def execute(owner, notice, sender):
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
 
-    with Usd.EditContext(stage, layer):
-        shader = UsdShade.Shader(prim)
-        st_inp = shader.GetInput("st")
-        if not st_inp:
-            return
+    # Callbacks already run inside the chunk's edit context (NoticeConnection).
+    shader = UsdShade.Shader(prim)
+    st_inp = shader.GetInput("st")
+    if not st_inp:
+        return
 
-        src = st_inp.GetConnectedSources()
-        uv_source_shader = None
-        uv_source_output = "result"
-        if src and src[0]:
-            uv_source_shader = src[0][0].source
-            uv_source_output = src[0][0].sourceName
+    src = st_inp.GetConnectedSources()
+    uv_source_shader = None
+    uv_source_output = "result"
+    if src and src[0]:
+        uv_source_shader = src[0][0].source
+        uv_source_output = src[0][0].sourceName
 
-        mat_path = prim.GetParent().GetPath()
-        xform_path = f"{mat_path}/UVTransform"
-        xform_shader = UsdShade.Shader.Define(stage, xform_path)
-        xform_shader.CreateIdAttr("UsdTransform2d")
-        xform_shader.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(ss, st))
-        xform_shader.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(os_, ot))
-        xform_shader.CreateInput("rotation", Sdf.ValueTypeNames.Float).Set(rot)
-        xform_shader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+    mat_path = prim.GetParent().GetPath()
+    xform_path = f"{mat_path}/UVTransform"
+    xform_shader = UsdShade.Shader.Define(stage, xform_path)
+    xform_shader.CreateIdAttr("UsdTransform2d")
+    xform_shader.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(ss, st))
+    xform_shader.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(os_, ot))
+    xform_shader.CreateInput("rotation", Sdf.ValueTypeNames.Float).Set(rot)
+    xform_shader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
 
-        if uv_source_shader:
-            xform_shader.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(
-                uv_source_shader, uv_source_output
-            )
-        st_inp.ConnectToSource(xform_shader.ConnectableAPI(), "result")
+    if uv_source_shader:
+        xform_shader.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(
+            uv_source_shader, uv_source_output
+        )
+    st_inp.ConnectToSource(xform_shader.ConnectableAPI(), "result")
 
 
 def main():

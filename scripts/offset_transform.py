@@ -1,4 +1,4 @@
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, UsdGeom
 from usd_chunks import chunk
 
 _ROTATE_TYPES = frozenset([
@@ -101,12 +101,12 @@ def execute(owner, notice, sender):
 
     xformable = UsdGeom.Xformable(prim)
     _clear_chunk_xform(owner)
-    with Usd.EditContext(stage, layer):
-        xformable.GetXformOpOrderAttr().Set([])
-        xformable.AddTranslateOp().Set(new_t)
-        xformable.AddRotateXYZOp().Set(new_r)
-        if new_s != Gf.Vec3f(1.0, 1.0, 1.0):
-            xformable.AddScaleOp().Set(new_s)
+    # Callbacks already run inside the chunk's edit context (NoticeConnection).
+    xformable.GetXformOpOrderAttr().Set([])
+    xformable.AddTranslateOp().Set(new_t)
+    xformable.AddRotateXYZOp().Set(new_r)
+    if new_s != Gf.Vec3f(1.0, 1.0, 1.0):
+        xformable.AddScaleOp().Set(new_s)
 
     _last_applied[chunk_id] = {
         "path": prim_path_str,

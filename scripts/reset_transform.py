@@ -1,4 +1,4 @@
-from pxr import Usd, UsdGeom
+from pxr import UsdGeom
 from usd_chunks import chunk
 
 
@@ -19,8 +19,8 @@ def execute(owner, notice, sender):
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
 
-    with Usd.EditContext(stage, layer):
-        UsdGeom.Xformable(prim).ClearXformOpOrder()
+    # Callbacks already run inside the chunk's edit context (NoticeConnection).
+    UsdGeom.Xformable(prim).ClearXformOpOrder()
 
 
 def main():

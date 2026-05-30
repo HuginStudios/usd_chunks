@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pxr import Gf, Usd, UsdGeom, Vt
+from pxr import Gf, UsdGeom, Vt
 
 from usd_chunks import chunk
 
@@ -28,11 +28,11 @@ def execute(owner, notice, sender):
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
 
-    with Usd.EditContext(stage, layer):
-        for prim in prims:
-            gprim = UsdGeom.Gprim(prim)
-            if gprim:
-                gprim.GetDisplayColorAttr().Set(color)
+    # Callbacks already run inside the chunk's edit context (NoticeConnection).
+    for prim in prims:
+        gprim = UsdGeom.Gprim(prim)
+        if gprim:
+            gprim.GetDisplayColorAttr().Set(color)
 
 
 def main():
