@@ -384,6 +384,16 @@ def _on_mode_changed(owner, notice, sender):
         region_grp.unset_state(chunk.ChunkFlags.State.HIDDEN)
 
 
+def _auto_scatter(owner, notice, sender):
+    """Re-scatter on any setting change, but only while Auto Scatter is on."""
+    chunk_obj = owner.get_chunk()
+    if not chunk_obj:
+        return
+    toggle = chunk_obj.get_param("auto_scatter")
+    if toggle and toggle.value:
+        execute(owner, notice, sender)
+
+
 def execute(owner, notice, sender):
     """Scatter prototype instances onto/into the surface — Scatter button."""
     _chunk = owner.get_chunk()
@@ -592,9 +602,24 @@ def main():
     ))
     chunk_api.add_param(var_grp)
 
+    chunk_api.add_param(chunk.Checkbox(
+        "auto_scatter", "Auto Scatter", default_value=False,
+        tooltip="Re-scatter automatically whenever a setting changes — no need to press Scatter. Off by default to avoid lag on heavy meshes.",
+    ))
+
     scatter_btn = chunk.Button("scatter", "Scatter", tooltip="Place the instances now.")
     scatter_btn.add_callback(execute)
     chunk_api.add_param(scatter_btn)
+
+    # Re-run on change while Auto Scatter is on. Wire every tuning param (and the
+    # toggle itself, so turning it on does an immediate scatter). inst_path is
+    # left out so editing the path doesn't spawn orphan instancers per keystroke.
+    for name in (
+        "surface_prim", "proto_prim", "scatter_mode", "auto_spacing", "spacing",
+        "max_count", "seed", "max_slope", "scale_min", "scale_max", "normal_offset",
+        "orient_mode", "rand_axis", "rand_amount", "auto_scatter",
+    ):
+        chunk_api.get_param(name).add_callback(_auto_scatter)
 
     return chunk_api
 
