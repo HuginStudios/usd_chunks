@@ -149,12 +149,14 @@ def execute(owner, notice, sender):
     param = notice.data
     _chunk = param.get_chunk()
     stage = owner.get_stage()
+    if not stage:
+        return
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
     raw_path = _chunk.get_param("primpath_location").value
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
-    if not var_selections:
+    if not var_selections and not chunk_notice._loading_stage:
         raw_path = chunk_utils.get_unique_path(stage, raw_path)
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:

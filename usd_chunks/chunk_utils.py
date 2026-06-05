@@ -2,16 +2,63 @@ import re
 from contextlib import contextmanager, ExitStack
 from pxr import Usd
 
+_EXPR_RE = re.compile(r'@(\w+)\.(\w+)@')
+
+
+def parse_expression(text: str) -> list[tuple[str, str]]:
+    """Return (node_name, param_name) pairs for every @node.param@ token in text."""
+    return _EXPR_RE.findall(text)
+
+
+def has_expression(text: str) -> bool:
+    return bool(_EXPR_RE.search(text))
+
 
 def get_unique_path(stage, prim_path):
-    if not stage.GetPrimAtPath(prim_path).IsValid():
+    """Return prim_path if unused on stage, else a unique variant with a numeric suffix.
+
+    Also accepts a ChunkParamBase in place of a string.  If the param's raw value is an
+    expression the resolved path is returned as-is — expressions define an explicit derived
+    path, so uniqueness bumping would be wrong.
+
+    When a param is passed, the chunk's procedural layer is cleared of the old prim spec
+    before checking uniqueness, so previous executions don't inflate the suffix counter.
+    """
+    raw_value = getattr(prim_path, 'raw_value', None)
+    if raw_value is not None:
+        if isinstance(raw_value, str) and has_expression(raw_value):
+            resolved = getattr(prim_path, 'value', None)
+            return str(resolved) if resolved is not None else ""
+
+        # Clear the old prim spec from the chunk's procedural layer before checking
+        # uniqueness — otherwise our own previous authoring counts as "taken"
+        old_path = getattr(prim_path, 'value', None)
+        if old_path:
+            chunk = getattr(prim_path, 'get_chunk', lambda: None)()
+            if chunk is not None:
+                layer = chunk.get_edit_context()
+                if layer and layer.anonymous:
+                    layer.Clear()
+
+        prim_path = getattr(prim_path, 'value', prim_path)
+
+    if isinstance(prim_path, str) and has_expression(prim_path):
         return prim_path
 
-    # Strip any trailing digits to get the base
-    base = re.sub(r'\d+$', '', prim_path)
+    if not stage:
+        return prim_path
 
-    count = 1
-    while stage.GetPrimAtPath(f"{base}{count}").IsValid():
+    def _is_taken(path):
+        prim = stage.GetPrimAtPath(path)
+        return prim.IsValid() and bool(prim.GetTypeName())
+
+    if not _is_taken(prim_path):
+        return prim_path
+
+    m = re.search(r'\d+$', prim_path)
+    base = prim_path[: m.start()] if m else prim_path
+    count = int(m.group()) + 1 if m else 1
+    while _is_taken(f"{base}{count}"):
         count += 1
 
     return f"{base}{count}"

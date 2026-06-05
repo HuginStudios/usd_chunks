@@ -16,9 +16,9 @@ def addCube(owner: chunk.Button, notice, sender):
 
 
 def main():
-    button = chunk.Button("add_cube", "Add Cube")
 
     chunk_api = chunk.Chunk("Add Cubes")
+    button = chunk.Button("add_cube", "Add Cube")
     chunk_api.add_param(button)
 
     button.add_callback(addCube)
@@ -26,4 +26,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES, interactive=True)

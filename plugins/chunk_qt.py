@@ -7,6 +7,7 @@ from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chu
 import usd_chunks.chunk_flags
 from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
+from plugins import chunk_usd
 
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
@@ -499,11 +500,18 @@ class LabeledWidget(QtWidgets.QWidget):
         self._value_tooltip.setWindowFlags(QtCore.Qt.WindowType.ToolTip)
         self._tooltip_timer = QtCore.QTimer(self)
         self._tooltip_timer.timeout.connect(self.hide_tooltip)
+        self._show_timer = QtCore.QTimer(self)
+        self._show_timer.setSingleShot(True)
+        self._show_timer.timeout.connect(self.show_tooltip)
 
         if isinstance(self.widget, ChunkParamWidgetBase):
             self._listener = chunk_notice.NoticeConnection(
                 self.update_value, alias=self.widget.get_notice_alias(), sender=self.widget
             )
+
+        self._name_hint = ""
+        self._label_hovered = False
+        self.label.installEventFilter(self)
 
         self.setMouseTracking(True)
 
@@ -517,15 +525,31 @@ class LabeledWidget(QtWidgets.QWidget):
         return True
 
     def tooltip_pos(self):
-        return self.mapToGlobal(self.rect().bottomLeft())
+        return QtGui.QCursor.pos() + QtCore.QPoint(16, 8)
+
+    def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if obj is self.label:
+            if event.type() == QtCore.QEvent.Type.Enter:
+                self._label_hovered = True
+                if self._name_hint:
+                    self._show_timer.start(600)
+            elif event.type() == QtCore.QEvent.Type.Leave:
+                self._label_hovered = False
+                self._show_timer.stop()
+                self.hide_tooltip()
+        return False
 
     def show_tooltip(self):
+        if self._label_hovered and self._name_hint:
+            text = self._name_hint
+        elif self.should_show_tooltip():
+            text = str(self.widget.param.value)
+        else:
+            return
+        self._value_tooltip.setText(text)
+        self._value_tooltip.adjustSize()
         self._value_tooltip.move(self.tooltip_pos())
         self._value_tooltip.setHidden(False)
-        self._value_tooltip.setText(str(self.widget.param.value))
-        self._value_tooltip.resize(
-            QtCore.QSize(self._value_tooltip.font().pointSize() * len(str(self.widget.param.value)), 20)
-        )
         self._tooltip_timer.start(3000)
 
     def hide_tooltip(self):
@@ -544,22 +568,39 @@ class LabeledWidget(QtWidgets.QWidget):
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         if self.should_show_tooltip():
-            self.show_tooltip()
             event.accept()
         return super().mouseMoveEvent(event)
 
     def enterEvent(self, event: QtGui.QEnterEvent) -> None:
-        if self.should_show_tooltip():
-            self.show_tooltip()
+        if self.should_show_tooltip() and not self._label_hovered:
+            self._show_timer.start(600)
             event.accept()
         return super().enterEvent(event)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:
+        self._show_timer.stop()
         self.hide_tooltip()
         return super().leaveEvent(event)
 
-    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-        event.accept()
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+        if not isinstance(self.widget, ChunkParamWidgetBase):
+            event.ignore()
+            return
+
+        param = self.widget.param
+        chunk_obj = param.get_chunk()
+        context = chunk_obj.get_context() if chunk_obj else None
+
+        if not context:
+            event.ignore()
+            return
+
+        menu = QtWidgets.QMenu()
+        loft_action = menu.addAction("Loft up")
+
+        if action := menu.exec_(event.globalPos()):
+            if action == loft_action:
+                chunk_usd.loft_param_to_context(param, context)
 
 
 class ChunkArea(QtWidgets.QScrollArea):
@@ -831,6 +872,8 @@ class ContainerWidget(
 
         if label is not None:
             labeled.update_label(label)
+        if isinstance(widget, ChunkParamWidgetBase):
+            labeled._name_hint = widget.param.name
 
         if self.group.has_flag(ChunkFlags.GroupFlags.LIST):
             del_icon = QtGui.QIcon(str(chunk_resources.get_icon("remove")))
@@ -889,6 +932,53 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             QtWidgets.QSizePolicy.Policy.Preferred,
             QtWidgets.QSizePolicy.Policy.Minimum,
         )
+
+        if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            self._prim_path_field = self._build_prim_path_field()
+            self.__layout__.insertWidget(2, self._prim_path_field)
+
+            self._lofted_container = QtWidgets.QWidget()
+            self._lofted_layout = QtWidgets.QVBoxLayout(self._lofted_container)
+            self._lofted_layout.setContentsMargins(4, 2, 4, 4)
+            self._lofted_layout.setSpacing(2)
+            self._lofted_container.setVisible(False)
+            self.__layout__.insertWidget(3, self._lofted_container)
+
+    def add_widget(self, widget: QtWidgets.QWidget, label=None):
+        if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(widget, ChunkParamWidgetBase):
+            widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
+            labeled = LabeledWidget(widget, self)
+            if label is not None:
+                labeled.update_label(label)
+            labeled._name_hint = widget.param.name
+            self._lofted_layout.addWidget(labeled)
+            self._lofted_container.setVisible(True)
+        else:
+            super().add_widget(widget, label)
+
+    def _build_prim_path_field(self) -> QtWidgets.QWidget:
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+
+        label = QtWidgets.QLabel("Prim Path")
+        label.setFixedWidth(64)
+
+        edit = QtWidgets.QLineEdit(self.group.prim_path or "")
+        edit.setPlaceholderText("/chunks  (default)")
+
+        def _commit():
+            val = edit.text().strip() or None
+            if val == self.group.prim_path:
+                return
+            chunk_usd.rename_context_prim_path(self.group, val)
+
+        edit.editingFinished.connect(_commit)
+
+        layout.addWidget(label)
+        layout.addWidget(edit)
+        return container
 
     def contextMenuEvent(self, event):
         if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
@@ -1231,6 +1321,9 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._chunk_loaded_listener = chunk_notice.NoticeConnection(
             self._loaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
         )
+        self._chunk_deleted_listener = chunk_notice.NoticeConnection(
+            self._deleted_chunk_callback, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, globally=True
+        )
         self.build()
 
     def _loaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
@@ -1241,6 +1334,12 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             sender (chunk.Chunk): The new chunk that was added
         """
         self.create_chunk_widget(sender)
+
+    def _deleted_chunk_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
+        if not sender.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            return
+        if (idx := self.tab_widget.get_chunk_context_index(sender)) is not None:
+            self.tab_widget.removeTab(idx)
 
     def create_chunk_widget(self, loaded_chunk: chunk.ChunkBase):
         if loaded_chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
@@ -1530,34 +1629,87 @@ class FilterableChunkMenu(QtWidgets.QMenu):
 
     def _filter_actions(self, text: str):
         term = text.strip().lower()
+        normal_font = self.font()
+        bold_font = QtGui.QFont(normal_font)
+        bold_font.setBold(True)
 
         if not term:
             for action in self.filterable:
                 action.setVisible(True)
+                action.setFont(normal_font)
             self._filter_menus(self)
-
             return
 
         for action, path_elems in self.filterable.items():
-            action.setVisible(any(term in x for x in path_elems))
+            matches = any(term in x for x in path_elems)
+            action.setVisible(matches)
+            action.setFont(bold_font if matches else normal_font)
 
         self._filter_menus(self)
+        QtCore.QTimer.singleShot(0, self._open_first_submenu)
+
+    def _open_first_submenu(self):
+        for action in self.actions():
+            if (
+                action.isVisible()
+                and not action.isSeparator()
+                and not isinstance(action, QtWidgets.QWidgetAction)
+            ):
+                self.setActiveAction(action)
+                submenu = action.menu()
+                if submenu:
+                    if not submenu.isVisible():
+                        QtWidgets.QApplication.postEvent(
+                            self,
+                            QtGui.QKeyEvent(
+                                QtCore.QEvent.Type.KeyPress,
+                                QtCore.Qt.Key.Key_Right,
+                                QtCore.Qt.KeyboardModifier.NoModifier,
+                            ),
+                        )
+                    QtCore.QTimer.singleShot(0, lambda m=submenu: self._highlight_submenu_leaf(m))
+                break
+
+    def _highlight_submenu_leaf(self, submenu: QtWidgets.QMenu):
+        for action in submenu.actions():
+            if action.isVisible() and not action.isSeparator():
+                submenu.setActiveAction(action)
+                break
 
     def eventFilter(self, obj, event):
-        """Keep arrow/return key presses inside the QLineEdit."""
         if obj is self.filter_widget:
             if event.type() == event.Type.KeyPress:
                 key = event.key()
+                if key == QtCore.Qt.Key.Key_Escape:
+                    return True
                 if key in (
                     QtCore.Qt.Key.Key_Return,
-                    QtCore.Qt.Key.Key_Escape,
+                    QtCore.Qt.Key.Key_Down,
+                    QtCore.Qt.Key.Key_Up,
                 ):
-                    return True  # prevent menu navigation stealing focus
-        return super().eventFilter(obj, event)
+                    QtWidgets.QApplication.sendEvent(self, event)
+                    return True
+            return super().eventFilter(obj, event)
+
+        # App-level filter: redirect typing from any open submenu back to the search box
+        if isinstance(obj, QtWidgets.QMenu) and event.type() == QtCore.QEvent.Type.KeyPress:
+            key = event.key()
+            text = event.text()
+            if text and text.isprintable() and not text.isspace():
+                self.filter_widget.insert(text)
+                return True
+            if key == QtCore.Qt.Key.Key_Backspace:
+                current = self.filter_widget.text()
+                if current:
+                    self.filter_widget.setText(current[:-1])
+                return True
+
+        return False
 
     def select_module(self, pos):
         items = dict()
         items["menu"] = self
+        self._flat_results: list = []
 
         filter_action = QtWidgets.QWidgetAction(items["menu"])
         filter_action.setDefaultWidget(self.filter_widget)
@@ -1581,6 +1733,13 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                     d[ns] = {"menu": d.get("menu").addMenu(ns)}
                 d = d[ns]
 
+            # Flat search result — full path label, hidden until search is active
+            label = " → ".join(namespace)
+            flat_action = self.addAction(label)
+            flat_action.setData(mod)
+            flat_action.setVisible(False)
+            self._flat_results.append((flat_action, search_term))
+
         self.addSeparator()
 
         import_action = QtGui.QAction("import")
@@ -1588,7 +1747,9 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         self.addAction(import_action)
 
         self.filter_widget.setFocus()
+        QtWidgets.QApplication.instance().installEventFilter(self)
         exc = self.exec_(pos)
+        QtWidgets.QApplication.instance().removeEventFilter(self)
 
         if not exc:
             return

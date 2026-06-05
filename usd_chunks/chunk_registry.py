@@ -23,6 +23,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Generator,
     Iterable,
     List,
     Optional,
@@ -31,7 +32,6 @@ from typing import (
     TypeVar,
     overload,
     Sequence,
-    Generator,
     Tuple,
 )
 from enum import Enum
@@ -907,7 +907,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         for key, layer in self.chunk_layers.items():
             if not layer:
                 continue
-
             file = self.save_layer(key, path)
             if not file:
                 continue
@@ -937,13 +936,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         Returns:
             Sdf.Layer: The root layer which holds the chunk sublayers
         """
-
-        if not self._root_layer:
+        if self._root_layer is None:
             self._root_layer = Sdf.Layer.CreateAnonymous("chunks")
-        return Sdf.Find(self._root_layer.identifier)
+        return self._root_layer
 
     def get_stage_root(self) -> Sdf.Layer:
-        # if self.stage:
         return self.stage.GetRootLayer()
 
     def get_layer(self, c: "core.ChunkHash") -> Sdf.Layer | None:
@@ -959,6 +956,12 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
         return self.chunk_layers.get(c)
 
+    def register_chunk_layer(self, c: "core.ChunkCommon", layer: Sdf.Layer) -> None:
+        """Associate an existing layer as this chunk's edit layer."""
+        h = c.get_hash()
+        self.chunk_layers[h] = layer
+        weakref.finalize(c, self._chunk_deleted, h)
+
     def get_or_create_layer(self, c: "core.ChunkCommon") -> Sdf.Layer | None:
         """
         Get a layer similarly to get_layer(). Will create a new one if the layer does
@@ -970,21 +973,32 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         Returns:
             Sdf.Layer: The layer, either found or created
 
-        Rasises:
+        Raises:
             AttributeError: If the stage has not been initialized
         """
-
         if not self.stage:
             return
+
+        existing = self.chunk_layers.get(c.get_hash())
+        if existing and not existing.anonymous:
+            return existing
+
+        owner = c.get_owner()
+        while owner and not isinstance(owner, core.ChunkBase):
+            owner = owner.get_owner()
+        if isinstance(owner, core.ChunkBase) and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            ctx_layer = self.chunk_layers.get(owner.get_hash())
+            if ctx_layer and not ctx_layer.anonymous:
+                return ctx_layer
 
         root = self.get_root_layer()
         sesh = self.get_stage_root()
 
-        # If the root has been detatched from the stage's root, reapply it
+        # If the root has been detached from the stage's root, reapply it
         if root.identifier not in sesh.subLayerPaths:
             sesh.subLayerPaths.append(root.identifier)
 
-        # Create a graph layer - these are mosult for orginizing the layers. When chunks are part of
+        # Create a graph layer - these are used for organising the layers. When chunks are part of
         # the same graph, they will become siblings in the same graph layer
         graph_layer_id = f"graph_{c.get_dag_node().get_graph_id()}"
 
@@ -993,7 +1007,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self.graph_layers[graph_layer_id] = parent
             root.subLayerPaths.insert(0, parent.identifier)
 
-        # If the root has been detatched from the stage's root, reapply it
+        # If the root has been detached from the stage's root, reapply it
         if parent.identifier not in root.subLayerPaths:
             root.subLayerPaths.insert(0, parent.identifier)
 
@@ -1017,7 +1031,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         # If a chunk connection changed after the chunk layer was created, the layer may have been
         # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice
-
         for pl, sl in self.iter_chunk_layers():
             if sl.identifier == layer.identifier and pl.identifier != parent.identifier:
                 pl.subLayerPaths.remove(sl.identifier)
@@ -1054,7 +1067,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         Returns:
             Sdf.Layer: A new layer
         """
-
         h = c.get_hash()
         if layer := self.chunk_layers.get(h):
             return layer
@@ -1121,23 +1133,27 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if stage:
             self.stage = stage
 
-            root = self.get_root_layer().identifier
-            sesh = self.get_stage_root()
-            if root not in sesh.subLayerPaths:
-                sesh.subLayerPaths.append(root)
-
-    def _iter_sublayers(self, layer: Sdf.Layer):
+    def _iter_sublayers(self, layer: Sdf.Layer, visited: set | None = None):
+        if visited is None:
+            visited = set()
+        if layer.identifier in visited:
+            return
+        visited.add(layer.identifier)
         for lname in layer.subLayerPaths:
             slayer = Sdf.Find(lname)
             if slayer:
                 yield (layer, slayer)
-                yield from self._iter_sublayers(slayer)
+                yield from self._iter_sublayers(slayer, visited)
 
-    def iter_chunk_layers(self) -> Generator[Tuple[Sdf.Layer, Sdf.Layer]]:
+    def iter_chunk_layers(self) -> Generator[Tuple[Sdf.Layer, Sdf.Layer], None, None]:
         yield from self._iter_sublayers(self.get_root_layer())
 
     def _chunk_deleted(self, chunk_hash):
         if not (layer := self.get_layer(chunk_hash)):
+            return
+
+        if not layer.anonymous:
+            self.chunk_layers.pop(chunk_hash, None)
             return
 
         layer_hierarchy: Dict[Sdf.Layer, Sdf.Layer] = {}

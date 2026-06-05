@@ -50,6 +50,11 @@ from usd_chunks import chunk_serial
 
 logger = logging.getLogger(__name__)
 
+# Set to True while a param is writing its value to USD attrs so that
+# ChunkStageSync._on_objects_changed skips those synchronous ObjectsChanged callbacks.
+_usd_write_active: bool = False
+_loading_stage = None  # Set during load_chunks so callbacks can access the stage during file open
+
 
 _T = TypeVar("_T")
 Predicate: TypeAlias = Callable[[Any], TypeGuard[_T]]
@@ -147,6 +152,8 @@ class ChunkNoticeAlias(IntEnum):
     CHUNK_UNLOADED = auto()  # Sent when a chunk was unloaded
 
     CHUNK_CONFIG_CHANGED = auto()  # Sent when a chunk config was changed
+
+    DEPENDENCY_ADDED = auto()  # Sent when a DAG dependency is added between two propagators
 
     CUSTOM = auto()  # Custom notices should be registered with aliases > CUSTOM
 
@@ -335,6 +342,12 @@ class ChunkUnloadedNotice(ChunkNotice):
 @chunk_notice(ChunkNoticeAlias.CHUNK_CONFIG_CHANGED)
 class ChunkConfigChanged(ChunkNotice):
     data: "chunk_core.ChunkConfig"
+
+
+@chunk_notice(ChunkNoticeAlias.DEPENDENCY_ADDED)
+class DependencyAddedNotice(ChunkNotice):
+    """Sent when add_dependency() is called. sender=dependent, data=input propagator."""
+    data: "chunk_notice.ChunkNoticePropagator"
 
 
 ### UI Notices
@@ -1106,7 +1119,9 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         Returns:
             int: The dependency index
         """
-        return self.get_dag_node().add_dependency(input.get_dag_node())
+        idx = self.get_dag_node().add_dependency(input.get_dag_node())
+        send_notice(ChunkNoticeAlias.DEPENDENCY_ADDED, self, data=input)
+        return idx
 
     @overload
     def get_dependency(self, index: int = 0) -> Optional["ChunkNoticePropagator"]: ...
@@ -1511,3 +1526,5 @@ class NoticeConnection(chunk_serial.Serializeable):
         if self._listener is not None:
             self._listener.Revoke()
             self._listener = None
+
+

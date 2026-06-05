@@ -8,8 +8,8 @@ from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
-from usd_chunks import chunk_registry, chunk_core, chunk_serial, chunk_notice
-from plugins import chunk_qt
+from usd_chunks import chunk_registry, chunk_core, chunk_serial
+from plugins import chunk_qt, chunk_usd
 
 from typing import List
 
@@ -40,6 +40,7 @@ class UsdviewScene(chunk_core.SceneSender):
         self._camera_snap_timer = QtCore.QTimer()
         self._camera_snap_timer.setSingleShot(True)
         self._camera_snap_timer.timeout.connect(self._on_snap_timer)
+
         super().__init__()
 
     def get_current_frame(self) -> float:
@@ -158,8 +159,8 @@ def launch_chunks(usdviewApi) -> None:
     scene = UsdviewScene(usdviewApi)
 
     chunk_qt.build_chunk_docker(usdviewApi.qMainWindow)
-    chunk_registry.ChunkLayerManager().initialize(usdviewApi.stage)
     chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
+    chunk_usd.initialize(usdviewApi.stage, scene)
 
 
 class ChunksPluginContainer(PluginContainer):
@@ -172,7 +173,7 @@ class ChunksPluginContainer(PluginContainer):
         reg.reload_modules()
 
     def saveLayers(self, usdviewApi):
-        reg = chunk_registry.ChunkLayerManager()
+        reg = chunk_usd.ChunkLayerManager()
         # flt = "*.usda *.usd *.usdc"
         if not (path := chunk_qt.file_dial(directory=True)):
             return
