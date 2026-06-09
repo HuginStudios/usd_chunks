@@ -31,17 +31,32 @@ _COL_NODE_BG = QtGui.QColor("#3a3a3a")
 _COL_NODE_HEADER = QtGui.QColor("#2a2a2a")
 _COL_NODE_BORDER = QtGui.QColor("#555555")
 _COL_NODE_SELECTED = QtGui.QColor("#cab46a")  # matches ChunkWidget.SELECTED_COLOR
-_COL_PORT_EXEC = QtGui.QColor("#cccccc")
-_COL_PORT_FLOAT = QtGui.QColor("#e07840")  # orange
-_COL_PORT_INT = QtGui.QColor("#5599dd")    # blue
-_COL_PORT_BOOL = QtGui.QColor("#d4b84a")   # yellow
-_COL_PORT_STRING = QtGui.QColor("#88cc88")  # green
+_COL_PORT_EXEC = QtGui.QColor("#999999")
+_COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
+_COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
+_COL_PORT_BOOL = QtGui.QColor("#9e8e4a")   # muted yellow
+_COL_PORT_STRING = QtGui.QColor("#6a9070")  # muted green
 _COL_TEXT_PRIMARY = QtGui.QColor("#ffffff")
 _COL_TEXT_SECONDARY = QtGui.QColor("#aaaaaa")
 
 _CHUNKS_ROOT = "/chunks"
 _CHUNK_PRIM_TYPENAME = "Chunk"
 _UNBUILT = object()  # sentinel for ChunkGraphScene._built_context
+
+# Hidden top-level sink widget: child QWidgets parented here avoid a native OS
+# window (and the Windows flash that comes with it) while staying off the viewport.
+_proxy_sink: Optional[QtWidgets.QWidget] = None
+
+
+def _get_proxy_sink() -> QtWidgets.QWidget:
+    global _proxy_sink
+    if _proxy_sink is None:
+        _proxy_sink = QtWidgets.QWidget()
+        # Logically visible (so children inherit WA_WState_Visible and isVisible()
+        # returns True for port placement) but physically suppressed so nothing renders.
+        _proxy_sink.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
+        _proxy_sink.show()
+    return _proxy_sink
 
 _PORT_EXEC = "exec"
 _PORT_FLOAT = "float"
@@ -150,9 +165,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def create_proxy(self):
         """Create the embedded ChunkWidget proxy. Called in deferred batches after scene build."""
-        chunk_widget = ChunkWidget(self.chunk)
+        # Create as a child of the sink so the show() called during init (via
+        # update_from_state → set_hidden(False)) doesn't flash a native OS window.
+        chunk_widget = ChunkWidget(self.chunk, parent=_get_proxy_sink())
+        # setWidget() requires a top-level widget.  Reparent to None first, but set
+        # WA_DontShowOnScreen beforehand so the OS never calls ShowWindow during the
+        # transition from child → top-level.
+        chunk_widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
+        chunk_widget.setParent(None)
         chunk_widget.setStyleSheet(CHUNK_STYLESHEET)
         chunk_widget.setFixedWidth(_NODE_WIDTH)
+        self._chunk_widget = chunk_widget  # pin Python ref; PySide6 may GC despite Qt C++ ownership
         self._proxy = QtWidgets.QGraphicsProxyWidget(self)
         self._proxy.setWidget(chunk_widget)
         self._proxy.setPos(0, _NODE_HEADER_H)
@@ -172,7 +195,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
 
     def _rebuild_typed_ports(self):
-        if self._proxy is None:
+        if self._proxy is None or self._proxy.widget() is None:
             return
         scene = self.scene()
         for port in self._typed_ports:
@@ -533,14 +556,23 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         # Proxy widgets (ChunkWidget) are created in small batches so the graph
         # renders immediately with node headers and fills in progressively.
-        self._create_proxies_batch(list(self._nodes.values()))
+        self._create_proxies_batch(list(self._nodes.values()), on_complete=self._on_proxies_ready)
 
-    def _create_proxies_batch(self, remaining: list):
+    def _on_proxies_ready(self):
+        for view in self.views():
+            if view.isVisible():
+                view._frame_nodes()
+            else:
+                view._pending_frame = True
+
+    def _create_proxies_batch(self, remaining: list, on_complete=None):
         batch, rest = remaining[:self._PROXY_BATCH_SIZE], remaining[self._PROXY_BATCH_SIZE:]
         for node in batch:
             node.create_proxy()
         if rest:
-            QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest))
+            QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, on_complete))
+        elif on_complete:
+            QtCore.QTimer.singleShot(0, on_complete)
 
     def _build_edges(self):
         for edge in self._edges:
@@ -595,8 +627,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         if prim_path is None:
             return
         node = self._nodes.pop(prim_path)
-        self.removeItem(node)
-        self._build_edges()
+        # Defer so all CHUNK_DELETED callbacks (including ChunkWidget.delete_self)
+        # complete before Qt destroys the embedded widget.
+        QtCore.QTimer.singleShot(0, lambda: (self.removeItem(node), self._build_edges()))
 
     def _on_objects_changed(self, notice, sender):
         if not self._stage:
@@ -711,6 +744,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.setSceneRect(-e, -e, e * 2, e * 2)
         self._pan_active = False
         self._pan_start = QtCore.QPoint()
+        self._pending_frame = False
 
         self._menubar = QtWidgets.QMenuBar(self)
         view_menu = self._menubar.addMenu("View")
@@ -746,11 +780,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def build(self, stage: Usd.Stage, scene_sender: core.SceneSender, context=None):
         self.scene().build(stage, scene_sender, context)
 
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        super().showEvent(event)
+        if self._pending_frame:
+            self._pending_frame = False
+            self._frame_nodes()
+
     # ------------------------------------------------------------------
     # Zoom
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
-        factor = 1.01 if event.angleDelta().y() > 0 else 1 / 1.01
+        factor = 1.03 if event.angleDelta().y() > 0 else 1 / 1.03
         self.scale(factor, factor)
 
     # ------------------------------------------------------------------

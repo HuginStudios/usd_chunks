@@ -1152,10 +1152,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not (layer := self.get_layer(chunk_hash)):
             return
 
-        if not layer.anonymous:
-            self.chunk_layers.pop(chunk_hash, None)
-            return
-
         layer_hierarchy: Dict[Sdf.Layer, Sdf.Layer] = {}
 
         for parent, sublayer in self.iter_chunk_layers():

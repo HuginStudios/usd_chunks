@@ -396,6 +396,11 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
         if registry.initialized:
+            # Context chunks are excluded from get_chunks() — process them first
+            # so tabs exist before non-context chunks are added to them.
+            for ctx in registry.scene.chunks.get_my_params():
+                if isinstance(ctx, chunk_core.ChunkBase) and ctx.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                    self.tab_widget.add_chunk_context(ctx)
             for c in registry.scene.get_chunks():
                 self.create_chunk_widget(c)
 
@@ -547,4 +552,4 @@ def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
 
     module_dock.setWidget(ChunkWidgetDocker(parent=module_dock))
     parent_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, module_dock)
-    parent_window.resizeDocks([module_dock], [300], QtCore.Qt.Orientation.Horizontal)
+    parent_window.resizeDocks([module_dock], [400], QtCore.Qt.Orientation.Horizontal)

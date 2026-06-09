@@ -33,6 +33,8 @@ class UsdviewScene(chunk_core.SceneSender):
         view_settings = data_model.viewSettings  # type: ignore
         view_settings.signalSettingChanged.connect(self._on_view_settings_changed)
 
+        data_model.signalStageReplaced.connect(self._on_stage_replaced)  # type: ignore
+
         self._current_cam = None
 
         # Adds a delay to the set_viewport_camera as a workaround to remove thread racing
@@ -145,6 +147,9 @@ class UsdviewScene(chunk_core.SceneSender):
     def _on_snap_timer(self):
         if self._snap_prim is not None:
             self._set_viewport_camera(self._snap_prim)
+
+    def _on_stage_replaced(self):
+        self.notify_stage_replaced(self.get_stage())
 
 
 def launch_chunks(usdviewApi) -> None:

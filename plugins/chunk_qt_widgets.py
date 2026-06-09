@@ -748,7 +748,7 @@ class ContainerWidget(
             self.content.setWidgetResizable(True)
 
         else:
-            self.content = QtWidgets.QFrame()
+            self.content = QtWidgets.QFrame(self)
             self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
             self.content_layout.setContentsMargins(2, 2, 2, 10)
             self.content_layout.setSpacing(1)
@@ -927,8 +927,12 @@ class ContainerWidget(
                 self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
 
     def delete_self(self):
-        self.setParent(None)
-        self.deleteLater()
+        try:
+            self.setParent(None)
+            self.deleteLater()
+        except RuntimeError:
+            # C++ object already destroyed (e.g. by QGraphicsProxyWidget teardown)
+            pass
 
     def remove_widget(self, widget: QtWidgets.QWidget):
         count = self.content_layout.count()
@@ -1015,7 +1019,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self._prim_path_field = self._build_prim_path_field()
             self.__layout__.insertWidget(2, self._prim_path_field)
 
-            self._lofted_container = QtWidgets.QWidget()
+            self._lofted_container = QtWidgets.QWidget(self)
             self._lofted_layout = QtWidgets.QVBoxLayout(self._lofted_container)
             self._lofted_layout.setContentsMargins(4, 2, 4, 4)
             self._lofted_layout.setSpacing(2)

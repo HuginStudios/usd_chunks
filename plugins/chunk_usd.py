@@ -101,16 +101,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         load_chunks(stage, self._scene, self._loaded_prim_paths)
 
     def _on_chunk_deleted(self, notice, sender: "core.ChunkBase") -> None:
-        if not self._stage:
+        if not self._stage or not isinstance(sender, core.ChunkBase):
             return
-        prim_path = self._chunk_prim_paths.pop(id(sender), None)
-        if not prim_path:
-            chunk_root = _resolve_chunk_root(sender)
-            prim_path = f"{chunk_root}/{sender.name}"
-        self._loaded_prim_paths.discard(prim_path)
-        sdf_path = Sdf.Path(prim_path)
-        if self._stage.GetPrimAtPath(sdf_path).IsValid():
-            self._stage.RemovePrim(sdf_path)
+        chunk_root = _resolve_chunk_root(sender)
+        sdf_path = Sdf.Path(f"{chunk_root}/{sender.name}")
+        for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+            parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
+            if parent and sdf_path.name in parent.nameChildren:
+                del parent.nameChildren[sdf_path.name]
 
     def _on_state_changed(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
@@ -473,12 +471,11 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
         finally:
             chunk_notice._loading_stage = old_loading_stage
 
-    # Root-layer chunks first — create default context only on initial load
+    # Root-layer chunks first — create a context tab named after the file.
     if None in groups:
-        if is_initial_load:
-            layer = stage.GetRootLayer()
-            tab_name = Path(layer.GetDisplayName() or layer.identifier).stem or "Chunks"
-            scene.add_context(tab_name)
+        layer = stage.GetRootLayer()
+        tab_name = Path(layer.GetDisplayName() or layer.identifier).stem or "Chunks"
+        scene.add_context(tab_name)
         _add_prim_mods(groups.pop(None)[1])
 
     # Sublayer groups — each gets its own context tab for visual organisation
