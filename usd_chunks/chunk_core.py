@@ -2493,26 +2493,31 @@ class ChunkUsdAttributeSupport(AttributesBase):
             and isinstance(notice.data, AttributeSender)
             and notice.data.name == "value"
         ):
-            val = notice.data.value
+            raw = self.raw_value
+            is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
+            val = raw if is_expr else notice.data.value
             if val is not None:
                 chunk_notice._usd_write_active = True
                 try:
                     if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
-                        if usd_attr.GetConnections():
-                            # Get() resolves through the connection — compare against the
-                            # authored spec default so the stored value stays in sync.
-                            layer = stage.GetEditTarget().GetLayer()
-                            spec = layer.GetAttributeAtPath(usd_attr.GetPath())
-                            if (spec.default if spec else None) != val:
-                                usd_attr.Set(val)
-                        elif usd_attr.Get(0) != val:
+                        layer = stage.GetEditTarget().GetLayer()
+                        spec = layer.GetAttributeAtPath(usd_attr.GetPath())
+                        current = (spec.default if spec else None) if (is_expr or usd_attr.GetConnections()) else usd_attr.Get(0)
+                        if current != val:
                             usd_attr.Set(val)
+                        if is_expr:
+                            chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
+                            usd_attr.SetConnections([
+                                Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
+                                for node, attr_name in chunk_utils.parse_expression(raw)
+                            ])
                     # USD connections on driven attrs are authoritative once OpenExec is available.
                     # Until then, write directly so the values propagate today.
-                    for path in self._driven_attr_paths:
-                        if driven_attr := stage.GetAttributeAtPath(Sdf.Path(path)):
-                            if driven_attr.Get(0) != val:
-                                driven_attr.Set(val)
+                    if not is_expr:
+                        for path in self._driven_attr_paths:
+                            if driven_attr := stage.GetAttributeAtPath(Sdf.Path(path)):
+                                if driven_attr.Get(0) != val:
+                                    driven_attr.Set(val)
                 finally:
                     chunk_notice._usd_write_active = False
 
@@ -2530,9 +2535,18 @@ class ChunkUsdAttributeSupport(AttributesBase):
             sender (AttributeSender): The sender of the notice
         """
         if isinstance(notice.data, Usd.Attribute):
-            if notice.data.Get(0) == sender.value:
+            raw = self.raw_value
+            is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
+            store_val = raw if is_expr else sender.value
+            if notice.data.Get(0) == store_val:
                 return
-            notice.data.Set(sender.value)
+            notice.data.Set(store_val)
+            if is_expr:
+                chunk_root = str(notice.data.GetPrim().GetParent().GetPath())
+                notice.data.SetConnections([
+                    Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
+                    for node, attr_name in chunk_utils.parse_expression(raw)
+                ])
 
         elif isinstance(notice.data, Usd.Relationship) and sender.value is not None:
             # Currently just assume the string is a comma separated list of paths. This will likely
