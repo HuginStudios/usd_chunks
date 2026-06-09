@@ -1080,10 +1080,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         act_names.append(inspect_layer_action)
         menu.addActions(act_names)
 
-        if parent := self.parentWidget():
-            res = menu.exec_(parent.mapToGlobal(self.geometry().topLeft()))
-        else:
-            res = menu.exec_(event.globalPos())
+        res = menu.exec_(event.globalPos())
 
         if not res:
             event.ignore()

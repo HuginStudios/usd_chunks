@@ -73,6 +73,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._objects_changed_listener = NoticeConnection(
             self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True
         )
+        self._chunk_deleted_listener = NoticeConnection(
+            self._on_chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True
+        )
+        self._state_changed_listener = NoticeConnection(
+            self._on_state_changed, ChunkNoticeAlias.STATE_CHANGED, globally=True
+        )
         self._contents_changed_listener = NoticeConnection(
             self._on_contents_changed, ChunkNoticeAlias.STAGE_CONTENTS_CHANGED, globally=True
         )
@@ -93,6 +99,32 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
         self._stage = stage
         load_chunks(stage, self._scene, self._loaded_prim_paths)
+
+    def _on_chunk_deleted(self, notice, sender: "core.ChunkBase") -> None:
+        if not self._stage:
+            return
+        prim_path = self._chunk_prim_paths.pop(id(sender), None)
+        if not prim_path:
+            chunk_root = _resolve_chunk_root(sender)
+            prim_path = f"{chunk_root}/{sender.name}"
+        self._loaded_prim_paths.discard(prim_path)
+        sdf_path = Sdf.Path(prim_path)
+        if self._stage.GetPrimAtPath(sdf_path).IsValid():
+            self._stage.RemovePrim(sdf_path)
+
+    def _on_state_changed(self, notice, sender: "core.ChunkBase") -> None:
+        if not self._stage or not isinstance(sender, core.ChunkBase):
+            return
+        prim_path = self._chunk_prim_paths.get(id(sender))
+        if not prim_path:
+            chunk_root = _resolve_chunk_root(sender)
+            prim_path = f"{chunk_root}/{sender.name}"
+        prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
+        if not prim.IsValid():
+            return
+        disabled = sender.has_state(ChunkFlags.State.DISABLED)
+        if prim.IsActive() == disabled:
+            prim.SetActive(not disabled)
 
     def _on_objects_changed(self, notice: Usd.Notice.ObjectsChanged, sender):
         if chunk_notice._usd_write_active or not self._scene:

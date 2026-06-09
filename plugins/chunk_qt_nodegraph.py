@@ -18,8 +18,9 @@ from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_core as core
 from usd_chunks.chunk import Checkbox, FileBrowser, LineEdit, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks import chunk_notice as _chunk_notice
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, CHUNK_STYLESHEET
+from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, CHUNK_STYLESHEET, source_code_dial
 
 _PORT_RADIUS = 5
 _NODE_WIDTH = 220
@@ -387,6 +388,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._selected = selected
             self.update()
         self._set_collapsed(self.chunk.has_state(ChunkFlags.State.COLLAPSED))
+        disabled = self.chunk.has_state(ChunkFlags.State.DISABLED)
+        self.setOpacity(0.35 if disabled else 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +497,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._objects_changed_conn = NoticeConnection(
             self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True
         )
+        self._chunk_deleted_conn = NoticeConnection(
+            self._on_chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True
+        )
 
         chunks_by_path = {
             f"{_resolve_chunk_root(c)}/{c.name}": c
@@ -581,6 +587,16 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         for edge in self._edges:
             if edge.src_port in node_ports or edge.dst_port in node_ports:
                 edge.update_path()
+
+    def _on_chunk_deleted(self, notice, sender):
+        prim_path = next(
+            (p for p, n in self._nodes.items() if n.chunk is sender), None
+        )
+        if prim_path is None:
+            return
+        node = self._nodes.pop(prim_path)
+        self.removeItem(node)
+        self._build_edges()
 
     def _on_objects_changed(self, notice, sender):
         if not self._stage:
@@ -828,7 +844,34 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 self.setFocus()
             event.accept()
             return
+        if event.key() == QtCore.Qt.Key.Key_Delete:
+            self._delete_selected()
+            event.accept()
+            return
+        if event.key() == QtCore.Qt.Key.Key_D:
+            self._toggle_disable_selected()
+            event.accept()
+            return
         super().keyPressEvent(event)
+
+    def _delete_selected(self) -> None:
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        for node in list(graph_scene._nodes.values()):
+            if node.chunk.has_state(ChunkFlags.State.SELECTED):
+                node.chunk.request_delete()
+
+    def _toggle_disable_selected(self) -> None:
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        for node in list(graph_scene._nodes.values()):
+            if node.chunk.has_state(ChunkFlags.State.SELECTED):
+                if node.chunk.has_state(ChunkFlags.State.DISABLED):
+                    node.chunk.unset_state(ChunkFlags.State.DISABLED)
+                else:
+                    node.chunk.set_state(ChunkFlags.State.DISABLED)
 
     # ------------------------------------------------------------------
     # Wire drag
@@ -940,9 +983,53 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         menu = QtWidgets.QMenu()
         menu.addAction("Disconnect").triggered.connect(
-            lambda: (attr.ClearConnections(), graph_scene._build_edges())
+            lambda: self._disconnect_port(port, attr, graph_scene)
         )
         menu.exec(global_pos)
+
+    def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: "ChunkGraphScene") -> None:
+        # For exec ports: rewire predecessor → successor before clearing.
+        if port.port_type == _PORT_EXEC:
+            prim_path = Sdf.Path(port.attr_path).GetPrimPath()
+            out_attr_path = str(prim_path) + ".outputs:chunk"
+            # Find any successor whose inputs:chunk points to this node's outputs:chunk.
+            for node in graph_scene._nodes.values():
+                succ_attr = graph_scene._stage.GetAttributeAtPath(
+                    Sdf.Path(str(node.prim.GetPath()) + ".inputs:chunk")
+                )
+                if succ_attr and succ_attr.IsValid():
+                    if any(str(c) == out_attr_path for c in succ_attr.GetConnections()):
+                        # Rewire successor to this node's predecessor.
+                        pred_conns = attr.GetConnections()
+                        if pred_conns:
+                            succ_attr.SetConnections(list(pred_conns))
+                        else:
+                            succ_attr.ClearConnections()
+                        break
+        attr.ClearConnections()
+        graph_scene._build_edges()
+
+    def _show_chunk_menu(self, chunk: core.ChunkBase, global_pos: QtCore.QPoint) -> None:
+        menu = QtWidgets.QMenu()
+        actions: dict = {}
+        for conn in chunk.find_callbacks(notice_type=ChunkNoticeAlias.MENU_ACTION_NOTICE):
+            meth = conn.get_method()
+            if meth:
+                actions[menu.addAction(meth.__name__)] = conn
+
+        inspect_action = menu.addAction("inspect layer")
+
+        res = menu.exec(global_pos)
+        if not res:
+            return
+        if res == inspect_action:
+            layer = chunk.get_edit_context()
+            if layer:
+                source_code_dial(layer.ExportToString(), core.UsdSyntaxHighlightMapping())
+        elif conn := actions.get(res):
+            conn.handle_callback(
+                _chunk_notice.MenuActionNotice(chunk.get_notice_data()), chunk, False
+            )
 
     # ------------------------------------------------------------------
     # Frame
@@ -963,12 +1050,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.fitInView(rect, QtCore.Qt.KeepAspectRatio)
 
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
-        # Let embedded proxy widgets (buttons, line-edits, …) handle their own
-        # context menus first; only fall through to the chunk-creation menu if
-        # nothing in the scene consumed the event.
-        super().contextMenuEvent(event)
-        if event.isAccepted():
-            return
+        scene_pos = self.mapToScene(event.pos())
+        # Node right-click: show the chunk's own context menu.
+        for item in self.scene().items(scene_pos):
+            if isinstance(item, ChunkNodeItem):
+                self._show_chunk_menu(item.chunk, event.globalPos())
+                event.accept()
+                return
 
         mod = FilterableChunkMenu().select_module(event.globalPos())
         if not mod:
