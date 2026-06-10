@@ -3993,8 +3993,15 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             return
 
         if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            c._parent_context = self._current_context
             self._current_context = weakref.ref(c)
-            self.chunks.add(c, False)
+            # User-created group chunks (have a module config) need PARAM_ADDED to fire
+            # so ChunkStageSync can create their USD prim. Tab contexts skip this.
+            send_added = bool(c.get_config() and c.get_config().module)
+            self.chunks.add(c, send_added)
+            if send_added:
+                # Restore parent context so subsequent chunks don't fall into the group.
+                self._current_context = c._parent_context
             if notify:
                 chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
 
@@ -4052,17 +4059,33 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return self.chunks.get_param(chunk, is_inst(ChunkBase))
 
+    def get_context_for_prim_path(self, path: str) -> "ChunkBase | None":
+        """Return the CONTEXT chunk whose prim_path matches path, or None."""
+        for c in self.get_chunks():
+            if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                if getattr(c, "prim_path", None) == path:
+                    return c
+        return None
+
     def get_chunks(self) -> Tuple[ChunkBase, ...]:
         seen: set = set()
         res: list = []
-        for i in self.chunks.get_my_params():
-            if not isinstance(i, ChunkBase):
+        stack: list = list(self.chunks.get_my_params())
+        while stack:
+            i = stack.pop()
+            if not isinstance(i, ChunkBase) or i in seen:
                 continue
-            candidates = i.get_my_params() if i.has_flag(ChunkFlags.GroupFlags.CONTEXT) else (i,)
-            for c in candidates:
-                if c not in seen and isinstance(c, ChunkBase):
-                    seen.add(c)
-                    res.append(c)
+            seen.add(i)
+            cfg = i.get_config()
+            is_group_chunk = i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module
+            if i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and not is_group_chunk:
+                # Plain tab context: don't include it, but visit its children.
+                stack.extend(i.get_my_params())
+            else:
+                res.append(i)
+                if is_group_chunk:
+                    # ChunkGroup: include it AND recurse so sub-chunks are reachable.
+                    stack.extend(i.get_my_params())
         return tuple(res)
 
     def clear_chunk_selection(self):

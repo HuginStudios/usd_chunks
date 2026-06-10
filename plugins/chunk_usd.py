@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Generator, Optional, Tuple
 
-from pxr import Gf, Sdf, Usd, UsdUI
+from pxr import Gf, Sdf, Usd, UsdUI, Vt
 
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
@@ -36,6 +36,33 @@ _SDF_TYPE_MAP = {
     float: Sdf.ValueTypeNames.Float,
     str: Sdf.ValueTypeNames.String,
 }
+
+_LIST_SDF_TYPE_MAP = {
+    bool: Sdf.ValueTypeNames.BoolArray,
+    int: Sdf.ValueTypeNames.IntArray,
+    float: Sdf.ValueTypeNames.FloatArray,
+    str: Sdf.ValueTypeNames.StringArray,
+}
+
+_LIST_VT_MAP = {
+    bool: Vt.BoolArray,
+    int: Vt.IntArray,
+    float: Vt.FloatArray,
+    str: Vt.StringArray,
+}
+
+
+def _sdf_type_and_value(val):
+    """Return (Sdf value type, USD-safe value) for val, or (None, None) if unsupported."""
+    if isinstance(val, list):
+        elem_type = type(val[0]) if val else str
+        sdf_type = _LIST_SDF_TYPE_MAP.get(elem_type)
+        vt_cls = _LIST_VT_MAP.get(elem_type)
+        if sdf_type is None or vt_cls is None:
+            return None, None
+        return sdf_type, vt_cls(val)
+    sdf_type = _SDF_TYPE_MAP.get(type(val))
+    return sdf_type, val
 
 
 
@@ -103,8 +130,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     def _on_chunk_deleted(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
             return
-        chunk_root = _resolve_chunk_root(sender)
-        sdf_path = Sdf.Path(f"{chunk_root}/{sender.name}")
+        if sender.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            if not getattr(sender, "prim_path", None):
+                return  # tab context — no USD prim to remove
+            sdf_path = Sdf.Path(sender.prim_path)
+        else:
+            chunk_root = _resolve_chunk_root(sender)
+            sdf_path = Sdf.Path(f"{chunk_root}/{sender.name}")
         for layer in self._stage.GetLayerStack(includeSessionLayers=True):
             parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
             if parent and sdf_path.name in parent.nameChildren:
@@ -165,7 +197,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not self.initialized or not self._stage:
             return
         attr_sender = notice.data
-        if not isinstance(attr_sender, core.AttributeSender) or attr_sender.name != "name":
+        if not isinstance(attr_sender, core.AttributeSender):
+            return
+
+        if attr_sender.name == "value" and not chunk_notice._usd_write_active:
+            owner = attr_sender.get_owner()
+            if owner is not None:
+                self._sync_list_proxy_to_usd(owner)
+            return
+
+        if attr_sender.name != "name":
             return
         old_name = attr_sender.old_value
         owner = attr_sender.get_owner()
@@ -219,6 +260,49 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         layer.Apply(edit)
         _patch_expressions(self._stage, f".{old_name}@", f".{new_name}@")
 
+    def _sync_list_proxy_to_usd(self, proxy_param) -> None:
+        """Write the full array for a ListGroup template param when any proxy value changes."""
+        # Ownership chain: ProxyParam → NameSyncedContainer → ChunkGroupBase("0") → ChunkListGroupBase
+        container = proxy_param.get_owner()
+        proxy_group = container.get_owner() if container is not None else None
+        if not isinstance(proxy_group, core.ChunkGroupBase) or not proxy_group.name.isdigit():
+            return
+        list_group = proxy_group.get_owner()
+        if not isinstance(list_group, core.ChunkListGroupBase):
+            return
+        chunk = list_group.get_chunk()
+        if chunk is None:
+            return
+        prim_path = self._chunk_prim_paths.get(id(chunk))
+        if not prim_path:
+            prim_path = f"{_resolve_chunk_root(chunk)}/{chunk.name}"
+        prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
+        if not prim.IsValid():
+            return
+        lg_path = next(
+            (p for p, lg in _iter_list_group_arrays(chunk) if lg is list_group), None
+        )
+        if lg_path is None:
+            return
+        template_name = proxy_param.name
+        values = [
+            v for i in range(list_group.size)
+            if (px := list_group.get_indexed_param(template_name, i)) is not None
+            for v in [px.value] if v is not None
+        ]
+        if not values:
+            return
+        sdf_type, usd_value = _sdf_type_and_value(values)
+        if sdf_type is None:
+            return
+        attr_name = f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{template_name}"
+        chunk_notice._usd_write_active = True
+        try:
+            attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+            attr.Set(usd_value)
+        finally:
+            chunk_notice._usd_write_active = False
+
     def _on_edit_target_changed(self, notice, sender):
         pass  # Kept for compatibility; listener is disabled — see initialize()
 
@@ -244,7 +328,19 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         chunk = notice.data
         if not isinstance(chunk, core.ChunkBase):
             return
-        prim_path = f"{_resolve_chunk_root(chunk)}/{chunk.name}"
+        is_group = chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+        if is_group:
+            # For CONTEXT group chunks, prim lives at parent_root/name, not under
+            # _resolve_chunk_root (which would give prim_path/chunks — the sub-root).
+            parent_ctx = getattr(chunk, "_parent_context", None)
+            parent_ctx = parent_ctx() if parent_ctx else None
+            if parent_ctx and getattr(parent_ctx, "prim_path", None):
+                parent_root = f"{parent_ctx.prim_path}/chunks"
+            else:
+                parent_root = _CHUNKS_ROOT
+            prim_path = f"{parent_root}/{chunk.name}"
+        else:
+            prim_path = f"{_resolve_chunk_root(chunk)}/{chunk.name}"
         # If the path is already tracked, this chunk is being loaded from USD
         # (load_chunks pre-registers paths before add_chunk). Skip _define_prim —
         # the prim already exists in the sublayer; load_chunks handles _wire_inputs.
@@ -253,26 +349,49 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._loaded_prim_paths.add(prim_path)
         self._chunk_prim_paths[id(chunk)] = prim_path
 
-        prev = self._find_dag_tail(chunk.get_context(), exclude=chunk)
+        if is_group:
+            pc = getattr(chunk, "_parent_context", None)
+            tail_context = pc() if pc else None
+        else:
+            tail_context = chunk.get_context()
+        prev = self._find_dag_tail(tail_context, exclude=chunk)
         prim = self._define_prim(chunk, prev)
         self._wire_inputs(prim, chunk)
+        # Set prim_path on group contexts so sub-chunks nest correctly under them.
+        if is_group:
+            chunk.prim_path = prim_path
 
     def _find_dag_tail(self, context, exclude=None) -> "core.ChunkBase | None":
         """Return the tail of the exec DAG for this context — the chunk whose outputs:chunk
         is not referenced by any other chunk's inputs:chunk. Used as prev_chunk when no
         interactive history exists (e.g. first add after loading a .usda)."""
+        # Regular chunks in this context.
         context_chunks = [
             c for c in self._scene.get_chunks()
-            if c.get_context() == context
-            and not c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
-            and c is not exclude
+            if c.get_context() == context and c is not exclude
         ]
+        # Also include ChunkGroup chunks (CONTEXT with a USD prim) that belong here.
+        # Plain tab contexts are excluded — they have no prim and no exec connections.
+        for c in self._scene.get_chunks():
+            if not isinstance(c, core.ChunkBase) or c is exclude:
+                continue
+            if not (c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+                    and c.get_config() and c.get_config().module):
+                continue
+            pc = getattr(c, "_parent_context", None)
+            if (pc() if pc else None) == context:
+                context_chunks.append(c)
+
         if not context_chunks:
             return None
 
         referenced: set[str] = set()
         for c in context_chunks:
-            prim = self._stage.GetPrimAtPath(Sdf.Path(f"{_resolve_chunk_root(c)}/{c.name}"))
+            prim_path = (
+                c.prim_path if c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+                else f"{_resolve_chunk_root(c)}/{c.name}"
+            )
+            prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
             if not prim.IsValid():
                 continue
             exec_in = prim.GetAttribute(_EXEC_INPUT)
@@ -283,7 +402,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # Last unreferenced chunk in list order is the tail
         tail = None
         for c in context_chunks:
-            if f"{_resolve_chunk_root(c)}/{c.name}" not in referenced:
+            prim_path = (
+                c.prim_path if c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+                else f"{_resolve_chunk_root(c)}/{c.name}"
+            )
+            if prim_path not in referenced:
                 tail = c
         return tail
 
@@ -318,7 +441,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             deps = [prev_chunk]
         if deps:
             exec_in = prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-            exec_in.SetConnections([Sdf.Path(f"{_resolve_chunk_root(dep)}/{dep.name}.{_EXEC_OUTPUT}") for dep in deps])
+            exec_in.SetConnections([
+                Sdf.Path(
+                    f"{dep.prim_path}.{_EXEC_OUTPUT}"
+                    if dep.has_flag(ChunkFlags.GroupFlags.CONTEXT) and getattr(dep, "prim_path", None)
+                    else f"{_resolve_chunk_root(dep)}/{dep.name}.{_EXEC_OUTPUT}"
+                )
+                for dep in deps
+            ])
 
         for path, param in _iter_chunk_params(chunk):
             raw = param.raw_value
@@ -367,8 +497,22 @@ def _iter_chunk_params(
         path = f"{prefix}.{param.name}" if prefix else param.name
         if isinstance(param, core.ChunkParamBase):
             yield path, param
+        elif isinstance(param, core.ChunkListGroupBase):
+            pass  # handled as arrays by _iter_list_group_arrays
         else:
             yield from _iter_chunk_params(param, path)
+
+
+def _iter_list_group_arrays(
+    obj: "core.ChunkCommon", prefix: str = ""
+) -> Generator[Tuple[str, "core.ChunkListGroupBase"], None, None]:
+    """Yield (path, list_group) for every ChunkListGroupBase in the hierarchy."""
+    for param in obj.get_my_params():
+        path = f"{prefix}.{param.name}" if prefix else param.name
+        if isinstance(param, core.ChunkListGroupBase):
+            yield path, param
+        elif not isinstance(param, core.ChunkParamBase):
+            yield from _iter_list_group_arrays(param, path)
 
 
 def initialize(stage: Usd.Stage, scene: "core.SceneSender") -> None:
@@ -433,11 +577,30 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
         chunk_notice._loading_stage = stage
         try:
             deferred = []  # (prim, chunk)
+            group_chunk_by_path: dict[str, "core.ChunkBase"] = {}
             for prim, mod in prim_mods:
+                # Walk up the prim's parent chain to find the nearest loaded ChunkGroup.
+                ancestor_group = None
+                p = prim.GetParent()
+                while p and not p.IsPseudoRoot():
+                    g = group_chunk_by_path.get(str(p.GetPath()))
+                    if g is not None:
+                        ancestor_group = g
+                        break
+                    p = p.GetParent()
+
                 chunks = mod.create() if mod.loaded else mod.load()
                 for c in chunks:
                     if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                        c.prim_path = str(prim.GetPath())
                         scene.add_chunk(c)
+                        if c.get_config() and c.get_config().module:
+                            group_chunk_by_path[str(prim.GetPath())] = c
+                    elif ancestor_group is not None:
+                        # Sub-chunk of a ChunkGroup: add directly to that group.
+                        ancestor_group.add_param(c, notify=False)
+                        _load_wire_inputs(prim, c)
+                        deferred.append((prim, c))
                     else:
                         if added := scene.add_chunk(c, notify=False):
                             _load_wire_inputs(prim, added)
@@ -666,6 +829,25 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
         if not name.startswith(_INPUTS_PREFIX):
             continue
         param_path = name[len(_INPUTS_PREFIX):].replace(":", ".")
+
+        # List group arrays: inputs:list_name:param_name = StringArray([...])
+        # Detect by: parent resolves to a ChunkListGroupBase and value is a Vt array.
+        parts = param_path.split(".")
+        if len(parts) >= 2:
+            parent_path = ".".join(parts[:-1])
+            template_name = parts[-1]
+            parent = chunk.get_param(parent_path) if parent_path else None
+            if isinstance(parent, core.ChunkListGroupBase):
+                val = attr.Get()
+                if val is not None and hasattr(val, "__iter__") and not isinstance(val, str):
+                    values = list(val)
+                    if parent.size < len(values):
+                        parent.size = len(values)
+                    for i, v in enumerate(values):
+                        if px := parent.get_indexed_param(template_name, i):
+                            px.value = v
+                continue
+
         if param := chunk.get_param(param_path):
             param._connect_param_attr(attr)
 
@@ -792,8 +974,10 @@ def _author_prim(layer: Sdf.Layer, chunk: "core.ChunkBase", prev_chunk: "core.Ch
     for path, param in _iter_chunk_params(chunk):
         store_value = param.raw_value
         if store_value is None:
+            store_value = param.value  # proxy params delegate raw_value to the template (None); use value instead
+        if store_value is None:
             continue
-        sdf_type = _SDF_TYPE_MAP.get(type(store_value))
+        sdf_type, usd_value = _sdf_type_and_value(store_value)
         if sdf_type is None:
             continue
 
@@ -818,14 +1002,36 @@ def _author_prim(layer: Sdf.Layer, chunk: "core.ChunkBase", prev_chunk: "core.Ch
                 ctx_attr_spec.default = val
 
             attr_spec = Sdf.AttributeSpec(prim_spec, attr_spec_name, sdf_type)
-            attr_spec.default = ctx_param.value if ctx_param.value is not None else store_value
+            attr_spec.default = ctx_param.value if ctx_param.value is not None else usd_value
             attr_spec.connectionPathList.explicitItems = [Sdf.Path(ctx_attr_path_str)]
         else:
             attr_spec = Sdf.AttributeSpec(prim_spec, attr_spec_name, sdf_type)
-            attr_spec.default = store_value
+            attr_spec.default = usd_value
             if isinstance(store_value, str) and chunk_utils.has_expression(store_value):
                 conn_paths = [
                     Sdf.Path(f"{chunk_root}/{node_name}.inputs:{param_name}")
                     for node_name, param_name in chunk_utils.parse_expression(store_value)
                 ]
                 attr_spec.connectionPathList.explicitItems = conn_paths
+
+    # Serialize ListGroup template params as arrays: inputs:list_name:param_name = [v0, v1, ...]
+    for lg_path, list_group in _iter_list_group_arrays(chunk):
+        if not list_group.proxy_params:
+            continue
+        for proxy_param in list_group.proxy_params[0].get_my_params():
+            if not isinstance(proxy_param, core.ChunkParamBase):
+                continue
+            values = [
+                v for i in range(list_group.size)
+                if (px := list_group.get_indexed_param(proxy_param.name, i)) is not None
+                for v in [px.value]
+                if v is not None
+            ]
+            if not values:
+                continue
+            sdf_type, usd_value = _sdf_type_and_value(values)
+            if sdf_type is None:
+                continue
+            attr_spec_name = f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}"
+            attr_spec = Sdf.AttributeSpec(prim_spec, attr_spec_name, sdf_type)
+            attr_spec.default = usd_value

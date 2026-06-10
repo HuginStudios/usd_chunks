@@ -1,3 +1,5 @@
+import weakref
+
 from PySide6 import QtWidgets, QtCore, QtGui
 
 from pxr import Tf
@@ -245,12 +247,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             chunks = mod.load()
 
         for c in chunks:
-            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT) and (scene := chunk.get_scene()):
-                # If the chunk has the context flag, we should just add it to the scene and let ChunkWidgetDocker
-                # manage the adding of the context (from CHUNK_LOADED)
-                scene.add_chunk(c)
-            else:
-                self.add_chunk_to_tab(c)
+            self.add_chunk_to_tab(c)
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
         w = self.widget(idx)
@@ -270,8 +267,8 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
     def add_chunk_context(self, c: chunk.ChunkBase):
         stack = QtWidgets.QStackedWidget(self)
-        stack.addWidget(ChunkWidget(c, self))   # page 0: params
-        stack.addWidget(ChunkGraphView(self))   # page 1: graph
+        stack.addWidget(ChunkWidget(c, self, is_tab_context=True))  # page 0: params
+        stack.addWidget(ChunkGraphView(self))                        # page 1: graph
         stack.setCurrentIndex(self._view_mode)
         idx = self.addTab(stack, c.name)
         self.setCurrentIndex(idx)
@@ -303,7 +300,10 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             if param in t.group.get_my_params():
                 return
 
-            # This will add the chunk to the Context chunk (tab) and display it in the tab widget
+            cfg = getattr(param, 'get_config', lambda: None)()
+            if cfg and cfg.module and param.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                param._parent_context = weakref.ref(t.group)
+
             t.group.add_param(param)
 
 
@@ -340,10 +340,25 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
     def create_chunk_widget(self, loaded_chunk: chunk.ChunkBase):
         if loaded_chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            cfg = loaded_chunk.get_config()
+            if cfg and cfg.module:
+                # User-created ChunkGroup: add a standalone ChunkWidget directly to
+                # the parent tab's content layout — NOT via add_param, which would
+                # propagate sub-chunk PARAM_ADDED notices up to the parent context.
+                parent_ctx = getattr(loaded_chunk, '_parent_context', None)
+                parent_ctx = parent_ctx() if parent_ctx else None
+                if parent_ctx is not None:
+                    idx = self.tab_widget.get_chunk_context_index(parent_ctx)
+                    tab_cw = self.tab_widget.get_chunk_context(idx)
+                    if tab_cw is not None:
+                        tab_cw._add_group_widget(loaded_chunk)
+                    return
+            # Plain tab context: create its tab immediately.
             self.tab_widget.add_chunk_context(loaded_chunk)
         elif ctx := loaded_chunk.get_context():
             idx = self.tab_widget.get_chunk_context_index(ctx)
-            self.tab_widget.add_chunk_to_tab(loaded_chunk, idx)
+            if idx is not None:
+                self.tab_widget.add_chunk_to_tab(loaded_chunk, idx)
 
     def _current_context(self):
         idx = self.tab_widget.currentIndex()
@@ -374,6 +389,26 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         if graph_view.scene()._built_context == context:
             return  # already built for this context — keep the cache
         graph_view.build(stage, registry.scene, context)
+        graph_view.dive_into.connect(self._on_dive_into, QtCore.Qt.UniqueConnection)
+
+    def _on_dive_into(self, context_chunk):
+        idx = self.tab_widget.get_chunk_context_index(context_chunk)
+        if idx is None:
+            # Ensure the group isn't collapsed when we build its tab — the scroll
+            # area is sized via setFixedHeight inside update_from_state, so a
+            # lingering COLLAPSED state would make it 0px tall on first show.
+            context_chunk.unset_state(ChunkFlags.State.COLLAPSED)
+            self.tab_widget.add_chunk_context(context_chunk)
+            idx = self.tab_widget.get_chunk_context_index(context_chunk)
+        if idx is not None:
+            self.tab_widget.setCurrentIndex(idx)
+
+    def _on_tab_changed(self, _):
+        registry = chunk_registry.ChunkRegistry()
+        if registry.initialized:
+            ctx = self._current_context()
+            registry.scene._current_context = weakref.ref(ctx) if ctx is not None else None
+        self._rebuild_graph()
 
     def _on_view_mode_changed(self, mode: int):
         self.tab_widget.set_view_mode(mode)
@@ -388,7 +423,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._view_bar.addTab("Params")
         self._view_bar.addTab("Graph")
         self._view_bar.currentChanged.connect(self._on_view_mode_changed)
-        self.tab_widget.currentChanged.connect(lambda _: self._rebuild_graph())
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
         registry = chunk_registry.ChunkRegistry()
         self.setStyleSheet(CHUNK_STYLESHEET)

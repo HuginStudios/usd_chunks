@@ -735,13 +735,23 @@ class ContainerWidget(
         self._depth = 0
         super().__init__(group, parent=parent)
 
+    def _is_context_tab(self) -> bool:
+        """True when this widget is the scrollable tab context (not a compact node)."""
+        if not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            return False
+        if getattr(self, '_is_tab_context_widget', False):
+            return True  # explicitly opened as a tab — always use scroll area
+        cfg = getattr(self.group, 'get_config', lambda: None)()
+        return not (cfg and getattr(cfg, 'module', None))
+
     def build_collapsable(self):
-        if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-            # Context chunks are scrollable
+        if self._is_context_tab():
+            # Plain tab contexts are scrollable containers for all child chunks.
             self.content = QtWidgets.QScrollArea(self)
             self.content_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
             self.content_layout.setContentsMargins(2, 2, 2, 10)
             self.content_layout.setSpacing(20)
+            self.content_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
             wid = QtWidgets.QWidget(self)
             wid.setLayout(self.content_layout)
             self.content.setWidget(wid)
@@ -998,10 +1008,22 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self,
         group: chunk.ChunkBase,
         parent=None,
+        is_tab_context: bool = False,
     ):
+        # Must be set before super().__init__ so build_collapsable sees the correct role.
+        self._is_tab_context_widget = is_tab_context
         super().__init__(group, parent)
 
         self.installEventFilter(self)
+
+    def _is_group_chunk(self) -> bool:
+        """True when this is a user-created ChunkGroup (CONTEXT with a module), not a plain tab context."""
+        cfg = self.group.get_config() if isinstance(self.group, chunk.ChunkBase) else None
+        return bool(self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module)
+
+    def _is_group_chunk_node(self) -> bool:
+        """True only when shown as a node in a parent context (not as the tab context widget itself)."""
+        return self._is_group_chunk() and not getattr(self, '_is_tab_context_widget', False)
 
     def build_collapsable(self):
         super().build_collapsable()
@@ -1020,14 +1042,33 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self.__layout__.insertWidget(2, self._prim_path_field)
 
             self._lofted_container = QtWidgets.QWidget(self)
+            self._lofted_container.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Preferred,
+                QtWidgets.QSizePolicy.Policy.Maximum,
+            )
             self._lofted_layout = QtWidgets.QVBoxLayout(self._lofted_container)
             self._lofted_layout.setContentsMargins(4, 2, 4, 4)
             self._lofted_layout.setSpacing(2)
+            self._lofted_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
             self._lofted_container.setVisible(False)
-            self.__layout__.insertWidget(3, self._lofted_container)
+            lofted_idx = 3 if hasattr(self, '_prim_path_field') else 2
+            self.__layout__.insertWidget(lofted_idx, self._lofted_container)
+
+        if self._is_group_chunk():
+            self.minimize_button.installEventFilter(self)
+            if self._is_group_chunk_node():
+                # Node view: content has no sub-chunks. Zero out its height so the
+                # layout never allocates space for it regardless of frame style or
+                # animation side-effects.
+                self.content.hide()
+                self.content.setMaximumHeight(0)
 
     def add_widget(self, widget: QtWidgets.QWidget, label=None):
-        if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(widget, ChunkParamWidgetBase):
+        if self._is_group_chunk_node() and not isinstance(widget, ChunkParamWidgetBase):
+            # Shown as a node: suppress all non-lofted widgets.
+            return
+        if (self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+                and isinstance(widget, ChunkParamWidgetBase)):
             widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
             labeled = LabeledWidget(widget, self)
             if label is not None:
@@ -1038,8 +1079,69 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         else:
             super().add_widget(widget, label)
 
+    def _add_group_layout(self, group):
+        if self._is_group_chunk_node():
+            # Don't create orphan Qt child widgets — they render at (0,0) as overlays.
+            return None
+        if (isinstance(group, chunk.ChunkBase)
+                and group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+                and (cfg := group.get_config()) and cfg.module):
+            # ChunkGroup nodes are rendered via _add_group_widget (triggered by CHUNK_LOADED).
+            # Suppress the normal nested-layout path to avoid a duplicate widget.
+            return None
+        return super()._add_group_layout(group)
+
+    def _build_param_widgets(self, group):
+        if self._is_group_chunk_node():
+            # Shown as a node: only lofted ChunkParamBase params, no sub-chunk containers.
+            for param in group.get_my_params():
+                if isinstance(param, chunk_core.ChunkParamBase):
+                    self._add_param_widget(param)
+            return
+        super()._build_param_widgets(group)
+
+    def animation_finished(self):
+        super().animation_finished()
+        if self._is_context_tab() and not self.is_collapsed():
+            # After expansion, clear the fixed height the animation pinned on the
+            # QScrollArea so it can expand to fill __layout__ naturally.
+            self.content.setMinimumHeight(0)
+            self.content.setMaximumHeight(16777215)
+
+    def update_from_state(self):
+        if self._is_group_chunk_node():
+            # Skip super() — it would start the collapse animation which calls
+            # content.setFixedHeight and inflates the node's reported size.
+            # Drive everything directly with blocked signals so toggled() never fires.
+            expanded = not self.group.has_state(ChunkFlags.State.COLLAPSED)
+            self.minimize_button.blockSignals(True)
+            self.minimize_button.setChecked(expanded)
+            self.minimize_button.blockSignals(False)
+            if hasattr(self, '_prim_path_field'):
+                self._prim_path_field.setVisible(expanded)
+            if hasattr(self, '_lofted_container'):
+                has_content = bool(self._lofted_layout.count()) if hasattr(self, '_lofted_layout') else False
+                self._lofted_container.setVisible(expanded and has_content)
+            self.set_selected(self.group.has_state(ChunkFlags.State.SELECTED))
+            return
+        super().update_from_state()
+
+    def _add_group_widget(self, group_chunk):
+        """Add a ChunkGroup as a visible item in this tab's params panel.
+
+        We bypass add_param so sub-chunk PARAM_ADDED notices never propagate
+        into this tab context's ownership chain.
+        """
+        w = ChunkWidget(group_chunk, self)
+        w.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)
+        self.content_layout.addWidget(w, 0, QtCore.Qt.AlignTop)
+
     def _build_prim_path_field(self) -> QtWidgets.QWidget:
         container = QtWidgets.QWidget()
+        container.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
         layout = QtWidgets.QHBoxLayout(container)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
@@ -1110,7 +1212,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         return chunk.DefaulConfig().category
 
     def set_selected(self, val: bool):
-        if val and not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+        if val and (not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) or self._is_group_chunk()):
             col = self.SELECTED_COLOR
             pxs = 1
         else:
@@ -1128,6 +1230,18 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         return super().set_selected(val)
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if (watched is getattr(self, 'minimize_button', None)
+                and event.type() == QtCore.QEvent.Type.MouseButtonDblClick
+                and self._is_group_chunk()):
+            # Double-click on the header of a ChunkGroup — dive into its tab.
+            parent = self.parent()
+            while parent is not None:
+                if callable(getattr(parent, '_on_dive_into', None)):
+                    parent._on_dive_into(self.group)
+                    return True
+                parent = parent.parent()
+            return True
+
         if isinstance(event, QtGui.QMouseEvent) and event.type() is event.Type.MouseButtonPress and event.isAccepted():
             if not (c := self.group.get_chunk()):
                 event.ignore()

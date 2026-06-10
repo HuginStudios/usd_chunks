@@ -31,6 +31,9 @@ _COL_NODE_BG = QtGui.QColor("#3a3a3a")
 _COL_NODE_HEADER = QtGui.QColor("#2a2a2a")
 _COL_NODE_BORDER = QtGui.QColor("#555555")
 _COL_NODE_SELECTED = QtGui.QColor("#cab46a")  # matches ChunkWidget.SELECTED_COLOR
+_COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black — group/context nodes
+_COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber — locked (external-layer) nodes
+_COL_LOCKED_BG = QtGui.QColor("#2e2e28")
 _COL_PORT_EXEC = QtGui.QColor("#999999")
 _COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
 _COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
@@ -38,6 +41,7 @@ _COL_PORT_BOOL = QtGui.QColor("#9e8e4a")   # muted yellow
 _COL_PORT_STRING = QtGui.QColor("#6a9070")  # muted green
 _COL_TEXT_PRIMARY = QtGui.QColor("#ffffff")
 _COL_TEXT_SECONDARY = QtGui.QColor("#aaaaaa")
+_COL_TEXT_LOCKED = QtGui.QColor("#888877")
 
 _CHUNKS_ROOT = "/chunks"
 _CHUNK_PRIM_TYPENAME = "Chunk"
@@ -118,10 +122,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     in the Params panel via selection sync.
     """
 
-    def __init__(self, chunk: core.ChunkBase, prim: Usd.Prim):
+    def __init__(self, chunk: core.ChunkBase, prim: Usd.Prim, locked: bool = False):
         super().__init__()
         self.chunk = chunk
         self.prim = prim
+        self._locked = locked
+        self._is_group = chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT)
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
@@ -301,31 +307,46 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         )
 
     def paint(self, painter: QtGui.QPainter, option, widget=None):
+        bg_color = _COL_LOCKED_BG if self._locked else _COL_NODE_BG
         body = QtCore.QRectF(0, 0, _NODE_WIDTH, self._height)
         border_color = _COL_NODE_SELECTED if self._selected else _COL_NODE_BORDER
 
-        painter.setBrush(_COL_NODE_BG)
+        painter.setBrush(bg_color)
         painter.setPen(QtGui.QPen(border_color, 1.5))
         painter.drawRoundedRect(body, 4, 4)
 
         # Header background — square bottom corners so it merges with body
-        painter.setBrush(_COL_NODE_HEADER)
+        if self._is_group:
+            header_color = _COL_GROUP_HEADER
+        elif self._locked:
+            header_color = _COL_LOCKED_HEADER
+        else:
+            header_color = _COL_NODE_HEADER
+        painter.setBrush(header_color)
         painter.setPen(QtCore.Qt.NoPen)
         header = QtCore.QRectF(0, 0, _NODE_WIDTH, _NODE_HEADER_H)
         painter.drawRoundedRect(header, 4, 4)
         # Cover the rounded bottom of the header rect
         painter.drawRect(QtCore.QRectF(0, 10, _NODE_WIDTH, _NODE_HEADER_H - 10))
 
-        painter.setPen(QtGui.QPen(_COL_TEXT_PRIMARY))
+        name_color = _COL_TEXT_LOCKED if self._locked else _COL_TEXT_PRIMARY
+        painter.setPen(QtGui.QPen(name_color))
         painter.setFont(QtGui.QFont("Arial", 9, QtGui.QFont.Bold))
+        # Group nodes show a dive-in indicator; locked nodes show a lock marker
+        label = self.chunk.name
+        if self._is_group:
+            label = f"{label}  ▶"
+        elif self._locked:
+            label = f"{label}  \U0001f512"
         painter.drawText(
             QtCore.QRectF(8, 4, _NODE_WIDTH - 16, 18),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
-            self.chunk.name,
+            label,
         )
 
         chunk_type = self.prim.GetAttribute("info:chunkType").Get() or ""
-        painter.setPen(QtGui.QPen(_COL_TEXT_SECONDARY))
+        sub_color = _COL_TEXT_LOCKED if self._locked else _COL_TEXT_SECONDARY
+        painter.setPen(QtGui.QPen(sub_color))
         painter.setFont(QtGui.QFont("Arial", 8))
         painter.drawText(
             QtCore.QRectF(8, 22, _NODE_WIDTH - 16, 14),
@@ -335,10 +356,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def mouseDoubleClickEvent(self, event):
         if event.pos().y() <= _NODE_HEADER_H:
-            if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
-                self.chunk.unset_state(ChunkFlags.State.COLLAPSED)
-            else:
-                self.chunk.set_state(ChunkFlags.State.COLLAPSED)
+            if self._is_group:
+                scene = self.scene()
+                if scene and hasattr(scene, "dive_into"):
+                    scene.dive_into.emit(self.chunk)
+                event.accept()
+                return
+            if not self._locked:
+                if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
+                    self.chunk.unset_state(ChunkFlags.State.COLLAPSED)
+                else:
+                    self.chunk.set_state(ChunkFlags.State.COLLAPSED)
             event.accept()
         else:
             super().mouseDoubleClickEvent(event)
@@ -348,7 +376,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             scene = self.scene()
             if scene and hasattr(scene, "_scene_sender") and scene._scene_sender:
                 scene._scene_sender.set_selected_chunks([self.chunk])
-            if event.pos().y() <= _NODE_HEADER_H:
+            if event.pos().y() <= _NODE_HEADER_H and not self._locked:
                 self.setFocus()
                 self._drag_active = True
                 self._drag_start = event.pos()
@@ -492,6 +520,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
     _PROXY_BATCH_SIZE = 5  # ChunkWidgets created per event-loop tick
 
+    dive_into = QtCore.Signal(object)  # emitted with the CONTEXT ChunkBase when a group node is double-clicked
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._stage: Optional[Usd.Stage] = None
@@ -540,6 +570,19 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         if not chunks_root.IsValid():
             return
 
+        # Also include CONTEXT group chunks whose prims live directly under this root
+        for prim in chunks_root.GetChildren():
+            path = str(prim.GetPath())
+            if path not in chunks_by_path:
+                ctx_chunk = scene_sender.get_context_for_prim_path(path)
+                if ctx_chunk is not None:
+                    chunks_by_path[path] = ctx_chunk
+
+        # Pre-compute lock state: a prim is locked when authored in a layer that isn't
+        # the session layer, root layer, or current edit target.
+        root_id = stage.GetRootLayer().identifier
+        edit_id = stage.GetEditTarget().GetLayer().identifier
+
         for prim in chunks_root.GetChildren():
             if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
                 continue
@@ -547,7 +590,13 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             chunk = chunks_by_path.get(path)
             if chunk is None:
                 continue
-            node = ChunkNodeItem(chunk, prim)
+            src_layer = next(
+                (spec.layer for spec in prim.GetPrimStack()
+                 if not spec.layer.anonymous and spec.layer.identifier != root_id),
+                None,
+            )
+            locked = src_layer is not None and src_layer.identifier != edit_id
+            node = ChunkNodeItem(chunk, prim, locked=locked)
             self.addItem(node)
             self._nodes[path] = node
 
@@ -725,6 +774,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     _SCENE_EXTENT = 50000
 
+    dive_into = QtCore.Signal(object)  # re-emitted from scene when a group node is double-clicked
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(ChunkGraphScene())
@@ -778,7 +829,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         return QtCore.QSize(0, 0)
 
     def build(self, stage: Usd.Stage, scene_sender: core.SceneSender, context=None):
-        self.scene().build(stage, scene_sender, context)
+        scene = self.scene()
+        scene.build(stage, scene_sender, context)
+        scene.dive_into.connect(self.dive_into)
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:
         super().showEvent(event)
