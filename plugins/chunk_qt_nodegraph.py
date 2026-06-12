@@ -762,23 +762,34 @@ class _ProxyKeyRouter(QtCore.QObject):
         if etype not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
             return False
 
-        # If a real input widget outside our proxy has native focus, deactivate
-        # and let it handle its own keys.
         fw = QtWidgets.QApplication.focusWidget()
         if isinstance(fw, self._INPUT_TYPES):
+            inside_proxy = self._active is not None and (
+                fw is self._active or self._active.isAncestorOf(fw)
+            )
+            if inside_proxy:
+                # QLineEdit inside our proxy has Qt-internal focus — prevent shortcuts
+                # but let KeyPress flow natively so the widget handles it directly.
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                return False
+            # Input widget outside our proxy has focus — deactivate and defer.
             self._active = None
             self._view_active = False
             return False
 
-        # F-to-frame: intercept when graph view was last clicked, no proxy active.
-        if self._view_active and self._active is None:
-            if etype == QtCore.QEvent.Type.ShortcutOverride and event.key() == QtCore.Qt.Key.Key_F:
-                event.accept()
-                return True
-            if etype == QtCore.QEvent.Type.KeyPress and event.key() == QtCore.Qt.Key.Key_F:
-                self._view._frame_nodes()
-                event.accept()
-                return True
+        # F-to-frame: intercept only when cursor is over the graph view and no proxy active.
+        if self._active is None and event.key() == QtCore.Qt.Key.Key_F:
+            view = self._view
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    view._frame_nodes()
+                    event.accept()
+                    return True
 
         if self._active is None:
             return False
@@ -942,7 +953,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         # Track which proxy widget was clicked so the key router can forward
         # key events to it without relying on native focus (which usdview steals).
-        self._proxy_key_router.set_active(proxy.widget() if proxy else None)
+        # Find the specific child widget at the click position rather than the
+        # top-level proxy widget, so key events reach e.g. QLineEdit directly.
+        if proxy:
+            proxy_local = proxy.mapFromScene(scene_pos).toPoint()
+            clicked_child = proxy.widget().childAt(proxy_local)
+            self._proxy_key_router.set_active(clicked_child or proxy.widget())
+        else:
+            self._proxy_key_router.set_active(None)
         self._proxy_key_router.set_view_active(True)
         if proxy is None:
             self.setFocus()
