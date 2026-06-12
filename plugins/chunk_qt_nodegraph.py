@@ -8,6 +8,7 @@ Edges follow inputs:chunk connections between prims.
 
 from __future__ import annotations
 
+import gc
 import re
 from typing import Optional
 
@@ -16,11 +17,12 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_core as core
+from usd_chunks import chunk_registry
+from plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, FileBrowser, LineEdit, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks import chunk_notice as _chunk_notice
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, CHUNK_STYLESHEET, source_code_dial
+from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, CHUNK_STYLESHEET, ViewSlotState
 
 _PORT_RADIUS = 5
 _NODE_WIDTH = 220
@@ -34,6 +36,7 @@ _COL_NODE_SELECTED = QtGui.QColor("#cab46a")  # matches ChunkWidget.SELECTED_COL
 _COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black — group/context nodes
 _COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber — locked (external-layer) nodes
 _COL_LOCKED_BG = QtGui.QColor("#2e2e28")
+_COL_VIEW_HEADER = QtGui.QColor("#c87830")   # pale orange — view/terminal nodes
 _COL_PORT_EXEC = QtGui.QColor("#999999")
 _COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
 _COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
@@ -45,6 +48,8 @@ _COL_TEXT_LOCKED = QtGui.QColor("#888877")
 
 _CHUNKS_ROOT = "/chunks"
 _CHUNK_PRIM_TYPENAME = "Chunk"
+_EXEC_INPUT = "inputs:chunk"
+_EXEC_OUTPUT = "outputs:chunk"
 _UNBUILT = object()  # sentinel for ChunkGraphScene._built_context
 
 # Hidden top-level sink widget: child QWidgets parented here avoid a native OS
@@ -131,6 +136,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
+        self._is_view = prim.GetAttribute("info:chunkType").Get() == "view"
         self._drag_active = False
         self._drag_start = QtCore.QPointF()
         self._proxy: Optional[QtWidgets.QGraphicsProxyWidget] = None
@@ -163,11 +169,14 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._exec_in_port.setPos(0, _NODE_HEADER_H // 2)
         self._ports.append(self._exec_in_port)
 
-        self._exec_out_port = ChunkPortItem(
-            f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
-        )
-        self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
-        self._ports.append(self._exec_out_port)
+        if prim.HasAttribute("outputs:chunk"):
+            self._exec_out_port = ChunkPortItem(
+                f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
+            )
+            self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+            self._ports.append(self._exec_out_port)
+        else:
+            self._exec_out_port = None
 
     def create_proxy(self):
         """Create the embedded ChunkWidget proxy. Called in deferred batches after scene build."""
@@ -209,7 +218,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if scene:
                 scene.removeItem(port)
         self._typed_ports.clear()
-        self._ports = [self._exec_in_port, self._exec_out_port]
+        self._ports = [p for p in [self._exec_in_port, self._exec_out_port] if p is not None]
         if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
             # Proxy is hidden — place ports at header centre using param list alone.
             self._place_param_ports_collapsed()
@@ -316,7 +325,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         painter.drawRoundedRect(body, 4, 4)
 
         # Header background — square bottom corners so it merges with body
-        if self._is_group:
+        if self._is_view:
+            header_color = _COL_VIEW_HEADER
+        elif self._is_group:
             header_color = _COL_GROUP_HEADER
         elif self._locked:
             header_color = _COL_LOCKED_HEADER
@@ -332,9 +343,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         name_color = _COL_TEXT_LOCKED if self._locked else _COL_TEXT_PRIMARY
         painter.setPen(QtGui.QPen(name_color))
         painter.setFont(QtGui.QFont("Arial", 9, QtGui.QFont.Bold))
-        # Group nodes show a dive-in indicator; locked nodes show a lock marker
         label = self.chunk.name
-        if self._is_group:
+        if self._is_view:
+            slot = self.prim.GetAttribute("view:slot").Get()
+            label = f"View [{slot}]" if slot is not None else "View"
+        elif self._is_group:
             label = f"{label}  ▶"
         elif self._locked:
             label = f"{label}  \U0001f512"
@@ -356,6 +369,15 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def mouseDoubleClickEvent(self, event):
         if event.pos().y() <= _NODE_HEADER_H:
+            if self._is_view:
+                slot = self.prim.GetAttribute("view:slot").Get()
+                if slot is not None:
+                    for view in (self.scene().views() if self.scene() else []):
+                        if isinstance(view, ChunkGraphView):
+                            view._view_state.set_slot(slot)
+                            break
+                event.accept()
+                return
             if self._is_group:
                 scene = self.scene()
                 if scene and hasattr(scene, "dive_into"):
@@ -683,8 +705,15 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
     def _on_objects_changed(self, notice, sender):
         if not self._stage:
             return
-        if sender.GetRootLayer().identifier == self._stage.GetRootLayer().identifier:
-            self._build_edges()
+        if sender.GetRootLayer().identifier != self._stage.GetRootLayer().identifier:
+            return
+        for path in notice.GetChangedInfoOnlyPaths():
+            if path.IsPropertyPath() and path.name == "ui:nodegraph:node:pos":
+                prim_path = str(path.GetPrimPath())
+                node = self._nodes.get(prim_path)
+                if node:
+                    node._apply_usd_pos(node.prim)
+        self._build_edges()
 
 
 # ---------------------------------------------------------------------------
@@ -812,6 +841,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         self._drag_src_port: Optional[ChunkPortItem] = None
         self._drag_edge: Optional[QtWidgets.QGraphicsPathItem] = None
+        self._view_state = ViewSlotState(self)
+        self._view_state.slot_changed.connect(self._on_view_slot_changed)
+        self._view_state.create_view_for.connect(self._on_create_view_for_path)
 
     def _on_toggle_param_edges(self, checked: bool):
         graph_scene = self.scene()
@@ -821,6 +853,34 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def resizeEvent(self, event: QtGui.QResizeEvent):
         super().resizeEvent(event)
         self._menubar.setFixedWidth(self.width())
+
+    def drawForeground(self, painter: QtGui.QPainter, rect) -> None:
+        super().drawForeground(painter, rect)
+        painter.save()
+        painter.resetTransform()
+        vp = self.viewport()
+        if self._view_state.active_slot == 0:
+            text = "View: –"
+            bg = QtGui.QColor(40, 40, 40, 180)
+            fg = QtGui.QColor(120, 120, 120)
+        else:
+            text = f"View: {self._view_state.active_slot}"
+            bg = QtGui.QColor(_COL_VIEW_HEADER.red(), _COL_VIEW_HEADER.green(), _COL_VIEW_HEADER.blue(), 210)
+            fg = QtGui.QColor("#ffffff")
+        font = QtGui.QFont("monospace", 9, QtGui.QFont.Bold)
+        painter.setFont(font)
+        fm = QtGui.QFontMetrics(font)
+        pad_x, pad_y = 8, 5
+        w = fm.horizontalAdvance(text) + pad_x * 2
+        h = fm.height() + pad_y * 2
+        x = vp.width() - w - 8
+        y = vp.height() - h - 8
+        painter.setBrush(bg)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.drawRoundedRect(QtCore.QRect(x, y, w, h), 4, 4)
+        painter.setPen(fg)
+        painter.drawText(QtCore.QRect(x, y, w, h), QtCore.Qt.AlignCenter, text)
+        painter.restore()
 
     def sizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(200, 200)
@@ -943,6 +1003,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         if event.key() == QtCore.Qt.Key.Key_D:
             self._toggle_disable_selected()
+            event.accept()
+            return
+        if event.key() == QtCore.Qt.Key.Key_V:
+            self._create_view_node()
+            event.accept()
+            return
+        if event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2, QtCore.Qt.Key.Key_3):
+            slot = event.key() - QtCore.Qt.Key.Key_0
+            cur = self._view_state.active_slot
+            self._view_state.set_slot(0 if cur == slot else slot)
             event.accept()
             return
         super().keyPressEvent(event)
@@ -1102,27 +1172,201 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         attr.ClearConnections()
         graph_scene._build_edges()
 
-    def _show_chunk_menu(self, chunk: core.ChunkBase, global_pos: QtCore.QPoint) -> None:
-        menu = QtWidgets.QMenu()
-        actions: dict = {}
-        for conn in chunk.find_callbacks(notice_type=ChunkNoticeAlias.MENU_ACTION_NOTICE):
-            meth = conn.get_method()
-            if meth:
-                actions[menu.addAction(meth.__name__)] = conn
+    def _show_chunk_menu(self, node: "ChunkNodeItem", global_pos: QtCore.QPoint) -> None:
+        self._view_state.show_chunk_menu(node.chunk, str(node.prim.GetPath()), global_pos)
 
-        inspect_action = menu.addAction("inspect layer")
+    # ------------------------------------------------------------------
+    # View nodes
 
-        res = menu.exec(global_pos)
-        if not res:
+    def _create_view_node(self) -> None:
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender or not graph_scene._stage:
             return
-        if res == inspect_action:
-            layer = chunk.get_edit_context()
+        selected = [n for n in graph_scene._nodes.values() if n.chunk.has_state(ChunkFlags.State.SELECTED)]
+        if not selected:
+            return
+        self._create_view_node_for(selected[0])
+
+    def _create_view_node_for(self, target_node: "ChunkNodeItem") -> None:
+        self._create_view_node_for_prim(str(target_node.prim.GetPath()))
+
+    def _create_view_node_for_prim(self, target_prim_path: str) -> None:
+        """Create a view node wired to target_prim_path using only USD stage data."""
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+
+        target_prim = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
+        if not target_prim.IsValid():
+            return
+        if target_prim.GetAttribute("info:chunkType").Get() == "view":
+            return
+
+        # If a view is already wired to this prim, activate it instead of creating a duplicate.
+        for prim in stage.Traverse():
+            if prim.GetAttribute("info:chunkType").Get() != "view":
+                continue
+            exec_in = prim.GetAttribute(_EXEC_INPUT)
+            if exec_in.IsValid():
+                for conn_path in exec_in.GetConnections():
+                    if str(conn_path.GetPrimPath()) == target_prim_path:
+                        existing_slot = prim.GetAttribute("view:slot").Get()
+                        if existing_slot is not None:
+                            self._view_state.set_slot(existing_slot)
+                        return
+
+        # Find an unused slot.
+        used_slots: set = set()
+        for prim in stage.Traverse():
+            s = prim.GetAttribute("view:slot").Get()
+            if s is not None:
+                used_slots.add(s)
+        slot = next((s for s in [1, 2, 3] if s not in used_slots), None)
+        if slot is None:
+            return
+
+        mod = registry.get_chunk_module("view")
+        if not mod:
+            return
+        chunks = mod.create() if mod.loaded else mod.load()
+        if not chunks:
+            return
+        view_chunk = chunks[0]
+        view_chunk.name = f"View{slot}"
+        view_chunk.set_state(ChunkFlags.State.COLLAPSED)
+
+        # Read target pos from USD before add_chunk fires CHUNK_LOADED and rebuilds the graph.
+        node_api = UsdUI.NodeGraphNodeAPI(target_prim)
+        pos_attr = node_api.GetPosAttr()
+        raw_pos = pos_attr.Get() if (pos_attr and pos_attr.IsValid()) else None
+        tx, ty = (float(raw_pos[0]), float(raw_pos[1])) if raw_pos is not None else (0.0, 0.0)
+
+        scene = _chunk.get_scene()
+        if not scene:
+            return
+        scene.add_chunk(view_chunk)
+
+        view_prim_path = f"{_resolve_chunk_root(view_chunk)}/{view_chunk.name}"
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+        view_prim = stage.GetPrimAtPath(Sdf.Path(view_prim_path))
+        if not view_prim.IsValid():
+            return
+
+        exec_in = view_prim.GetAttribute(_EXEC_INPUT)
+        if not exec_in.IsValid():
+            exec_in = view_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        exec_in.SetConnections([Sdf.Path(f"{target_prim_path}.{_EXEC_OUTPUT}")])
+
+        slot_attr = view_prim.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
+        slot_attr.SetVariability(Sdf.VariabilityUniform)
+        slot_attr.Set(slot)
+
+        UsdUI.NodeGraphNodeAPI.Apply(view_prim).CreatePosAttr().Set(
+            Gf.Vec2f(tx + _NODE_WIDTH + 40, ty - 80)
+        )
+
+        QtCore.QTimer.singleShot(0, lambda: self._view_state.set_slot(slot))
+
+    def set_view_state(self, vs: ViewSlotState) -> None:
+        self._view_state.slot_changed.disconnect(self._on_view_slot_changed)
+        self._view_state.create_view_for.disconnect(self._on_create_view_for_path)
+        self._view_state = vs
+        vs.slot_changed.connect(self._on_view_slot_changed)
+        vs.create_view_for.connect(self._on_create_view_for_path)
+
+    def _on_create_view_for_path(self, prim_path: str) -> None:
+        self._create_view_node_for_prim(prim_path)
+
+    def _on_view_slot_changed(self, slot: int) -> None:
+        if slot == 0:
+            self._do_deactivate_view()
+        else:
+            self._do_activate_view_slot(slot)
+        self.viewport().update()
+
+    def _do_deactivate_view(self) -> None:
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+        context = self._graph_context()
+        lm = chunk_registry.ChunkLayerManager()
+        for c in registry.scene.get_chunks():
+            if chunk_usd.is_view_chunk(c):
+                continue
+            if context and c.get_context() != context:
+                continue
+            c.set_blocked(False)
+            layer = lm.get_layer(c)
+            if layer and not c.has_state(ChunkFlags.State.DISABLED):
+                layer.SetMuted(False)
+        for head in chunk_usd.get_exec_head_chunks(stage, registry.scene, context):
+            if not head.has_state(ChunkFlags.State.DISABLED):
+                head.execute()
+
+    def _do_activate_view_slot(self, slot: int) -> None:
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+        context = self._graph_context()
+
+        view_chunk = chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene)
+        if view_chunk is None:
+            return
+
+        gc.collect()  # break zombie NoticeConnection cycles before STATE_CHANGED fires
+        for c in registry.scene.get_chunks():
+            if c.has_state(ChunkFlags.State.SELECTED):
+                c.set_selected(False)
+        view_chunk.set_selected(True)
+
+        lm = chunk_registry.ChunkLayerManager()
+        src_chunks = chunk_usd.get_view_exec_sources(view_chunk, stage, registry.scene)
+        if not src_chunks:
+            return
+
+        downstream: set = set()
+        for src in src_chunks:
+            downstream |= chunk_usd.get_exec_downstream_chunks(src, stage, registry.scene)
+
+        # Block before mute: ObjectsChanged from SetMuted must not re-execute blocked nodes.
+        for c in registry.scene.get_chunks():
+            if chunk_usd.is_view_chunk(c):
+                continue
+            if context and c.get_context() != context:
+                continue
+            if c in downstream:
+                c.set_blocked(True)
+            else:
+                c.set_blocked(False)
+                layer = lm.get_layer(c)
+                if layer and not c.has_state(ChunkFlags.State.DISABLED):
+                    layer.SetMuted(False)
+
+        for c in downstream:
+            if chunk_usd.is_view_chunk(c):
+                continue
+            layer = lm.get_layer(c)
             if layer:
-                source_code_dial(layer.ExportToString(), core.UsdSyntaxHighlightMapping())
-        elif conn := actions.get(res):
-            conn.handle_callback(
-                _chunk_notice.MenuActionNotice(chunk.get_notice_data()), chunk, False
-            )
+                layer.SetMuted(True)
+
+        for src in src_chunks:
+            if not src.has_state(ChunkFlags.State.DISABLED):
+                src.execute()
+
+    def _graph_context(self) -> "Optional[core.ChunkBase]":
+        graph_scene = self.scene()
+        return graph_scene._built_context if isinstance(graph_scene, ChunkGraphScene) else None
 
     # ------------------------------------------------------------------
     # Frame
@@ -1147,7 +1391,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Node right-click: show the chunk's own context menu.
         for item in self.scene().items(scene_pos):
             if isinstance(item, ChunkNodeItem):
-                self._show_chunk_menu(item.chunk, event.globalPos())
+                self._show_chunk_menu(item, event.globalPos())
                 event.accept()
                 return
 

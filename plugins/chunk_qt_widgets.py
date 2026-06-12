@@ -1,7 +1,7 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Any, Dict, Optional, DefaultDict, List, Generic
+from typing import Any, Optional, Generic
 
-from pxr import Tf
+from pxr import Tf, Usd
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_serial
 import usd_chunks.chunk_flags
@@ -996,6 +996,99 @@ class ContainerWidget(
         self.remove_widget(widget)
 
 
+_VIEW_COL_HEADER = "#c87830"
+
+
+class ViewSlotState(QtCore.QObject):
+    """Shared view-slot state for a context tab.
+
+    Holds the active view slot (0 = none, 1–3 = active) and notifies connected
+    widgets when it changes.  The actual blocking/muting logic lives in
+    ChunkGraphView; this object is the lightweight communication bus between
+    the nodegraph and the params panel.
+    """
+
+    slot_changed = QtCore.Signal(int)   # 0 = off, 1–3 = active slot
+    create_view_for = QtCore.Signal(str)  # prim path — handled by ChunkGraphView
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._slot: int = 0
+
+    @property
+    def active_slot(self) -> int:
+        return self._slot
+
+    def set_slot(self, slot: int) -> None:
+        if slot != self._slot:
+            self._slot = slot
+            self.slot_changed.emit(slot)
+
+    def show_chunk_menu(
+        self,
+        grp: "chunk.ChunkBase",
+        prim_path: str,
+        global_pos: QtCore.QPoint,
+    ) -> None:
+        """Build and exec the shared right-click menu for a chunk.
+
+        Handles custom callback actions, Inspect Layer, and Set View / Activate
+        View N.  The actual view-node creation is delegated to ChunkGraphView
+        via the create_view_for signal.
+        """
+        menu = QtWidgets.QMenu()
+        cb_actions: dict = {}
+        for conn in grp.find_callbacks(notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE):
+            meth = conn.get_method()
+            if meth:
+                cb_actions[menu.addAction(meth.__name__)] = conn
+
+        inspect_action = menu.addAction("Inspect Layer")
+        menu.addSeparator()
+
+        stage: Optional[Usd.Stage] = grp.get_stage()
+        is_view_chunk = False
+        existing_view_slot: Optional[int] = None
+        if stage:
+            prim = stage.GetPrimAtPath(prim_path)
+            if prim.IsValid():
+                is_view_chunk = prim.GetAttribute("info:chunkType").Get() == "view"
+            if not is_view_chunk:
+                for p in stage.Traverse():
+                    if p.GetAttribute("info:chunkType").Get() != "view":
+                        continue
+                    exec_in = p.GetAttribute("inputs:chunk")
+                    if exec_in.IsValid():
+                        for conn_path in exec_in.GetConnections():
+                            if str(conn_path.GetPrimPath()) == prim_path:
+                                existing_view_slot = p.GetAttribute("view:slot").Get()
+
+        if existing_view_slot is not None:
+            view_action = menu.addAction(f"Activate View {existing_view_slot}")
+        elif is_view_chunk:
+            view_action = None
+        else:
+            view_action = menu.addAction("Set View")
+
+        res = menu.exec(global_pos)
+        if not res:
+            return
+
+        if res == inspect_action:
+            layer = grp.get_edit_context()
+            if layer:
+                source_code_dial(layer.ExportToString(), chunk_core.UsdSyntaxHighlightMapping())
+        elif view_action and res == view_action:
+            if existing_view_slot is not None:
+                self.set_slot(existing_view_slot)
+            else:
+                self.create_view_for.emit(prim_path)
+        elif conn := cb_actions.get(res):
+            conn.handle_callback(
+                chunk_notice.MenuActionNotice(grp.get_notice_data()), grp, False
+            )
+
+
 class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     """
     Chunk is a base class for creating UI components.
@@ -1012,9 +1105,83 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     ):
         # Must be set before super().__init__ so build_collapsable sees the correct role.
         self._is_tab_context_widget = is_tab_context
+        self._view_state: Optional[ViewSlotState] = None
+        self._view_overlay: Optional[QtWidgets.QLabel] = None
         super().__init__(group, parent)
 
         self.installEventFilter(self)
+        if is_tab_context:
+            self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+
+    def set_view_state(self, vs: "ViewSlotState") -> None:
+        if self._view_state is not None:
+            self._view_state.slot_changed.disconnect(self._update_view_overlay)
+        self._view_state = vs
+        vs.slot_changed.connect(self._update_view_overlay)
+        if self._is_tab_context_widget:
+            self._ensure_view_overlay()
+            self._update_view_overlay(vs.active_slot)
+
+    def _ensure_view_overlay(self) -> None:
+        if self._view_overlay is not None:
+            return
+        ol = QtWidgets.QLabel(self)
+        ol.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        ol.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        ol.hide()
+        self._view_overlay = ol
+        self._position_view_overlay()
+
+    def _update_view_overlay(self, slot: int) -> None:
+        if not self._is_tab_context_widget or not self._view_overlay:
+            return
+        if slot == 0:
+            text = "View: –"
+            self._view_overlay.setStyleSheet(
+                "background: rgba(40,40,40,180); color: rgb(130,130,130);"
+                "border-radius: 4px; padding: 3px 8px;"
+            )
+        else:
+            text = f"View: {slot}"
+            self._view_overlay.setStyleSheet(
+                "background: rgba(200,120,48,210); color: white;"
+                "border-radius: 4px; padding: 3px 8px;"
+            )
+        self._view_overlay.setText(text)
+        self._view_overlay.adjustSize()
+        self._position_view_overlay()
+        self._view_overlay.show()
+        self._view_overlay.raise_()
+
+    def _position_view_overlay(self) -> None:
+        if not self._view_overlay:
+            return
+        sz = self._view_overlay.sizeHint()
+        self._view_overlay.setGeometry(
+            self.width() - sz.width() - 8,
+            self.height() - sz.height() - 8,
+            sz.width(),
+            sz.height(),
+        )
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if self._view_overlay:
+            self._position_view_overlay()
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if self._view_state and self._is_tab_context_widget:
+            if event.key() in (
+                QtCore.Qt.Key.Key_1,
+                QtCore.Qt.Key.Key_2,
+                QtCore.Qt.Key.Key_3,
+            ):
+                slot = event.key() - QtCore.Qt.Key.Key_0
+                cur = self._view_state.active_slot
+                self._view_state.set_slot(0 if cur == slot else slot)
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def _is_group_chunk(self) -> bool:
         """True when this is a user-created ChunkGroup (CONTEXT with a module), not a plain tab context."""
@@ -1164,41 +1331,54 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         layout.addWidget(edit)
         return container
 
+    def _reorder_chunk_widget_after(
+        self,
+        chunk_to_move: "chunk.ChunkBase",
+        after_chunk: "chunk.ChunkBase",
+    ) -> None:
+        """Move chunk_to_move's widget to appear immediately after after_chunk's widget."""
+        after_idx: Optional[int] = None
+        move_widget: Optional[QtWidgets.QWidget] = None
+        for i in range(self.content_layout.count()):
+            item = self.content_layout.itemAt(i)
+            if not item:
+                continue
+            w = item.widget()
+            if not isinstance(w, LabeledWidget):
+                continue
+            inner = w.widget
+            if isinstance(inner, ChunkWidget):
+                if inner.group is after_chunk:
+                    after_idx = i
+                elif inner.group is chunk_to_move:
+                    move_widget = w
+        if after_idx is not None and move_widget is not None:
+            self.content_layout.insertWidget(after_idx + 1, move_widget)
+
+    def _find_view_state(self) -> "Optional[ViewSlotState]":
+        if self._view_state:
+            return self._view_state
+        p = self.parent()
+        while p is not None:
+            if isinstance(p, ChunkWidget) and p._view_state:
+                return p._view_state
+            p = p.parent()
+        return None
+
     def contextMenuEvent(self, event):
         if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             event.ignore()
             return
-
-        menu = QtWidgets.QMenu()
-        actions: Dict[QtGui.QAction, chunk_notice.NoticeConnection] = {}
-        for conn in self.group.find_callbacks(notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE):
-            meth = conn.get_method()
-            if not meth:
-                continue
-
-            actions[QtGui.QAction(meth.__name__)] = conn
-
-        act_names = list(actions.keys())
-
-        # Custom UI actions
-        inspect_layer_action = QtGui.QAction("inspect layer")
-
-        act_names.append(inspect_layer_action)
-        menu.addActions(act_names)
-
-        res = menu.exec_(event.globalPos())
-
-        if not res:
+        vs = self._find_view_state()
+        if vs is None:
             event.ignore()
             return
-
-        if conn := actions.get(res):
-            conn.handle_callback(chunk_notice.MenuActionNotice(self.group.get_notice_data()), self.group, False)
-
-        elif res == inspect_layer_action:
-            layer = self.group.get_edit_context()
-            if layer:
-                source_code_dial(layer.ExportToString(), chunk_core.UsdSyntaxHighlightMapping())
+        ctx = self.group.get_context()
+        if ctx and getattr(ctx, "prim_path", None):
+            prim_path = f"{ctx.prim_path}/chunks/{self.group.name}"
+        else:
+            prim_path = f"/chunks/{self.group.name}"
+        vs.show_chunk_menu(self.group, prim_path, event.globalPos())
 
     def get_category(self) -> str:
         """Get the category of this Chunk

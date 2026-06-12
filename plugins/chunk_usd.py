@@ -11,6 +11,7 @@ from typing import Generator, Optional, Tuple
 
 from pxr import Gf, Sdf, Usd, UsdUI, Vt
 
+from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_notice
@@ -433,8 +434,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if not attr.Get():
                 attr.Set(config.module)
 
-        exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
-        exec_out.SetVariability(Sdf.VariabilityUniform)
+        config = chunk.get_config()
+        if not (config and config.terminal):
+            exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
+            exec_out.SetVariability(Sdf.VariabilityUniform)
 
         deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
         if not deps and prev_chunk:
@@ -488,6 +491,174 @@ def _resolve_chunk_root(chunk: "core.ChunkBase") -> str:
     if context and getattr(context, "prim_path", None):
         return f"{context.prim_path}/chunks"
     return _CHUNKS_ROOT
+
+
+def get_chunk_prim_path(chunk: "core.ChunkBase") -> str:
+    """Return the USD prim path string for a chunk."""
+    if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and chunk.get_config() and chunk.get_config().module:
+        return chunk.prim_path or f"{_resolve_chunk_root(chunk)}/{chunk.name}"
+    return f"{_resolve_chunk_root(chunk)}/{chunk.name}"
+
+
+def is_view_chunk(chunk: "core.ChunkBase") -> bool:
+    """Return True if chunk is a view-type chunk."""
+    cfg = chunk.get_config()
+    return bool(cfg and cfg.module == "view")
+
+
+def find_view_chunk_for_slot(
+    slot: int,
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+) -> "core.ChunkBase | None":
+    """Return the view chunk assigned to slot, or None."""
+    for c in scene.get_chunks():
+        if not is_view_chunk(c):
+            continue
+        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
+        if prim.IsValid() and prim.GetAttribute("view:slot").Get() == slot:
+            return c
+    return None
+
+
+def get_view_exec_sources(
+    view_chunk: "core.ChunkBase",
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+) -> "list[core.ChunkBase]":
+    """Return the chunks wired into view_chunk's inputs:chunk."""
+    prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(view_chunk)))
+    if not prim.IsValid():
+        return []
+    exec_in = prim.GetAttribute(_EXEC_INPUT)
+    if not exec_in.IsValid():
+        return []
+    return [
+        c for conn in exec_in.GetConnections()
+        if (c := prim_to_chunk.get(str(conn.GetPrimPath()))) is not None
+    ]
+
+
+def get_exec_downstream_chunks(
+    start: "core.ChunkBase",
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+) -> "set[core.ChunkBase]":
+    """BFS forward through inputs:chunk connections from start.
+
+    Returns all downstream ChunkBase objects (start itself is excluded).
+    """
+    prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    start_path = get_chunk_prim_path(start)
+    downstream: set = set()
+    frontier = {start_path}
+    while frontier:
+        next_frontier: set = set()
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if path in downstream or path == start_path:
+                continue
+            exec_in = prim.GetAttribute(_EXEC_INPUT)
+            if not exec_in.IsValid():
+                continue
+            if any(str(conn.GetPrimPath()) in frontier for conn in exec_in.GetConnections()):
+                next_frontier.add(path)
+                if c := prim_to_chunk.get(path):
+                    downstream.add(c)
+        frontier = next_frontier
+    return downstream
+
+
+def get_exec_head_chunks(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase | None" = None,
+) -> "list[core.ChunkBase]":
+    """Return non-view chunks with no non-view exec (inputs:chunk) input.
+
+    These are the roots of the exec chain — re-executing them propagates
+    through the full chain.  Pass context to restrict to one tab context.
+    """
+    candidates = [
+        c for c in scene.get_chunks()
+        if not is_view_chunk(c) and (context is None or c.get_context() == context)
+    ]
+    candidate_paths = {get_chunk_prim_path(c) for c in candidates}
+    has_non_view_input: set = set()
+    for c in candidates:
+        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
+        if not prim.IsValid():
+            continue
+        exec_in = prim.GetAttribute(_EXEC_INPUT)
+        if not exec_in.IsValid():
+            continue
+        for conn in exec_in.GetConnections():
+            if str(conn.GetPrimPath()) in candidate_paths:
+                has_non_view_input.add(get_chunk_prim_path(c))
+    return [c for c in candidates if get_chunk_prim_path(c) not in has_non_view_input]
+
+
+_chunk_clipboard: list[str] = []
+
+
+def copy_selected_chunks() -> None:
+    """Store prim paths of selected non-view chunks for later paste."""
+    global _chunk_clipboard
+    registry = chunk_registry.ChunkRegistry()
+    if not (scene := registry.scene):
+        return
+    _chunk_clipboard = [
+        get_chunk_prim_path(c)
+        for c in scene.get_selected_chunks()
+        if not is_view_chunk(c)
+    ]
+
+
+def paste_chunks() -> None:
+    """Create duplicates of clipboard chunks, copying their input attribute values."""
+    if not _chunk_clipboard:
+        return
+    registry = chunk_registry.ChunkRegistry()
+    scene = registry.scene
+    if not scene:
+        return
+    stage = scene.get_stage()
+    if not stage:
+        return
+
+    prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    for prim_path in _chunk_clipboard:
+        src_chunk = prim_to_chunk.get(prim_path)
+        if src_chunk is None:
+            continue
+        cfg = src_chunk.get_config()
+        if not cfg or not cfg.module:
+            continue
+        src_prim = stage.GetPrimAtPath(Sdf.Path(prim_path))
+        if not src_prim.IsValid():
+            continue
+        new_chunks = _chunk_mod.create_chunks(cfg.module)
+        if not new_chunks:
+            continue
+        new_chunk = new_chunks[0]
+        new_prim_path = get_chunk_prim_path(new_chunk)
+        new_prim = stage.GetPrimAtPath(Sdf.Path(new_prim_path))
+        if not new_prim.IsValid():
+            continue
+        for attr in src_prim.GetAttributes():
+            name = attr.GetName()
+            if not name.startswith(_INPUTS_PREFIX) or name == _EXEC_INPUT:
+                continue
+            dst_attr = new_prim.GetAttribute(name)
+            if not dst_attr.IsValid():
+                continue
+            val = attr.Get()
+            if val is not None:
+                dst_attr.Set(val)
+            if attr.HasAuthoredConnections():
+                dst_attr.SetConnections(attr.GetConnections())
+        _load_wire_inputs(new_prim, new_chunk)
 
 
 def _iter_chunk_params(
@@ -951,8 +1122,10 @@ def _author_prim(layer: Sdf.Layer, chunk: "core.ChunkBase", prev_chunk: "core.Ch
         attr_spec.default = config.module
         attr_spec.variability = Sdf.VariabilityUniform
 
-    exec_out_spec = Sdf.AttributeSpec(prim_spec, _EXEC_OUTPUT, Sdf.ValueTypeNames.Token)
-    exec_out_spec.variability = Sdf.VariabilityUniform
+    config = chunk.get_config()
+    if not (config and config.terminal):
+        exec_out_spec = Sdf.AttributeSpec(prim_spec, _EXEC_OUTPUT, Sdf.ValueTypeNames.Token)
+        exec_out_spec.variability = Sdf.VariabilityUniform
 
     deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
     if not deps and prev_chunk:

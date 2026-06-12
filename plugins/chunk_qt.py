@@ -7,6 +7,7 @@ from pxr import Tf
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_serial
 from usd_chunks import chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
+from plugins import chunk_usd
 
 from plugins.chunk_qt_widgets import (
     SyntaxHighlighter,
@@ -31,6 +32,7 @@ from plugins.chunk_qt_widgets import (
     FilterableChunkMenu,
     file_dial,
     CHUNK_STYLESHEET,
+    ViewSlotState,
 )
 from plugins.chunk_qt_nodegraph import ChunkGraphView
 
@@ -118,6 +120,28 @@ class EditableTabBar(QtWidgets.QTabBar):
             self._editor.hide()
             self.setTabText(index, self._editor.text())
             self.tab_name_changed.emit(self._editor.text(), index)
+
+
+_TEXT_INPUT_TYPES = (
+    QtWidgets.QLineEdit,
+    QtWidgets.QTextEdit,
+    QtWidgets.QAbstractSpinBox,
+    QtWidgets.QPlainTextEdit,
+)
+
+
+def _guarded_copy():
+    focused = QtWidgets.QApplication.focusWidget()
+    if focused and isinstance(focused, _TEXT_INPUT_TYPES):
+        return
+    chunk_usd.copy_selected_chunks()
+
+
+def _guarded_paste():
+    focused = QtWidgets.QApplication.focusWidget()
+    if focused and isinstance(focused, _TEXT_INPUT_TYPES):
+        return
+    chunk_usd.paste_chunks()
 
 
 class ChunkTabWidget(QtWidgets.QTabWidget):
@@ -267,9 +291,23 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
     def add_chunk_context(self, c: chunk.ChunkBase):
         stack = QtWidgets.QStackedWidget(self)
-        stack.addWidget(ChunkWidget(c, self, is_tab_context=True))  # page 0: params
-        stack.addWidget(ChunkGraphView(self))                        # page 1: graph
+        params_widget = ChunkWidget(c, self, is_tab_context=True)
+        graph_view = ChunkGraphView(self)
+        vs = ViewSlotState(stack)
+        params_widget.set_view_state(vs)
+        graph_view.set_view_state(vs)
+        stack.addWidget(params_widget)   # page 0: params
+        stack.addWidget(graph_view)      # page 1: graph
         stack.setCurrentIndex(self._view_mode)
+
+        copy_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Copy, stack)
+        copy_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        copy_sc.activated.connect(_guarded_copy)
+
+        paste_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Paste, stack)
+        paste_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        paste_sc.activated.connect(_guarded_paste)
+
         idx = self.addTab(stack, c.name)
         self.setCurrentIndex(idx)
         self.update_stylesheet()
@@ -330,6 +368,28 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._invalidate_graph_views()
         if self._view_bar.currentIndex() == 1:
             self._rebuild_graph()
+        if chunk_usd.is_view_chunk(sender):
+            self._reposition_view_chunk(sender)
+        elif not chunk_notice._loading_stage:
+            chunk_registry.ChunkRegistry().scene.set_selected_chunks([sender])
+
+    def _reposition_view_chunk(self, view_chunk: chunk.ChunkBase) -> None:
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+        sources = chunk_usd.get_view_exec_sources(view_chunk, stage, registry.scene)
+        if not sources:
+            return
+        ctx = view_chunk.get_context()
+        if not ctx:
+            return
+        idx = self.tab_widget.get_chunk_context_index(ctx)
+        tab_cw = self.tab_widget.get_chunk_context(idx)
+        if tab_cw is not None:
+            tab_cw._reorder_chunk_widget_after(view_chunk, sources[0])
 
     def _deleted_chunk_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
         if not sender.has_flag(ChunkFlags.GroupFlags.CONTEXT):

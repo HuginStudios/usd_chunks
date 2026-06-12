@@ -1,9 +1,19 @@
 from usd_chunks import chunk, chunk_utils, chunk_notice
 
 
-def execute(owner, notice, sender):
+def execute(owner, notice, _sender):
     param = notice.data
     _chunk = param.get_chunk()
+    if getattr(_chunk, '_executing', False):
+        return
+    _chunk._executing = True
+    try:
+        _execute(_chunk, owner)
+    finally:
+        _chunk._executing = False
+
+
+def _execute(_chunk, owner):
     stage = owner.get_stage()
 
     chunk_layer = stage.GetEditTarget().GetLayer()
@@ -50,7 +60,6 @@ def main():
     vs_list.size = 1
     vs_list.add_callback(execute)
     chunk_api.add_param(vs_list)
-
     chunk_api.add_callback(execute, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
 
     return chunk_api

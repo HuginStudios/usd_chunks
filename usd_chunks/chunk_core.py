@@ -1614,9 +1614,10 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         return res
 
     def __getattribute__(self, name: str) -> Any:
-        if name == "value":
-            # Get the value stored on the proxy
-            return self._value
+        if name in ("value", "raw_value"):
+            # Return the value stored on the proxy so widgets display the proxy's own value,
+            # not the template's default.
+            return super().__getattribute__("_value")
         if name == "iter_hierarchy":
             return super().__getattribute__("_iter_hierarchy")
         if name == "get_my_params":
@@ -3707,6 +3708,7 @@ class ChunkConfig(AttributesBase):
     required_modules: list[str] = attrs.field(factory=list)
     module: str = attrs.field(default="")
     interactive: bool = attrs.field(default=False)
+    terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
