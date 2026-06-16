@@ -2361,7 +2361,10 @@ class ChunkCommon(AttributesBase):
         Returns:
             bool: If the flag is enabled or not
         """
-        return flag in self.flags
+        try:
+            return flag in self.flags
+        except TypeError:
+            return False
 
     def set_state(self, state: ChunkFlags.State):
         """
@@ -2493,6 +2496,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             and not self.is_blocked()
             and isinstance(notice.data, AttributeSender)
             and notice.data.name == "value"
+            and hasattr(self, 'raw_value')
         ):
             raw = self.raw_value
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
@@ -2512,13 +2516,20 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                 Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
                                 for node, attr_name in chunk_utils.parse_expression(raw)
                             ])
-                    # USD connections on driven attrs are authoritative once OpenExec is available.
-                    # Until then, write directly so the values propagate today.
-                    if not is_expr:
-                        for path in self._driven_attr_paths:
-                            if driven_attr := stage.GetAttributeAtPath(Sdf.Path(path)):
-                                if driven_attr.Get(0) != val:
-                                    driven_attr.Set(val)
+                    # Write the current value to the driven attr (real prim, e.g. light)
+                    # in the chunk's own layer so it renders correctly.  Using
+                    # get_edit_context() targets the same layer execute() writes to
+                    # (anonymous for procedural chunks, file layer for interactive ones),
+                    # keeping the user's edit-target layer free of value opinions.
+                    if not is_expr and self._driven_attr_paths:
+                        chunk_layer = self.get_edit_context()
+                        if chunk_layer:
+                            for path in self._driven_attr_paths:
+                                sdf_path = Sdf.Path(path)
+                                if driven_attr := stage.GetAttributeAtPath(sdf_path):
+                                    if driven_attr.Get(0) != val:
+                                        with Usd.EditContext(stage, chunk_layer):
+                                            driven_attr.Set(val)
                 finally:
                     chunk_notice._usd_write_active = False
 
@@ -2536,7 +2547,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             sender (AttributeSender): The sender of the notice
         """
         if isinstance(notice.data, Usd.Attribute):
-            raw = self.raw_value
+            raw = getattr(self, 'raw_value', None)
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
             store_val = raw if is_expr else sender.value
             if notice.data.Get(0) == store_val:
@@ -3647,6 +3658,19 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         if notice and (p := notice.data):
             if isinstance(p, AttributeSender) and p.name == "value" and not self.is_blocked():
                 if usd_attr := self.get_usd_prop():
+                    # Assemble new Vec3f from children and write to the chunk-prim attr so
+                    # the stored value is current before propagating to driven attrs.
+                    child_vals = [c.value for c in self.get_my_params() if isinstance(c, ChunkParamBase)]
+                    if child_vals:
+                        try:
+                            new_vec = Gf.Vec3f(*child_vals)
+                            chunk_notice._usd_write_active = True
+                            try:
+                                usd_attr.Set(new_vec)
+                            finally:
+                                chunk_notice._usd_write_active = False
+                        except Exception:
+                            pass
                     chunk_notice.send_notice(p.get_notice_alias(), self.get_attribute_sender("value"), usd_attr)
 
         return my_notice

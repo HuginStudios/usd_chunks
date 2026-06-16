@@ -3,7 +3,7 @@ from typing import Any, Optional, Generic
 
 from pxr import Tf, Usd
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_serial
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_serial, chunk_utils
 import usd_chunks.chunk_flags
 from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
@@ -136,6 +136,10 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
         return self.value() / self._step
 
     def set_value(self, value):
+        if isinstance(value, str):
+            value = self.param.value
+        if value is None or isinstance(value, str):
+            return
         self.setValue(value * self._step)
 
     def set_param_layout(self, layout_flags: usd_chunks.chunk_flags.ChunkFlags.LayoutFlags):
@@ -180,6 +184,10 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
         return self.value()
 
     def set_value(self, value):
+        if isinstance(value, str):
+            value = self.param.value
+        if value is None or isinstance(value, str):
+            return
         return self.setValue(value)
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
@@ -216,6 +224,10 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
         return self.value()
 
     def set_value(self, value):
+        if isinstance(value, str):
+            value = self.param.value
+        if value is None or isinstance(value, str):
+            return
         return self.setValue(value)
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
@@ -443,6 +455,29 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
     def set_value(self, value):
         return self.setCurrentText(value)
 
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() != QtCore.Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+        # QComboBox.showPopup() can't use the proxy-aware popup path for widgets
+        # that are deep descendants of a QGraphicsProxyWidget (graphicsProxyWidget()
+        # returns None for non-direct embeds).  Replace with a QMenu so the popup
+        # always appears at the correct screen position.
+        QtCore.QTimer.singleShot(0, self._show_as_menu)
+
+    def _show_as_menu(self) -> None:
+        menu = QtWidgets.QMenu(self)
+        current = self.currentText()
+        for i in range(self.count()):
+            text = self.itemText(i)
+            act = menu.addAction(text)
+            if text == current:
+                act.setCheckable(True)
+                act.setChecked(True)
+        pos = self.mapToGlobal(QtCore.QPoint(0, self.height()))
+        if chosen := menu.exec_(pos):
+            self.setCurrentText(chosen.text())
+
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
@@ -464,6 +499,10 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
         return self.isChecked()
 
     def set_value(self, value: bool):
+        if isinstance(value, str):
+            value = self.param.value
+        if value is None or isinstance(value, str):
+            return
         return self.setChecked(value)
 
     def set_hidden(self, val: bool):
@@ -669,16 +708,43 @@ class LabeledWidget(QtWidgets.QWidget):
         chunk_obj = param.get_chunk()
         context = chunk_obj.get_context() if chunk_obj else None
 
-        if not context:
+        t = param.evaluate_type()
+        is_expr_capable = (
+            ChunkFlags.ParamType.FLOAT in t
+            or ChunkFlags.ParamType.INT in t
+            or ChunkFlags.ParamType.BOOL in t
+        )
+        raw = param.raw_value
+        has_expr = is_expr_capable and isinstance(raw, str) and chunk_utils.has_expression(raw)
+
+        menu = QtWidgets.QMenu()
+        value_rect = QtCore.QRect(self.widget.pos(), self.widget.size())
+        loft_action = menu.addAction("Loft up") if context and not value_rect.contains(event.pos()) else None
+        expr_action = None
+        clear_expr_action = None
+
+        if is_expr_capable:
+            if has_expr:
+                clear_expr_action = menu.addAction("Clear Expression")
+            else:
+                expr_action = menu.addAction("Set Expression...")
+
+        if not menu.actions():
             event.ignore()
             return
 
-        menu = QtWidgets.QMenu()
-        loft_action = menu.addAction("Loft up")
-
         if action := menu.exec_(event.globalPos()):
-            if action == loft_action:
+            if loft_action and action == loft_action:
                 chunk_usd.loft_param_to_context(param, context)
+            elif expr_action and action == expr_action:
+                current = str(raw) if isinstance(raw, str) else ""
+                text, ok = QtWidgets.QInputDialog.getText(
+                    self, "Set Expression", "Expression:", QtWidgets.QLineEdit.EchoMode.Normal, current
+                )
+                if ok and text:
+                    param.value = text
+            elif clear_expr_action and action == clear_expr_action:
+                param.value = param.default_value
 
 
 class ChunkArea(QtWidgets.QScrollArea):

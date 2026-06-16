@@ -1,6 +1,6 @@
 import os
 from pxr import Sdf
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_utils, chunk_notice
 from usd_chunks.chunk_utils import get_unique_path
 
 
@@ -78,11 +78,7 @@ def main():
     primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     primpath.add_callback(import_callback)
     referenceChunk.add_param(primpath)
-
-    button = chunk.Button("import", "import")
-    button.add_callback(import_callback)
-
-    referenceChunk.add_param(button)
+    referenceChunk.add_callback(import_callback, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
 
     return referenceChunk
 

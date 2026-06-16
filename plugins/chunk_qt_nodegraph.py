@@ -22,7 +22,7 @@ from plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, FileBrowser, LineEdit, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, CHUNK_STYLESHEET, ViewSlotState
+from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, CHUNK_STYLESHEET, ViewSlotState
 
 _PORT_RADIUS = 5
 _NODE_WIDTH = 220
@@ -821,7 +821,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.setScene(ChunkGraphScene())
         self.setRenderHint(QtGui.QPainter.Antialiasing)
         self.setDragMode(QtWidgets.QGraphicsView.NoDrag)
-        self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)
+        self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
         self.setBackgroundBrush(QtGui.QColor("#252525"))
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -914,7 +914,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # Zoom
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
-        factor = 1.03 if event.angleDelta().y() > 0 else 1 / 1.03
+        factor = 1.08 if event.angleDelta().y() > 0 else 1 / 1.08
         self.scale(factor, factor)
 
     # ------------------------------------------------------------------
@@ -1406,8 +1406,33 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
         scene_pos = self.mapToScene(event.pos())
-        # Node right-click: show the chunk's own context menu.
         for item in self.scene().items(scene_pos):
+            if isinstance(item, QtWidgets.QGraphicsProxyWidget):
+                top_widget = item.widget()
+                if top_widget:
+                    proxy_local = item.mapFromScene(scene_pos).toPoint()
+                    child = top_widget.childAt(proxy_local) or top_widget
+                    w = child
+                    while w is not None:
+                        if isinstance(w, LabeledWidget):
+                            # Send a fresh QContextMenuEvent through Qt's event
+                            # system rather than calling the method directly —
+                            # direct calls bypass popup state tracking and cause
+                            # menu.exec_() to close immediately.
+                            local_pos = w.mapFromGlobal(event.globalPos())
+                            ctx = QtGui.QContextMenuEvent(
+                                QtGui.QContextMenuEvent.Reason.Mouse,
+                                local_pos,
+                                event.globalPos(),
+                            )
+                            QtWidgets.QApplication.sendEvent(w, ctx)
+                            event.accept()
+                            return
+                        if w is top_widget:
+                            break
+                        w = w.parent()
+                event.accept()
+                return
             if isinstance(item, ChunkNodeItem):
                 self._show_chunk_menu(item, event.globalPos())
                 event.accept()
