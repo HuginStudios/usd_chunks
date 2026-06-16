@@ -109,7 +109,7 @@ def execute(owner, notice, sender):
         attr.Set(UsdGeom.Tokens.inherited)
         if not var_selections and prim.GetPath().pathString != target_path:
             _chunk.get_param("primpath_location").value = prim.GetPath().pathString
-        #show_attribute(prim, _chunk)
+        show_attribute(prim, _chunk)
 
 
 def config():

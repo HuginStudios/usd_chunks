@@ -1,38 +1,49 @@
 import os
 from pxr import Sdf
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_utils, chunk_notice
 from usd_chunks.chunk_utils import get_unique_path
 
 
 def file_changed(owner, notice, sender):
     """Callback for changing reference paths."""
-    reference_path = ""
     param = notice.data
+    _chunk = param.get_chunk()
+
     if param.name == "file_path" and param.value:
-        reference_path = notice.data.value
+        reference_path = param.value
     else:
-        # Import button needs to get the param.
-        reference_path = param.get_chunk().get_param("file_path").value
+        fp = _chunk.get_param("file_path") if _chunk else None
+        reference_path = fp.value if fp else None
 
-    asset_name = os.path.basename(reference_path)
-    asset_name = os.path.splitext(asset_name)[0]
-    prim_path = prim_path = f"/{asset_name}"
-    unique_path = prim_path
+    if not reference_path:
+        return
+
+    primpath_param = _chunk.get_param("primpath_location") if _chunk else None
+    if not primpath_param:
+        return
+    
+    if chunk_utils.has_expression(primpath_param.raw_value or ""):
+        return
+    
+    asset_name = os.path.splitext(os.path.basename(reference_path))[0]
     stage = param.get_stage()
-
-    unique_path = get_unique_path(stage, prim_path)
-    param.get_chunk().get_param("primpath_location").value = unique_path
+    unique_path = get_unique_path(stage, f"/{asset_name}")
+    primpath_param.value = unique_path
 
 
 def import_callback(owner, notice, sender):
     param = notice.data
+    _chunk = param.get_chunk()
+    reference_path = _chunk.get_param("file_path").value if _chunk else None
+    if not reference_path:
+        return
+
     stage = param.get_stage()
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-    reference_path = param.get_chunk().get_param("file_path").value
-    raw_path = param.get_chunk().get_param("primpath_location").value
-    import_path = param.get_chunk().get_param("import_primpath").value
+    raw_path = _chunk.get_param("primpath_location").value
+    import_path = _chunk.get_param("import_primpath").value
 
     if import_path:
         ref = Sdf.Reference(reference_path, import_path)
@@ -67,11 +78,7 @@ def main():
     primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     primpath.add_callback(import_callback)
     referenceChunk.add_param(primpath)
-
-    button = chunk.Button("import", "import")
-    button.add_callback(import_callback)
-
-    referenceChunk.add_param(button)
+    referenceChunk.add_callback(import_callback, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
 
     return referenceChunk
 
@@ -80,7 +87,7 @@ def config():
     return chunk.DefaulConfig(
         category=chunk.StandardCategory.UTILS,
         description="""
-        Reference chunk — lets the user pick an external USD file and insert it as a
+        Reference chunk: Lets the user pick an external USD file and insert it as a
         Usd.Reference into the active stage.
 
         When a file is selected, the asset name is extracted and used to suggest a

@@ -3,22 +3,35 @@ from usd_chunks import chunk, chunk_utils, chunk_notice
 def execute(owner, notice, sender):
     param = notice.data
     _chunk = param.get_chunk()
+
+    if getattr(_chunk, '_executing', False):
+        return
+    _chunk._executing = True
+
+    try:
+        _execute(_chunk, owner)
+    finally:
+        _chunk._executing = False
+
+
+def _execute(_chunk, owner):
     stage = owner.get_stage()
 
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
-
-    raw_path = _chunk.get_param("primpath_location").value
+    primpath_param = _chunk.get_param("primpath_location")
+    raw_path = primpath_param.value
     prim_type = _chunk.get_param("prim_type").value
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
 
     if not var_selections:
-        raw_path = chunk_utils.get_unique_path(stage, raw_path)
+        raw_path = chunk_utils.get_unique_path(stage, primpath_param)
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.DefinePrim(target_path, prim_type)
-        if not var_selections and prim.GetPath().pathString != target_path:
-            _chunk.get_param("primpath_location").value = prim.GetPath().pathString
+        if not var_selections:
+            actual_path = prim.GetPath().pathString
+            raw_stored = primpath_param.raw_value
+            if not chunk_utils.has_expression(raw_stored or "") and actual_path != (raw_stored or ""):
+                primpath_param.value = actual_path
 
 
 def main():

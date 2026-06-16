@@ -8,8 +8,8 @@ from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
-from usd_chunks import chunk_registry, chunk_core, chunk_serial, chunk_notice
-from plugins import chunk_qt
+from usd_chunks import chunk_registry, chunk_core, chunk_serial
+from plugins import chunk_qt, chunk_usd
 
 from typing import List
 
@@ -33,6 +33,8 @@ class UsdviewScene(chunk_core.SceneSender):
         view_settings = data_model.viewSettings  # type: ignore
         view_settings.signalSettingChanged.connect(self._on_view_settings_changed)
 
+        data_model.signalStageReplaced.connect(self._on_stage_replaced)  # type: ignore
+
         self._current_cam = None
 
         # Adds a delay to the set_viewport_camera as a workaround to remove thread racing
@@ -40,6 +42,7 @@ class UsdviewScene(chunk_core.SceneSender):
         self._camera_snap_timer = QtCore.QTimer()
         self._camera_snap_timer.setSingleShot(True)
         self._camera_snap_timer.timeout.connect(self._on_snap_timer)
+
         super().__init__()
 
     def get_current_frame(self) -> float:
@@ -145,6 +148,9 @@ class UsdviewScene(chunk_core.SceneSender):
         if self._snap_prim is not None:
             self._set_viewport_camera(self._snap_prim)
 
+    def _on_stage_replaced(self):
+        self.notify_stage_replaced(self.get_stage())
+
 
 def launch_chunks(usdviewApi) -> None:
     """Launch the UI Creator plugin.
@@ -158,8 +164,8 @@ def launch_chunks(usdviewApi) -> None:
     scene = UsdviewScene(usdviewApi)
 
     chunk_qt.build_chunk_docker(usdviewApi.qMainWindow)
-    chunk_registry.ChunkLayerManager().initialize(usdviewApi.stage)
     chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
+    chunk_usd.initialize(usdviewApi.stage, scene)
 
 
 class ChunksPluginContainer(PluginContainer):
@@ -172,7 +178,7 @@ class ChunksPluginContainer(PluginContainer):
         reg.reload_modules()
 
     def saveLayers(self, usdviewApi):
-        reg = chunk_registry.ChunkLayerManager()
+        reg = chunk_usd.ChunkLayerManager()
         # flt = "*.usda *.usd *.usdc"
         if not (path := chunk_qt.file_dial(directory=True)):
             return
