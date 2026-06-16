@@ -110,40 +110,80 @@ class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
             self.setFormat(start, end - start, fmt)
 
 
-class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
-    def __init__(self, param: chunk.Slider):
-        super().__init__(param)
 
-        self._step = 1000 if usd_chunks.chunk_flags.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
+class SpinSlider(QtWidgets.QWidget):
+    def __init__(self, parent=None, is_float=False):
+        super().__init__(parent)
+        self._step = 1000 if is_float else 1
+
+        if is_float:
+            self.spin_box = QtWidgets.QDoubleSpinBox()
+            self.spin_box.setDecimals(2)
+            self.spin_box.setSingleStep(1.0 / self._step)
+            self.spin_box.setLocale(QtCore.QLocale.c())
+            self.spin_box.setRange(-1e300, 1e300)
+        else:
+            self.spin_box = QtWidgets.QSpinBox()
+            self.spin_box.setRange(-2147483648, 2147483647)
+        self.spin_box.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.spin_box.setMaximumWidth(48)
+
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.addWidget(self.slider)
+        layout.addWidget(self.spin_box)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        self.spin_box.valueChanged.connect(self._on_spin_changed)
+
+    def _on_slider_changed(self, value):
+        with QtCore.QSignalBlocker(self.spin_box):
+            self.spin_box.setValue(value / self._step)
+
+    def _on_spin_changed(self, real_value):
+        with QtCore.QSignalBlocker(self.slider):
+            self.slider.setValue(int(real_value * self._step))
+
+    def setRange(self, min_int, max_int):
+        self.slider.setRange(min_int, max_int)
+
+    def setValue(self, int_value):
+        self.slider.setValue(int_value)
+
+    def value(self):
+        return self.slider.value()
+
+    def setOrientation(self, orient):
+        self.slider.setOrientation(orient)
+
+    def wheelEvent(self, event: QtGui.QWheelEvent):
+        event.ignore()
+
+class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
+    def __init__(self, param: chunk.Slider):
+        is_float = ChunkFlags.ParamType.FLOAT in param.evaluate_type()
+        super().__init__(param, is_float=is_float)
 
         min_val = param.min_value
         max_val = param.max_value
-
-        if min_val is not None:
-            self.setMinimum(int(min_val * self._step))
-        else:
-            self.setMinimum(10 * (1 - self._step))
-
-        if max_val is not None:
-            self.setMaximum(int(max_val * self._step))
-        else:
-            self.setMaximum(10 * self._step)
+        min_int = int(min_val * self._step) if min_val is not None else 100 * (1 - self._step)
+        max_int = int(max_val * self._step) if max_val is not None else 100 * self._step
+        self.setRange(min_int, max_int)
 
         self.setup_chunk_widget()
-        self.valueChanged.connect(self.value_changed)
+        self.slider.valueChanged.connect(self.value_changed)
+        self.spin_box.valueChanged.connect(lambda v: self.value_changed(int(v * self._step)))
 
     def get_value(self):
         return self.value() / self._step
 
     def set_value(self, value):
-        if isinstance(value, str):
-            value = self.param.value
-        if value is None or isinstance(value, str):
-            return
-        self.setValue(value * self._step)
+        self.setValue(int(value * self._step))
 
-    def set_param_layout(self, layout_flags: usd_chunks.chunk_flags.ChunkFlags.LayoutFlags):
-        is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL == layout_flags
+    def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
+        is_horizontal = ChunkFlags.LayoutFlags.HORIZONTAL == layout_flags
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
         self.setOrientation(orient)
