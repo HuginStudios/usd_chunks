@@ -1,12 +1,12 @@
 import weakref
 
 from PySide6 import QtWidgets, QtCore, QtGui
-
 from pxr import Tf
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_serial
 from usd_chunks import chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
+
 from plugins import chunk_usd
 
 from plugins.chunk_qt_widgets import (
