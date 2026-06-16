@@ -635,6 +635,8 @@ class LabeledWidget(QtWidgets.QWidget):
     def should_show_tooltip(self):
         if not isinstance(self.widget, ChunkParamWidgetBase):
             return False
+        if isinstance(self.widget, ChunkSliderWidget):
+            return False
 
         t = self.widget.param.evaluate_type()
         if (ChunkFlags.ParamType.EMPTY | ChunkFlags.ParamType.STRING) & t != 0:
