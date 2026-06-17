@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import types as _types
+from pathlib import Path
+
 import pytest
-from pxr import Gf, Usd
+from pxr import Gf, Sdf, Usd
 
 from plugins.chunk_usd import (
+    _CHUNK_PRIM_TYPENAME,
     _CHUNK_TYPE_ATTR,
     _CHUNKS_ROOT,
     _EXEC_INPUT,
@@ -14,9 +18,10 @@ from plugins.chunk_usd import (
     ChunkStageSync,
     export_chunks,
     load_chunks,
+    rename_context_prim_path,
 )
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
 
 
 class _DummyScene(SceneSender):
@@ -700,3 +705,167 @@ def test_patch_expressions_on_chunk_rename() -> None:
     src.name = "src2"  # _handle_rename → _patch_expressions(stage, "@src.", "@src2.")
 
     assert ref_prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == "@src2.val@"
+
+
+# ---------------------------------------------------------------------------
+# _patch_expressions: param rename rewrites .oldname@ expression substrings
+# ---------------------------------------------------------------------------
+
+def test_patch_expressions_on_param_rename() -> None:
+    """Renaming a param rewrites .oldname@ in expression strings via _patch_expressions."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    owner = _chunk_with_module("owner")
+    foo = chunk.Slider("foo", default_value=0.0)
+    owner.add_param(foo)
+    scene.add_chunk(owner)
+
+    ref = _chunk_with_module("ref")
+    expr_param = chunk.LineEdit("p")
+    expr_param.value = "@owner.foo@"
+    ref.add_param(expr_param)
+    scene.add_chunk(ref)  # _sync_chunk_inputs creates inputs:p = "@owner.foo@"
+
+    ref_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/ref")
+    assert ref_prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == "@owner.foo@"
+
+    foo.name = "bar"  # _handle_param_rename → _patch_expressions(stage, ".foo@", ".bar@")
+
+    assert ref_prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == "@owner.bar@"
+
+
+# ---------------------------------------------------------------------------
+# ChunkStageSync: vector pre-wired to a real USD attr gets inputs: attr created
+# ---------------------------------------------------------------------------
+
+def test_vector_sync_input_creates_chunk_prim_attr() -> None:
+    """_sync_vector_input copies a real attr's value to inputs: on the chunk prim."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    # Real USD prim with an authored Float3 attr (simulates e.g. a camera translate)
+    real_prim = stage.DefinePrim("/scene/obj", "Xform")
+    real_attr = real_prim.CreateAttribute("translate", Sdf.ValueTypeNames.Float3, custom=True)
+    real_attr.Set(Gf.Vec3f(1.0, 2.0, 3.0))
+
+    # Vector param pre-wired to the real attr (as if a prior sync already linked them)
+    vec = chunk.Vector("pos", param=chunk.Slider(), length=3, suffixes="xyz")
+    vec._param_attr_path = str(real_attr.GetPath())
+
+    c = _chunk_with_module("n")
+    c.add_param(vec)
+    scene.add_chunk(c)  # → _define_prim → _sync_chunk_inputs → _sync_vector_input
+
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/n")
+    attr = prim.GetAttribute(f"{_INPUTS_PREFIX}pos")
+    assert attr.IsValid()
+    assert attr.Get() == Gf.Vec3f(1.0, 2.0, 3.0)
+
+
+# ---------------------------------------------------------------------------
+# _author_prim: three-chunk exec chain wires a→b→c via prev_chunk
+# ---------------------------------------------------------------------------
+
+def test_exec_chain_three_chunks() -> None:
+    """A three-node chain produces inputs:chunk connections b→a and c→b."""
+    stage = Usd.Stage.CreateInMemory()
+    a = _chunk_with_module("a")
+    b = _chunk_with_module("b")
+    c = _chunk_with_module("c")
+    _author_prim(stage, a, index=0)
+    _author_prim(stage, b, prev_chunk=a, index=1)
+    _author_prim(stage, c, prev_chunk=b, index=2)
+
+    conns_b = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/b").GetAttribute(_EXEC_INPUT).GetConnections()
+    conns_c = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/c").GetAttribute(_EXEC_INPUT).GetConnections()
+
+    assert any("a" in str(p) for p in conns_b)
+    assert any("b" in str(p) for p in conns_c)
+
+
+# ---------------------------------------------------------------------------
+# rename_context_prim_path: copies prim specs to new path and removes old
+# ---------------------------------------------------------------------------
+
+def test_rename_context_prim_path() -> None:
+    """rename_context_prim_path moves sub-chunk prim to the new root and clears the old one."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    # Author a sub-chunk prim at the old location
+    stage.DefinePrim(Sdf.Path("/old_ctx/chunks"), _CHUNK_PRIM_TYPENAME)
+    stage.DefinePrim(Sdf.Path("/old_ctx/chunks/c1"), _CHUNK_PRIM_TYPENAME)
+    assert stage.GetPrimAtPath("/old_ctx/chunks/c1").IsValid()
+
+    # Context chunk that owns c1 as a sub-chunk
+    ctx = _chunk_with_module("ctx")
+    ctx.prim_path = "/old_ctx"
+    c1 = _chunk_with_module("c1")
+    ctx.add_param(c1)
+
+    rename_context_prim_path(ctx, "/new_ctx")
+
+    assert ctx.prim_path == "/new_ctx"
+    assert stage.GetPrimAtPath("/new_ctx/chunks/c1").IsValid()
+    assert not stage.GetPrimAtPath("/old_ctx/chunks/c1").IsValid()
+
+
+# ---------------------------------------------------------------------------
+# load_chunks: sub-chunk nested under a CONTEXT+module prim joins the group
+# ---------------------------------------------------------------------------
+
+_GROUP_MODULE_NAME = "_test_context_group"
+
+
+def _ensure_test_group_module() -> None:
+    """Insert a minimal CONTEXT-producing ChunkModule into the registry (once)."""
+    reg = chunk_registry.ChunkRegistry()
+    if _GROUP_MODULE_NAME in reg.registered_modules:
+        return
+    grp_mod = object.__new__(chunk_registry.ChunkModule)
+    grp_mod.module = _types.ModuleType(_GROUP_MODULE_NAME)
+    grp_mod.module_name = _GROUP_MODULE_NAME
+    grp_mod.module_file = Path(_GROUP_MODULE_NAME + ".py")
+    grp_mod.loaded = True
+    grp_mod._has_main = True
+    grp_mod.config = ChunkConfig(module=_GROUP_MODULE_NAME)
+    grp_mod._checksum = -1
+    grp_mod.func = lambda: ChunkBase("grp", flags=ChunkFlags.GroupFlags.CONTEXT)
+    reg.registered_modules[_GROUP_MODULE_NAME] = grp_mod
+
+
+def test_load_chunks_subchunk_in_group() -> None:
+    """load_chunks adds sub-chunks as params of their nearest ancestor CONTEXT+module chunk."""
+    _ensure_test_group_module()
+
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+
+    # Author group prim with its type attr
+    grp_prim = stage.DefinePrim(Sdf.Path(f"{_CHUNKS_ROOT}/grp"), _CHUNK_PRIM_TYPENAME)
+    grp_attr = grp_prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
+    grp_attr.SetVariability(Sdf.VariabilityUniform)
+    grp_attr.Set(_GROUP_MODULE_NAME)
+
+    # Author sub-chunk prim nested under the group prim
+    sub_prim = stage.DefinePrim(Sdf.Path(f"{_CHUNKS_ROOT}/grp/c1"), _CHUNK_PRIM_TYPENAME)
+    sub_attr = sub_prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
+    sub_attr.SetVariability(Sdf.VariabilityUniform)
+    sub_attr.Set("prim")
+
+    load_chunks(stage, scene)
+
+    all_chunks = scene.get_chunks()
+    ctx = next((c for c in all_chunks if c.has_flag(ChunkFlags.GroupFlags.CONTEXT)), None)
+    assert ctx is not None, "No CONTEXT group chunk found after load_chunks"
+    sub = [p for p in ctx.get_my_params() if isinstance(p, ChunkBase)]
+    assert len(sub) == 1
+    assert sub[0].name == "Prim"
