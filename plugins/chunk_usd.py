@@ -39,6 +39,15 @@ _SDF_TYPE_MAP = {
     str: Sdf.ValueTypeNames.String,
 }
 
+_VECTOR_TYPE_MAP: dict = {
+    (float, 2): (Sdf.ValueTypeNames.Float2, Gf.Vec2f),
+    (float, 3): (Sdf.ValueTypeNames.Float3, Gf.Vec3f),
+    (float, 4): (Sdf.ValueTypeNames.Float4, Gf.Vec4f),
+    (int, 2): (Sdf.ValueTypeNames.Int2, Gf.Vec2i),
+    (int, 3): (Sdf.ValueTypeNames.Int3, Gf.Vec3i),
+    (int, 4): (Sdf.ValueTypeNames.Int4, Gf.Vec4i),
+}
+
 _LIST_SDF_TYPE_MAP = {
     bool: Sdf.ValueTypeNames.BoolArray,
     int: Sdf.ValueTypeNames.IntArray,
@@ -52,6 +61,18 @@ _LIST_VT_MAP = {
     float: Vt.FloatArray,
     str: Vt.StringArray,
 }
+
+
+def _sdf_vector_type(val: tuple) -> tuple:
+    """Return (Sdf type, Gf value) for a vector tuple, or (None, None) if unsupported."""
+    non_none = [v for v in val if v is not None]
+    if not non_none:
+        return None, None
+    entry = _VECTOR_TYPE_MAP.get((type(non_none[0]), len(val)))
+    if entry is None:
+        return None, None
+    sdf_type, gf_cls = entry
+    return sdf_type, gf_cls(*[v if v is not None else 0 for v in val])
 
 
 def _sdf_type_and_value(val):
@@ -289,7 +310,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     def _handle_param_rename(self, param: "core.ChunkParamBase", old_name: str, new_name: str) -> None:
         """Rename a param's USD attribute and patch expression strings."""
         chunk = next(
-            (c for c in self._scene.get_chunks() if param in list(_iter_chunk_params(c))[1::2]),
+            (c for c in self._scene.get_chunks() if any(p is param for _, p in _iter_chunk_params(c))),
             None,
         )
         if chunk is None:
@@ -1095,12 +1116,12 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
 
 
 def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
-    layer = Sdf.Layer.CreateAnonymous()
+    stage = Usd.Stage.CreateInMemory()
     prev_chunk = None
     for index, chunk in enumerate(scene.get_chunks()):
-        _author_prim(layer, chunk, prev_chunk, index)
+        _author_prim(stage, chunk, prev_chunk, index)
         prev_chunk = chunk
-    layer.Export(str(path))
+    stage.GetRootLayer().Export(str(path))
 
 
 def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | None") -> None:
@@ -1371,45 +1392,39 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             )
 
 
-def _author_prim(layer: Sdf.Layer, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:
+def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:
     chunk_root = _resolve_chunk_root(chunk)
-    root_sdf_path = Sdf.Path(chunk_root)
-    if not layer.GetPrimAtPath(root_sdf_path):
-        root_spec = Sdf.CreatePrimInLayer(layer, root_sdf_path)
-        root_spec.typeName = _CHUNK_PRIM_TYPENAME
-        root_spec.specifier = Sdf.SpecifierDef
+    stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
 
-    prim_path = Sdf.Path(f"{chunk_root}/{chunk.name}")
-    prim_spec = Sdf.CreatePrimInLayer(layer, prim_path)
-    prim_spec.typeName = _CHUNK_PRIM_TYPENAME
-    prim_spec.specifier = Sdf.SpecifierDef
+    prim = stage.DefinePrim(Sdf.Path(f"{chunk_root}/{chunk.name}"), _CHUNK_PRIM_TYPENAME)
 
-    schemas = Sdf.TokenListOp()
-    schemas.prependedItems = ["NodeGraphNodeAPI"]
-    prim_spec.SetInfo("apiSchemas", schemas)
-    if "ui:nodegraph:node:pos" not in prim_spec.attributes:
-        pos_spec = Sdf.AttributeSpec(prim_spec, "ui:nodegraph:node:pos", Sdf.ValueTypeNames.Float2)
-        pos_spec.default = Gf.Vec2f(index * _NODE_STEP, 0.0)
+    ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
+    if not ui_api.GetPosAttr().HasAuthoredValue():
+        ui_api.CreatePosAttr(Gf.Vec2f(index * _NODE_STEP, 0.0))
 
     config = chunk.get_config()
     if config and config.module:
-        attr_spec = Sdf.AttributeSpec(prim_spec, _CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token)
-        attr_spec.default = config.module
-        attr_spec.variability = Sdf.VariabilityUniform
+        attr = prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
+        attr.SetVariability(Sdf.VariabilityUniform)
+        attr.Set(config.module)
 
-    config = chunk.get_config()
     if not (config and config.terminal):
-        exec_out_spec = Sdf.AttributeSpec(prim_spec, _EXEC_OUTPUT, Sdf.ValueTypeNames.Token)
-        exec_out_spec.variability = Sdf.VariabilityUniform
+        exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
+        exec_out.SetVariability(Sdf.VariabilityUniform)
 
     deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
     if not deps and prev_chunk:
         deps = [prev_chunk]
     if deps:
-        exec_in_spec = Sdf.AttributeSpec(prim_spec, _EXEC_INPUT, Sdf.ValueTypeNames.Token)
-        exec_in_spec.connectionPathList.explicitItems = [
-            Sdf.Path(f"{_resolve_chunk_root(dep)}/{dep.name}.{_EXEC_OUTPUT}") for dep in deps
-        ]
+        exec_in = prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        exec_in.SetConnections([
+            Sdf.Path(
+                f"{dep.prim_path}.{_EXEC_OUTPUT}"
+                if dep.has_flag(ChunkFlags.GroupFlags.CONTEXT) and getattr(dep, "prim_path", None)
+                else f"{_resolve_chunk_root(dep)}/{dep.name}.{_EXEC_OUTPUT}"
+            )
+            for dep in deps
+        ])
 
     # Build a name → context_param map for lofted params (direct ChunkParamBase children of context)
     context = chunk.get_context()
@@ -1425,42 +1440,58 @@ def _author_prim(layer: Sdf.Layer, chunk: "core.ChunkBase", prev_chunk: "core.Ch
             store_value = param.value  # proxy params delegate raw_value to the template (None); use value instead
         if store_value is None:
             continue
+        if store_value == getattr(param, "default_value", None):
+            continue
         sdf_type, usd_value = _sdf_type_and_value(store_value)
         if sdf_type is None:
             continue
 
-        attr_spec_name = f"{_INPUTS_PREFIX}{path.replace('.', ':')}"
+        attr_name = f"{_INPUTS_PREFIX}{path.replace('.', ':')}"
         ctx_param = lofted.get(param.name)
 
         if ctx_param:
             # Param is lofted: write a connection on the inner attr and author the context prim's attr
             ctx_attr_path_str = ctx_param._param_attr_path  # e.g. "/chunks.inputs:mySlider"
             ctx_prim_str, ctx_attr_name = ctx_attr_path_str.rsplit(".", 1)
-            ctx_prim_sdf = Sdf.Path(ctx_prim_str)
+            ctx_prim = stage.GetPrimAtPath(Sdf.Path(ctx_prim_str))
+            if not (ctx_prim and ctx_prim.IsValid()):
+                ctx_prim = stage.DefinePrim(Sdf.Path(ctx_prim_str), _CHUNK_PRIM_TYPENAME)
+            ctx_attr = ctx_prim.CreateAttribute(ctx_attr_name, sdf_type, custom=True)
+            ctx_attr.Set(ctx_param.value if ctx_param.value is not None else param.value)
 
-            if not layer.GetPrimAtPath(ctx_prim_sdf):
-                ctx_prim_spec = Sdf.CreatePrimInLayer(layer, ctx_prim_sdf)
-                ctx_prim_spec.typeName = _CHUNK_PRIM_TYPENAME
-                ctx_prim_spec.specifier = Sdf.SpecifierDef
-            ctx_prim_spec = layer.GetPrimAtPath(ctx_prim_sdf)
-
-            if ctx_attr_name not in ctx_prim_spec.attributes:
-                ctx_attr_spec = Sdf.AttributeSpec(ctx_prim_spec, ctx_attr_name, sdf_type)
-                val = ctx_param.value if ctx_param.value is not None else param.value
-                ctx_attr_spec.default = val
-
-            attr_spec = Sdf.AttributeSpec(prim_spec, attr_spec_name, sdf_type)
-            attr_spec.default = ctx_param.value if ctx_param.value is not None else usd_value
-            attr_spec.connectionPathList.explicitItems = [Sdf.Path(ctx_attr_path_str)]
+            inner_attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+            inner_attr.Set(ctx_param.value if ctx_param.value is not None else usd_value)
+            inner_attr.SetConnections([Sdf.Path(ctx_attr_path_str)])
         else:
-            attr_spec = Sdf.AttributeSpec(prim_spec, attr_spec_name, sdf_type)
-            attr_spec.default = usd_value
+            attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+            attr.Set(usd_value)
             if isinstance(store_value, str) and chunk_utils.has_expression(store_value):
-                conn_paths = [
+                attr.SetConnections([
                     Sdf.Path(f"{chunk_root}/{node_name}.inputs:{param_name}")
                     for node_name, param_name in chunk_utils.parse_expression(store_value)
-                ]
-                attr_spec.connectionPathList.explicitItems = conn_paths
+                ])
+
+    for vec_path, vector in _iter_chunk_vectors(chunk):
+        val = vector.value
+        if not val or not any(v is not None for v in val):
+            continue
+        if val == vector.default_value:
+            continue
+        attr_name = f"{_INPUTS_PREFIX}{vec_path.replace('.', ':')}"
+        # If the vector is already wired to a real USD attr, preserve its exact type
+        backing = getattr(vector, '_param_attr_path', None)
+        if backing:
+            real_attr = stage.GetAttributeAtPath(Sdf.Path(backing))
+            if real_attr and real_attr.IsValid() and real_attr.HasAuthoredValue():
+                if (current_val := real_attr.Get()) is not None:
+                    attr = prim.CreateAttribute(attr_name, real_attr.GetTypeName(), custom=False)
+                    attr.Set(current_val)
+                    continue
+        sdf_type, usd_value = _sdf_vector_type(val)
+        if sdf_type is None:
+            continue
+        attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+        attr.Set(usd_value)
 
     # Serialize ListGroup template params as arrays: inputs:list_name:param_name = [v0, v1, ...]
     for lg_path, list_group in _iter_list_group_arrays(chunk):
@@ -1480,6 +1511,5 @@ def _author_prim(layer: Sdf.Layer, chunk: "core.ChunkBase", prev_chunk: "core.Ch
             sdf_type, usd_value = _sdf_type_and_value(values)
             if sdf_type is None:
                 continue
-            attr_spec_name = f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}"
-            attr_spec = Sdf.AttributeSpec(prim_spec, attr_spec_name, sdf_type)
-            attr_spec.default = usd_value
+            attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}", sdf_type, custom=False)
+            attr.Set(usd_value)
