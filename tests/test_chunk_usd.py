@@ -581,3 +581,122 @@ def test_chunk_stage_sync_listgroup_live_sync() -> None:
     attr = prim.GetAttribute(f"{_INPUTS_PREFIX}items:val")
     assert attr.IsValid()
     assert list(attr.Get()) == pytest.approx([1.0, 2.0])
+
+
+# ---------------------------------------------------------------------------
+# Expression authoring: value + USD connections
+# ---------------------------------------------------------------------------
+
+def test_expression_authoring() -> None:
+    """Expression string is stored as attr value; USD connections point to the referenced inputs:."""
+    stage = Usd.Stage.CreateInMemory()
+
+    src = _chunk_with_module("src")
+    expr_param = chunk.LineEdit("p")
+    expr_param.value = "@dst.val@"
+    src.add_param(expr_param)
+    _author_prim(stage, src)
+
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/src")
+    attr = prim.GetAttribute(f"{_INPUTS_PREFIX}p")
+    assert attr.IsValid()
+    assert attr.Get() == "@dst.val@"
+    conns = attr.GetConnections()
+    assert len(conns) == 1
+    assert str(conns[0]) == f"{_CHUNKS_ROOT}/dst.inputs:val"
+
+
+# ---------------------------------------------------------------------------
+# Expression restore: _load_wire_inputs wires param and preserves USD connections
+# ---------------------------------------------------------------------------
+
+def test_expression_load_wires_param() -> None:
+    """_load_wire_inputs calls _connect_param_attr on expression attrs: param is wired and connections intact."""
+    stage = Usd.Stage.CreateInMemory()
+
+    src = _chunk_with_module("src")
+    expr_param = chunk.LineEdit("p")
+    expr_param.value = "@dst.val@"
+    src.add_param(expr_param)
+    _author_prim(stage, src)
+
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/src")
+    _load_wire_inputs(prim, src)
+
+    assert expr_param._param_attr_path == f"{_CHUNKS_ROOT}/src.{_INPUTS_PREFIX}p"
+    conns = prim.GetAttribute(f"{_INPUTS_PREFIX}p").GetConnections()
+    assert len(conns) == 1
+    assert str(conns[0]) == f"{_CHUNKS_ROOT}/dst.inputs:val"
+
+
+# ---------------------------------------------------------------------------
+# Expression authoring: multiple @..@ tokens produce multiple connections
+# ---------------------------------------------------------------------------
+
+def test_expression_multi_reference_authoring() -> None:
+    """Two @node.param@ tokens in one expression produce two USD connections."""
+    stage = Usd.Stage.CreateInMemory()
+
+    src = _chunk_with_module("src")
+    expr_param = chunk.LineEdit("p")
+    expr_param.value = "@a.x@ + @b.y@"
+    src.add_param(expr_param)
+    _author_prim(stage, src)
+
+    attr = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/src").GetAttribute(f"{_INPUTS_PREFIX}p")
+    assert attr.Get() == "@a.x@ + @b.y@"
+    conns = attr.GetConnections()
+    assert len(conns) == 2
+    assert str(conns[0]) == f"{_CHUNKS_ROOT}/a.inputs:x"
+    assert str(conns[1]) == f"{_CHUNKS_ROOT}/b.inputs:y"
+
+
+# ---------------------------------------------------------------------------
+# Expression authoring: numeric param with multiplication expression
+# ---------------------------------------------------------------------------
+
+def test_expression_numeric_param_authoring() -> None:
+    """Expression on a Slider is stored as a String USD attr (raw_value is the expr string)."""
+    stage = Usd.Stage.CreateInMemory()
+
+    src = _chunk_with_module("src")
+    slider = chunk.Slider("p", default_value=0.0)
+    slider.value = "@a.x@ * @b.y@"  # bypasses float type-check via convert_attr expression path
+    src.add_param(slider)
+    _author_prim(stage, src)
+
+    attr = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/src").GetAttribute(f"{_INPUTS_PREFIX}p")
+    assert attr.IsValid()
+    assert attr.Get() == "@a.x@ * @b.y@"
+    conns = attr.GetConnections()
+    assert len(conns) == 2
+    assert str(conns[0]) == f"{_CHUNKS_ROOT}/a.inputs:x"
+    assert str(conns[1]) == f"{_CHUNKS_ROOT}/b.inputs:y"
+
+
+# ---------------------------------------------------------------------------
+# _patch_expressions: chunk rename rewrites expression strings across the stage
+# ---------------------------------------------------------------------------
+
+def test_patch_expressions_on_chunk_rename() -> None:
+    """Renaming a chunk rewrites @oldname.param@ expressions in all attrs via _patch_expressions."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    src = _chunk_with_module("src")
+    scene.add_chunk(src)
+
+    ref = _chunk_with_module("ref")
+    expr_param = chunk.LineEdit("p")
+    expr_param.value = "@src.val@"
+    ref.add_param(expr_param)
+    scene.add_chunk(ref)  # _wire_inputs → _sync_chunk_inputs creates inputs:p = "@src.val@"
+
+    ref_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/ref")
+    assert ref_prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == "@src.val@"
+
+    src.name = "src2"  # _handle_rename → _patch_expressions(stage, "@src.", "@src2.")
+
+    assert ref_prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == "@src2.val@"
