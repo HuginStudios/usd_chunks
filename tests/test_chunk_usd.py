@@ -20,6 +20,7 @@ from plugins.chunk_usd import (
     load_chunks,
     rename_context_prim_path,
 )
+from usd_chunks.chunk_utils import get_unique_path
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
 
@@ -869,3 +870,53 @@ def test_load_chunks_subchunk_in_group() -> None:
     sub = [p for p in ctx.get_my_params() if isinstance(p, ChunkBase)]
     assert len(sub) == 1
     assert sub[0].name == "Prim"
+
+
+# ---------------------------------------------------------------------------
+# get_unique_path: expression path clears stale anonymous layer prim
+# ---------------------------------------------------------------------------
+
+class _LayerChunk:
+    """Minimal chunk stub whose get_edit_context returns a controlled anonymous layer."""
+    def __init__(self, layer: Sdf.Layer) -> None:
+        self._layer = layer
+
+    def get_edit_context(self) -> Sdf.Layer:
+        return self._layer
+
+
+class _ExprParam:
+    """Minimal param stub with a pre-resolved expression value and a stale anonymous layer."""
+    def __init__(self, resolved_path: str, layer: Sdf.Layer) -> None:
+        self.raw_value = "@A.primpath_location@/geo"
+        self._resolved = resolved_path
+        self._chunk = _LayerChunk(layer)
+
+    @property
+    def value(self) -> str:
+        return self._resolved
+
+    def get_chunk(self) -> _LayerChunk:
+        return self._chunk
+
+
+def test_get_unique_path_clears_layer_on_expression() -> None:
+    """get_unique_path clears the chunk's anonymous layer even when raw_value is an expression.
+
+    Bug: previously the layer.Clear() call was guarded by the non-expression branch, so a stale
+    prim authored during a previous execution (e.g. /geo) would persist after the primpath_location
+    was changed to an expression like @A.primpath_location@/geo.
+    """
+    stage = Usd.Stage.CreateInMemory()
+
+    # Stale anonymous layer simulating a prim left over from a previous execution
+    old_layer = Sdf.Layer.CreateAnonymous()
+    Sdf.CreatePrimInLayer(old_layer, Sdf.Path("/geo"))
+    assert old_layer.GetPrimAtPath(Sdf.Path("/geo")) is not None
+
+    param = _ExprParam("/prim/geo", old_layer)
+
+    result = get_unique_path(stage, param)
+
+    assert result == "/prim/geo"
+    assert old_layer.GetPrimAtPath(Sdf.Path("/geo")) is None  # stale prim was cleared
