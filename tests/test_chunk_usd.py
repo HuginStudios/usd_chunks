@@ -17,11 +17,12 @@ from plugins.chunk_usd import (
     _load_wire_inputs,
     ChunkStageSync,
     export_chunks,
+    initialize as _chunk_usd_init,
     load_chunks,
     rename_context_prim_path,
 )
 from usd_chunks.chunk_utils import get_unique_path
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk, chunk_notice, chunk_registry
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
 
 
@@ -920,3 +921,35 @@ def test_get_unique_path_clears_layer_on_expression() -> None:
 
     assert result == "/prim/geo"
     assert old_layer.GetPrimAtPath(Sdf.Path("/geo")) is None  # stale prim was cleared
+
+
+# ---------------------------------------------------------------------------
+# load_chunks: dynamic attr_grp params restored from saved chunk-prim attrs
+# ---------------------------------------------------------------------------
+
+def test_load_chunks_restores_light_dynamic_params() -> None:
+    """_restore_dynamic_params re-populates attr_grp params created by show_attribute.
+
+    Regression: before the fix, loading a saved light chunk left attr_grp params at
+    USD schema defaults because show_attribute wired them to the freshly-created light
+    prim (schema defaults), and the saved chunk-prim storage attrs were never consulted.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+
+    # Author a chunk prim as it would appear in a saved .usda file.
+    prim = stage.DefinePrim(Sdf.Path(f"{_CHUNKS_ROOT}/Light"), _CHUNK_PRIM_TYPENAME)
+    prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token).Set("light")
+    prim.CreateAttribute("inputs:primpath_location", Sdf.ValueTypeNames.String).Set("/lights/light1")
+    prim.CreateAttribute(
+        "inputs:attr_grp:inputs:color", Sdf.ValueTypeNames.Color3f
+    ).Set(Gf.Vec3f(-1.339, 1.0, 1.0))
+
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    light_chunks = [c for c in scene.get_chunks() if c.name == "Light"]
+    assert light_chunks, "Light chunk was not loaded"
+    color = light_chunks[0].get_param("attr_grp.inputs.color")
+    assert color is not None, "attr_grp.inputs.color param not found after load"
+    assert pytest.approx(tuple(color.value), abs=1e-3) == (-1.339, 1.0, 1.0)

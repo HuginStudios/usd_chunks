@@ -597,9 +597,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         else:
             prim_path = f"{_resolve_chunk_root(chunk)}/{chunk.name}"
         # If the path is already tracked, this chunk is being loaded from USD
-        # (load_chunks pre-registers paths before add_chunk). Skip _define_prim —
+        # (load_chunks pre-registers paths before add_chunk). Still register in
+        # _chunk_prim_paths so _sync_param_input can find it, but skip _define_prim —
         # the prim already exists in the sublayer; load_chunks handles _wire_inputs.
         if prim_path in self._loaded_prim_paths:
+            self._chunk_prim_paths[id(chunk)] = prim_path
             return
         self._loaded_prim_paths.add(prim_path)
         self._chunk_prim_paths[id(chunk)] = prim_path
@@ -1089,7 +1091,7 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
 
             # Fire CHUNK_LOADED only for terminal nodes (no DAG dependents) so that
             # execution propagates from the end of the chain rather than every node.
-            for _, added in deferred:
+            for prim, added in deferred:
                 if not added.get_dependents():
                     lm = ChunkLayerManager()
                     if lm.initialized:
@@ -1098,6 +1100,13 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
                     chunk_notice.send_notice(
                         chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
                     )
+                    # Restore saved values for params created dynamically during execute
+                    # (e.g. show_attribute in light.py populates attr_grp after the
+                    # chunk fires CHUNK_LOADED). The first _load_wire_inputs call runs
+                    # before execute so those params don't exist yet; this second pass
+                    # sets their values from the chunk-prim storage attrs, which triggers
+                    # _sync_vector_input to wire them and author the driven USD connection.
+                    _restore_dynamic_params(prim, added)
         finally:
             chunk_notice._loading_stage = old_loading_stage
 
@@ -1317,6 +1326,33 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
 
         if param := chunk.get_param(param_path):
             param._connect_param_attr(attr)
+
+
+def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
+    """Restore saved values for params created dynamically inside a CHUNK_LOADED callback.
+
+    Params added during execute (e.g. show_attribute) aren't present when the first
+    _load_wire_inputs runs before execute, so their chunk-prim storage attrs are skipped.
+    After execute fires we scan those attrs again: if a param now exists but is still
+    wired to a real-prim attr (not the chunk-prim storage), we set its value from the
+    saved attr.  The resulting PARAM_CHANGED triggers _sync_param_input / _sync_vector_input
+    which wires the param to chunk storage and authors the driven USD connection.
+    """
+    prim_path = str(prim.GetPath())
+    for attr in prim.GetAttributes():
+        name = attr.GetName()
+        if not name.startswith(_INPUTS_PREFIX):
+            continue
+        param_path = name[len(_INPUTS_PREFIX):].replace(":", ".")
+        param = chunk.get_param(param_path)
+        if param is None:
+            continue
+        existing = getattr(param, "_param_attr_path", None)
+        if existing and existing.startswith(prim_path):
+            continue  # already wired to chunk storage from first _load_wire_inputs
+        val = attr.Get(0)
+        if val is not None:
+            param.value = val
 
 
 def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
