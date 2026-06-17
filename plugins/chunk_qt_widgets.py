@@ -1,7 +1,7 @@
 from PySide6 import QtWidgets, QtCore, QtGui
 from typing import Any, Optional, Generic
 
-from pxr import Tf, Usd
+from pxr import Sdf, Tf, Usd
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_serial, chunk_utils
 import usd_chunks.chunk_flags
@@ -674,6 +674,8 @@ class LabeledWidget(QtWidgets.QWidget):
 
     def should_show_tooltip(self):
         if not isinstance(self.widget, ChunkParamWidgetBase):
+            return False
+        if isinstance(self.widget, ChunkSliderWidget):
             return False
 
         t = self.widget.param.evaluate_type()
@@ -1429,6 +1431,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             val = edit.text().strip() or None
             if val == self.group.prim_path:
                 return
+            if val is not None:
+                p = Sdf.Path(val)
+                if not p.IsPrimPath() or not p.IsAbsolutePath():
+                    edit.setText(self.group.prim_path or "")
+                    return
             chunk_usd.rename_context_prim_path(self.group, val)
 
         edit.editingFinished.connect(_commit)

@@ -1,4 +1,4 @@
-"""
+﻿"""
 The ChunkRegistry singleton is responsible for loading and unloading the chunks.
 USD_CHUNK_DIR environment variable tells the registry where to scan for .py files
 containing the chunks. The ChunkRegistry will also scan nested folders in this location
@@ -120,7 +120,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
 
                 # When a chunk runs a subprocess, the os.environ is passed as the env. Therefore we should
                 # also make sure the PYTHONPATH is updated in order for the subprocess to find the packages
-                os.environ["PYTHONPATH"] = os.environ["PYTHONPATH"] + os.pathsep + str(self.package_dir)
+                os.environ["PYTHONPATH"] = os.environ.get("PYTHONPATH", "") + os.pathsep + str(self.package_dir)
 
             self.initialized = True
             self._load_cache()

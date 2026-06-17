@@ -39,6 +39,15 @@ _SDF_TYPE_MAP = {
     str: Sdf.ValueTypeNames.String,
 }
 
+_VECTOR_TYPE_MAP: dict = {
+    (float, 2): (Sdf.ValueTypeNames.Float2, Gf.Vec2f),
+    (float, 3): (Sdf.ValueTypeNames.Float3, Gf.Vec3f),
+    (float, 4): (Sdf.ValueTypeNames.Float4, Gf.Vec4f),
+    (int, 2): (Sdf.ValueTypeNames.Int2, Gf.Vec2i),
+    (int, 3): (Sdf.ValueTypeNames.Int3, Gf.Vec3i),
+    (int, 4): (Sdf.ValueTypeNames.Int4, Gf.Vec4i),
+}
+
 _LIST_SDF_TYPE_MAP = {
     bool: Sdf.ValueTypeNames.BoolArray,
     int: Sdf.ValueTypeNames.IntArray,
@@ -52,6 +61,18 @@ _LIST_VT_MAP = {
     float: Vt.FloatArray,
     str: Vt.StringArray,
 }
+
+
+def _sdf_vector_type(val: tuple) -> tuple:
+    """Return (Sdf type, Gf value) for a vector tuple, or (None, None) if unsupported."""
+    non_none = [v for v in val if v is not None]
+    if not non_none:
+        return None, None
+    entry = _VECTOR_TYPE_MAP.get((type(non_none[0]), len(val)))
+    if entry is None:
+        return None, None
+    sdf_type, gf_cls = entry
+    return sdf_type, gf_cls(*[v if v is not None else 0 for v in val])
 
 
 def _sdf_type_and_value(val):
@@ -149,7 +170,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 spec.ClearDefaultValue()
 
     def _on_contents_changed(self, notice, sender):
-        if not self._scene:
+        if chunk_notice._usd_write_active or not self._scene:
             return
         stage = notice.GetStage()
         if not stage:
@@ -167,13 +188,28 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if not getattr(sender, "prim_path", None):
                 return  # tab context — no USD prim to remove
             sdf_path = Sdf.Path(sender.prim_path)
+            chunk_root = str(sdf_path.GetParentPath())
         else:
             chunk_root = _resolve_chunk_root(sender)
             sdf_path = Sdf.Path(f"{chunk_root}/{sender.name}")
+        prim_path_str = str(sdf_path)
+        self._loaded_prim_paths.discard(prim_path_str)
+        self._chunk_prim_paths.pop(id(sender), None)
+
         for layer in self._stage.GetLayerStack(includeSessionLayers=True):
             parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
             if parent and sdf_path.name in parent.nameChildren:
                 del parent.nameChildren[sdf_path.name]
+
+        root_sdf = Sdf.Path(chunk_root)
+        root_prim = self._stage.GetPrimAtPath(root_sdf)
+        if root_prim.IsValid() and not any(
+            child.GetTypeName() == _CHUNK_PRIM_TYPENAME for child in root_prim.GetChildren()
+        ):
+            for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+                root_parent = layer.GetPrimAtPath(root_sdf.GetParentPath())
+                if root_parent and root_sdf.name in root_parent.nameChildren:
+                    del root_parent.nameChildren[root_sdf.name]
 
     def _on_state_changed(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
@@ -197,27 +233,42 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
         self._stage = sender
         changed = {str(p) for p in notice.GetChangedInfoOnlyPaths()}
-        if not changed:
+        # Include resynced paths for editors (e.g. usdview) that author active via the layer
+        all_changed = changed | {str(p) for p in notice.GetResyncedPaths()}
+        if not all_changed:
             return
         for chunk in self._scene.get_chunks():
-            for _, param in _iter_chunk_params(chunk):
-                data_path = getattr(param, "_param_attr_path", None)
-                if not data_path or data_path not in changed:
-                    continue
-                attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
-                if attr and attr.IsValid():
-                    val = attr.Get(0)
-                    if val is not None and val != param.value:
-                        param.value = val
-            for _, vector in _iter_chunk_vectors(chunk):
-                data_path = getattr(vector, "_param_attr_path", None)
-                if not data_path or data_path not in changed:
-                    continue
-                attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
-                if attr and attr.IsValid():
-                    val = attr.Get(0)
-                    if val is not None:
-                        vector.value = val
+            if changed:
+                for _, param in _iter_chunk_params(chunk):
+                    data_path = getattr(param, "_param_attr_path", None)
+                    if not data_path or data_path not in changed:
+                        continue
+                    attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
+                    if attr and attr.IsValid():
+                        val = attr.Get(0)
+                        if val is not None and val != param.value:
+                            param.value = val
+                for _, vector in _iter_chunk_vectors(chunk):
+                    data_path = getattr(vector, "_param_attr_path", None)
+                    if not data_path or data_path not in changed:
+                        continue
+                    attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
+                    if attr and attr.IsValid():
+                        val = attr.Get(0)
+                        if val is not None:
+                            vector.value = val
+            chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
+            if not chunk_prim_path or chunk_prim_path not in all_changed:
+                continue
+            prim = sender.GetPrimAtPath(Sdf.Path(chunk_prim_path))
+            if not prim.IsValid():
+                continue
+            is_active = prim.IsActive()
+            is_disabled = chunk.has_state(ChunkFlags.State.DISABLED)
+            if not is_active and not is_disabled:
+                chunk.set_state(ChunkFlags.State.DISABLED)
+            elif is_active and is_disabled:
+                chunk.unset_state(ChunkFlags.State.DISABLED)
 
     def reload_for_stage(self, stage: Usd.Stage) -> None:
         """Reinitialize for a newly opened stage (File > Open).  Safe to call from a
@@ -289,7 +340,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     def _handle_param_rename(self, param: "core.ChunkParamBase", old_name: str, new_name: str) -> None:
         """Rename a param's USD attribute and patch expression strings."""
         chunk = next(
-            (c for c in self._scene.get_chunks() if param in list(_iter_chunk_params(c))[1::2]),
+            (c for c in self._scene.get_chunks() if any(p is param for _, p in _iter_chunk_params(c))),
             None,
         )
         if chunk is None:
@@ -569,16 +620,18 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             parent_ctx = getattr(chunk, "_parent_context", None)
             parent_ctx = parent_ctx() if parent_ctx else None
             if parent_ctx and getattr(parent_ctx, "prim_path", None):
-                parent_root = f"{parent_ctx.prim_path}/chunks"
+                parent_root = parent_ctx.prim_path
             else:
                 parent_root = _CHUNKS_ROOT
             prim_path = f"{parent_root}/{chunk.name}"
         else:
             prim_path = f"{_resolve_chunk_root(chunk)}/{chunk.name}"
         # If the path is already tracked, this chunk is being loaded from USD
-        # (load_chunks pre-registers paths before add_chunk). Skip _define_prim —
+        # (load_chunks pre-registers paths before add_chunk). Still register in
+        # _chunk_prim_paths so _sync_param_input can find it, but skip _define_prim —
         # the prim already exists in the sublayer; load_chunks handles _wire_inputs.
         if prim_path in self._loaded_prim_paths:
+            self._chunk_prim_paths[id(chunk)] = prim_path
             return
         self._loaded_prim_paths.add(prim_path)
         self._chunk_prim_paths[id(chunk)] = prim_path
@@ -752,7 +805,7 @@ def _resolve_chunk_root(chunk: "core.ChunkBase") -> str:
     """Return the parent prim path for chunk based on its context's prim_path."""
     context = chunk.get_context()
     if context and getattr(context, "prim_path", None):
-        return f"{context.prim_path}/chunks"
+        return context.prim_path
     return _CHUNKS_ROOT
 
 
@@ -1068,7 +1121,7 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
 
             # Fire CHUNK_LOADED only for terminal nodes (no DAG dependents) so that
             # execution propagates from the end of the chain rather than every node.
-            for _, added in deferred:
+            for prim, added in deferred:
                 if not added.get_dependents():
                     lm = ChunkLayerManager()
                     if lm.initialized:
@@ -1077,6 +1130,13 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
                     chunk_notice.send_notice(
                         chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
                     )
+                    # Restore saved values for params created dynamically during execute
+                    # (e.g. show_attribute in light.py populates attr_grp after the
+                    # chunk fires CHUNK_LOADED). The first _load_wire_inputs call runs
+                    # before execute so those params don't exist yet; this second pass
+                    # sets their values from the chunk-prim storage attrs, which triggers
+                    # _sync_vector_input to wire them and author the driven USD connection.
+                    _restore_dynamic_params(prim, added)
         finally:
             chunk_notice._loading_stage = old_loading_stage
 
@@ -1095,12 +1155,12 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
 
 
 def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
-    layer = Sdf.Layer.CreateAnonymous()
+    stage = Usd.Stage.CreateInMemory()
     prev_chunk = None
     for index, chunk in enumerate(scene.get_chunks()):
-        _author_prim(layer, chunk, prev_chunk, index)
+        _author_prim(stage, chunk, prev_chunk, index)
         prev_chunk = chunk
-    layer.Export(str(path))
+    stage.GetRootLayer().Export(str(path))
 
 
 def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | None") -> None:
@@ -1110,8 +1170,8 @@ def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | No
         context.prim_path = new_prim_path
         return
 
-    old_root = f"{context.prim_path}/chunks" if context.prim_path else _CHUNKS_ROOT
-    new_root = f"{new_prim_path}/chunks" if new_prim_path else _CHUNKS_ROOT
+    old_root = context.prim_path if context.prim_path else _CHUNKS_ROOT
+    new_root = new_prim_path if new_prim_path else _CHUNKS_ROOT
 
     if old_root == new_root:
         context.prim_path = new_prim_path
@@ -1189,8 +1249,12 @@ def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | No
 
     # Update path tracking in the sync singleton
     for chunk_obj in chunk_objs:
-        sync._loaded_prim_paths.discard(f"{old_root}/{chunk_obj.name}")
-        sync._loaded_prim_paths.add(f"{new_root}/{chunk_obj.name}")
+        old_tracked = f"{old_root}/{chunk_obj.name}"
+        new_tracked = f"{new_root}/{chunk_obj.name}"
+        sync._loaded_prim_paths.discard(old_tracked)
+        sync._loaded_prim_paths.add(new_tracked)
+        if sync._chunk_prim_paths.get(id(chunk_obj)) == old_tracked:
+            sync._chunk_prim_paths[id(chunk_obj)] = new_tracked
 
     context.prim_path = new_prim_path
 
@@ -1298,6 +1362,33 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
             param._connect_param_attr(attr)
 
 
+def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
+    """Restore saved values for params created dynamically inside a CHUNK_LOADED callback.
+
+    Params added during execute (e.g. show_attribute) aren't present when the first
+    _load_wire_inputs runs before execute, so their chunk-prim storage attrs are skipped.
+    After execute fires we scan those attrs again: if a param now exists but is still
+    wired to a real-prim attr (not the chunk-prim storage), we set its value from the
+    saved attr.  The resulting PARAM_CHANGED triggers _sync_param_input / _sync_vector_input
+    which wires the param to chunk storage and authors the driven USD connection.
+    """
+    prim_path = str(prim.GetPath())
+    for attr in prim.GetAttributes():
+        name = attr.GetName()
+        if not name.startswith(_INPUTS_PREFIX):
+            continue
+        param_path = name[len(_INPUTS_PREFIX):].replace(":", ".")
+        param = chunk.get_param(param_path)
+        if param is None:
+            continue
+        existing = getattr(param, "_param_attr_path", None)
+        if existing and existing.startswith(prim_path):
+            continue  # already wired to chunk storage from first _load_wire_inputs
+        val = attr.Get(0)
+        if val is not None:
+            param.value = val
+
+
 def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
     """Recreate Python-side lofted context params that were saved to USD.
 
@@ -1371,45 +1462,39 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             )
 
 
-def _author_prim(layer: Sdf.Layer, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:
+def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:
     chunk_root = _resolve_chunk_root(chunk)
-    root_sdf_path = Sdf.Path(chunk_root)
-    if not layer.GetPrimAtPath(root_sdf_path):
-        root_spec = Sdf.CreatePrimInLayer(layer, root_sdf_path)
-        root_spec.typeName = _CHUNK_PRIM_TYPENAME
-        root_spec.specifier = Sdf.SpecifierDef
+    stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
 
-    prim_path = Sdf.Path(f"{chunk_root}/{chunk.name}")
-    prim_spec = Sdf.CreatePrimInLayer(layer, prim_path)
-    prim_spec.typeName = _CHUNK_PRIM_TYPENAME
-    prim_spec.specifier = Sdf.SpecifierDef
+    prim = stage.DefinePrim(Sdf.Path(f"{chunk_root}/{chunk.name}"), _CHUNK_PRIM_TYPENAME)
 
-    schemas = Sdf.TokenListOp()
-    schemas.prependedItems = ["NodeGraphNodeAPI"]
-    prim_spec.SetInfo("apiSchemas", schemas)
-    if "ui:nodegraph:node:pos" not in prim_spec.attributes:
-        pos_spec = Sdf.AttributeSpec(prim_spec, "ui:nodegraph:node:pos", Sdf.ValueTypeNames.Float2)
-        pos_spec.default = Gf.Vec2f(index * _NODE_STEP, 0.0)
+    ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
+    if not ui_api.GetPosAttr().HasAuthoredValue():
+        ui_api.CreatePosAttr(Gf.Vec2f(index * _NODE_STEP, 0.0))
 
     config = chunk.get_config()
     if config and config.module:
-        attr_spec = Sdf.AttributeSpec(prim_spec, _CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token)
-        attr_spec.default = config.module
-        attr_spec.variability = Sdf.VariabilityUniform
+        attr = prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
+        attr.SetVariability(Sdf.VariabilityUniform)
+        attr.Set(config.module)
 
-    config = chunk.get_config()
     if not (config and config.terminal):
-        exec_out_spec = Sdf.AttributeSpec(prim_spec, _EXEC_OUTPUT, Sdf.ValueTypeNames.Token)
-        exec_out_spec.variability = Sdf.VariabilityUniform
+        exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
+        exec_out.SetVariability(Sdf.VariabilityUniform)
 
     deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
     if not deps and prev_chunk:
         deps = [prev_chunk]
     if deps:
-        exec_in_spec = Sdf.AttributeSpec(prim_spec, _EXEC_INPUT, Sdf.ValueTypeNames.Token)
-        exec_in_spec.connectionPathList.explicitItems = [
-            Sdf.Path(f"{_resolve_chunk_root(dep)}/{dep.name}.{_EXEC_OUTPUT}") for dep in deps
-        ]
+        exec_in = prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        exec_in.SetConnections([
+            Sdf.Path(
+                f"{dep.prim_path}.{_EXEC_OUTPUT}"
+                if dep.has_flag(ChunkFlags.GroupFlags.CONTEXT) and getattr(dep, "prim_path", None)
+                else f"{_resolve_chunk_root(dep)}/{dep.name}.{_EXEC_OUTPUT}"
+            )
+            for dep in deps
+        ])
 
     # Build a name → context_param map for lofted params (direct ChunkParamBase children of context)
     context = chunk.get_context()
@@ -1425,42 +1510,58 @@ def _author_prim(layer: Sdf.Layer, chunk: "core.ChunkBase", prev_chunk: "core.Ch
             store_value = param.value  # proxy params delegate raw_value to the template (None); use value instead
         if store_value is None:
             continue
+        if store_value == getattr(param, "default_value", None):
+            continue
         sdf_type, usd_value = _sdf_type_and_value(store_value)
         if sdf_type is None:
             continue
 
-        attr_spec_name = f"{_INPUTS_PREFIX}{path.replace('.', ':')}"
+        attr_name = f"{_INPUTS_PREFIX}{path.replace('.', ':')}"
         ctx_param = lofted.get(param.name)
 
         if ctx_param:
             # Param is lofted: write a connection on the inner attr and author the context prim's attr
             ctx_attr_path_str = ctx_param._param_attr_path  # e.g. "/chunks.inputs:mySlider"
             ctx_prim_str, ctx_attr_name = ctx_attr_path_str.rsplit(".", 1)
-            ctx_prim_sdf = Sdf.Path(ctx_prim_str)
+            ctx_prim = stage.GetPrimAtPath(Sdf.Path(ctx_prim_str))
+            if not (ctx_prim and ctx_prim.IsValid()):
+                ctx_prim = stage.DefinePrim(Sdf.Path(ctx_prim_str), _CHUNK_PRIM_TYPENAME)
+            ctx_attr = ctx_prim.CreateAttribute(ctx_attr_name, sdf_type, custom=True)
+            ctx_attr.Set(ctx_param.value if ctx_param.value is not None else param.value)
 
-            if not layer.GetPrimAtPath(ctx_prim_sdf):
-                ctx_prim_spec = Sdf.CreatePrimInLayer(layer, ctx_prim_sdf)
-                ctx_prim_spec.typeName = _CHUNK_PRIM_TYPENAME
-                ctx_prim_spec.specifier = Sdf.SpecifierDef
-            ctx_prim_spec = layer.GetPrimAtPath(ctx_prim_sdf)
-
-            if ctx_attr_name not in ctx_prim_spec.attributes:
-                ctx_attr_spec = Sdf.AttributeSpec(ctx_prim_spec, ctx_attr_name, sdf_type)
-                val = ctx_param.value if ctx_param.value is not None else param.value
-                ctx_attr_spec.default = val
-
-            attr_spec = Sdf.AttributeSpec(prim_spec, attr_spec_name, sdf_type)
-            attr_spec.default = ctx_param.value if ctx_param.value is not None else usd_value
-            attr_spec.connectionPathList.explicitItems = [Sdf.Path(ctx_attr_path_str)]
+            inner_attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+            inner_attr.Set(ctx_param.value if ctx_param.value is not None else usd_value)
+            inner_attr.SetConnections([Sdf.Path(ctx_attr_path_str)])
         else:
-            attr_spec = Sdf.AttributeSpec(prim_spec, attr_spec_name, sdf_type)
-            attr_spec.default = usd_value
+            attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+            attr.Set(usd_value)
             if isinstance(store_value, str) and chunk_utils.has_expression(store_value):
-                conn_paths = [
+                attr.SetConnections([
                     Sdf.Path(f"{chunk_root}/{node_name}.inputs:{param_name}")
                     for node_name, param_name in chunk_utils.parse_expression(store_value)
-                ]
-                attr_spec.connectionPathList.explicitItems = conn_paths
+                ])
+
+    for vec_path, vector in _iter_chunk_vectors(chunk):
+        val = vector.value
+        if not val or not any(v is not None for v in val):
+            continue
+        if val == vector.default_value:
+            continue
+        attr_name = f"{_INPUTS_PREFIX}{vec_path.replace('.', ':')}"
+        # If the vector is already wired to a real USD attr, preserve its exact type
+        backing = getattr(vector, '_param_attr_path', None)
+        if backing:
+            real_attr = stage.GetAttributeAtPath(Sdf.Path(backing))
+            if real_attr and real_attr.IsValid() and real_attr.HasAuthoredValue():
+                if (current_val := real_attr.Get()) is not None:
+                    attr = prim.CreateAttribute(attr_name, real_attr.GetTypeName(), custom=False)
+                    attr.Set(current_val)
+                    continue
+        sdf_type, usd_value = _sdf_vector_type(val)
+        if sdf_type is None:
+            continue
+        attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+        attr.Set(usd_value)
 
     # Serialize ListGroup template params as arrays: inputs:list_name:param_name = [v0, v1, ...]
     for lg_path, list_group in _iter_list_group_arrays(chunk):
@@ -1480,6 +1581,5 @@ def _author_prim(layer: Sdf.Layer, chunk: "core.ChunkBase", prev_chunk: "core.Ch
             sdf_type, usd_value = _sdf_type_and_value(values)
             if sdf_type is None:
                 continue
-            attr_spec_name = f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}"
-            attr_spec = Sdf.AttributeSpec(prim_spec, attr_spec_name, sdf_type)
-            attr_spec.default = usd_value
+            attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}", sdf_type, custom=False)
+            attr.Set(usd_value)

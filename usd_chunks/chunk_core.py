@@ -2139,7 +2139,7 @@ class ChunkCommon(AttributesBase):
 
     # Type specific flags, can be used for setting custom flags.
     flags: IntFlag = attrs.field(
-        default=IntFlag(0),
+        default=0,
         metadata=AttributeMetadata(sender_alias=chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED),
     )  # type: ignore
 

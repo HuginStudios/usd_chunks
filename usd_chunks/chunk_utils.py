@@ -26,19 +26,18 @@ def get_unique_path(stage, prim_path):
     """
     raw_value = getattr(prim_path, 'raw_value', None)
     if raw_value is not None:
+        # Clear the chunk's procedural layer before resolving the path so stale prims
+        # from a previous execution are removed regardless of whether the new path
+        # comes from a literal value or an expression.
+        chunk = getattr(prim_path, 'get_chunk', lambda: None)()
+        if chunk is not None:
+            layer = chunk.get_edit_context()
+            if layer and layer.anonymous:
+                layer.Clear()
+
         if isinstance(raw_value, str) and has_expression(raw_value):
             resolved = getattr(prim_path, 'value', None)
             return str(resolved) if resolved is not None else ""
-
-        # Clear the old prim spec from the chunk's procedural layer before checking
-        # uniqueness — otherwise our own previous authoring counts as "taken"
-        old_path = getattr(prim_path, 'value', None)
-        if old_path:
-            chunk = getattr(prim_path, 'get_chunk', lambda: None)()
-            if chunk is not None:
-                layer = chunk.get_edit_context()
-                if layer and layer.anonymous:
-                    layer.Clear()
 
         prim_path = getattr(prim_path, 'value', prim_path)
 
