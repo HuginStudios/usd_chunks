@@ -170,7 +170,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 spec.ClearDefaultValue()
 
     def _on_contents_changed(self, notice, sender):
-        if not self._scene:
+        if chunk_notice._usd_write_active or not self._scene:
             return
         stage = notice.GetStage()
         if not stage:
@@ -188,13 +188,28 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if not getattr(sender, "prim_path", None):
                 return  # tab context — no USD prim to remove
             sdf_path = Sdf.Path(sender.prim_path)
+            chunk_root = str(sdf_path.GetParentPath())
         else:
             chunk_root = _resolve_chunk_root(sender)
             sdf_path = Sdf.Path(f"{chunk_root}/{sender.name}")
+        prim_path_str = str(sdf_path)
+        self._loaded_prim_paths.discard(prim_path_str)
+        self._chunk_prim_paths.pop(id(sender), None)
+
         for layer in self._stage.GetLayerStack(includeSessionLayers=True):
             parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
             if parent and sdf_path.name in parent.nameChildren:
                 del parent.nameChildren[sdf_path.name]
+
+        root_sdf = Sdf.Path(chunk_root)
+        root_prim = self._stage.GetPrimAtPath(root_sdf)
+        if root_prim.IsValid() and not any(
+            child.GetTypeName() == _CHUNK_PRIM_TYPENAME for child in root_prim.GetChildren()
+        ):
+            for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+                root_parent = layer.GetPrimAtPath(root_sdf.GetParentPath())
+                if root_parent and root_sdf.name in root_parent.nameChildren:
+                    del root_parent.nameChildren[root_sdf.name]
 
     def _on_state_changed(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
@@ -218,27 +233,42 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
         self._stage = sender
         changed = {str(p) for p in notice.GetChangedInfoOnlyPaths()}
-        if not changed:
+        # Include resynced paths for editors (e.g. usdview) that author active via the layer
+        all_changed = changed | {str(p) for p in notice.GetResyncedPaths()}
+        if not all_changed:
             return
         for chunk in self._scene.get_chunks():
-            for _, param in _iter_chunk_params(chunk):
-                data_path = getattr(param, "_param_attr_path", None)
-                if not data_path or data_path not in changed:
-                    continue
-                attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
-                if attr and attr.IsValid():
-                    val = attr.Get(0)
-                    if val is not None and val != param.value:
-                        param.value = val
-            for _, vector in _iter_chunk_vectors(chunk):
-                data_path = getattr(vector, "_param_attr_path", None)
-                if not data_path or data_path not in changed:
-                    continue
-                attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
-                if attr and attr.IsValid():
-                    val = attr.Get(0)
-                    if val is not None:
-                        vector.value = val
+            if changed:
+                for _, param in _iter_chunk_params(chunk):
+                    data_path = getattr(param, "_param_attr_path", None)
+                    if not data_path or data_path not in changed:
+                        continue
+                    attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
+                    if attr and attr.IsValid():
+                        val = attr.Get(0)
+                        if val is not None and val != param.value:
+                            param.value = val
+                for _, vector in _iter_chunk_vectors(chunk):
+                    data_path = getattr(vector, "_param_attr_path", None)
+                    if not data_path or data_path not in changed:
+                        continue
+                    attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
+                    if attr and attr.IsValid():
+                        val = attr.Get(0)
+                        if val is not None:
+                            vector.value = val
+            chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
+            if not chunk_prim_path or chunk_prim_path not in all_changed:
+                continue
+            prim = sender.GetPrimAtPath(Sdf.Path(chunk_prim_path))
+            if not prim.IsValid():
+                continue
+            is_active = prim.IsActive()
+            is_disabled = chunk.has_state(ChunkFlags.State.DISABLED)
+            if not is_active and not is_disabled:
+                chunk.set_state(ChunkFlags.State.DISABLED)
+            elif is_active and is_disabled:
+                chunk.unset_state(ChunkFlags.State.DISABLED)
 
     def reload_for_stage(self, stage: Usd.Stage) -> None:
         """Reinitialize for a newly opened stage (File > Open).  Safe to call from a
@@ -590,7 +620,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             parent_ctx = getattr(chunk, "_parent_context", None)
             parent_ctx = parent_ctx() if parent_ctx else None
             if parent_ctx and getattr(parent_ctx, "prim_path", None):
-                parent_root = f"{parent_ctx.prim_path}/chunks"
+                parent_root = parent_ctx.prim_path
             else:
                 parent_root = _CHUNKS_ROOT
             prim_path = f"{parent_root}/{chunk.name}"
@@ -775,7 +805,7 @@ def _resolve_chunk_root(chunk: "core.ChunkBase") -> str:
     """Return the parent prim path for chunk based on its context's prim_path."""
     context = chunk.get_context()
     if context and getattr(context, "prim_path", None):
-        return f"{context.prim_path}/chunks"
+        return context.prim_path
     return _CHUNKS_ROOT
 
 
@@ -1140,8 +1170,8 @@ def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | No
         context.prim_path = new_prim_path
         return
 
-    old_root = f"{context.prim_path}/chunks" if context.prim_path else _CHUNKS_ROOT
-    new_root = f"{new_prim_path}/chunks" if new_prim_path else _CHUNKS_ROOT
+    old_root = context.prim_path if context.prim_path else _CHUNKS_ROOT
+    new_root = new_prim_path if new_prim_path else _CHUNKS_ROOT
 
     if old_root == new_root:
         context.prim_path = new_prim_path
@@ -1219,8 +1249,12 @@ def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | No
 
     # Update path tracking in the sync singleton
     for chunk_obj in chunk_objs:
-        sync._loaded_prim_paths.discard(f"{old_root}/{chunk_obj.name}")
-        sync._loaded_prim_paths.add(f"{new_root}/{chunk_obj.name}")
+        old_tracked = f"{old_root}/{chunk_obj.name}"
+        new_tracked = f"{new_root}/{chunk_obj.name}"
+        sync._loaded_prim_paths.discard(old_tracked)
+        sync._loaded_prim_paths.add(new_tracked)
+        if sync._chunk_prim_paths.get(id(chunk_obj)) == old_tracked:
+            sync._chunk_prim_paths[id(chunk_obj)] = new_tracked
 
     context.prim_path = new_prim_path
 

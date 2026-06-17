@@ -487,6 +487,157 @@ def test_chunk_stage_sync_delete_chunk() -> None:
     assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/del").IsValid()
 
 
+def test_delete_chunk_removes_anonymous_layer() -> None:
+    """Releasing a deleted chunk removes its anonymous layer from the stage sublayer stack.
+
+    ChunkLayerManager registers a weakref.finalize on each chunk so that GC triggers
+    removal of the sublayer.  This test verifies that after request_delete() + del the
+    anonymous layer is no longer reachable via stage.GetLayerStack().
+    """
+    import gc
+
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)  # initialises both ChunkLayerManager and ChunkStageSync
+
+    c = _chunk_with_module("anon_del")
+    scene.add_chunk(c)
+
+    lm = chunk_registry.ChunkLayerManager()
+    layer = lm.get_layer(c.get_hash())
+    assert layer is not None, "chunk should have an anonymous layer after add"
+    layer_id = layer.identifier
+    assert layer_id in {lay.identifier for lay in stage.GetLayerStack(includeSessionLayers=True)}
+
+    c.request_delete()
+    del c  # release test reference so weakref.finalize can fire
+    gc.collect()
+
+    assert layer_id not in {lay.identifier for lay in stage.GetLayerStack(includeSessionLayers=True)}
+
+
+def test_delete_loaded_chunk_removes_prim() -> None:
+    """Deleting a chunk that was loaded from a USDA file removes its prim from the stage.
+
+    Regression guard: _on_chunk_deleted must find and remove the prim from the session
+    layer even when the chunk was populated via load_chunks rather than add_chunk.
+    The prim path must match the loaded chunk name (load_chunks uses the module's
+    default name, e.g. "prim" module → chunk "Prim" → prim at /chunks/Prim).
+    """
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+
+    prim_path = Sdf.Path(f"{_CHUNKS_ROOT}/Prim")
+    prim = stage.DefinePrim(prim_path, _CHUNK_PRIM_TYPENAME)
+    prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token).Set("prim")
+
+    _chunk_usd_init(stage, scene)
+
+    loaded = next((c for c in scene.get_chunks() if c.name == "Prim"), None)
+    assert loaded is not None, "chunk not found after load_chunks"
+    assert stage.GetPrimAtPath(prim_path).IsValid()
+
+    loaded.request_delete()
+
+    assert not stage.GetPrimAtPath(prim_path).IsValid()
+
+
+def test_delete_last_chunk_removes_chunks_root() -> None:
+    """Deleting the last chunk under /chunks removes the /chunks root prim too."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    c = _chunk_with_module("Solo")
+    scene.add_chunk(c)
+    assert stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid()
+
+    c.request_delete()
+
+    assert not stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid()
+
+
+def test_delete_one_of_two_chunks_keeps_chunks_root() -> None:
+    """Deleting one chunk when another still exists must not remove /chunks."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    c1 = _chunk_with_module("A")
+    c2 = _chunk_with_module("B")
+    scene.add_chunk(c1)
+    scene.add_chunk(c2)
+
+    c1.request_delete()
+
+    assert stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid()
+    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/B").IsValid()
+
+
+def test_delete_then_readd_same_type_recreates_prim() -> None:
+    """Re-adding a chunk of the same type after deletion must recreate the chunk prim.
+
+    Regression: _on_param_added adds every new prim path to _loaded_prim_paths so that
+    duplicate add_chunk calls from load_chunks are ignored.  _on_chunk_deleted was not
+    discarding the path, so the second add_chunk hit the early-return and skipped
+    _define_prim entirely.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    c1 = _chunk_with_module("Prim")
+    scene.add_chunk(c1)
+    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Prim").IsValid()
+
+    c1.request_delete()
+    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Prim").IsValid()
+
+    c2 = _chunk_with_module("Prim")
+    scene.add_chunk(c2)
+    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Prim").IsValid()
+
+
+# ---------------------------------------------------------------------------
+# ChunkStageSync: external USD active change syncs to chunk disabled state
+# ---------------------------------------------------------------------------
+
+def test_external_prim_deactivate_disables_chunk() -> None:
+    """Setting prim.SetActive(False) externally (e.g. from Python or usdview) must
+    propagate back to the chunk's DISABLED state via _on_objects_changed.
+
+    The scene must return the same stage so the root-layer identity check passes.
+    """
+    stage = Usd.Stage.CreateInMemory()
+
+    class _SyncScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _SyncScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    c = _chunk_with_module("ext")
+    scene.add_chunk(c)
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/ext")
+    assert prim.IsActive()
+    assert not c.has_state(chunk.ChunkFlags.State.DISABLED)
+
+    prim.SetActive(False)
+
+    assert c.has_state(chunk.ChunkFlags.State.DISABLED)
+
+    prim.SetActive(True)
+
+    assert not c.has_state(chunk.ChunkFlags.State.DISABLED)
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync lifecycle: chunk disable / enable toggles prim active state
 # ---------------------------------------------------------------------------
@@ -801,10 +952,9 @@ def test_rename_context_prim_path() -> None:
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
     ChunkStageSync().initialize(stage, scene)
 
-    # Author a sub-chunk prim at the old location
-    stage.DefinePrim(Sdf.Path("/old_ctx/chunks"), _CHUNK_PRIM_TYPENAME)
-    stage.DefinePrim(Sdf.Path("/old_ctx/chunks/c1"), _CHUNK_PRIM_TYPENAME)
-    assert stage.GetPrimAtPath("/old_ctx/chunks/c1").IsValid()
+    # Author a sub-chunk prim at the old location (no /chunks intermediate)
+    stage.DefinePrim(Sdf.Path("/old_ctx/c1"), _CHUNK_PRIM_TYPENAME)
+    assert stage.GetPrimAtPath("/old_ctx/c1").IsValid()
 
     # Context chunk that owns c1 as a sub-chunk
     ctx = _chunk_with_module("ctx")
@@ -815,8 +965,37 @@ def test_rename_context_prim_path() -> None:
     rename_context_prim_path(ctx, "/new_ctx")
 
     assert ctx.prim_path == "/new_ctx"
-    assert stage.GetPrimAtPath("/new_ctx/chunks/c1").IsValid()
-    assert not stage.GetPrimAtPath("/old_ctx/chunks/c1").IsValid()
+    assert stage.GetPrimAtPath("/new_ctx/c1").IsValid()
+    assert not stage.GetPrimAtPath("/old_ctx/c1").IsValid()
+
+
+def test_rename_context_prim_path_updates_chunk_prim_paths() -> None:
+    """rename_context_prim_path must update ChunkStageSync._chunk_prim_paths.
+
+    Regression: after rename the tracking dict still pointed to the old path so
+    state sync and active-state detection silently stopped working — the prim
+    appeared to 'disappear' from the sync's perspective even though it moved.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    # Tab context with no prim_path — sub-chunks default to /chunks
+    ctx = scene.add_context("MyTab")
+    c1 = _chunk_with_module("c1")
+    scene.add_chunk(c1)  # → ctx.add_param(c1) → prim at /chunks/c1
+
+    sync = ChunkStageSync()
+    assert stage.GetPrimAtPath("/chunks/c1").IsValid(), "prim must exist before rename"
+    assert sync._chunk_prim_paths.get(id(c1)) == "/chunks/c1"
+
+    rename_context_prim_path(ctx, "/mychunks")
+
+    assert stage.GetPrimAtPath("/mychunks/c1").IsValid(), "prim must be at new path"
+    assert not stage.GetPrimAtPath("/chunks/c1").IsValid(), "old prim must be removed"
+    assert sync._chunk_prim_paths.get(id(c1)) == "/mychunks/c1", \
+        "_chunk_prim_paths must be updated so sync still finds the chunk"
 
 
 # ---------------------------------------------------------------------------
