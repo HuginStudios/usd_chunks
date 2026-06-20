@@ -84,6 +84,7 @@ from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
 if TYPE_CHECKING:
     from attr import Attribute
 
+
 ###########
 # CONFIGS #
 ###########
@@ -374,6 +375,7 @@ class TextEdit(ChunkParamBase[str]):
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+    rows: int | None = field(default=None, metadata={"validate": False, "convert": False})
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:

@@ -582,6 +582,7 @@ class ChunkModule(chunk_serial.Serializeable):
             for c in loaded:
                 self.config.module = self.module_name
                 c._config = self.config
+                c._module = self.module
 
         return loaded
 

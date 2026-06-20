@@ -1,44 +1,35 @@
-from usd_chunks import chunk, chunk_utils, chunk_notice
+from usd_chunks import chunk, chunk_utils
 
 
-def execute(owner, notice, _sender):
-    param = notice.data
-    _chunk = param.get_chunk()
-    if getattr(_chunk, '_executing', False):
-        return
-    _chunk._executing = True
-    try:
-        _execute(_chunk, owner)
-    finally:
-        _chunk._executing = False
-
-
-def _execute(_chunk, owner):
-    stage = owner.get_stage()
-
+def execute(node):
+    stage = node.get_stage()
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-    raw_path = _chunk.get_param("primpath_location").value
+    raw_path = node.get_param("primpath_location").value
 
-    vs_list   = _chunk.get_param("variant_entries", chunk.is_inst(chunk.ListGroup))
-    vs_name_t = vs_list.get_param("vs_name")
-    v_names_t = vs_list.get_param("v_names")
+    vs_list   = node.get_param("variant_entries", chunk.is_inst(chunk.ListGroup))
+    vs_name_t  = vs_list.get_param("vs_name")
+    v_names_t  = vs_list.get_param("v_names")
+    v_default_t = vs_list.get_param("v_default")
 
-    vsets: dict[str, list[str]] = {}
+    vsets: dict[str, tuple[list[str], str]] = {}
     for i in range(vs_list.size):
-        vs_name = vs_list.get_indexed_param(vs_name_t, i).value or ""
-        v_names = vs_list.get_indexed_param(v_names_t, i).value or ""
+        vs_name   = vs_list.get_indexed_param(vs_name_t, i).value or ""
+        v_names   = vs_list.get_indexed_param(v_names_t, i).value or ""
+        v_default = vs_list.get_indexed_param(v_default_t, i).value or ""
         if vs_name:
             variants = [v.strip() for v in v_names.split(",") if v.strip()]
-            vsets[vs_name] = variants
+            vsets[vs_name] = (variants, v_default)
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         target_prim = stage.OverridePrim(target_path)
-        for vs_name, variants in vsets.items():
+        for vs_name, (variants, v_default) in vsets.items():
             vset = target_prim.GetVariantSets().AddVariantSet(vs_name)
             for v in variants:
                 vset.AddVariant(v)
+            if v_default and v_default in variants:
+                vset.SetVariantSelection(v_default)
 
 
 def main():
@@ -51,16 +42,13 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
     )
     chunk_api.add_param(primpath)
-    primpath.add_callback(execute)
-
-    vs_list = chunk.ListGroup("variant_entries")
-    vs_name = chunk.LineEdit("vs_name", "Variant Set", flags=chunk.ChunkFlags.ParamFlags.LABELED)
-    v_names = chunk.LineEdit("v_names", "Variants",    flags=chunk.ChunkFlags.ParamFlags.LABELED)
-    vs_list.add_params([vs_name, v_names])
+    vs_list   = chunk.ListGroup("variant_entries")
+    vs_name   = chunk.LineEdit("vs_name",   "Variant Set", flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    v_names   = chunk.LineEdit("v_names",   "Variants",    flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    v_default = chunk.LineEdit("v_default", "Default",     flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    vs_list.add_params([vs_name, v_names, v_default])
     vs_list.size = 1
-    vs_list.add_callback(execute)
     chunk_api.add_param(vs_list)
-    chunk_api.add_callback(execute, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
 
     return chunk_api
 

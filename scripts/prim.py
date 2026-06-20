@@ -1,25 +1,11 @@
-from usd_chunks import chunk, chunk_utils, chunk_notice
-
-def execute(owner, notice, sender):
-    param = notice.data
-    _chunk = param.get_chunk()
-
-    if getattr(_chunk, '_executing', False):
-        return
-    _chunk._executing = True
-
-    try:
-        _execute(_chunk, owner)
-    finally:
-        _chunk._executing = False
+from usd_chunks import chunk, chunk_utils
 
 
-def _execute(_chunk, owner):
-    stage = owner.get_stage()
-
-    primpath_param = _chunk.get_param("primpath_location")
+def execute(node):
+    stage = node.get_stage()
+    primpath_param = node.get_param("primpath_location")
     raw_path = primpath_param.value
-    prim_type = _chunk.get_param("prim_type").value
+    prim_type = node.get_param("prim_type").value
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
 
     if not var_selections:
@@ -47,17 +33,12 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
     )
     chunk_api.add_param(primpath)
-    primpath.add_callback(execute)
-
     prim_type = chunk.Menu(
         "prim_type",
         "Prim type",
         menu_items=["Xform", "Scope", "Class"],
     )
     chunk_api.add_param(prim_type)
-    prim_type.add_callback(execute)
-
-    chunk_api.add_callback(execute, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
 
     return chunk_api
 

@@ -368,6 +368,10 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
         self.text.setFont(font)
 
+        if param.rows is not None:
+            line_h = QtGui.QFontMetrics(self.text.font()).lineSpacing()
+            self.text.setFixedHeight(param.rows * line_h + 4)
+
         self.main_layout = QtWidgets.QHBoxLayout()
 
         self.main_layout.setContentsMargins(0, 0, 0, 0)

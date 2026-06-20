@@ -115,6 +115,8 @@ def author_in_variant_context(stage, path_str):
 
     session_target = Usd.EditTarget(stage.GetSessionLayer())
 
+    session_layer = stage.GetSessionLayer()
+
     with ExitStack() as stack:
         for anchor_prim_path, vs_name, variant in var_selections:
             anchor_prim = stage.GetPrimAtPath(anchor_prim_path)
@@ -122,13 +124,19 @@ def author_in_variant_context(stage, path_str):
                 anchor_prim = stage.OverridePrim(anchor_prim_path)
             vset = anchor_prim.GetVariantSets().GetVariantSet(vs_name)
 
+            # Record only the session-layer opinion — not the composed selection.
+            # Restoring the composed prev would bleed upstream chunk-layer defaults
+            # back into the session layer, overriding downstream overrides.
+            spec = session_layer.GetPrimAtPath(anchor_prim_path)
+            prev_session = dict(spec.variantSelections).get(vs_name, "") if spec else ""
+
             with Usd.EditContext(stage, session_target):
-                prev = vset.GetVariantSelection()
                 vset.SetVariantSelection(variant)
 
-            # Clean up the session layer selection after the variant context
-            # exits (LIFO: callback registered before enter_context).
-            def _restore(v=vset, p=prev):
+            # On exit, restore only what was already in the session layer.
+            # If the session layer had no prior opinion, clear it so the
+            # session layer stays free of composed (chunk-layer) opinions.
+            def _restore(v=vset, p=prev_session):
                 with Usd.EditContext(stage, session_target):
                     if p:
                         v.SetVariantSelection(p)

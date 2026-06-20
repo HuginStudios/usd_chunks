@@ -1076,6 +1076,7 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
         chunk_notice._loading_stage = stage
         try:
             deferred = []  # (prim, chunk)
+            top_level_chunk_ids: set[int] = set()
             group_chunk_by_path: dict[str, "core.ChunkBase"] = {}
             for prim, mod in prim_mods:
                 # Walk up the prim's parent chain to find the nearest loaded ChunkGroup.
@@ -1104,10 +1105,12 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
                         if added := scene.add_chunk(c, notify=False):
                             _load_wire_inputs(prim, added)
                             deferred.append((prim, added))
+                            top_level_chunk_ids.add(id(added))
 
             # Restore DAG dependencies from inputs:chunk connections so execution
             # order is driven by the explicit graph, not just prim appearance order.
             chunk_by_name = {c.name: c for _, c in deferred}
+            chunks_with_dependencies: set[int] = set()
             for prim, chunk in deferred:
                 exec_attr = prim.GetAttribute(_EXEC_INPUT)
                 if not (exec_attr and exec_attr.IsValid()):
@@ -1116,26 +1119,62 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
                     dep_name = str(conn_path.GetPrimPath()).rsplit("/", 1)[-1]
                     if dep := chunk_by_name.get(dep_name):
                         chunk.add_dependency(dep)
+                        chunks_with_dependencies.add(id(chunk))
 
             _restore_lofted_params(stage, deferred)
 
-            # Fire CHUNK_LOADED only for terminal nodes (no DAG dependents) so that
-            # execution propagates from the end of the chain rather than every node.
+            # Wire the context (ChunkGroup) as DagNode owner of its terminal sub-chunks.
+            # Terminal nodes have no outputs so DagNode.should_solve() returns False by
+            # default, skipping them in the cascade. Setting the owner makes them solve.
+            chunks_that_are_deps: set[int] = set()
+            for _, c in deferred:
+                for _, dep in c.get_dependencies():
+                    chunks_that_are_deps.add(id(dep))
+            for _, c in deferred:
+                if id(c) not in chunks_that_are_deps:
+                    context = c.get_context()
+                    if context and isinstance(context, core.ChunkBase):
+                        c.get_dag_node().set_owner(context)
+
+            # Trigger the DAG solve for root nodes (no upstream dependencies).
+            # The solve cascades to dependents in topological order via add_dependency.
+            # Top-level chunks always execute. Sub-chunks inside ChunkGroups only
+            # execute when ChunkLayerManager owns this specific stage — a stale
+            # singleton from a different test/session must not add layers to the
+            # wrong stage stack or call execute prematurely.
+            lm = ChunkLayerManager()
+            can_execute_sub_chunks = lm.initialized and lm.stage is stage
+
+            # Re-sort graph sublayers so downstream chunks (higher sort_key after
+            # wiring) end up with stronger layers than their upstream dependencies.
+            # Layers are created early (during _load_wire_inputs) when sort_keys
+            # are all 0, so the initial insertion order needs correction here.
+            if lm.initialized:
+                layer_to_sk: dict[str, int] = {
+                    lay.identifier: c.get_dag_node().get_sort_key()
+                    for _, c in deferred
+                    if (lay := lm.get_layer(c))
+                }
+                for g_layer in lm.graph_layers.values():
+                    sl = list(g_layer.subLayerPaths)
+                    sl.sort(key=lambda ident: layer_to_sk.get(ident, 0), reverse=True)
+                    g_layer.subLayerPaths = sl  # type: ignore
+
+            for prim, added in deferred:
+                if id(added) not in chunks_with_dependencies:
+                    is_top_level = id(added) in top_level_chunk_ids
+                    if is_top_level or can_execute_sub_chunks:
+                        if lm.initialized:
+                            lm.get_or_create_layer(added)
+                        added.execute()
+
+            # Fire CHUNK_LOADED for terminal nodes (UI notification) and restore
+            # params that were created dynamically inside execute (e.g. show_attribute).
             for prim, added in deferred:
                 if not added.get_dependents():
-                    lm = ChunkLayerManager()
-                    if lm.initialized:
-                        if layer := lm.get_or_create_layer(added):
-                            layer.Clear()
                     chunk_notice.send_notice(
                         chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
                     )
-                    # Restore saved values for params created dynamically during execute
-                    # (e.g. show_attribute in light.py populates attr_grp after the
-                    # chunk fires CHUNK_LOADED). The first _load_wire_inputs call runs
-                    # before execute so those params don't exist yet; this second pass
-                    # sets their values from the chunk-prim storage attrs, which triggers
-                    # _sync_vector_input to wire them and author the driven USD connection.
                     _restore_dynamic_params(prim, added)
         finally:
             chunk_notice._loading_stage = old_loading_stage
