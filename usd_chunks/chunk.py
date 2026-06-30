@@ -80,6 +80,7 @@ from usd_chunks.chunk_core import (
 )
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
+from usd_chunks import chunk_utils
 
 if TYPE_CHECKING:
     from attr import Attribute
@@ -333,6 +334,16 @@ class LineEdit(ChunkParamBase[str]):
         """
         self.value = ",".join([str(x.GetPath()) for x in prims])
 
+    def resolve_paths(self) -> list[str]:
+        """Return the list of prim path strings after expanding globs in the value.
+
+        Supports space/comma separation and Houdini-style glob patterns:
+          *   within one path component, **  across any depth, ?  single char.
+        """
+        if not (stage := self.get_stage()) or not self.value:
+            return []
+        return chunk_utils.resolve_prim_paths(stage, self.value)
+
     def get_prims(self) -> Sequence[Usd.Prim]:
         """
         If this param is a list of prim paths (comma separated), then return the prims on the stage
@@ -342,11 +353,7 @@ class LineEdit(ChunkParamBase[str]):
         """
         if not (stage := self.get_stage()):
             return []
-        res = []
-        for pp in self.value.split(","):
-            if pp and (prm := stage.GetPrimAtPath(pp)) and prm.IsValid():
-                res.append(prm)
-        return res
+        return [prm for pp in self.resolve_paths() if (prm := stage.GetPrimAtPath(pp)) and prm.IsValid()]
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -428,6 +435,22 @@ class Separator(ChunkParamBase):
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.SEPARATOR
+
+
+class ColorPicker(ChunkParamBase[tuple]):
+    """
+    A color parameter holding an (r, g, b) tuple with values in 0-1 range.
+    Renders as a color swatch that opens a QColorDialog on click.
+    """
+
+    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.COLOR_PICKER
+
+    def evaluate_type(self) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.COLOR_PICKER
 
 
 class Custom(ChunkParamBase):

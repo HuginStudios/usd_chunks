@@ -2666,6 +2666,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
         For every path in _driven_attr_paths: ensure the attribute exists on the real prim
         (creating it with the storage attr's type if absent), then author
         real_attr.SetConnections([storage_path]).
+
+        Always writes into the chunk's own layer (anonymous for procedural, file for
+        interactive) so these connections never land in the session layer and can be
+        overridden in the same layer by wire_shader_input after connect_usd_attr.
         """
         if not self._param_attr_path:
             return
@@ -2677,6 +2681,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             return
         storage_path = Sdf.Path(self._param_attr_path)
         type_name = storage_attr.GetTypeName()
+        chunk_layer = self.get_edit_context()
 
         for path in self._driven_attr_paths:
             sdf_path = Sdf.Path(path)
@@ -2687,7 +2692,11 @@ class ChunkUsdAttributeSupport(AttributesBase):
                     continue
                 real_attr = prim.CreateAttribute(sdf_path.name, type_name, custom=False)
             if real_attr and real_attr.IsValid():
-                real_attr.SetConnections([storage_path])
+                if chunk_layer:
+                    with Usd.EditContext(stage, chunk_layer):
+                        real_attr.SetConnections([storage_path])
+                else:
+                    real_attr.SetConnections([storage_path])
 
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> "ChunkUsdAttributeSupport":
@@ -3113,9 +3122,14 @@ class ChunkContainerBase(ChunkCommon):
                 raise NameError(failed_msg.format(f"{p.name} is duplicated in the hierarchy"))
             found_params.add(p)
 
-            if p.name in found_names:
-                raise NameError(failed_msg.format(f"param name: {p.name} is not unique in the hierarchy"))
-            found_names.add(p.name)
+            # Vector children are scoped to their parent vector; skip global name uniqueness for them.
+            direct_owner = p.get_owner()
+            if isinstance(direct_owner, NameSyncedContainer):
+                direct_owner = direct_owner.get_owner()
+            if not isinstance(direct_owner, ChunkVectorBase):
+                if p.name in found_names:
+                    raise NameError(failed_msg.format(f"param name: {p.name} is not unique in the hierarchy"))
+                found_names.add(p.name)
 
     def print_hierarchy(self):
         """
@@ -3733,6 +3747,7 @@ class ChunkConfig(AttributesBase):
     module: str = attrs.field(default="")
     interactive: bool = attrs.field(default=False)
     terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
+    outputs: list[tuple[str, str]] = attrs.field(factory=list)  # extra typed output ports: [(name, SdfTypeName), ...]
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED

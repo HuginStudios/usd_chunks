@@ -404,10 +404,7 @@ def apply_material(owner, notice, sender):
         refs.AddReference(mtlx_path, mtlx_prim_path)
 
     bound = 0
-    for path_str in prim_path_param.value.split(","):
-        path_str = path_str.strip()
-        if not path_str:
-            continue
+    for path_str in prim_path_param.resolve_paths():
 
         with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
             prim = stage.GetPrimAtPath(target_path)

@@ -1,8 +1,55 @@
 import re
 from contextlib import contextmanager, ExitStack
-from pxr import Usd
+from pxr import Sdf, Usd
 
 _EXPR_RE = re.compile(r'@(\w+)\.(\w+)@')
+
+
+def resolve_prim_paths(stage, location_str):
+    """Split location_str on whitespace/commas and expand glob patterns.
+
+    Glob rules (Houdini-style):
+      *   matches any characters within one path component (no slash crossing)
+      **  matches any characters across any number of path components
+      ?   matches one character within one path component
+
+    /geo/*   → direct children of /geo only
+    /geo/**  → everything recursively under /geo
+    /**      → every prim on the stage
+    mesh*    → root-level prims whose name starts with "mesh" (/ prepended)
+    """
+    def _to_re(pattern):
+        parts = []
+        i = 0
+        while i < len(pattern):
+            if pattern[i:i+2] == "**":
+                parts.append(".*")
+                i += 2
+            elif pattern[i] == "*":
+                parts.append("[^/]*")
+                i += 1
+            elif pattern[i] == "?":
+                parts.append("[^/]")
+                i += 1
+            else:
+                parts.append(re.escape(pattern[i]))
+                i += 1
+        return re.compile("".join(parts) + "$")
+
+    paths = []
+    for token in re.split(r"[\s,]+", location_str.strip()):
+        if not token:
+            continue
+        if "*" not in token and "?" not in token:
+            paths.append(token)
+            continue
+        if not token.startswith("/"):
+            token = "/" + token
+        rx = _to_re(token)
+        for prim in stage.Traverse():
+            if rx.match(prim.GetPath().pathString):
+                paths.append(prim.GetPath().pathString)
+    return paths
 
 
 def parse_expression(text: str) -> list[tuple[str, str]]:
@@ -99,6 +146,70 @@ def split_variant_path(path_str: str) -> tuple[str, str, list[tuple[str, str, st
     target = accumulated.rstrip('/') or '/'
     anchor = selections[0][0] if selections else target
     return anchor, target, selections
+
+
+def wire_shader_input(
+    stage: Usd.Stage,
+    chunk_prim: Usd.Prim,
+    param_name: str,
+    shader_attr: Usd.Attribute,
+    *,
+    clear_on_miss: bool = False,
+) -> bool:
+    """Redirect a shader input to an upstream shader output when a chunk-level connection exists.
+
+    When chunk_prim.inputs:<param_name> is connected to an upstream chunk's output port,
+    that upstream chunk's execute() has already wired its outputs:<name> attr to the real
+    shader output in the session layer. This function follows that two-hop chain and sets
+    shader_attr directly to the upstream shader's output path.
+
+    Writes redirects into the session layer so they override the connect_usd_attr opinion
+    (which _author_driven_connections also authors in the session layer). When no upstream
+    connection is found the session-layer opinion is cleared, letting the anonymous-layer
+    connect_usd_attr link (or nothing when clear_on_miss=True) take effect.
+
+    Call after all connect_usd_attr calls in a chunk execute() for any shader input that
+    can receive connections from other shader chunks in the nodegraph.
+
+    Args:
+        stage: the active USD stage.
+        chunk_prim: this chunk's prim (from node._exec_prim_path or node.prim_path).
+        param_name: the chunk param name whose nodegraph port carries the connection.
+        shader_attr: the shader's USD attribute to wire (e.g. UsdUVTexture.inputs:st).
+        clear_on_miss: if True, also clear shader_attr in the current layer when no
+            upstream is found. Use for inputs that have no local value param fallback.
+
+    Returns:
+        True if an upstream shader connection was found and applied, False otherwise.
+    """
+    session_layer = stage.GetSessionLayer()
+
+    if chunk_prim and chunk_prim.IsValid():
+        chunk_input = chunk_prim.GetAttribute(f"inputs:{param_name}")
+        if chunk_input and chunk_input.IsValid():
+            for conn in chunk_input.GetConnections():
+                upstream_prim = stage.GetPrimAtPath(conn.GetPrimPath())
+                if not upstream_prim.IsValid():
+                    continue
+                # Nodegraph stores typed connections with inputs: on the source side;
+                # the actual chunk output attr that carries the shader path uses outputs:.
+                output_attr_name = "outputs:" + str(conn).rsplit(":", 1)[-1]
+                upstream_output = upstream_prim.GetAttribute(output_attr_name)
+                if not (upstream_output and upstream_output.IsValid()):
+                    continue
+                shader_conns = upstream_output.GetConnections()
+                if shader_conns:
+                    with Usd.EditContext(stage, session_layer):
+                        shader_attr.SetConnections([shader_conns[0]])
+                    return True
+
+    # No upstream connection found. Clear any session-layer redirect so the
+    # anonymous-layer connect_usd_attr opinion (or cleared state) can take effect.
+    with Usd.EditContext(stage, session_layer):
+        shader_attr.ClearConnections()
+    if clear_on_miss:
+        shader_attr.ClearConnections()
+    return False
 
 
 @contextmanager

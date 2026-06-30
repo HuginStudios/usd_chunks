@@ -19,7 +19,7 @@ from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
 from plugins import chunk_usd
-from usd_chunks.chunk import Checkbox, FileBrowser, LineEdit, Slider, Spinbox, TextEdit
+from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, CHUNK_STYLESHEET, ViewSlotState
@@ -72,6 +72,9 @@ _PORT_FLOAT = "float"
 _PORT_INT = "int"
 _PORT_BOOL = "bool"
 _PORT_STRING = "string"
+_PORT_COLOR = "color"
+
+_COL_PORT_COLOR = QtGui.QColor("#c87060")  # muted red
 
 _PORT_TYPE_COLOR = {
     _PORT_EXEC:   _COL_PORT_EXEC,
@@ -79,13 +82,14 @@ _PORT_TYPE_COLOR = {
     _PORT_INT:    _COL_PORT_INT,
     _PORT_BOOL:   _COL_PORT_BOOL,
     _PORT_STRING: _COL_PORT_STRING,
+    _PORT_COLOR:  _COL_PORT_COLOR,
 }
 
 
 class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
     """A connection dot on a node."""
 
-    def __init__(self, attr_path: str, port_type: str, parent: "ChunkNodeItem"):
+    def __init__(self, attr_path: str, port_type: str, parent: "ChunkNodeItem", show_label: bool = False):
         r = _PORT_RADIUS
         super().__init__(-r, -r, r * 2, r * 2, parent)
         self.attr_path = attr_path
@@ -95,21 +99,62 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
         self.setPen(QtGui.QPen(QtCore.Qt.NoPen))
         self.setZValue(1)
 
+        if show_label:
+            label_text = attr_path.rsplit(":", 1)[-1]
+            text = QtWidgets.QGraphicsSimpleTextItem(label_text, self)
+            font = QtGui.QFont("Arial", 7)
+            text.setFont(font)
+            text.setBrush(QtGui.QColor("#cccccc"))
+            tw = text.boundingRect().width()
+            th = text.boundingRect().height()
+            # Output ports sit on the right edge — label goes to the left of the dot
+            text.setPos(-r - 3 - tw, -th / 2)
+
     def set_highlighted(self, on: bool) -> None:
         self.setPen(QtGui.QPen(QtGui.QColor("white"), 1.5) if on else QtGui.QPen(QtCore.Qt.NoPen))
 
 
 
+def _sdf_to_port_type(sdf_type_name) -> str:
+    if sdf_type_name in (Sdf.ValueTypeNames.Color3f, Sdf.ValueTypeNames.Color4f):
+        return _PORT_COLOR
+    if sdf_type_name in (Sdf.ValueTypeNames.Bool,):
+        return _PORT_BOOL
+    if sdf_type_name in (Sdf.ValueTypeNames.String, Sdf.ValueTypeNames.Token, Sdf.ValueTypeNames.Asset):
+        return _PORT_STRING
+    if sdf_type_name in (
+        Sdf.ValueTypeNames.Int, Sdf.ValueTypeNames.Int2,
+        Sdf.ValueTypeNames.Int3, Sdf.ValueTypeNames.Int4,
+    ):
+        return _PORT_INT
+    return _PORT_FLOAT
+
+
 def _iter_connectable_params(obj: core.ChunkCommon):
-    """Recursively yield float/int/bool/string params from a chunk or group."""
+    """Recursively yield float/int/bool/string/color params and vectors from a chunk or group."""
     for param in obj.get_my_params():
-        if isinstance(param, (Slider, Spinbox, Checkbox, LineEdit, TextEdit, FileBrowser)):
+        if isinstance(param, (Slider, Spinbox, Checkbox, LineEdit, TextEdit, FileBrowser, ColorPicker)):
             yield param
+        elif isinstance(param, core.ChunkVectorBase):
+            yield param  # vector as a single port — children are not connectable individually
         elif not isinstance(param, core.ChunkParamBase):
             yield from _iter_connectable_params(param)
 
 
-def _param_port_type(param: core.ChunkParamBase) -> str:
+def _iter_all_vectors(obj: core.ChunkCommon):
+    """Recursively yield all ChunkVectorBase instances from a chunk or group."""
+    for param in obj.get_my_params():
+        if isinstance(param, core.ChunkVectorBase):
+            yield param
+        elif not isinstance(param, core.ChunkParamBase):
+            yield from _iter_all_vectors(param)
+
+
+def _param_port_type(param) -> str:
+    if isinstance(param, ColorPicker):
+        return _PORT_COLOR
+    if isinstance(param, core.ChunkVectorBase):
+        return _PORT_FLOAT
     if isinstance(param, Checkbox):
         return _PORT_BOOL
     if isinstance(param, (LineEdit, TextEdit, FileBrowser)):
@@ -143,6 +188,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._port_rebuild_timer: Optional[QtCore.QTimer] = None
         self._height = _NODE_HEADER_H
         self._full_height = _NODE_HEADER_H
+        self._outputs_start_y: float = 0.0  # >0 when typed output ports are present
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, False)  # handled manually — header only
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -227,6 +273,31 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if scene:
             scene._build_edges()
 
+    def _place_prim_output_ports(self, y_start: float, extend_height: bool = False):
+        """Create output ports for every outputs:* attribute on the prim (excluding outputs:chunk)."""
+        _STEP = _PORT_RADIUS * 2 + 8
+        attrs = [
+            a for a in self.prim.GetAttributes()
+            if a.GetName().startswith("outputs:") and a.GetName() != "outputs:chunk"
+        ]
+        if not attrs:
+            return
+        self._outputs_start_y = y_start
+        y = y_start + _PORT_RADIUS + 4
+        for attr in attrs:
+            name = attr.GetName()
+            ptype = _sdf_to_port_type(attr.GetTypeName())
+            port = ChunkPortItem(f"{self.prim.GetPath()}.{name}", ptype, parent=self, show_label=True)
+            port.setPos(_NODE_WIDTH, y)
+            self._ports.append(port)
+            self._typed_ports.append(port)
+            y += _STEP
+        if extend_height:
+            needed = y + _PORT_RADIUS + 4
+            if needed > self._height:
+                self._height = needed
+                self.prepareGeometryChange()
+
     def _place_param_ports_collapsed(self):
         for param in _iter_connectable_params(self.chunk):
             ptype = _param_port_type(param)
@@ -238,6 +309,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
+        self._place_prim_output_ports(_NODE_HEADER_H // 2, extend_height=False)
 
     def _place_param_ports(self, chunk_widget: QtWidgets.QWidget):
 
@@ -251,16 +323,28 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             for w in chunk_widget.findChildren(QtWidgets.QWidget)
             if isinstance(w, core.ChunkParamWidgetBase)
         }
+        vector_widgets = {
+            w.group: w
+            for w in chunk_widget.findChildren(ContainerWidget)
+            if isinstance(getattr(w, 'group', None), core.ChunkVectorBase)
+        }
 
         for param in _iter_connectable_params(self.chunk):
-            widget = param_widgets.get(param)
+            if isinstance(param, core.ChunkVectorBase):
+                widget = vector_widgets.get(param)
+            else:
+                widget = param_widgets.get(param)
             if widget is None:
                 continue
 
             ptype = _param_port_type(param)
 
             if widget.isVisible():
-                local = widget.mapTo(chunk_widget, QtCore.QPoint(0, widget.height() // 2))
+                if isinstance(param, core.ChunkVectorBase):
+                    hdr = widget.minimize_button
+                    local = hdr.mapTo(chunk_widget, QtCore.QPoint(0, hdr.height() // 2))
+                else:
+                    local = widget.mapTo(chunk_widget, QtCore.QPoint(0, widget.height() // 2))
             else:
                 # Param lives inside a collapsed group — walk up to find the nearest
                 # visible ContainerWidget and place the port there instead.
@@ -287,6 +371,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
 
+        self._place_prim_output_ports(self._full_height, extend_height=True)
+
+    def _sync_vector_states(self):
+        """Disable vector params whose inputs:* attr is connected; enable the rest."""
+        for vec in _iter_all_vectors(self.chunk):
+            attr = self.prim.GetAttribute(f"inputs:{vec.name}")
+            connected = attr.IsValid() and bool(attr.GetConnections())
+            if connected:
+                vec.set_state(ChunkFlags.State.DISABLED)
+            else:
+                vec.unset_state(ChunkFlags.State.DISABLED)
 
     def _apply_usd_pos(self, prim: Usd.Prim):
         ui_api = UsdUI.NodeGraphNodeAPI(prim)
@@ -366,6 +461,21 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             str(chunk_type),
         )
+
+        # Typed outputs section — separator line + darker strip
+        if self._outputs_start_y > _NODE_HEADER_H and self._height > self._outputs_start_y:
+            outputs_rect = QtCore.QRectF(
+                0, self._outputs_start_y,
+                _NODE_WIDTH, self._height - self._outputs_start_y,
+            )
+            painter.setBrush(QtGui.QColor("#2a2a2a"))
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawRect(outputs_rect)
+            painter.setPen(QtGui.QPen(QtGui.QColor("#555555"), 1))
+            painter.drawLine(
+                QtCore.QPointF(0, self._outputs_start_y),
+                QtCore.QPointF(_NODE_WIDTH, self._outputs_start_y),
+            )
 
     def mouseDoubleClickEvent(self, event):
         if event.pos().y() <= _NODE_HEADER_H:
@@ -684,6 +794,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                     edge = ChunkEdgeItem(src_port, dst_port, expression)
                     self.addItem(edge)
                     self._edges.append(edge)
+
+        for node in self._nodes.values():
+            node._sync_vector_states()
 
     def update_edges_for(self, node: ChunkNodeItem):
         node_ports = set(node._ports)
@@ -1148,7 +1261,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             dst_node = graph_scene._nodes.get(str(Sdf.Path(dst.attr_path).GetPrimPath()))
             if dst_node:
                 param = dst_node.chunk.get_param(dst_param_name)
-                if param is not None:
+                if param is not None and not isinstance(param, core.ChunkVectorBase):
                     param.value = f"@{src_node_name}.{src_param_name}@"
 
         graph_scene._build_edges()
@@ -1188,6 +1301,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                             succ_attr.ClearConnections()
                         break
         attr.ClearConnections()
+        # For typed ports, re-execute the owning chunk so shader-level connections
+        # (e.g. UsdUVTexture.inputs:st) are cleared to match the disconnected chunk state.
+        # Vector params don't use expressions, so no value change fires automatically.
+        if port.port_type != _PORT_EXEC:
+            prim_path = str(Sdf.Path(port.attr_path).GetPrimPath())
+            node = graph_scene._nodes.get(prim_path)
+            if node and getattr(node, 'chunk', None):
+                node.chunk.execute()
         graph_scene._build_edges()
 
     def _show_chunk_menu(self, node: "ChunkNodeItem", global_pos: QtCore.QPoint) -> None:

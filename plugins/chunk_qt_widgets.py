@@ -599,6 +599,61 @@ class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
         self.setEnabled(val)
 
 
+class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.QPushButton):
+    def __init__(self, param: chunk.ColorPicker):
+        super().__init__(param)
+        self.setFixedHeight(24)
+        self.setFlat(True)
+        self.setup_chunk_widget()
+        self.clicked.connect(self._open_dialog)
+
+    def _qcolor(self) -> QtGui.QColor:
+        val = self.param.value
+        if not val or len(val) < 3:
+            return QtGui.QColor(0, 0, 0)
+        r, g, b = [max(0.0, min(1.0, float(v))) for v in val[:3]]
+        return QtGui.QColor.fromRgbF(r, g, b)
+
+    def _apply_swatch(self, color: QtGui.QColor):
+        self.setStyleSheet(
+            f"background-color: {color.name()};"
+            f"border: 1px solid #555555;"
+            f"border-radius: 3px;"
+        )
+
+    def get_value(self):
+        return self.param.value
+
+    def set_value(self, value):
+        if value is None:
+            return
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            self._apply_swatch(QtGui.QColor.fromRgbF(
+                max(0.0, min(1.0, float(value[0]))),
+                max(0.0, min(1.0, float(value[1]))),
+                max(0.0, min(1.0, float(value[2]))),
+            ))
+
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
+
+    def update_from_state(self):
+        self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
+        self.set_enabled(not self.param.has_state(ChunkFlags.State.DISABLED))
+
+    def _open_dialog(self):
+        color = QtWidgets.QColorDialog.getColor(
+            self._qcolor(), self, "Pick Color",
+            QtWidgets.QColorDialog.ColorDialogOption.DontUseNativeDialog,
+        )
+        if color.isValid():
+            self._apply_swatch(color)
+            self.value_changed((color.redF(), color.greenF(), color.blueF()))
+
+
 class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
     widget_map = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
@@ -613,6 +668,7 @@ class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
         ChunkFlags.ParamType.CHECKBOX: ChunkCheckBoxWidget,
         ChunkFlags.ParamType.BUTTON: ChunkPushButtonWidget,
         ChunkFlags.ParamType.SEPARATOR: ChunkSeparatorWidget,
+        ChunkFlags.ParamType.COLOR_PICKER: ChunkColorPickerWidget,
     }
 
     def create_widget(self, param: chunk.ChunkParamBase) -> ChunkParamWidgetBase | None:

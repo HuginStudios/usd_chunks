@@ -3,7 +3,7 @@ usdchunks CLI — headless execution of chunk networks serialized as .usda files
 
 Usage:
     usdchunks run my_setup.usda [ChunkName.param=value ...]
-    usdchunks list my_setup.usda
+    usdchunks info my_setup.usda
 """
 
 import sys
@@ -77,7 +77,7 @@ def _parse_param_overrides(chunks, overrides):
             param.value = types[0](value)
 
 
-def cmd_list(args):
+def cmd_info(args):
     stage = Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
@@ -88,7 +88,7 @@ def cmd_list(args):
     for prim in stage.Traverse():
         if prim.GetTypeName() != "Chunk":
             continue
-        if prim.GetAttribute("info:chunkType").Get():
+        if prim.GetAttribute("info:chunkType").Get() != "chunkgroup":
             continue
 
         doc = prim.GetAttribute(f"{_INPUTS}doc").Get()
@@ -227,7 +227,7 @@ def main():
             "  usdchunks run setup.usda -o result.usda\n"
             "  usdchunks run setup.usda -p\n"
             "  usdchunks run setup.usda MyChunk.primpath_location=/geo\n"
-            "  usdchunks list setup.usda\n"
+            "  usdchunks info setup.usda\n"
             "  usdchunks validate setup.usda -v\n"
         ),
         formatter_class=RawDescriptionHelpFormatter,
@@ -256,12 +256,12 @@ def main():
     run_parser.add_argument("--export", "-o", metavar="FILE", help="Flatten and export the resulting stage to FILE")
     run_parser.add_argument("--printout", "-p", action="store_true", help="Print the flattened stage to stdout")
 
-    list_parser = sub.add_parser(
-        "list",
-        help="List chunks and their params from a .usda file",
+    info_parser = sub.add_parser(
+        "info",
+        help="Show info and exposed params for ChunkGroups in a .usda file",
         description="Print metadata and exposed params for each ChunkGroup in the network.",
     )
-    list_parser.add_argument("usda", help="Path to the .usda chunk network file")
+    info_parser.add_argument("usda", help="Path to the .usda chunk network file")
 
     validate_parser = sub.add_parser(
         "validate",
@@ -279,8 +279,8 @@ def main():
 
     if args.command == "run":
         cmd_run(args)
-    elif args.command == "list":
-        cmd_list(args)
+    elif args.command == "info":
+        cmd_info(args)
     elif args.command == "validate":
         cmd_validate(args)
     else:

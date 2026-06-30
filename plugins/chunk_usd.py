@@ -77,6 +77,8 @@ def _sdf_vector_type(val: tuple) -> tuple:
 
 def _sdf_type_and_value(val):
     """Return (Sdf value type, USD-safe value) for val, or (None, None) if unsupported."""
+    if isinstance(val, tuple):
+        return _sdf_vector_type(val)
     if isinstance(val, list):
         elem_type = type(val[0]) if val else str
         sdf_type = _LIST_SDF_TYPE_MAP.get(elem_type)
@@ -635,6 +637,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
         self._loaded_prim_paths.add(prim_path)
         self._chunk_prim_paths[id(chunk)] = prim_path
+        # Use object.__setattr__ to store the prim path without going through
+        # the attrs _wrapped_setattr, which would fire value_changed / notices.
+        object.__setattr__(chunk, '_exec_prim_path', prim_path)
 
         if is_group:
             pc = getattr(chunk, "_parent_context", None)
@@ -724,6 +729,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not (config and config.terminal):
             exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
             exec_out.SetVariability(Sdf.VariabilityUniform)
+
+        if config and getattr(config, "outputs", None):
+            for out_name, out_type_name in config.outputs:
+                out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
+                if out_type is not None:
+                    prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
 
         deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
         if not deps and prev_chunk:
@@ -1093,6 +1104,7 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
                 for c in chunks:
                     if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                         c.prim_path = str(prim.GetPath())
+                        object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                         scene.add_chunk(c)
                         if c.get_config() and c.get_config().module:
                             group_chunk_by_path[str(prim.GetPath())] = c
@@ -1100,10 +1112,12 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
                         # Sub-chunk of a ChunkGroup: add directly to that group.
                         ancestor_group.add_param(c, notify=False)
                         _load_wire_inputs(prim, c)
+                        object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                         deferred.append((prim, c))
                     else:
                         if added := scene.add_chunk(c, notify=False):
                             _load_wire_inputs(prim, added)
+                            object.__setattr__(added, '_exec_prim_path', str(prim.GetPath()))
                             deferred.append((prim, added))
                             top_level_chunk_ids.add(id(added))
 
@@ -1520,6 +1534,12 @@ def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.Ch
     if not (config and config.terminal):
         exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
         exec_out.SetVariability(Sdf.VariabilityUniform)
+
+    if config and getattr(config, "outputs", None):
+        for out_name, out_type_name in config.outputs:
+            out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
+            if out_type is not None:
+                prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
 
     deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
     if not deps and prev_chunk:
