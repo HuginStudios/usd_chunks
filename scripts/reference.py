@@ -1,6 +1,6 @@
 import os
 from pxr import Sdf
-from usd_chunks import chunk, chunk_utils, chunk_notice
+from usd_chunks import chunk, chunk_utils
 from usd_chunks.chunk_utils import get_unique_path
 
 
@@ -31,19 +31,17 @@ def file_changed(owner, notice, sender):
     primpath_param.value = unique_path
 
 
-def import_callback(owner, notice, sender):
-    param = notice.data
-    _chunk = param.get_chunk()
-    reference_path = _chunk.get_param("file_path").value if _chunk else None
+def execute(node):
+    reference_path = node.get_param("file_path").value
     if not reference_path:
         return
 
-    stage = param.get_stage()
+    stage = node.get_stage()
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-    raw_path = _chunk.get_param("primpath_location").value
-    import_path = _chunk.get_param("import_primpath").value
+    raw_path = node.get_param("primpath_location").value
+    import_path = node.get_param("import_primpath").value
 
     if import_path:
         ref = Sdf.Reference(reference_path, import_path)
@@ -55,10 +53,11 @@ def import_callback(owner, notice, sender):
         else:
             ref = Sdf.Reference(reference_path)
 
+    prim_type = node.get_param("prim_type").value or "Xform"
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
-            prim = stage.DefinePrim(target_path, "Xform")
+            prim = stage.DefinePrim(target_path, prim_type)
         prim.GetReferences().AddReference(ref)
 
 
@@ -69,16 +68,15 @@ def main():
     reference_fb = chunk.FileBrowser("file_path", extensions=[".usd*", ".usd", ".usda", ".usdc", ".usdz"])
     reference_fb.add_callback(file_changed)
     import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path", flags=chunk.ChunkFlags.ParamFlags.LABELED)
-    import_primpath.add_callback(import_callback)
-
     referenceChunk.add_param(reference_fb)
     referenceChunk.add_param(import_primpath)
 
     # prim location
     primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
-    primpath.add_callback(import_callback)
     referenceChunk.add_param(primpath)
-    referenceChunk.add_callback(import_callback, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
+
+    prim_type = chunk.LineEdit("prim_type", "Prim Type", default_value="Xform", flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    referenceChunk.add_param(prim_type)
 
     return referenceChunk
 

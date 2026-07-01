@@ -1,15 +1,13 @@
 from pxr import UsdGeom, Gf
-from usd_chunks import chunk, chunk_notice, chunk_core, chunk_utils
+from usd_chunks import chunk, chunk_core, chunk_utils
 
 
-def execute(owner, notice, sender):
-    param = notice.data
-    _chunk = param.get_chunk()
-    stage = owner.get_stage()
+def execute(node):
+    stage = node.get_stage()
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-    raw_path = _chunk.get_param("primpath_location").value
+    raw_path = node.get_param("primpath_location").value
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.GetPrimAtPath(target_path)
@@ -17,25 +15,25 @@ def execute(owner, notice, sender):
             return
 
         xformable = UsdGeom.Xformable(stage.OverridePrim(target_path))
-        existing  = {op.GetOpName(): op for op in xformable.GetOrderedXformOps()}
+        existing = {op.GetOpName(): op for op in xformable.GetOrderedXformOps()}
         transform_op = existing.get("xformOp:transform") or xformable.AddTransformOp()
 
         rotation = (
-            Gf.Rotation(Gf.Vec3d(1, 0, 0), _chunk.get_param("rx").value) *
-            Gf.Rotation(Gf.Vec3d(0, 1, 0), _chunk.get_param("ry").value) *
-            Gf.Rotation(Gf.Vec3d(0, 0, 1), _chunk.get_param("rz").value)
+            Gf.Rotation(Gf.Vec3d(1, 0, 0), node.get_param("rx").value) *
+            Gf.Rotation(Gf.Vec3d(0, 1, 0), node.get_param("ry").value) *
+            Gf.Rotation(Gf.Vec3d(0, 0, 1), node.get_param("rz").value)
         )
         xform = Gf.Transform()
         xform.SetTranslation(Gf.Vec3d(
-            _chunk.get_param("tx").value,
-            _chunk.get_param("ty").value,
-            _chunk.get_param("tz").value,
+            node.get_param("tx").value,
+            node.get_param("ty").value,
+            node.get_param("tz").value,
         ))
         xform.SetRotation(rotation)
         xform.SetScale(Gf.Vec3d(
-            _chunk.get_param("sx").value or 1.0,
-            _chunk.get_param("sy").value or 1.0,
-            _chunk.get_param("sz").value or 1.0,
+            node.get_param("sx").value or 1.0,
+            node.get_param("sy").value or 1.0,
+            node.get_param("sz").value or 1.0,
         ))
         transform_op.Set(xform.GetMatrix())
 
@@ -49,7 +47,6 @@ def main():
         default_value="/prim",
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
     )
-    primpath.add_callback(execute)
     chunk_api.add_param(primpath)
 
     for grp_name, grp_label, axes, min_v, max_v, default in [
@@ -70,11 +67,8 @@ def main():
                 min_value=min_v, max_value=max_v, default_value=default,
                 flags=chunk.ChunkFlags.ParamFlags.LABELED,
             )
-            s.add_callback(execute)
             grp.add_param(s)
         chunk_api.add_param(grp)
-
-    chunk_api.add_callback(execute, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
 
     return chunk_api
 

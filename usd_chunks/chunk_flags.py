@@ -145,6 +145,9 @@ class ChunkFlags:
         # Bool
         CHECKBOX = BOOL | (1 << 0)
 
+        # Vector / color
+        COLOR_PICKER = VECTOR | (1 << 0)
+
     @staticmethod
     def ParamTypeToTypes(t: ParamType) -> List[type]:
         """Provides default values for ParamType enums. If t is a combination of multiple ParamTypes, returns all supported values
@@ -168,4 +171,7 @@ class ChunkFlags:
         if ChunkFlags.ParamType.STRING in t:
             result.append(str)
             result.append(Sdf.AssetPath)
+        if ChunkFlags.ParamType.VECTOR in t:
+            result.append(tuple)
+            result.append(list)
         return result

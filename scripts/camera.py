@@ -102,8 +102,6 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
     )
     chunk_api.add_param(primpath)
-    primpath.add_callback(execute, send_on_create=False)
-
     # add camera type
     cameras = _get_camera_data()
     cam_presets = [cam.get("model") for cam in cameras]
@@ -140,44 +138,51 @@ def main():
     set_cam_btn.add_callback(_set_as_viewport_camera)
     chunk_api.add_param(set_cam_btn)
 
-    chunk_api.add_callback(execute, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
-
     return chunk_api
 
 
-def execute(owner, notice, sender):
-    param = notice.data
-    _chunk = param.get_chunk()
-    stage = owner.get_stage()
+def execute(node):
+    stage = node.get_stage()
     if not stage:
         return
+
+    raw_path = node.get_param("primpath_location").value
+
+    if raw_path == getattr(node, '_last_camera_path', None):
+        return
+
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-    raw_path = _chunk.get_param("primpath_location").value
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
     if not var_selections and not chunk_notice._loading_stage:
         raw_path = chunk_utils.get_unique_path(stage, raw_path)
 
+    node._last_camera_path = raw_path
+
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.DefinePrim(target_path, "Camera")
 
-        _chunk.get_param("focalLength").connect_usd_attr(prim.GetAttribute("focalLength"))
-        _chunk.get_param("horizontalAperture").connect_usd_attr(prim.GetAttribute("horizontalAperture"))
-        _chunk.get_param("horizontalApertureOffset").connect_usd_attr(prim.GetAttribute("horizontalApertureOffset"))
-        _chunk.get_param("verticalAperture").connect_usd_attr(prim.GetAttribute("verticalAperture"))
-        _chunk.get_param("verticalApertureOffset").connect_usd_attr(prim.GetAttribute("verticalApertureOffset"))
-        _chunk.get_param("fStop").connect_usd_attr(prim.GetAttribute("fStop"))
-        _chunk.get_param("focusDistance").connect_usd_attr(prim.GetAttribute("focusDistance"))
+        node.get_param("focalLength").connect_usd_attr(prim.GetAttribute("focalLength"))
+        node.get_param("horizontalAperture").connect_usd_attr(prim.GetAttribute("horizontalAperture"))
+        node.get_param("horizontalApertureOffset").connect_usd_attr(prim.GetAttribute("horizontalApertureOffset"))
+        node.get_param("verticalAperture").connect_usd_attr(prim.GetAttribute("verticalAperture"))
+        node.get_param("verticalApertureOffset").connect_usd_attr(prim.GetAttribute("verticalApertureOffset"))
+        node.get_param("fStop").connect_usd_attr(prim.GetAttribute("fStop"))
+        node.get_param("focusDistance").connect_usd_attr(prim.GetAttribute("focusDistance"))
 
         attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
         attr.Set(UsdGeom.Tokens.inherited)
 
         if not var_selections and prim.GetPath().pathString != target_path:
-            _chunk.get_param("primpath_location").value = prim.GetPath().pathString
+            node.get_param("primpath_location").value = prim.GetPath().pathString
+            node._last_camera_path = prim.GetPath().pathString
 
-    if _chunk.get_param("lock_to_freecam").value:
-        _set_as_viewport_camera(_chunk, None, None)
+    if node.get_param("lock_to_freecam").value:
+        scene = node.get_scene()
+        prim = stage.GetPrimAtPath(node.get_param("primpath_location").value)
+        if prim.IsValid():
+            scene.set_viewport_camera(prim)
 
 
 def config():

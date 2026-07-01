@@ -6,8 +6,8 @@ import io
 import threading
 import requests
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core, chunk_utils
-from pxr import UsdShade
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core
+from plugins.chunk_usd import ChunkStageSync
 from PySide6 import QtWidgets, QtCore, QtGui
 
 API_ROOT = "https://api.matlib.gpuopen.com/api"
@@ -18,7 +18,7 @@ _results_by_title: dict[str, dict] = {}
 _selected_title: str = ""
 _thumbnail_cache: dict[str, bytes] = {}  # render_id → jpeg bytes
 
-THUMB_SIZE = 105
+THUMB_SIZE = 90
 
 
 def _safe_prim_name(s: str) -> str:
@@ -255,6 +255,21 @@ class MaterialGridWidget(chunk_core.ChunkParamWidgetBase, QtWidgets.QWidget):
         global _all_materials
         _all_materials = materials
         self._do_search()
+        # Restore previously picked selection from the param
+        c = self.param.get_chunk()
+        pt = c.get_param("picked_title") if c else None
+        if pt and pt.value:
+            self._restore_selection(pt.value)
+
+    def _restore_selection(self, title: str):
+        if title in self._tiles:
+            self._set_selected(title)
+        else:
+            # Tile may not be loaded yet — scroll-load until found or exhausted
+            while title not in self._tiles and self._page_offset < len(self._page_items):
+                self._load_next_page()
+            if title in self._tiles:
+                self._set_selected(title)
 
     def _do_search(self):
         global _results_by_title
@@ -331,42 +346,49 @@ def _pick_package(package_ids: list[str], resolution: str) -> dict | None:
     return None
 
 
-def apply_material(owner, notice, sender):
-    resolution_param = owner.get_param("resolution", chunk.is_inst(chunk.Menu))
-    prim_path_param = owner.get_param("primpath_location", chunk.is_param_t(str))
-    mat_scope_param = owner.get_param("mat_scope", chunk.is_param_t(str))
-    cache_param = owner.get_param("cache_dir", chunk.is_param_t(str))
-    status_param = owner.get_param("status", chunk.is_inst(chunk.Label))
+def _create_child(module_key: str, parent):
+    """Create a child chunk and attach it to parent inside the user's edit context.
 
-    title = _selected_title
-    mat = _results_by_title.get(title)
+    add_param is called inside ChunkStageSync._chunk_prim_edit_context() so that
+    the Chunk prim authored by _define_prim lands on the user's persistent edit
+    layer (session layer), not on the parent context's anonymous execute layer.
+    """
+    with ChunkStageSync()._chunk_prim_edit_context():
+        mod = chunk_registry.ChunkRegistry().get_chunk_module(module_key)
+        if not mod:
+            return None
+        created = mod.create() if mod.loaded else mod.load()
+        child = created[0] if created else None
+        if child:
+            parent.add_param(child)
+    return child
+
+
+def _download_and_apply(node, title: str) -> str:
+    resolution = node.get_param("resolution", chunk.is_inst(chunk.Menu)).value
+    mat_scope = (node.get_param("mat_scope", chunk.is_param_t(str)).value or "/materials").rstrip("/")
+    cache_dir = node.get_param("cache_dir", chunk.is_param_t(str)).value or os.path.expanduser("~/.gpuopen_cache")
+
+    mat = _results_by_title.get(title) or next(
+        (m for m in _fetch_all_materials(cache_dir) if m.get("title") == title), None
+    )
     if not mat:
-        status_param.value = "Select a material first"
-        return
+        return f"Material '{title}' not found in catalog"
 
-    resolution = resolution_param.value
-    cache_dir = cache_param.value or os.path.expanduser("~/.gpuopen_cache")
-
-    status_param.value = "Resolving package…"
     try:
         pkg = _pick_package(mat.get("packages", []), resolution)
     except Exception as exc:
-        status_param.value = f"Package lookup failed: {exc}"
-        return
+        return f"Package lookup failed: {exc}"
 
     if not pkg:
-        status_param.value = "No package found"
-        return
-
+        return "No package found"
     file_url = pkg.get("file_url")
     if not file_url:
-        status_param.value = "Package has no download URL"
-        return
+        return "Package has no download URL"
 
     mat_dir = os.path.join(cache_dir, _safe_prim_name(f"{title}_{pkg.get('label', resolution)}"))
     os.makedirs(mat_dir, exist_ok=True)
 
-    status_param.value = f"Downloading {pkg.get('label', '')}…"
     try:
         resp = requests.get(file_url, timeout=120)
         resp.raise_for_status()
@@ -374,58 +396,91 @@ def apply_material(owner, notice, sender):
             z.extractall(mat_dir)
             names = z.namelist()
     except Exception as exc:
-        status_param.value = f"Download failed: {exc}"
-        return
+        return f"Download failed: {exc}"
 
     mtlx_path = next(
         (os.path.join(mat_dir, n).replace("\\", "/") for n in names if n.endswith(".mtlx")),
         None,
     )
-
-    scene = chunk_registry.ChunkRegistry().scene
-    stage = scene.get_stage()
-    if not stage:
-        status_param.value = "No stage"
-        return
+    if not mtlx_path:
+        return "No .mtlx file in package"
 
     mat_name = _safe_prim_name(title)
-    mat_scope = (mat_scope_param.value or "/materials").rstrip("/")
     mat_path = f"{mat_scope}/{mat_name}"
+    mtlx_mat_name = mat.get("mtlx_material_name", mat_name)
 
-    stage.DefinePrim(mat_scope, "Scope")
-    material = UsdShade.Material.Define(stage, mat_path)
+    # Children must be added to the CONTEXT *before* their param values are set.
+    # Setting a value triggers an immediate self-execute (reference.execute /
+    # bind_material.execute), which clears the stage's current edit-target layer
+    # on the assumption it owns a dedicated layer — a layer that add_param's
+    # CONTEXT branch is what creates. Setting values first leaves that Clear()
+    # hitting whatever layer happens to be the edit target instead (e.g. the
+    # parent's), wiping the child's own params before they're ever read back.
+    ref_chunk = node.get_param("Reference", chunk.is_inst(chunk.Chunk))
+    if not ref_chunk:
+        ref_chunk = _create_child("reference", node)
+    if ref_chunk:
+        # file_path's file_changed callback auto-derives primpath_location from
+        # the filename, so set file_path first — otherwise that auto-suggestion
+        # overwrites the explicit mat_path we set below.
+        ref_chunk.get_param("file_path").value = mtlx_path
+        ref_chunk.get_param("import_primpath").value = f"/MaterialX/Materials/{mtlx_mat_name}"
+        ref_chunk.get_param("prim_type").value = "Material"
+        ref_chunk.get_param("primpath_location").value = mat_path
 
-    # MaterialX reference
-    if mtlx_path:
-        mtlx_mat_name = mat.get("mtlx_material_name", mat_name)
-        mtlx_prim_path = f"/MaterialX/Materials/{mtlx_mat_name}"
-        refs = material.GetPrim().GetReferences()
-        refs.ClearReferences()
-        refs.AddReference(mtlx_path, mtlx_prim_path)
+    bind_chunk = node.get_param("BindMaterial", chunk.is_inst(chunk.Chunk))
+    if not bind_chunk:
+        bind_chunk = _create_child("bind_material", node)
+    if bind_chunk:
+        bind_chunk.get_param("material_path").value = mat_path
+        bind_chunk.get_param("primpath_location").value = node.get_param("target_primpath").value
 
-    bound = 0
-    for path_str in prim_path_param.value.split(","):
-        path_str = path_str.strip()
-        if not path_str:
-            continue
+    node.get_param("resolved_material_path").value = mat_path
+    return f"Ready — {mat_path}"
 
-        with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
-            prim = stage.GetPrimAtPath(target_path)
-            if prim and prim.IsValid():
-                UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
-                bound += 1
 
-    status_param.value = f"Bound to {bound} prim(s)" if bound else "No valid prims"
+def execute(node):
+    """Re-applies the stored picked material, (re)creating the Reference and
+    BindMaterial children if they're missing — e.g. after a reload where the
+    USD prims exist but their backing Python child chunks weren't reattached.
+    """
+    title = node.get_param("picked_title").value
+    if not title:
+        return
+    status_param = node.get_param("status", chunk.is_inst(chunk.Label))
+    if status_param:
+        status_param.value = f"Downloading {title}…"
+    result = _download_and_apply(node, title)
+    if status_param:
+        status_param.value = result
+
+
+def apply_material(owner, _notice, _sender):
+    title = _selected_title
+    if not title:
+        status_param = owner.get_param("status", chunk.is_inst(chunk.Label))
+        if status_param:
+            status_param.value = "Select a material first"
+        return
+    owner.get_param("picked_title").value = title
+    execute(owner)
 
 
 # Chunk definition
 
 
 def main():
-    chunk_api = chunk.Chunk("Assign Material")
+    chunk_api = chunk.Chunk(
+        "AMD MaterialX Library",
+        flags=(
+            chunk_core.ChunkFlags.GroupFlags.CONTEXT
+            | chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE
+            | chunk_core.ChunkFlags.GroupFlags.LABELED
+        ),
+    )
 
     prim_path = chunk.LineEdit(
-        "primpath_location",
+        "target_primpath",
         "Prim Path",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
@@ -456,7 +511,18 @@ def main():
     )
     advanced.add_param(cache_dir)
 
-    chunk_api.add_params([prim_path, mat_scope, grid_param, resolution, status, advanced, apply_btn])
+    picked_title = chunk.LineEdit(
+        "picked_title",
+        "Picked Material",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+    )
+    material_path = chunk.LineEdit(
+        "resolved_material_path",
+        "Material Path",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+    )
+
+    chunk_api.add_params([prim_path, mat_scope, grid_param, resolution, picked_title, material_path, status, advanced, apply_btn])
 
     chunk_api.add_callback(
         _on_chunk_loaded,

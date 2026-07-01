@@ -11,6 +11,10 @@ def main():
             | ChunkFlags.GroupFlags.FRAMED
         ),
     )
+
+    doc = chunk.TextEdit("doc", "Description", rows=3, flags=ChunkFlags.ParamFlags.LABELED, tooltip="Describe what this ChunkGroup does. Used by both users and LLMs to understand the network interface.")
+    chunk_api.add_param(doc)
+
     return chunk_api
 
 
