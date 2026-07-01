@@ -695,7 +695,23 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
     def _layout_changed(self, notice, sender):
         self.update_from_layout()
 
+    def _disconnect_callbacks(self):
+        """Revoke all notice subscriptions held by this widget.
+
+        Must be called when the widget is torn down. The host (Qt) may destroy the
+        underlying C++ object while the Python wrapper — and therefore its notice
+        subscriptions — stays alive, so without this a later notice would invoke a
+        method on a deleted object (e.g. ``setHidden`` on a dead ChunkWidget).
+        """
+        for conn in self._callbacks:
+            try:
+                conn.disconnect()
+            except Exception:
+                pass
+        self._callbacks.clear()
+
     def _group_deleted(self, ref):
+        self._disconnect_callbacks()
         self.delete_self()
 
     def _delete_self(self, notice, sender):
@@ -705,6 +721,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         self.group_widgets.clear()
         self.param_widgets.clear()
 
+        self._disconnect_callbacks()
         self.delete_self()
 
     def _param_added_callback(self, notice, sender: GroupT):
@@ -738,7 +755,12 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
     def _state_changed(self, notice, sender):
         if notice.data.get_owner() == self.group:
-            self.update_from_state()
+            try:
+                self.update_from_state()
+            except RuntimeError:
+                # Host C++ object was already destroyed but this widget's subscription
+                # outlived it (stale widget from a panel rebuild). Self-heal by revoking.
+                self._disconnect_callbacks()
 
     def _add_param_widget(self, param: "ChunkParamBase", group: Optional["ChunkContainerBase"] = None, list_index=0):
         t = param.evaluate_type()
