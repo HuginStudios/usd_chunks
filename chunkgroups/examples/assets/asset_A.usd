@@ -1,0 +1,14 @@
+#usda 1.0
+(
+    defaultPrim = "asset_A"
+    upAxis = "Z"
+    metersPerUnit = 0.01
+)
+
+def Xform "asset_A"
+{
+    def Cube "geo"
+    {
+        double size = 100
+    }
+}

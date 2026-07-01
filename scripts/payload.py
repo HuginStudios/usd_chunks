@@ -1,6 +1,6 @@
 import os
 from pxr import Sdf
-from usd_chunks import chunk, chunk_utils, chunk_notice
+from usd_chunks import chunk, chunk_utils
 from usd_chunks.chunk_utils import get_unique_path
 
 
@@ -31,29 +31,27 @@ def file_changed(owner, notice, sender):
     primpath_param.value = unique_path
 
 
-def import_callback(owner, notice, sender):
-    param = notice.data
-    _chunk = param.get_chunk()
-    Payload_path = _chunk.get_param("file_path").value if _chunk else None
-    if not Payload_path:
+def execute(node):
+    payload_path = node.get_param("file_path").value
+    if not payload_path:
         return
 
-    stage = param.get_stage()
+    stage = node.get_stage()
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-    raw_path = _chunk.get_param("primpath_location").value
-    import_path = _chunk.get_param("import_primpath").value
+    raw_path = node.get_param("primpath_location").value
+    import_path = node.get_param("import_primpath").value
 
     if import_path:
-        ref = Sdf.Payload(Payload_path, import_path)
+        ref = Sdf.Payload(payload_path, import_path)
     else:
-        layer = Sdf.Layer.FindOrOpen(Payload_path)
+        layer = Sdf.Layer.FindOrOpen(payload_path)
         if layer and not layer.defaultPrim:
             roots = list(layer.rootPrims)
-            ref = Sdf.Payload(Payload_path, f"/{roots[0].name}") if len(roots) == 1 else Sdf.Payload(Payload_path)
+            ref = Sdf.Payload(payload_path, f"/{roots[0].name}") if len(roots) == 1 else Sdf.Payload(payload_path)
         else:
-            ref = Sdf.Payload(Payload_path)
+            ref = Sdf.Payload(payload_path)
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.GetPrimAtPath(target_path)
@@ -69,18 +67,12 @@ def main():
     Payload_fb = chunk.FileBrowser("file_path", extensions=[".usd*", ".usd", ".usda", ".usdc", ".usdz"])
     Payload_fb.add_callback(file_changed)
     import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path", flags=chunk.ChunkFlags.ParamFlags.LABELED)
-    import_primpath.add_callback(import_callback)
-
     PayloadChunk.add_param(Payload_fb)
     PayloadChunk.add_param(import_primpath)
 
     # prim location
     primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
-    primpath.add_callback(import_callback)
     PayloadChunk.add_param(primpath)
-
-    PayloadChunk.add_callback(import_callback, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
-
 
     return PayloadChunk
 

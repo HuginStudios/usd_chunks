@@ -1,8 +1,8 @@
-from usd_chunks import chunk, chunk_notice, chunk_core, chunk_utils
+from usd_chunks import chunk, chunk_core, chunk_utils
 from pxr import UsdGeom
 
-def show_attribute(prim, _chunk):
-    attr_grp = _chunk.get_param("attr_grp", chunk.is_group)
+def show_attribute(prim, node):
+    attr_grp = node.get_param("attr_grp", chunk.is_group)
 
     # clean params.
     for grp in attr_grp.get_my_params():
@@ -72,7 +72,6 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
     )
     chunk_api.add_param(primpath)
-    primpath.add_callback(execute)
 
     light_type = chunk.Menu(
         "light_type",
@@ -80,36 +79,40 @@ def main():
         menu_items=["DiskLight", "RectLight", "DomeLight", "DistantLight", "SphereLight", "CylinderLight"],
     )
     chunk_api.add_param(light_type)
-    light_type.add_callback(execute)
 
     attribute_group = chunk.Group("attr_grp", flags=chunk.ChunkFlags.GroupFlags.FRAMED)
     chunk_api.add_param(attribute_group)
 
-    chunk_api.add_callback(execute, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
-
     return chunk_api
 
 
-def execute(owner, notice, sender):
-    param = notice.data
-    _chunk = param.get_chunk()
-    stage = owner.get_stage()
+def execute(node):
+    stage = node.get_stage()
+    raw_path = node.get_param("primpath_location").value
+    light_type = node.get_param("light_type").value
+
+    if light_type == getattr(node, '_last_light_type', None) and raw_path == getattr(node, '_last_light_path', None):
+        return
+
+    node._last_light_type = light_type
+
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-    raw_path = _chunk.get_param("primpath_location").value
-    light_type = _chunk.get_param("light_type").value
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
     if not var_selections:
         raw_path = chunk_utils.get_unique_path(stage, raw_path)
+
+    node._last_light_path = raw_path
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.DefinePrim(target_path, light_type)
         attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
         attr.Set(UsdGeom.Tokens.inherited)
         if not var_selections and prim.GetPath().pathString != target_path:
-            _chunk.get_param("primpath_location").value = prim.GetPath().pathString
-        show_attribute(prim, _chunk)
+            node.get_param("primpath_location").value = prim.GetPath().pathString
+            node._last_light_path = prim.GetPath().pathString
+        show_attribute(prim, node)
 
 
 def config():

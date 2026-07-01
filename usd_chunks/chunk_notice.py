@@ -1106,6 +1106,23 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             if notice := prop.send_self():
                 msg += f"   {notice.alias.name}\n"
 
+            if module := getattr(prop, '_module', None):
+                if callable(getattr(module, 'execute', None)) and not getattr(prop, '_executing', False):
+                    global _usd_write_active
+                    prop._executing = True
+                    _usd_write_active = True
+                    try:
+                        stage = prop.get_stage()
+                        ctx = prop.get_edit_context()
+                        if stage and ctx:
+                            with Usd.EditContext(stage, ctx):
+                                module.execute(prop)
+                        else:
+                            module.execute(prop)
+                    finally:
+                        _usd_write_active = False
+                        prop._executing = False
+
         msg += "====== FINISHED ======\n"
         logger.debug(msg)
 
