@@ -13,15 +13,15 @@ def apply(owner: chunk.Chunk, notice, sender):
 
     schema_reg = Usd.SchemaRegistry()
     schema = schema_reg.GetTypeFromName(menu.value)
+    if not schema:
+        return
 
     for prim in prims:
         prim.ApplyAPI(schema)
 
 
-def update(owner: chunk.Chunk, notice, sender):
-    prims = notice.data
-    if not prims:
-        return
+def update(owner: chunk.Chunk, notice, sender: chunk.LineEdit):
+    prims = sender.get_prims()
 
     prim: Usd.Prim = prims[0]
     stage = owner.get_stage()
@@ -49,12 +49,16 @@ def update(owner: chunk.Chunk, notice, sender):
 
 def main():
     menu = chunk.Menu("schemas", "Schemas")
+    primSel = chunk.LineEdit(
+        "prim", flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION
+    )
+
     btn = chunk.Button("apply", "Apply")
 
     myChunk = chunk.Chunk("Apply Schema")
-    myChunk.add_params([menu, btn])
+    myChunk.add_params([primSel, menu, btn])
 
-    myChunk.add_callback(update, listen_globally=True, notice_alias=ChunkNoticeAlias.PRIM_SELECTION_CHANGED)
+    myChunk.add_callback(update, sender=primSel, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED, send_on_create=True)
     myChunk.add_callback(apply, sender=btn)
 
     return myChunk

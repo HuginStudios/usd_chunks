@@ -1,735 +1,250 @@
-from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Any, Dict, Optional, DefaultDict, List, Generic
+import weakref
 
+from PySide6 import QtWidgets, QtCore, QtGui
 from pxr import Tf
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_serial
-import usd_chunks.chunk_flags
-from usd_chunks.chunk_core import ChunkParamWidgetBase
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_serial
 from usd_chunks import chunk_core
-
-from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
-from enum import Enum
-import os
-import re
 
-
-class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], QtWidgets.QSlider):
-    def __init__(self, param: chunk.Slider):
-        super().__init__(param)
-
-        self._step = 1000 if usd_chunks.chunk_flags.ChunkFlags.ParamType.FLOAT in param.evaluate_type() else 1
-
-        min_val = param.min_value
-        max_val = param.max_value
-
-        if min_val is not None:
-            self.setMinimum(int(min_val * self._step))
-        else:
-            self.setMinimum(0)
-
-        if max_val is not None:
-            self.setMaximum(int(max_val * self._step))
-        else:
-            self.setMaximum(10 * self._step)
-
-        self.setup_chunk_widget()
-        self.valueChanged.connect(self.value_changed)
-
-    def get_value(self):
-        return self.value() / self._step
-
-    def set_value(self, value):
-        # self.blockSignals(True)
-        self.setValue(value * self._step)
-        # self.blockSignals(False)
-
-    def set_param_layout(self, layout_flags: usd_chunks.chunk_flags.ChunkFlags.LayoutFlags):
-        is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL in layout_flags
-        orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
-
-        self.setOrientation(orient)
-
-    def value_changed(self, value: Optional[int | float] = None):
-        if not self.param or value is None:
-            return
-        super().value_changed(value / float(self._step))
-
-
-class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
-    def __init__(self, param: chunk.Spinbox):
-        super().__init__(param)
-
-        self._step = 1
-
-        min_val = param.min_value
-        max_val = param.max_value
-
-        self.setMinimum(min_val if min_val is not None else -1e9)
-        self.setMaximum(max_val if max_val is not None else 1e9)
-
-        self.setup_chunk_widget()
-        self.valueChanged.connect(self.value_changed)
-
-    def get_value(self):
-        return self.value()
-
-    def set_value(self, value):
-        return self.setValue(value)
-
-    def wheelEvent(self, event: QtGui.QWheelEvent):
-        event.ignore()
-
-
-class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpinBox):
-    def __init__(self, param: chunk.Spinbox):
-        super().__init__(param)
-
-        self._step = 1
-
-        min_val = param.min_value
-        max_val = param.max_value
-
-        self.setMinimum(int(min_val) if min_val is not None else -2_147_483_647)
-        self.setMaximum(int(max_val) if max_val is not None else 2_147_483_647)
-
-        self.setup_chunk_widget()
-        self.valueChanged.connect(self.value_changed)
-
-    def get_value(self):
-        return self.value()
-
-    def set_value(self, value):
-        return self.setValue(value)
-
-    def wheelEvent(self, event: QtGui.QWheelEvent):
-        event.ignore()
-
-
-class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
-    def __init__(self, param: chunk.Label):
-        super().__init__(param)
-        self.setup_chunk_widget()
-
-    def get_value(self):
-        return self.text()
-
-    def set_value(self, value):
-        return self.set_label(value)
-
-    def set_label(self, text):
-        return self.setText(text)
-
-
-class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidget):
-    def __init__(self, param: chunk.LineEdit):
-        super().__init__(param)
-
-        self.button = QtWidgets.QToolButton(self)
-        self.button.setText("Pin Selection")
-        self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("pin"))))
-        self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
-
-        self.button.clicked.connect(self.pin_prim)
-
-        self.text = QtWidgets.QLineEdit(self)
-        self.text.editingFinished.connect(self.value_changed)
-        self.main_layout = QtWidgets.QHBoxLayout()
-
-        self.main_layout.setContentsMargins(0, 0, 0, 0)
-        self.main_layout.addWidget(self.text)
-        self.main_layout.addWidget(self.button)
-        self.setLayout(self.main_layout)
-
-        self.button.setHidden(not self.param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION))
-
-        self.setup_chunk_widget()
-
-    def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: chunk.ChunkParamBase):
-        if notice.alias == chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED and notice.data.value:
-            self.button.setHidden(ChunkFlags.ParamFlags.PRIM_SELECTION not in notice.data.value)
-
-        return super().handle_param_changed(notice, sender)
-
-    def pin_prim(self):
-        self.param.set_prims(self.param.get_scene().get_selected_prims())
-
-    def get_value(self):
-        return self.text.text()
-
-    def set_value(self, value):
-        return self.text.setText(str(value))
-
-
-class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QPlainTextEdit):
-    def __init__(self, param: chunk.TextEdit):
-        super().__init__(param)
-        self.setPlaceholderText("")
-        self.setMinimumHeight(60)
-        self.textChanged.connect(self.value_changed)
-        self.setup_chunk_widget()
-
-    def get_value(self):
-        return self.toPlainText()
-
-    def set_value(self, value):
-        self.blockSignals(True)
-        self.setPlainText(str(value) if value is not None else "")
-        self.blockSignals(False)
-
-
-class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
-    ValueChanged = QtCore.Signal(str)
-
-    def __init__(self, param: chunk.FileBrowser):
-        super().__init__(param)
-
-        self.button = QtWidgets.QToolButton(self)
-        self.button.setText("Browse")
-
-        self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("folder_open"))))
-
-        self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
-        self.button.clicked.connect(self.open_file_dial)
-        self.text = QtWidgets.QLineEdit(self)
-
-        self.setup_chunk_widget()
-        self.text.editingFinished.connect(self.value_changed)
-        self.ValueChanged.connect(self.value_changed)
-
-    def open_file_dial(self):
-        if not self.param:
-            return
-
-        pattern = ""
-        if self.param.pattern:
-            pattern = self.param.pattern
-
-        if not pattern:
-            pattern = "*"
-
-        if self.param.extensions:
-            pattern = " ".join([pattern + x for x in self.param.extensions])
-
-        create_new = not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
-        directory = self.param.has_flag(ChunkFlags.ParamFlags.DIRECTORY)
-
-        if file := file_dial(pattern, create_new, directory):
-            self.set_value(file)
-            self.ValueChanged.emit(file)
-
-    def get_value(self):
-        return self.text.text()
-
-    def set_value(self, value):
-        return self.text.setText(str(value))
-
-    def set_icon(self, icon: str):
-        self.button.setIcon(QtGui.QIcon(icon))
-
-    def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
-        if ChunkFlags.LayoutFlags.VERTICAL in layout_flags:
-            self.main_layout = QtWidgets.QVBoxLayout()
-        else:
-            self.main_layout = QtWidgets.QHBoxLayout()
-
-        self.main_layout.setContentsMargins(0, 0, 0, 0)
-        self.main_layout.addWidget(self.text)
-        self.main_layout.addWidget(self.button)
-
-        self.setLayout(self.main_layout)
-
-
-class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox):
-    def __init__(self, param: chunk.Menu):
-        super().__init__(param)
-
-        self.add_callback(self.menu_items_changed, param.get_attribute_sender("menu_items"))
-        self.update_menu_items(param)
-
-        self.setup_chunk_widget()
-        self.currentTextChanged.connect(self.value_changed)
-
-    def menu_items_changed(self, notice, sender):
-        self.update_menu_items(self.param)
-
-    def update_menu_items(self, param: chunk.Menu):
-        menu_items = self.param.menu_items
-        self.clear()
-
-        if menu_items:
-            self.addItems(menu_items)
-            val = self.param.value if self.param.value is not None else self.param.default_value
-            if val:
-                self.set_value(val)
-
-        if self.param.default_value:
-            self.setCurrentIndex(menu_items.index(self.param.default_value))
-
-    def get_value(self):
-        return self.currentText()
-
-    def set_value(self, value):
-        return self.setCurrentText(value)
-
-    def wheelEvent(self, event: QtGui.QWheelEvent):
-        event.ignore()
-
-
-class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheckBox):
-    def __init__(self, param: chunk.Checkbox):
-        super().__init__(param)
-        self.setup_chunk_widget()
-
-        self.toggled.connect(self.value_changed)
-
-    def get_value(self):
-        return self.isChecked()
-
-    def set_value(self, value: bool):
-        return self.setChecked(value)
-
-
-class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushButton):
-    def __init__(self, param: chunk.Button):
-        super().__init__(param)
-        self.setup_chunk_widget()
-        self.clicked.connect(self.value_changed)
-
-    def set_label(self, text):
-        self.setText(text)
-
-    def set_icon(self, icon: str):
-        qicon = QtGui.QIcon(icon)
-        self.setIcon(qicon)
-
-    def value_changed(self, value: Any = None):
-        """Override for buttons as the param do not have a value. Better to just send the param notice directly"""
-        if self.param:
-            self.param.execute()
-
-
-class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
-    def __init__(self, param: chunk.Separator):
-        super().__init__(param)
-
-        is_horizontal = usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL in param.layout
-        shape = QtWidgets.QFrame.Shape.HLine if is_horizontal else QtWidgets.QFrame.Shape.VLine
-        self.setFrameShape(shape)
-        self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
-
-        self.setup_chunk_widget()
-
-
-class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
-    widget_map = {
-        ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
-        ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
-        ChunkFlags.ParamType.FLOAT_SPINBOX: ChunkFloatSpinboxWidget,
-        ChunkFlags.ParamType.INT_SPINBOX: ChunkIntSpinboxWidget,
-        ChunkFlags.ParamType.LABEL: ChunkLabelWidget,
-        ChunkFlags.ParamType.LINEEDIT: ChunkLineEditWidget,
-        ChunkFlags.ParamType.TEXTEDIT: ChunkTextEditWidget,
-        ChunkFlags.ParamType.FILE: ChunkFileWidget,
-        ChunkFlags.ParamType.STRING_MENU: ChunkComboBoxWidget,
-        ChunkFlags.ParamType.CHECKBOX: ChunkCheckBoxWidget,
-        ChunkFlags.ParamType.BUTTON: ChunkPushButtonWidget,
-        ChunkFlags.ParamType.SEPARATOR: ChunkSeparatorWidget,
-    }
-
-    def create_widget(self, param: chunk.ChunkParamBase) -> ChunkParamWidgetBase | None:
-        """Create a Qt widget based on the ChunkParam object. The param.get_type() should determine the type of Qt Widget to create
-
-        Args:
-            param (chunk.ChunkParamBase): The parameter. The widget will update param.value when widget value is changed
-
-        Returns:
-            QtWidgets.QWidget: The QtWidget created
-            None: If failed to create a widget
-        """
-        key = param.evaluate_type()
-        widget_class = self.get_map().get(key, None)
-
-        if not widget_class:
-            print("Could not create widget for param: ", param.name, "Missing mapping in Qt factory")
-            return None
-
-        widget: ChunkParamWidgetBase = widget_class(param)
-
-        if param.tooltip and isinstance(widget, QtWidgets.QWidget):
-            widget.setToolTip(param.tooltip)
-
-        return widget
-
-
-class LabeledWidget(QtWidgets.QWidget):
-    def __init__(self, widget, parent=None):
+from plugins import chunk_usd
+
+from plugins.chunk_qt_widgets import (
+    SyntaxHighlighter,
+    ChunkSliderWidget,
+    ChunkFloatSpinboxWidget,
+    ChunkIntSpinboxWidget,
+    ChunkLabelWidget,
+    ChunkLineEditWidget,
+    ChunkTextEditWidget,
+    ChunkFileWidget,
+    ChunkComboBoxWidget,
+    ChunkCheckBoxWidget,
+    ChunkPushButtonWidget,
+    ChunkSeparatorWidget,
+    ChunkQTWidgetFactory,
+    LabeledWidget,
+    ChunkArea,
+    ContainerWidget,
+    ChunkWidget,
+    confirm_dial,
+    source_code_dial,
+    FilterableChunkMenu,
+    file_dial,
+    CHUNK_STYLESHEET,
+    ViewSlotState,
+)
+from plugins.chunk_qt_nodegraph import ChunkGraphView
+
+
+class EditableTabBar(QtWidgets.QTabBar):
+    request_delete = QtCore.Signal(int)
+    request_toggle_disable = QtCore.Signal(int)
+    tab_name_changed = QtCore.Signal(str, int)
+
+    def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.vlayout = QtWidgets.QVBoxLayout()
-        self.vlayout.setContentsMargins(0, 0, 0, 0)
-        self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self._editor = QtWidgets.QLineEdit(self)
+        self._editor.setWindowFlags(QtCore.Qt.WindowType.Popup)
+        self._editor.setFocusProxy(self)
+        self._editor.editingFinished.connect(self.handleEditingFinished)
+        self._editor.installEventFilter(self)
 
-        self.widget: ChunkParamWidgetBase = widget
-        self.label = QtWidgets.QLabel()
-        self.label.setHidden(True)
+    def mousePressEvent(self, event):
+        if self.tabAt(event.pos()) == 0:
+            return
+        super().mousePressEvent(event)
 
-        self.vlayout.addWidget(self.label)
-        self.vlayout.addWidget(widget)
-        self.setLayout(self.vlayout)
-
-        self._value_tooltip = QtWidgets.QLabel(parent=self)
-        self._value_tooltip.setHidden(True)
-        self._value_tooltip.setWindowFlags(QtCore.Qt.WindowType.ToolTip)
-        self._tooltip_timer = QtCore.QTimer(self)
-        self._tooltip_timer.timeout.connect(self.hide_tooltip)
-
-        if isinstance(self.widget, ChunkParamWidgetBase):
-            self._listener = chunk_notice.NoticeConnection(
-                self.update_value, alias=self.widget.get_notice_alias(), sender=self.widget
-            )
-
-        self.setMouseTracking(True)
-
-    def should_show_tooltip(self):
-        if not isinstance(self.widget, ChunkParamWidgetBase):
-            return False
-
-        t = self.widget.param.evaluate_type()
-        if (ChunkFlags.ParamType.EMPTY | ChunkFlags.ParamType.STRING) & t != 0:
-            return False
-        return True
-
-    def tooltip_pos(self):
-        return self.mapToGlobal(self.rect().bottomLeft())
-
-    def show_tooltip(self):
-        self._value_tooltip.move(self.tooltip_pos())
-        self._value_tooltip.setHidden(False)
-        self._value_tooltip.setText(str(self.widget.param.value))
-        self._tooltip_timer.start(3000)
-
-    def hide_tooltip(self):
-        self._value_tooltip.hide()
-
-    def update_value(self, notice: chunk_notice.ChunkNotice, sender):
-        name = notice.data.name
-        if name in ["label", "name"]:
-            self.update_label(notice.data.value)
-        elif name == "value" and self.should_show_tooltip():
-            self.show_tooltip()
-
-    def update_label(self, text):
-        self.label.setHidden(not bool(text))
-        self.label.setText(text)
-
-    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
-        if self.should_show_tooltip():
-            self.show_tooltip()
-            event.accept()
-        return super().mouseMoveEvent(event)
-
-    def enterEvent(self, event: QtGui.QEnterEvent) -> None:
-        if self.should_show_tooltip():
-            self.show_tooltip()
-            event.accept()
-        return super().enterEvent(event)
-
-    def leaveEvent(self, event: QtCore.QEvent) -> None:
-        self.hide_tooltip()
-        return super().leaveEvent(event)
-
-
-class ContainerWidget(
-    Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QWidget
-):
-    """
-    Chunk is a base class for creating UI components.
-    It provides a structure for initializing the API and creating UI Chunks.
-    """
-
-    group_height_changed = QtCore.Signal(float)
-
-    def __init__(
-        self,
-        group,
-        parent=None,
-    ):
-        self.animation_duration = 300
-        self._animation_value = 0
-        super().__init__(group, parent=parent)
-
-    def build_collapsable(self):
-        self.content = QtWidgets.QFrame()
-        self.content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Ignored)
-
-        self.content_layout = QtWidgets.QFormLayout()
-        self.content_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.DontWrapRows)
-        self.content_layout.setContentsMargins(2, 1, 2, 1)
-        self.content_layout.setHorizontalSpacing(0)
-        self.content.setLayout(self.content_layout)
-
-        # Setup minimize/maximize button
-        self.minimize_button = QtWidgets.QToolButton()
-        self.minimize_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.minimize_button.setIconSize(QtCore.QSize(6, 6))
-        self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
-
-        self.list_expand_button = QtWidgets.QToolButton()
-        self.list_expand_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.list_expand_button.setIconSize(QtCore.QSize(6, 6))
-        self.list_expand_button.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum
-        )
-        self.list_expand_button.setHidden(True)
-
-        # Used when collapsable
-        self.toggle_anim = QtCore.QPropertyAnimation(self, b"animation_value")
-        self.toggle_anim.setStartValue(0)
-        self.toggle_anim.setEndValue(self.animation_duration)
-
-        self.__layout__ = QtWidgets.QVBoxLayout()
-        self.__layout__.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.__layout__.setContentsMargins(2, 1, 2, 1)
-        self.__layout__.setSpacing(0)
-
-        self.__layout__.addWidget(self.minimize_button)
-        self.__layout__.addWidget(self.list_expand_button)
-        self.__layout__.addWidget(self.content)
-
-        self.setLayout(self.__layout__)
-
-    def supports_widget(self, widget: Any) -> bool:
-        return isinstance(widget, QtWidgets.QWidget)
-
-    @QtCore.Property(float)
-    def animation_value(self):  # type: ignore
-        return self._animation_value
-
-    @animation_value.setter
-    def animation_value(self, val):
-        self._animation_value = val
-        scale = max(self._animation_value / self.animation_duration, 0)
-
-        h = self.content_layout.sizeHint().height()
-        self.content.setFixedHeight(h * scale)
-
-    def animation_finished(self):
-        """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
-        if self.is_collapsed():
-            self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
-        else:
-            self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
-
-    def get_widget_factory(self) -> chunk_core.ChunkWidgetFactoryBase:
-        if factory := self.group.widget_factory:
-            return factory
-        else:
-            return ChunkQTWidgetFactory()
-
-    def update_from_flags(self):
-        if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
-            # Enables animatiable collapsing of the group
-            self.minimize_button.setArrowType(QtCore.Qt.ArrowType.RightArrow)
-            self.minimize_button.setCheckable(True)
-            self.toggle_anim.finished.connect(self.animation_finished)
-            self.minimize_button.toggled.connect(self.set_expanded)
-        else:
-            # The layout should update min and max size. When Collapsable, this is handled in animation_finished, as collapsed groups should set NoConstraint
-            self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
-
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
-            self.minimize_button.setText(self.group.get_label())
-            self.minimize_button.setHidden(False)
-        else:
-            self.minimize_button.setText("")
-            if not self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
-                self.minimize_button.setHidden(True)
-
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
-            self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-            self.content.setLineWidth(2)
-        else:
-            self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LIST in self.group.flags:
-            self.list_expand_button.setHidden(False)
-
-            icon = QtGui.QIcon(str(chunk_resources.get_icon("add")))
-            self.list_expand_button.setIcon(icon)
-            self.list_expand_button.setIconSize(QtCore.QSize(20, 20))
-            self.list_expand_button.clicked.connect(self.list_expand)
-
-    def update_label(self, text: str):
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
-            self.minimize_button.setText(text)
-
-    def list_expand(self):
-        if not isinstance(self.group, chunk_core.ChunkListGroupBase):
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+        idx = self.tabAt(event.pos())
+        if idx == 0:
             return
 
-        self.group.size += 1
-
-    def set_hidden(self, val: bool):
-        self.setHidden(val)
-
-    def set_enabled(self, val: bool):
-        self.content.setEnabled(val)
-
-    def update_from_state(self):
-        super().update_from_state()
-
-        if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
-            self.minimize_button.setChecked(not self.group.has_state(ChunkFlags.State.COLLAPSED))
-
-    def set_expanded(self, checked):
-        arrow_type = QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
-        direction = (
-            QtCore.QAbstractAnimation.Direction.Forward if checked else QtCore.QAbstractAnimation.Direction.Backward
-        )
-        if checked:
-            self.group.unset_state(ChunkFlags.State.COLLAPSED)
-        else:
-            self.group.set_state(ChunkFlags.State.COLLAPSED)
-
-        self.minimize_button.setArrowType(arrow_type)
-        self.toggle_anim.setDirection(direction)
-        self.toggle_anim.start()
-
-    def delete_self(self):
-        self.setParent(None)
-        self.deleteLater()
-
-    def remove_widget(self, widget: QtWidgets.QWidget):
-        count = self.content_layout.rowCount()
-        for i in reversed(range(count)):
-            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-            if not item:
-                continue
-            iw = item.widget()
-
-            if isinstance(iw, LabeledWidget) and iw.widget == widget:
-                self.content_layout.removeRow(i)
-
-    def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
-        widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
-
-        labeled = LabeledWidget(widget, self)
-        if label is not None:
-            labeled.update_label(label)
-
-        self.content_layout.addWidget(labeled)
-
-        if self.group.has_flag(ChunkFlags.GroupFlags.LIST):
-            del_icon = QtGui.QIcon(str(chunk_resources.get_icon("remove")))
-
-            i = self.content_layout.rowCount() - 1
-            item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-            if not item or not (w := item.widget()):
-                return
-
-            label = self.content_layout.labelForField(w)
-
-            if label is None:
-                del_btn = QtWidgets.QToolButton()
-                del_btn.setIcon(del_icon)
-                del_btn.setIconSize(QtCore.QSize(15, 15))
-                del_btn.clicked.connect(partial(self.remove_from_list_group, widget))
-
-                self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.LabelRole, del_btn)
-                self.content_layout.setWidget(i, QtWidgets.QFormLayout.ItemRole.FieldRole, w)
-
-    def remove_from_list_group(self, widget: QtWidgets.QWidget):
-        if isinstance(self.group, chunk_core.ChunkListGroupBase):
-            for i in range(self.content_layout.rowCount()):
-                item = self.content_layout.itemAt(i, QtWidgets.QFormLayout.ItemRole.FieldRole)
-                if not item:
-                    continue
-
-                iw = item.widget()
-                if isinstance(iw, LabeledWidget) and iw.widget == widget:
-                    self.group.remove_index(i)
-
-        elif isinstance(widget, chunk_core.ChunkContainerWidgetBase):
-            widget.group.request_delete()
-        elif isinstance(widget, chunk_core.ChunkParamWidgetBase):
-            widget.param.request_delete()
-        self.remove_widget(widget)
-
-
-class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
-    """
-    Chunk is a base class for creating UI components.
-    It provides a structure for initializing the API and creating UI Chunks.
-    """
-
-    def __init__(
-        self,
-        group: chunk.ChunkBase,
-        parent=None,
-    ):
-        super().__init__(group, parent)
-
-    def contextMenuEvent(self, event):
         menu = QtWidgets.QMenu()
-        actions: Dict[QtGui.QAction, chunk_notice.NoticeConnection] = {}
-        for conn in self.group.find_callbacks(notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE):
-            meth = conn.get_method()
-            if not meth:
-                continue
 
-            actions[QtGui.QAction(meth.__name__)] = conn
+        remove_action = QtGui.QAction("remove")
+        disable_action = QtGui.QAction("toggle enabled")
 
-        menu.addActions(list(actions.keys()))
-
-        if parent := self.parentWidget():
-            res = menu.exec_(parent.mapToGlobal(self.geometry().topLeft()))
-        else:
-            res = menu.exec_(event.globalPos())
+        menu.addActions([remove_action, disable_action])
+        res = menu.exec_(event.globalPos())
 
         if not res:
             return
 
-        if conn := actions.get(res):
-            conn.handle_callback(chunk_notice.MenuActionNotice(self.group.get_notice_data()), self.group, False)
+        if res == remove_action:
+            self.request_delete.emit(idx)
+        elif res == disable_action:
+            self.request_toggle_disable.emit(idx)
 
-    def get_category(self) -> str:
-        """Get the category of this Chunk
+    def eventFilter(self, widget, event):
+        if (
+            event.type() == QtCore.QEvent.Type.MouseButtonPress
+            and not self._editor.geometry().contains(event.globalPos())
+        ) or (event.type() == QtCore.QEvent.Type.KeyPress and event.key() == QtCore.Qt.Key.Key_Escape):
+            self._editor.hide()
+            return True
 
-        Returns:
-            str: Category of this Chunk
-        """
-        if isinstance(self.group, chunk_core.ChunkBase):
-            if config := self.group.get_config():
-                return config.category
-        return chunk.DefaulConfig().category
+        return super().eventFilter(widget, event)
+
+    def mouseDoubleClickEvent(self, event):
+        index = self.tabAt(event.pos())
+        if index > 0:
+            self.editTab(index)
+
+    def editTab(self, index):
+        if self.shape() in [
+            QtWidgets.QTabBar.Shape.RoundedEast,
+            QtWidgets.QTabBar.Shape.RoundedWest,
+            QtWidgets.QTabBar.Shape.TriangularEast,
+            QtWidgets.QTabBar.Shape.TriangularWest,
+        ]:
+            rect = self.tabRect(index)
+            h = rect.height()
+            rect.setHeight(rect.width())
+            rect.setWidth(h)
+
+        else:
+            rect = self.tabRect(index)
+
+        self._editor.move(self.mapToGlobal(rect.topLeft()))
+        self._editor.setText(self.tabText(index))
+
+        self._editor.setFixedSize(rect.size())
+        if not self._editor.isVisible():
+            self._editor.show()
+
+    def handleEditingFinished(self):
+        index = self.currentIndex()
+        if index >= 0:
+            self._editor.hide()
+            self.setTabText(index, self._editor.text())
+            self.tab_name_changed.emit(self._editor.text(), index)
 
 
-class ChunkArea(QtWidgets.QScrollArea):
-    def __init__(self, parent=None):
-        super().__init__(parent)
+_TEXT_INPUT_TYPES = (
+    QtWidgets.QLineEdit,
+    QtWidgets.QTextEdit,
+    QtWidgets.QAbstractSpinBox,
+    QtWidgets.QPlainTextEdit,
+)
 
-        self.flow = QtWidgets.QVBoxLayout()
-        self.flow.setContentsMargins(0, 0, 0, 0)
 
-        self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+def _guarded_copy():
+    focused = QtWidgets.QApplication.focusWidget()
+    if focused and isinstance(focused, _TEXT_INPUT_TYPES):
+        return
+    chunk_usd.copy_selected_chunks()
 
-        self.widget_holder = QtWidgets.QWidget(self)
-        self.widget_holder.setLayout(self.flow)
 
-        self.setWidget(self.widget_holder)
-        self.setWidgetResizable(True)
+def _guarded_paste():
+    focused = QtWidgets.QApplication.focusWidget()
+    if focused and isinstance(focused, _TEXT_INPUT_TYPES):
+        return
+    chunk_usd.paste_chunks()
 
 
 class ChunkTabWidget(QtWidgets.QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
+        self.tab_bar = EditableTabBar(self)
+        self.setTabBar(self.tab_bar)
 
+        self.tab_bar.request_delete.connect(self.delete_tab)
+        self.tab_bar.request_toggle_disable.connect(self.toggle_disabled_tab)
+        self.tab_bar.tab_name_changed.connect(self.update_context_name)
+
+        self._view_mode: int = 0  # 0 = params, 1 = graph
+
+        self._btn = QtWidgets.QPushButton("+", self)
+        self._btn.clicked.connect(self.add_new_tab)
+
+        self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
         self.setMinimumWidth(200)
+
+        self.add_tab_button()
+        self.update_stylesheet()
+
+    def update_stylesheet(self):
+        code = ""
+
+        if self.count() > 1:
+            code = f"""
+                QTabBar::tab {{
+                    border-color: #4A4A4A;
+                    border: 1px solid transparent;
+                }}
+                QTabBar::tab:right {{
+                    padding: 12 0px;
+                    border-top-right-radius: 8px;
+                    border-bottom-right-radius: 8px;
+                }}
+                QTabBar::tab:top {{
+                    padding: 0 12px;
+                    border-top-left-radius: 8px;
+                    border-top-right-radius: 8px;
+                }}
+
+                QTabBar::tab:hover:!selected {{
+                    background: #868686;
+                }}
+
+                QTabBar::tab:selected:!first {{
+                    border-color: {ChunkWidget.SELECTED_COLOR};
+                }}
+
+                QTabBar::tab:first {{
+                    background: transparent;
+                    border: none;
+                    padding: 0 0px;
+                }}
+                QTabBar::tab:first:hover {{
+                    background: transparent;
+                }}
+                """
+        else:
+            code = """
+                QTabBar::tab {
+                    background: transparent;
+                    border: none;
+                    padding: 0 0px;
+                }
+                """
+        self.setStyleSheet(code)
+
+    def toggle_disabled_tab(self, idx):
+        if t := self.get_chunk_context(idx):
+            if t.group.has_state(ChunkFlags.State.DISABLED):
+                t.group.enable()
+            else:
+                t.group.disable()
+
+    def delete_tab(self, idx):
+        if t := self.get_chunk_context(idx):
+            t.group.request_delete()
+        self.update_stylesheet()
+
+    def update_context_name(self, name, idx):
+        if tab := self.get_chunk_context(idx):
+            tab.group.name = name
+
+    def add_new_tab(self):
+        # Create a new context chunk which will be displayed as the current tab
+        name = f"Tab {self.tabBar().count()}"
+
+        if scene := chunk.get_scene():
+            scene.add_context(name)
+        else:
+            c = chunk.Chunk(name, flags=ChunkFlags.GroupFlags.CONTEXT)
+            self.add_chunk_context(c)
+
+    def add_tab_button(self):
+        w = ChunkArea(self)
+        idx = self.addTab(w, "")
+
+        self.tabBar().setTabButton(idx, QtWidgets.QTabBar.ButtonPosition.LeftSide, self._btn)
+        return idx
 
     def update_tab_position(self):
         if self.height() > self.width():
@@ -746,54 +261,8 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         return self._tabPosition
 
     def contextMenuEvent(self, event):
-        items = dict()
-        items["menu"] = QtWidgets.QMenu("chunks")
-
-        for mod in chunk_registry.ChunkRegistry().get_chunk_modules(sort_result=True):
-            cat = mod.config.category
-            if isinstance(cat, Enum):
-                cat = cat.value
-
-            namespace = mod.module_name.split(".")
-            if namespace[0].lower() == cat.lower():
-                namespace.pop(0)
-
-            if cat:
-                namespace.insert(0, cat)
-
-            d = items
-            for ns in namespace:
-                if ns == namespace[-1]:
-                    if m := d.get("menu"):
-                        action = m.addAction(ns)
-                        action.setData(mod)
-                    break
-                elif ns not in d:
-                    d[ns] = {"menu": d.get("menu").addMenu(ns)}
-                d = d[ns]
-
-        items["menu"].addSeparator()
-
-        import_action = QtGui.QAction("import")
-        import_action.setData("import")
-        items["menu"].addAction(import_action)
-
-        exc = items["menu"].exec_(event.globalPos())
-
-        if not exc:
-            return
-
-        if exc.data() == "import":
-            ext = (
-                chunk_serial.FileExtensions.PY_MODULE,
-                chunk_serial.FileExtensions.CHUNK_MODULE,
-            )
-            flt = " ".join(f"*{x}" for x in ext)
-            if file := file_dial(flt):
-                chunk_registry.ChunkRegistry().import_chunk(file)
-            return
-
-        if not (mod := exc.data()) or not isinstance(mod, chunk_registry.ChunkModule):
+        mod = FilterableChunkMenu().select_module(event.globalPos())
+        if not mod:
             return
 
         if mod.loaded:
@@ -801,23 +270,92 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         else:
             chunks = mod.load()
 
-        chunk_registry.ChunkRegistry().scene.add_chunks(chunks)
+        for c in chunks:
+            self.add_chunk_to_tab(c)
+
+    def get_chunk_context(self, idx) -> ChunkWidget | None:
+        w = self.widget(idx)
+        if isinstance(w, QtWidgets.QStackedWidget):
+            w = w.widget(0)
+        assert w is None or isinstance(w, ChunkWidget)
+        return w
+
+    def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
+        for i in range(self.count()):
+            w = self.widget(i)
+            if isinstance(w, QtWidgets.QStackedWidget):
+                w = w.widget(0)
+            if isinstance(w, ChunkWidget) and w.group == ctx:
+                return i
+        return None
+
+    def add_chunk_context(self, c: chunk.ChunkBase):
+        stack = QtWidgets.QStackedWidget(self)
+        params_widget = ChunkWidget(c, self, is_tab_context=True)
+        graph_view = ChunkGraphView(self)
+        vs = ViewSlotState(stack)
+        params_widget.set_view_state(vs)
+        graph_view.set_view_state(vs)
+        stack.addWidget(params_widget)   # page 0: params
+        stack.addWidget(graph_view)      # page 1: graph
+        stack.setCurrentIndex(self._view_mode)
+
+        copy_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Copy, stack)
+        copy_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        copy_sc.activated.connect(_guarded_copy)
+
+        paste_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Paste, stack)
+        paste_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        paste_sc.activated.connect(_guarded_paste)
+
+        idx = self.addTab(stack, c.name)
+        self.setCurrentIndex(idx)
+        self.update_stylesheet()
+
+    def set_view_mode(self, mode: int):
+        self._view_mode = mode
+        for i in range(self.count()):
+            w = self.widget(i)
+            if isinstance(w, QtWidgets.QStackedWidget):
+                w.setCurrentIndex(mode)
+
+    def get_current_graph_view(self):
+        w = self.widget(self.currentIndex())
+        if isinstance(w, QtWidgets.QStackedWidget):
+            gv = w.widget(1)
+            if isinstance(gv, ChunkGraphView):
+                return gv
+        return None
+
+    def add_chunk_to_tab(self, param: chunk_core.ChunkBase, tabidx=None):
+        if tabidx is None:
+            tabidx = self.tabBar().currentIndex()
+        if tabidx == 0:
+            self.add_new_tab()
+            tabidx = 1
+
+        if t := self.get_chunk_context(tabidx):
+            if param in t.group.get_my_params():
+                return
+
+            cfg = getattr(param, 'get_config', lambda: None)()
+            if cfg and cfg.module and param.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                param._parent_context = weakref.ref(t.group)
+
+            t.group.add_param(param)
 
 
 class ChunkWidgetDocker(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.build()
 
         self._chunk_loaded_listener = chunk_notice.NoticeConnection(
             self._loaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
         )
-        self._chunk_unloaded_listener = chunk_notice.NoticeConnection(
-            self._unloaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_UNLOADED, globally=True
+        self._chunk_deleted_listener = chunk_notice.NoticeConnection(
+            self._deleted_chunk_callback, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, globally=True
         )
-
-    def _unloaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
-        pass
+        self.build()
 
     def _loaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
         """Called whenever CHUNK_LOADED notice was recieved - will in turn add a new chunk widget
@@ -826,155 +364,156 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             notice (chunk_notice.ChunkLoadedNotice): The notice sent from the registry
             sender (chunk.Chunk): The new chunk that was added
         """
-        self.add_chunk_widget(sender)
+        self.create_chunk_widget(sender)
+        self._invalidate_graph_views()
+        if self._view_bar.currentIndex() == 1:
+            self._rebuild_graph()
+        if chunk_usd.is_view_chunk(sender):
+            self._reposition_view_chunk(sender)
+        elif not chunk_notice._loading_stage:
+            chunk_registry.ChunkRegistry().scene.set_selected_chunks([sender])
+
+    def _reposition_view_chunk(self, view_chunk: chunk.ChunkBase) -> None:
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+        sources = chunk_usd.get_view_exec_sources(view_chunk, stage, registry.scene)
+        if not sources:
+            return
+        ctx = view_chunk.get_context()
+        if not ctx:
+            return
+        idx = self.tab_widget.get_chunk_context_index(ctx)
+        tab_cw = self.tab_widget.get_chunk_context(idx)
+        if tab_cw is not None:
+            tab_cw._reorder_chunk_widget_after(view_chunk, sources[0])
+
+    def _deleted_chunk_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
+        if not sender.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            return
+        if (idx := self.tab_widget.get_chunk_context_index(sender)) is not None:
+            self.tab_widget.removeTab(idx)
+        self._invalidate_graph_views()
+
+    def create_chunk_widget(self, loaded_chunk: chunk.ChunkBase):
+        if loaded_chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            cfg = loaded_chunk.get_config()
+            if cfg and cfg.module:
+                # User-created ChunkGroup: add a standalone ChunkWidget directly to
+                # the parent tab's content layout — NOT via add_param, which would
+                # propagate sub-chunk PARAM_ADDED notices up to the parent context.
+                parent_ctx = getattr(loaded_chunk, '_parent_context', None)
+                parent_ctx = parent_ctx() if parent_ctx else None
+                if parent_ctx is not None:
+                    idx = self.tab_widget.get_chunk_context_index(parent_ctx)
+                    tab_cw = self.tab_widget.get_chunk_context(idx)
+                    if tab_cw is not None:
+                        tab_cw._add_group_widget(loaded_chunk)
+                    return
+            # Plain tab context: create its tab immediately.
+            self.tab_widget.add_chunk_context(loaded_chunk)
+        elif ctx := loaded_chunk.get_context():
+            idx = self.tab_widget.get_chunk_context_index(ctx)
+            if idx is not None:
+                self.tab_widget.add_chunk_to_tab(loaded_chunk, idx)
+
+    def _current_context(self):
+        idx = self.tab_widget.currentIndex()
+        if idx == 0:
+            return None
+        w = self.tab_widget.get_chunk_context(idx)
+        return w.group if w else None
+
+    def _invalidate_graph_views(self):
+        for i in range(self.tab_widget.count()):
+            w = self.tab_widget.widget(i)
+            if isinstance(w, QtWidgets.QStackedWidget):
+                gv = w.widget(1)
+                if isinstance(gv, ChunkGraphView):
+                    gv.scene().invalidate()
+
+    def _rebuild_graph(self):
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+        graph_view = self.tab_widget.get_current_graph_view()
+        if not graph_view:
+            return
+        context = self._current_context()
+        if graph_view.scene()._built_context == context:
+            return  # already built for this context — keep the cache
+        graph_view.build(stage, registry.scene, context)
+        graph_view.dive_into.connect(self._on_dive_into, QtCore.Qt.UniqueConnection)
+
+    def _on_dive_into(self, context_chunk):
+        idx = self.tab_widget.get_chunk_context_index(context_chunk)
+        if idx is None:
+            # Ensure the group isn't collapsed when we build its tab — the scroll
+            # area is sized via setFixedHeight inside update_from_state, so a
+            # lingering COLLAPSED state would make it 0px tall on first show.
+            context_chunk.unset_state(ChunkFlags.State.COLLAPSED)
+            self.tab_widget.add_chunk_context(context_chunk)
+            idx = self.tab_widget.get_chunk_context_index(context_chunk)
+        if idx is not None:
+            self.tab_widget.setCurrentIndex(idx)
+
+    def _on_tab_changed(self, _):
+        registry = chunk_registry.ChunkRegistry()
+        if registry.initialized:
+            ctx = self._current_context()
+            registry.scene._current_context = weakref.ref(ctx) if ctx is not None else None
+        self._rebuild_graph()
+
+    def _on_view_mode_changed(self, mode: int):
+        self.tab_widget.set_view_mode(mode)
+        if mode == 1:
+            self._rebuild_graph()
 
     def build(self):
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.MinimumExpanding)
-        self.chunk_tabs: dict[str, ChunkArea] = {}
         self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
+
+        self._view_bar = QtWidgets.QTabBar(self)
+        self._view_bar.addTab("Params")
+        self._view_bar.addTab("Graph")
+        self._view_bar.currentChanged.connect(self._on_view_mode_changed)
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
         registry = chunk_registry.ChunkRegistry()
-
-        self.setStyleSheet("""
-        QFrame{
-            background-color: #333333;
-        }
-        QComboBox{
-            background-color: #202020;
-        }
-        QToolButton{
-            border: 2px solid;
-            text-align: center;border: 0px;
-            border-radius: 0px;
-            padding: 4px;
-            background-color: #333333;
-            color: #EEEEEE;
-            border-color: rgb(156, 156, 156); 
-        }
-        QPushButton{border: 1px solid;
-            border-color: rgb(115, 115, 115);
-            border-radius: 3px;
-            background-color: #333333;
-            }
-            QPushButton:hover {
-            border: 1px solid;
-            border-radius: 3px;
-            border-color: rgb(156, 156, 156);
-        }
-        QPushButton:focus {
-            outline-color: transparent;
-            border: 2px solid;
-            border-color: rgb(243, 243, 243);
-        }
-        QPushButton:pressed{
-            background-color: rgb(80, 80, 80);
-        }
-        QPushButton:disabled {
-            color: rgb(40, 40, 40);
-            border-color: rgb(40, 40, 40);
-            background-color: rgb(40, 40, 40);
-        }
-        QSlider {
-            min-height: 8px;
-            background: transparent;
-            height: 20px;
-        }
-
-        QSlider::groove:horizontal {
-            border: 0px;
-            background: #202020;
-            height: 5px;
-            border-radius: 10px;
-        }
-
-        QSlider::handle {
-            background: #808080;
-            height: 10px;
-            width: 10px;
-            border-radius: 5px;
-            margin: -3px 0px;
-        }
-        QSlider::handle:hover {
-            background: #999999;
-            height: 10px;
-            width: 10px;
-            border-radius: 5px;
-            margin: -3px 0px;
-        }
-
-        QSlider::sub-page:horizontal {
-            background: #404040;
-            border-top-left-radius: 10px;
-            border-bottom-left-radius: 10px;
-        }
-
-        QRangeSlider {
-            qproperty-barColor: #202020;
-        }
-        """)
+        self.setStyleSheet(CHUNK_STYLESHEET)
 
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
         if registry.initialized:
+            # Context chunks are excluded from get_chunks() — process them first
+            # so tabs exist before non-context chunks are added to them.
+            for ctx in registry.scene.chunks.get_my_params():
+                if isinstance(ctx, chunk_core.ChunkBase) and ctx.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                    self.tab_widget.add_chunk_context(ctx)
             for c in registry.scene.get_chunks():
-                self.add_chunk_widget(c)
+                self.create_chunk_widget(c)
 
         self.main_layout = QtWidgets.QVBoxLayout()
         self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+        self.main_layout.addWidget(self._view_bar)
         self.main_layout.addWidget(self.tab_widget)
 
         self.setLayout(self.main_layout)
         self.show()
-
-    def add_chunk_widget(self, loaded_chunk: chunk.ChunkBase | ChunkWidget) -> ChunkWidget:
-        """Adds a ChunkWidget to the docker
-
-        Args:
-            loaded_chunk (chunk.Chunk | ChunkWidget): The chunk to add as a widget
-
-        Returns:
-            ChunkWidget: The new ChunkWidget created for the loaded_chunk
-        """
-        widget = None
-
-        if isinstance(loaded_chunk, chunk.ChunkBase):
-            # If the returned value is a Chunk, we need to create the widget here as well
-            widget = ChunkWidget(loaded_chunk, self)
-        elif isinstance(loaded_chunk, ChunkWidget):
-            # If main returned a ChunkWidget, we can use it directly
-            widget = loaded_chunk
-        else:
-            return None
-
-        category = widget.get_category()
-        if category not in self.chunk_tabs.keys():
-            self.chunk_tabs[category] = ChunkArea(self)
-            self.tab_widget.addTab(self.chunk_tabs[category], category)
-
-        self.chunk_tabs[category].flow.addWidget(widget)
-        return widget
-
-
-class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
-    def __init__(self, parent):
-        super().__init__(parent)
-
-        self._mappings = {}
-
-    def add_mapping(self, pattern, format):
-        self._mappings[pattern] = format
-
-    def highlightBlock(self, text):
-        for pattern, format in self._mappings.items():
-            for match in re.finditer(pattern, text):
-                start, end = match.span()
-                self.setFormat(start, end - start, format)
 
 
 class ChunkModuleLoader(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.content = QtWidgets.QTableWidget(rowCount=0, columnCount=4, parent=self)
+        self.content = QtWidgets.QTableWidget(rowCount=0, columnCount=3, parent=self)
 
         self.content.setSelectionMode(QtWidgets.QTableWidget.SelectionMode.ExtendedSelection)
         self.content.setSelectionBehavior(QtWidgets.QTableWidget.SelectionBehavior.SelectRows)
@@ -998,11 +537,11 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         menu = QtWidgets.QMenu()
 
-        # actions: Dict[QtGui.QAction, chunk_registry.ChunkModule] = {}
+        create_action = QtGui.QAction("create")
         export_action = QtGui.QAction("export")
         inspect_action = QtGui.QAction("inspect")
 
-        menu.addActions([export_action, inspect_action])
+        menu.addActions([create_action, export_action, inspect_action])
 
         res = menu.exec_(event.globalPos())
 
@@ -1015,8 +554,18 @@ class ChunkModuleLoader(QtWidgets.QDialog):
             if file := file_dial(flt, True):
                 mod.export(file)
         elif res == inspect_action and mod.module:
-            src = chunk_serial.serialize_source(mod.module)
-            python_source_dial(src)
+            if isinstance(mod.module, chunk_serial.RuntimeModule):
+                src = mod.module._code
+            else:
+                src = chunk_serial.serialize_source(mod.module)
+            source_code_dial(src, chunk_core.PySyntaxHighlightMapping())
+        elif res == create_action:
+            if not mod.loaded:
+                cs = mod.load()
+            else:
+                cs = mod.create()
+            if cs:
+                chunk_registry.ChunkRegistry().scene.add_chunks(cs)
 
         return super().contextMenuEvent(event)
 
@@ -1026,16 +575,16 @@ class ChunkModuleLoader(QtWidgets.QDialog):
     def new_row(self, row, mod: chunk_registry.ChunkModule):
         self.content.insertRow(row)
 
-        c0 = QtWidgets.QTableWidgetItem()
-        c0.setCheckState(self.get_check_state(mod.loaded))
-
         c1 = QtWidgets.QTableWidgetItem(mod.module_name)
+        c1.setToolTip(mod.config.description)
 
-        c2 = QtWidgets.QTableWidgetItem(mod.config.category)
+        c2 = QtWidgets.QTableWidgetItem(mod.module_file.as_posix() if mod.module_file.exists() else "Not Found")
 
-        self.content.setItem(row, 0, c0)
-        self.content.setItem(row, 1, c1)
-        self.content.setItem(row, 3, c2)
+        c3 = QtWidgets.QTableWidgetItem(mod.config.category)
+
+        self.content.setItem(row, 0, c1)
+        self.content.setItem(row, 1, c2)
+        self.content.setItem(row, 2, c3)
 
     def load_chunks(self):
         reg = chunk_registry.ChunkRegistry()
@@ -1088,76 +637,6 @@ class ChunkModuleLoader(QtWidgets.QDialog):
                     self.load_unload(mod, check)
 
 
-def confirm_dial(msg) -> bool:
-    dial = QtWidgets.QMessageBox(text=msg)
-    dial.setStandardButtons(QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Yes)
-    return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
-
-
-def python_source_dial(src: str):
-    _editor = QtWidgets.QPlainTextEdit(src, readOnly=True)
-    hl = PythonSyntaxHighlighter(_editor.document())
-
-    class_format = QtGui.QTextCharFormat()
-    class_format.setFontWeight(QtGui.QFont.Weight.Bold)
-    class_format.setForeground(QtCore.Qt.GlobalColor.blue)
-    pattern = r"^\s*class\s+\w+\(.*$"
-    hl.add_mapping(pattern, class_format)
-
-    function_format = QtGui.QTextCharFormat()
-    function_format.setFontItalic(True)
-    function_format.setForeground(QtCore.Qt.GlobalColor.blue)
-    pattern = r"^\s*def\s+\w+\s*\(.*\)\s*:\s*$"
-    hl.add_mapping(pattern, function_format)
-
-    comment_format = QtGui.QTextCharFormat()
-    comment_format.setBackground(QtGui.QColor("#77ff77"))
-    hl.add_mapping(r"^\s*#.*$", comment_format)
-
-    font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
-    _editor.setFont(font)
-
-    dial = QtWidgets.QDialog()
-    dial_layout = QtWidgets.QHBoxLayout()
-    dial.setLayout(dial_layout)
-    dial_layout.addWidget(_editor)
-    return dial.exec()
-
-
-def file_dial(filter: Optional[str] = None, create_new=False, directory=False):
-    dial = QtWidgets.QFileDialog()
-
-    accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptOpen
-    file_mode = QtWidgets.QFileDialog.FileMode.AnyFile
-
-    # if create_new:
-    #     accept_mode = QtWidgets.QFileDialog.AcceptMode.AcceptSave
-
-    if directory:
-        file_mode = QtWidgets.QFileDialog.FileMode.Directory
-
-    elif not create_new:
-        file_mode = QtWidgets.QFileDialog.FileMode.ExistingFile
-        dial.setOption(QtWidgets.QFileDialog.Option.ReadOnly)
-
-    dial.setFileMode(file_mode)
-    dial.setAcceptMode(accept_mode)
-
-    if filter and not directory:
-        dial.setNameFilter(filter)
-
-    if not dial.exec():
-        return None
-
-    res = dial.selectedFiles()[0]
-
-    if create_new:
-        if os.path.exists(res) and not confirm_dial(f"Override {res}?"):
-            return None
-
-    return res
-
-
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
     # Create an empty dock widget to hold the modules
     module_dock = parent_window.findChild(QtWidgets.QDockWidget, "Chunks")
@@ -1168,3 +647,4 @@ def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
 
     module_dock.setWidget(ChunkWidgetDocker(parent=module_dock))
     parent_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, module_dock)
+    parent_window.resizeDocks([module_dock], [400], QtCore.Qt.Orientation.Horizontal)

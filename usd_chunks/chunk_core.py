@@ -1,6 +1,6 @@
 """
 Defines all base classes which the chunks and associated classes should derive from. These classes should not
-be instatiated, instead use the implementations from usd_chunks.chunk.
+be instatiated, instead use the implementations from [usd_chunks.chunk](chunk.md).
 
 We use the attrs library behind the scenes to get dataclass-like behaviour for all the Chunk classes in order to
 easily create and manage attributes. The attributes and function definitions from attrs are inherited through the mro
@@ -44,17 +44,17 @@ from typing import (
     Sequence,
     get_origin,
     TypeGuard,
-    TypeAlias,
     overload,
 )
 
+from pathlib import Path
 import attrs
 from attr import _make as attrMake
-from pxr import Sdf, Usd
-from typing_extensions import Self, dataclass_transform
+from pxr import Sdf, Usd, UsdGeom, Gf
+from typing_extensions import Self, dataclass_transform, Required
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_serial
+from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_serial, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 
 
@@ -71,6 +71,66 @@ ChunkT = TypeVar("ChunkT", bound="ChunkCommon")
 ################################
 # BASE CLASSES FOR UI ELEMENTS #
 ################################
+
+
+class SyntaxHighlightStyle(TypedDict, total=False):
+    color: Required[str]
+    italic: bool
+    bold: bool
+
+
+class SyntaxHighlightMapping:
+    def __init__(self):
+        self._mappings: Dict[str, SyntaxHighlightStyle] = {}
+
+    def add_mapping(self, pattern, style: SyntaxHighlightStyle):
+        self._mappings[pattern] = style
+
+    def get_mappings(self):
+        return self._mappings.items()
+
+    def match_text(self, text: str) -> Generator[Tuple[int, int, SyntaxHighlightStyle], None, None]:
+        for pattern, fmt in self._mappings.items():
+            for m in re.finditer(pattern, text):
+                start, end = m.span()
+                yield start, end, fmt
+
+
+class PySyntaxHighlightMapping(SyntaxHighlightMapping):
+    def __init__(self) -> None:
+        super().__init__()
+
+        pattern = r"^\s*class\s+\w+\(.*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#4c6ea3"))
+
+        pattern = r"^\s*def\s+\w+\s*\(.*\)\s*:\s*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#31a56b"))
+
+        pattern = r"^\s*#.*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#3f883f"))
+
+
+class UsdSyntaxHighlightMapping(SyntaxHighlightMapping):
+    def __init__(self) -> None:
+        super().__init__()
+
+        pattern = r"^\s*class\s+\w+\(.*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#4c6ea3"))
+
+        pattern = r"^\s*(def|over)"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#4a80ec"))
+
+        pattern = r"^\s*#.*$"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#3f883f"))
+
+        pattern = r"(?<=def )(\w+)"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#51c765"))
+
+        pattern = r"(\"|\')\w+(\"|\')"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#e17a3f"))
+
+        pattern = r"(double|float|int|uniform|asset|token|color)\w?.(\[\])?"
+        self.add_mapping(pattern, SyntaxHighlightStyle(color="#4aabec"))
 
 
 class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
@@ -96,7 +156,10 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         self.index = 0
 
         self.add_callback(
-            self.handle_param_changed, param, notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED
+            self.handle_param_changed,
+            param,
+            notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+            send_on_create=True,
         )
 
     @property
@@ -121,13 +184,19 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         attrname = notice.data.name
         value = notice.data.value
         if attrname == "value":
-            self.set_value(value)
+            self.set_value(self.param.raw_value)
 
         elif attrname in ["name", "label"]:
             self.set_label(self.param.get_label())
 
         elif attrname == "icon" and isinstance(value, str):
             self.set_icon(value)
+
+        elif attrname == "state":
+            self.update_from_state()
+
+        elif attrname == "layout" and isinstance(value, ChunkFlags.LayoutFlags):
+            self.set_param_layout(value)
 
         self.send_self(data=notice.data)
 
@@ -136,7 +205,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         Called when initializing the widget. Sets the value and label on this object to represent the values of the chunk object
         """
 
-        value = self.param.value
+        value = self.param.raw_value
         label = self.param.get_label()
 
         if value is not None:
@@ -201,6 +270,40 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         """
         pass
 
+    @abstractmethod
+    def set_hidden(self, val: bool):
+        """
+        Set the ui widget hidden based on the value of val
+
+        Args:
+            val (bool): Whether to hide or show the widget
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_enabled(self, val: bool):
+        """
+        Set the ui widget enabled or disabled based on value of val
+
+        Args:
+            val (bool): Whether to enable or disable the widget
+
+        Raises:
+            NotImplementedError: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_from_state(self):
+        """
+        Called when state of the group has changed
+        """
+        self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
+        self.set_enabled(not self.param.has_state(ChunkFlags.State.DISABLED))
+
     def value_changed(self, value: Optional[Any] = None):
         """
         Called whenever the value of the widget changed, and forwards the new value to self.set_value.
@@ -233,12 +336,12 @@ class ChunkWidgetFactoryBase(Protocol):
 
     widget_map: Dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]
 
-    def get_map(self):
+    def get_map(self) -> Dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]:
         """
         Return the widget_map of the factory
 
         Returns:
-            ict[ChunkFlags.ParamType, type[ChunkParamWidget]]: The widget_map
+            Dict[ChunkFlags.ParamType, type[ChunkParamWidget]]: The widget_map
         """
         return self.widget_map
 
@@ -291,7 +394,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
         # Hold a weakref to the group. If all other references to the group is killed, then
         # remove it from the UI as well, as the ui should not take ownership of the group
-        self._group = weakref.ref(group)
+        self._group = weakref.ref(group, self._group_deleted)
 
         self._callbacks: List[chunk_notice.NoticeConnection] = []
 
@@ -339,17 +442,28 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             )
         )
 
+        self._callbacks.append(
+            chunk_notice.NoticeConnection(
+                self._layout_changed,
+                chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                self.group.get_attribute_sender("layout"),
+            )
+        )
+
         # Associate ChunkParamGroup objects with group widgets
-        self.group_widgets: dict[ChunkHash, ChunkContainerWidgetBase] = {}
+        self.group_widgets: weakref.WeakValueDictionary[ChunkHash, ChunkContainerWidgetBase] = (
+            weakref.WeakValueDictionary()
+        )
 
         # Container for all widgets in this chunk. Dict will map between ChunkParam -> widget
         # for each widget created from the same ChunkParam instance
-        self.param_widgets: dict[ChunkHash, ChunkParamWidgetBase] = {}
+        self.param_widgets: weakref.WeakValueDictionary[ChunkHash, ChunkParamWidgetBase] = weakref.WeakValueDictionary()
 
         # Initialize everything
         self.factory = self.get_widget_factory()
         self.build_collapsable()
         self._build_param_widgets(self.group)
+        self.update_from_layout()
         self.update_from_flags()
         self.update_from_state()
 
@@ -460,12 +574,31 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         raise NotImplementedError
 
     @abstractmethod
+    def set_selected(self, val: bool):
+        """
+        Called when the SELECTED state is changed. Should display the selection on the widget. By default,
+        this does nothing
+
+        Args:
+            val (bool): Whether to enable or disable the widget
+        """
+        pass
+
+    @abstractmethod
     def update_from_state(self):
         """
         Called when state of the group has changed
         """
         self.set_hidden(self.group.has_state(ChunkFlags.State.HIDDEN))
         self.set_enabled(not self.group.has_state(ChunkFlags.State.DISABLED))
+        self.set_selected(self.group.has_state(ChunkFlags.State.SELECTED))
+
+    @abstractmethod
+    def update_from_layout(self):
+        """
+        Called when layout of the group has changed
+        """
+        pass
 
     @abstractmethod
     def set_expanded(self, checked: bool):
@@ -492,7 +625,6 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         A ui implementation plugin should implement this function to get labeled widgets
 
         Args:
-            param (chunk_core.ChunkCommon): The param that was changed
             notice (Tf.Notice): The notice that was sent
             sender (chunk_core.AttributeSender): The attribute that changed
         """
@@ -560,6 +692,12 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
     def _name_changed(self, notice, sender):
         self.update_label(sender.value)
 
+    def _layout_changed(self, notice, sender):
+        self.update_from_layout()
+
+    def _group_deleted(self, ref):
+        self.delete_self()
+
     def _delete_self(self, notice, sender):
         if sender is not self.group:
             return
@@ -593,15 +731,14 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         if isinstance(h, ChunkParamBase):
             if wid := self.param_widgets.get(h):
                 self.remove_widget(wid)
-                self.param_widgets.pop(h)
 
         elif isinstance(h, ChunkContainerBase):
             if wid := self.group_widgets.get(h):
                 self.remove_widget(wid)
-                self.group_widgets.pop(h)
 
     def _state_changed(self, notice, sender):
-        self.update_from_state()
+        if notice.data.get_owner() == self.group:
+            self.update_from_state()
 
     def _add_param_widget(self, param: "ChunkParamBase", group: Optional["ChunkContainerBase"] = None, list_index=0):
         t = param.evaluate_type()
@@ -703,9 +840,9 @@ def get_attr_index(cls, data):
 
 
 def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Attribute]):
-    """Used as attrs.field_transformer for chunk attributes.
-    Adds cls.validate_attr as a validation function to all attrs.fields if hasattr(cls, "validate_attr").
-    Adds cls._safe_convert to the conversion pipe of all attrs.fields if hasattr(cls, "_safe_convert")"""
+    """Used as attrs.field_transformer for chunk attributes in order to sort the __init__ arguments to
+    match pylance
+    """
 
     sort_keys = {}
     results = []
@@ -893,7 +1030,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             new_conn = chunk_notice.NoticeConnection(
                 meth, conn.alias, sender, conn.globally, self if conn.owner is not None else None
             )
-            self.add_connection(new_conn)
+            self._callbacks.add(new_conn)
 
 
 class CopyMode(IntEnum):
@@ -948,8 +1085,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
     This is achieved by using the AttributeSender class, which holds a handle to the owner (AttributesBase), name of the attribute it represents,
     and the alias for which notice to send. It also holds the old_value (the value of the attribute prior to the change) when available.
 
-    Instances of this class will automatically set self as owner on all AttributeSenders it manages, which allows the attribute to call data_changed
-    on this class when modified.
+    Instances of this class will automatically set self as owner on all AttributeSenders it manages.
 
     AttributesMetaclass is used as metaclass to automatically hook into the attrs framework. Any subclass is thus treated as it was
     created with attrs.define. All fields will call _validate() and _convert() as validation and conversion functions. Any changes made to an
@@ -988,6 +1124,11 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False, serialize=True
         ),
     )
+    _logger: Optional[logging.Logger] = attrs.field(
+        init=False,
+        default=None,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
 
     @classmethod
     def print_init_signature(cls):
@@ -1021,6 +1162,11 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             self._attr_senders[name] = sender
 
         self._resolve_failed_converters()
+
+    def get_logger(self) -> logging.Logger:
+        if not self._logger:
+            self._logger = logging.getLogger(f"usd_chunks.{self.__class__.__name__}")
+        return self._logger
 
     def clone(self) -> Self:
         """
@@ -1098,9 +1244,16 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             post_init()
 
         if len(copied.__dict__) != len(self.__dict__):
-            raise copy.Error(
-                f"Failed to copy {type(self).__name__}, the source and copy has mismatch in number of attributes"
-            )
+            # Source may have extra non-attrs entries set dynamically after init (e.g. lazy-init
+            # attributes). Copy them verbatim so the clone is complete. If the copy somehow ended
+            # up with MORE entries than the source, that is a genuine bug and we raise.
+            extra = {k: v for k, v in self.__dict__.items() if k not in copied.__dict__}
+            if extra:
+                copied.__dict__.update(extra)
+            if len(copied.__dict__) > len(self.__dict__):
+                raise copy.Error(
+                    f"Failed to copy {type(self).__name__}, copy has more attributes than source"
+                )
 
         copied.set_owner(self.get_owner())
         # Copy any connections to self over to the copy
@@ -1204,6 +1357,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             # the notices to not get recursion. Only the first call to __setattr__ should send notices.
             if notice and notice.alias in [
                 chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                chunk_notice.ChunkNoticeAlias.VALUE_CHANGED,
                 chunk_notice.ChunkNoticeAlias.INPUT_CHANGED,
             ]:
                 for name, func in self._attrib_functions.items():
@@ -1252,7 +1406,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         count = 0
         while len(self._failed_converters) > 0:
             failed_attrs = tuple(self._failed_converters.keys())
-            for attr in failed_attrs:
+            for attr in reversed(failed_attrs):
                 setattr(self, attr, self._failed_converters[attr])
 
             count += 1
@@ -1305,7 +1459,7 @@ class ChunkHash(Protocol):
     """Protocol for hashable Chunk object"""
 
     def __hash__(self) -> int: ...
-    def __eq__(self, value: object) -> bool: ...
+    def __eq__(self, value: object, /) -> bool: ...
 
 
 class ProxyParam(chunk_notice.ChunkNoticePropagator):
@@ -1460,9 +1614,10 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         return res
 
     def __getattribute__(self, name: str) -> Any:
-        if name == "value":
-            # Get the value stored on the proxy
-            return self._value
+        if name in ("value", "raw_value"):
+            # Return the value stored on the proxy so widgets display the proxy's own value,
+            # not the template's default.
+            return super().__getattribute__("_value")
         if name == "iter_hierarchy":
             return super().__getattribute__("_iter_hierarchy")
         if name == "get_my_params":
@@ -1551,17 +1706,9 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     will have the NameSyncedContainer as owner. Any concrete chunk object who holds an instance of this class should therefore not
     manage ownership of params, instead, it should own the NameSyncedContainer only. This class will not send any notices though, only propagate
     notices from children.
-
-    Attributes:
-        last_added: The last item that was added to the container
-        las_removed: The last item that was removed from the container
-
-        params (ChainMap[ChunkHash, ChunkCommon]): A mapping with access to nested children
-        names (ChainMap[str, ChunkHash]): A mapping from parameter names to the params map. A param with
-            name "myParam" may be accessed as params[names["myParam"]]
     """
 
-    def __init__(self, params: Optional[Sequence[ChunkT]] = None):
+    def __init__(self):
         super().__init__()
 
         self._last_added: Optional[HashVal] = None
@@ -1569,13 +1716,6 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
 
         self._params: ChainMap[ChunkHash, ChunkT] = ChainMap()
         self._names: ChainMap[str, ChunkHash] = ChainMap()
-
-        if params is not None:
-            for i in params:
-                self.add(i)
-
-    def __bool__(self):
-        return bool(self._params)
 
     def __copy__(self):
         copied = NameSyncedContainer()
@@ -1586,10 +1726,32 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         copied._copy_callbacks(self)
         return copied
 
+    def empty(self):
+        return not bool(self._params)
+
     def serialize(self, glb):
         if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
-            res.kwargs["params"] = list(self.get_my_params())
+            # Serialize params as a temp 'params' attribute. This will be de-serialized in post_serial_setattr
+            res.attributes["params"] = list(self.get_my_params())
+
         return res
+
+    def post_serial_setattr(self, name, value):
+        if name == "params":
+            # Add the params to this container by calling add. Previously we created the params in place and passed them to
+            # the NameSyncedContainer constructor. The reason for the change is to be able to modify the container before
+            # adding the parameters; Owner is set on the params in add(), but this sets the graph_id as well, which is wrong
+            # on the scene 'chunks' container. The graph_id should ideally be smarter, but for now this solves the issue.
+            # TODO: Rework graph_id
+            for i in value:
+                if self.get_param(i):
+                    continue
+
+                self.add(i)
+                if isinstance(i, ChunkContainerBase):
+                    self.add_nested(i.children)  # type: ignore
+            return
+        return super().post_serial_setattr(name, value)
 
     def get_notice_data(self) -> Self:
         return self
@@ -1634,7 +1796,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         Appends nested params to the ChainMap. This allows for fast lookups accross the layers.
 
         Args:
-            nested (NameSyncedContainer) : The nested params to add
+            nested ("NameSyncedContainer[ChunkT]"): The nested params to add
         """
         self._params.maps.append(nested._params)
         self._names.maps.append(nested._names)
@@ -1712,12 +1874,17 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     @overload
     def get_param(self, key: Union[ChunkHash, str], predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
 
-    def get_param(self, key: Union[ChunkHash, str], predicate: Optional[Predicate[ValueT]] = None):
+    def get_param(
+        self, key: Union[ChunkHash, str], predicate: Optional[Predicate[ValueT]] = None
+    ) -> Optional[ChunkT] | ValueT:
         """Retrieve a param from this datastructure. Key can be either a ChunkCommon (It hashes to the HashVal),
-        an explicit HashVal (ChunkObject._hashable) or a name.
+        an explicit HashVal (ChunkObject.get_hash()) or a string (name or path). If the key is a path (identifier) to a param such as:
+        aChunk.aGroup.aParam, the returned param will look for a param at the path specified. If just a name is supplied, the first
+        found param with the name is returned.
 
         Returns:
-            ChunkCommon | None: The found Chunk object if found
+            Optional[ChunkT]: The found Chunk object if found
+            ValueT: The found Chunk object matching the predicate if supplied
         """
         if isinstance(key, str):
             res = self.get_by_name(key)
@@ -1737,7 +1904,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     @overload
     def get_by_name(self, name: str, predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
 
-    def get_by_name(self, name: str, predicate: Optional[Predicate[ValueT]] = None):
+    def get_by_name(self, name: str, predicate: Optional[Predicate[ValueT]] = None) -> Optional[ChunkT] | ValueT:
         """
         Excplicitly retrieve a param by its name. In order to find nested children, one can
         pass the hierarchy to the 'name' argument by adding a dot (.) for each level in the hierarchy:
@@ -1747,12 +1914,12 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         ```
 
         Returns:
-            ChunkCommon | None: The found Chunk object if found
+            Optional[ChunkT]: The found Chunk object if found
+            ValueT: The found Chunk object matching the predicate, if supplied
         """
         if "." in name:
             hierarchy = name.split(".")
             cm: ChainMap = self._names
-
             idx = 0
             g = hierarchy[0]
 
@@ -1764,7 +1931,13 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
                     # Found g in first layer, so can look for next entry in the query
                     idx += 1
 
-                cm = cm.maps[1]  # type: ignore
+                    # FInd the parameter matching g and update cm to reflected the parameters own children.
+                    grp = self._params.get(cm.maps[0].get(g))
+                    if not grp or not isinstance(grp, ChunkContainerBase):
+                        raise NameError(f"Could not find param {name}. {g} is not a container type parameter")
+
+                    cm = grp.children._names
+
                 g = hierarchy[idx]
 
             if key := cm.get(g):
@@ -1801,11 +1974,12 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     @overload
     def get_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
 
-    def get_params(self, predicate: Optional[Predicate[ValueT]] = None):
+    def get_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ChunkT, ...] | Tuple[ValueT, ...]:
         """Get all params on this layer and under
 
         Returns:
-            Tuple[ChunkCommon, ...]: The params
+            Tuple[ChunkT, ...]: The params
+            Tuple[ValueT, ...]: The params matching the predicate if supplied
         """
         ps = self._params.values()
 
@@ -1818,11 +1992,12 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     @overload
     def get_my_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
 
-    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None):
+    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ChunkT, ...] | Tuple[ValueT, ...]:
         """Get all params on this layer only
 
         Returns:
-            Tuple[ChunkCommon, ...]: The params
+            Tuple[ChunkT, ...]: The params
+            Tuple[ValueT, ...]: The params matching the predicate, if supplied
         """
         ps = self._params.maps[0].values()
         if not predicate:
@@ -1942,12 +2117,6 @@ class ChunkCommon(AttributesBase):
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
 
-    _logger: Optional[logging.Logger] = attrs.field(
-        init=False,
-        default=None,
-        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
-    )
-
     # Name for the chunk object
     name: str = attrs.field(default="")
 
@@ -1980,6 +2149,22 @@ class ChunkCommon(AttributesBase):
         default=None, init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
     )
 
+    def get_identifier(self) -> str:
+        """
+        Get an identifier for this chunk object. The identifier is a dot(.) separated path, from the top-most
+        owner, usually the ChunkBase, to this object. F.e. MyChunk.SomeGroup.MyParam
+
+        Returns:
+            str: The string identifier for this chunk object
+        """
+        names = [self.name]
+        owner = self.get_owner()
+        while owner:
+            if isinstance(owner, ChunkCommon):
+                names.append(owner.name)
+            owner = owner.get_owner()
+        return ".".join(reversed(names))
+
     def get_chunk(self) -> Optional["ChunkBase"]:
         """
         Get the owning Chunk if it exists.
@@ -2000,7 +2185,7 @@ class ChunkCommon(AttributesBase):
 
     def get_layer_identifier(self) -> str:
         """
-        Implements the ChunkUsdLayerSupport protocol
+        Get the layer identifier used by the ChunkLayerManager
 
         Returns:
             str: the layer identifier for this param
@@ -2026,7 +2211,8 @@ class ChunkCommon(AttributesBase):
 
     def get_hash(self) -> HashVal:
         """
-        Implements the ChunkUsdLayerSupport protocol
+        Get the HasVal associated with the chunk object. Can be useful to not increase the ref
+        count when storing this object is a hash map
 
         Returns:
             ChunkHash: The hashval of this object
@@ -2035,8 +2221,6 @@ class ChunkCommon(AttributesBase):
 
     def get_edit_context(self) -> Sdf.Layer | None:
         """
-        Implements the ChunkUsdLayerSupport protocol.
-
         Use when modifying the stage and the changes should be added to the local
         Sdf.Layer corresponding to this chunk object. Will traverse up the hierarchy
         to find the nearest ChunkBase parent and use the layer from it, instead of having
@@ -2209,7 +2393,13 @@ class ChunkCommon(AttributesBase):
         Returns:
             bool: True if the state is set, otherwise False
         """
-        return state in self.state
+        return bool(self.state & state)
+
+    def set_selected(self, val: bool):
+        if val:
+            self.set_state(ChunkFlags.State.SELECTED)
+        else:
+            self.unset_state(ChunkFlags.State.SELECTED)
 
     def __hash__(self) -> int:
         return hash(self._hashable)
@@ -2223,7 +2413,7 @@ class ChunkCommon(AttributesBase):
         Returns:
             Usd.Stage: The stage held by the SceneSender of ChunkRegistry
         """
-        return self.get_scene().get_stage()
+        return self.get_scene().get_stage() or chunk_notice._loading_stage
 
     def get_scene(self) -> "SceneSender":
         """Easy access to the current chunk scene.
@@ -2239,6 +2429,8 @@ class ChunkCommon(AttributesBase):
     def request_delete(self):
         """Sends a notice for owners to delete this Chunk object. It's the owners responsibility to remove their reference to this object.
         If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.
+
+        In addition, all callbacks will be removed from this object, and the owner will be set to None.
         """
 
         # Make sure we're enabled when deleting as being disabled will block necessary notices from being sent
@@ -2267,14 +2459,25 @@ class ChunkUsdAttributeSupport(AttributesBase):
     This inteface class can be subclassed for valued parameter classes in order to support connections
     to UsdAttribute objects. This enables a parameter to be generated from a UsdAttribute, and creating
     the NoticeConnections for managaging the value setting and getting between the param and the
-    UsdAttribute. A subclass will need to implement the ChunkUsdLayerSupport protocol
+    UsdAttribute
     """
 
-    # link to UsdAttribute if needed. Hidden in __init__ as the field would be added as the first argument
-    # by the concrete classes
-    _usd_prop: Optional[Usd.Property] = attrs.field(default=None, init=False)
+    # The storage attribute path (/chunks/<name>/inputs:<param>) — the param's authoritative USD value.
+    _param_attr_path: Optional[str] = attrs.field(
+        default=None,
+        init=False,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
 
-    # Hold a connection to the Usd.Attribute of usd_attr.
+    # Real prim attr paths this storage attr drives via USD native connections.
+    # Connections are re-authored whenever _param_attr_path is set.
+    _driven_attr_paths: List[str] = attrs.field(
+        factory=list,
+        init=False,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
+
+    # Lifecycle connection — fires update_usd_prop when param value changes.
     _usd_prop_connection: Optional[chunk_notice.NoticeConnection] = attrs.field(
         default=None,
         init=False,
@@ -2285,22 +2488,51 @@ class ChunkUsdAttributeSupport(AttributesBase):
         my_notice = super().data_changed(notice)
 
         stage = chunk_registry.ChunkRegistry().scene.get_stage()
-        if notice and stage and (usd_attr := self.get_usd_prop()) and not self.is_blocked():
-            chunk_notice.send_notice(notice.alias, notice.data, usd_attr)
+        if (
+            notice
+            and stage
+            and self._param_attr_path
+            and not self.is_blocked()
+            and isinstance(notice.data, AttributeSender)
+            and notice.data.name == "value"
+            and hasattr(self, 'raw_value')
+        ):
+            raw = self.raw_value
+            is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
+            val = raw if is_expr else notice.data.value
+            if val is not None:
+                chunk_notice._usd_write_active = True
+                try:
+                    if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
+                        layer = stage.GetEditTarget().GetLayer()
+                        spec = layer.GetAttributeAtPath(usd_attr.GetPath())
+                        current = (spec.default if spec else None) if (is_expr or usd_attr.GetConnections()) else usd_attr.Get(0)
+                        if current != val:
+                            usd_attr.Set(val)
+                        if is_expr:
+                            chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
+                            usd_attr.SetConnections([
+                                Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
+                                for node, attr_name in chunk_utils.parse_expression(raw)
+                            ])
+                    # Write the current value to the driven attr (real prim, e.g. light)
+                    # in the chunk's own layer so it renders correctly.  Using
+                    # get_edit_context() targets the same layer execute() writes to
+                    # (anonymous for procedural chunks, file layer for interactive ones),
+                    # keeping the user's edit-target layer free of value opinions.
+                    if not is_expr and self._driven_attr_paths:
+                        chunk_layer = self.get_edit_context()
+                        if chunk_layer:
+                            for path in self._driven_attr_paths:
+                                sdf_path = Sdf.Path(path)
+                                if driven_attr := stage.GetAttributeAtPath(sdf_path):
+                                    if driven_attr.Get(0) != val:
+                                        with Usd.EditContext(stage, chunk_layer):
+                                            driven_attr.Set(val)
+                finally:
+                    chunk_notice._usd_write_active = False
 
         return my_notice
-
-    def get_stage(self) -> Usd.Stage | None:
-        raise NotImplementedError
-
-    def get_layer_identifier(self) -> str:
-        raise NotImplementedError
-
-    def get_hash(self) -> ChunkHash:
-        raise NotImplementedError
-
-    def get_edit_context(self) -> Sdf.Layer | None:
-        raise NotImplementedError
 
     @abstractmethod
     def update_usd_prop(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
@@ -2314,9 +2546,18 @@ class ChunkUsdAttributeSupport(AttributesBase):
             sender (AttributeSender): The sender of the notice
         """
         if isinstance(notice.data, Usd.Attribute):
-            if notice.data.Get(0) == sender.value:
+            raw = getattr(self, 'raw_value', None)
+            is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
+            store_val = raw if is_expr else sender.value
+            if notice.data.Get(0) == store_val:
                 return
-            notice.data.Set(sender.value)
+            notice.data.Set(store_val)
+            if is_expr:
+                chunk_root = str(notice.data.GetPrim().GetParent().GetPath())
+                notice.data.SetConnections([
+                    Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
+                    for node, attr_name in chunk_utils.parse_expression(raw)
+                ])
 
         elif isinstance(notice.data, Usd.Relationship) and sender.value is not None:
             # Currently just assume the string is a comma separated list of paths. This will likely
@@ -2328,36 +2569,29 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice.data.SetTargets(targets)
 
     @abstractmethod
-    def usd_prop_changed(self, attr: Usd.Property):
+    def usd_prop_changed(self):
         """
         A callback for when the UsdAttribute member was changed. This will update the value of
-        the AttributeSender passed to set_usd_attr().
-
-        Args:
-            attr (Usd.Attribute): The updated UsdAttribute.
+        the AttributeSender passed to set_usd_attr()..
         """
         if not self._usd_prop_connection:
             return
         if not isinstance(self._usd_prop_connection.sender, AttributeSender):
             return
 
+        attr = self.get_usd_prop()
         if isinstance(attr, Usd.Attribute):
             self._usd_prop_connection.sender.value = attr.Get(0)
         elif isinstance(attr, Usd.Relationship):
             self._usd_prop_connection.sender.value = ",".join([str(x) for x in attr.GetForwardedTargets()])
 
-    def set_usd_prop(self, attr: Usd.Property, sender: AttributeSender):
+    def set_usd_prop(self, prop_path: str | Usd.Property, sender: AttributeSender):
         """
-        Set the references UsdAttribute object. Any changes to the param will
-        update the attribute
-
-        Args:
-            attr (Usd.Attribute): The UsdAttribute to refrence
-            sender (AttributeSender): A sender object that should connect to the UsdAttribute.
-                When a signal with sender and ATTRIBUTE_CHANGED notice is sent, the method
-                update_usd_attrib() of this class is called
+        Bind this param to a specific USD property with an explicit sender (used for relationships).
+        Prefer _connect_param_attr for standard attribute binding.
         """
-        self._usd_prop = attr
+        path = str(prop_path.GetPath()) if isinstance(prop_path, Usd.Property) else prop_path
+        self._param_attr_path = path
 
         if self._usd_prop_connection:
             self._usd_prop_connection.disconnect()
@@ -2365,16 +2599,94 @@ class ChunkUsdAttributeSupport(AttributesBase):
         self._usd_prop_connection = chunk_notice.NoticeConnection(
             self.update_usd_prop, chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED, sender, owner=self
         )
-        self.usd_prop_changed(attr)
+        self.usd_prop_changed()
 
     def get_usd_prop(self) -> Usd.Property | None:
         """
-        Get the usd attribute references by this object
+        Return the storage attribute this param is bound to.
 
         Returns:
-            Usd.Attribute | None: The referenced usd attribute
+            Usd.Property | None: The bound storage USD property, or None.
         """
-        return self._usd_prop
+        stage = self.get_stage()
+        if stage and self._param_attr_path:
+            return stage.GetPropertyAtPath(self._param_attr_path)
+
+    def _connect_param_attr(self, attr: Usd.Property) -> None:
+        """
+        Internal: bind this param to its storage attribute for UI↔USD sync.
+        After binding, re-authors any pending USD connections to driven real attrs.
+        Called by _load_wire_inputs; not part of the public chunk-module API.
+
+        Args:
+            attr (Usd.Property): The storage attribute (/chunks/<name>/inputs:<param>).
+        """
+        path = str(attr.GetPath())
+        if self._param_attr_path == path:
+            return
+        self._param_attr_path = path
+        if not self._usd_prop_connection:
+            try:
+                if sender := self.get_attribute_sender("value"):
+                    self._usd_prop_connection = chunk_notice.NoticeConnection(
+                        self.update_usd_prop,
+                        chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+                        sender,
+                        owner=self,
+                    )
+            except AttributeError:
+                pass
+        self._author_driven_connections()
+        if isinstance(attr, Usd.Attribute) and (val := attr.Get(0)) is not None:
+            self.value = val
+
+    def connect_usd_attr(self, attr: Usd.Property) -> None:
+        """
+        Drive a real prim attribute from this param's storage attribute via a USD native
+        connection. The storage attr becomes the connection source; the real attr is the target.
+        If the real attr does not exist yet it will be created in _author_driven_connections once
+        the storage attr is known. If the storage attr is not yet known the whole operation is
+        deferred until _connect_param_attr is called.
+
+        Args:
+            attr (Usd.Property): The real prim attribute to drive (e.g. /cameras/Cam.focalLength).
+                                 May be an invalid/non-existent attribute — the path is stored and
+                                 the attribute is created on demand.
+        """
+        path = str(attr.GetPath())
+        if path in self._driven_attr_paths:
+            return
+        self._driven_attr_paths.append(path)
+        if self._param_attr_path:
+            self._author_driven_connections()
+
+    def _author_driven_connections(self) -> None:
+        """
+        For every path in _driven_attr_paths: ensure the attribute exists on the real prim
+        (creating it with the storage attr's type if absent), then author
+        real_attr.SetConnections([storage_path]).
+        """
+        if not self._param_attr_path:
+            return
+        stage = chunk_registry.ChunkRegistry().scene.get_stage()
+        if not stage:
+            return
+        storage_attr = stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path))
+        if not (storage_attr and storage_attr.IsValid()):
+            return
+        storage_path = Sdf.Path(self._param_attr_path)
+        type_name = storage_attr.GetTypeName()
+
+        for path in self._driven_attr_paths:
+            sdf_path = Sdf.Path(path)
+            real_attr = stage.GetAttributeAtPath(sdf_path)
+            if not (real_attr and real_attr.IsValid()):
+                prim = stage.GetPrimAtPath(sdf_path.GetPrimPath())
+                if not (prim and prim.IsValid()):
+                    continue
+                real_attr = prim.CreateAttribute(sdf_path.name, type_name, custom=False)
+            if real_attr and real_attr.IsValid():
+                real_attr.SetConnections([storage_path])
 
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> "ChunkUsdAttributeSupport":
@@ -2404,11 +2716,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
             param.default_value = default_value  # type: ignore
 
-        try:
-            if sender := param.get_attribute_sender("value"):
-                param.set_usd_prop(attr, sender)
-        except AttributeError:
-            pass
+        param._connect_param_attr(attr)
 
         return param
 
@@ -2438,10 +2746,16 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     #       This should also work on groups and chunks... But thats a bit more complicated
     custom_widget: Optional[ChunkParamWidgetBase] = attrs.field(default=None)
 
+    _expression_connections: list = attrs.field(
+        default=attrs.Factory(list), init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
+    )
+
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "value":
             if val is None:
                 return self.default_value
+            if isinstance(val, str) and chunk_utils.has_expression(val):
+                return val  # Store expression strings as-is without type conversion
 
         if attr.name == "default_value":
             supported = ChunkFlags.ParamTypeToTypes(self.get_type())
@@ -2454,7 +2768,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             if val is None:
                 return type_default()
 
-            if type(val) is not type_default:
+            if type(val) not in supported:
                 # When the value does not match the type_default, we can try to convert it. If failed, use the type default
                 try:
                     # Try casting the type_default to val
@@ -2467,6 +2781,8 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "value" and val is not None:
+            if isinstance(val, str) and chunk_utils.has_expression(val):
+                return True  # Expression strings bypass type checking; resolved in value_changed
             expected_type = ChunkFlags.ParamTypeToTypes(self.get_type())
 
             t = type(val)
@@ -2511,6 +2827,89 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.PARAM_CHANGED
 
+    def connect_value(self, other: "ChunkParamBase[ValueT]"):
+        my_t = self.evaluate_type()
+        other_t = other.evaluate_type()
+        if my_t not in other_t:
+            raise ValueError(f"Can't connect {other_t.name} to parameter {my_t}")
+
+        idx = -1
+        # If other already is connected to self, then we can use that index
+        for i, node in self.get_dependencies(is_inst(type(other))):
+            if node == other:
+                idx = i
+                break
+
+        if idx == -1:
+            # The nodes are not connected, so we add other as dependency
+            idx = self.add_dependency(other)
+        self.set_function("value", lambda x, _: x.get_dependency(idx, is_inst(type(other))).value)
+
+    def value_changed(self, attrname: str, old_value: Any, value: Any):
+        if attrname == "default_value" and hasattr(self, "value") and (self.value is None or self.value == old_value):
+            self.value = value
+
+        if attrname == "value":
+            self._expression_connections = []
+            if isinstance(value, str) and chunk_utils.has_expression(value):
+                for node_name, param_name in chunk_utils.parse_expression(value):
+                    ref = self._resolve_expression_ref(node_name, param_name)
+                    if ref is None:
+                        logger.warning(f"Expression ref @{node_name}.{param_name}@ not found")
+                        continue
+                    conn = chunk_notice.NoticeConnection(
+                        method=self._on_ref_changed,
+                        alias=chunk_notice.ChunkNoticeAlias.VALUE_CHANGED,
+                        sender=ref.get_attribute_sender("value"),
+                    )
+                    self._expression_connections.append(conn)
+
+        return super().value_changed(attrname, old_value, value)
+
+    def _on_ref_changed(self, notice=None, sender=None):
+        attr_sender = self.get_attribute_sender("value")
+        attr_sender.old_value = self.__dict__.get("value")
+        attr_sender.execute()
+
+    @property
+    def raw_value(self) -> Any:
+        """The stored value before expression evaluation. Use this for display purposes."""
+        return self.__dict__.get("value")
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "value" and "value" in self.__dict__:
+            raw = self.__dict__["value"]
+            if isinstance(raw, str) and chunk_utils.has_expression(raw):
+                return self._resolve_expression_string(raw)
+            return raw
+        return super().__getattribute__(name)
+
+    def _resolve_expression_string(self, expr: str) -> Any:
+        tokens = chunk_utils.parse_expression(expr)
+        if len(tokens) == 1 and expr.strip() == f"@{tokens[0][0]}.{tokens[0][1]}@":
+            ref = self._resolve_expression_ref(*tokens[0])
+            return ref.value if ref is not None else self.__dict__.get("default_value")
+        result = expr
+        for node_name, param_name in tokens:
+            ref = self._resolve_expression_ref(node_name, param_name)
+            val = str(ref.value) if ref is not None and ref.value is not None else ""
+            result = result.replace(f"@{node_name}.{param_name}@", val)
+        return result
+
+    def _resolve_expression_ref(self, node_name: str, param_name: str) -> Optional["ChunkParamBase"]:
+        chunk = self.get_chunk()
+        if not chunk:
+            return None
+        context = chunk.get_context()
+        if context:
+            return context.get_param(f"{node_name}.{param_name}")
+        try:
+            scene = chunk_registry.ChunkRegistry().get_scene()
+            target = scene.get_chunk(node_name)
+            return target.get_param(param_name) if target else None
+        except Exception:
+            return None
+
 
 class ChunkContainerBase(ChunkCommon):
     """
@@ -2543,7 +2942,7 @@ class ChunkContainerBase(ChunkCommon):
         return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
 
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
-        if isinstance(notice, chunk_notice.AttributeStateChangeNotice):
+        if isinstance(notice, chunk_notice.AttributeStateChangeNotice) and notice.data.get_owner() == self:
             # If this container holds nested chunks, and the DISABLED state was switched, we should propagate the state
             # to all nested chunks. This is done because the chunk layers are muted/unmuted based on the ENABLED state,
             # and if parent chunks are DISABLED and nested chunks are not, the nested chunk layer will not be muted
@@ -2553,6 +2952,7 @@ class ChunkContainerBase(ChunkCommon):
             removed = old_state ^ (new_state & old_state)
 
             if ChunkFlags.State.DISABLED in (added | removed):
+
                 def _pred(val) -> TypeGuard[ChunkBase]:
                     return isinstance(val, ChunkBase)
 
@@ -2593,16 +2993,22 @@ class ChunkContainerBase(ChunkCommon):
     @overload
     def get_param(self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]]) -> ValueT: ...
 
-    def get_param(self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]] = None):
+    def get_param(
+        self, param: ChunkCommon | str | HashVal, predicate: Optional[Predicate[ValueT]] = None
+    ) -> Optional[ChunkCommon] | ValueT:
         """
         Get a parameter or group inside of this group. A string can be passed to get a parameter by name.
-        The string can also be the explicit hierarchy of a param by spacing the hiearchy levels with a dot
+        The string can also be the explicit hierarchical identifier of a param by spacing the hiearchy levels with a dot
 
         ``` py
         myChunk.get_param("groupA.groupB.param")
         ```
 
-        A Predicate function can be used to narrot the result type and validates the result:
+        If just a name is passed, the first found param with said name will be returned. A ChunkGroupBase object enforce that
+        it's own child params have unique names. However, the names must not be unique to nested parameters. For this reason,
+        multiple params with the same name may exist in a hierarchy.
+
+        A Predicate function can be used to narrow the result type and validates the result:
         ``` py
         p = myChunk.get_param("aSlider", chunk.is_ins(chunk.Slider))
         p.value = 10
@@ -2610,10 +3016,12 @@ class ChunkContainerBase(ChunkCommon):
 
         Args:
             param (ChunkParamBase | str): A parameter to find. If string is passed, look for param with name
-            predicate (Optional[Predicate]): A predicate function used to check and narrow the type of the parameter
+            predicate (Optional[Predicate[ValueT]]): A predicate function used to check and narrow the type of the parameter
 
         Returns:
-            ChunkParam: The found parameter or None if not found
+            Optional[ChunkCommon]: The found parameter or None if not found
+            ValueT: The found parameter matching the predicate if supplied
+
         """
 
         if isinstance(param, (ChunkCommon, HashVal, ProxyParam)):
@@ -2627,11 +3035,15 @@ class ChunkContainerBase(ChunkCommon):
     @overload
     def get_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
 
-    def get_params(self, predicate: Optional[Predicate[ValueT]] = None):
+    def get_params(self, predicate: Optional[Predicate[ValueT]] = None) -> Tuple[ChunkCommon, ...] | Tuple[ValueT, ...]:
         """Get all parameters in this group including nested
 
+        Args:
+            predicate (Optional[Predicate[ValueT]]): An optional predicate function to filter the result. Defaults to None.
+
         Returns:
-            Tuple[ChunkParamBase]: All parameters in this group
+            Tuple[ChunkCommon, ...]: All parameters in this group
+            Tuple[ValueT, ...]: All parameters in this group matching the predicate, if supplied
         """
         return self.children.get_params(predicate)
 
@@ -2641,11 +3053,17 @@ class ChunkContainerBase(ChunkCommon):
     @overload
     def get_my_params(self, predicate: Optional[Predicate[ValueT]]) -> Tuple[ValueT, ...]: ...
 
-    def get_my_params(self, predicate: Optional[Predicate[ValueT]] = None):
+    def get_my_params(
+        self, predicate: Optional[Predicate[ValueT]] = None
+    ) -> Tuple[ChunkCommon, ...] | Tuple[ValueT, ...]:
         """Get all parameters added directly to this group
 
+        Args:
+            predicate (Optional[Predicate[ValueT]]): An optional predicate function to filter the result. Defaults to None.
+
         Returns:
-            Tuple[ChunkParamBase]: All parameters owned by this group
+            Tuple[ChunkCommon, ...]: All parameters owned by this group
+            Tuple[ValueT, ...]: All parameters owned by this group matching the predicate, if supplied
         """
         return self.children.get_my_params(predicate)
 
@@ -2727,6 +3145,8 @@ class ChunkContainerBase(ChunkCommon):
 
             if owner and isinstance(owner, ChunkContainerBase):
                 msg += f". Owner = ({owner.name})"
+
+            msg += f". Id = ({hex(id(p))})"
             msg += "\n"
 
         self.get_logger().info(msg)
@@ -2819,10 +3239,8 @@ class ChunkGroupBase(ChunkContainerBase):
             # by the container, so should not modify owner here
             self.children.add(new_param)
 
-            if isinstance(new_param, ChunkGroupBase):
-                # Also append the children of the group, as this allows for fast lookups accross the layers.
-                # This ignores the children of vectors, as access to the vector elements should be accessed on
-                # the vector itself, and not as children
+            if isinstance(new_param, ChunkContainerBase):
+                # Also append the children of the group, as this allows for fast lookups accross the layers
                 self.children.add_nested(new_param.children)
 
         else:
@@ -2866,19 +3284,20 @@ class ChunkGroupBase(ChunkContainerBase):
         return new_param
 
     def get_reserved_names(self) -> Set[str]:
-        """A combination of reserved param and group names
+        """Get a set of reserved names. These are the names of all parameters and groups under this group + this groups name.
+        A new parameters name should not exist in the set in order to be valid.
 
         Returns:
             Set[str]: A set of reserved group and parameter names which new parameters should not be named
         """
-        return set(self.children.get_names()) | set([self.name])
+        return set(self.children.get_my_names()) | set([self.name])
 
     @staticmethod
     def get_valid_child_name(orig_name: str, reserved_names: Set[str]) -> str:
-        """Get a unique name for param or group to be added on this group by adding a numerical suffix to duplicate names
+        """Get a unique name from orig_name that does not intersect reserved_names by adding a numerical suffix to duplicate names
 
         Args:
-            param (ChunkParam): a name that might not be unique
+            orig_name (str): The name to make valid
             reserved_names (Set[str]): A list of reserved names. This paramater can't have a name
                 which exist in this list. The new, valid name will be appended to this list to nest a group inside an already created group
 
@@ -2918,8 +3337,10 @@ class ChunkListGroupBase(ChunkGroupBase):
     will return from the 'children' container. i.e the container which the proxies references. To modify all proxies simultaneously one can modify
     the referenced parameters with get_param() and similarly to add a parameter to all instances, use add_param().
 
-    Args:
+    Attributes:
         size (int): The size of the list. This can be modified at runtime to extend / shrink the list
+        proxy_params (List[ChunkGroupBase]): A list of groups holding the proxy parameters. This is managed internally, and should not be modified
+            externally
     """
 
     size: int = attrs.field(default=0)
@@ -2934,7 +3355,7 @@ class ChunkListGroupBase(ChunkGroupBase):
 
     def get_indexed_param(
         self, param: ChunkCommon | str | HashVal, index: int, predicate: Optional[Predicate[ValueT]] = None
-    ):
+    ) -> Optional[ChunkCommon] | ValueT:
         """
         Get a param from the proxy list. The index should be an index of the proxy_params list. If found, The returned
         value is a ProxyParam referencing the param input, at index.
@@ -2942,9 +3363,11 @@ class ChunkListGroupBase(ChunkGroupBase):
         Args:
             param (ChunkCommon | str | HashVal): The param to look for. If a string is supplied, the parameters name will be used for equality check
             index (int): The index in to proxy_params which to get the parameter from
+            predicate (Optional[Predicate[ValueT]]): A predicate function to use for filtering the params. Defaults to None
 
         Returns:
-            ChunkCommon | None: The proxy parameter referencing param
+            Optional[ChunkCommon]: The proxy parameter referencing param
+            ValueT: The proxy parameter referencing param, matching the predicate if predicate is not None
 
         Raises:
             IndexError:
@@ -3048,11 +3471,43 @@ class ChunkBase(ChunkGroupBase):
     # having to execute main() of the chunk module.
     _config: Optional["ChunkConfig"] = attrs.field(default=None, init=False, metadata=AttributeMetadata(serialize=True))
 
+    # For CONTEXT chunks: the USD prim path this context maps to. Chunks within
+    # the context are placed at {prim_path}/chunks/{chunk_name}. Falls back to
+    # _CHUNKS_ROOT when None.
+    prim_path: Optional[str] = attrs.field(default=None)
+
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
-        self.add_callback(self.disable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
-        self.add_callback(self.enable, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
-        self.add_callback(self.remove, notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE)
+        self.add_callback(
+            self.disable,
+            notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE,
+            send_on_create=False,
+            private=True,
+        )
+        self.add_callback(
+            self.enable,
+            notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE,
+            send_on_create=False,
+            private=True,
+        )
+        self.add_callback(
+            self.remove,
+            notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE,
+            send_on_create=False,
+            private=True,
+        )
+        self.add_callback(
+            self.trigger_on_create_callbacks,
+            notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED,
+            send_on_create=False,
+            private=True,
+        )
+
+    def start_gizmo(self, notice=None, sender=None):
+        self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_START)
+
+    def stop_gizmo(self, notice=None, sender=None):
+        self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_STOP)
 
     def disable(self, notice=None, sender=None):
         self.set_state(ChunkFlags.State.DISABLED)
@@ -3063,14 +3518,48 @@ class ChunkBase(ChunkGroupBase):
     def remove(self, notice=None, sender=None):
         self.request_delete()
 
+    def trigger_on_create_callbacks(self, notice=None, sender=None):
+        """
+        Call trigger() on all callbacks in the container from get_on_create_callbacks(). This function should be called once the chunk is loaded
+        properly and added to the scene. This is a callback that is called when the chunk is loaded ( CHUNK_LOADED is sent ).
+        """
+        for _, child in self.iter_hierarchy():
+            for cb in child.get_on_create_callbacks():
+                if cb.alias == chunk_notice.ChunkNoticeAlias.CHUNK_LOADED:
+                    continue
+                cb.trigger()
+
     def get_config(self) -> Optional["ChunkConfig"]:
         return self._config
+
+    def get_edit_context(self) -> "Sdf.Layer | None":
+        if self._config and self._config.interactive:
+            return None
+        return super().get_edit_context()
 
     def get_chunk(self) -> Optional["ChunkBase"]:
         return self
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
+
+    def add_param(self, param: ChunkT, force_unique: bool = True, notify: bool = True) -> ChunkT:
+        res = super().add_param(param, force_unique)
+        if notify and self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(param, ChunkBase):
+            lm = chunk_registry.ChunkLayerManager()
+            if lm.initialized:
+                if layer := lm.get_or_create_layer(param):
+                    layer.Clear()
+            chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, param, data=param)
+        return res
+
+    def get_context(self) -> Optional["ChunkBase"]:
+        owner = self
+        while owner:
+            if isinstance(owner, ChunkBase) and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                return owner
+            owner = owner.get_owner()
+        return None
 
 
 class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
@@ -3097,8 +3586,9 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
     """
 
     param: ChunkParamBase = attrs.field(default=None, repr=False, metadata=AttributeMetadata(serialize=False))
-    length: int = attrs.field(default=3)
-    suffixes: Optional[tuple[str, ...] | str] = attrs.field(default=None)
+    length: int = attrs.field(default=0)
+    suffixes: Optional[Sequence[str] | str] = attrs.field(default=None)
+    _default_value: Optional[Sequence[Any]] = attrs.field(default=None, alias="default_value")
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "suffixes" and val is not None:
@@ -3112,10 +3602,21 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         super().__attrs_post_init__()
         self._attr_senders["value"] = AttributeSender(self, "value", chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
 
-        if self.children or not self.param:
+        if not self.children.empty() or not self.param:
             # __attrs_post_init__ was called when copied, so no need to reinitialize the children as they
             # have already been initialized
             return
+
+        if self.length and self._default_value and (self.length != len(self._default_value)):
+            raise ValueError(f"Length and default_value of vector {self.name} does not match")
+
+        if not self.length and self._default_value:
+            self.length = len(self._default_value)
+        elif not self.length and self.suffixes:
+            self.length = len(self.suffixes)
+
+        if not self.suffixes:
+            self.suffixes = "abcdefghijklmnopqrstuvwxyz"[: self.length]
 
         for i in range(self.length):
             # Clone the self.param length times, and add the clones to the clildren container
@@ -3125,6 +3626,9 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                 np.name += self.suffixes[i]
 
             self.children.add(np)
+
+        if self._default_value:
+            self.default_value = self._default_value
 
     def __getitem__(self, key: str | int) -> ChunkParamBase:
         """Allows for Vector[0] or Vector['paramName'] access to the vector values
@@ -3153,6 +3657,19 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         if notice and (p := notice.data):
             if isinstance(p, AttributeSender) and p.name == "value" and not self.is_blocked():
                 if usd_attr := self.get_usd_prop():
+                    # Assemble new Vec3f from children and write to the chunk-prim attr so
+                    # the stored value is current before propagating to driven attrs.
+                    child_vals = [c.value for c in self.get_my_params() if isinstance(c, ChunkParamBase)]
+                    if child_vals:
+                        try:
+                            new_vec = Gf.Vec3f(*child_vals)
+                            chunk_notice._usd_write_active = True
+                            try:
+                                usd_attr.Set(new_vec)
+                            finally:
+                                chunk_notice._usd_write_active = False
+                        except Exception:
+                            pass
                     chunk_notice.send_notice(p.get_notice_alias(), self.get_attribute_sender("value"), usd_attr)
 
         return my_notice
@@ -3169,7 +3686,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         return tuple(x.value for x in self.get_my_params() if isinstance(x, ChunkParamBase))
 
     @value.setter
-    def value(self, val: Tuple[Any, ...]):
+    def value(self, val: Sequence[Any]):
         if not len(val) == self.length:
             raise ValueError(
                 f"Trying to set value {val} on vector param {self.name} with wring size. Size should be {self.length}"
@@ -3183,7 +3700,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         return tuple(x.default_value for x in self.get_my_params() if isinstance(x, ChunkParamBase))
 
     @default_value.setter
-    def default_value(self, val: Tuple[Any, ...]):
+    def default_value(self, val: Sequence[Any]):
         if val is None:
             return
 
@@ -3213,6 +3730,8 @@ class ChunkConfig(AttributesBase):
     requirements: list[str] = attrs.field(factory=list)
     required_modules: list[str] = attrs.field(factory=list)
     module: str = attrs.field(default="")
+    interactive: bool = attrs.field(default=False)
+    terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
@@ -3221,18 +3740,204 @@ class ChunkConfig(AttributesBase):
 class SceneSender(chunk_notice.ChunkNoticePropagator):
     """
     Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
-    See implementation in plugins/usdview/__init__.py
+    See implementation in plugins/usdview/__init__.py for an example implementation.
+
+    The class is not purely abstract, as most functions dealing with chunks are implemented. However, a subclass should implement all relevant
+    @abstractmethod functions.
     """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.chunks: NameSyncedContainer[ChunkBase] = NameSyncedContainer()
-        self.chunks.get_dag_node()._part_of_graph = False
-        self.get_dag_node()._part_of_graph = False
-        self.chunks.set_owner(self)
+        self.set_chunks(NameSyncedContainer())
 
         self._modified = False
+        self._scene_file = Path()
+        self._current_context: Optional[weakref.ReferenceType[ChunkBase]] = None
+        self._selected_chunks: weakref.WeakSet[ChunkBase] = weakref.WeakSet()
+        self._stage_replaced_listeners: list = []
+
+    def add_stage_replaced_listener(self, callback) -> None:
+        """Register a callback invoked when the DCC opens a new stage.
+        Called by chunk_usd.initialize so that reload_for_stage runs on file open."""
+        self._stage_replaced_listeners.append(callback)
+
+    def notify_stage_replaced(self, stage) -> None:
+        """DCC implementations call this once a new stage is fully loaded."""
+        for cb in self._stage_replaced_listeners:
+            cb(stage)
+
+    @abstractmethod
+    def get_current_frame(self) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_end_frame(self) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_start_frame(self) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_current_frame(self, frame: float):
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_end_frame(self, frame: float):
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_start_frame(self, frame: float):
+        raise NotImplementedError
+
+    def serialize(self, glb):
+        # Ensure that the scene is not serialized. For now, we only serialize the chunks NameSyncedContainer
+        return None
+
+    def export_scene(self, path: str | Path):
+        """
+        Export the current scene. The result will be written to path, if path is a chunk_serial.FileExtensions.SCENE file path.
+        The file will contain information about all the loaded chunks and modules, and when loaded
+        should recrete the scene 1:1
+
+        Args:
+            path (str | Path): A target file path which to write to
+        """
+        p = Path(path)
+        if p.suffix != chunk_serial.FileExtensions.SCENE:
+            return
+
+        self.set_scene_file(path)
+
+        layers = {}
+        layer_data = []
+        lreg = chunk_registry.ChunkLayerManager()
+
+        if lreg.initialized:
+            for c in self.get_chunks():
+                if layer := lreg.get_layer(c):
+                    lname = lreg.get_layer_file_name(layer)
+                    layers[lname] = c.get_hash()
+                    layer_data.append((lname, lreg.get_layer_usda(layer)))
+
+        data = chunk_serial.Scene(
+            modules=chunk_registry.ChunkRegistry().get_chunk_modules(True), chunks=self.chunks, layers=layers
+        )
+        chunk_serial.save_scene(path, data, layer_data)
+
+    def save_scene(self):
+        """
+        Calls export_scene with the current scene file as target, meaning this will override the currently loaded scene.
+        If no scene is set, this will print a warning and do nothing.
+        """
+        if not (f := self.get_scene_file()):
+            logger.warning("No scene file set")
+            return
+
+        self.export_scene(f)
+        self._modified = False
+
+    def get_scene_file(self):
+        if self._scene_file == Path():
+            return None
+        return self._scene_file
+
+    def set_scene_file(self, path: str | Path):
+        """
+        Set the current scene file. The file extension of path should be chunk_serial.FileExtensions.SCENE. This will not
+        load the content of the file. To load the content of the file, use open_scene() instead.
+
+        Args:
+            path (str | Path): A path to a scene file.
+        """
+        if (p := Path(path)) and p.suffix != chunk_serial.FileExtensions.SCENE:
+            logger.warning(f"Unsupported scene file extension: {path}")
+            return
+
+        self._scene_file = Path(path)
+
+    def open_scene(self, path: str | Path):
+        """
+        Open a scene file (.chsc) and import its content. The chunks member will be replaced with the chunks
+        imported from the file. All layers will be replaced.
+
+        Args:
+            path (str | Path): _description_
+        """
+        p = Path(path)
+        if not p.exists() or p.suffix != chunk_serial.FileExtensions.SCENE:
+            return
+
+        if self.is_modified():
+            if not self.request_save():
+                return
+
+        # Clear the current scene
+        self.clear()
+
+        # Deserialize json files
+        serial = chunk_serial.load_file(path)
+        if not serial or not (data := chunk_serial.deserialize_scene(serial)):
+            return
+
+        self.set_scene_file(p)
+
+        # Construct the modules
+        for mod_cnstr in data.get("modules", []):
+            mod = mod_cnstr.construct(False)
+
+            if not isinstance(mod, chunk_registry.ChunkModule):
+                logger.error(f"Return value from serial is not a ChunkModule: {mod}")
+                continue
+
+            if not mod._pre_load():
+                logger.error(f"Failed to preload: {mod}")
+                continue
+
+            mod = mod_cnstr.post_constuct()
+            chunk_registry.ChunkRegistry().register_module(mod)
+
+        # Construct the chunks
+        if chunks := data.get("chunks"):
+            if nsc := chunks.construct(False):
+                nsc: NameSyncedContainer
+                nsc.get_dag_node()._part_of_graph = False
+                chunks.post_constuct()
+
+                self.set_chunks(nsc)
+
+        self._modified = False
+
+        # Construct the layers
+        lreg = chunk_registry.ChunkLayerManager()
+        if not lreg.initialized:
+            return
+
+        for layer_name, cref in data.get("layers", {}).items():
+            c = cref.construct()
+
+            if not isinstance(c, ChunkCommon):
+                logger.warning(f"Could not load layer {layer_name}. The referenced chunk was not found")
+                continue
+
+            try:
+                layer_str = chunk_serial.load_scene_data(p, layer_name)
+            except Exception:
+                continue
+
+            if not layer_str:
+                logger.warning(f"Could not load layer {layer_name}")
+                continue
+
+            layer = Sdf.Layer.CreateAnonymous()
+            layer.ImportFromString(layer_str.decode())
+
+            c_layer = lreg.get_or_create_layer(c)
+            if not c_layer:
+                logger.warning(f"Could not load layer for chunk {c.name}")
+                continue
+            lreg.stitch_layers(c_layer, layer)
 
     def remove_chunk(self, chunk: str | ChunkHash):
         """
@@ -3245,8 +3950,65 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         c.request_delete()
         self._modified = True
 
-    def add_chunk(self, c: ChunkBase):
-        names = self.get_chunk_names()
+    def add_context(self, name: str, prim_path: Optional[str] = None) -> ChunkBase | None:
+        """
+        Adds a context chunk to the scene. Concrete chunks can be added to the context using add_param and similar. The returned
+        ChunkBase object is just a ChunkBase with the CONTEXT flag. This can be used as a organisatorial chunk that contains other chunks
+        under a shared layer
+
+        Args:
+            name (str): The name of the context
+            prim_path (str, optional): USD prim path this context maps to. Chunks within it are
+                placed at ``{prim_path}/chunks/{chunk_name}``. Defaults to the global /chunks root.
+
+        Returns:
+            ChunkBase | None: The context chunk that was added to the scene
+        """
+        return self.add_chunk(ChunkBase(name, flags=ChunkFlags.GroupFlags.CONTEXT, prim_path=prim_path))
+
+    def set_chunks(self, chunks: NameSyncedContainer[ChunkBase]):
+        """
+        Sets the container storing all the chunks. Will override all currently loaded chunks
+
+        Args:
+            chunks (NameSyncedContainer[ChunkBase]): The container
+        """
+        self.chunks = chunks
+        self.chunks.get_dag_node()._part_of_graph = False
+        self.get_dag_node()._part_of_graph = False
+        self.chunks.set_owner(self)
+
+        for c in self.chunks.get_my_params():
+            try:
+                c.check_hierarchy()
+            except Exception as e:
+                logger.exception(e)
+                c.print_hierarchy()
+                continue
+
+            # TODO: The chunk may have been loaded before, so dumb to send CHUNK_LOADED here perhaps? CHUNK_LOADED should
+            # just be called when a new chunk instance is created, but after initialization
+            chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+
+            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                for i in c.get_my_params(is_inst(ChunkBase)):
+                    chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, i, data=i)
+
+        self._modified = True
+
+    def add_chunk(self, c: ChunkBase, notify: bool = True) -> ChunkBase | None:
+        """
+        Adds a chunk to the root of the scene.
+
+        Args:
+            c (ChunkBase): The chunk to add. Ideally this should be a context chunk, and nested chunks should live underneath
+            notify (bool): Whether to fire CHUNK_LOADED after adding. Pass False to defer notification (e.g. to apply stored values first).
+
+        Returns:
+            ChunkBase | None: The added chunk
+        """
+
+        names = self.chunks.get_my_names()
         if c.name in names:
             c.name = c.get_valid_child_name(c.name, set(names))
         try:
@@ -3255,38 +4017,161 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             logger.exception(e)
             return
 
-        self.chunks.add(c, False)
-        chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+        if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            c._parent_context = self._current_context
+            self._current_context = weakref.ref(c)
+            # User-created group chunks (have a module config) need PARAM_ADDED to fire
+            # so ChunkStageSync can create their USD prim. Tab contexts skip this.
+            send_added = bool(c.get_config() and c.get_config().module)
+            self.chunks.add(c, send_added)
+            if send_added:
+                # Restore parent context so subsequent chunks don't fall into the group.
+                self._current_context = c._parent_context
+            if notify:
+                chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, c, data=c)
+
+        elif self._current_context and (ctx := self._current_context()):
+            ctx.add_param(c, notify=notify)
+        elif ctx := self.add_context("Chunks"):
+            ctx.add_param(c, notify=notify)
+        else:
+            logger.error(f"Failed to add chunk {c}")
+            return
+
         self._modified = True
         return c
 
     def add_chunks(self, chunks: Sequence[ChunkBase]):
+        """
+        Add all chunks in the sequence
+
+        Args:
+            chunks (Sequence[ChunkBase]): The chunks to add to the scene
+        """
         for c in chunks:
             self.add_chunk(c)
 
     def clear(self):
-        for c in self.get_chunks():
-            c.request_delete()
-
+        """
+        Clear the chunk container. This may not delete the chunks if string references to the chunks
+        are maintained elsewhere
+        """
         self.chunks.clear()
         self._modified = True
 
     def holds_chunk(self, chunk: str | ChunkHash) -> bool:
+        """
+        Check if the scene holds a chunk with name or hash
+
+        Args:
+            chunk (str | ChunkHash): The name or hash of the chunk to find
+
+        Returns:
+            bool: True if the scene holds the chunk, False otherwise
+        """
         return self.get_chunk(chunk) is not None
 
     def get_chunk(self, chunk: str | ChunkHash) -> ChunkBase | None:
-        return self.chunks.get_param(chunk)
+        """
+        Return a single chunk held by the scene. If no chunk is found, None is returned.
+        Contrary to get_chunks, this may return context chunks as well
+
+        Args:
+            chunk (str | ChunkHash): The name or hash of the chunk to find
+
+        Returns:
+            ChunkBase | None: The found chunk or None
+        """
+        res = self.chunks.get_param(chunk)
+        return res if isinstance(res, ChunkBase) else None
+
+    def get_context_for_prim_path(self, path: str) -> "ChunkBase | None":
+        """Return the CONTEXT chunk whose prim_path matches path, or None."""
+        for c in self.get_chunks():
+            if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                if getattr(c, "prim_path", None) == path:
+                    return c
+        return None
 
     def get_chunks(self) -> Tuple[ChunkBase, ...]:
-        return self.chunks.get_my_params()
+        seen: set = set()
+        res: list = []
+        stack: list = list(self.chunks.get_my_params())
+        while stack:
+            i = stack.pop()
+            if not isinstance(i, ChunkBase) or i in seen:
+                continue
+            seen.add(i)
+            cfg = i.get_config()
+            is_group_chunk = i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module
+            if i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and not is_group_chunk:
+                # Plain tab context: don't include it, but visit its children.
+                stack.extend(i.get_my_params())
+            else:
+                res.append(i)
+                if is_group_chunk:
+                    # ChunkGroup: include it AND recurse so sub-chunks are reachable.
+                    stack.extend(i.get_my_params())
+        return tuple(res)
 
-    def get_chunk_names(self):
-        return self.chunks.get_my_names()
+    def clear_chunk_selection(self):
+        """
+        Clear the chunk selection
+        """
+        for i in self.get_selected_chunks():
+            i.set_selected(False)
 
-    def is_modified(self):
+    def get_selected_chunks(self) -> Tuple[ChunkBase, ...]:
+        """
+        get the currently selected chunks
+
+        Returns:
+            Tuple[ChunkBase, ...]: The selected chunks
+        """
+        return tuple(self._selected_chunks)
+
+    def set_selected_chunks(self, selection: Sequence[ChunkBase]):
+        """
+        Deselects the currently selected chunks and sets the selection to the sequence of
+        chunks passed as selection
+
+        Args:
+            selection (Sequence[ChunkBase]): The new selection to set
+        """
+        old_selection = self.get_selected_chunks()
+        for c in old_selection:
+            if c not in selection:
+                c.set_selected(False)
+
+        for c in selection:
+            if c not in old_selection:
+                c.set_selected(True)
+
+    def is_modified(self) -> bool:
+        """
+        Returns whether the scene has been modified since created
+
+        Returns:
+            bool: True if the scene has been modified, False otherwise
+        """
         return self._modified
 
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
+        if (
+            notice
+            and chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.STATE_CHANGED)
+            and isinstance(notice.data.get_owner(), ChunkBase)
+        ):
+            # Toggle the selected chunk in self._selected_chunks
+            old_state = ChunkFlags.State(notice.data.old_value)
+            new_state = ChunkFlags.State(notice.data.value)
+            added = new_state ^ (new_state & old_state)
+            removed = old_state ^ (new_state & old_state)
+            if ChunkFlags.State.SELECTED in (added | removed):
+                self._selected_chunks ^= set((notice.data.get_owner(),))
+                # Return early to skip changing self._modified
+                return super().data_changed(notice)
+
         self._modified = True
         return super().data_changed(notice)
 
@@ -3296,6 +4181,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._modified = True
         return super().send_self(alias, data)
 
+    @abstractmethod
     def should_install_package(self, package_name: str) -> bool:
         """
         When a modules config has requirements to external pip packages, the packages may be installed automatically by the ChunkDependencyManager.
@@ -3310,30 +4196,114 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return False
 
+    @abstractmethod
     def request_save(self):
+        """
+        Request a save of the scene. Should be implemented by a plugin
+
+        Raises:
+            NotImplementedError: If not implemented by a plugin
+        """
         raise NotImplementedError
 
     @abstractmethod
-    def get_stage(self) -> Usd.Stage:
-        raise NotImplementedError
-
-    def get_selected_prims(self) -> List[Usd.Prim]:
+    def get_stage(self) -> Usd.Stage | None:
         """
-        Get the selected prims in the scene
+        Get the current scene stage. Should be implemented by a plugin
 
         Returns:
-            List[Usd.Prim]: Selected prims
+            Usd.Stage | None: The stage if available
         """
-        raise NotImplementedError
+        return None
 
-    def get_selected_property(self) -> Usd.Property:
+    @abstractmethod
+    def get_selected_prims(self) -> Sequence[Usd.Prim]:
         """
-        Get the selected property in the scene
+        Get the selected prims in the scene. Should be implemented by a plugin
+
+        Returns:
+            Sequence[Usd.Prim]: Selected prims
+        """
+        return []
+
+    @abstractmethod
+    def get_selected_property(self) -> Usd.Property | None:
+        """
+        Get the selected property in the scene. Should be implemented by a plugin
 
         Returns:
             Usd.Property: Selected property
         """
+        return None
+
+    @abstractmethod
+    def get_active_camera(self) -> Gf.Camera | None:
+        """Return the current viewport camera as a Gf.Camera, or None if unsupported."""
+        return None
+
+    @abstractmethod
+    def get_current_frame(self) -> float:
+        """
+        Get the current
+
+        Returns:
+            float: _description_
+        """
         raise NotImplementedError
+
+    @abstractmethod
+    def get_end_frame(self) -> float:
+        """
+        Get the current end frame
+
+        Returns:
+            float: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_start_frame(self) -> float:
+        """
+        Get the current start frame
+
+        Returns:
+            float: _description_
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_current_frame(self, frame: float):
+        """
+        In the plugin implementation, set the current frame
+
+        Args:
+            frame (float): The frame to set
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_end_frame(self, frame: float):
+        """
+        In the plugin implementation, set the end frame
+
+        Args:
+            frame (float): The frame to set
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_start_frame(self, frame: float):
+        """
+        In the plugin implementation, set the start frame
+
+        Args:
+            frame (float): The frame to set
+        """
+        raise NotImplementedError
+
+    def set_viewport_camera(self, prim: UsdGeom.Camera) -> None:
+        """Set the viewport to look through the given camera prim."""
+        pass
 
     def primSelectionChangedCallback(self, *args, **kwargs):
         chunk_notice.send_notice(
@@ -3343,6 +4313,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def propSelectionChangedCallback(self, *args, **kwargs):
         chunk_notice.send_notice(
             chunk_notice.ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property()
+        )
+
+    def activeCameraChangedCallback(self, *args, **kwargs):
+        chunk_notice.send_notice(
+            chunk_notice.ChunkNoticeAlias.CAMERA_CHANGED, sender=self, data=self.get_active_camera()
         )
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
@@ -3369,10 +4344,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def set_camera_prim(self, prim: Any) -> None:
         """Set the active camera to the given prim."""
 
-    def get_current_frame(self) -> float:
-        """Return the current frame/time code."""
-        return 0.0
-
     def refresh_timeline(self, start: float, end: float) -> None:
         """Update the host timeline range."""
 
@@ -3383,3 +4354,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def subscribe_frame_changed(self, callback) -> Any:
         """Subscribe to frame/time changes. Returns an unsubscribe callable, or None."""
         return None
+
+
+def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:
+    """
+    Created a predicate function which can be used for type narrowing the input parameter v
+
+    Args:
+        cls (type[ValueT]): The type which to check
+
+    Returns:
+        Predicate[ValueT]: The predicate function
+    """
+
+    def _fn(v: Any) -> TypeGuard[ValueT]:
+        return isinstance(v, cls)
+
+    return _fn

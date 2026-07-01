@@ -92,7 +92,7 @@ def validate_name(param: chunk.LineEdit, sender: chunk_core.AttributeSender):
     return sender.value
 
 
-def nameChanged(owner: chunk.LineEdit, notice, sender):
+def nameChanged1(owner: chunk.LineEdit, notice, sender):
     if not (s := notice.data) or s.name != "value":
         return
 
@@ -102,6 +102,17 @@ def nameChanged(owner: chunk.LineEdit, notice, sender):
     param_name = s.old_value if s.old_value else "listSlider"
     if p := c.get_param(param_name):
         p.name = s.value
+
+
+def nameChanged2(owner: chunk.Slider, attrsender):
+    nameEdit = owner.get_dependency(0, chunk.is_param_t(str))
+    if nameEdit.value:
+        return nameEdit.value
+    return attrsender.value
+
+
+def primSelCallback(owner: chunk.LineEdit, notice: chunk_notice.InputChangedNotice, sender: chunk.LineEdit):
+    owner.set_prims(notice.data.get_prims()) # type: ignore
 
 
 def main():
@@ -172,11 +183,11 @@ def main():
     myChunk.add_param(sliderGroup)
 
     # A vector is an extension of the group, with a single param repeated length times. The suffix replace the default
-    # numbered suffix for duplicated params.
+    # 'a, b, c, d....' suffix.
     # Accessing params on a vector can be done through __setitem__ (vec["X"] or vec[0]) as well as get_param and similar group functions
-    sliderVec = chunk.Vector("SliderVec", param=chunk.Slider(), length=3, suffixes="XYZ")
+    sliderVec = chunk.Vector("SliderVec", param=chunk.Slider(), suffixes="XYZ", default_value=[0, 1, 2])
 
-    # Modifying valus on a Vector can be dome like so:
+    # Modifying values on a Vector can be dome like so:
     #    sliderVec[0] = 10
     #    sliderVec["X"] = 10
     #    sliderVec.value = (1, 2, 3)
@@ -239,14 +250,39 @@ def main():
 
     # A text edit is a parameter for editing strings. In this case, the callback will rename the listSlider, showing how the proxies will update.
     nameEdit = chunk.LineEdit("list_name")
-    nameEdit.add_callback(nameChanged, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+
+    # These are examples of how to modify an attribute of a parameter based on another parameter. In both cases, the name of listSlider is modified
+    # when the nameEdit's value is cja
+
+    # nameEdit.add_callback(nameChanged1, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+    # nameEdit.set_function("value", validate_name)
+
+    listSlider.add_dependency(nameEdit)
+    listSlider.set_function("name", nameChanged2)
 
     # Add a function to be called whenever the 'value' attribute changes. The return value of the function will be the new value of the param
-    nameEdit.set_function("value", validate_name)
     myChunk.add_params([nameEdit, listGroup])
 
     # Prints the hierarchy of the chunk. Useful for debugging chunks
     # myChunk.print_hierarchy()
+
+    lineA = chunk.LineEdit("A")
+    lineA.set_flag(chunk.ChunkFlags.ParamFlags.PRIM_SELECTION)
+    lineB = chunk.LineEdit("B")
+    lineB.set_flag(chunk.ChunkFlags.ParamFlags.PRIM_SELECTION)
+
+    lineB.add_dependency(lineA)
+    lineB.add_callback(primSelCallback, notice_alias=chunk_notice.ChunkNoticeAlias.INPUT_CHANGED)
+
+    myChunk.add_params([lineA, lineB])
+
+    # A value can be connected using the connect_value wrapper function. Internally, this does:
+    # idx = sliderB.add_dependency(sliderA)
+    # sliderB.set_function("value", lambda x, _: x.get_dependency(idx, is_inst(type(other))).value)
+    sliderA = chunk.Slider("sliderA")
+    sliderB = chunk.Slider("sliderB")
+    sliderB.connect_value(sliderA)
+    myChunk.add_params([sliderA, sliderB])
 
     return myChunk
 

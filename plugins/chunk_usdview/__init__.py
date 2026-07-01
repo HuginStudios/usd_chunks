@@ -3,15 +3,16 @@
 This module provides a framework for dynamically loading and managing custom UI modules
 """
 
-from pxr import Tf, Usd
+from pxr import Tf, Usd, Gf
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
+from pxr.Usdviewq.qt import QtCore
 
 from usd_chunks import chunk_registry, chunk_core, chunk_serial
-from plugins import chunk_qt
+from plugins import chunk_qt, chunk_usd
 
 from typing import Any, Callable, List, Optional
-from collections import defaultdict
+
 
 class UsdviewScene(chunk_core.SceneSender):
     """
@@ -28,16 +29,68 @@ class UsdviewScene(chunk_core.SceneSender):
         selection_model = data_model.selection  # type: ignore
         selection_model.signalPrimSelectionChanged.connect(self.primSelectionChangedCallback)
         selection_model.signalPropSelectionChanged.connect(self.propSelectionChangedCallback)
+
+        view_settings = data_model.viewSettings  # type: ignore
+        view_settings.signalSettingChanged.connect(self._on_view_settings_changed)
+
+        data_model.signalStageReplaced.connect(self._on_stage_replaced)  # type: ignore
+
+        self._current_cam = None
+
+        # Adds a delay to the set_viewport_camera as a workaround to remove thread racing
+        self._camera_prim = None
+        self._camera_snap_timer = QtCore.QTimer()
+        self._camera_snap_timer.setSingleShot(True)
+        self._camera_snap_timer.timeout.connect(self._on_snap_timer)
+
         super().__init__()
 
-    def request_save(self) -> bool:
-        reg = chunk_registry.ChunkRegistry()
+    def get_current_frame(self) -> float:
+        return self.usdviewAPI.dataModel.currentFrame
 
-        if not chunk_qt.confirm_dial("Save scene?"):
+    def get_end_frame(self) -> float:
+        return self.usdviewAPI.dataModel.frameRangeEnd
+
+    def get_start_frame(self) -> float:
+        return self.usdviewAPI.dataModel.frameRangeBegin
+
+    def set_current_frame(self, frame: float):
+        appCtrl = self.usdviewAPI._UsdviewApi__appController
+        appCtrl.setFrame(frame)
+        QtCore.QCoreApplication.processEvents()
+
+    def set_end_frame(self, frame: float):
+        stage = self.get_stage()
+        if not stage:
+            return
+
+        appCtrl = getattr(self.usdviewAPI, "_UsdviewApi__appController")
+        with Usd.EditContext(self.get_stage(), stage.GetSessionLayer()):
+            stage.SetMetadata("endFrame", frame)
+            self.usdviewAPI.dataModel.frameRangeEnd = frame
+            appCtrl.realEndTimeCode = frame
+        appCtrl._UpdateTimeSamples()
+
+    def set_start_frame(self, frame: float):
+        stage = self.get_stage()
+        if not stage:
+            return
+
+        appCtrl = getattr(self.usdviewAPI, "_UsdviewApi__appController")
+        with Usd.EditContext(self.get_stage(), stage.GetSessionLayer()):
+            stage.SetMetadata("startFrame", frame)
+            self.usdviewAPI.dataModel.frameRangeBegin = frame
+            appCtrl.realStartTimeCode = frame
+        appCtrl._UpdateTimeSamples()
+
+    def request_save(self) -> bool:
+        reg = chunk_registry.ChunkRegistry().scene
+
+        if not chunk_qt.confirm_dial("Save chunk scene?"):
             return True
 
         flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+        if file := chunk_qt.file_dial(flt, create_new=True):
             reg.export_scene(file)
             return True
 
@@ -135,15 +188,6 @@ class UsdviewScene(chunk_core.SceneSender):
             except Exception:
                 pass
 
-    def get_current_frame(self) -> float:
-        ctrl = self._get_ctrl()
-        if ctrl:
-            try:
-                return ctrl._dataModel.currentFrame.GetValue()
-            except Exception:
-                pass
-        return 0.0
-
     def refresh_timeline(self, start: float, end: float) -> None:
         ctrl = self._get_ctrl()
         if ctrl:
@@ -180,6 +224,44 @@ class UsdviewScene(chunk_core.SceneSender):
         except Exception:
             return None
 
+    def _get_free_camera(self):
+        app = self.usdviewAPI._UsdviewApi__appController
+        return app._dataModel.viewSettings.freeCamera
+
+    def get_active_camera(self):
+        free_cam = self._get_free_camera()
+        if free_cam is None:
+            return None
+        return free_cam.computeGfCamera(Gf.BBox3d())
+
+    def _set_viewport_camera(self, prim):
+        app = self.usdviewAPI._UsdviewApi__appController
+        app._dataModel.viewSettings.cameraPrim = prim
+
+    def set_viewport_camera(self, prim) -> None:
+        self._snap_prim = prim
+        self._camera_snap_timer.start(150)
+
+    def _on_view_settings_changed(self):
+        current_cam = self._get_free_camera()
+
+        if current_cam == self._current_cam:
+            return
+
+        if self._current_cam is not None:
+            self._current_cam.signalFrustumChanged.disconnect(self.activeCameraChangedCallback)
+
+        if current_cam is not None:
+            self._current_cam = current_cam
+            self._current_cam.signalFrustumChanged.connect(self.activeCameraChangedCallback)
+
+    def _on_snap_timer(self):
+        if self._snap_prim is not None:
+            self._set_viewport_camera(self._snap_prim)
+
+    def _on_stage_replaced(self):
+        self.notify_stage_replaced(self.get_stage())
+
 
 def launch_chunks(usdviewApi) -> None:
     """Launch the UI Creator plugin.
@@ -193,8 +275,8 @@ def launch_chunks(usdviewApi) -> None:
     scene = UsdviewScene(usdviewApi)
 
     chunk_qt.build_chunk_docker(usdviewApi.qMainWindow)
-    chunk_registry.ChunkLayerManager().initialize(usdviewApi.stage)
     chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
+    chunk_usd.initialize(usdviewApi.stage, scene)
 
 
 class ChunksPluginContainer(PluginContainer):
@@ -204,28 +286,10 @@ class ChunksPluginContainer(PluginContainer):
 
     def reloadChunks(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
-
-        loaded_config_names = defaultdict(int)
-        for c in reg.scene.get_chunks():
-            if conf := c.get_config():
-                loaded_config_names[conf.module] += 1
-        
-        reg.scene.clear()
-
-        for mod in reg.registered_modules.values():
-            # mod.unload()
-            if mod.loaded:
-                mod.unload()
-            
-            for i in range(loaded_config_names.get(mod.module_name, 0)):
-                if i == 0:
-                    chunks = mod.load()
-                else:
-                    chunks = mod.create()
-                reg.scene.add_chunks(chunks)
+        reg.reload_modules()
 
     def saveLayers(self, usdviewApi):
-        reg = chunk_registry.ChunkLayerManager()
+        reg = chunk_usd.ChunkLayerManager()
         # flt = "*.usda *.usd *.usdc"
         if not (path := chunk_qt.file_dial(directory=True)):
             return
@@ -233,29 +297,27 @@ class ChunksPluginContainer(PluginContainer):
         reg.save_layers(path)
 
     def saveScene(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry()
+        reg = chunk_registry.ChunkRegistry().scene
 
         if reg.get_scene_file():
             return reg.save_scene()
 
         flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+        if file := chunk_qt.file_dial(flt, create_new=True):
             reg.export_scene(file)
-            reg.set_scene_file(file)
 
     def saveSceneAs(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry()
+        reg = chunk_registry.ChunkRegistry().scene
 
         flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=True):
+        if file := chunk_qt.file_dial(flt, create_new=True):
             reg.export_scene(file)
-            reg.set_scene_file(file)
 
     def openScene(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry()
+        reg = chunk_registry.ChunkRegistry().scene
 
         flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=False):
+        if file := chunk_qt.file_dial(flt, create_new=False):
             reg.open_scene(file)
 
     def importChunk(self, usdviewApi):
@@ -267,7 +329,7 @@ class ChunksPluginContainer(PluginContainer):
         )
 
         flt = " ".join([f"*{x}" for x in exts])
-        if file := chunk_qt.file_dial(filter=flt, create_new=False):
+        if file := chunk_qt.file_dial(flt, create_new=False):
             reg.import_chunk(file)
 
     def registerPlugins(self, plugRegistry, plugCtx) -> None:

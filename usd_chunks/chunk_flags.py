@@ -1,4 +1,4 @@
-from enum import IntFlag, auto
+from enum import IntFlag, IntEnum, auto
 from typing import List
 from pxr import Sdf
 
@@ -11,7 +11,7 @@ class _FlagRepr(IntFlag):
 class ChunkFlags:
     """Hold common flags for chunks"""
 
-    class LayoutFlags(_FlagRepr):
+    class LayoutFlags(IntEnum):
         """Flags for layout hinting parameters and groups
 
         Attributes:
@@ -30,12 +30,14 @@ class ChunkFlags:
             HIDDEN: Hint the ui to not draw this param or group
             DISABLED: Hint the ui to disable this param or group
             COLLAPSED: For COLLAPSABLE groups, this should collapse the group if set
+            SELECTED: The chunk is selected
         """
 
         NONE = 0
         HIDDEN = auto()
         DISABLED = auto()
         COLLAPSED = auto()
+        SELECTED = auto()
 
     class GroupFlags(_FlagRepr):
         """Flags for chunk constainer type objects (Chunk, Group)
@@ -45,12 +47,16 @@ class ChunkFlags:
             COLLAPSABLE: If the group should be able to collapse
             FRAMED: A simple style flag
             LIST: Parameters on this group is treated as a list that can be extended and shrinked
+            CONTEXT: The group should be displayed as a context rather than a node/chunk. A chunk 
+                context only displays the children of said chunk. In the QT plugin, this is a tab
         """
 
-        LABELED = 1
+        NONE = 0
+        LABELED = auto()
         COLLAPSABLE = auto()
         FRAMED = auto()
         LIST = auto()
+        CONTEXT = auto()
 
     class ParamFlags(_FlagRepr):
         """Flags for chunk params
@@ -63,7 +69,8 @@ class ChunkFlags:
             PROP_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdProperty selections
         """
 
-        LABELED = 1
+        NONE = 0
+        LABELED = auto()
 
         # FILE
         FILE_EXISTING = auto()
@@ -72,6 +79,10 @@ class ChunkFlags:
         # LINEEDIT
         PRIM_SELECTION = auto()
         PROP_SELECTION = auto()
+
+        # TEXTEDIT
+        PY_SYNTAX_HIGHLIGHT = auto()
+        USD_SYNTAX_HIGHLIGHT = auto()
 
     class ParamType(_FlagRepr):
         """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
@@ -127,9 +138,9 @@ class ChunkFlags:
         # String
         LABEL = STRING | (1 << 0)
         LINEEDIT = STRING | (1 << 1)
-        FILE = STRING | (1 << 2)
-        STRING_MENU = STRING | (1 << 3)
-        TEXTEDIT = STRING | (1 << 4)
+        TEXTEDIT = STRING | (1 << 2)
+        FILE = STRING | (1 << 3)
+        STRING_MENU = STRING | (1 << 4)
 
         # Bool
         CHECKBOX = BOOL | (1 << 0)

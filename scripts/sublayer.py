@@ -53,4 +53,28 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)
+    return chunk.DefaulConfig(
+        category=chunk.StandardCategory.UTILS,
+        description="""
+        Sublayer chunk: Lets the user add one or more external USD files as sublayers
+        on the chunk's own edit layer, making those files compose underneath all
+        other opinions on the stage.
+
+        Parameters:
+          imports (ListGroup of sublayer_path FileBrowsers)
+            A dynamic list where each entry is a file browser constrained to existing
+            USD files. Add rows to stack multiple sublayers; remove rows to drop them.
+          import (Button)
+            Provides an explicit trigger in the UI; the underlying rebuild is driven
+            by the ATTRIBUTE_CHANGED callback, not the button directly.
+
+        On every change the callback collects all non-empty path values from the
+        list, then assigns them wholesale to edit_layer.subLayerPaths, replacing
+        the previous list in one step.
+
+        The callback is registered at chunk level on ATTRIBUTE_CHANGED and guards
+        with `notice.data.name not in ["size", "value"]` so it only fires for real
+        path edits and list-size changes. Per-param callbacks are deliberately
+        avoided here: removing a list item renames internal params and would fire
+        the callback twice, producing a spurious intermediate state.
+        """)

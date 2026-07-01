@@ -146,15 +146,20 @@ def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
     segs = owner.get_param("segments", chunk.is_param_t(int))
     len = owner.get_param("length", chunk.is_param_t(float))
 
-    tgt = None
-    if scene := chunk.get_scene():
-        tgt = scene.get_selected_prims()
+    # tgt = None
+    # if scene := chunk.get_scene():
+    #     tgt = scene.get_selected_prims()
 
-    if not tgt:
+    if not (c := owner.get_chunk()):
         return
 
-    tgtPrim = tgt[0]
-    mesh = UsdGeom.Mesh.Get(stage, tgtPrim.GetPath())
+    prim_path = c.get_param("skin_prim", chunk.is_inst(chunk.LineEdit))    
+    tgt_prims = prim_path.get_prims()
+    if not tgt_prims:
+        return
+    
+    tgt_prim = tgt_prims[0]
+    mesh = UsdGeom.Mesh.Get(stage, tgt_prim.GetPath())
     if not mesh:
         return
 
@@ -163,6 +168,8 @@ def hair_changed(owner: chunk.ChunkGroupBase, notice, sender):
 
 def main():
     menu = chunk.Menu("mesh_type", "Mesh Type", menu_items=["none", "curly"], default_value="none")
+
+    prim_path = chunk.LineEdit("skin_prim", flags=chunk.ChunkFlags.ParamFlags.PRIM_SELECTION | chunk.ChunkFlags.ParamFlags.LABELED)
 
     curly_group = chunk.Group("curly", "curly")
     curly_group.add_params(
@@ -177,7 +184,7 @@ def main():
     curly_group.add_callback(hair_changed)
 
     chunk_api = chunk.Chunk("Add Hair")
-    chunk_api.add_params([menu, curly_group])
+    chunk_api.add_params([prim_path, menu, curly_group])
 
     chunk_api.add_callback(menu_changed, sender=menu)
 

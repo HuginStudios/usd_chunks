@@ -8,7 +8,7 @@ framework.
 As all chunk classes inherit from chunk_core.AttributesMetaclass,
 all these classes are in fact attrs classes (dataclass). So creating a new
 Chunk Parameter class, one must only declare the class and inherit
-from ChunkParamBase or related base class. As the class will, behind
+from [ChunkParamBase][usd_chunks.chunk_core.ChunkParamBase] or related base class. As the class will, behind
 the scenes, be wrapped in attrs.define() we get some method definitions
 for free; most notably \\_\\_init\\_\\_(). The \\_\\_init\\_\\_ will
 be created from all the fields of the class, including inherited, so
@@ -17,8 +17,8 @@ we don't have to define the \\_\\_init\\_\\_ function for each chunk class.
 For this reason, any attributes of a chunk class should be defined
 using attrs.field().
 
-A class which inherits from ChunkParamBase need to implement get_type(),
-and possibly evaluate_type() if the type may change during runtime. This
+A class which inherits from [ChunkParamBase][usd_chunks.chunk_core.ChunkParamBase] need to implement [get_type][usd_chunks.chunk_core.ChunkParamBase.get_type],
+and possibly [evaluate_type][usd_chunks.chunk_core.ChunkParamBase.evaluate_type] if the type may change during runtime. This
 is to ensure an easy mapping between chunks and whatever UI framework is used
 
 !!! example
@@ -36,17 +36,18 @@ When creating a chunk module, the chunk.Chunk() class is the top level
 container for which all parameters and groups should be added to. Creating
 a simple chunk with a button is as simple as:
 
-``` py
-from usd_chunks import chunk
+!!! example
+    ``` py
+    from usd_chunks import chunk
 
 
-def main():
-    myChunk = chunk.Chunk("myChunk", category="example")
-    btnParam = chunk.Button("myButton")
+    def main():
+        myChunk = chunk.Chunk("myChunk")
+        btnParam = chunk.Button("myButton")
 
-    myChunk.add_param(btnParam)
-    return myChunk
-```
+        myChunk.add_param(btnParam)
+        return myChunk
+    ```
 
 See [example](../example.md) for a more extensive example.
 
@@ -56,31 +57,26 @@ from attr import Attribute as Attribute
 from attrs import field
 
 from enum import IntFlag, Enum
-from typing import (
-    Any,
-    List,
-    Optional,
-    Sequence,
-    TYPE_CHECKING,
-    cast,
-    TypeGuard,
-)
+from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast, TypeGuard, overload
 
 from pxr import Usd, Sdf
 
-from usd_chunks.chunk_notice import ChunkNoticeAlias
+# Keep the ChunkNoticeAlias import as clients may use usd_chunks.chunk.ChunkNoticeAlias, without having to import chunk_notice
+from usd_chunks.chunk_notice import ChunkNoticeAlias  # noqa: F401
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
-    ChunkConfig,
+    ChunkConfig as _cfg,
     ChunkParamBase,
     ChunkGroupBase,
     ChunkVectorBase,
     ChunkUsdAttributeSupport,
     ChunkCommon,
     ChunkListGroupBase,
+    SceneSender,
     Predicate,
     ValueT,
+    is_inst,
 )
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
@@ -93,7 +89,7 @@ if TYPE_CHECKING:
 ###########
 
 
-class DefaulConfig(ChunkConfig):
+class DefaulConfig(_cfg):
     """
     This class is used as a default config.
 
@@ -197,7 +193,7 @@ class Slider(ChunkParamBase[int | float]):
         param = super().from_usd_attr(attr, *args, **kwargs)
 
         try:
-            limits = attr.GetLimits()
+            limits = attr.GetLimits()  # type: ignore
         except Exception:
             limits = None
         if limits:
@@ -315,6 +311,12 @@ class Button(ChunkParamBase):
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.BUTTON
 
+    def click(self):
+        """
+        Click the button, triggering connected callbacks to called
+        """
+        self.get_attribute_sender("value").execute()
+
     def execute(self) -> None:
         """Fire this button by sending a PARAM_CHANGED notice."""
         from usd_chunks import chunk_notice as _cn
@@ -336,7 +338,8 @@ class Checkbox(ChunkParamBase[bool]):
 
 class LineEdit(ChunkParamBase[str]):
     """
-    An editable string parameter
+    An editable string parameter for a single line. May set the ParamFlags.PRIM_SELECTION flag if the param is used for
+    Usd.Prim selection
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
@@ -347,7 +350,13 @@ class LineEdit(ChunkParamBase[str]):
         if self.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION):
             self.set_prims(self.get_scene().get_selected_prims())
 
-    def set_prims(self, prims: List[Usd.Prim]):
+    def value_changed(self, attrname: str, old_value: Any, value: Any):
+        if attrname == "flags" and ChunkFlags.ParamFlags.PRIM_SELECTION in value:
+            self.set_prims(self.get_scene().get_selected_prims())
+
+        return super().value_changed(attrname, old_value, value)
+
+    def set_prims(self, prims: Sequence[Usd.Prim]):
         """
         Sets the value of the param to a list of prim paths
 
@@ -356,7 +365,7 @@ class LineEdit(ChunkParamBase[str]):
         """
         self.value = ",".join([str(x.GetPath()) for x in prims])
 
-    def get_prims(self) -> List[Usd.Prim]:
+    def get_prims(self) -> Sequence[Usd.Prim]:
         """
         If this param is a list of prim paths (comma separated), then return the prims on the stage
 
@@ -386,7 +395,7 @@ class LineEdit(ChunkParamBase[str]):
             param = cls(*args, **kwargs)
         try:
             if sender := param.get_attribute_sender("value"):
-                param.set_usd_prop(rel, sender)
+                param.set_usd_prop(str(rel.GetPath()), sender)
         except AttributeError:
             pass
         return param
@@ -394,13 +403,10 @@ class LineEdit(ChunkParamBase[str]):
 
 class TextEdit(ChunkParamBase[str]):
     """
-    A multi-line editable string parameter.
+    An editable string parameter with multiple lines
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
-
-    def __attrs_post_init__(self):
-        super().__attrs_post_init__()
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -437,7 +443,7 @@ class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
 
 class Label(ChunkParamBase[str]):
     """
-    A label parameter. Should not be editable
+    A label parameter. Should not be editable in the UI. The name or label param attribute controls the displayed text
     """
 
     @classmethod
@@ -525,25 +531,62 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
 
 
 def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | None:
+    """
+    Similar to param_from_attr but for a Usd.Relationship. Will create a LineEdit.
+
+    Args:
+        attr (Usd.Relationship): The relationship to connect with a param
+
+    Returns:
+        ChunkCommon | None: The resulting param if created successfully
+    """
     return LineEdit.from_usd_rel(attr, *args, **kwargs)
 
 
-def get_chunk_registry():
+def get_chunk_registry() -> ChunkRegistry | None:
+    """
+    Get the ChunkRegistry instance. This can be used to find / register loaded chunk modules
+
+    Returns:
+        ChunkRegistry | None: The registry if it has been initialized. Otherwise None
+    """
     res = ChunkRegistry()
     return res if res.initialized else None
 
 
-def get_scene():
+def get_scene() -> SceneSender | None:
+    """
+    Return the current SceneSender object. The SceneSender can be used to find / add chunks to the scene, as well as saving / loading the current scene
+
+    Returns:
+        SceneSender | None: The current scene or None if the scene does not exists
+    """
     if reg := get_chunk_registry():
         return reg.scene
 
 
-def get_layer_manager():
+def get_layer_manager() -> ChunkLayerManager | None:
+    """
+    Return the ChunkLayerManager. This can be used to manage the chunk layers. Useful for layer management such as clearing, muting, removing, etc.
+
+    Returns:
+        ChunkLayerManager | None: The ChunkLayerManager if found, otherwise None
+    """
     res = ChunkLayerManager()
     return res if res.initialized else None
 
 
 def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
+    """
+    Find a ChunkModule in the registry and run it's main() function, then add the resulting chunk(s) to the scene if not anonymous.
+
+    Args:
+        module_name (str): The name of the module to load, relative to USD_CHUNK_DIRS
+        anonymous (bool, optional): If set to True, the resulting chunks will be added to the scene directly. Defaults to False.
+
+    Returns:
+        Sequence[Chunk]: The created chunks
+    """
     if not (reg := get_chunk_registry()):
         return []
 
@@ -565,6 +608,15 @@ def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
 
 
 def get_chunk(chunk_name: str):
+    """
+    A simple method to find a chunk in the current scene.
+
+    Args:
+        chunk_name (str): The name of the chunk to find. Note that this should be the current chunk instance name
+
+    Returns:
+        Chunk: The found chunk, or None if not found
+    """
     if not (reg := get_chunk_registry()):
         return None
     return reg.scene.get_chunk(chunk_name)
@@ -573,23 +625,6 @@ def get_chunk(chunk_name: str):
 ##############
 # PREDICATES #
 ##############
-
-
-def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:
-    """
-    Created a predicate function which can be used for type narrowing the input parameter v
-
-    Args:
-        cls (type[ValueT]): The type which to check
-
-    Returns:
-        Predicate[ValueT]: The predicate function
-    """
-
-    def _fn(v: Any) -> TypeGuard[ValueT]:
-        return isinstance(v, cls)
-
-    return _fn
 
 
 def is_param(v: Any) -> TypeGuard[ChunkParamBase]:
@@ -605,24 +640,41 @@ def is_param(v: Any) -> TypeGuard[ChunkParamBase]:
     return is_inst(ChunkParamBase)(v)
 
 
-def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]:
+@overload
+def is_param_t(t: ChunkFlags.ParamType) -> Predicate[ChunkParamBase]: ...
+
+
+@overload
+def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]: ...
+
+
+def is_param_t(t: ChunkFlags.ParamType | type[ValueT]) -> Predicate[ChunkParamBase] | Predicate[ChunkParamBase[ValueT]]:
     """
     Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
-    a value of type t
+    a value of type t or the param.evaluate_type() is t if t is a chunkFlags.ParamType enum
 
     Args:
-        t (type[ValueT]): A value held by the parameter
+        t (Any): The value type or chunkFlags.ParamType to match
 
     Returns:
         Predicate[ChunkParamBase[ValueT]]: The predicate function
     """
 
-    def _fn(v) -> TypeGuard[ChunkParamBase[ValueT]]:
+    if isinstance(t, ChunkFlags.ParamType):
+
+        def _fn_e(v) -> TypeGuard[ChunkParamBase]:
+            if not is_param(v):
+                return False
+            return t in v.evaluate_type()
+
+        return _fn_e
+
+    def _fn_t(v) -> TypeGuard[ChunkParamBase]:
         if not is_param(v):
             return False
         return t in ChunkFlags.ParamTypeToTypes(v.evaluate_type())
 
-    return _fn
+    return _fn_t
 
 
 def is_param_drivable(v: Any) -> bool:

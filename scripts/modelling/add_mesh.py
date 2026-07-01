@@ -1,5 +1,5 @@
 from pxr import Usd, UsdGeom, Sdf, UsdShade
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 import itertools
 import numpy as np
 import os
@@ -272,15 +272,9 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, c
 
 
 def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
-    groups = owner.get_my_params(chunk.is_group)
     selected = sender.value
 
-    ctx = owner.get_edit_context()
-
-    if ctx and (lreg := chunk.get_layer_manager()):
-        lreg.clear_layer(ctx.identifier)
-
-    for g in groups:
+    for g in owner.get_my_params(chunk.is_group):
         if g.name == selected:
             g.unset_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
         else:
@@ -345,6 +339,12 @@ def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
     api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
 
 
+def clear_layer(owner: chunk.ChunkCommon):
+    ctx = owner.get_edit_context()
+    if ctx and (lreg := chunk.get_layer_manager()):
+        lreg.clear_layer(ctx.identifier)
+
+
 def cube_changed(owner: chunk.Group, notice, sender):
     stage = owner.get_stage()
 
@@ -353,6 +353,9 @@ def cube_changed(owner: chunk.Group, notice, sender):
 
     if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
         return
+
+    clear_layer(owner)
+
     xseg = owner.get_param("dimx", chunk.is_param_t(int))
     yseg = owner.get_param("dimy", chunk.is_param_t(int))
     zseg = owner.get_param("dimz", chunk.is_param_t(int))
@@ -361,7 +364,12 @@ def cube_changed(owner: chunk.Group, notice, sender):
     height = owner.get_param("height", chunk.is_param_t(float))
     depth = owner.get_param("depth", chunk.is_param_t(float))
 
-    build_cube(stage, "/cube", xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
+    raw_path = "/cube"
+    if c := owner.get_chunk():
+        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
+
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        build_cube(stage, path, xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
 
 
 def tube_changed(owner: chunk.Group, notice, sender):
@@ -373,6 +381,8 @@ def tube_changed(owner: chunk.Group, notice, sender):
     if not stage:
         return
 
+    clear_layer(owner)
+
     rows = owner.get_param("rows", chunk.is_param_t(int))
     cols = owner.get_param("cols", chunk.is_param_t(int))
 
@@ -380,7 +390,12 @@ def tube_changed(owner: chunk.Group, notice, sender):
     height = owner.get_param("height1", chunk.is_param_t(float))
     caps = owner.get_param("caps", chunk.is_param_t(bool))
 
-    build_tube(owner.get_stage(), "/tube", rows.value, cols.value, radius.value, height.value, caps.value)
+    raw_path = "/tube"
+    if c := owner.get_chunk():
+        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
+
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        build_tube(stage, path, rows.value, cols.value, radius.value, height.value, caps.value)
 
 
 def grid_changed(owner: chunk.Group, notice, sender):
@@ -391,6 +406,8 @@ def grid_changed(owner: chunk.Group, notice, sender):
 
     if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
         return
+
+    clear_layer(owner)
 
     dimx = owner.get_param("dimx1", chunk.is_param_t(int))
     dimy = owner.get_param("dimy1", chunk.is_param_t(int))
@@ -403,14 +420,18 @@ def grid_changed(owner: chunk.Group, notice, sender):
     if topo.value == "tris":
         topo_val = Topo.TRIS
 
-    grid = build_plane(owner.get_stage(), "/plane", dimx.value, dimy.value, width.value, height.value, topo=topo_val)
-    if grid:
-        add_texture(grid.GetPrim())
+    raw_path = "/plane"
+    if c := owner.get_chunk():
+        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
+
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        grid = build_plane(stage, path, dimx.value, dimy.value, width.value, height.value, topo=topo_val)
+        if grid:
+            add_texture(grid.GetPrim())
 
 
 def main():
-    path = chunk.LineEdit("prim_path", "Prim Patm", default_value="/mesh")
-
+    path = chunk.LineEdit("prim_path", "Prim Path", default_value="/mesh")
     menu = chunk.Menu(
         "mesh_type", "Mesh Type", menu_items=["none", "cube", "sphere", "grid", "tube"], default_value="none"
     )
@@ -428,6 +449,7 @@ def main():
     )
     cube_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     cube_group.add_callback(cube_changed)
+    cube_group.add_callback(cube_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     tube_group = chunk.Group("tube", "Tube")
     tube_group.add_params(
@@ -441,6 +463,7 @@ def main():
     )
     tube_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     tube_group.add_callback(tube_changed)
+    tube_group.add_callback(tube_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     grid_group = chunk.Group("grid", "Grid")
     grid_group.add_params(
@@ -454,6 +477,7 @@ def main():
     )
     grid_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     grid_group.add_callback(grid_changed)
+    grid_group.add_callback(grid_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     chunk_api = chunk.Chunk("Add Mesh")
     chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
