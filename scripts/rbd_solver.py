@@ -402,7 +402,7 @@ def _build_heightfield(cprim, up_idx, resolution=64, min_cell=0.0):
     return {"nrow": N, "ncol": N, "size": size, "heights": heights, "pos": pos, "quat": quat}
 
 
-def _add_colliders(spec, collision_prims, up_idx, friction, contact_tc, dyn_radius, hfield_res):
+def _add_colliders(spec, collision_prims, up_idx, friction, contact_tc, dyn_radius, hfield_res, floor_drop=0.0):
     """Add static/kinematic collision bodies to *spec*.
 
     No collision prims → infinite ground plane. Otherwise each prim becomes a
@@ -418,6 +418,10 @@ def _add_colliders(spec, collision_prims, up_idx, friction, contact_tc, dyn_radi
         # Infinite ground plane, oriented to the scene's up axis.
         plane_body = spec.worldbody.add_body()
         plane_body.name = "ground"
+        if floor_drop:
+            ppos = [0.0, 0.0, 0.0]
+            ppos[up_idx] = -floor_drop
+            plane_body.pos = ppos
         if up_idx == 1:  # Y-up: rotate plane so its normal points +Y
             a = math.pi / 4  # half-angle of -90° rotation around X
             plane_body.quat = [math.cos(a), -math.sin(a), 0.0, 0.0]
@@ -443,7 +447,7 @@ def _add_colliders(spec, collision_prims, up_idx, friction, contact_tc, dyn_radi
         gp_body = spec.worldbody.add_body()
         gp_body.name = "catch_ground"
         gpos = [0.0, 0.0, 0.0]
-        gpos[up_idx] = ground_up
+        gpos[up_idx] = ground_up - floor_drop
         gp_body.pos = gpos
         if up_idx == 1:  # Y-up: orient plane normal to +Y
             a = math.pi / 4
@@ -651,7 +655,7 @@ def _sim_prim_gen_mj(
     # --- static / kinematic collision bodies ---
     dyn_radius = max(half_extents) + max(collision_margin, 0.0)
     mocap_col_names = _add_colliders(
-        spec, collision_prims, up_idx, friction, contact_tc, dyn_radius, hfield_res
+        spec, collision_prims, up_idx, friction, contact_tc, dyn_radius, hfield_res, floor_drop
     )
 
     # --- initial orientation (offset already applied above) ---
@@ -859,6 +863,7 @@ def simulate_mujoco(
     collision_margin=0.0,
     solver_iters=30,
     hfield_res=96,
+    floor_drop=0.0,
 ):
     """Run MuJoCo simulation."""
     if not _HAS_MUJOCO:
@@ -912,7 +917,7 @@ def simulate_mujoco_instancer(
     otx, oty, otz, orx, ory, orz,
     friction=0.5, restitution=0.1,
     lin_damping=0.0, ang_damping=0.05,
-    solver_iters=30, hfield_res=96,
+    solver_iters=30, hfield_res=96, floor_drop=0.0,
 ):
     """Run MuJoCo multi-body simulation for a UsdGeom.PointInstancer using MjSpec.
 
@@ -999,7 +1004,7 @@ def simulate_mujoco_instancer(
 
     # Same colliders as the single-prim path (bowl heightfield + backstop, etc.)
     mocap_col_names = _add_colliders(
-        spec, collision_prims, up_idx, friction, contact_tc, max_radius, hfield_res
+        spec, collision_prims, up_idx, friction, contact_tc, max_radius, hfield_res, floor_drop
     )
 
     dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
@@ -1163,6 +1168,36 @@ def _clear_chunk_bake(owner):
         lreg.clear_layer(layer.identifier)
 
 
+def _promote_bake_layer(layer):
+    """Make the bake layer the strongest chunk layer for its target prim.
+
+    Chunk layers are ordered so the earlier-added sibling wins. When the solver
+    animates a prim that another chunk authored (e.g. a PointInstancer created by
+    ScatterPoints), that source chunk's static values would otherwise override the
+    baked time samples. Move the bake layer — and its parent graph layer — to the
+    front of their containers so the simulation wins.
+    """
+    lreg = chunk.get_layer_manager()
+    if not lreg or not layer:
+        return
+    try:
+        root = lreg.get_root_layer()
+        for parent, sub in lreg.iter_chunk_layers():
+            if sub.identifier != layer.identifier:
+                continue
+            # Strongest sibling within its parent graph layer.
+            if sub.identifier in parent.subLayerPaths and parent.subLayerPaths[0] != sub.identifier:
+                parent.subLayerPaths.remove(sub.identifier)
+                parent.subLayerPaths.insert(0, sub.identifier)
+            # Strongest graph layer under the chunks root.
+            if parent.identifier in root.subLayerPaths and root.subLayerPaths[0] != parent.identifier:
+                root.subLayerPaths.remove(parent.identifier)
+                root.subLayerPaths.insert(0, parent.identifier)
+            break
+    except Exception as e:
+        print(f"[MuJoCoSolver] Could not promote bake layer: {e}")
+
+
 def reset(owner, notice, sender):
     _clear_chunk_bake(owner)
     print("[MuJoCoSolver] Reset — bake cleared.")
@@ -1240,6 +1275,7 @@ def execute(owner, notice, sender):
     orz = float(_chunk.get_param("off_rz").value or 0)
     init_vel = _parse_vec3(_chunk.get_param("initial_velocity").value)
     ang_vel = _parse_vec3(_chunk.get_param("angular_velocity").value)
+    floor_drop = float(_chunk.get_param("floor_drop").value or 0.0)
 
     layer = owner.get_edit_context()
     if not layer:
@@ -1257,6 +1293,7 @@ def execute(owner, notice, sender):
             lin_damping=lin_damping, ang_damping=ang_damping,
             solver_iters=30,
             hfield_res=int(_chunk.get_param("hfield_res").value or 96),
+            floor_drop=floor_drop,
         )
     else:
         xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
@@ -1299,7 +1336,12 @@ def execute(owner, notice, sender):
             collision_margin=float(_chunk.get_param("collision_margin").value or 0.0),
             solver_iters=30,
             hfield_res=int(_chunk.get_param("hfield_res").value or 96),
+            floor_drop=floor_drop,
         )
+
+    # Ensure the baked animation overrides any chunk (e.g. ScatterPoints) that authored
+    # the target prim, otherwise its static values win and playback shows nothing.
+    _promote_bake_layer(layer)
 
     try:
         from scripts.node_graph.graph_host import GraphHost
@@ -1341,6 +1383,13 @@ def main():
     )
     clear_col_btn.add_callback(clear_collision)
     col_grp.add_param(clear_col_btn)
+    col_grp.add_param(
+        chunk.Spinbox(
+            "floor_drop", "Floor Drop", default_value=0.0,
+            tooltip="Lower the catch-all ground plane by this much below the collider's "
+            "lowest point, so bodies that roll off the rim keep falling further.",
+        )
+    )
     chunk_api.add_param(col_grp)
 
     sim_grp = chunk.Group("Simulation", flags=_GF)
