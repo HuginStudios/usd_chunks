@@ -2,6 +2,13 @@ import pytest
 from usd_chunks.chunk_registry import ChunkLayerManager
 
 
+@pytest.fixture(scope="session")
+def qapp():
+    """Session-wide QApplication required by any test that creates Qt widgets."""
+    from PySide6 import QtWidgets
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
 @pytest.fixture(autouse=True)
 def reset_chunk_layer_manager():
     """Reset ChunkLayerManager singleton between tests for isolation.

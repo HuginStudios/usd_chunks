@@ -43,7 +43,7 @@ def execute(node):
     material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
 
     primpath_param = node.get_param("primpath_location")
-    if primpath_param.value:
+    if primpath_param.value and primpath_param.value != "/":
         for path_str in primpath_param.resolve_paths():
             with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
                 prim = stage.GetPrimAtPath(target_path)
@@ -85,7 +85,7 @@ def main():
         min_value=0.0, max_value=1.0,
         default_value=1.0,
     )
-    ior = chunk.Spinbox(
+    ior = chunk.Slider(
         "ior", "IOR",
         min_value=1.0, max_value=3.0,
         default_value=1.5,

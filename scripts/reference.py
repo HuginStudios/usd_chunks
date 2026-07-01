@@ -53,10 +53,11 @@ def execute(node):
         else:
             ref = Sdf.Reference(reference_path)
 
+    prim_type = node.get_param("prim_type").value or "Xform"
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
-            prim = stage.DefinePrim(target_path, "Xform")
+            prim = stage.DefinePrim(target_path, prim_type)
         prim.GetReferences().AddReference(ref)
 
 
@@ -73,6 +74,9 @@ def main():
     # prim location
     primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     referenceChunk.add_param(primpath)
+
+    prim_type = chunk.LineEdit("prim_type", "Prim Type", default_value="Xform", flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    referenceChunk.add_param(prim_type)
 
     return referenceChunk
 

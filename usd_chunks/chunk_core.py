@@ -1319,6 +1319,9 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         if self.is_blocked() and attrname != "state":
             return
 
+        if chunk_notice._loading_stage:
+            return
+
         if sender := self._attr_senders.get(attrname):
             sender.old_value = old_value
             sender.execute()
@@ -2255,7 +2258,10 @@ class ChunkCommon(AttributesBase):
 
         if inspect.isclass(attr.type) and issubclass(attr.type, Enum):
             if val is not None and not isinstance(val, attr.type):
-                return attr.type(val)
+                try:
+                    return attr.type(val)
+                except TypeError:
+                    return val
 
         return super().convert_attr(attr, val)
 

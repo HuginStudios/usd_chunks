@@ -27,6 +27,7 @@ from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChu
 _PORT_RADIUS = 5
 _NODE_WIDTH = 220
 _NODE_HEADER_H = 40
+_DOT_R = 10  # dot node circle radius
 
 
 _COL_NODE_BG = QtGui.QColor("#3a3a3a")
@@ -181,7 +182,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
-        self._is_view = prim.GetAttribute("info:chunkType").Get() == "view"
+        _chunk_type = prim.GetAttribute("info:chunkType").Get()
+        self._is_view = _chunk_type == "view"
+        self._is_dot = _chunk_type == "dot"
         self._drag_active = False
         self._drag_start = QtCore.QPointF()
         self._proxy: Optional[QtWidgets.QGraphicsProxyWidget] = None
@@ -207,6 +210,21 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     # Build
 
     def _build_ports(self, prim: Usd.Prim):
+        if self._is_dot:
+            self._exec_in_port = ChunkPortItem(
+                f"{prim.GetPath()}.inputs:chunk", _PORT_EXEC, parent=self
+            )
+            self._exec_in_port.setPos(0, _DOT_R)
+            self._ports.append(self._exec_in_port)
+            self._exec_out_port = ChunkPortItem(
+                f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
+            )
+            self._exec_out_port.setPos(_DOT_R * 2, _DOT_R)
+            self._ports.append(self._exec_out_port)
+            self._height = _DOT_R * 2
+            self._full_height = _DOT_R * 2
+            return
+
         # Exec ports only — lightweight, no widget creation.
         # Proxy (ChunkWidget) is created later via create_proxy() to allow batched deferred loading.
         self._exec_in_port = ChunkPortItem(
@@ -226,6 +244,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def create_proxy(self):
         """Create the embedded ChunkWidget proxy. Called in deferred batches after scene build."""
+        if self._is_dot:
+            return
         # Create as a child of the sink so the show() called during init (via
         # update_from_state → set_hidden(False)) doesn't flash a native OS window.
         chunk_widget = ChunkWidget(self.chunk, parent=_get_proxy_sink())
@@ -404,6 +424,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     # QGraphicsItem interface
 
     def boundingRect(self) -> QtCore.QRectF:
+        if self._is_dot:
+            pad = _PORT_RADIUS
+            return QtCore.QRectF(-pad, -pad, _DOT_R * 2 + pad * 2, _DOT_R * 2 + pad * 2)
         return QtCore.QRectF(
             -_PORT_RADIUS, 0,
             _NODE_WIDTH + _PORT_RADIUS * 2,
@@ -411,6 +434,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         )
 
     def paint(self, painter: QtGui.QPainter, option, widget=None):
+        if self._is_dot:
+            color = _COL_NODE_SELECTED if self._selected else _COL_PORT_EXEC
+            painter.setBrush(color)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawEllipse(QtCore.QPointF(_DOT_R, _DOT_R), _DOT_R, _DOT_R)
+            if self._selected:
+                painter.setBrush(QtCore.Qt.NoBrush)
+                painter.setPen(QtGui.QPen(_COL_NODE_SELECTED, 1.5))
+                painter.drawEllipse(QtCore.QPointF(_DOT_R, _DOT_R), _DOT_R + 3, _DOT_R + 3)
+            return
+
         bg_color = _COL_LOCKED_BG if self._locked else _COL_NODE_BG
         body = QtCore.QRectF(0, 0, _NODE_WIDTH, self._height)
         border_color = _COL_NODE_SELECTED if self._selected else _COL_NODE_BORDER
@@ -478,6 +512,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             )
 
     def mouseDoubleClickEvent(self, event):
+        if self._is_dot:
+            event.accept()
+            return
         if event.pos().y() <= _NODE_HEADER_H:
             if self._is_view:
                 slot = self.prim.GetAttribute("view:slot").Get()
@@ -816,7 +853,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         QtCore.QTimer.singleShot(0, lambda: (self.removeItem(node), self._build_edges()))
 
     def _on_objects_changed(self, notice, sender):
-        if not self._stage:
+        if not self._stage or not sender:
             return
         if sender.GetRootLayer().identifier != self._stage.GetRootLayer().identifier:
             return
