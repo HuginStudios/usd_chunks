@@ -24,6 +24,11 @@ class _FocusGuardWindow(QtWidgets.QWidget):
     """Floating window that disables usdview's AppEventFilter while active."""
     def __init__(self):
         super().__init__(None, QtCore.Qt.Window)
+        # Auxiliary tool window: must not keep the application alive. Without this,
+        # closing usdview's main window while the node graph is open leaves this
+        # top-level window registered, so Qt's quitOnLastWindowClosed never fires
+        # and the process hangs after the window disappears.
+        self.setAttribute(QtCore.Qt.WA_QuitOnClose, False)
         self._filter = None
         self._graph_widget = None
 
