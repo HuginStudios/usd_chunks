@@ -518,9 +518,15 @@ def _add_colliders(spec, collision_prims, up_idx, friction, contact_tc, dyn_radi
         cr = fb.ComputeWorldBound(cp).ComputeAlignedRange()
         if not cr.IsEmpty():
             csz = cr.GetMax() - cr.GetMin()
+            half = [csz[0] / 2, csz[1] / 2, csz[2] / 2]
+            # A flat collider (grid/plane) has a zero extent on one axis, which MuJoCo
+            # rejects ("size N must be positive in geom"). Give any degenerate axis a
+            # small thickness so it becomes a thin slab the bodies can rest on.
+            min_half = max(1e-3, 1e-3 * max(half))
+            half = [max(h, min_half) for h in half]
             bg = col_body.add_geom()
             bg.type = _mj.mjtGeom.mjGEOM_BOX
-            bg.size = [csz[0] / 2, csz[1] / 2, csz[2] / 2]
+            bg.size = half
             bg.friction = [friction, 0.005, 0.0001]
             bg.solref = [contact_tc, 1.0]
             bg.condim = 3
