@@ -558,6 +558,7 @@ def _sim_prim_gen_mj(
     ang_damping=0.05,
     hull_max_verts=0,
     hfield_res=96,
+    floor_drop=0.0,
 ):
     """MuJoCo rigid body simulation — yields frame index, returns all_mats.
 
@@ -899,6 +900,7 @@ def simulate_mujoco(
         lin_damping,
         ang_damping,
         hfield_res=hfield_res,
+        floor_drop=floor_drop,
     )
 
     # Exhaust the generator to get all_mats
