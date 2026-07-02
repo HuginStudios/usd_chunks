@@ -4364,37 +4364,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.NONE
 
-    # ── Optional DCC capabilities (override in concrete subclasses) ────────────
-    # These have noop/None defaults so hosts that don't support them still work.
-
-    def set_selection(self, prim: Any) -> None:
-        """Set the host selection to a single prim."""
-
-    def get_viewport_screenshot(self) -> Any:
-        """Return a QPixmap of the current viewport, or None."""
-        return None
-
-    def frame_prim(self, prim: Any, on_ready=None) -> None:
-        """Frame prim in the viewport; call on_ready(pixmap) when ready."""
-        if on_ready:
-            on_ready(None)
-
-    def update_viewport(self) -> None:
-        """Force a viewport redraw."""
-
-    def set_camera_prim(self, prim: Any) -> None:
-        """Set the active camera to the given prim."""
-
+    # Optional DCC capability with a no-op default so hosts that don't support
+    # it still work; usdview overrides it (used by the RBD solver after baking).
     def refresh_timeline(self, start: float, end: float) -> None:
         """Update the host timeline range."""
-
-    def subscribe_selection_changed(self, callback) -> Any:
-        """Subscribe to selection changes. Returns an unsubscribe callable, or None."""
-        return None
-
-    def subscribe_frame_changed(self, callback) -> Any:
-        """Subscribe to frame/time changes. Returns an unsubscribe callable, or None."""
-        return None
 
 
 def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:

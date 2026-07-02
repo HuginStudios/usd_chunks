@@ -11,7 +11,7 @@ from pxr.Usdviewq.qt import QtCore
 from usd_chunks import chunk_registry, chunk_core, chunk_serial
 from plugins import chunk_qt, chunk_usd
 
-from typing import Any, Callable, List, Optional
+from typing import List
 
 
 class UsdviewScene(chunk_core.SceneSender):
@@ -119,75 +119,6 @@ class UsdviewScene(chunk_core.SceneSender):
         except Exception:
             return None
 
-    def set_selection(self, prim: Any) -> None:
-        ctrl = self._get_ctrl()
-        if ctrl and prim:
-            try:
-                ctrl._dataModel.selection.setPrim(prim)
-            except Exception:
-                pass
-
-    def get_viewport_screenshot(self) -> Any:
-        ctrl = self._get_ctrl()
-        if not ctrl:
-            return None
-        try:
-            sv = ctrl._stageView
-            try:
-                return sv.grabFramebuffer()
-            except Exception:
-                return sv.grab()
-        except Exception:
-            return None
-
-    def frame_prim(self, prim: Any, on_ready: Optional[Callable] = None) -> None:
-        from PySide6.QtCore import QTimer
-        ctrl = self._get_ctrl()
-        if not ctrl or not prim:
-            if on_ready:
-                on_ready(None)
-            return
-        try:
-            sv = ctrl._stageView
-            old_state = sv.copyViewState()
-            ctrl._dataModel.selection.setPrim(prim)
-            ctrl._frameSelection()
-
-            def _do_grab() -> None:
-                px = None
-                try:
-                    px = sv.grab()
-                except Exception:
-                    pass
-                try:
-                    sv.restoreViewState(old_state)
-                    sv.updateView()
-                except Exception:
-                    pass
-                if on_ready:
-                    on_ready(px)
-
-            QTimer.singleShot(250, _do_grab)
-        except Exception:
-            if on_ready:
-                on_ready(None)
-
-    def update_viewport(self) -> None:
-        ctrl = self._get_ctrl()
-        if ctrl:
-            try:
-                ctrl._stageView.updateView(resetCam=False, forceComputeBBox=True)
-            except Exception:
-                pass
-
-    def set_camera_prim(self, prim: Any) -> None:
-        ctrl = self._get_ctrl()
-        if ctrl and prim:
-            try:
-                ctrl._dataModel.viewSettings.cameraPrim = prim
-            except Exception:
-                pass
-
     def refresh_timeline(self, start: float, end: float) -> None:
         ctrl = self._get_ctrl()
         if ctrl:
@@ -197,32 +128,6 @@ class UsdviewScene(chunk_core.SceneSender):
                 ctrl._UpdateTimeSamples()
             except Exception:
                 pass
-
-    def subscribe_selection_changed(self, callback: Callable) -> Optional[Callable]:
-        try:
-            model = self.usdviewAPI.dataModel
-
-            def _on_sel_changed(*args):
-                callback()
-
-            model.selection.signalPrimSelectionChanged.connect(_on_sel_changed)
-            return lambda: model.selection.signalPrimSelectionChanged.disconnect(
-                _on_sel_changed
-            )
-        except Exception:
-            return None
-
-    def subscribe_frame_changed(self, callback: Callable) -> Optional[Callable]:
-        try:
-            model = self.usdviewAPI.dataModel
-
-            def _on_frame(*args):
-                callback()
-
-            model.signalCurrentFrameChanged.connect(_on_frame)
-            return lambda: model.signalCurrentFrameChanged.disconnect(_on_frame)
-        except Exception:
-            return None
 
     def _get_free_camera(self):
         app = self.usdviewAPI._UsdviewApi__appController
