@@ -1262,7 +1262,7 @@ def clear_collision(owner, notice, sender):
     print("[MuJoCoSolver] Cleared collision prims")
 
 
-def execute(owner, notice, sender):
+def _run(owner, notice, sender):
     if not _HAS_MUJOCO:
         print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
         return
@@ -1504,7 +1504,7 @@ def main():
     chunk_api.add_param(vel_grp)
 
     run_btn = chunk.Button("run_sim", "Run Simulation")
-    run_btn.add_callback(execute)
+    run_btn.add_callback(_run)
     chunk_api.add_param(run_btn)
 
     reset_btn = chunk.Button("reset_sim", "Reset")

@@ -391,10 +391,10 @@ def _auto_scatter(owner, notice, sender):
         return
     toggle = chunk_obj.get_param("auto_scatter")
     if toggle and toggle.value:
-        execute(owner, notice, sender)
+        _run(owner, notice, sender)
 
 
-def execute(owner, notice, sender):
+def _run(owner, notice, sender):
     """Scatter prototype instances onto/into the surface — Scatter button."""
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
@@ -677,7 +677,7 @@ def main():
     )
 
     scatter_btn = chunk.Button("scatter", "Scatter", tooltip="Place the instances now.")
-    scatter_btn.add_callback(execute)
+    scatter_btn.add_callback(_run)
     chunk_api.add_param(scatter_btn)
 
     # Re-run on change while Auto Scatter is on. Wire every tuning param (and the

@@ -7,7 +7,7 @@ from pxr import Gf, UsdGeom, Vt
 from usd_chunks import chunk
 
 
-def execute(owner, notice, sender):
+def _run(owner, notice, sender):
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage:
@@ -44,7 +44,7 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
     chunk_api.add_param(prim_path)
-    prim_path.add_callback(execute)
+    prim_path.add_callback(_run)
 
     color_grp = chunk.Group("Color")
     color_grp.add_param(chunk.Spinbox("color_r", "R", default_value=0.5))
@@ -53,7 +53,7 @@ def main():
     chunk_api.add_param(color_grp)
 
     for name in ("color_r", "color_g", "color_b"):
-        chunk_api.get_param(name).add_callback(execute)
+        chunk_api.get_param(name).add_callback(_run)
 
     return chunk_api
 

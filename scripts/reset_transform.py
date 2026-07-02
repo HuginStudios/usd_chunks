@@ -2,7 +2,7 @@ from pxr import UsdGeom
 from usd_chunks import chunk
 
 
-def execute(owner, notice, sender):
+def _run(owner, notice, sender):
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage:
@@ -35,7 +35,7 @@ def main():
 
     run_btn = chunk.Button("run", "Reset Transform")
     chunk_api.add_param(run_btn)
-    run_btn.add_callback(execute)
+    run_btn.add_callback(_run)
 
     return chunk_api
 

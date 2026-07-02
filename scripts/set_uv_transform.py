@@ -7,7 +7,7 @@ from pxr import Gf, Sdf, UsdShade
 from usd_chunks import chunk
 
 
-def execute(owner, notice, sender):
+def _run(owner, notice, sender):
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage:
@@ -77,7 +77,7 @@ def main():
     chunk_api.add_param(chunk.Spinbox("rotation", "Rotation (degrees)", default_value=0.0))
 
     for name in ("shader_path", "scale_s", "scale_t", "offset_s", "offset_t", "rotation"):
-        chunk_api.get_param(name).add_callback(execute)
+        chunk_api.get_param(name).add_callback(_run)
 
     return chunk_api
 
