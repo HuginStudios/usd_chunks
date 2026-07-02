@@ -239,6 +239,12 @@ class MaterialGridWidget(chunk_core.ChunkParamWidgetBase, QtWidgets.QWidget):
     def set_label(self, _t):
         pass
 
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
+
     # Public
     def fetch_catalog_async(self, cache_dir: str):
         def _work():
