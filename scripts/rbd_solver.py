@@ -1344,8 +1344,10 @@ def execute(owner, notice, sender):
     _promote_bake_layer(layer)
 
     try:
-        from scripts.node_graph.graph_host import GraphHost
-        GraphHost.current().refresh_timeline(start_frame, start_frame + frame_count - 1)
+        from usd_chunks import chunk_registry
+        scene = chunk_registry.ChunkRegistry().scene
+        if scene:
+            scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
     except Exception:
         pass
 
