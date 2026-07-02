@@ -50,6 +50,7 @@ def export(owner, notice, sender):
         print(f"[ExportUSD] Session layer exported to {output_path}")
     else:
         from pxr import Sdf
+
         layer = Sdf.Layer.Find(selection)
         if layer:
             layer.Export(output_path)

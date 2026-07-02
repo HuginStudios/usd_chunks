@@ -164,6 +164,7 @@ def _map_bounce(bounce_value: float) -> str:
 def _map_damping(lin_damping: float, ang_damping: float) -> tuple[str, str]:
     return f"{lin_damping}", f"{ang_damping}"
 
+
 def _debug_show_collision_geoms(stage, model, data):
     """Create debug collision geoms. Uses xformOp:transform for animation."""
     session = stage.GetSessionLayer()
@@ -187,13 +188,13 @@ def _debug_show_collision_geoms(stage, model, data):
                     continue
                 face_start = model.mesh_faceadr[mesh_id]
                 face_count = model.mesh_facenum[mesh_id]
-                faces = model.mesh_face[face_start:face_start + face_count]
+                faces = model.mesh_face[face_start : face_start + face_count]
 
                 max_vi = 0
                 for f in faces:
                     max_vi = max(max_vi, int(f[0]), int(f[1]), int(f[2]))
                 vert_start = model.mesh_vertadr[mesh_id]
-                hull_verts = model.mesh_vert[vert_start:vert_start + max_vi + 1]
+                hull_verts = model.mesh_vert[vert_start : vert_start + max_vi + 1]
 
                 # Just write vertices in world space (no xformOp needed)
                 # geom_xpos + geom_xmat gives us the full world transform of this geom
@@ -275,12 +276,12 @@ def _debug_update_frame(stage, model, data, frame, start_frame):
                     continue
                 face_start = model.mesh_faceadr[mesh_id]
                 face_count = model.mesh_facenum[mesh_id]
-                faces = model.mesh_face[face_start:face_start + face_count]
+                faces = model.mesh_face[face_start : face_start + face_count]
                 max_vi = 0
                 for f in faces:
                     max_vi = max(max_vi, int(f[0]), int(f[1]), int(f[2]))
                 vert_start = model.mesh_vertadr[mesh_id]
-                hull_verts = model.mesh_vert[vert_start:vert_start + max_vi + 1]
+                hull_verts = model.mesh_vert[vert_start : vert_start + max_vi + 1]
 
                 points = Vt.Vec3fArray(len(hull_verts))
                 for vi, v in enumerate(hull_verts):
@@ -464,10 +465,7 @@ def _add_colliders(spec, collision_prims, up_idx, friction, contact_tc, dyn_radi
         world_xf = xfc.GetLocalToWorldTransform(cp)
         col_t = world_xf.ExtractTranslation()
 
-        is_anim = any(
-            op.GetNumTimeSamples() > 1
-            for op in UsdGeom.Xformable(cp).GetOrderedXformOps()
-        )
+        is_anim = any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(cp).GetOrderedXformOps())
 
         # Concave collision via heightfield (static, non-X-up prims only).
         # MuJoCo collides mesh geoms as their convex hull, so a bowl would be
@@ -748,10 +746,7 @@ def _sim_prim_gen_mj(
         mid = int(model.body_mocapid[mbid])
         mocap_ids.append((mid, cprim))
 
-    print(
-        f"[RBDSolver/MuJoCo] Compiled — {model.nbody} bodies, "
-        f"{model.ngeom} geoms, shape={shape_type}"
-    )
+    print(f"[RBDSolver/MuJoCo] Compiled — {model.nbody} bodies, {model.ngeom} geoms, shape={shape_type}")
 
     # Initialize forward kinematics so xpos/xquat are valid on frame 0
     _mj.mj_forward(model, data)
@@ -776,9 +771,7 @@ def _sim_prim_gen_mj(
         qmj = data.xquat[bid]  # [w, x, y, z] — same convention as USD, no reordering needed
 
         world_mat = Gf.Matrix4d()
-        world_mat.SetRotate(
-            Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3]))
-        )
+        world_mat.SetRotate(Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3])))
         # Body origin coincides with the prim origin, so xpos maps directly to
         # the prim transform — the geometry offset is baked into the geom/hull.
         world_mat.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
@@ -793,9 +786,7 @@ def _sim_prim_gen_mj(
     return all_mats
 
 
-def _write_prim_results(
-    stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz=None
-):
+def _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz=None):
     """Write single-prim simulation results to USD (main-thread only)."""
     if scale_xyz and any(abs(s - 1.0) > 1e-6 for s in scale_xyz):
         sx, sy, sz = scale_xyz
@@ -814,15 +805,11 @@ def _write_prim_results(
     with Usd.EditContext(stage, layer):
         order_attr = prim.GetAttribute("xformOpOrder")
         if not order_attr:
-            order_attr = prim.CreateAttribute(
-                "xformOpOrder", Sdf.ValueTypeNames.TokenArray
-            )
+            order_attr = prim.CreateAttribute("xformOpOrder", Sdf.ValueTypeNames.TokenArray)
         order_attr.Set(["xformOp:transform"])
         xf_attr = prim.GetAttribute("xformOp:transform")
         if not xf_attr:
-            xf_attr = prim.CreateAttribute(
-                "xformOp:transform", Sdf.ValueTypeNames.Matrix4d
-            )
+            xf_attr = prim.CreateAttribute("xformOp:transform", Sdf.ValueTypeNames.Matrix4d)
         xf_attr.Set(_local(all_mats[0]))
         for frame_idx, mat in enumerate(all_mats):
             xf_attr.Set(_local(mat), Usd.TimeCode(start_frame + frame_idx))
@@ -884,11 +871,33 @@ def simulate_mujoco(
 
     # Run the working MuJoCo simulation generator
     gen = _sim_prim_gen_mj(
-        stage, prim, collision_prims, frame_count, gravity,
-        friction, restitution, mass, substeps, init_vel, ang_vel,
-        start_frame, dt, otx, oty, otz, orx, ory, orz,
-        up_idx, shape_type, collision_margin, solver_iters,
-        translate, rot, lin_damping, ang_damping,
+        stage,
+        prim,
+        collision_prims,
+        frame_count,
+        gravity,
+        friction,
+        restitution,
+        mass,
+        substeps,
+        init_vel,
+        ang_vel,
+        start_frame,
+        dt,
+        otx,
+        oty,
+        otz,
+        orx,
+        ory,
+        orz,
+        up_idx,
+        shape_type,
+        collision_margin,
+        solver_iters,
+        translate,
+        rot,
+        lin_damping,
+        ang_damping,
         hfield_res=hfield_res,
     )
 
@@ -911,13 +920,31 @@ def simulate_mujoco(
 
 
 def simulate_mujoco_instancer(
-    stage, prim, layer, collision_prims,
-    frame_count, fps, gravity, mass, substeps,
-    init_vel, ang_vel, start_frame,
-    otx, oty, otz, orx, ory, orz,
-    friction=0.5, restitution=0.1,
-    lin_damping=0.0, ang_damping=0.05,
-    solver_iters=30, hfield_res=96, floor_drop=0.0,
+    stage,
+    prim,
+    layer,
+    collision_prims,
+    frame_count,
+    fps,
+    gravity,
+    mass,
+    substeps,
+    init_vel,
+    ang_vel,
+    start_frame,
+    otx,
+    oty,
+    otz,
+    orx,
+    ory,
+    orz,
+    friction=0.5,
+    restitution=0.1,
+    lin_damping=0.0,
+    ang_damping=0.05,
+    solver_iters=30,
+    hfield_res=96,
+    floor_drop=0.0,
 ):
     """Run MuJoCo multi-body simulation for a UsdGeom.PointInstancer using MjSpec.
 
@@ -976,11 +1003,14 @@ def simulate_mujoco_instancer(
 
     def _instance_radius(idx):
         sx, sy, sz = _instance_scale(idx)
-        return max(
-            float(proto_ext[0]) * sx,
-            float(proto_ext[1]) * sy,
-            float(proto_ext[2]) * sz,
-        ) / 2.0
+        return (
+            max(
+                float(proto_ext[0]) * sx,
+                float(proto_ext[1]) * sy,
+                float(proto_ext[2]) * sz,
+            )
+            / 2.0
+        )
 
     # Representative radius (largest instance) for the heightfield cell-size cap.
     max_radius = max([0.5] + [_instance_radius(i) for i in range(num_instances)])
@@ -1069,12 +1099,12 @@ def simulate_mujoco_instancer(
         bid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, f"b{i}")
         bids.append(bid)
         dof0 = int(model.jnt_dofadr[int(model.body_jntadr[bid])])
-        model.dof_damping[dof0: dof0 + 3] = lin_damping
-        model.dof_damping[dof0 + 3: dof0 + 6] = ang_damping
+        model.dof_damping[dof0 : dof0 + 3] = lin_damping
+        model.dof_damping[dof0 + 3 : dof0 + 6] = ang_damping
         if init_vel:
-            data.qvel[dof0: dof0 + 3] = init_vel[:3]
+            data.qvel[dof0 : dof0 + 3] = init_vel[:3]
         if ang_vel:
-            data.qvel[dof0 + 3: dof0 + 6] = ang_vel[:3]
+            data.qvel[dof0 + 3 : dof0 + 6] = ang_vel[:3]
 
     # Resolve mocap collider ids for per-frame kinematic updates
     mocap_ids = []
@@ -1216,9 +1246,7 @@ def add_collision(owner, notice, sender):
     if not selected:
         print("[MuJoCoSolver] No prim selected in viewport")
         return
-    existing = [
-        p.strip() for p in (param.value or "").replace(",", "\n").split("\n") if p.strip()
-    ]
+    existing = [p.strip() for p in (param.value or "").replace(",", "\n").split("\n") if p.strip()]
     added = 0
     for prim in selected:
         path = str(prim.GetPath())
@@ -1252,9 +1280,7 @@ def execute(owner, notice, sender):
     if not prim.IsValid() or prim.GetPath() == Sdf.Path("/"):
         return
 
-    collision_prims = _parse_collision_prims(
-        _chunk.get_param("collision_path").value, stage
-    )
+    collision_prims = _parse_collision_prims(_chunk.get_param("collision_path").value, stage)
 
     frame_count = int(_chunk.get_param("frame_count").value or 120)
     fps = float(_chunk.get_param("fps").value or 24)
@@ -1285,12 +1311,28 @@ def execute(owner, notice, sender):
 
     if UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
         simulate_mujoco_instancer(
-            stage, prim, layer, collision_prims,
-            frame_count, fps, gravity, mass, substeps,
-            init_vel, ang_vel, start_frame,
-            otx, oty, otz, orx, ory, orz,
-            friction=friction, restitution=restitution,
-            lin_damping=lin_damping, ang_damping=ang_damping,
+            stage,
+            prim,
+            layer,
+            collision_prims,
+            frame_count,
+            fps,
+            gravity,
+            mass,
+            substeps,
+            init_vel,
+            ang_vel,
+            start_frame,
+            otx,
+            oty,
+            otz,
+            orx,
+            ory,
+            orz,
+            friction=friction,
+            restitution=restitution,
+            lin_damping=lin_damping,
+            ang_damping=ang_damping,
             solver_iters=30,
             hfield_res=int(_chunk.get_param("hfield_res").value or 96),
             floor_drop=floor_drop,
@@ -1325,12 +1367,31 @@ def execute(owner, notice, sender):
         )
 
         simulate_mujoco(
-            stage, prim, layer, frame_count, fps, gravity, mass, substeps,
-            init_vel, ang_vel, start_frame, parent_world_inv, half_extents, z_offset,
-            otx, oty, otz, orx, ory, orz,
+            stage,
+            prim,
+            layer,
+            frame_count,
+            fps,
+            gravity,
+            mass,
+            substeps,
+            init_vel,
+            ang_vel,
+            start_frame,
+            parent_world_inv,
+            half_extents,
+            z_offset,
+            otx,
+            oty,
+            otz,
+            orx,
+            ory,
+            orz,
             collision_prims=collision_prims,
-            friction=friction, restitution=restitution,
-            lin_damping=lin_damping, ang_damping=ang_damping,
+            friction=friction,
+            restitution=restitution,
+            lin_damping=lin_damping,
+            ang_damping=ang_damping,
             scale_xyz=scale_xyz,
             shape_type=shape_type,
             collision_margin=float(_chunk.get_param("collision_margin").value or 0.0),
@@ -1345,6 +1406,7 @@ def execute(owner, notice, sender):
 
     try:
         from usd_chunks import chunk_registry
+
         scene = chunk_registry.ChunkRegistry().scene
         if scene:
             scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
@@ -1356,12 +1418,17 @@ def main():
     chunk_api = chunk.Chunk("RBD Solver")
 
     prim_path = chunk.LineEdit(
-        "prim_path", "Target Prim",
+        "prim_path",
+        "Target Prim",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
     chunk_api.add_param(prim_path)
 
-    _GF = chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED | chunk.ChunkFlags.GroupFlags.FRAMED
+    _GF = (
+        chunk.ChunkFlags.GroupFlags.COLLAPSABLE
+        | chunk.ChunkFlags.GroupFlags.LABELED
+        | chunk.ChunkFlags.GroupFlags.FRAMED
+    )
 
     col_grp = chunk.Group("Collision", flags=_GF)
     col_grp.add_param(
@@ -1374,20 +1441,25 @@ def main():
         )
     )
     add_col_btn = chunk.Button(
-        "add_collision", "Add Selected",
+        "add_collision",
+        "Add Selected",
         tooltip="Append the prim(s) selected in the usdview hierarchy to the list.",
     )
     add_col_btn.add_callback(add_collision)
     col_grp.add_param(add_col_btn)
 
     clear_col_btn = chunk.Button(
-        "clear_collision", "Clear", tooltip="Remove all collider prims.",
+        "clear_collision",
+        "Clear",
+        tooltip="Remove all collider prims.",
     )
     clear_col_btn.add_callback(clear_collision)
     col_grp.add_param(clear_col_btn)
     col_grp.add_param(
         chunk.Spinbox(
-            "floor_drop", "Floor Drop", default_value=0.0,
+            "floor_drop",
+            "Floor Drop",
+            default_value=0.0,
             tooltip="Lower the catch-all ground plane by this much below the collider's "
             "lowest point, so bodies that roll off the rim keep falling further.",
         )
@@ -1405,7 +1477,9 @@ def main():
     physics_grp = chunk.Group("Physics", flags=_GF)
     # Sphere is the most stable shape against the heightfield collider; Convex
     # Hull is more accurate on flat ground but can be unstable on heightfields.
-    physics_grp.add_param(chunk.Menu("shape_type", "Collision Shape", menu_items=["Sphere", "Box", "Convex Hull"], default_value="Sphere"))
+    physics_grp.add_param(
+        chunk.Menu("shape_type", "Collision Shape", menu_items=["Sphere", "Box", "Convex Hull"], default_value="Sphere")
+    )
     physics_grp.add_param(chunk.Spinbox("collision_margin", "Collision Margin", default_value=0.0))
     physics_grp.add_param(chunk.Spinbox("hfield_res", "Collider Resolution", default_value=64, is_int=True))
     physics_grp.add_param(chunk.Spinbox("friction", "Friction", default_value=0.5))

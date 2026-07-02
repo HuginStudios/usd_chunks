@@ -468,9 +468,11 @@ def execute(owner, notice, sender):
             n = int(math.sqrt(max_count))
             off = (n - 1) * sp / 2
             positions = [
-                Gf.Vec3f(x * sp - off + rng.uniform(-sp * 0.3, sp * 0.3),
-                         y * sp - off + rng.uniform(-sp * 0.3, sp * 0.3), 0)
-                for x in range(n) for y in range(n)
+                Gf.Vec3f(
+                    x * sp - off + rng.uniform(-sp * 0.3, sp * 0.3), y * sp - off + rng.uniform(-sp * 0.3, sp * 0.3), 0
+                )
+                for x in range(n)
+                for y in range(n)
             ]
             normals = [Gf.Vec3f(0, 0, 1)] * len(positions)
 
@@ -521,91 +523,158 @@ def main():
     chunk_api = chunk.Chunk("Scatter Points")
 
     # --- Target ---
-    chunk_api.add_param(chunk.LineEdit(
-        "surface_prim", "Surface Mesh",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-        tooltip="Mesh to scatter onto (Surface) or fill (Volume).",
-    ))
-    chunk_api.add_param(chunk.LineEdit(
-        "proto_prim", "Prototype Prim",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-        tooltip="Prim instanced at each scatter point. Empty = a default cube.",
-    ))
-    chunk_api.add_param(chunk.LineEdit(
-        "inst_path", "Instancer Path", default_value="/ScatterInstancer",
-        tooltip="USD path where the PointInstancer is created. Feed this to the RBD Solver to settle the instances.",
-    ))
+    chunk_api.add_param(
+        chunk.LineEdit(
+            "surface_prim",
+            "Surface Mesh",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+            tooltip="Mesh to scatter onto (Surface) or fill (Volume).",
+        )
+    )
+    chunk_api.add_param(
+        chunk.LineEdit(
+            "proto_prim",
+            "Prototype Prim",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+            tooltip="Prim instanced at each scatter point. Empty = a default cube.",
+        )
+    )
+    chunk_api.add_param(
+        chunk.LineEdit(
+            "inst_path",
+            "Instancer Path",
+            default_value="/ScatterInstancer",
+            tooltip="USD path where the PointInstancer is created. Feed this to the RBD Solver to settle the instances.",
+        )
+    )
 
-    _GF = (chunk.ChunkFlags.GroupFlags.COLLAPSABLE
-           | chunk.ChunkFlags.GroupFlags.LABELED
-           | chunk.ChunkFlags.GroupFlags.FRAMED)
+    _GF = (
+        chunk.ChunkFlags.GroupFlags.COLLAPSABLE
+        | chunk.ChunkFlags.GroupFlags.LABELED
+        | chunk.ChunkFlags.GroupFlags.FRAMED
+    )
 
     # --- Distribution ---
     dist_grp = chunk.Group("Distribution", flags=_GF)
     mode_param = chunk.Menu(
-        "scatter_mode", "Mode", menu_items=_SCATTER_MODES, default_value="Surface",
+        "scatter_mode",
+        "Mode",
+        menu_items=_SCATTER_MODES,
+        default_value="Surface",
         tooltip="Surface: place on faces.\nVolume: fill the interior of a closed mesh.",
     )
     mode_param.add_callback(_on_mode_changed)
     dist_grp.add_param(mode_param)
-    dist_grp.add_param(chunk.Checkbox(
-        "auto_spacing", "Auto Spacing", default_value=True,
-        tooltip="Derive spacing from the prototype's footprint so instances don't overlap. Turn off to set Spacing manually.",
-    ))
-    dist_grp.add_param(chunk.Spinbox(
-        "spacing", "Spacing", default_value=0.0,
-        tooltip="Minimum distance between instances, in scene units (used when Auto Spacing is off). 0 = allow overlap.",
-    ))
-    dist_grp.add_param(chunk.Spinbox(
-        "max_count", "Max Count", default_value=200, is_int=True,
-        tooltip="Upper limit on instances. Spacing may place fewer if the surface fills up first.",
-    ))
-    dist_grp.add_param(chunk.Spinbox(
-        "seed", "Seed", default_value=0, is_int=True,
-        tooltip="Random seed — change for a different pattern with the same settings.",
-    ))
+    dist_grp.add_param(
+        chunk.Checkbox(
+            "auto_spacing",
+            "Auto Spacing",
+            default_value=True,
+            tooltip="Derive spacing from the prototype's footprint so instances don't overlap. Turn off to set Spacing manually.",
+        )
+    )
+    dist_grp.add_param(
+        chunk.Spinbox(
+            "spacing",
+            "Spacing",
+            default_value=0.0,
+            tooltip="Minimum distance between instances, in scene units (used when Auto Spacing is off). 0 = allow overlap.",
+        )
+    )
+    dist_grp.add_param(
+        chunk.Spinbox(
+            "max_count",
+            "Max Count",
+            default_value=200,
+            is_int=True,
+            tooltip="Upper limit on instances. Spacing may place fewer if the surface fills up first.",
+        )
+    )
+    dist_grp.add_param(
+        chunk.Spinbox(
+            "seed",
+            "Seed",
+            default_value=0,
+            is_int=True,
+            tooltip="Random seed — change for a different pattern with the same settings.",
+        )
+    )
     chunk_api.add_param(dist_grp)
 
     # --- Region (Surface only) ---
     region_grp = chunk.Group("Region", flags=_GF)
-    region_grp.add_param(chunk.Spinbox(
-        "max_slope", "Max Slope", default_value=90.0,
-        tooltip="Only scatter on faces within this many degrees of facing up.\n90 = all upward faces, lower = flatter ground only, 180 = every face.",
-    ))
+    region_grp.add_param(
+        chunk.Spinbox(
+            "max_slope",
+            "Max Slope",
+            default_value=90.0,
+            tooltip="Only scatter on faces within this many degrees of facing up.\n90 = all upward faces, lower = flatter ground only, 180 = every face.",
+        )
+    )
     chunk_api.add_param(region_grp)
 
     # --- Variation ---
     var_grp = chunk.Group("Variation", flags=_GF)
-    var_grp.add_param(chunk.Spinbox(
-        "scale_min", "Scale Min", default_value=1.0,
-        tooltip="Smallest random scale applied to an instance.",
-    ))
-    var_grp.add_param(chunk.Spinbox(
-        "scale_max", "Scale Max", default_value=1.0,
-        tooltip="Largest random scale. Set Min and Max apart for natural size variation.",
-    ))
-    var_grp.add_param(chunk.Spinbox(
-        "normal_offset", "Normal Offset", default_value=0.0,
-        tooltip="Push instances along the surface normal. Positive lifts them off the surface (handy before an RBD settle); negative sinks them in.",
-    ))
-    var_grp.add_param(chunk.Menu(
-        "orient_mode", "Orientation Mode", menu_items=_ORIENT_MODES, default_value="Align to Normal",
-        tooltip="Align to Normal: follow the surface.\nUp / Keep Original: use the prototype's orientation.\nRandom: fully random.",
-    ))
-    var_grp.add_param(chunk.Menu(
-        "rand_axis", "Random Rotation Axis", menu_items=_RAND_AXES, default_value="Off",
-        tooltip="Add a random spin around this axis on top of the base orientation. Off disables it.",
-    ))
-    var_grp.add_param(chunk.Spinbox(
-        "rand_amount", "Random Rotation (deg)", default_value=360.0,
-        tooltip="Maximum random rotation in degrees (each instance gets a random angle between -this and +this).",
-    ))
+    var_grp.add_param(
+        chunk.Spinbox(
+            "scale_min",
+            "Scale Min",
+            default_value=1.0,
+            tooltip="Smallest random scale applied to an instance.",
+        )
+    )
+    var_grp.add_param(
+        chunk.Spinbox(
+            "scale_max",
+            "Scale Max",
+            default_value=1.0,
+            tooltip="Largest random scale. Set Min and Max apart for natural size variation.",
+        )
+    )
+    var_grp.add_param(
+        chunk.Spinbox(
+            "normal_offset",
+            "Normal Offset",
+            default_value=0.0,
+            tooltip="Push instances along the surface normal. Positive lifts them off the surface (handy before an RBD settle); negative sinks them in.",
+        )
+    )
+    var_grp.add_param(
+        chunk.Menu(
+            "orient_mode",
+            "Orientation Mode",
+            menu_items=_ORIENT_MODES,
+            default_value="Align to Normal",
+            tooltip="Align to Normal: follow the surface.\nUp / Keep Original: use the prototype's orientation.\nRandom: fully random.",
+        )
+    )
+    var_grp.add_param(
+        chunk.Menu(
+            "rand_axis",
+            "Random Rotation Axis",
+            menu_items=_RAND_AXES,
+            default_value="Off",
+            tooltip="Add a random spin around this axis on top of the base orientation. Off disables it.",
+        )
+    )
+    var_grp.add_param(
+        chunk.Spinbox(
+            "rand_amount",
+            "Random Rotation (deg)",
+            default_value=360.0,
+            tooltip="Maximum random rotation in degrees (each instance gets a random angle between -this and +this).",
+        )
+    )
     chunk_api.add_param(var_grp)
 
-    chunk_api.add_param(chunk.Checkbox(
-        "auto_scatter", "Auto Scatter", default_value=False,
-        tooltip="Re-scatter automatically whenever a setting changes — no need to press Scatter. Off by default to avoid lag on heavy meshes.",
-    ))
+    chunk_api.add_param(
+        chunk.Checkbox(
+            "auto_scatter",
+            "Auto Scatter",
+            default_value=False,
+            tooltip="Re-scatter automatically whenever a setting changes — no need to press Scatter. Off by default to avoid lag on heavy meshes.",
+        )
+    )
 
     scatter_btn = chunk.Button("scatter", "Scatter", tooltip="Place the instances now.")
     scatter_btn.add_callback(execute)
@@ -615,9 +684,21 @@ def main():
     # toggle itself, so turning it on does an immediate scatter). inst_path is
     # left out so editing the path doesn't spawn orphan instancers per keystroke.
     for name in (
-        "surface_prim", "proto_prim", "scatter_mode", "auto_spacing", "spacing",
-        "max_count", "seed", "max_slope", "scale_min", "scale_max", "normal_offset",
-        "orient_mode", "rand_axis", "rand_amount", "auto_scatter",
+        "surface_prim",
+        "proto_prim",
+        "scatter_mode",
+        "auto_spacing",
+        "spacing",
+        "max_count",
+        "seed",
+        "max_slope",
+        "scale_min",
+        "scale_max",
+        "normal_offset",
+        "orient_mode",
+        "rand_axis",
+        "rand_amount",
+        "auto_scatter",
     ):
         chunk_api.get_param(name).add_callback(_auto_scatter)
 

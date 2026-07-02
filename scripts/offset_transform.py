@@ -1,14 +1,16 @@
 from pxr import Gf, UsdGeom
 from usd_chunks import chunk
 
-_ROTATE_TYPES = frozenset([
-    UsdGeom.XformOp.TypeRotateXYZ,
-    UsdGeom.XformOp.TypeRotateXZY,
-    UsdGeom.XformOp.TypeRotateYXZ,
-    UsdGeom.XformOp.TypeRotateYZX,
-    UsdGeom.XformOp.TypeRotateZXY,
-    UsdGeom.XformOp.TypeRotateZYX,
-])
+_ROTATE_TYPES = frozenset(
+    [
+        UsdGeom.XformOp.TypeRotateXYZ,
+        UsdGeom.XformOp.TypeRotateXZY,
+        UsdGeom.XformOp.TypeRotateYXZ,
+        UsdGeom.XformOp.TypeRotateYZX,
+        UsdGeom.XformOp.TypeRotateZXY,
+        UsdGeom.XformOp.TypeRotateZYX,
+    ]
+)
 
 # keyed by id(chunk_instance) → {"path": str, "t": tuple, "r": tuple, "s": tuple}
 _last_applied: dict = {}
@@ -50,7 +52,7 @@ def execute(owner, notice, sender):
     osy = float(_chunk.get_param("sy").value or 1)
     osz = float(_chunk.get_param("sz").value or 1)
 
-    no_offset = (otx == oty == otz == orx == ory == orz == 0.0 and osx == osy == osz == 1.0)
+    no_offset = otx == oty == otz == orx == ory == orz == 0.0 and osx == osy == osz == 1.0
     last = _last_applied.get(chunk_id)
 
     if last and last["path"] != prim_path_str:

@@ -55,18 +55,14 @@ def execute(owner, notice, sender):
     xform_shader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
 
     if uv_source_shader:
-        xform_shader.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(
-            uv_source_shader, uv_source_output
-        )
+        xform_shader.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(uv_source_shader, uv_source_output)
     st_inp.ConnectToSource(xform_shader.ConnectableAPI(), "result")
 
 
 def main():
     chunk_api = chunk.Chunk("Set UV Transform")
 
-    chunk_api.add_param(
-        chunk.LineEdit("shader_path", "Shader Prim Path")
-    )
+    chunk_api.add_param(chunk.LineEdit("shader_path", "Shader Prim Path"))
 
     scale_grp = chunk.Group("Scale")
     scale_grp.add_param(chunk.Spinbox("scale_s", "Scale S", default_value=1.0))
