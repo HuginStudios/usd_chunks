@@ -302,7 +302,8 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         Called when state of the group has changed
         """
         self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
-        self.set_enabled(not self.param.has_state(ChunkFlags.State.DISABLED))
+        is_output = self.param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
+        self.set_enabled(not is_output and not self.param.has_state(ChunkFlags.State.DISABLED))
 
     def value_changed(self, value: Optional[Any] = None):
         """
@@ -590,7 +591,8 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         Called when state of the group has changed
         """
         self.set_hidden(self.group.has_state(ChunkFlags.State.HIDDEN))
-        self.set_enabled(not self.group.has_state(ChunkFlags.State.DISABLED))
+        is_output = self.group.has_flag(ChunkFlags.ParamFlags.OUTPUT)
+        self.set_enabled(not is_output and not self.group.has_state(ChunkFlags.State.DISABLED))
         self.set_selected(self.group.has_state(ChunkFlags.State.SELECTED))
 
     @abstractmethod
@@ -738,9 +740,13 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
     def _state_changed(self, notice, sender):
         if notice.data.get_owner() == self.group:
-            self.update_from_state()
+            try:
+                self.update_from_state()
+            except RuntimeError:
+                pass
 
     def _add_param_widget(self, param: "ChunkParamBase", group: Optional["ChunkContainerBase"] = None, list_index=0):
+        is_output = param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
         t = param.evaluate_type()
         if t == ChunkFlags.ParamType.NONE:
             return
@@ -759,6 +765,9 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 
         if not widget:
             return
+
+        if is_output:
+            widget.set_enabled(False)
 
         self._callbacks.extend(
             [
@@ -2503,43 +2512,61 @@ class ChunkUsdAttributeSupport(AttributesBase):
             and isinstance(notice.data, AttributeSender)
             and notice.data.name == "value"
             and hasattr(self, 'raw_value')
+            # ChunkVectorBase's "value" bubbles up from a child's scalar AttributeSender —
+            # notice.data.value below would be a single float, not the vector's tuple.
+            # ChunkVectorBase.data_changed handles its own (correctly-typed) version of this.
+            and not isinstance(self, ChunkVectorBase)
         ):
             raw = self.raw_value
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            val = raw if is_expr else notice.data.value
+            val = notice.data.value
             if val is not None:
                 chunk_notice._usd_write_active = True
                 try:
                     if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
-                        layer = stage.GetEditTarget().GetLayer()
-                        spec = layer.GetAttributeAtPath(usd_attr.GetPath())
-                        current = (spec.default if spec else None) if (is_expr or usd_attr.GetConnections()) else usd_attr.Get(0)
-                        if current != val:
-                            usd_attr.Set(val)
+                        if not is_expr:
+                            current = usd_attr.Get(0)
+                            if current != val:
+                                usd_attr.Set(val)
                         if is_expr:
                             chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
                             usd_attr.SetConnections([
-                                Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
+                                Sdf.Path(
+                                    f"{chunk_root}/{node}.outputs:{attr_name}"
+                                    if stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}")).GetAttribute(f"outputs:{attr_name}").IsValid()
+                                    else f"{chunk_root}/{node}.inputs:{attr_name}"
+                                )
                                 for node, attr_name in chunk_utils.parse_expression(raw)
                             ])
-                    # Write the current value to the driven attr (real prim, e.g. light)
-                    # in the chunk's own layer so it renders correctly.  Using
-                    # get_edit_context() targets the same layer execute() writes to
-                    # (anonymous for procedural chunks, file layer for interactive ones),
-                    # keeping the user's edit-target layer free of value opinions.
-                    if not is_expr and self._driven_attr_paths:
-                        chunk_layer = self.get_edit_context()
-                        if chunk_layer:
-                            for path in self._driven_attr_paths:
-                                sdf_path = Sdf.Path(path)
-                                if driven_attr := stage.GetAttributeAtPath(sdf_path):
-                                    if driven_attr.Get(0) != val:
-                                        with Usd.EditContext(stage, chunk_layer):
-                                            driven_attr.Set(val)
+                            if usd_attr.GetTypeName() == Sdf.ValueTypeNames.String and usd_attr.Get(0) != raw:
+                                usd_attr.Set(raw)
+                    self._write_driven_attrs(stage, val)
                 finally:
                     chunk_notice._usd_write_active = False
 
         return my_notice
+
+    def _write_driven_attrs(self, stage: Usd.Stage, val: Any) -> None:
+        """Push val (already resolved) to every real prim attr in _driven_attr_paths.
+
+        Uses get_edit_context() so the write lands in the chunk's own layer (anonymous
+        for procedural chunks, file layer for interactive ones), keeping the user's
+        edit-target layer free of value opinions. Connections between the driven attr
+        and the storage attr are topology only — USD Get() on the driven attr doesn't
+        follow them, so the resolved value must be copied explicitly for any GUI
+        reading that attr directly to see it.
+        """
+        if val is None or not self._driven_attr_paths:
+            return
+        chunk_layer = self.get_edit_context()
+        if not chunk_layer:
+            return
+        for path in self._driven_attr_paths:
+            sdf_path = Sdf.Path(path)
+            if driven_attr := stage.GetAttributeAtPath(sdf_path):
+                if driven_attr.Get(0) != val:
+                    with Usd.EditContext(stage, chunk_layer):
+                        driven_attr.Set(val)
 
     @abstractmethod
     def update_usd_prop(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
@@ -2552,19 +2579,33 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice (chunk_notice.AttributeChangeNotice): The notice holding the UsdAttribute
             sender (AttributeSender): The sender of the notice
         """
-        if isinstance(notice.data, Usd.Attribute):
+        # ChunkVectorBase.data_changed already handles this write path itself (correctly,
+        # with outputs:-preferring connection routing) — this method's SetConnections
+        # below hardcodes inputs: unconditionally, so letting both run fights over two
+        # different connection targets on every value change.
+        if isinstance(notice.data, Usd.Attribute) and not isinstance(self, ChunkVectorBase):
             raw = getattr(self, 'raw_value', None)
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            store_val = raw if is_expr else sender.value
-            if notice.data.Get(0) == store_val:
-                return
-            notice.data.Set(store_val)
-            if is_expr:
-                chunk_root = str(notice.data.GetPrim().GetParent().GetPath())
-                notice.data.SetConnections([
-                    Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
-                    for node, attr_name in chunk_utils.parse_expression(raw)
-                ])
+            # Only String-typed attrs can hold the raw expression text itself (needed so
+            # _patch_expressions can rewrite it on rename); other types (Float, Float3,
+            # etc.) only ever store the resolved value — the expression is reconstructed
+            # from SetConnections on reload (see _expression_from_connections).
+            if is_expr and notice.data.GetTypeName() != Sdf.ValueTypeNames.String:
+                store_val = sender.value
+            else:
+                store_val = raw if is_expr else sender.value
+            chunk_notice._usd_write_active = True
+            try:
+                if notice.data.Get(0) != store_val:
+                    notice.data.Set(store_val)
+                if is_expr:
+                    chunk_root = str(notice.data.GetPrim().GetParent().GetPath())
+                    notice.data.SetConnections([
+                        Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
+                        for node, attr_name in chunk_utils.parse_expression(raw)
+                    ])
+            finally:
+                chunk_notice._usd_write_active = False
 
         elif isinstance(notice.data, Usd.Relationship) and sender.value is not None:
             # Currently just assume the string is a comma separated list of paths. This will likely
@@ -2644,8 +2685,43 @@ class ChunkUsdAttributeSupport(AttributesBase):
             except AttributeError:
                 pass
         self._author_driven_connections()
-        if isinstance(attr, Usd.Attribute) and (val := attr.Get(0)) is not None:
-            self.value = val
+        if isinstance(attr, Usd.Attribute):
+            val = attr.Get(0)
+            connections = attr.GetConnections()
+            if not connections:
+                if val is not None:
+                    self.value = val
+            elif isinstance(val, str) and chunk_utils.has_expression(val):
+                self.value = val
+            else:
+                # Non-string (e.g. Float) expression attrs only ever store the
+                # connection, never the expression text, so reconstruct it here.
+                if expr := self._expression_from_connections(connections):
+                    self.value = expr
+
+    @staticmethod
+    def _expression_from_connections(connections) -> Optional[str]:
+        tokens = []
+        for conn in connections:
+            path = Sdf.Path(str(conn))
+            node_name = path.GetPrimPath().name
+            param_name = path.name.rsplit(":", 1)[-1]
+            tokens.append(f"@{node_name}.{param_name}@")
+        return "".join(tokens) if tokens else None
+
+    def _resolve_expression_ref(self, node_name: str, param_name: str) -> Optional["ChunkCommon"]:
+        chunk = self.get_chunk()
+        if not chunk:
+            return None
+        context = chunk.get_context()
+        if context:
+            return context.get_param(f"{node_name}.{param_name}")
+        try:
+            scene = chunk_registry.ChunkRegistry().get_scene()
+            target = scene.get_chunk(node_name)
+            return target.get_param(param_name) if target else None
+        except Exception:
+            return None
 
     def connect_usd_attr(self, attr: Usd.Property) -> None:
         """
@@ -2703,6 +2779,12 @@ class ChunkUsdAttributeSupport(AttributesBase):
                         real_attr.SetConnections([storage_path])
                 else:
                     real_attr.SetConnections([storage_path])
+
+        # SetConnections only authors topology — Get() on the driven attr doesn't follow
+        # it, so push the current resolved value too. Needed because connect_usd_attr is
+        # (re-)called on every load/execute, e.g. after a roundtrip restores an expression
+        # via _connect_param_attr before this chunk's own driven wiring runs.
+        self._write_driven_attrs(stage, getattr(self, 'value', None))
 
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> "ChunkUsdAttributeSupport":
@@ -2911,20 +2993,6 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             val = str(ref.value) if ref is not None and ref.value is not None else ""
             result = result.replace(f"@{node_name}.{param_name}@", val)
         return result
-
-    def _resolve_expression_ref(self, node_name: str, param_name: str) -> Optional["ChunkParamBase"]:
-        chunk = self.get_chunk()
-        if not chunk:
-            return None
-        context = chunk.get_context()
-        if context:
-            return context.get_param(f"{node_name}.{param_name}")
-        try:
-            scene = chunk_registry.ChunkRegistry().get_scene()
-            target = scene.get_chunk(node_name)
-            return target.get_param(param_name) if target else None
-        except Exception:
-            return None
 
 
 class ChunkContainerBase(ChunkCommon):
@@ -3611,6 +3679,31 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
     suffixes: Optional[Sequence[str] | str] = attrs.field(default=None)
     _default_value: Optional[Sequence[Any]] = attrs.field(default=None, alias="default_value")
 
+    # A Vector's own .flags is GroupFlags-typed (needed for widget construction — see
+    # has_flag override below) and can't also carry ChunkFlags.ParamFlags.OUTPUT: GroupFlags
+    # and ParamFlags are separate IntFlag classes with overlapping bit values, and has_flag()
+    # does a strict same-class check, so combining them via `|` makes OUTPUT silently
+    # undetectable (or, the other way round, makes GroupFlags checks crash). is_output is a
+    # dedicated field so a Vector can be a computed output without touching .flags at all.
+    is_output: bool = attrs.field(default=False)
+
+    # Raw @Node.vecParam@ expression string driving this vector's value, when set.
+    # Whole-vector references only — the referenced param must itself resolve to a
+    # same-length sequence. None means the vector's value comes from its own children.
+    _expr_value: Optional[str] = attrs.field(
+        default=None, init=False, metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND)
+    )
+    _expression_connections: list = attrs.field(
+        default=attrs.Factory(list), init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
+    )
+
+    # Set by _set_children_blocked while assigning children one at a time, so
+    # data_changed can skip writing a (still partial) tuple to the storage attr
+    # without suppressing each child's own notify (which widgets rely on to refresh).
+    _suppress_storage_write: bool = attrs.field(
+        default=False, init=False, metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND)
+    )
+
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "suffixes" and val is not None:
             if len(val) < self.length:
@@ -3646,6 +3739,12 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             if self.suffixes:
                 np.name += self.suffixes[i]
 
+            if self.is_output:
+                # Children are plain scalar params (Slider etc.) — no GroupFlags/ParamFlags
+                # collision for them, unlike the vector itself, so OUTPUT can go straight
+                # on .flags to get the normal widget.set_enabled(False) treatment.
+                np.set_flag(ChunkFlags.ParamFlags.OUTPUT)
+
             self.children.add(np)
 
         if self._default_value:
@@ -3675,23 +3774,51 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
     def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> Optional[chunk_notice.ChunkNotice]:
         my_notice = super().data_changed(notice)
 
-        if notice and (p := notice.data):
-            if isinstance(p, AttributeSender) and p.name == "value" and not self.is_blocked():
-                if usd_attr := self.get_usd_prop():
-                    # Assemble new Vec3f from children and write to the chunk-prim attr so
-                    # the stored value is current before propagating to driven attrs.
-                    child_vals = [c.value for c in self.get_my_params() if isinstance(c, ChunkParamBase)]
-                    if child_vals:
-                        try:
-                            new_vec = Gf.Vec3f(*child_vals)
-                            chunk_notice._usd_write_active = True
-                            try:
-                                usd_attr.Set(new_vec)
-                            finally:
-                                chunk_notice._usd_write_active = False
-                        except Exception:
-                            pass
-                    chunk_notice.send_notice(p.get_notice_alias(), self.get_attribute_sender("value"), usd_attr)
+        stage = chunk_registry.ChunkRegistry().scene.get_stage()
+        if (
+            notice
+            and stage
+            and isinstance(notice.data, AttributeSender)
+            and notice.data.name == "value"
+            and not self.is_blocked()
+        ):
+            # notice.data is typically a *child's* AttributeSender (bubbled up through
+            # the DAG), whose .value is a single scalar — not usable here. This vector's
+            # own self.value (tuple, already expression-aware) is what must be written.
+            raw = self.raw_value
+            is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
+            val = self.value
+            # _set_children_blocked sets this while assigning each child in turn, to
+            # avoid writing a partial tuple to the storage attr on the first (still
+            # mid-assignment) bubble — that write would otherwise be the one that lazily
+            # authors the attr and never gets corrected afterward. Notices still need to
+            # propagate normally during the loop (this doesn't use is_blocked()) so each
+            # child's own widget refreshes live as it's set.
+            if val is not None and not self._suppress_storage_write:
+                chunk_notice._usd_write_active = True
+                try:
+                    if self._param_attr_path and (usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path))):
+                        if not is_expr:
+                            current = usd_attr.Get(0)
+                            if current != val:
+                                usd_attr.Set(val)
+                        else:
+                            chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
+                            usd_attr.SetConnections([
+                                Sdf.Path(
+                                    f"{chunk_root}/{node}.outputs:{attr_name}"
+                                    if stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}")).GetAttribute(f"outputs:{attr_name}").IsValid()
+                                    else f"{chunk_root}/{node}.inputs:{attr_name}"
+                                )
+                                for node, attr_name in chunk_utils.parse_expression(raw)
+                            ])
+                    self._write_driven_attrs(stage, val)
+                finally:
+                    chunk_notice._usd_write_active = False
+
+            # Forward on this vector's own "value" sender so anything depending on the
+            # whole vector (e.g. a downstream @Node.vecParam@ expression) reacts too.
+            chunk_notice.send_notice(notice.data.get_notice_alias(), self.get_attribute_sender("value"), self.get_usd_prop())
 
         return my_notice
 
@@ -3703,18 +3830,84 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         param.value = val
 
     @property
+    def raw_value(self) -> Any:
+        """The stored expression string, or the tuple of children's raw values."""
+        if self._expr_value is not None:
+            return self._expr_value
+        return tuple(x.raw_value for x in self.get_my_params() if isinstance(x, ChunkParamBase))
+
+    @property
     def value(self):
+        if self._expr_value is not None and chunk_utils.has_expression(self._expr_value):
+            return self._resolve_expression_tuple(self._expr_value)
         return tuple(x.value for x in self.get_my_params() if isinstance(x, ChunkParamBase))
 
     @value.setter
-    def value(self, val: Sequence[Any]):
+    def value(self, val: Union[Sequence[Any], str]):
+        if isinstance(val, str) and chunk_utils.has_expression(val):
+            self._expr_value = val
+            self._expression_connections = []
+            for node_name, param_name in chunk_utils.parse_expression(val):
+                ref = self._resolve_expression_ref(node_name, param_name)
+                if ref is None:
+                    logger.warning(f"Expression ref @{node_name}.{param_name}@ not found")
+                    continue
+                conn = chunk_notice.NoticeConnection(
+                    method=self._on_ref_changed,
+                    alias=chunk_notice.ChunkNoticeAlias.VALUE_CHANGED,
+                    sender=ref.get_attribute_sender("value"),
+                )
+                self._expression_connections.append(conn)
+            self._push_resolved_children()
+            return
+
+        self._expr_value = None
+        self._expression_connections = []
         if not len(val) == self.length:
             raise ValueError(
                 f"Trying to set value {val} on vector param {self.name} with wring size. Size should be {self.length}"
             )
 
-        for i in range(self.length):
-            self[i] = val[i]
+        self._set_children_blocked(val)
+
+    def _push_resolved_children(self) -> None:
+        """Push the resolved tuple down into child params so their own widgets display
+        real numbers rather than the parent's expression string."""
+        resolved = self.value
+        if resolved is None or len(resolved) != self.length:
+            return
+        self._set_children_blocked(resolved)
+
+    def _set_children_blocked(self, val: Sequence[Any]) -> None:
+        """Set every child from val, suppressing this vector's own storage-attr write
+        until all children are set (data_changed checks _suppress_storage_write).
+        Without this, the first (still mid-assignment) child change would be the one
+        that lazily authors the chunk-prim storage attr, permanently baking in a
+        stale value with only some components set.
+
+        Deliberately does NOT use set_blocked(), which is transitive to children via
+        their owner-chain is_blocked() check — that would also suppress each child's
+        own notify, which their widgets rely on to refresh live as they're set."""
+        self._suppress_storage_write = True
+        try:
+            for i in range(self.length):
+                self[i] = val[i]
+        finally:
+            self._suppress_storage_write = False
+        self.get_attribute_sender("value").execute()
+
+    def _on_ref_changed(self, notice=None, sender=None):
+        self._push_resolved_children()
+
+    def _resolve_expression_tuple(self, expr: str) -> tuple:
+        tokens = chunk_utils.parse_expression(expr)
+        if len(tokens) == 1 and expr.strip() == f"@{tokens[0][0]}.{tokens[0][1]}@":
+            ref = self._resolve_expression_ref(*tokens[0])
+            if ref is not None:
+                ref_val = ref.value
+                if isinstance(ref_val, (tuple, list)) and len(ref_val) == self.length:
+                    return tuple(ref_val)
+        return self.default_value
 
     @property
     def default_value(self):
@@ -3738,6 +3931,13 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
 
     def evaluate_type(self):
         return ChunkFlags.ParamType.VECTOR | self.param.evaluate_type()
+
+    def has_flag(self, flag: IntFlag) -> bool:
+        """ChunkFlags.ParamFlags.OUTPUT is tracked via is_output instead of .flags — see
+        the field's docstring. Everything else defers to the normal GroupFlags check."""
+        if flag == ChunkFlags.ParamFlags.OUTPUT:
+            return self.is_output
+        return super().has_flag(flag)
 
 
 class ChunkConfig(AttributesBase):
