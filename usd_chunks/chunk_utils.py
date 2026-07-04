@@ -5,8 +5,30 @@ from pxr import Sdf, Usd
 _EXPR_RE = re.compile(r'@(\w+)\.(\w+)@')
 
 
+def find_collection(stage: Usd.Stage, name: str):
+    """Find a UsdCollectionAPI named `name` anywhere on the stage, or None.
+
+    Collections are looked up by name across the whole stage (no namespacing),
+    matching Houdini's %collectionName resolution in primpattern fields.
+    """
+    for prim in stage.Traverse():
+        for coll in Usd.CollectionAPI.GetAllCollections(prim):
+            if coll.GetName() == name:
+                return coll
+    return None
+
+
+def resolve_collection_members(stage: Usd.Stage, name: str) -> list[str]:
+    """Return the resolved member prim paths of the collection named `name`, or []."""
+    coll = find_collection(stage, name)
+    if coll is None:
+        return []
+    query = coll.ComputeMembershipQuery()
+    return [str(p) for p in Usd.ComputeIncludedPathsFromCollection(query, stage)]
+
+
 def resolve_prim_paths(stage, location_str):
-    """Split location_str on whitespace/commas and expand glob patterns.
+    """Split location_str on whitespace/commas and expand glob patterns and collection refs.
 
     Glob rules (Houdini-style):
       *   matches any characters within one path component (no slash crossing)
@@ -17,6 +39,10 @@ def resolve_prim_paths(stage, location_str):
     /geo/**  → everything recursively under /geo
     /**      → every prim on the stage
     mesh*    → root-level prims whose name starts with "mesh" (/ prepended)
+
+    %name    → every prim in the UsdCollectionAPI named "name" (see find_collection),
+               however it was authored (explicit includes/excludes, expansion rule, or
+               a membership expression) — resolved via the collection's own query.
     """
     def _to_re(pattern):
         parts = []
@@ -40,11 +66,14 @@ def resolve_prim_paths(stage, location_str):
     for token in re.split(r"[\s,]+", location_str.strip()):
         if not token:
             continue
-        if "*" not in token and "?" not in token:
-            paths.append(token)
+        if token.startswith("%"):
+            paths.extend(resolve_collection_members(stage, token[1:]))
             continue
         if not token.startswith("/"):
             token = "/" + token
+        if "*" not in token and "?" not in token:
+            paths.append(token)
+            continue
         rx = _to_re(token)
         for prim in stage.Traverse():
             if rx.match(prim.GetPath().pathString):
@@ -210,6 +239,25 @@ def wire_shader_input(
     if clear_on_miss:
         shader_attr.ClearConnections()
     return False
+
+
+def iter_prim_targets(stage, param):
+    """Yield target_path for every prim/pattern/collection resolved from `param`
+    (a LineEdit-like param with .resolve_paths()), each already inside
+    author_in_variant_context.
+
+    Replaces the repeated:
+        for path_str in param.resolve_paths():
+            with author_in_variant_context(stage, path_str) as target_path:
+                ...
+
+    with:
+        for target_path in iter_prim_targets(stage, param):
+            ...
+    """
+    for path_str in param.resolve_paths():
+        with author_in_variant_context(stage, path_str) as target_path:
+            yield target_path
 
 
 @contextmanager

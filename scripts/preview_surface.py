@@ -44,11 +44,10 @@ def execute(node):
 
     primpath_param = node.get_param("primpath_location")
     if primpath_param.value and primpath_param.value != "/":
-        for path_str in primpath_param.resolve_paths():
-            with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
-                prim = stage.GetPrimAtPath(target_path)
-                if prim and prim.IsValid():
-                    UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+        for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
+            prim = stage.GetPrimAtPath(target_path)
+            if prim and prim.IsValid():
+                UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
 
 
 def main():

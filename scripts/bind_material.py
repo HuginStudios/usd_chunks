@@ -16,11 +16,10 @@ def execute(node):
     if not material:
         return
 
-    for path_str in prim_path_param.resolve_paths():
-        with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
-            prim = stage.GetPrimAtPath(target_path)
-            if prim and prim.IsValid():
-                UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+    for target_path in chunk_utils.iter_prim_targets(stage, prim_path_param):
+        prim = stage.GetPrimAtPath(target_path)
+        if prim and prim.IsValid():
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
 
 
 def main():
