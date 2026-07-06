@@ -714,6 +714,7 @@ def simulate_mujoco_instancer(
     lin_damping: float = 0.0,
     ang_damping: float = 0.05,
     shape_type: str = "Sphere",
+    collision_margin: float = 0.0,
     solver_iters: int = 30,
     hfield_res: int = 96,
     floor_drop: float = 0.0,
@@ -789,7 +790,7 @@ def simulate_mujoco_instancer(
         )
 
     # Representative radius (largest instance) for the heightfield cell-size cap.
-    max_radius = max([0.5] + [_instance_radius(i) for i in range(num_instances)])
+    max_radius = max([0.5] + [_instance_radius(i) for i in range(num_instances)]) + max(collision_margin, 0.0)
 
     dt = 1.0 / fps
 
@@ -844,7 +845,15 @@ def simulate_mujoco_instancer(
         ma = spec.add_mesh()
         ma.name = name
         ma.uservert = hull_base.flatten()
-        ma.scale = [sx, sy, sz]
+        msx, msy, msz = sx, sy, sz
+        if collision_margin != 0.0:
+            # Grow the hull outward by ~collision_margin via a uniform scale bump
+            # (same approximation the single-prim path uses).
+            max_ext = max(float(proto_ext[0]) * sx, float(proto_ext[1]) * sy, float(proto_ext[2]) * sz) / 2.0
+            if max_ext > 1e-6:
+                mf = (max_ext + collision_margin) / max_ext
+                msx, msy, msz = sx * mf, sy * mf, sz * mf
+        ma.scale = [msx, msy, msz]
         ma.maxhullvert = 64
         hull_mesh_cache[key] = name
         return name
@@ -871,7 +880,7 @@ def simulate_mujoco_instancer(
         wqi = wq.GetImaginary()
 
         sx, sy, sz = _instance_scale(i)
-        radius_i = max(_instance_radius(i), 1e-4)
+        radius_i = max(_instance_radius(i) + collision_margin, 1e-4)
         # Centre the sphere on the prototype geometry (scaled, in body-local), so
         # the collider tracks the visual instance instead of its origin.
         gpos = [
@@ -895,9 +904,9 @@ def simulate_mujoco_instancer(
         elif shape_type == "Box":
             g.type = _mj.mjtGeom.mjGEOM_BOX
             g.size = [
-                max(float(proto_ext[0]) * sx / 2.0, 1e-4),
-                max(float(proto_ext[1]) * sy / 2.0, 1e-4),
-                max(float(proto_ext[2]) * sz / 2.0, 1e-4),
+                max(float(proto_ext[0]) * sx / 2.0 + collision_margin, 1e-4),
+                max(float(proto_ext[1]) * sy / 2.0 + collision_margin, 1e-4),
+                max(float(proto_ext[2]) * sz / 2.0 + collision_margin, 1e-4),
             ]
             g.pos = gpos
         else:
@@ -1161,6 +1170,7 @@ def _run(owner, notice, sender) -> None:
             lin_damping=lin_damping,
             ang_damping=ang_damping,
             shape_type=shape_type,
+            collision_margin=float(_chunk.get_param("collision_margin").value or 0.0),
             solver_iters=30,
             hfield_res=int(_chunk.get_param("hfield_res").value or 96),
             floor_drop=floor_drop,
