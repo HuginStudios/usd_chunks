@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Generator
 
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
@@ -18,7 +19,7 @@ except ImportError:
     _np = None
 
 
-def _build_heightfield(cprim, up_idx, resolution=64, min_cell=0.0):
+def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_cell: float = 0.0) -> dict | None:
     """Sample the top surface of *cprim*'s meshes into a MuJoCo heightfield.
 
     A bowl/plate/terrain inner surface is single-valued in height, so a
@@ -123,7 +124,16 @@ def _build_heightfield(cprim, up_idx, resolution=64, min_cell=0.0):
     return {"nrow": N, "ncol": N, "size": size, "heights": heights, "pos": pos, "quat": quat}
 
 
-def _add_colliders(spec, collision_prims, up_idx, friction, contact_tc, dyn_radius, hfield_res, floor_drop=0.0):
+def _add_colliders(
+    spec: _mj.MjSpec,
+    collision_prims: list[Usd.Prim] | None,
+    up_idx: int,
+    friction: float,
+    contact_tc: float,
+    dyn_radius: float,
+    hfield_res: int,
+    floor_drop: float = 0.0,
+) -> list[tuple[str, Usd.Prim]]:
     """Add static/kinematic collision bodies to *spec*.
 
     No collision prims → infinite ground plane. Otherwise each prim becomes a
@@ -255,37 +265,36 @@ def _add_colliders(spec, collision_prims, up_idx, friction, contact_tc, dyn_radi
 
 
 def _sim_prim_gen_mj(
-    stage,
-    prim,
-    collision_prims,
-    frame_count,
-    gravity,
-    friction,
-    restitution,
-    mass,
-    substeps,
-    init_vel,
-    ang_vel,
-    start_frame,
-    dt,
-    otx,
-    oty,
-    otz,
-    orx,
-    ory,
-    orz,
-    up_idx,
-    shape_type,
-    collision_margin,
-    solver_iters,
-    translate,
-    rot,
-    lin_damping=0.0,
-    ang_damping=0.05,
-    hull_max_verts=0,
-    hfield_res=96,
-    floor_drop=0.0,
-):
+    prim: Usd.Prim,
+    collision_prims: list[Usd.Prim] | None,
+    frame_count: int,
+    gravity: float,
+    friction: float,
+    restitution: float,
+    mass: float,
+    substeps: int,
+    init_vel: list[float],
+    ang_vel: list[float],
+    start_frame: int,
+    dt: float,
+    otx: float,
+    oty: float,
+    otz: float,
+    orx: float,
+    ory: float,
+    orz: float,
+    up_idx: int,
+    shape_type: str,
+    collision_margin: float,
+    solver_iters: int,
+    translate: Gf.Vec3d,
+    rot: Gf.Rotation,
+    lin_damping: float = 0.0,
+    ang_damping: float = 0.05,
+    hull_max_verts: int = 0,
+    hfield_res: int = 96,
+    floor_drop: float = 0.0,
+) -> Generator[int, None, list[Gf.Matrix4d] | None]:
     """MuJoCo rigid body simulation — yields frame index, returns all_mats.
 
     Uses MjSpec to build the scene programmatically from USD mesh data (no file I/O).
@@ -302,9 +311,6 @@ def _sim_prim_gen_mj(
         sz = rng.GetMax() - rng.GetMin()
         half_extents = [sz[0] / 2, sz[1] / 2, sz[2] / 2]
         z_offset = (rng.GetMin()[up_idx] + rng.GetMax()[up_idx]) / 2 - translate[up_idx]
-
-    body_ctr = list(translate)
-    body_ctr[up_idx] += z_offset
 
     # --- apply the initial rotation offset up front, so the hull, the body
     # quaternion and the geom offset are all built in the same final frame ---
@@ -513,7 +519,15 @@ def _sim_prim_gen_mj(
     return all_mats
 
 
-def _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz=None):
+def _write_prim_results(
+    stage: Usd.Stage,
+    prim: Usd.Prim,
+    layer: Sdf.Layer,
+    parent_world_inv: Gf.Matrix4d,
+    all_mats: list[Gf.Matrix4d],
+    start_frame: int,
+    scale_xyz: tuple[float, float, float] | None = None,
+) -> None:
     """Write single-prim simulation results to USD (main-thread only)."""
     if scale_xyz and any(abs(s - 1.0) > 1e-6 for s in scale_xyz):
         sx, sy, sz = scale_xyz
@@ -547,38 +561,36 @@ def _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_fr
 
 
 def simulate_mujoco(
-    stage,
-    prim,
-    layer,
-    frame_count,
-    fps,
-    gravity,
-    mass,
-    substeps,
-    init_vel,
-    ang_vel,
-    start_frame,
-    parent_world_inv,
-    half_extents,
-    z_offset,
-    otx,
-    oty,
-    otz,
-    orx,
-    ory,
-    orz,
-    collision_prims=None,
-    friction=0.5,
-    restitution=0.1,
-    lin_damping=0.0,
-    ang_damping=0.05,
-    scale_xyz=None,
-    shape_type="Convex Hull",
-    collision_margin=0.0,
-    solver_iters=30,
-    hfield_res=96,
-    floor_drop=0.0,
-):
+    stage: Usd.Stage,
+    prim: Usd.Prim,
+    layer: Sdf.Layer,
+    frame_count: int,
+    fps: float,
+    gravity: float,
+    mass: float,
+    substeps: int,
+    init_vel: list[float],
+    ang_vel: list[float],
+    start_frame: int,
+    parent_world_inv: Gf.Matrix4d,
+    otx: float,
+    oty: float,
+    otz: float,
+    orx: float,
+    ory: float,
+    orz: float,
+    collision_prims: list[Usd.Prim] | None = None,
+    friction: float = 0.5,
+    restitution: float = 0.1,
+    lin_damping: float = 0.0,
+    ang_damping: float = 0.05,
+    scale_xyz: tuple[float, float, float] | None = None,
+    shape_type: str = "Convex Hull",
+    collision_margin: float = 0.0,
+    solver_iters: int = 30,
+    hfield_res: int = 96,
+    floor_drop: float = 0.0,
+) -> list[Gf.Matrix4d] | None:
     """Run MuJoCo simulation."""
     if not _HAS_MUJOCO:
         print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
@@ -598,7 +610,6 @@ def simulate_mujoco(
 
     # Run the working MuJoCo simulation generator
     gen = _sim_prim_gen_mj(
-        stage,
         prim,
         collision_prims,
         frame_count,
@@ -647,38 +658,75 @@ def simulate_mujoco(
     return all_mats
 
 
+def _proto_hull_verts(stage: Usd.Stage, proto_targets, cap: int = 200) -> _np.ndarray | None:
+    """Prototype mesh vertices for a shared convex-hull collider (extracted once).
+
+    Points are gathered in the prototype's world-bound space — the same space the
+    caller measures proto extent/centre in — so per-instance scaling stays
+    consistent with the sphere/box path. Subsampled to *cap* points to keep the
+    per-asset hull build cheap. Returns None if the prototype has no mesh data.
+    """
+    if _np is None or not proto_targets:
+        return None
+    proto_prim = stage.GetPrimAtPath(proto_targets[0])
+    if not proto_prim:
+        return None
+    xc = UsdGeom.XformCache()
+    verts = []
+    for c in Usd.PrimRange(proto_prim):
+        mesh = UsdGeom.Mesh(c)
+        pts = mesh.GetPointsAttr().Get()
+        if not pts:
+            continue
+        cxf = xc.GetLocalToWorldTransform(c)
+        for p in pts:
+            w = cxf.Transform(Gf.Vec3d(p[0], p[1], p[2]))
+            verts.append([float(w[0]), float(w[1]), float(w[2])])
+    if len(verts) < 4:
+        return None
+    arr = _np.asarray(verts, dtype=_np.float32)
+    if len(arr) > cap:
+        arr = arr[:: max(1, len(arr) // cap)][:cap]
+    return arr
+
+
 def simulate_mujoco_instancer(
-    stage,
-    prim,
-    layer,
-    collision_prims,
-    frame_count,
-    fps,
-    gravity,
-    mass,
-    substeps,
-    init_vel,
-    ang_vel,
-    start_frame,
-    otx,
-    oty,
-    otz,
-    orx,
-    ory,
-    orz,
-    friction=0.5,
-    restitution=0.1,
-    lin_damping=0.0,
-    ang_damping=0.05,
-    solver_iters=30,
-    hfield_res=96,
-    floor_drop=0.0,
-):
+    stage: Usd.Stage,
+    prim: Usd.Prim,
+    layer: Sdf.Layer,
+    collision_prims: list[Usd.Prim] | None,
+    frame_count: int,
+    fps: float,
+    gravity: float,
+    mass: float,
+    substeps: int,
+    init_vel: list[float],
+    ang_vel: list[float],
+    start_frame: int,
+    otx: float,
+    oty: float,
+    otz: float,
+    orx: float,
+    ory: float,
+    orz: float,
+    friction: float = 0.5,
+    restitution: float = 0.1,
+    lin_damping: float = 0.0,
+    ang_damping: float = 0.05,
+    shape_type: str = "Sphere",
+    solver_iters: int = 30,
+    hfield_res: int = 96,
+    floor_drop: float = 0.0,
+) -> None:
     """Run MuJoCo multi-body simulation for a UsdGeom.PointInstancer using MjSpec.
 
-    Each instance is a sphere with a free joint; they collide with each other
-    and with the same collider stack as the single-prim path (concave
-    heightfield + backstop for the bowl, else a ground plane).
+    Each instance gets a free joint and collides with the other instances and the
+    same collider stack as the single-prim path (concave heightfield + backstop
+    for a bowl, else a ground plane). *shape_type* picks the per-instance collider:
+    "Sphere" (fast, most stable in dense piles), "Box", or "Convex Hull" (accurate,
+    heavier — the shared prototype hull is built once and reused per distinct
+    scale). A sphere is rotationally symmetric, so the rotation offset and each
+    instance's own orientation only influence the physics for Box / Convex Hull.
     """
     if not _HAS_MUJOCO:
         print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
@@ -723,13 +771,13 @@ def simulate_mujoco_instancer(
 
     scales = instancer.GetScalesAttr().Get()
 
-    def _instance_scale(idx):
+    def _instance_scale(idx: int) -> tuple[float, float, float]:
         if scales and idx < len(scales):
             s = scales[idx]
             return float(s[0]), float(s[1]), float(s[2])
         return 1.0, 1.0, 1.0
 
-    def _instance_radius(idx):
+    def _instance_radius(idx: int) -> float:
         sx, sy, sz = _instance_scale(idx)
         return (
             max(
@@ -767,6 +815,40 @@ def simulate_mujoco_instancer(
 
     dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
 
+    # Rotation offset applied to every instance's initial orientation (mirrors the
+    # single-prim path). Only meaningful physically for Box / Convex Hull colliders.
+    off_rot = None
+    if orx != 0.0 or ory != 0.0 or orz != 0.0:
+        off_rot = (
+            Gf.Rotation(Gf.Vec3d(1, 0, 0), orx)
+            * Gf.Rotation(Gf.Vec3d(0, 1, 0), ory)
+            * Gf.Rotation(Gf.Vec3d(0, 0, 1), orz)
+        )
+
+    # Convex hull: extract the shared prototype geometry once, then build one mesh
+    # asset per distinct instance scale (MuJoCo computes the hull per asset).
+    hull_base = None
+    if shape_type == "Convex Hull":
+        hull_base = _proto_hull_verts(stage, proto_targets)
+        if hull_base is None:
+            print("[MuJoCoSolver] Convex Hull: no prototype mesh data, falling back to Sphere")
+
+    hull_mesh_cache: dict[tuple[float, float, float], str] = {}
+
+    def _hull_mesh_for_scale(sx: float, sy: float, sz: float) -> str:
+        key = (round(sx, 5), round(sy, 5), round(sz, 5))
+        name = hull_mesh_cache.get(key)
+        if name is not None:
+            return name
+        name = f"hull{len(hull_mesh_cache)}"
+        ma = spec.add_mesh()
+        ma.name = name
+        ma.uservert = hull_base.flatten()
+        ma.scale = [sx, sy, sz]
+        ma.maxhullvert = 64
+        hull_mesh_cache[key] = name
+        return name
+
     # Per-instance bodies
     for i in range(num_instances):
         lp = positions[i]
@@ -781,8 +863,11 @@ def simulate_mujoco_instancer(
             local_q = Gf.Quatd(float(q.GetReal()), float(qi[0]), float(qi[1]), float(qi[2]))
         else:
             local_q = Gf.Quatd(1.0, 0.0, 0.0, 0.0)
-        # to world: instancer rotation * instance-local orientation
-        wq = (inst_rot * Gf.Rotation(local_q)).GetQuat()
+        # to world: instancer rotation * instance-local orientation * offset
+        world_rot = inst_rot * Gf.Rotation(local_q)
+        if off_rot is not None:
+            world_rot = world_rot * off_rot
+        wq = world_rot.GetQuat()
         wqi = wq.GetImaginary()
 
         sx, sy, sz = _instance_scale(i)
@@ -802,9 +887,23 @@ def simulate_mujoco_instancer(
         jnt = body.add_joint()
         jnt.type = _mj.mjtJoint.mjJNT_FREE
         g = body.add_geom()
-        g.type = _mj.mjtGeom.mjGEOM_SPHERE
-        g.size = [radius_i, 0.0, 0.0]
-        g.pos = gpos
+        if hull_base is not None:
+            # Shared prototype hull, scaled per instance. The verts already carry the
+            # geometry offset, so the geom stays at the body origin (no gpos).
+            g.type = _mj.mjtGeom.mjGEOM_MESH
+            g.meshname = _hull_mesh_for_scale(sx, sy, sz)
+        elif shape_type == "Box":
+            g.type = _mj.mjtGeom.mjGEOM_BOX
+            g.size = [
+                max(float(proto_ext[0]) * sx / 2.0, 1e-4),
+                max(float(proto_ext[1]) * sy / 2.0, 1e-4),
+                max(float(proto_ext[2]) * sz / 2.0, 1e-4),
+            ]
+            g.pos = gpos
+        else:
+            g.type = _mj.mjtGeom.mjGEOM_SPHERE
+            g.size = [radius_i, 0.0, 0.0]
+            g.pos = gpos
         g.mass = mass
         g.friction = [friction, 0.005, 0.0001]
         g.solref = [contact_tc, dyn_dampratio]
@@ -905,7 +1004,7 @@ def _parse_vec3(s: str) -> list[float]:
     return [0.0, 0.0, 0.0]
 
 
-def _parse_collision_prims(value, stage):
+def _parse_collision_prims(value: str, stage: Usd.Stage | None) -> list[Usd.Prim]:
     """Parse a newline-or-comma-separated path list into valid Usd.Prim objects."""
     result = []
     if not stage:
@@ -920,13 +1019,13 @@ def _parse_collision_prims(value, stage):
     return result
 
 
-def _clear_chunk_bake(owner):
+def _clear_chunk_bake(owner) -> None:
     layer = owner.get_edit_context()
     if layer and (lreg := chunk.get_layer_manager()):
         lreg.clear_layer(layer.identifier)
 
 
-def _promote_bake_layer(layer):
+def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
     """Make the bake layer the strongest chunk layer for its target prim.
 
     Chunk layers are ordered so the earlier-added sibling wins. When the solver
@@ -956,12 +1055,12 @@ def _promote_bake_layer(layer):
         print(f"[MuJoCoSolver] Could not promote bake layer: {e}")
 
 
-def reset(owner, notice, sender):
+def reset(owner, notice, sender) -> None:
     _clear_chunk_bake(owner)
     print("[MuJoCoSolver] Reset — bake cleared.")
 
 
-def add_collision(owner, notice, sender):
+def add_collision(owner, notice, sender) -> None:
     """Append the viewport-selected prim(s) to the collision list (comma-joined
     so get_prims() picks them all up)."""
     from usd_chunks import chunk_registry
@@ -985,12 +1084,12 @@ def add_collision(owner, notice, sender):
     print(f"[MuJoCoSolver] Added {added} collision prim(s); {len(existing)} total")
 
 
-def clear_collision(owner, notice, sender):
+def clear_collision(owner, notice, sender) -> None:
     owner.get_chunk().get_param("collision_path").value = ""
     print("[MuJoCoSolver] Cleared collision prims")
 
 
-def _run(owner, notice, sender):
+def _run(owner, notice, sender) -> None:
     if not _HAS_MUJOCO:
         print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
         return
@@ -1061,6 +1160,7 @@ def _run(owner, notice, sender):
             restitution=restitution,
             lin_damping=lin_damping,
             ang_damping=ang_damping,
+            shape_type=shape_type,
             solver_iters=30,
             hfield_res=int(_chunk.get_param("hfield_res").value or 96),
             floor_drop=floor_drop,
@@ -1071,17 +1171,6 @@ def _run(owner, notice, sender):
         parent_world_inv = Gf.Matrix4d(1.0)
         if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
             parent_world_inv = xform_cache.GetLocalToWorldTransform(parent).GetInverse()
-
-        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
-        rng = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
-        half_extents = [0.5, 0.5, 0.5]
-        z_offset = 0.0
-        up_idx = 1 if UsdGeom.GetStageUpAxis(stage).upper() == "Y" else 2
-        if not rng.IsEmpty():
-            sz = rng.GetMax() - rng.GetMin()
-            half_extents = [sz[0] / 2, sz[1] / 2, sz[2] / 2]
-            translate = xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation()
-            z_offset = ((rng.GetMin()[up_idx] + rng.GetMax()[up_idx]) / 2) - translate[up_idx]
 
         # Extract local scale so we can preserve it in the baked transform
         local_xf = xform_cache.GetLocalTransformation(prim)[0]
@@ -1107,8 +1196,6 @@ def _run(owner, notice, sender):
             ang_vel,
             start_frame,
             parent_world_inv,
-            half_extents,
-            z_offset,
             otx,
             oty,
             otz,
@@ -1142,7 +1229,7 @@ def _run(owner, notice, sender):
         pass
 
 
-def main():
+def main() -> chunk.Chunk:
     chunk_api = chunk.Chunk("RBD Solver")
 
     prim_path = chunk.LineEdit(
@@ -1242,5 +1329,5 @@ def main():
     return chunk_api
 
 
-def config():
+def config() -> chunk.DefaulConfig:
     return chunk.DefaulConfig(category="Simulation")
