@@ -43,6 +43,7 @@ _COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
 _COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
 _COL_PORT_BOOL = QtGui.QColor("#9e8e4a")   # muted yellow
 _COL_PORT_STRING = QtGui.QColor("#6a9070")  # muted green
+_COL_PORT_VECTOR = QtGui.QColor("#9a5da8")  # muted purple
 _COL_TEXT_PRIMARY = QtGui.QColor("#ffffff")
 _COL_TEXT_SECONDARY = QtGui.QColor("#aaaaaa")
 _COL_TEXT_LOCKED = QtGui.QColor("#888877")
@@ -74,6 +75,7 @@ _PORT_INT = "int"
 _PORT_BOOL = "bool"
 _PORT_STRING = "string"
 _PORT_COLOR = "color"
+_PORT_VECTOR = "vector"
 
 _COL_PORT_COLOR = QtGui.QColor("#c87060")  # muted red
 
@@ -84,6 +86,7 @@ _PORT_TYPE_COLOR = {
     _PORT_BOOL:   _COL_PORT_BOOL,
     _PORT_STRING: _COL_PORT_STRING,
     _PORT_COLOR:  _COL_PORT_COLOR,
+    _PORT_VECTOR: _COL_PORT_VECTOR,
 }
 
 
@@ -128,6 +131,10 @@ def _sdf_to_port_type(sdf_type_name) -> str:
         Sdf.ValueTypeNames.Int3, Sdf.ValueTypeNames.Int4,
     ):
         return _PORT_INT
+    if sdf_type_name in (
+        Sdf.ValueTypeNames.Float2, Sdf.ValueTypeNames.Float3, Sdf.ValueTypeNames.Float4,
+    ):
+        return _PORT_VECTOR
     return _PORT_FLOAT
 
 
@@ -155,7 +162,7 @@ def _param_port_type(param) -> str:
     if isinstance(param, ColorPicker):
         return _PORT_COLOR
     if isinstance(param, core.ChunkVectorBase):
-        return _PORT_FLOAT
+        return _PORT_VECTOR
     if isinstance(param, Checkbox):
         return _PORT_BOOL
     if isinstance(param, (LineEdit, TextEdit, FileBrowser)):
@@ -276,7 +283,14 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
 
     def _rebuild_typed_ports(self):
-        if self._proxy is None or self._proxy.widget() is None:
+        if self._proxy is None:
+            return
+        try:
+            if self._proxy.widget() is None:
+                return
+        except RuntimeError:
+            # C++ QGraphicsProxyWidget already destroyed (e.g. node deleted between
+            # scheduling this deferred rebuild and it firing) — nothing to rebuild.
             return
         scene = self.scene()
         for port in self._typed_ports:
@@ -292,13 +306,24 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._place_param_ports(self._proxy.widget())
         if scene:
             scene._build_edges()
+        # New/removed/recolored port items don't always get their region marked
+        # dirty automatically — without this the old pixels can linger on screen
+        # until something unrelated (e.g. deselecting the node) forces a repaint.
+        self.update()
 
     def _place_prim_output_ports(self, y_start: float, extend_height: bool = False):
-        """Create output ports for every outputs:* attribute on the prim (excluding outputs:chunk)."""
+        """Create output ports for every outputs:* attribute on the prim (excluding
+        outputs:chunk) that isn't already represented by a param-level port — every
+        connectable param gets its own inputs:/outputs: pair from _place_param_ports
+        regardless of the OUTPUT flag, so an OUTPUT param's real outputs:attr would
+        otherwise show up twice (once inline with its widget, once again down here)."""
+        covered = {f"outputs:{p.name}" for p in _iter_connectable_params(self.chunk)}
         _STEP = _PORT_RADIUS * 2 + 8
         attrs = [
             a for a in self.prim.GetAttributes()
-            if a.GetName().startswith("outputs:") and a.GetName() != "outputs:chunk"
+            if a.GetName().startswith("outputs:")
+            and a.GetName() != "outputs:chunk"
+            and a.GetName() not in covered
         ]
         if not attrs:
             return
@@ -1291,6 +1316,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         # For typed params, also write an expression so the value resolves at runtime.
         # The user can clear it from the QLineEdit to keep the wiring without expression eval.
+        # ChunkVectorBase supports this too (whole-vector references, e.g. @Node.vecParam@ —
+        # no per-component wiring).
         if src.port_type != _PORT_EXEC:
             src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
             src_param_name = src.attr_path.rsplit(":", 1)[-1]
@@ -1298,7 +1325,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             dst_node = graph_scene._nodes.get(str(Sdf.Path(dst.attr_path).GetPrimPath()))
             if dst_node:
                 param = dst_node.chunk.get_param(dst_param_name)
-                if param is not None and not isinstance(param, core.ChunkVectorBase):
+                if param is not None:
                     param.value = f"@{src_node_name}.{src_param_name}@"
 
         graph_scene._build_edges()
@@ -1337,14 +1364,23 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         else:
                             succ_attr.ClearConnections()
                         break
-        attr.ClearConnections()
+        chunk_usd.ChunkStageSync().clear_attr_connections(attr)
         # For typed ports, re-execute the owning chunk so shader-level connections
         # (e.g. UsdUVTexture.inputs:st) are cleared to match the disconnected chunk state.
-        # Vector params don't use expressions, so no value change fires automatically.
+        # Resetting param.value to default_value also clears a ChunkVectorBase's
+        # expression string (its value setter treats a non-string Sequence as "not
+        # an expression"), same as it does for scalar params.
         if port.port_type != _PORT_EXEC:
             prim_path = str(Sdf.Path(port.attr_path).GetPrimPath())
             node = graph_scene._nodes.get(prim_path)
             if node and getattr(node, 'chunk', None):
+                if port.is_input:
+                    attr_local = port.attr_path.rsplit(".", 1)[-1]
+                    if attr_local.startswith("inputs:"):
+                        param_name = attr_local[len("inputs:"):].replace(":", ".")
+                        param = node.chunk.get_param(param_name)
+                        if param is not None:
+                            param.value = param.default_value
                 node.chunk.execute()
         graph_scene._build_edges()
 

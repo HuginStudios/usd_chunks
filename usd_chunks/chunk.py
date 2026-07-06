@@ -292,7 +292,7 @@ class Menu(ChunkParamBase[str]):
 
     def convert_attr(self, attr: "Attribute", val: Any) -> Any:
         if attr.name in ["default_value", "value"]:
-            if self.menu_items and val not in self.menu_items:
+            if self.menu_items and val is not None and val not in self.menu_items:
                 return self.menu_items[0]
 
         return super().convert_attr(attr, val)

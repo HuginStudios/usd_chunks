@@ -787,6 +787,153 @@ def test_expression_load_wires_param() -> None:
     assert str(conns[0]) == f"{_CHUNKS_ROOT}/dst.inputs:val"
 
 
+def test_float_expression_load_reconstructs_raw_value() -> None:
+    """Float attrs store only the connection (no string value); reload must
+    reconstruct the @node.param@ expression from that connection so it survives
+    a save/reopen, instead of silently falling back to a plain number."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _SyncScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _SyncScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    dst = _chunk_with_module("dst")
+    dst.add_param(chunk.Slider("val", default_value=1.0))
+    scene.add_chunk(dst)
+    dst.get_param("val").value = 5.0  # non-default so its storage attr exists
+
+    src = _chunk_with_module("src")
+    src.add_param(chunk.Slider("p", default_value=1.0))
+    scene.add_chunk(src)
+    src.get_param("p").value = "@dst.val@"  # live-authored, same as a UI-dragged connection
+
+    attr = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/src").GetAttribute(f"{_INPUTS_PREFIX}p")
+    assert attr.GetTypeName() == Sdf.ValueTypeNames.Float
+    assert attr.Get() is None, "Float expression attrs must not store a string value"
+    assert len(attr.GetConnections()) == 1
+
+    reloaded = chunk.Chunk("src")
+    reloaded_param = chunk.Slider("p", default_value=1.0)
+    reloaded.add_param(reloaded_param)
+
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/src")
+    _load_wire_inputs(prim, reloaded)
+
+    assert reloaded_param.raw_value == "@dst.val@"
+
+
+def test_expression_value_updates_driven_attr() -> None:
+    """A param wired to a real prim attr via connect_usd_attr (e.g. camera focalLength
+    driven by a Slider) must push its *resolved* value to that driven attr even when
+    raw_value is an expression, not just when it's a plain number."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _SyncScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _SyncScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    ChunkStageSync().initialize(stage, scene)
+
+    src = _chunk_with_module("src")
+    src.add_param(chunk.Slider("val", default_value=0.0))
+    scene.add_chunk(src)
+    src.get_param("val").value = 12.5
+
+    dst = _chunk_with_module("dst")
+    slider = chunk.Slider("p", default_value=0.0)
+    dst.add_param(slider)
+    scene.add_chunk(dst)
+
+    driven_prim = stage.DefinePrim("/geo/sphere", "Sphere")
+    driven_attr = driven_prim.CreateAttribute("radius", Sdf.ValueTypeNames.Float, custom=False)
+    slider.connect_usd_attr(driven_attr)
+
+    slider.value = "@src.val@"
+
+    assert driven_attr.Get() == pytest.approx(12.5)
+
+
+def test_expression_listener_reconnects_after_reload() -> None:
+    """Reproduces a real user report: load a saved graph with MathOps.result driving
+    MathOps1.a via an expression, then change MathOps.a. The resolved value updates
+    fine on a fresh read, but the live-update listener (_expression_connections),
+    rebuilt during _load_wire_inputs's _connect_param_attr, failed to attach because
+    the *referenced* chunk (MathOps) wasn't registered with the scene yet at that
+    point in load_chunks's loop — so no notice ever reached MathOps1's widget.
+    load_chunks must retry the listener setup once every chunk in the batch is
+    registered, and the retry must actually restore live propagation."""
+    import importlib
+    mo = importlib.import_module("scripts.math_ops")
+
+    stage = Usd.Stage.CreateInMemory()
+    stage.GetRootLayer().ImportFromString(
+        """#usda 1.0
+
+def Chunk "chunks"
+{
+    def Chunk "MathOps" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "math_ops"
+        float inputs:a = 54.077
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+    }
+
+    def Chunk "MathOps1" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "math_ops"
+        float inputs:a.connect = </chunks/MathOps.inputs:result>
+        token inputs:chunk.connect = </chunks/MathOps.outputs:chunk>
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (260, 0)
+    }
+}
+"""
+    )
+
+    class _SyncScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _SyncScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    ChunkStageSync().initialize(stage, scene)
+    load_chunks(stage, scene)
+
+    loaded = {c.name: c for c in scene.get_chunks()}
+    m0, m1 = loaded["MathOps"], loaded["MathOps1"]
+    a_param = m1.get_param("a")
+
+    assert a_param.raw_value == "@MathOps.result@"
+    assert a_param.value == pytest.approx(54.077, abs=1e-3)
+    assert a_param._expression_connections, "listener must be attached after load_chunks"
+
+    # A GUI slider bound to a real driven attr (e.g. camera focalLength) must also
+    # refresh on reload/reconnect, and keep tracking live edits afterward.
+    driven_prim = stage.DefinePrim("/geo/xform", "Xform")
+    driven_attr = driven_prim.CreateAttribute("myFloat", Sdf.ValueTypeNames.Float, custom=True)
+    a_param.connect_usd_attr(driven_attr)
+    assert driven_attr.Get() == pytest.approx(54.077, abs=1e-3)
+
+    m0.get_param("a").value = 10.0
+    mo.execute(m0)
+
+    assert a_param.value == pytest.approx(10.0)
+    assert driven_attr.Get() == pytest.approx(10.0)
+
+
 # ---------------------------------------------------------------------------
 # Expression authoring: multiple @..@ tokens produce multiple connections
 # ---------------------------------------------------------------------------
@@ -830,6 +977,44 @@ def test_expression_numeric_param_authoring() -> None:
     assert len(conns) == 2
     assert str(conns[0]) == f"{_CHUNKS_ROOT}/a.inputs:x"
     assert str(conns[1]) == f"{_CHUNKS_ROOT}/b.inputs:y"
+
+
+# ---------------------------------------------------------------------------
+# Float expression via ChunkStageSync (mult-style workflow)
+# ---------------------------------------------------------------------------
+
+def test_float_expression_via_chunk_stage_sync() -> None:
+    """Float param expression via ChunkStageSync: Float attr with connections only, resolves Python-side."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    # Source chunk with an OUTPUT result param (simulates compute chunk)
+    src = _chunk_with_module("Mult1")
+    result = chunk.Spinbox("result", default_value=0.0, flags=ChunkFlags.ParamFlags.OUTPUT)
+    result.value = 15.0  # non-default so _sync_chunk_inputs creates outputs:result attr
+    src.add_param(result)
+    scene.add_chunk(src)
+
+    # Downstream chunk with a float input driven by expression
+    ref = _chunk_with_module("Mult2")
+    a_param = chunk.Slider("a", default_value=1.0)
+    a_param.value = "@Mult1.result@"
+    ref.add_param(a_param)
+    scene.add_chunk(ref)
+
+    mult2_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Mult2")
+    attr = mult2_prim.GetAttribute(f"{_INPUTS_PREFIX}a")
+
+    assert attr.IsValid(), "inputs:a must exist on Mult2 prim"
+    assert attr.GetTypeName() == Sdf.ValueTypeNames.Float, "float expression must use Float attr, not String"
+    conns = attr.GetConnections()
+    assert len(conns) == 1, "expression must create exactly one connection"
+    assert str(conns[0]).endswith("Mult1.outputs:result"), "expression routes to outputs: for OUTPUT params"
+    assert attr.Get() is None, "float expression attrs must not store the expression string as a value"
+    assert a_param.raw_value == "@Mult1.result@", "raw_value must remain the expression string"
+    assert a_param.value == pytest.approx(15.0), "param.value must resolve the expression to Mult1.result"
 
 
 # ---------------------------------------------------------------------------
