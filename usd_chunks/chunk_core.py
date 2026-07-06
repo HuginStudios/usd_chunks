@@ -591,8 +591,12 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         Called when state of the group has changed
         """
         self.set_hidden(self.group.has_state(ChunkFlags.State.HIDDEN))
-        is_output = self.group.has_flag(ChunkFlags.ParamFlags.OUTPUT)
-        self.set_enabled(not is_output and not self.group.has_state(ChunkFlags.State.DISABLED))
+        # NB: OUTPUT is a ParamFlags value and has no meaning for a group. Checking it
+        # here against the group's GroupFlags mis-fires because ParamFlags.OUTPUT and
+        # GroupFlags.COLLAPSABLE share the same bit (2), so every collapsible group
+        # read as "output" and disabled all its children. A group is only disabled by
+        # its own DISABLED state.
+        self.set_enabled(not self.group.has_state(ChunkFlags.State.DISABLED))
         self.set_selected(self.group.has_state(ChunkFlags.State.SELECTED))
 
     @abstractmethod
