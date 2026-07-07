@@ -553,7 +553,8 @@ def main():
             "inst_path",
             "Instancer Path",
             default_value="/ScatterInstancer",
-            tooltip="USD path where the PointInstancer is created. Feed this to the RBD Solver to settle the instances.",
+            tooltip="USD path where the PointInstancer is created. Feed this to the RBD Solver "
+            "to settle the instances.",
         )
     )
 
@@ -579,7 +580,8 @@ def main():
             "auto_spacing",
             "Auto Spacing",
             default_value=True,
-            tooltip="Derive spacing from the prototype's footprint so instances don't overlap. Turn off to set Spacing manually.",
+            tooltip="Derive spacing from the prototype's footprint so instances don't overlap. "
+            "Turn off to set Spacing manually.",
         )
     )
     dist_grp.add_param(
@@ -587,7 +589,8 @@ def main():
             "spacing",
             "Spacing",
             default_value=0.0,
-            tooltip="Minimum distance between instances, in scene units (used when Auto Spacing is off). 0 = allow overlap.",
+            tooltip="Minimum distance between instances, in scene units (used when Auto Spacing is off). "
+            "0 = allow overlap.",
         )
     )
     dist_grp.add_param(
@@ -617,7 +620,8 @@ def main():
             "max_slope",
             "Max Slope",
             default_value=90.0,
-            tooltip="Only scatter on faces within this many degrees of facing up.\n90 = all upward faces, lower = flatter ground only, 180 = every face.",
+            tooltip="Only scatter on faces within this many degrees of facing up.\n"
+            "90 = all upward faces, lower = flatter ground only, 180 = every face.",
         )
     )
     chunk_api.add_param(region_grp)
@@ -645,7 +649,8 @@ def main():
             "normal_offset",
             "Normal Offset",
             default_value=0.0,
-            tooltip="Push instances along the surface normal. Positive lifts them off the surface (handy before an RBD settle); negative sinks them in.",
+            tooltip="Push instances along the surface normal. Positive lifts them off the surface "
+            "(handy before an RBD settle); negative sinks them in.",
         )
     )
     var_grp.add_param(
@@ -654,7 +659,9 @@ def main():
             "Orientation Mode",
             menu_items=_ORIENT_MODES,
             default_value="Align to Normal",
-            tooltip="Align to Normal: follow the surface.\nUp / Keep Original: use the prototype's orientation.\nRandom: fully random.",
+            tooltip="Align to Normal: follow the surface.\n"
+            "Up / Keep Original: use the prototype's orientation.\n"
+            "Random: fully random.",
         )
     )
     var_grp.add_param(
@@ -681,7 +688,8 @@ def main():
             "auto_scatter",
             "Auto Scatter",
             default_value=False,
-            tooltip="Re-scatter automatically whenever a setting changes — no need to press Scatter. Off by default to avoid lag on heavy meshes.",
+            tooltip="Re-scatter automatically whenever a setting changes — no need to press Scatter. "
+            "Off by default to avoid lag on heavy meshes.",
         )
     )
 
