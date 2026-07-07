@@ -309,8 +309,10 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         w = self.widget(idx)
         if isinstance(w, ChunkTabContextStack):
             w = w.widget(0)
-        assert w is None or isinstance(w, ChunkWidget)
-        return w
+        # Not every tab holds a context: index 0 is the "+" ChunkArea, and during
+        # async teardown (a ChunkTabContextStack removing itself on GC) the current
+        # widget can momentarily be something else. Return None rather than assert.
+        return w if isinstance(w, ChunkWidget) else None
 
     def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
         for i in range(self.count()):
