@@ -131,26 +131,30 @@ def main():
         "prim_path",
         "Prim",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        tooltip="The prim to offset — pick it in the viewport or type a path.",
     )
     chunk_api.add_param(prim_path)
     prim_path.add_callback(_run)
 
+    _t_tip = "Added to the prim's current {} translation, in scene units."
     translate_grp = chunk.Group("Translate")
-    translate_grp.add_param(chunk.Spinbox("tx", "Translate X", default_value=0.0))
-    translate_grp.add_param(chunk.Spinbox("ty", "Translate Y", default_value=0.0))
-    translate_grp.add_param(chunk.Spinbox("tz", "Translate Z", default_value=0.0))
+    translate_grp.add_param(chunk.Spinbox("tx", "Translate X", default_value=0.0, tooltip=_t_tip.format("X")))
+    translate_grp.add_param(chunk.Spinbox("ty", "Translate Y", default_value=0.0, tooltip=_t_tip.format("Y")))
+    translate_grp.add_param(chunk.Spinbox("tz", "Translate Z", default_value=0.0, tooltip=_t_tip.format("Z")))
     chunk_api.add_param(translate_grp)
 
+    _r_tip = "Added to the prim's current {} rotation, in degrees."
     rotate_grp = chunk.Group("Rotate")
-    rotate_grp.add_param(chunk.Spinbox("rx", "Rotate X", default_value=0.0))
-    rotate_grp.add_param(chunk.Spinbox("ry", "Rotate Y", default_value=0.0))
-    rotate_grp.add_param(chunk.Spinbox("rz", "Rotate Z", default_value=0.0))
+    rotate_grp.add_param(chunk.Spinbox("rx", "Rotate X", default_value=0.0, tooltip=_r_tip.format("X")))
+    rotate_grp.add_param(chunk.Spinbox("ry", "Rotate Y", default_value=0.0, tooltip=_r_tip.format("Y")))
+    rotate_grp.add_param(chunk.Spinbox("rz", "Rotate Z", default_value=0.0, tooltip=_r_tip.format("Z")))
     chunk_api.add_param(rotate_grp)
 
+    _s_tip = "Multiplies the prim's current {} scale (1 = unchanged)."
     scale_grp = chunk.Group("Scale")
-    scale_grp.add_param(chunk.Spinbox("sx", "Scale X", default_value=1.0))
-    scale_grp.add_param(chunk.Spinbox("sy", "Scale Y", default_value=1.0))
-    scale_grp.add_param(chunk.Spinbox("sz", "Scale Z", default_value=1.0))
+    scale_grp.add_param(chunk.Spinbox("sx", "Scale X", default_value=1.0, tooltip=_s_tip.format("X")))
+    scale_grp.add_param(chunk.Spinbox("sy", "Scale Y", default_value=1.0, tooltip=_s_tip.format("Y")))
+    scale_grp.add_param(chunk.Spinbox("sz", "Scale Z", default_value=1.0, tooltip=_s_tip.format("Z")))
     chunk_api.add_param(scale_grp)
 
     for name in ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz"):
@@ -160,4 +164,12 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)
+    return chunk.DefaulConfig(
+        category=chunk.StandardCategory.UTILS,
+        description=(
+            "Applies a relative translate/rotate/scale offset on top of a prim's existing\n"
+            "transform (translate and rotate add, scale multiplies). Re-authors on each\n"
+            "change and tracks the last applied offset, so dragging a value adjusts\n"
+            "smoothly instead of stacking. Authors an over in the chunk layer."
+        ),
+    )

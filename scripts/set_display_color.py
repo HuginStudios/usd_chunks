@@ -46,14 +46,15 @@ def main():
         "prim_path",
         "Prim",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        tooltip="The prim to colour — pick it in the viewport or type a path.",
     )
     chunk_api.add_param(prim_path)
     prim_path.add_callback(_run)
 
     color_grp = chunk.Group("Color")
-    color_grp.add_param(chunk.Spinbox("color_r", "R", default_value=0.5))
-    color_grp.add_param(chunk.Spinbox("color_g", "G", default_value=0.5))
-    color_grp.add_param(chunk.Spinbox("color_b", "B", default_value=0.5))
+    color_grp.add_param(chunk.Spinbox("color_r", "R", default_value=0.5, tooltip="Red channel (0–1)."))
+    color_grp.add_param(chunk.Spinbox("color_g", "G", default_value=0.5, tooltip="Green channel (0–1)."))
+    color_grp.add_param(chunk.Spinbox("color_b", "B", default_value=0.5, tooltip="Blue channel (0–1)."))
     chunk_api.add_param(color_grp)
 
     for name in ("color_r", "color_g", "color_b"):
@@ -63,4 +64,11 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="Material")
+    return chunk.DefaulConfig(
+        category="Material",
+        description=(
+            "Authors a uniform displayColor (primvars:displayColor) on the target prim —\n"
+            "a quick flat colour for previews or for tagging prims, without needing a\n"
+            "material."
+        ),
+    )

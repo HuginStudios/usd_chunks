@@ -33,6 +33,7 @@ from plugins.chunk_qt_widgets import (
     file_dial,
     CHUNK_STYLESHEET,
     ViewSlotState,
+    _clean_description,
 )
 from plugins.chunk_qt_nodegraph import ChunkGraphView
 
@@ -309,6 +310,9 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         paste_sc.activated.connect(_guarded_paste)
 
         idx = self.addTab(stack, c.name)
+        cfg = c.get_config() if hasattr(c, "get_config") else None
+        if cfg and (desc := _clean_description(cfg.description)):
+            self.setTabToolTip(idx, desc)
         self.setCurrentIndex(idx)
         self.update_stylesheet()
 
@@ -576,7 +580,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
         self.content.insertRow(row)
 
         c1 = QtWidgets.QTableWidgetItem(mod.module_name)
-        c1.setToolTip(mod.config.description)
+        c1.setToolTip(_clean_description(mod.config.description))
 
         c2 = QtWidgets.QTableWidgetItem(mod.module_file.as_posix() if mod.module_file.exists() else "Not Found")
 

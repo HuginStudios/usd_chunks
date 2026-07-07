@@ -1253,6 +1253,7 @@ def main() -> chunk.Chunk:
         "prim_path",
         "Target Prim",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        tooltip="The prim to simulate — a single mesh, or a PointInstancer to simulate every instance.",
     )
     chunk_api.add_param(prim_path)
 
@@ -1299,47 +1300,134 @@ def main() -> chunk.Chunk:
     chunk_api.add_param(col_grp)
 
     sim_grp = chunk.Group("Simulation", flags=_GF)
-    sim_grp.add_param(chunk.Spinbox("frame_count", "Frame Count", default_value=120, is_int=True))
-    sim_grp.add_param(chunk.Spinbox("fps", "FPS", default_value=24.0))
-    sim_grp.add_param(chunk.Spinbox("gravity", "Gravity", default_value=-981.0))
-    sim_grp.add_param(chunk.Spinbox("substeps", "Substeps", default_value=8, is_int=True))
-    sim_grp.add_param(chunk.Spinbox("start_frame", "Start Frame", default_value=1, is_int=True))
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "frame_count",
+            "Frame Count",
+            default_value=120,
+            is_int=True,
+            tooltip="Number of frames to simulate and bake.",
+        )
+    )
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "fps", "FPS", default_value=24.0, tooltip="Frames per second — sets the simulation timestep (1/fps)."
+        )
+    )
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "gravity",
+            "Gravity",
+            default_value=-981.0,
+            tooltip="Gravity along the scene's up axis, in scene units/s². Default -981 assumes centimetres.",
+        )
+    )
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "substeps",
+            "Substeps",
+            default_value=8,
+            is_int=True,
+            tooltip="Physics steps per frame. Higher = more stable/accurate but slower.",
+        )
+    )
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "start_frame", "Start Frame", default_value=1, is_int=True, tooltip="First frame of the baked animation."
+        )
+    )
     chunk_api.add_param(sim_grp)
 
     physics_grp = chunk.Group("Physics", flags=_GF)
     # Sphere is the most stable shape against the heightfield collider; Convex
     # Hull is more accurate on flat ground but can be unstable on heightfields.
     physics_grp.add_param(
-        chunk.Menu("shape_type", "Collision Shape", menu_items=["Sphere", "Box", "Convex Hull"], default_value="Sphere")
+        chunk.Menu(
+            "shape_type",
+            "Collision Shape",
+            menu_items=["Sphere", "Box", "Convex Hull"],
+            default_value="Sphere",
+            tooltip="Collision shape for the dynamic body: Sphere (fastest, most stable), Box, "
+            "or Convex Hull (most accurate, can be unstable on concave colliders).",
+        )
     )
-    physics_grp.add_param(chunk.Spinbox("collision_margin", "Collision Margin", default_value=0.0))
-    physics_grp.add_param(chunk.Spinbox("hfield_res", "Collider Resolution", default_value=64, is_int=True))
-    physics_grp.add_param(chunk.Spinbox("friction", "Friction", default_value=0.5))
-    physics_grp.add_param(chunk.Spinbox("restitution", "Bounce", default_value=0.1))
-    physics_grp.add_param(chunk.Spinbox("mass", "Mass", default_value=1.0))
-    physics_grp.add_param(chunk.Spinbox("lin_damping", "Linear Damping", default_value=0.0))
-    physics_grp.add_param(chunk.Spinbox("ang_damping", "Angular Damping", default_value=0.05))
+    physics_grp.add_param(
+        chunk.Spinbox(
+            "collision_margin",
+            "Collision Margin",
+            default_value=0.0,
+            tooltip="Extra padding grown around every collider, in scene units. Helps avoid clipping.",
+        )
+    )
+    physics_grp.add_param(
+        chunk.Spinbox(
+            "hfield_res",
+            "Collider Resolution",
+            default_value=64,
+            is_int=True,
+            tooltip="Grid resolution of the heightfield built from concave colliders (bowls/terrain). "
+            "Higher = finer surface but heavier.",
+        )
+    )
+    physics_grp.add_param(
+        chunk.Spinbox("friction", "Friction", default_value=0.5, tooltip="Surface friction (0 = frictionless).")
+    )
+    physics_grp.add_param(
+        chunk.Spinbox(
+            "restitution", "Bounce", default_value=0.1, tooltip="Bounciness: 0 = no bounce, 1 = fully elastic."
+        )
+    )
+    physics_grp.add_param(chunk.Spinbox("mass", "Mass", default_value=1.0, tooltip="Mass of the dynamic body."))
+    physics_grp.add_param(
+        chunk.Spinbox(
+            "lin_damping",
+            "Linear Damping",
+            default_value=0.0,
+            tooltip="Linear drag slowing the body's motion (0 = none).",
+        )
+    )
+    physics_grp.add_param(
+        chunk.Spinbox(
+            "ang_damping", "Angular Damping", default_value=0.05, tooltip="Rotational drag slowing the body's spin."
+        )
+    )
     chunk_api.add_param(physics_grp)
 
+    _ot_tip = "Shift the body's start position along {} before simulating, in scene units."
+    _or_tip = "Pre-rotate the body around {} before simulating, in degrees."
     offset_grp = chunk.Group("Offsets", flags=_GF)
-    offset_grp.add_param(chunk.Spinbox("off_tx", "Offset X", default_value=0.0))
-    offset_grp.add_param(chunk.Spinbox("off_ty", "Offset Y", default_value=0.0))
-    offset_grp.add_param(chunk.Spinbox("off_tz", "Offset Z", default_value=0.0))
-    offset_grp.add_param(chunk.Spinbox("off_rx", "Rotate X", default_value=0.0))
-    offset_grp.add_param(chunk.Spinbox("off_ry", "Rotate Y", default_value=0.0))
-    offset_grp.add_param(chunk.Spinbox("off_rz", "Rotate Z", default_value=0.0))
+    offset_grp.add_param(chunk.Spinbox("off_tx", "Offset X", default_value=0.0, tooltip=_ot_tip.format("X")))
+    offset_grp.add_param(chunk.Spinbox("off_ty", "Offset Y", default_value=0.0, tooltip=_ot_tip.format("Y")))
+    offset_grp.add_param(chunk.Spinbox("off_tz", "Offset Z", default_value=0.0, tooltip=_ot_tip.format("Z")))
+    offset_grp.add_param(chunk.Spinbox("off_rx", "Rotate X", default_value=0.0, tooltip=_or_tip.format("X")))
+    offset_grp.add_param(chunk.Spinbox("off_ry", "Rotate Y", default_value=0.0, tooltip=_or_tip.format("Y")))
+    offset_grp.add_param(chunk.Spinbox("off_rz", "Rotate Z", default_value=0.0, tooltip=_or_tip.format("Z")))
     chunk_api.add_param(offset_grp)
 
     vel_grp = chunk.Group("Velocity", flags=_GF)
-    vel_grp.add_param(chunk.LineEdit("initial_velocity", "Linear Velocity", default_value="0 0 0"))
-    vel_grp.add_param(chunk.LineEdit("angular_velocity", "Angular Velocity", default_value="0 0 0"))
+    vel_grp.add_param(
+        chunk.LineEdit(
+            "initial_velocity",
+            "Linear Velocity",
+            default_value="0 0 0",
+            tooltip="Starting linear velocity as 'x y z', in scene units/s.",
+        )
+    )
+    vel_grp.add_param(
+        chunk.LineEdit(
+            "angular_velocity",
+            "Angular Velocity",
+            default_value="0 0 0",
+            tooltip="Starting angular velocity as 'x y z', in radians/s.",
+        )
+    )
     chunk_api.add_param(vel_grp)
 
-    run_btn = chunk.Button("run_sim", "Run Simulation")
+    run_btn = chunk.Button("run_sim", "Run Simulation", tooltip="Simulate and bake the animation onto the target prim.")
     run_btn.add_callback(_run)
     chunk_api.add_param(run_btn)
 
-    reset_btn = chunk.Button("reset_sim", "Reset")
+    reset_btn = chunk.Button("reset_sim", "Reset", tooltip="Clear the baked animation from this chunk's layer.")
     reset_btn.add_callback(reset)
     chunk_api.add_param(reset_btn)
 
@@ -1347,4 +1435,12 @@ def main() -> chunk.Chunk:
 
 
 def config() -> chunk.DefaulConfig:
-    return chunk.DefaulConfig(category="Simulation")
+    return chunk.DefaulConfig(
+        category="Simulation",
+        description=(
+            "Bakes a MuJoCo rigid-body simulation onto the target prim — or every instance\n"
+            "of a PointInstancer — as keyframed animation over the frame range. Add colliders\n"
+            "for objects to rest on or in (a heightfield is built for concave shapes like\n"
+            "bowls). Requires the 'mujoco' package."
+        ),
+    )

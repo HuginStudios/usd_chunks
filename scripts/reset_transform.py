@@ -35,10 +35,11 @@ def main():
         "prim_path",
         "Prim",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        tooltip="The prim whose transform ops to clear — pick it in the viewport or type a path.",
     )
     chunk_api.add_param(prim_path)
 
-    run_btn = chunk.Button("run", "Reset Transform")
+    run_btn = chunk.Button("run", "Reset Transform", tooltip="Clear the prim's authored transform ops.")
     chunk_api.add_param(run_btn)
     run_btn.add_callback(_run)
 
@@ -46,4 +47,11 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.UTILS)
+    return chunk.DefaulConfig(
+        category=chunk.StandardCategory.UTILS,
+        description=(
+            "Clears all authored transform ops on the target prim, resetting it to its\n"
+            "underlying composed transform. Authors in the chunk layer, so the prim's\n"
+            "original definition is untouched — remove the chunk to restore it."
+        ),
+    )

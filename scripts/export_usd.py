@@ -70,6 +70,8 @@ def main():
             "output_file",
             "Output File",
             extensions=["usd", "usda", "usdc", "usdz"],
+            tooltip="Destination file. The extension picks the format: .usda (text), "
+            ".usdc (binary), .usd (either), or .usdz (package).",
         )
     )
 
@@ -78,14 +80,18 @@ def main():
         "Layer",
         menu_items=["Stage (Flattened)"],
         default_value="Stage (Flattened)",
+        tooltip="What to export: the whole flattened stage, the session layer, or a "
+        "specific sublayer. Press Refresh Layers to populate this list from the stage.",
     )
     chunk_api.add_param(layer_menu)
 
-    refresh_btn = chunk.Button("refresh", "↻ Refresh Layers")
+    refresh_btn = chunk.Button(
+        "refresh", "↻ Refresh Layers", tooltip="Rebuild the Layer menu from the current stage's layers."
+    )
     refresh_btn.add_callback(_refresh_layers)
     chunk_api.add_param(refresh_btn)
 
-    export_btn = chunk.Button("export", "Export")
+    export_btn = chunk.Button("export", "Export", tooltip="Write the selected layer/stage to the output file.")
     export_btn.add_callback(export)
     chunk_api.add_param(export_btn)
 
@@ -93,4 +99,11 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="Composition")
+    return chunk.DefaulConfig(
+        category="Composition",
+        description=(
+            "Exports the current stage — fully flattened, the session layer, or a single\n"
+            "chosen sublayer — to a USD file on disk. Press Refresh Layers to populate\n"
+            "the Layer menu, pick a target, then Export."
+        ),
+    )
