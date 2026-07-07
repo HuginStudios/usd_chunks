@@ -154,6 +154,19 @@ class Vector(ChunkVectorBase):
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
 
+def _apply_usd_hard_limits(param, attr) -> None:
+    """Copy an attribute's hard min/max limits onto a numeric param, if it has them."""
+    try:
+        limits = attr.GetLimits()  # type: ignore
+    except Exception:
+        limits = None
+    if limits and (hard := limits.get("hard")):
+        if hasattr(param, "min_value"):
+            param.min_value = hard.get("minimum", None)  # type: ignore
+        if hasattr(param, "max_value"):
+            param.max_value = hard.get("maximum", None)  # type: ignore
+
+
 class Slider(ChunkParamBase[int | float]):
     """
     A slider parameter holding a float or int value
@@ -179,20 +192,7 @@ class Slider(ChunkParamBase[int | float]):
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)
-
-        try:
-            limits = attr.GetLimits()  # type: ignore
-        except Exception:
-            limits = None
-        if limits:
-            if hard := limits.get("hard"):
-                limit_min = hard.get("minimum", None)
-                limit_max = hard.get("maximum", None)
-
-                if hasattr(param, "min_value"):
-                    param.min_value = limit_min  # type: ignore
-                if hasattr(param, "max_value"):
-                    param.max_value = limit_max  # type: ignore
+        _apply_usd_hard_limits(param, attr)
         return param
 
 
@@ -223,16 +223,7 @@ class Spinbox(ChunkParamBase[float | int]):
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)
-
-        if limits := attr.GetLimits():  # type: ignore
-            if hard := limits.get("hard"):
-                limit_min = hard.get("minimum", None)
-                limit_max = hard.get("maximum", None)
-
-                if hasattr(param, "min_value"):
-                    param.min_value = limit_min  # type: ignore
-                if hasattr(param, "max_value"):
-                    param.max_value = limit_max  # type: ignore
+        _apply_usd_hard_limits(param, attr)
         return param
 
 
