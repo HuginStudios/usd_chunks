@@ -685,19 +685,6 @@ def is_param_t(t: ChunkFlags.ParamType | type[ValueT]) -> Predicate[ChunkParamBa
     return _fn_t
 
 
-def is_param_drivable(v: Any) -> bool:
-    """Predicate for get_params(): True for params that can be driven from the node graph.
-
-    Includes ChunkVectorBase and all ChunkParamBase subclasses except
-    Button, Separator, Label, and Custom.
-    """
-    if isinstance(v, ChunkVectorBase):
-        return True
-    if isinstance(v, ChunkParamBase):
-        return not isinstance(v, (Button, Separator, Label, Custom))
-    return False
-
-
 def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
     """
     A predicate function for checking if v is a ChunkGroupBase
