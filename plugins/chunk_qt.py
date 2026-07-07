@@ -78,15 +78,15 @@ class EditableTabBar(QtWidgets.QTabBar):
         menu = QtWidgets.QMenu()
         menu.setToolTipsVisible(True)
 
-        # Show the chunk's description (stored as the tab tooltip): the first line as a
-        # disabled header, the full text on hover.
+        # Show the chunk's description (stored as the tab tooltip): first line as an
+        # info item, full text on hover. The action must stay ENABLED — Qt does not
+        # show tooltips for disabled menu items. Clicking it is a harmless no-op.
         if desc := self.tabToolTip(idx):
             first_line = desc.splitlines()[0]
             label = first_line if len(first_line) <= 60 else first_line[:57] + "…"
-            header = QtGui.QAction(label, menu)
-            header.setEnabled(False)
-            header.setToolTip(desc)
-            menu.addAction(header)
+            info_action = QtGui.QAction(f"ℹ {label}", menu)
+            info_action.setToolTip(desc)
+            menu.addAction(info_action)
             menu.addSeparator()
 
         remove_action = QtGui.QAction("remove")
