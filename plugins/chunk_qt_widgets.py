@@ -1164,26 +1164,30 @@ class ContainerWidget(
             pass
 
     def remove_widget(self, widget: QtWidgets.QWidget):
-        count = self.content_layout.count()
-        for i in reversed(range(count)):
-            item = self.content_layout.itemAt(i)
-            if not item:
-                continue
-            iw = item.widget()
+        try:
+            count = self.content_layout.count()
+            for i in reversed(range(count)):
+                item = self.content_layout.itemAt(i)
+                if not item:
+                    continue
+                iw = item.widget()
 
-            if isinstance(iw, LabeledWidget) and iw.widget == widget:
-                self.content_layout.removeItem(item)
-                # Tear the wrapper down, not just its layout entry. Otherwise the
-                # LabeledWidget stays a child of this container, keeping a strong ref to
-                # the param widget -> chunk, so the chunk never GCs and its layer's
-                # weakref.finalize (which removes the layer) never fires.
-                try:
+                if isinstance(iw, LabeledWidget) and iw.widget == widget:
+                    self.content_layout.removeItem(item)
+                    # Tear the wrapper down, not just its layout entry. Otherwise the
+                    # LabeledWidget stays a child of this container, keeping a strong ref
+                    # to the param widget -> chunk, so the chunk never GCs and its layer's
+                    # weakref.finalize (which removes the layer) never fires.
                     iw.setParent(None)
                     iw.deleteLater()
-                except RuntimeError:
-                    # C++ object already destroyed (e.g. during cascade teardown)
-                    pass
-                break
+                    break
+        except RuntimeError:
+            # This container's own C++ layout/widget was already torn down (e.g. the whole
+            # ChunkWidget was deleted via _group_deleted while a sibling's PARAM_REMOVED was
+            # still propagating here during a tab-delete cascade). Nothing to remove — the
+            # parent teardown handles the children. Swallowing this lets the cascade finish
+            # and reach super().request_delete()/CHUNK_DELETED, so the tab actually closes.
+            pass
 
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
