@@ -1,6 +1,6 @@
 import re
 from contextlib import contextmanager, ExitStack
-from pxr import Sdf, Usd
+from pxr import Usd
 
 _EXPR_RE = re.compile(r'@(\w+)\.(\w+)@')
 
@@ -78,7 +78,9 @@ def resolve_prim_paths(stage, location_str):
         for prim in stage.Traverse():
             if rx.match(prim.GetPath().pathString):
                 paths.append(prim.GetPath().pathString)
-    return paths
+    # Order-preserving de-dup: a prim matched by both an explicit path and a
+    # glob/collection should only be targeted once.
+    return list(dict.fromkeys(paths))
 
 
 def parse_expression(text: str) -> list[tuple[str, str]]:
