@@ -1,4 +1,3 @@
-import textwrap
 import weakref
 
 from PySide6 import QtWidgets, QtCore, QtGui
@@ -34,21 +33,9 @@ from plugins.chunk_qt_widgets import (
     file_dial,
     CHUNK_STYLESHEET,
     ViewSlotState,
+    _clean_description,
 )
 from plugins.chunk_qt_nodegraph import ChunkGraphView
-
-
-# The attrs default for ChunkConfig.description — an unfilled chunk. Don't tooltip it.
-_PLACEHOLDER_DESC = "Chunk description..."
-
-
-def _clean_description(desc: str) -> str:
-    """Normalise a chunk's config description for display as a tooltip.
-
-    Descriptions are often triple-quoted with leading indentation; dedent + strip
-    so the tooltip reads cleanly instead of showing the source indentation.
-    """
-    return textwrap.dedent(desc or "").strip()
 
 
 class EditableTabBar(QtWidgets.QTabBar):
@@ -76,18 +63,6 @@ class EditableTabBar(QtWidgets.QTabBar):
             return
 
         menu = QtWidgets.QMenu()
-        menu.setToolTipsVisible(True)
-
-        # Show the chunk's description (stored as the tab tooltip): first line as an
-        # info item, full text on hover. The action must stay ENABLED — Qt does not
-        # show tooltips for disabled menu items. Clicking it is a harmless no-op.
-        if desc := self.tabToolTip(idx):
-            first_line = desc.splitlines()[0]
-            label = first_line if len(first_line) <= 60 else first_line[:57] + "…"
-            info_action = QtGui.QAction(f"ℹ {label}", menu)
-            info_action.setToolTip(desc)
-            menu.addAction(info_action)
-            menu.addSeparator()
 
         remove_action = QtGui.QAction("remove")
         disable_action = QtGui.QAction("toggle enabled")
@@ -336,7 +311,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
         idx = self.addTab(stack, c.name)
         cfg = c.get_config() if hasattr(c, "get_config") else None
-        if cfg and cfg.description != _PLACEHOLDER_DESC and (desc := _clean_description(cfg.description)):
+        if cfg and (desc := _clean_description(cfg.description)):
             self.setTabToolTip(idx, desc)
         self.setCurrentIndex(idx)
         self.update_stylesheet()

@@ -12,6 +12,21 @@ from plugins import chunk_usd
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
 import os
+import textwrap
+
+_PLACEHOLDER_DESC = "Chunk description..."
+
+
+def _clean_description(desc: str) -> str:
+    """Dedented/stripped chunk description for a tooltip; '' for the unset placeholder.
+
+    Descriptions are often triple-quoted with leading indentation; dedent + strip so the
+    tooltip reads cleanly. Returns '' for the default placeholder so undocumented chunks
+    show no tooltip.
+    """
+    cleaned = textwrap.dedent(desc or "").strip()
+    return "" if cleaned == _PLACEHOLDER_DESC else cleaned
+
 
 CHUNK_STYLESHEET = """
 QCheckBox {
@@ -1776,6 +1791,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
     def select_module(self, pos):
         items = dict()
         items["menu"] = self
+        self.setToolTipsVisible(True)
         self._flat_results: list = []
 
         filter_action = QtWidgets.QWidgetAction(items["menu"])
@@ -1788,22 +1804,28 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             namespace = mod.get_menu_name().split(os.pathsep)
             search_term = set([x.lower() for x in namespace])
 
+            tooltip = _clean_description(mod.config.description)
+
             d = items
             for ns in namespace:
                 if ns is namespace[-1]:
                     if m := d.get("menu"):
                         action = m.addAction(ns)
                         action.setData(mod)
+                        action.setToolTip(tooltip)
                         self.filterable[action] = search_term
                     break
                 elif ns not in d:
-                    d[ns] = {"menu": d.get("menu").addMenu(ns)}
+                    submenu = d.get("menu").addMenu(ns)
+                    submenu.setToolTipsVisible(True)
+                    d[ns] = {"menu": submenu}
                 d = d[ns]
 
             # Flat search result — full path label, hidden until search is active
             label = " → ".join(namespace)
             flat_action = self.addAction(label)
             flat_action.setData(mod)
+            flat_action.setToolTip(tooltip)
             flat_action.setVisible(False)
             self._flat_results.append((flat_action, search_term))
 
