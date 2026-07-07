@@ -66,6 +66,10 @@ def _get_proxy_sink() -> QtWidgets.QWidget:
         # Logically visible (so children inherit WA_WState_Visible and isVisible()
         # returns True for port placement) but physically suppressed so nothing renders.
         _proxy_sink.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
+        # This persistent top-level sink is never closed. Without WA_QuitOnClose=False it
+        # counts as an open window, so usdview's quitOnLastWindowClosed never fires when the
+        # main window closes and the process hangs on exit.
+        _proxy_sink.setAttribute(QtCore.Qt.WA_QuitOnClose, False)
         _proxy_sink.show()
     return _proxy_sink
 
