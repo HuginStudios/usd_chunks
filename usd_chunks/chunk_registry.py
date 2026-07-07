@@ -993,11 +993,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 return ctx_layer
 
         root = self.get_root_layer()
-        sesh = self.get_stage_root()
+        # Chunk edits live on the session layer (strongest in composition) so they override
+        # opinions authored in the scene's own layers — e.g. an RBD bake must beat the prim's
+        # existing xformOp:transform. Insert at the top so the chunks root wins over other sublayers.
+        sesh = self.stage.GetSessionLayer()
 
-        # If the root has been detached from the stage's root, reapply it
+        # If the root has been detached from the session layer, reapply it at the top
         if root.identifier not in sesh.subLayerPaths:
-            sesh.subLayerPaths.append(root.identifier)
+            sesh.subLayerPaths.insert(0, root.identifier)
 
         # Create a graph layer - these are used for organising the layers. When chunks are part of
         # the same graph, they will become siblings in the same graph layer

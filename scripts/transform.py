@@ -7,35 +7,38 @@ def execute(node):
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-    raw_path = node.get_param("primpath_location").value
+    primpath_param = node.get_param("primpath_location")
+    if not primpath_param.value:
+        return
 
-    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+    rotation = (
+        Gf.Rotation(Gf.Vec3d(1, 0, 0), node.get_param("rx").value) *
+        Gf.Rotation(Gf.Vec3d(0, 1, 0), node.get_param("ry").value) *
+        Gf.Rotation(Gf.Vec3d(0, 0, 1), node.get_param("rz").value)
+    )
+    xform = Gf.Transform()
+    xform.SetTranslation(Gf.Vec3d(
+        node.get_param("tx").value,
+        node.get_param("ty").value,
+        node.get_param("tz").value,
+    ))
+    xform.SetRotation(rotation)
+    xform.SetScale(Gf.Vec3d(
+        node.get_param("sx").value or 1.0,
+        node.get_param("sy").value or 1.0,
+        node.get_param("sz").value or 1.0,
+    ))
+    matrix = xform.GetMatrix()
+
+    for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
-            return
+            continue
 
         xformable = UsdGeom.Xformable(stage.OverridePrim(target_path))
         existing = {op.GetOpName(): op for op in xformable.GetOrderedXformOps()}
         transform_op = existing.get("xformOp:transform") or xformable.AddTransformOp()
-
-        rotation = (
-            Gf.Rotation(Gf.Vec3d(1, 0, 0), node.get_param("rx").value) *
-            Gf.Rotation(Gf.Vec3d(0, 1, 0), node.get_param("ry").value) *
-            Gf.Rotation(Gf.Vec3d(0, 0, 1), node.get_param("rz").value)
-        )
-        xform = Gf.Transform()
-        xform.SetTranslation(Gf.Vec3d(
-            node.get_param("tx").value,
-            node.get_param("ty").value,
-            node.get_param("tz").value,
-        ))
-        xform.SetRotation(rotation)
-        xform.SetScale(Gf.Vec3d(
-            node.get_param("sx").value or 1.0,
-            node.get_param("sy").value or 1.0,
-            node.get_param("sz").value or 1.0,
-        ))
-        transform_op.Set(xform.GetMatrix())
+        transform_op.Set(matrix)
 
 
 def main():
@@ -45,7 +48,7 @@ def main():
         "primpath_location",
         "Prim Path",
         default_value="/prim",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
     chunk_api.add_param(primpath)
 
@@ -78,12 +81,13 @@ def config():
         category=chunk.StandardCategory.EXAMPLES,
         description="""
         Transform chunk — applies translate, rotate (XYZ Euler, degrees), and
-        scale xform ops to an existing prim at a given stage path.
+        scale xform ops to one or more existing prims.
 
         Parameters:
-          - Prim Path: the stage path of the prim to transform. The prim must
-            already exist (created by another chunk). An over is authored in
-            the chunk layer so the original prim definition is untouched.
+          - Prim Path: comma-separated prim paths or Houdini-style glob patterns
+            (*, **, ?) to transform. Each matched prim must already exist
+            (created by another chunk). An over is authored per prim in the
+            chunk layer so the original prim definitions are untouched.
           - Translate (X/Y/Z): world-space translation in scene units (-1000–1000).
             Expanded by default.
           - Rotate (X/Y/Z): XYZ Euler rotation in degrees (-180–180). Collapsed

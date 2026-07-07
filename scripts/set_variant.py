@@ -6,18 +6,18 @@ def execute(node):
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
-    raw_path  = node.get_param("primpath_location").value
+    primpath_param = node.get_param("primpath_location")
     vs_name   = node.get_param("variant_set").value or ""
     selection = node.get_param("variant_selection").value or ""
 
-    if not vs_name:
+    if not vs_name or not primpath_param.value:
         return
 
-    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+    for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
         prim = stage.OverridePrim(target_path)
         vset = prim.GetVariantSets().GetVariantSet(vs_name)
         if not vset:
-            return
+            continue
         if selection:
             vset.SetVariantSelection(selection)
         else:
@@ -30,7 +30,7 @@ def main():
     primpath = chunk.LineEdit(
         "primpath_location", "Prim Path",
         default_value="/prim",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
     vs_name = chunk.LineEdit(
         "variant_set", "Variant Set",
@@ -52,12 +52,16 @@ def config():
     return chunk.DefaulConfig(
         category=chunk.StandardCategory.EXAMPLES,
         description="""
-        Set Variant chunk — authors an active variant selection on a prim.
+        Set Variant chunk — authors an active variant selection on one or more prims.
 
         Separate from Add Variants (which defines which variant sets and names
         exist): this chunk controls which variant is currently selected, authoring
         an OverridePrim opinion with the chosen selection. Clearing the selection
         field removes the selection opinion entirely.
+
+        Prim Path accepts comma-separated paths, Houdini-style glob patterns
+        (*, **, ?), or a %name collection reference — the selection is applied
+        to every matched prim.
 
         Designed to be the final node in a variant network so the selection can
         be lofted or overridden independently of the variant set definitions.

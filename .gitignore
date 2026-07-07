@@ -9,4 +9,12 @@ dist
 build
 *.egg-info
 
-scripts/examples/cameras.json
+# AI tool working directories and issue tracker (local only)
+.scratch/
+issues/
+.claude/
+.kilocode/
+.kiro/
+.planning/
+.vexp/
+.sven/

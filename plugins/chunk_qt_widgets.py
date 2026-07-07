@@ -12,6 +12,21 @@ from plugins import chunk_usd
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
 import os
+import textwrap
+
+_PLACEHOLDER_DESC = "Chunk description..."
+
+
+def _clean_description(desc: str) -> str:
+    """Dedented/stripped chunk description for a tooltip; '' for the unset placeholder.
+
+    Descriptions are often triple-quoted with leading indentation; dedent + strip so the
+    tooltip reads cleanly. Returns '' for the default placeholder so undocumented chunks
+    show no tooltip.
+    """
+    cleaned = textwrap.dedent(desc or "").strip()
+    return "" if cleaned == _PLACEHOLDER_DESC else cleaned
+
 
 CHUNK_STYLESHEET = """
 QCheckBox {
@@ -180,7 +195,14 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
         return self.value() / self._step
 
     def set_value(self, value):
-        self.setValue(int(value * self._step))
+        if isinstance(value, str):
+            value = self.param.value
+        if value is None or isinstance(value, str):
+            return
+        int_val = int(value * self._step)
+        with QtCore.QSignalBlocker(self.slider), QtCore.QSignalBlocker(self.spin_box):
+            self.slider.setValue(int_val)
+            self.spin_box.setValue(int_val / self._step)
 
     def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
         is_horizontal = ChunkFlags.LayoutFlags.HORIZONTAL == layout_flags
@@ -211,6 +233,8 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
 
         if min_val is not None:
             self.setMinimum(min_val * self._step)
+        else:
+            self.setMinimum(-999999999.0)
 
         if max_val is not None:
             self.setMaximum(max_val * self._step)
@@ -228,7 +252,8 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
             value = self.param.value
         if value is None or isinstance(value, str):
             return
-        return self.setValue(value)
+        with QtCore.QSignalBlocker(self):
+            self.setValue(value)
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
@@ -251,6 +276,8 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
 
         if min_val is not None:
             self.setMinimum(int(min_val * self._step))
+        else:
+            self.setMinimum(-999999999)
 
         if max_val is not None:
             self.setMaximum(int(max_val * self._step))
@@ -268,7 +295,8 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
             value = self.param.value
         if value is None or isinstance(value, str):
             return
-        return self.setValue(value)
+        with QtCore.QSignalBlocker(self):
+            self.setValue(value)
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
@@ -388,7 +416,8 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
 
     def set_value(self, value):
         if value != self.get_value():
-            self.text.setPlainText(str(value))
+            with QtCore.QSignalBlocker(self.text):
+                self.text.setPlainText(str(value))
 
     def set_hidden(self, val: bool):
         self.setHidden(val)
@@ -497,7 +526,8 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         return self.currentText()
 
     def set_value(self, value):
-        return self.setCurrentText(value)
+        with QtCore.QSignalBlocker(self):
+            self.setCurrentText(value)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() != QtCore.Qt.LeftButton:
@@ -547,7 +577,8 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
             value = self.param.value
         if value is None or isinstance(value, str):
             return
-        return self.setChecked(value)
+        with QtCore.QSignalBlocker(self):
+            self.setChecked(value)
 
     def set_hidden(self, val: bool):
         self.setHidden(val)
@@ -642,7 +673,8 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
 
     def update_from_state(self):
         self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
-        self.set_enabled(not self.param.has_state(ChunkFlags.State.DISABLED))
+        is_output = self.param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
+        self.set_enabled(not is_output and not self.param.has_state(ChunkFlags.State.DISABLED))
 
     def _open_dialog(self):
         color = QtWidgets.QColorDialog.getColor(
@@ -726,11 +758,30 @@ class LabeledWidget(QtWidgets.QWidget):
                 self.update_value, alias=self.widget.get_notice_alias(), sender=self.widget
             )
 
+        # Hiding a param only hides its inner widget (see ChunkParamWidgetBase.set_hidden /
+        # ChunkContainerWidgetBase.set_hidden) — this row (label + widget) must react to the
+        # same state directly, driven by the model's own state, not Qt's Hide/Show events:
+        # a hidden child that un-hides while its parent (this row) is still hidden never
+        # actually becomes visible on screen, so Qt never fires a QEvent.Show for it,
+        # which would leave the row stuck hidden forever.
+        self._model = getattr(widget, 'param', None) or getattr(widget, 'group', None)
+        if self._model is not None:
+            self._state_listener = chunk_notice.NoticeConnection(
+                self._sync_hidden,
+                alias=chunk_notice.ChunkNoticeAlias.STATE_CHANGED,
+                sender=self._model.get_attribute_sender("state"),
+            )
+            self._sync_hidden()
+
         self._name_hint = ""
         self._label_hovered = False
         self.label.installEventFilter(self)
 
         self.setMouseTracking(True)
+
+    def _sync_hidden(self, notice=None, sender=None):
+        if self._model is not None:
+            self.setHidden(self._model.has_state(ChunkFlags.State.HIDDEN))
 
     def should_show_tooltip(self):
         if not isinstance(self.widget, ChunkParamWidgetBase):
@@ -1740,6 +1791,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
     def select_module(self, pos):
         items = dict()
         items["menu"] = self
+        self.setToolTipsVisible(True)
         self._flat_results: list = []
 
         filter_action = QtWidgets.QWidgetAction(items["menu"])
@@ -1752,22 +1804,28 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             namespace = mod.get_menu_name().split(os.pathsep)
             search_term = set([x.lower() for x in namespace])
 
+            tooltip = _clean_description(mod.config.description)
+
             d = items
             for ns in namespace:
                 if ns is namespace[-1]:
                     if m := d.get("menu"):
                         action = m.addAction(ns)
                         action.setData(mod)
+                        action.setToolTip(tooltip)
                         self.filterable[action] = search_term
                     break
                 elif ns not in d:
-                    d[ns] = {"menu": d.get("menu").addMenu(ns)}
+                    submenu = d.get("menu").addMenu(ns)
+                    submenu.setToolTipsVisible(True)
+                    d[ns] = {"menu": submenu}
                 d = d[ns]
 
             # Flat search result — full path label, hidden until search is active
             label = " → ".join(namespace)
             flat_action = self.addAction(label)
             flat_action.setData(mod)
+            flat_action.setToolTip(tooltip)
             flat_action.setVisible(False)
             self._flat_results.append((flat_action, search_term))
 
