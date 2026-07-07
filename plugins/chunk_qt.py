@@ -350,9 +350,12 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
     def add_chunk_to_tab(self, param: chunk_core.ChunkBase, tabidx=None):
         if tabidx is None:
             tabidx = self.tabBar().currentIndex()
-        if tabidx == 0:
+        # No context tab to receive the chunk: index 0 is the "+" button, and -1 means
+        # every tab was deleted. Either way, spin up a fresh tab and target it (add_new_tab
+        # selects the new tab, so read the current index back).
+        if tabidx <= 0 or self.get_chunk_context(tabidx) is None:
             self.add_new_tab()
-            tabidx = 1
+            tabidx = self.tabBar().currentIndex()
 
         if t := self.get_chunk_context(tabidx):
             if param in t.group.get_my_params():
