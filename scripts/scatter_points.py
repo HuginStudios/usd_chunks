@@ -6,6 +6,8 @@ loosely, then settle. Spacing (Poisson-disk) keeps instances from overlapping.
 
 Region filtering goes through a single per-point mask hook, so a future paint
 gizmo can supply a weight without touching the sampler/distribution/variation code.
+
+Requires: pxr (OpenUSD), usd_chunks.
 """
 
 from __future__ import annotations

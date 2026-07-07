@@ -1,8 +1,13 @@
-"""Export USD chunk — exports the current stage or a specific layer to disk."""
+"""Export USD chunk — exports the current stage or a specific layer to disk.
+
+Requires: pxr (OpenUSD), usd_chunks.
+"""
 
 from __future__ import annotations
 
 import os
+
+from pxr import Sdf
 
 from usd_chunks import chunk
 
@@ -49,8 +54,6 @@ def export(owner, notice, sender):
         stage.GetSessionLayer().Export(output_path)
         print(f"[ExportUSD] Session layer exported to {output_path}")
     else:
-        from pxr import Sdf
-
         layer = Sdf.Layer.Find(selection)
         if layer:
             layer.Export(output_path)

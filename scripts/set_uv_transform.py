@@ -1,4 +1,7 @@
-"""Set UV Transform chunk — inserts or updates a UsdTransform2d between UV reader and texture."""
+"""Set UV Transform chunk — inserts or updates a UsdTransform2d between UV reader and texture.
+
+Requires: pxr (OpenUSD), usd_chunks.
+"""
 
 from __future__ import annotations
 

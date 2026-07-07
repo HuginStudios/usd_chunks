@@ -1,4 +1,7 @@
-"""Set Display Color chunk — sets displayColor on the selected prim(s)."""
+"""Set Display Color chunk — sets displayColor on the selected prim(s).
+
+Requires: pxr (OpenUSD), usd_chunks.
+"""
 
 from __future__ import annotations
 

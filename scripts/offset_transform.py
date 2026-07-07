@@ -1,3 +1,8 @@
+"""Offset Transform chunk — applies a relative translate/rotate/scale offset to the selected prim(s).
+
+Requires: pxr (OpenUSD), usd_chunks.
+"""
+
 from pxr import Gf, UsdGeom
 from usd_chunks import chunk
 

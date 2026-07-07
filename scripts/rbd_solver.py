@@ -1,4 +1,8 @@
-"""MuJoCo RBD Solver — rigid body simulation via MuJoCo."""
+"""MuJoCo RBD Solver — rigid body simulation via MuJoCo.
+
+Requires: pxr (OpenUSD), usd_chunks, mujoco, numpy.
+Optional: scipy — smoother/denser heightfield colliders; falls back gracefully if absent.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ from collections.abc import Generator
 
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_registry
 
 try:
     import mujoco as _mj
@@ -1072,8 +1076,6 @@ def reset(owner, notice, sender) -> None:
 def add_collision(owner, notice, sender) -> None:
     """Append the viewport-selected prim(s) to the collision list (comma-joined
     so get_prims() picks them all up)."""
-    from usd_chunks import chunk_registry
-
     param = owner.get_chunk().get_param("collision_path")
     scene = chunk_registry.ChunkRegistry().scene
     if not scene:
@@ -1237,8 +1239,6 @@ def _run(owner, notice, sender) -> None:
     _promote_bake_layer(layer)
 
     try:
-        from usd_chunks import chunk_registry
-
         scene = chunk_registry.ChunkRegistry().scene
         if scene:
             scene.refresh_timeline(start_frame, start_frame + frame_count - 1)

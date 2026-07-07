@@ -1,3 +1,8 @@
+"""Set Transform chunk — sets an absolute translate/rotate/scale on the selected prim(s).
+
+Requires: pxr (OpenUSD), usd_chunks.
+"""
+
 from pxr import Gf, UsdGeom
 from usd_chunks import chunk
 
