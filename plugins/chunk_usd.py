@@ -137,7 +137,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._contents_changed_listener = NoticeConnection(
             self._on_contents_changed, ChunkNoticeAlias.STAGE_CONTENTS_CHANGED, globally=True
         )
-        
+
         if stage:
             self._loaded_stage = stage
             load_chunks(stage, scene, self._loaded_prim_paths)

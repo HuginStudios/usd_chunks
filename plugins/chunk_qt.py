@@ -144,6 +144,37 @@ def _guarded_paste():
     chunk_usd.paste_chunks()
 
 
+class ChunkTabContextStack(QtWidgets.QStackedWidget):
+    def __init__(self, ctx: chunk_core.ChunkBase, idx: int, parent=None):
+        super().__init__(parent)
+
+        params_widget = ChunkWidget(ctx, self, is_tab_context=True)
+        graph_view = ChunkGraphView(self)
+
+        vs = ViewSlotState(self)
+        params_widget.set_view_state(vs)
+        graph_view.set_view_state(vs)
+
+        self.addWidget(params_widget)  # page 0: params
+        self.addWidget(graph_view)  # page 1: graph
+
+        self.setCurrentIndex(idx)
+
+        copy_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Copy, self)
+        copy_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        copy_sc.activated.connect(_guarded_copy)
+
+        paste_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Paste, self)
+        paste_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        paste_sc.activated.connect(_guarded_paste)
+
+        self.ctx = weakref.ref(ctx, self._ctx_died)
+
+    def _ctx_died(self, ref):
+        self.setParent(None)
+        self.deleteLater()
+
+
 class ChunkTabWidget(QtWidgets.QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -275,7 +306,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
         w = self.widget(idx)
-        if isinstance(w, QtWidgets.QStackedWidget):
+        if isinstance(w, ChunkTabContextStack):
             w = w.widget(0)
         assert w is None or isinstance(w, ChunkWidget)
         return w
@@ -283,31 +314,14 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
     def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
         for i in range(self.count()):
             w = self.widget(i)
-            if isinstance(w, QtWidgets.QStackedWidget):
+            if isinstance(w, ChunkTabContextStack):
                 w = w.widget(0)
             if isinstance(w, ChunkWidget) and w.group == ctx:
                 return i
         return None
 
     def add_chunk_context(self, c: chunk.ChunkBase):
-        stack = QtWidgets.QStackedWidget(self)
-        params_widget = ChunkWidget(c, self, is_tab_context=True)
-        graph_view = ChunkGraphView(self)
-        vs = ViewSlotState(stack)
-        params_widget.set_view_state(vs)
-        graph_view.set_view_state(vs)
-        stack.addWidget(params_widget)   # page 0: params
-        stack.addWidget(graph_view)      # page 1: graph
-        stack.setCurrentIndex(self._view_mode)
-
-        copy_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Copy, stack)
-        copy_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        copy_sc.activated.connect(_guarded_copy)
-
-        paste_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Paste, stack)
-        paste_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        paste_sc.activated.connect(_guarded_paste)
-
+        stack = ChunkTabContextStack(c, self._view_mode, self)
         idx = self.addTab(stack, c.name)
         self.setCurrentIndex(idx)
         self.update_stylesheet()
@@ -316,12 +330,12 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         self._view_mode = mode
         for i in range(self.count()):
             w = self.widget(i)
-            if isinstance(w, QtWidgets.QStackedWidget):
+            if isinstance(w, ChunkTabContextStack):
                 w.setCurrentIndex(mode)
 
     def get_current_graph_view(self):
         w = self.widget(self.currentIndex())
-        if isinstance(w, QtWidgets.QStackedWidget):
+        if isinstance(w, ChunkTabContextStack):
             gv = w.widget(1)
             if isinstance(gv, ChunkGraphView):
                 return gv
@@ -338,7 +352,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             if param in t.group.get_my_params():
                 return
 
-            cfg = getattr(param, 'get_config', lambda: None)()
+            cfg = getattr(param, "get_config", lambda: None)()
             if cfg and cfg.module and param.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                 param._parent_context = weakref.ref(t.group)
 
@@ -405,7 +419,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                 # User-created ChunkGroup: add a standalone ChunkWidget directly to
                 # the parent tab's content layout — NOT via add_param, which would
                 # propagate sub-chunk PARAM_ADDED notices up to the parent context.
-                parent_ctx = getattr(loaded_chunk, '_parent_context', None)
+                parent_ctx = getattr(loaded_chunk, "_parent_context", None)
                 parent_ctx = parent_ctx() if parent_ctx else None
                 if parent_ctx is not None:
                     idx = self.tab_widget.get_chunk_context_index(parent_ctx)

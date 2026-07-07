@@ -2998,6 +2998,12 @@ class ChunkContainerBase(ChunkCommon):
         """
         Request delete this container, and subsequently clear its children
         """
+
+        # Call request_delete on all children. This will send PARAM_REMOVED on the removed
+        # children
+        for param in self.get_params():
+            param.request_delete()
+
         self.children.clear()
         self.children.set_owner(None)
 
@@ -3788,30 +3794,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """DCC implementations call this once a new stage is fully loaded."""
         for cb in self._stage_replaced_listeners:
             cb(stage)
-
-    @abstractmethod
-    def get_current_frame(self) -> float:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_end_frame(self) -> float:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_start_frame(self) -> float:
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_current_frame(self, frame: float):
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_end_frame(self, frame: float):
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_start_frame(self, frame: float):
-        raise NotImplementedError
 
     def serialize(self, glb):
         # Ensure that the scene is not serialized. For now, we only serialize the chunks NameSyncedContainer

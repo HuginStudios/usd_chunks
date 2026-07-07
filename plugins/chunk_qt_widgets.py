@@ -1106,8 +1106,8 @@ class ContainerWidget(
 
     def delete_self(self):
         try:
-            self.setParent(None)
             self.deleteLater()
+            self.setParent(None)
         except RuntimeError:
             # C++ object already destroyed (e.g. by QGraphicsProxyWidget teardown)
             pass
