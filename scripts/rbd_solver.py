@@ -1116,28 +1116,35 @@ def _run(owner, notice, sender) -> None:
     if not prim.IsValid() or prim.GetPath() == Sdf.Path("/"):
         return
 
-    collision_prims = _parse_collision_prims(_chunk.get_param("collision_path").value, stage)
+    # A typed param's .value already returns the correct type and falls back to its
+    # default_value when unset, so no cast or `or <fallback>` is needed. (The `or`
+    # form was also a latent bug: it clobbered a legitimate 0, e.g. zero bounce.)
+    is_f = chunk.is_param_t(float)
+    is_i = chunk.is_param_t(int)
+    is_s = chunk.is_param_t(str)
 
-    frame_count = int(_chunk.get_param("frame_count").value or 120)
-    fps = float(_chunk.get_param("fps").value or 24)
-    gravity = float(_chunk.get_param("gravity").value or -981)
-    substeps = max(1, int(_chunk.get_param("substeps").value or 4))
-    start_frame = int(_chunk.get_param("start_frame").value or 1)
-    friction = float(_chunk.get_param("friction").value or 0.5)
-    restitution = float(_chunk.get_param("restitution").value or 0.1)
-    mass = float(_chunk.get_param("mass").value or 1.0)
-    lin_damping = float(_chunk.get_param("lin_damping").value or 0.0)
-    ang_damping = float(_chunk.get_param("ang_damping").value or 0.05)
-    shape_type = _chunk.get_param("shape_type").value or "Convex Hull"
-    otx = float(_chunk.get_param("off_tx").value or 0)
-    oty = float(_chunk.get_param("off_ty").value or 0)
-    otz = float(_chunk.get_param("off_tz").value or 0)
-    orx = float(_chunk.get_param("off_rx").value or 0)
-    ory = float(_chunk.get_param("off_ry").value or 0)
-    orz = float(_chunk.get_param("off_rz").value or 0)
-    init_vel = _parse_vec3(_chunk.get_param("initial_velocity").value)
-    ang_vel = _parse_vec3(_chunk.get_param("angular_velocity").value)
-    floor_drop = float(_chunk.get_param("floor_drop").value or 0.0)
+    collision_prims = _parse_collision_prims(_chunk.get_param("collision_path", is_s).value, stage)
+
+    frame_count = _chunk.get_param("frame_count", is_i).value
+    fps = _chunk.get_param("fps", is_f).value
+    gravity = _chunk.get_param("gravity", is_f).value
+    substeps = max(1, _chunk.get_param("substeps", is_i).value)
+    start_frame = _chunk.get_param("start_frame", is_i).value
+    friction = _chunk.get_param("friction", is_f).value
+    restitution = _chunk.get_param("restitution", is_f).value
+    mass = _chunk.get_param("mass", is_f).value
+    lin_damping = _chunk.get_param("lin_damping", is_f).value
+    ang_damping = _chunk.get_param("ang_damping", is_f).value
+    shape_type = _chunk.get_param("shape_type", is_s).value
+    otx = _chunk.get_param("off_tx", is_f).value
+    oty = _chunk.get_param("off_ty", is_f).value
+    otz = _chunk.get_param("off_tz", is_f).value
+    orx = _chunk.get_param("off_rx", is_f).value
+    ory = _chunk.get_param("off_ry", is_f).value
+    orz = _chunk.get_param("off_rz", is_f).value
+    init_vel = _parse_vec3(_chunk.get_param("initial_velocity", is_s).value)
+    ang_vel = _parse_vec3(_chunk.get_param("angular_velocity", is_s).value)
+    floor_drop = _chunk.get_param("floor_drop", is_f).value
 
     layer = owner.get_edit_context()
     if not layer:
@@ -1170,9 +1177,9 @@ def _run(owner, notice, sender) -> None:
             lin_damping=lin_damping,
             ang_damping=ang_damping,
             shape_type=shape_type,
-            collision_margin=float(_chunk.get_param("collision_margin").value or 0.0),
+            collision_margin=_chunk.get_param("collision_margin", is_f).value,
             solver_iters=30,
-            hfield_res=int(_chunk.get_param("hfield_res").value or 96),
+            hfield_res=_chunk.get_param("hfield_res", is_i).value,
             floor_drop=floor_drop,
         )
     else:
@@ -1219,9 +1226,9 @@ def _run(owner, notice, sender) -> None:
             ang_damping=ang_damping,
             scale_xyz=scale_xyz,
             shape_type=shape_type,
-            collision_margin=float(_chunk.get_param("collision_margin").value or 0.0),
+            collision_margin=_chunk.get_param("collision_margin", is_f).value,
             solver_iters=30,
-            hfield_res=int(_chunk.get_param("hfield_res").value or 96),
+            hfield_res=_chunk.get_param("hfield_res", is_i).value,
             floor_drop=floor_drop,
         )
 
