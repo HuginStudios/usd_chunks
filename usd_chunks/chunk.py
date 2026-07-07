@@ -127,9 +127,7 @@ class Chunk(ChunkBase):
 
     # Override defaults
     flags: IntFlag = field(
-        default=ChunkFlags.GroupFlags.COLLAPSABLE
-        | ChunkFlags.GroupFlags.LABELED
-        | ChunkFlags.GroupFlags.FRAMED
+        default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
 
 
@@ -137,9 +135,7 @@ class Group(ChunkGroupBase):
     """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
 
     # Override defaults
-    flags: IntFlag = field(
-        default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
-    )
+    flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
 
 class ListGroup(ChunkListGroupBase):
@@ -147,9 +143,7 @@ class ListGroup(ChunkListGroupBase):
 
     # Override defaults
     flags: IntFlag = field(
-        default=ChunkFlags.GroupFlags.LABELED
-        | ChunkFlags.GroupFlags.FRAMED
-        | ChunkFlags.GroupFlags.LIST
+        default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED | ChunkFlags.GroupFlags.LIST
     )
 
 
@@ -157,9 +151,7 @@ class Vector(ChunkVectorBase):
     """A Vector is basically a group which holds a set number of parameters"""
 
     # Override defaults
-    flags: IntFlag = field(
-        default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
-    )
+    flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
 
 
 class Slider(ChunkParamBase[int | float]):
@@ -182,16 +174,10 @@ class Slider(ChunkParamBase[int | float]):
         return ChunkFlags.ParamType.INT_SLIDER | ChunkFlags.ParamType.FLOAT_SLIDER
 
     def evaluate_type(self) -> ChunkFlags.ParamType:
-        return (
-            ChunkFlags.ParamType.INT_SLIDER
-            if self.is_int
-            else ChunkFlags.ParamType.FLOAT_SLIDER
-        )
+        return ChunkFlags.ParamType.INT_SLIDER if self.is_int else ChunkFlags.ParamType.FLOAT_SLIDER
 
     @classmethod
-    def from_usd_attr(
-        cls, attr: Usd.Attribute, *args, **kwargs
-    ) -> ChunkUsdAttributeSupport:
+    def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)
 
         try:
@@ -235,9 +221,7 @@ class Spinbox(ChunkParamBase[float | int]):
         return ChunkFlags.ParamType.FLOAT_SPINBOX
 
     @classmethod
-    def from_usd_attr(
-        cls, attr: Usd.Attribute, *args, **kwargs
-    ) -> ChunkUsdAttributeSupport:
+    def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)
 
         if limits := attr.GetLimits():  # type: ignore
