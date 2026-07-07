@@ -827,6 +827,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._edges.clear()
 
         for node in self._nodes.values():
+            # A stage change fired by deleting a chunk lands here before that node's
+            # removal (which _on_chunk_deleted defers via singleShot), so its prim can
+            # already be expired. Skip it rather than touch an invalid prim.
+            if not node.prim.IsValid():
+                continue
             for attr in node.prim.GetAttributes():
                 attr_name = attr.GetName()
                 if not attr_name.startswith("inputs:"):
@@ -862,7 +867,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                     self._edges.append(edge)
 
         for node in self._nodes.values():
-            node._sync_vector_states()
+            if node.prim.IsValid():
+                node._sync_vector_states()
 
     def update_edges_for(self, node: ChunkNodeItem):
         node_ports = set(node._ports)
