@@ -1,3 +1,4 @@
+import textwrap
 import weakref
 
 from PySide6 import QtWidgets, QtCore, QtGui
@@ -35,6 +36,19 @@ from plugins.chunk_qt_widgets import (
     ViewSlotState,
 )
 from plugins.chunk_qt_nodegraph import ChunkGraphView
+
+
+# The attrs default for ChunkConfig.description — an unfilled chunk. Don't tooltip it.
+_PLACEHOLDER_DESC = "Chunk description..."
+
+
+def _clean_description(desc: str) -> str:
+    """Normalise a chunk's config description for display as a tooltip.
+
+    Descriptions are often triple-quoted with leading indentation; dedent + strip
+    so the tooltip reads cleanly instead of showing the source indentation.
+    """
+    return textwrap.dedent(desc or "").strip()
 
 
 class EditableTabBar(QtWidgets.QTabBar):
@@ -309,6 +323,9 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         paste_sc.activated.connect(_guarded_paste)
 
         idx = self.addTab(stack, c.name)
+        cfg = c.get_config() if hasattr(c, "get_config") else None
+        if cfg and cfg.description != _PLACEHOLDER_DESC and (desc := _clean_description(cfg.description)):
+            self.setTabToolTip(idx, desc)
         self.setCurrentIndex(idx)
         self.update_stylesheet()
 
@@ -576,7 +593,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
         self.content.insertRow(row)
 
         c1 = QtWidgets.QTableWidgetItem(mod.module_name)
-        c1.setToolTip(mod.config.description)
+        c1.setToolTip(_clean_description(mod.config.description))
 
         c2 = QtWidgets.QTableWidgetItem(mod.module_file.as_posix() if mod.module_file.exists() else "Not Found")
 
