@@ -591,8 +591,12 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         Called when state of the group has changed
         """
         self.set_hidden(self.group.has_state(ChunkFlags.State.HIDDEN))
-        is_output = self.group.has_flag(ChunkFlags.ParamFlags.OUTPUT)
-        self.set_enabled(not is_output and not self.group.has_state(ChunkFlags.State.DISABLED))
+        # NB: OUTPUT is a ParamFlags value and has no meaning for a group. Checking it
+        # here against the group's GroupFlags mis-fires because ParamFlags.OUTPUT and
+        # GroupFlags.COLLAPSABLE share the same bit (2), so every collapsible group
+        # read as "output" and disabled all its children. A group is only disabled by
+        # its own DISABLED state.
+        self.set_enabled(not self.group.has_state(ChunkFlags.State.DISABLED))
         self.set_selected(self.group.has_state(ChunkFlags.State.SELECTED))
 
     @abstractmethod
@@ -697,7 +701,23 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
     def _layout_changed(self, notice, sender):
         self.update_from_layout()
 
+    def _disconnect_callbacks(self):
+        """Revoke all notice subscriptions held by this widget.
+
+        Must be called when the widget is torn down. The host (Qt) may destroy the
+        underlying C++ object while the Python wrapper — and therefore its notice
+        subscriptions — stays alive, so without this a later notice would invoke a
+        method on a deleted object (e.g. ``setHidden`` on a dead ChunkWidget).
+        """
+        for conn in self._callbacks:
+            try:
+                conn.disconnect()
+            except Exception:
+                pass
+        self._callbacks.clear()
+
     def _group_deleted(self, ref):
+        self._disconnect_callbacks()
         self.delete_self()
 
     def _delete_self(self, notice, sender):
@@ -707,6 +727,7 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         self.group_widgets.clear()
         self.param_widgets.clear()
 
+        self._disconnect_callbacks()
         self.delete_self()
 
     def _param_added_callback(self, notice, sender: GroupT):
@@ -743,7 +764,9 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             try:
                 self.update_from_state()
             except RuntimeError:
-                pass
+                # Host C++ object was already destroyed but this widget's subscription
+                # outlived it (stale widget from a panel rebuild). Self-heal by revoking.
+                self._disconnect_callbacks()
 
     def _add_param_widget(self, param: "ChunkParamBase", group: Optional["ChunkContainerBase"] = None, list_index=0):
         is_output = param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
@@ -2376,10 +2399,7 @@ class ChunkCommon(AttributesBase):
         Returns:
             bool: If the flag is enabled or not
         """
-        try:
-            return flag in self.flags
-        except TypeError:
-            return False
+        return bool(self.flags & flag)
 
     def set_state(self, state: ChunkFlags.State):
         """
@@ -2409,7 +2429,7 @@ class ChunkCommon(AttributesBase):
         Returns:
             bool: True if the state is set, otherwise False
         """
-        return state in self.state
+        return bool(self.state & state)
 
     def set_selected(self, val: bool):
         if val:
@@ -4304,7 +4324,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         Returns:
             ChunkBase | None: The found chunk or None
         """
-        return self.chunks.get_param(chunk, is_inst(ChunkBase))
+        res = self.chunks.get_param(chunk)
+        return res if isinstance(res, ChunkBase) else None
 
     def get_context_for_prim_path(self, path: str) -> "ChunkBase | None":
         """Return the CONTEXT chunk whose prim_path matches path, or None."""
@@ -4543,6 +4564,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.NONE
+
+    # Optional DCC capability with a no-op default so hosts that don't support
+    # it still work; usdview overrides it (used by the RBD solver after baking).
+    def refresh_timeline(self, start: float, end: float) -> None:
+        """Update the host timeline range."""
 
 
 def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:

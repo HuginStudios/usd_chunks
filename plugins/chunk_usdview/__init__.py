@@ -113,6 +113,22 @@ class UsdviewScene(chunk_core.SceneSender):
     def get_selected_property(self) -> Usd.Property:
         return self.usdviewAPI.property  # type: ignore
 
+    def _get_ctrl(self):
+        try:
+            return self.usdviewAPI._UsdviewApi__appController
+        except Exception:
+            return None
+
+    def refresh_timeline(self, start: float, end: float) -> None:
+        ctrl = self._get_ctrl()
+        if ctrl:
+            try:
+                ctrl.realStartTimeCode = start
+                ctrl.realEndTimeCode = end
+                ctrl._UpdateTimeSamples()
+            except Exception:
+                pass
+
     def _get_free_camera(self):
         app = self.usdviewAPI._UsdviewApi__appController
         return app._dataModel.viewSettings.freeCamera
