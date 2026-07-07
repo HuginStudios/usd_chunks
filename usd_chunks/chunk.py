@@ -234,17 +234,6 @@ class Spinbox(ChunkParamBase[float | int]):
             return ChunkFlags.ParamType.INT_SPINBOX
         return ChunkFlags.ParamType.FLOAT_SPINBOX
 
-    def convert_attr(self, attr, val):
-        if attr.name in ("default_value", "value"):
-            if val is None:
-                return super().convert_attr(attr, val)
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
-                # is_int may not be set yet during attrs __init__ (default_value initialises
-                # first), so fall back to float — the safe choice for values like 0.6.
-                t = int if getattr(self, "is_int", False) else float
-                return t(val)
-        return super().convert_attr(attr, val)
-
     @classmethod
     def from_usd_attr(
         cls, attr: Usd.Attribute, *args, **kwargs
@@ -318,12 +307,6 @@ class Button(ChunkParamBase):
         Click the button, triggering connected callbacks to called
         """
         self.get_attribute_sender("value").execute()
-
-    def execute(self) -> None:
-        """Fire this button by sending a PARAM_CHANGED notice."""
-        from usd_chunks import chunk_notice as _cn
-
-        _cn.send_notice(ChunkNoticeAlias.PARAM_CHANGED, sender=self, data=self)
 
 
 class Checkbox(ChunkParamBase[bool]):
