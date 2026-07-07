@@ -67,8 +67,8 @@ def config():
     return chunk.DefaulConfig(
         category="Material",
         description=(
-            "Authors a uniform displayColor (primvars:displayColor) on the target prim — "
-            "a quick flat colour for previews or for tagging prims, without needing a "
+            "Authors a uniform displayColor (primvars:displayColor) on the target prim —\n"
+            "a quick flat colour for previews or for tagging prims, without needing a\n"
             "material."
         ),
     )

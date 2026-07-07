@@ -102,9 +102,9 @@ def config():
     return chunk.DefaulConfig(
         category="Material",
         description=(
-            "Inserts (or updates) a UsdTransform2d node between a texture's UV reader and "
-            "the texture, letting you scale/offset/rotate UVs without touching the texture "
-            "itself. Point Shader Prim Path at the texture shader whose 'st' input you "
+            "Inserts (or updates) a UsdTransform2d node between a texture's UV reader and\n"
+            "the texture, letting you scale/offset/rotate UVs without touching the texture\n"
+            "itself. Point Shader Prim Path at the texture shader whose 'st' input you\n"
             "want to transform."
         ),
     )

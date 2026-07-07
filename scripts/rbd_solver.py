@@ -1438,9 +1438,9 @@ def config() -> chunk.DefaulConfig:
     return chunk.DefaulConfig(
         category="Simulation",
         description=(
-            "Bakes a MuJoCo rigid-body simulation onto the target prim — or every instance "
-            "of a PointInstancer — as keyframed animation over the frame range. Add colliders "
-            "for objects to rest on or in (a heightfield is built for concave shapes like "
+            "Bakes a MuJoCo rigid-body simulation onto the target prim — or every instance\n"
+            "of a PointInstancer — as keyframed animation over the frame range. Add colliders\n"
+            "for objects to rest on or in (a heightfield is built for concave shapes like\n"
             "bowls). Requires the 'mujoco' package."
         ),
     )

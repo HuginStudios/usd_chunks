@@ -102,8 +102,8 @@ def config():
     return chunk.DefaulConfig(
         category="Composition",
         description=(
-            "Exports the current stage — fully flattened, the session layer, or a single "
-            "chosen sublayer — to a USD file on disk. Press Refresh Layers to populate "
+            "Exports the current stage — fully flattened, the session layer, or a single\n"
+            "chosen sublayer — to a USD file on disk. Press Refresh Layers to populate\n"
             "the Layer menu, pick a target, then Export."
         ),
     )

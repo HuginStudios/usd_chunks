@@ -167,9 +167,9 @@ def config():
     return chunk.DefaulConfig(
         category=chunk.StandardCategory.UTILS,
         description=(
-            "Applies a relative translate/rotate/scale offset on top of a prim's existing "
-            "transform (translate and rotate add, scale multiplies). Re-authors on each "
-            "change and tracks the last applied offset, so dragging a value adjusts "
+            "Applies a relative translate/rotate/scale offset on top of a prim's existing\n"
+            "transform (translate and rotate add, scale multiplies). Re-authors on each\n"
+            "change and tracks the last applied offset, so dragging a value adjusts\n"
             "smoothly instead of stacking. Authors an over in the chunk layer."
         ),
     )
