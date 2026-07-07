@@ -723,4 +723,12 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="Create")
+    return chunk.DefaulConfig(
+        category="Create",
+        description=(
+            "Scatters instances of a prototype across a mesh — on its surface or filling "
+            "its volume — as a PointInstancer. Poisson-disk spacing avoids overlaps, and "
+            "per-instance scale/orientation randomisation adds variation. Feed the output "
+            "to the RBD Solver to settle the scatter physically (e.g. apples into a bowl)."
+        ),
+    )

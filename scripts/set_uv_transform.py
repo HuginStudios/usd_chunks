@@ -66,19 +66,31 @@ def _run(owner, notice, sender):
 def main():
     chunk_api = chunk.Chunk("Set UV Transform")
 
-    chunk_api.add_param(chunk.LineEdit("shader_path", "Shader Prim Path"))
+    chunk_api.add_param(
+        chunk.LineEdit(
+            "shader_path",
+            "Shader Prim Path",
+            tooltip="Path to the texture shader whose 'st' (UV) input should be transformed.",
+        )
+    )
 
     scale_grp = chunk.Group("Scale")
-    scale_grp.add_param(chunk.Spinbox("scale_s", "Scale S", default_value=1.0))
-    scale_grp.add_param(chunk.Spinbox("scale_t", "Scale T", default_value=1.0))
+    scale_grp.add_param(
+        chunk.Spinbox("scale_s", "Scale S", default_value=1.0, tooltip="UV tiling along S: >1 repeats, <1 zooms in.")
+    )
+    scale_grp.add_param(
+        chunk.Spinbox("scale_t", "Scale T", default_value=1.0, tooltip="UV tiling along T: >1 repeats, <1 zooms in.")
+    )
     chunk_api.add_param(scale_grp)
 
     offset_grp = chunk.Group("Offset")
-    offset_grp.add_param(chunk.Spinbox("offset_s", "Offset S", default_value=0.0))
-    offset_grp.add_param(chunk.Spinbox("offset_t", "Offset T", default_value=0.0))
+    offset_grp.add_param(chunk.Spinbox("offset_s", "Offset S", default_value=0.0, tooltip="Pan the UVs along S."))
+    offset_grp.add_param(chunk.Spinbox("offset_t", "Offset T", default_value=0.0, tooltip="Pan the UVs along T."))
     chunk_api.add_param(offset_grp)
 
-    chunk_api.add_param(chunk.Spinbox("rotation", "Rotation (degrees)", default_value=0.0))
+    chunk_api.add_param(
+        chunk.Spinbox("rotation", "Rotation (degrees)", default_value=0.0, tooltip="Rotate the UVs, in degrees.")
+    )
 
     for name in ("shader_path", "scale_s", "scale_t", "offset_s", "offset_t", "rotation"):
         chunk_api.get_param(name).add_callback(_run)
@@ -87,4 +99,12 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="Material")
+    return chunk.DefaulConfig(
+        category="Material",
+        description=(
+            "Inserts (or updates) a UsdTransform2d node between a texture's UV reader and "
+            "the texture, letting you scale/offset/rotate UVs without touching the texture "
+            "itself. Point Shader Prim Path at the texture shader whose 'st' input you "
+            "want to transform."
+        ),
+    )
