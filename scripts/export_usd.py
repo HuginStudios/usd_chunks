@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 
 from usd_chunks import chunk
-from usd_chunks.chunk_flags import ChunkFlags
 
 
 def _refresh_layers(owner, notice, sender):
@@ -16,7 +15,7 @@ def _refresh_layers(owner, notice, sender):
         return
 
     items = ["Stage (Flattened)"]
-    items.append(f"Session Layer")
+    items.append("Session Layer")
     for layer in stage.GetLayerStack(includeSessionLayers=False):
         items.append(layer.identifier)
 
@@ -31,7 +30,8 @@ def export(owner, notice, sender):
     if not stage:
         return
 
-    output_path = (_chunk.get_param("output_file").value or "").strip()
+    is_s = chunk.is_param_t(str)
+    output_path = _chunk.get_param("output_file", is_s).value.strip()
     if not output_path:
         print("[ExportUSD] No output path set.")
         return
@@ -40,7 +40,7 @@ def export(owner, notice, sender):
     if ext.lower() not in (".usd", ".usda", ".usdc", ".usdz"):
         output_path += ".usda"
 
-    selection = _chunk.get_param("layer").value or "Stage (Flattened)"
+    selection = _chunk.get_param("layer", is_s).value
 
     if selection == "Stage (Flattened)":
         stage.Export(output_path)

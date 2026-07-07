@@ -17,9 +17,10 @@ def _run(owner, notice, sender):
     if not prims:
         return
 
-    r = float(_chunk.get_param("color_r").value or 0.5)
-    g = float(_chunk.get_param("color_g").value or 0.5)
-    b = float(_chunk.get_param("color_b").value or 0.5)
+    is_f = chunk.is_param_t(float)
+    r = _chunk.get_param("color_r", is_f).value
+    g = _chunk.get_param("color_g", is_f).value
+    b = _chunk.get_param("color_b", is_f).value
     color = Vt.Vec3fArray([Gf.Vec3f(r, g, b)])
 
     layer = owner.get_edit_context()

@@ -406,21 +406,28 @@ def _run(owner, notice, sender):
     proto_prims = _chunk.get_param("proto_prim").get_prims()
     proto_prim = proto_prims[0] if proto_prims else None
 
-    inst_path = _chunk.get_param("inst_path").value or "/ScatterInstancer"
-    scatter_mode = _chunk.get_param("scatter_mode").value or "Surface"
-    max_count = max(1, int(_chunk.get_param("max_count").value or 200))
-    seed = int(_chunk.get_param("seed").value or 0)
-    auto_spacing = bool(_chunk.get_param("auto_spacing").value)
-    spacing = float(_chunk.get_param("spacing").value or 0.0)
-    max_slope = float(_chunk.get_param("max_slope").value or 90.0)
-    scale_min = float(_chunk.get_param("scale_min").value or 1.0)
-    scale_max = float(_chunk.get_param("scale_max").value or 1.0)
+    is_f = chunk.is_param_t(float)
+    is_i = chunk.is_param_t(int)
+    is_s = chunk.is_param_t(str)
+    is_b = chunk.is_param_t(bool)
+
+    # `.value` is already typed and defaults when unset — no cast/`or` needed. inst_path
+    # keeps its fallback because an empty path (user cleared the field) is invalid here.
+    inst_path = _chunk.get_param("inst_path", is_s).value or "/ScatterInstancer"
+    scatter_mode = _chunk.get_param("scatter_mode", is_s).value
+    max_count = max(1, _chunk.get_param("max_count", is_i).value)
+    seed = _chunk.get_param("seed", is_i).value
+    auto_spacing = _chunk.get_param("auto_spacing", is_b).value
+    spacing = _chunk.get_param("spacing", is_f).value
+    max_slope = _chunk.get_param("max_slope", is_f).value
+    scale_min = _chunk.get_param("scale_min", is_f).value
+    scale_max = _chunk.get_param("scale_max", is_f).value
     if scale_max < scale_min:
         scale_min, scale_max = scale_max, scale_min
-    normal_offset = float(_chunk.get_param("normal_offset").value or 0.0)
-    orient_mode = _chunk.get_param("orient_mode").value or "Align to Normal"
-    rand_axis = _chunk.get_param("rand_axis").value or "Off"
-    rand_amount = float(_chunk.get_param("rand_amount").value or 360.0)
+    normal_offset = _chunk.get_param("normal_offset", is_f).value
+    orient_mode = _chunk.get_param("orient_mode", is_s).value
+    rand_axis = _chunk.get_param("rand_axis", is_s).value
+    rand_amount = _chunk.get_param("rand_amount", is_f).value
 
     layer = owner.get_edit_context()
     if not layer:

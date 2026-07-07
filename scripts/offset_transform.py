@@ -42,15 +42,16 @@ def _run(owner, notice, sender):
     prim_path_str = str(prim.GetPath())
     chunk_id = id(_chunk)
 
-    otx = float(_chunk.get_param("tx").value or 0)
-    oty = float(_chunk.get_param("ty").value or 0)
-    otz = float(_chunk.get_param("tz").value or 0)
-    orx = float(_chunk.get_param("rx").value or 0)
-    ory = float(_chunk.get_param("ry").value or 0)
-    orz = float(_chunk.get_param("rz").value or 0)
-    osx = float(_chunk.get_param("sx").value or 1)
-    osy = float(_chunk.get_param("sy").value or 1)
-    osz = float(_chunk.get_param("sz").value or 1)
+    is_f = chunk.is_param_t(float)
+    otx = _chunk.get_param("tx", is_f).value
+    oty = _chunk.get_param("ty", is_f).value
+    otz = _chunk.get_param("tz", is_f).value
+    orx = _chunk.get_param("rx", is_f).value
+    ory = _chunk.get_param("ry", is_f).value
+    orz = _chunk.get_param("rz", is_f).value
+    osx = _chunk.get_param("sx", is_f).value
+    osy = _chunk.get_param("sy", is_f).value
+    osz = _chunk.get_param("sz", is_f).value
 
     no_offset = otx == oty == otz == orx == ory == orz == 0.0 and osx == osy == osz == 1.0
     last = _last_applied.get(chunk_id)

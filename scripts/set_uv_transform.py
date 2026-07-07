@@ -13,18 +13,19 @@ def _run(owner, notice, sender):
     if not stage:
         return
 
-    shader_path = (_chunk.get_param("shader_path").value or "").strip()
+    shader_path = _chunk.get_param("shader_path", chunk.is_param_t(str)).value.strip()
     if not shader_path:
         return
     prim = stage.GetPrimAtPath(shader_path)
     if not prim or not prim.IsValid():
         return
 
-    ss = float(_chunk.get_param("scale_s").value or 1.0)
-    st = float(_chunk.get_param("scale_t").value or 1.0)
-    os_ = float(_chunk.get_param("offset_s").value or 0.0)
-    ot = float(_chunk.get_param("offset_t").value or 0.0)
-    rot = float(_chunk.get_param("rotation").value or 0.0)
+    is_f = chunk.is_param_t(float)
+    ss = _chunk.get_param("scale_s", is_f).value
+    st = _chunk.get_param("scale_t", is_f).value
+    os_ = _chunk.get_param("offset_s", is_f).value
+    ot = _chunk.get_param("offset_t", is_f).value
+    rot = _chunk.get_param("rotation", is_f).value
 
     layer = owner.get_edit_context()
     if not layer:
