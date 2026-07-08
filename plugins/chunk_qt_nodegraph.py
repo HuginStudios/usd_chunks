@@ -287,6 +287,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
 
     def _rebuild_typed_ports(self):
+        # This is deferred (singleShot), so by the time it runs the chunk may already be
+        # gone — disabled (prim inactive) or deleted (prim expired). Rebuilding ports reads
+        # prim attributes, so bail rather than crash; the scene rebuild will drop this node.
+        if not self.prim.IsValid():
+            return
         if self._proxy is None:
             return
         try:
@@ -744,9 +749,6 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
     def build(self, stage: Usd.Stage, scene_sender: core.SceneSender, context=None):
         self._built_context = context
-        self.clear()
-        self._nodes.clear()
-        self._edges.clear()
         self._stage = stage
         self._scene_sender = scene_sender
 
@@ -757,21 +759,65 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             self._on_chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True
         )
 
-        chunks_by_path = {
-            f"{_resolve_chunk_root(c)}/{c.name}": c
-            for c in scene_sender.get_chunks()
-            if c.get_context() == context
-        }
+        self._rebuild_nodes()
+
+    def _schedule_rebuild(self):
+        """Queue one deferred, coalesced rebuild.
+
+        A structural change (add/remove/enable/disable) fires a burst of notices; debouncing
+        collapses them into a single rebuild, and deferring past the current notice means we
+        never destroy an embedded widget while its callback is still on the stack.
+        """
+        if getattr(self, "_rebuild_pending", False):
+            return
+        self._rebuild_pending = True
+        QtCore.QTimer.singleShot(0, self._do_rebuild)
+
+    def _do_rebuild(self):
+        self._rebuild_pending = False
+        self._rebuild_nodes()
+
+    def _rebuild_nodes(self):
+        """Rebuild every node/edge from the current active chunk prims.
+
+        Safe to call on any structural change: disabled chunks (prim.SetActive(False)) and
+        deleted chunks simply drop out because GetChildren() only returns active prims, so
+        we never mutate the graph around an expired or inactive prim.
+        """
+        if not self._stage or not self._scene_sender:
+            return
+        stage = self._stage
+        scene_sender = self._scene_sender
+        context = self._built_context
 
         # Derive the prim root for this context
         if context is not None and getattr(context, "prim_path", None):
             chunks_root_path = Sdf.Path(f"{context.prim_path}/chunks")
         else:
             chunks_root_path = Sdf.Path(_CHUNKS_ROOT)
+        self._chunks_root_path = chunks_root_path
 
+        # Check the root is valid BEFORE clearing. A disable/delete recomposition can leave
+        # /chunks transiently invalid; if we cleared first and then bailed, the graph would
+        # be wiped and never rebuilt. Keep the current graph and retry once it settles.
         chunks_root = stage.GetPrimAtPath(chunks_root_path)
         if not chunks_root.IsValid():
+            retries = getattr(self, "_rebuild_retries", 0)
+            if retries < 20:
+                self._rebuild_retries = retries + 1
+                QtCore.QTimer.singleShot(0, self._do_rebuild)
             return
+        self._rebuild_retries = 0
+
+        self.clear()
+        self._nodes.clear()
+        self._edges.clear()
+
+        chunks_by_path = {
+            f"{_resolve_chunk_root(c)}/{c.name}": c
+            for c in scene_sender.get_chunks()
+            if c.get_context() == context
+        }
 
         # Also include CONTEXT group chunks whose prims live directly under this root
         for prim in chunks_root.GetChildren():
@@ -882,23 +928,25 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 edge.update_path()
 
     def _on_chunk_deleted(self, notice, sender):
-        prim_path = next(
-            (p for p, n in self._nodes.items() if n.chunk is sender), None
-        )
-        if prim_path is None:
-            return
-        node = self._nodes.pop(prim_path)
-        # Hide it now so Qt stops painting/hit-testing it from its now-expiring prim
-        # during the window before removal.
-        node.setVisible(False)
-        # Defer removal so all CHUNK_DELETED callbacks (including ChunkWidget.delete_self)
-        # complete before Qt destroys the embedded widget.
-        QtCore.QTimer.singleShot(0, lambda: (self.removeItem(node), self._build_edges()))
+        # A deleted chunk drops its prim from the stage. Rebuild from scratch so its node
+        # and any dangling edges go away cleanly (deferred inside _schedule_rebuild).
+        self._schedule_rebuild()
 
     def _on_objects_changed(self, notice, sender):
         if not self._stage or not sender:
             return
         if sender.GetRootLayer().identifier != self._stage.GetRootLayer().identifier:
+            return
+        # A prim-level resync under our chunks root means a chunk was added/removed/enabled/
+        # disabled. Rebuild the whole graph from scratch — only active chunks survive —
+        # instead of editing nodes in place around expired or inactive prims. Property-level
+        # resyncs (e.g. wiring a connection) don't change the node set, so they fall through
+        # to the cheap edge rebuild below.
+        root = getattr(self, "_chunks_root_path", None)
+        if root is not None and any(
+            p.IsPrimPath() and p.HasPrefix(root) for p in notice.GetResyncedPaths()
+        ):
+            self._schedule_rebuild()
             return
         for path in notice.GetChangedInfoOnlyPaths():
             if path.IsPropertyPath() and path.name == "ui:nodegraph:node:pos":
