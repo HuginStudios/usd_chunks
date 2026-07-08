@@ -1107,13 +1107,18 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                 msg += f"   {notice.alias.name}\n"
 
             if module := getattr(prop, '_module', None):
-                if callable(getattr(module, 'execute', None)) and not getattr(prop, '_executing', False):
+                stage = prop.get_stage()
+                ctx = prop.get_edit_context()
+                # A disabled chunk's edit layer is muted, i.e. removed from the stage's local
+                # layer stack. Don't re-run its module: authoring into a muted layer raises
+                # ("Layer ... is not in the local LayerStack"), and a disabled chunk must not
+                # execute anyway.
+                muted = bool(stage and ctx and stage.IsLayerMuted(ctx.identifier))
+                if callable(getattr(module, 'execute', None)) and not getattr(prop, '_executing', False) and not muted:
                     global _usd_write_active
                     prop._executing = True
                     _usd_write_active = True
                     try:
-                        stage = prop.get_stage()
-                        ctx = prop.get_edit_context()
                         if stage and ctx:
                             with Usd.EditContext(stage, ctx):
                                 module.execute(prop)

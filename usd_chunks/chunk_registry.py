@@ -1055,9 +1055,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             bool: True when the layer is muted, False otherwise
         """
         layer = self.chunk_layers.get(c)
-        if self.stage and layer and layer.IsMuted():
-            return True
-        return False
+        if not (self.stage and layer):
+            return False
+        # A chunk layer can be muted stage-scoped (disable path) or Sdf-level (node graph
+        # view slots); treat either as muted.
+        return self.stage.IsLayerMuted(layer.identifier) or layer.IsMuted()
 
     def add_layer(self, target_layer: Sdf.Layer, c: "core.ChunkCommon", index: int = 0) -> Sdf.Layer:
         """
@@ -1182,7 +1184,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not (layer := self.get_layer(c)):
             return
 
+        if not self.stage:
+            return
+
         if c.has_state(ChunkFlags.State.DISABLED):
-            layer.SetMuted(True)
+            # Mute through the stage (not Sdf.Layer.SetMuted) so usdview receives the
+            # recomposition notice and repaints. A plain layer-level mute recomposes lazily,
+            # leaving usdview showing sibling prims (e.g. a ScatterInstancer whose def lives
+            # in another chunk's layer) as if removed until the next edit forces a refresh.
+            self.stage.MuteLayer(layer.identifier)
         elif self.is_muted(c):
-            layer.SetMuted(False)
+            self.stage.UnmuteLayer(layer.identifier)
