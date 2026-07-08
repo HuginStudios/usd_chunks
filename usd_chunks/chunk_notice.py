@@ -1163,9 +1163,9 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         try:
             res = self.get_dag_node().get_input(index).propagator
         except (KeyError, IndexError, AttributeError):
-            if not predicate:
-                return None
-            raise
+            # A missing connection is "not found" -> None regardless of a type predicate.
+            # The predicate only filters a connection that exists (see ValueError below).
+            return None
         if not predicate or predicate(res):
             return res
         raise ValueError(f"Predicate {predicate} failed for get_dependency({index})")
@@ -1206,9 +1206,9 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         try:
             res = self.get_dag_node().get_output(index).propagator
         except (KeyError, IndexError, AttributeError):
-            if not predicate:
-                return None
-            raise
+            # A missing connection is "not found" -> None regardless of a type predicate.
+            # The predicate only filters a connection that exists (see ValueError below).
+            return None
         if not predicate or predicate(res):
             return res
         raise ValueError(f"Predicate {predicate} failed for get_dependency({index})")
