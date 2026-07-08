@@ -463,6 +463,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         )
 
     def paint(self, painter: QtGui.QPainter, option, widget=None):
+        # The chunk may already be deleted while this node awaits its deferred removal
+        # (see ChunkGraphScene._on_chunk_deleted); painting reads live prim attributes,
+        # so skip it rather than touch an expired prim.
+        if not self.prim.IsValid():
+            return
         if self._is_dot:
             color = _COL_NODE_SELECTED if self._selected else _COL_PORT_EXEC
             painter.setBrush(color)
@@ -883,7 +888,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         if prim_path is None:
             return
         node = self._nodes.pop(prim_path)
-        # Defer so all CHUNK_DELETED callbacks (including ChunkWidget.delete_self)
+        # Hide it now so Qt stops painting/hit-testing it from its now-expiring prim
+        # during the window before removal.
+        node.setVisible(False)
+        # Defer removal so all CHUNK_DELETED callbacks (including ChunkWidget.delete_self)
         # complete before Qt destroys the embedded widget.
         QtCore.QTimer.singleShot(0, lambda: (self.removeItem(node), self._build_edges()))
 
