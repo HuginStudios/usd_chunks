@@ -266,6 +266,14 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         """Create the embedded ChunkWidget proxy. Called in deferred batches after scene build."""
         if self._is_dot:
             return
+        # Runs deferred; the node may have been removed by a rebuild before this fires.
+        # Building a proxy/ports on a detached node leaves a ghost (its C++ item lingers in
+        # the scene after its Python wrapper is GC'd). Bail if we're no longer in a scene.
+        try:
+            if self.scene() is None:
+                return
+        except RuntimeError:
+            return
         # Create as a child of the sink so the show() called during init (via
         # update_from_state → set_hidden(False)) doesn't flash a native OS window.
         chunk_widget = ChunkWidget(self.chunk, parent=_get_proxy_sink())
@@ -752,6 +760,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Disable the BSP spatial index. clear() (used on every rebuild) can leave a
+        # destroyed QGraphicsProxyWidget dangling in the BSP index, so a later itemAt()
+        # returns freed memory and usdview crashes on the next click. NoIndex makes itemAt
+        # linearly scan the live item list instead — fine for the small node counts here.
+        self.setItemIndexMethod(QtWidgets.QGraphicsScene.ItemIndexMethod.NoIndex)
         self._stage: Optional[Usd.Stage] = None
         self._scene_sender: Optional[core.SceneSender] = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
@@ -802,6 +815,26 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._rebuild_pending = False
         self._rebuild_nodes()
 
+    def _teardown_items(self):
+        # Detach embedded widgets before their proxies are destroyed. QGraphicsScene.clear()
+        # tearing down live QGraphicsProxyWidgets (with complex embedded ChunkWidgets) can
+        # corrupt the scene, so a later itemAt()/click reads freed memory and crashes usdview.
+        # setWidget(None) hands each widget back and we delete it separately, so clear() only
+        # destroys now-empty proxies.
+        for node in self._nodes.values():
+            proxy = getattr(node, "_proxy", None)
+            if proxy is None:
+                continue
+            try:
+                w = proxy.widget()
+                proxy.setWidget(None)
+                if w is not None:
+                    w.setParent(None)
+                    w.deleteLater()
+            except RuntimeError:
+                pass
+        self.clear()
+
     def _rebuild_nodes(self):
         """Rebuild every node/edge from the current chunk prims.
 
@@ -830,6 +863,17 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # be wiped and never rebuilt. Keep the current graph and retry once it settles.
         chunks_root = stage.GetPrimAtPath(chunks_root_path)
         if not chunks_root.IsValid():
+            # /chunks is invalid. Distinguish "no chunks left" (e.g. the last chunk was
+            # removed, so /chunks legitimately went away) from a transient recomposition.
+            # If no chunks are expected here, clear the graph; otherwise keep it and retry so
+            # we don't wipe a live graph mid-recomposition (which would leave it empty).
+            expected = any(c.get_context() == context for c in scene_sender.get_chunks())
+            if not expected:
+                self._rebuild_retries = 0
+                self._teardown_items()
+                self._nodes.clear()
+                self._edges.clear()
+                return
             retries = getattr(self, "_rebuild_retries", 0)
             if retries < 20:
                 self._rebuild_retries = retries + 1
@@ -838,7 +882,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._rebuild_retries = 0
 
         self._dirty = False
-        self.clear()
+        # Bump the build generation so any in-flight deferred proxy batch from a previous
+        # rebuild aborts instead of creating a ghost node (a proxy/ports on a stale node the
+        # clear() below just removed).
+        self._build_gen = getattr(self, "_build_gen", 0) + 1
+        self._teardown_items()
         self._nodes.clear()
         self._edges.clear()
 
@@ -883,7 +931,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         # Proxy widgets (ChunkWidget) are created in small batches so the graph
         # renders immediately with node headers and fills in progressively.
-        self._create_proxies_batch(list(self._nodes.values()), on_complete=self._on_proxies_ready)
+        self._create_proxies_batch(list(self._nodes.values()), self._build_gen, on_complete=self._on_proxies_ready)
 
     def _on_proxies_ready(self):
         for view in self.views():
@@ -892,12 +940,14 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             else:
                 view._pending_frame = True
 
-    def _create_proxies_batch(self, remaining: list, on_complete=None):
+    def _create_proxies_batch(self, remaining: list, gen: int, on_complete=None):
+        if gen != getattr(self, "_build_gen", gen):
+            return  # a newer rebuild superseded this batch — don't touch its stale nodes
         batch, rest = remaining[:self._PROXY_BATCH_SIZE], remaining[self._PROXY_BATCH_SIZE:]
         for node in batch:
             node.create_proxy()
         if rest:
-            QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, on_complete))
+            QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, gen, on_complete))
         elif on_complete:
             QtCore.QTimer.singleShot(0, on_complete)
 
@@ -1225,12 +1275,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # key events to it without relying on native focus (which usdview steals).
         # Find the specific child widget at the click position rather than the
         # top-level proxy widget, so key events reach e.g. QLineEdit directly.
-        if proxy:
-            proxy_local = proxy.mapFromScene(scene_pos).toPoint()
-            clicked_child = proxy.widget().childAt(proxy_local)
-            self._proxy_key_router.set_active(clicked_child or proxy.widget())
-        else:
-            self._proxy_key_router.set_active(None)
+        # itemAt can return a proxy whose C++ object was already freed by a rebuild (a stale
+        # item lingering in the scene). Touching it (mapFromScene/widget) dereferences freed
+        # memory → native crash, which no try/except can catch — so validity-check first.
+        # Do NOT call into the proxy's C++ (mapFromScene/widget/childAt) here: on some Qt/
+        # PySide6 builds that dereferences a proxy left in a bad state by a rebuild and crashes
+        # usdview. Resolve the key-router target from the live node's pinned ChunkWidget via
+        # Python identity instead — no C++ touch on the proxy.
+        target_widget = None
+        graph_scene = self.scene()
+        if proxy is not None and isinstance(graph_scene, ChunkGraphScene):
+            for n in graph_scene._nodes.values():
+                if getattr(n, "_proxy", None) is proxy:
+                    target_widget = getattr(n, "_chunk_widget", None)
+                    break
+        self._proxy_key_router.set_active(target_widget)
         self._proxy_key_router.set_view_active(True)
         if proxy is None:
             self.setFocus()
