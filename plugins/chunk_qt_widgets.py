@@ -548,9 +548,16 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
             if text == current:
                 act.setCheckable(True)
                 act.setChecked(True)
-        pos = self.mapToGlobal(QtCore.QPoint(0, self.height()))
-        if chosen := menu.exec_(pos):
-            self.setCurrentText(chosen.text())
+        # Use popup() (non-modal), not exec_(). exec_ runs a nested event loop in which a
+        # deferred node-graph rebuild can destroy this proxied combobox mid-selection; exec_'s
+        # result would then be applied to a freed C++ widget → silent crash. With popup(), if
+        # the widget is destroyed the menu (its child) goes with it and never fires triggered.
+        menu.triggered.connect(self._menu_item_chosen)
+        menu.aboutToHide.connect(menu.deleteLater)
+        menu.popup(self.mapToGlobal(QtCore.QPoint(0, self.height())))
+
+    def _menu_item_chosen(self, action) -> None:
+        self.setCurrentText(action.text())
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
