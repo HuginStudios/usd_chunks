@@ -318,9 +318,18 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         for i in range(self.count()):
             w = self.widget(i)
             if isinstance(w, ChunkTabContextStack):
+                # Match on the stack's own context weakref. During delete the inner params
+                # ChunkWidget is torn down first, which shifts page 0 to the graph view and
+                # breaks a widget(0).group lookup — the stack's ctx stays valid until GC.
+                if w.ctx() is ctx:
+                    return i
                 w = w.widget(0)
-            if isinstance(w, ChunkWidget) and w.group == ctx:
-                return i
+            if isinstance(w, ChunkWidget):
+                try:
+                    if w.group == ctx:
+                        return i
+                except ReferenceError:
+                    continue
         return None
 
     def add_chunk_context(self, c: chunk.ChunkBase):
