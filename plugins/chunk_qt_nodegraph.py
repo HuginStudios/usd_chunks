@@ -651,13 +651,19 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             scene.update_edges_for(self)
 
     def _on_state_changed(self, notice, sender):
-        selected = self.chunk.has_state(ChunkFlags.State.SELECTED)
-        if selected != self._selected:
-            self._selected = selected
-            self.update()
-        self._set_collapsed(self.chunk.has_state(ChunkFlags.State.COLLAPSED))
-        disabled = self.chunk.has_state(ChunkFlags.State.DISABLED)
-        self.setOpacity(0.35 if disabled else 1.0)
+        # This is a global STATE_CHANGED callback and can arrive after the node's chunk was
+        # removed — the node's C++ item (and its proxy) may already be destroyed, so any Qt
+        # call raises. Nothing to update in that case.
+        try:
+            selected = self.chunk.has_state(ChunkFlags.State.SELECTED)
+            if selected != self._selected:
+                self._selected = selected
+                self.update()
+            self._set_collapsed(self.chunk.has_state(ChunkFlags.State.COLLAPSED))
+            disabled = self.chunk.has_state(ChunkFlags.State.DISABLED)
+            self.setOpacity(0.35 if disabled else 1.0)
+        except RuntimeError:
+            return
 
 
 # ---------------------------------------------------------------------------

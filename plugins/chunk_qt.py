@@ -172,8 +172,13 @@ class ChunkTabContextStack(QtWidgets.QStackedWidget):
         self.ctx = weakref.ref(ctx, self._ctx_died)
 
     def _ctx_died(self, ref):
-        self.setParent(None)
-        self.deleteLater()
+        # Weakref finalizer — can fire during app shutdown after Qt has already destroyed
+        # this stack's C++ object, so setParent/deleteLater would raise. Ignore that.
+        try:
+            self.setParent(None)
+            self.deleteLater()
+        except RuntimeError:
+            pass
 
 
 class ChunkTabWidget(QtWidgets.QTabWidget):
