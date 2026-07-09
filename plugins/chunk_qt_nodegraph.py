@@ -447,6 +447,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 vec.unset_state(ChunkFlags.State.DISABLED)
 
     def _apply_usd_pos(self, prim: Usd.Prim):
+        # A position notice can arrive for a node whose cached prim is already invalid
+        # (e.g. a stale node removed but not yet cleared by the deferred rebuild). Schemas
+        # raise on an invalid prim, so bail.
+        if not prim or not prim.IsValid():
+            return
         ui_api = UsdUI.NodeGraphNodeAPI(prim)
         pos_attr = ui_api.GetPosAttr()
         if pos_attr and pos_attr.HasAuthoredValue():
