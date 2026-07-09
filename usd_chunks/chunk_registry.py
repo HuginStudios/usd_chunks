@@ -876,6 +876,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         self._flags_listener = NoticeConnection(self._flags_changed, ChunkNoticeAlias.STATE_CHANGED, globally=True)
 
+        self._deleted_listener = NoticeConnection(
+            self._on_chunk_deleted_notice, ChunkNoticeAlias.CHUNK_DELETED, globally=True
+        )
+
         self.chunk_layers: Dict[core.ChunkHash, Sdf.Layer] = {}
         self.graph_layers: Dict[str, Sdf.Layer] = {}
         self._chunk_refs = weakref.WeakSet()
@@ -1153,6 +1157,15 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
     def iter_chunk_layers(self) -> Generator[Tuple[Sdf.Layer, Sdf.Layer], None, None]:
         yield from self._iter_sublayers(self.get_root_layer())
+
+    def _on_chunk_deleted_notice(self, notice, sender):
+        # Remove the chunk's edit layer immediately on delete. The layer is normally freed by
+        # a GC finalizer (add_layer), but a lingering reference — a node/widget or a reference
+        # cycle — can defer collection, leaving the layer and any baked edits (e.g. an RBD
+        # sim's time samples) composed into the scene. Idempotent with the finalizer.
+        get_hash = getattr(sender, "get_hash", None)
+        if callable(get_hash):
+            self._chunk_deleted(get_hash())
 
     def _chunk_deleted(self, chunk_hash):
         if not (layer := self.get_layer(chunk_hash)):
