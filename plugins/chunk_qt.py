@@ -469,8 +469,9 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         if not graph_view:
             return
         context = self._current_context()
-        if graph_view.scene()._built_context == context:
-            return  # already built for this context — keep the cache
+        scene = graph_view.scene()
+        if not getattr(scene, "_dirty", True) and scene._built_context == context:
+            return  # already built for this context and not invalidated — keep the cache
         graph_view.build(stage, registry.scene, context)
         graph_view.dive_into.connect(self._on_dive_into, QtCore.Qt.UniqueConnection)
 

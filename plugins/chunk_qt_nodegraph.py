@@ -53,6 +53,11 @@ _CHUNK_PRIM_TYPENAME = "Chunk"
 _EXEC_INPUT = "inputs:chunk"
 _EXEC_OUTPUT = "outputs:chunk"
 _UNBUILT = object()  # sentinel for ChunkGraphScene._built_context
+# Child predicate that keeps disabled chunks: disabling sets the chunk prim inactive
+# (prim.SetActive(False)), and the default GetChildren() skips inactive prims — which would
+# drop the disabled node out of the graph. Include inactive-but-defined prims so a disabled
+# node stays put (greyed out) instead of vanishing.
+_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 
 # Hidden top-level sink widget: child QWidgets parented here avoid a native OS
 # window (and the Windows flash that comes with it) while staying off the viewport.
@@ -216,6 +221,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         self._build_ports(prim)
         self._apply_usd_pos(prim)
+        # Reflect disabled state on (re)build — otherwise a rebuilt disabled node renders at
+        # full opacity until the next state change (e.g. selecting it).
+        if chunk.has_state(ChunkFlags.State.DISABLED):
+            self.setOpacity(0.35)
 
     # ------------------------------------------------------------------
     # Build
@@ -739,16 +748,21 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._objects_changed_conn: Optional[NoticeConnection] = None
         self._show_param_edges: bool = True
         self._built_context: object = _UNBUILT  # sentinel — tracks what context is currently rendered
+        self._dirty: bool = True  # set by invalidate(); cleared by a (re)build
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
         self._build_edges()
 
     def invalidate(self):
-        self._built_context = _UNBUILT
+        # Mark that a rebuild is needed WITHOUT clobbering _built_context. The scene's own
+        # notice-driven rebuild reads _built_context; nulling it to the sentinel here caused
+        # deletes to rebuild with no context and produce an empty graph until a tab-toggle.
+        self._dirty = True
 
     def build(self, stage: Usd.Stage, scene_sender: core.SceneSender, context=None):
         self._built_context = context
+        self._dirty = False
         self._stage = stage
         self._scene_sender = scene_sender
 
@@ -778,17 +792,20 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._rebuild_nodes()
 
     def _rebuild_nodes(self):
-        """Rebuild every node/edge from the current active chunk prims.
+        """Rebuild every node/edge from the current chunk prims.
 
-        Safe to call on any structural change: disabled chunks (prim.SetActive(False)) and
-        deleted chunks simply drop out because GetChildren() only returns active prims, so
-        we never mutate the graph around an expired or inactive prim.
+        Safe to call on any structural change. Deleted chunks drop out (their prim is gone);
+        disabled chunks stay (their prim is inactive but still included via _INCLUDE_INACTIVE)
+        and render greyed. Either way we rebuild from fresh prim handles rather than mutating
+        the graph around an expired prim.
         """
         if not self._stage or not self._scene_sender:
             return
         stage = self._stage
         scene_sender = self._scene_sender
         context = self._built_context
+        if context is _UNBUILT:
+            return  # not built yet — a real build() will render with a proper context
 
         # Derive the prim root for this context
         if context is not None and getattr(context, "prim_path", None):
@@ -809,6 +826,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             return
         self._rebuild_retries = 0
 
+        self._dirty = False
         self.clear()
         self._nodes.clear()
         self._edges.clear()
@@ -820,7 +838,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         }
 
         # Also include CONTEXT group chunks whose prims live directly under this root
-        for prim in chunks_root.GetChildren():
+        for prim in chunks_root.GetFilteredChildren(_INCLUDE_INACTIVE):
             path = str(prim.GetPath())
             if path not in chunks_by_path:
                 ctx_chunk = scene_sender.get_context_for_prim_path(path)
@@ -832,7 +850,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         root_id = stage.GetRootLayer().identifier
         edit_id = stage.GetEditTarget().GetLayer().identifier
 
-        for prim in chunks_root.GetChildren():
+        for prim in chunks_root.GetFilteredChildren(_INCLUDE_INACTIVE):
             if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
                 continue
             path = str(prim.GetPath())
