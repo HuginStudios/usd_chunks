@@ -1177,6 +1177,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         self._drag_src_port: Optional[ChunkPortItem] = None
         self._drag_edge: Optional[QtWidgets.QGraphicsPathItem] = None
+        self._drag_detach_attr: Optional[Usd.Attribute] = None
+        self._drag_detach_source_port: Optional[ChunkPortItem] = None
+        self._drag_reused_edge: Optional[ChunkEdgeItem] = None
         self._view_state = ViewSlotState(self)
         self._view_state.slot_changed.connect(self._on_view_slot_changed)
         self._view_state.create_view_for.connect(self._on_create_view_for_path)
@@ -1267,13 +1270,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 break
             item = item.parentItem()
 
-        # Port left-click → start wire drag; right-click → disconnect menu.
+        # Port left-click → start wire drag (drag off a connected input port to disconnect it).
         if isinstance(hit, ChunkPortItem):
             if event.button() == QtCore.Qt.LeftButton:
                 self._start_wire_drag(hit, scene_pos)
-                return
-            if event.button() == QtCore.Qt.RightButton:
-                self._show_port_menu(hit, event.globalPos())
                 return
 
         # Track which proxy widget was clicked so the key router can forward
@@ -1393,22 +1393,57 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     def _start_wire_drag(self, port: ChunkPortItem, scene_pos: QtCore.QPointF) -> None:
         self._drag_src_port = port
-        self._drag_edge = QtWidgets.QGraphicsPathItem()
-        pen = QtGui.QPen(port.brush().color(), 1.5, QtCore.Qt.DashLine)
-        self._drag_edge.setPen(pen)
-        self._drag_edge.setZValue(10)
-        self.scene().addItem(self._drag_edge)
+        self._drag_detach_attr = None
+        self._drag_detach_source_port = None
+        self._drag_reused_edge = None
+        # Grabbing an already-wired input port picks up its existing connection:
+        # dropping on a new source rewires it, dropping on another compatible input
+        # moves it there, dropping off any port disconnects it.
+        if port.is_input:
+            graph_scene = self.scene()
+            if isinstance(graph_scene, ChunkGraphScene) and graph_scene._stage:
+                attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
+                conns = list(attr.GetConnections()) if attr and attr.IsValid() else []
+                if conns:
+                    self._drag_detach_attr = attr
+                    self._drag_detach_source_port = self._find_sibling_output_port(conns[0], graph_scene)
+                    # Drag the real edge itself (its src end stays put, dst end follows
+                    # the cursor) instead of a separate rubber-band line on top of it.
+                    for edge in graph_scene._edges:
+                        if edge.dst_port is port:
+                            self._drag_reused_edge = edge
+                            edge.setPen(QtGui.QPen(edge.pen().color(), 1.5, QtCore.Qt.DashLine))
+                            break
+        if self._drag_reused_edge is None:
+            self._drag_edge = QtWidgets.QGraphicsPathItem()
+            pen = QtGui.QPen(port.brush().color(), 1.5, QtCore.Qt.DashLine)
+            self._drag_edge.setPen(pen)
+            self._drag_edge.setZValue(10)
+            self.scene().addItem(self._drag_edge)
+        else:
+            self._drag_edge = None
         self._update_wire_drag(scene_pos)
 
     def _update_wire_drag(self, scene_pos: QtCore.QPointF) -> None:
-        if self._drag_edge is None:
+        if self._drag_reused_edge is not None:
+            edge = self._drag_reused_edge
+            p1 = edge.src_port.scenePos()
+            p2 = scene_pos
+            dx = abs(p2.x() - p1.x()) * 0.5
+            path = QtGui.QPainterPath(p1)
+            path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
+            edge.prepareGeometryChange()
+            edge.setPath(path)
+            edge._p1, edge._p2 = p1, p2
+        elif self._drag_edge is not None:
+            p1 = self._drag_src_port.scenePos()
+            p2 = scene_pos
+            dx = abs(p2.x() - p1.x()) * 0.5
+            path = QtGui.QPainterPath(p1)
+            path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
+            self._drag_edge.setPath(path)
+        else:
             return
-        p1 = self._drag_src_port.scenePos()
-        p2 = scene_pos
-        dx = abs(p2.x() - p1.x()) * 0.5
-        path = QtGui.QPainterPath(p1)
-        path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
-        self._drag_edge.setPath(path)
 
         # Highlight compatible destination ports.
         graph_scene = self.scene()
@@ -1417,7 +1452,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 for port in node._ports:
                     port.set_highlighted(
                         port is not self._drag_src_port
-                        and self._can_connect(self._drag_src_port, port)
+                        and self._drag_target_ok(port)
                     )
 
     def _finish_wire_drag(self, scene_pos: QtCore.QPointF) -> None:
@@ -1427,20 +1462,44 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             (item for item in self.scene().items(scene_pos) if isinstance(item, ChunkPortItem)),
             None,
         )
-        if hit is not None and self._can_connect(self._drag_src_port, hit):
-            self._author_connection(self._drag_src_port, hit)
+        graph_scene = self.scene()
+        if hit is not None and self._drag_target_ok(hit):
+            if hit.is_input == self._drag_src_port.is_input:
+                # Dropped on another input of the same type as the one we grabbed:
+                # move the connection there instead of rewiring in place.
+                self._author_connection(self._drag_detach_source_port, hit)
+                if isinstance(graph_scene, ChunkGraphScene):
+                    self._disconnect_port(self._drag_src_port, self._drag_detach_attr, graph_scene)
+            else:
+                self._author_connection(self._drag_src_port, hit)
+        elif self._drag_detach_attr is not None and hit is not self._drag_src_port:
+            if isinstance(graph_scene, ChunkGraphScene):
+                self._disconnect_port(self._drag_src_port, self._drag_detach_attr, graph_scene)
         self._cancel_wire_drag()
 
     def _cancel_wire_drag(self) -> None:
         if self._drag_edge is not None:
             self.scene().removeItem(self._drag_edge)
             self._drag_edge = None
+        if self._drag_reused_edge is not None:
+            # If a connection change happened, _build_edges() already tore this
+            # item down — touching it further is a no-op (RuntimeError guarded).
+            # Otherwise, snap it back to its real solid path/pen.
+            try:
+                edge = self._drag_reused_edge
+                edge.setPen(QtGui.QPen(edge.src_port.brush().color(), 1.5))
+                edge.update_path()
+            except RuntimeError:
+                pass
+            self._drag_reused_edge = None
         graph_scene = self.scene()
         if isinstance(graph_scene, ChunkGraphScene):
             for node in graph_scene._nodes.values():
                 for port in node._ports:
                     port.set_highlighted(False)
         self._drag_src_port = None
+        self._drag_detach_attr = None
+        self._drag_detach_source_port = None
 
     def _can_connect(self, a: ChunkPortItem, b: ChunkPortItem) -> bool:
         if a.port_type != b.port_type:
@@ -1450,6 +1509,38 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if Sdf.Path(a.attr_path).GetPrimPath() == Sdf.Path(b.attr_path).GetPrimPath():
             return False
         return True
+
+    def _drag_target_ok(self, hit: ChunkPortItem) -> bool:
+        """Whether `hit` is a valid drop target for the wire currently being dragged."""
+        src = self._drag_src_port
+        if hit is src or hit.port_type != src.port_type:
+            return False
+        if hit.is_input != src.is_input:
+            return self._can_connect(src, hit)
+        # Same role as the grabbed port — only meaningful when we picked up an
+        # existing connection at an input port, moving its destination elsewhere.
+        if not src.is_input or self._drag_detach_source_port is None:
+            return False
+        return (
+            Sdf.Path(hit.attr_path).GetPrimPath()
+            != Sdf.Path(self._drag_detach_source_port.attr_path).GetPrimPath()
+        )
+
+    def _find_sibling_output_port(
+        self, conn_path: Sdf.Path, graph_scene: "ChunkGraphScene"
+    ) -> Optional[ChunkPortItem]:
+        """Resolve the ChunkPortItem for the source end of a connection. Exec connections
+        point straight at outputs:chunk; typed param connections point at the source's
+        inputs:param (see _author_connection), so the matching output port lives on the
+        sibling outputs:param attribute."""
+        src_prim_path = str(conn_path.GetPrimPath())
+        src_node = graph_scene._nodes.get(src_prim_path)
+        if src_node is None:
+            return None
+        attr_name = conn_path.name
+        if attr_name.startswith("inputs:"):
+            attr_name = "outputs:" + attr_name[len("inputs:"):]
+        return src_node.get_port(f"{src_prim_path}.{attr_name}")
 
     def _author_connection(self, a: ChunkPortItem, b: ChunkPortItem) -> None:
         src, dst = (b, a) if a.is_input else (a, b)
@@ -1488,21 +1579,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     param.value = f"@{src_node_name}.{src_param_name}@"
 
         graph_scene._build_edges()
-
-    def _show_port_menu(self, port: ChunkPortItem, global_pos: QtCore.QPoint) -> None:
-        if not port.is_input:
-            return
-        graph_scene = self.scene()
-        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage:
-            return
-        attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
-        if not (attr and attr.IsValid() and attr.GetConnections()):
-            return
-        menu = QtWidgets.QMenu()
-        menu.addAction("Disconnect").triggered.connect(
-            lambda: self._disconnect_port(port, attr, graph_scene)
-        )
-        menu.exec(global_pos)
 
     def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: "ChunkGraphScene") -> None:
         # For exec ports: rewire predecessor → successor before clearing.
