@@ -853,9 +853,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         # Derive the prim root for this context
         if context is not None and getattr(context, "prim_path", None):
-            chunks_root_path = Sdf.Path(f"{context.prim_path}/chunks")
+            chunks_root_path = chunk_usd._resolve_chunk_root(context)
         else:
             chunks_root_path = Sdf.Path(_CHUNKS_ROOT)
+
         self._chunks_root_path = chunks_root_path
 
         # Check the root is valid BEFORE clearing. A disable/delete recomposition can leave
@@ -891,7 +892,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._edges.clear()
 
         chunks_by_path = {
-            f"{_resolve_chunk_root(c)}/{c.name}": c
+            f"{chunk_usd._resolve_chunk_root(c)}/{c.name}": c
             for c in scene_sender.get_chunks()
             if c.get_context() == context
         }
@@ -1615,7 +1616,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         scene.add_chunk(view_chunk)
 
-        view_prim_path = f"{_resolve_chunk_root(view_chunk)}/{view_chunk.name}"
+        view_prim_path = f"{chunk_usd._resolve_chunk_root(view_chunk)}/{view_chunk.name}"
         stage = registry.scene.get_stage()
         if not stage:
             return
@@ -1799,12 +1800,3 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             scene.add_chunk(c)
 
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-
-def _resolve_chunk_root(chunk: core.ChunkBase) -> str:
-    context = chunk.get_context()
-    if context and getattr(context, "prim_path", None):
-        return f"{context.prim_path}/chunks"
-    return _CHUNKS_ROOT

@@ -907,7 +907,7 @@ def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
 def _resolve_chunk_root(chunk: "core.ChunkBase") -> str:
     """Return the parent prim path for chunk based on its context's prim_path."""
     context = chunk.get_context()
-    if context and getattr(context, "prim_path", None):
+    if context and context.prim_path:
         return context.prim_path
     return _CHUNKS_ROOT
 

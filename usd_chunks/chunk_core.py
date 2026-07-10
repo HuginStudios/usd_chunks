@@ -3618,6 +3618,11 @@ class ChunkBase(ChunkGroupBase):
             private=True,
         )
 
+    def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
+        if attr.name == "prim_path":
+            return str(val).replace(" ", "")
+        return super().convert_attr(attr, val)
+
     def start_gizmo(self, notice=None, sender=None):
         self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_START)
 
@@ -4188,7 +4193,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         Returns:
             ChunkBase | None: The context chunk that was added to the scene
         """
-        return self.add_chunk(ChunkBase(name, flags=ChunkFlags.GroupFlags.CONTEXT, prim_path=prim_path))
+        path = prim_path if prim_path else "/" + name
+        return self.add_chunk(ChunkBase(name, flags=ChunkFlags.GroupFlags.CONTEXT, prim_path=path))
 
     def set_chunks(self, chunks: NameSyncedContainer[ChunkBase]):
         """
