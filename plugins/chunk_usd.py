@@ -90,7 +90,6 @@ def _sdf_type_and_value(val):
     return sdf_type, val
 
 
-
 class ChunkStageSync(metaclass=RegistrySingleton):
     """
     Singleton that authors a Chunk prim on the stage whenever a Python chunk
@@ -495,7 +494,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             sdf_type = real_attr.GetTypeName()
         else:
             type_source = vector.default_value
-            sdf_type, _ = _sdf_vector_type(type_source) if type_source else (None, None)
+            if ChunkFlags.ParamType.FLOAT in vector.evaluate_type():
+                sdf_type, _ = _VECTOR_TYPE_MAP[(float, vector.length)]
+            else:
+                sdf_type, _ = _sdf_vector_type(type_source) if type_source else (None, None)
             if sdf_type is None:
                 return
             if not is_expr and vector.value == vector.default_value:
@@ -638,7 +640,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             sdf_type = _SDF_TYPE_MAP.get(type(type_source))
             if sdf_type is None:
                 continue
-
+            if ChunkFlags.ParamType.FLOAT in param.evaluate_type():
+                sdf_type = _SDF_TYPE_MAP[float]
             prefix = "outputs:" if param.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
             attr_name = f"{prefix}{path.replace('.', ':')}"
 
