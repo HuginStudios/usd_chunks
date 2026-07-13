@@ -894,7 +894,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         chunks_by_path = {
             f"{chunk_usd._resolve_chunk_root(c)}/{c.name}": c
             for c in scene_sender.get_chunks()
-            if c.get_context() == context
+            # Exclude the context chunk itself: get_context() returns self for a CONTEXT chunk,
+            # so a group would otherwise map to "{its own prim}/{its name}" — the path of a child
+            # inside it — and shadow a real nested chunk of the same name (backing that node with
+            # the wrong chunk, so double-clicking it dives into the parent instead of the child).
+            if c.get_context() == context and c is not context
         }
 
         # Also include CONTEXT group chunks whose prims live directly under this root
