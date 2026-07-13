@@ -3619,7 +3619,10 @@ class ChunkBase(ChunkGroupBase):
         )
 
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
-        if attr.name == "prim_path":
+        # Strip spaces so prim_path stays a valid USD path, but leave None alone — otherwise
+        # str(None) makes prim_path the string "None", which is truthy and Sdf.Path("None")
+        # collapses to an invalid empty path (breaks chunkgroups / _resolve_chunk_root).
+        if attr.name == "prim_path" and val is not None:
             return str(val).replace(" ", "")
         return super().convert_attr(attr, val)
 
@@ -4262,7 +4265,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         elif self._current_context and (ctx := self._current_context()):
             ctx.add_param(c, notify=notify)
-        elif ctx := self.add_context("Chunks"):
+        # The default catch-all context must map to the global chunks root ("/chunks",
+        # i.e. _CHUNKS_ROOT in the plugins layer) so chunks with no tab land there. Without
+        # an explicit path, add_context would give it "/Chunks" and break _resolve_chunk_root.
+        elif ctx := self.add_context("Chunks", prim_path="/chunks"):
             ctx.add_param(c, notify=notify)
         else:
             logger.error(f"Failed to add chunk {c}")

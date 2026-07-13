@@ -1166,19 +1166,19 @@ def test_rename_context_prim_path_updates_chunk_prim_paths() -> None:
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
     _chunk_usd_init(stage, scene)
 
-    # Tab context with no prim_path — sub-chunks default to /chunks
+    # A named tab context gets its own prim root ("/MyTab") — sub-chunks nest under it.
     ctx = scene.add_context("MyTab")
     c1 = _chunk_with_module("c1")
-    scene.add_chunk(c1)  # → ctx.add_param(c1) → prim at /chunks/c1
+    scene.add_chunk(c1)  # → ctx.add_param(c1) → prim at /MyTab/c1
 
     sync = ChunkStageSync()
-    assert stage.GetPrimAtPath("/chunks/c1").IsValid(), "prim must exist before rename"
-    assert sync._chunk_prim_paths.get(id(c1)) == "/chunks/c1"
+    assert stage.GetPrimAtPath("/MyTab/c1").IsValid(), "prim must exist before rename"
+    assert sync._chunk_prim_paths.get(id(c1)) == "/MyTab/c1"
 
     rename_context_prim_path(ctx, "/mychunks")
 
     assert stage.GetPrimAtPath("/mychunks/c1").IsValid(), "prim must be at new path"
-    assert not stage.GetPrimAtPath("/chunks/c1").IsValid(), "old prim must be removed"
+    assert not stage.GetPrimAtPath("/MyTab/c1").IsValid(), "old prim must be removed"
     assert sync._chunk_prim_paths.get(id(c1)) == "/mychunks/c1", \
         "_chunk_prim_paths must be updated so sync still finds the chunk"
 
