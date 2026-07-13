@@ -793,7 +793,19 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         return tail
 
     def _define_prim(self, chunk: core.ChunkBase, prev_chunk: "core.ChunkBase | None" = None) -> Usd.Prim:
-        chunk_root = _resolve_chunk_root(chunk)
+        # Author the prim at the exact path _on_param_added registered (chunk._exec_prim_path),
+        # so the prim is CREATED where it was REGISTERED. For CONTEXT group chunks these diverge:
+        # _on_param_added resolves the parent via _parent_context (e.g. "/MyTab"), but
+        # _resolve_chunk_root resolves via get_context() — None for a root-level group, giving
+        # "/chunks". A create/register mismatch defeats load_chunks' dedup and recurses forever
+        # (_define_prim → StageContentsChanged → load_chunks re-adds → _define_prim → …).
+        exec_path = getattr(chunk, "_exec_prim_path", None)
+        if exec_path:
+            target_path = str(exec_path)
+            chunk_root = str(Sdf.Path(target_path).GetParentPath())
+        else:
+            chunk_root = _resolve_chunk_root(chunk)
+            target_path = f"{chunk_root}/{chunk.name}"
 
         # All prim and attribute authoring must land on the user's chosen edit
         # target, never on a chunk's own anonymous execute layer (which gets
@@ -808,7 +820,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         )
 
         with self._chunk_prim_edit_context():
-            prim = self._stage.DefinePrim(Sdf.Path(f"{chunk_root}/{chunk.name}"), _CHUNK_PRIM_TYPENAME)
+            prim = self._stage.DefinePrim(Sdf.Path(target_path), _CHUNK_PRIM_TYPENAME)
 
             ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
             if not ui_api.GetPosAttr().HasAuthoredValue():
