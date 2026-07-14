@@ -548,9 +548,16 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
             if text == current:
                 act.setCheckable(True)
                 act.setChecked(True)
-        pos = self.mapToGlobal(QtCore.QPoint(0, self.height()))
-        if chosen := menu.exec_(pos):
-            self.setCurrentText(chosen.text())
+        # Use popup() (non-modal), not exec_(). exec_ runs a nested event loop in which a
+        # deferred node-graph rebuild can destroy this proxied combobox mid-selection; exec_'s
+        # result would then be applied to a freed C++ widget → silent crash. With popup(), if
+        # the widget is destroyed the menu (its child) goes with it and never fires triggered.
+        menu.triggered.connect(self._menu_item_chosen)
+        menu.aboutToHide.connect(menu.deleteLater)
+        menu.popup(self.mapToGlobal(QtCore.QPoint(0, self.height())))
+
+    def _menu_item_chosen(self, action) -> None:
+        self.setCurrentText(action.text())
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
@@ -1157,22 +1164,37 @@ class ContainerWidget(
 
     def delete_self(self):
         try:
-            self.setParent(None)
             self.deleteLater()
+            self.setParent(None)
         except RuntimeError:
             # C++ object already destroyed (e.g. by QGraphicsProxyWidget teardown)
             pass
 
     def remove_widget(self, widget: QtWidgets.QWidget):
-        count = self.content_layout.count()
-        for i in reversed(range(count)):
-            item = self.content_layout.itemAt(i)
-            if not item:
-                continue
-            iw = item.widget()
+        try:
+            count = self.content_layout.count()
+            for i in reversed(range(count)):
+                item = self.content_layout.itemAt(i)
+                if not item:
+                    continue
+                iw = item.widget()
 
-            if isinstance(iw, LabeledWidget) and iw.widget == widget:
-                self.content_layout.removeItem(item)
+                if isinstance(iw, LabeledWidget) and iw.widget == widget:
+                    self.content_layout.removeItem(item)
+                    # Tear the wrapper down, not just its layout entry. Otherwise the
+                    # LabeledWidget stays a child of this container, keeping a strong ref
+                    # to the param widget -> chunk, so the chunk never GCs and its layer's
+                    # weakref.finalize (which removes the layer) never fires.
+                    iw.setParent(None)
+                    iw.deleteLater()
+                    break
+        except RuntimeError:
+            # This container's own C++ layout/widget was already torn down (e.g. the whole
+            # ChunkWidget was deleted via _group_deleted while a sibling's PARAM_REMOVED was
+            # still propagating here during a tab-delete cascade). Nothing to remove — the
+            # parent teardown handles the children. Swallowing this lets the cascade finish
+            # and reach super().request_delete()/CHUNK_DELETED, so the tab actually closes.
+            pass
 
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)

@@ -3086,6 +3086,12 @@ class ChunkContainerBase(ChunkCommon):
         """
         Request delete this container, and subsequently clear its children
         """
+
+        # Call request_delete on all children. This will send PARAM_REMOVED on the removed
+        # children
+        for param in self.get_params():
+            param.request_delete()
+
         self.children.clear()
         self.children.set_owner(None)
 
@@ -3612,6 +3618,14 @@ class ChunkBase(ChunkGroupBase):
             private=True,
         )
 
+    def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
+        # Strip spaces so prim_path stays a valid USD path, but leave None alone — otherwise
+        # str(None) makes prim_path the string "None", which is truthy and Sdf.Path("None")
+        # collapses to an invalid empty path (breaks chunkgroups / _resolve_chunk_root).
+        if attr.name == "prim_path" and val is not None:
+            return str(val).replace(" ", "")
+        return super().convert_attr(attr, val)
+
     def start_gizmo(self, notice=None, sender=None):
         self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_START)
 
@@ -3653,12 +3667,17 @@ class ChunkBase(ChunkGroupBase):
         return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
 
     def add_param(self, param: ChunkT, force_unique: bool = True, notify: bool = True) -> ChunkT:
-        res = super().add_param(param, force_unique)
-        if notify and self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(param, ChunkBase):
+        do_context_setup = notify and self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(param, ChunkBase)
+        if do_context_setup:
+            # Clear the chunk's edit layer to a fresh slate BEFORE adding — adding fires
+            # PARAM_ADDED, which can trigger the chunk's execute() (e.g. via _wire_inputs);
+            # clearing afterwards would wipe what execute just authored.
             lm = chunk_registry.ChunkLayerManager()
             if lm.initialized:
                 if layer := lm.get_or_create_layer(param):
                     layer.Clear()
+        res = super().add_param(param, force_unique)
+        if do_context_setup:
             chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, param, data=param)
         return res
 
@@ -4009,30 +4028,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         for cb in self._stage_replaced_listeners:
             cb(stage)
 
-    @abstractmethod
-    def get_current_frame(self) -> float:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_end_frame(self) -> float:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_start_frame(self) -> float:
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_current_frame(self, frame: float):
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_end_frame(self, frame: float):
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_start_frame(self, frame: float):
-        raise NotImplementedError
-
     def serialize(self, glb):
         # Ensure that the scene is not serialized. For now, we only serialize the chunks NameSyncedContainer
         return None
@@ -4206,7 +4201,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         Returns:
             ChunkBase | None: The context chunk that was added to the scene
         """
-        return self.add_chunk(ChunkBase(name, flags=ChunkFlags.GroupFlags.CONTEXT, prim_path=prim_path))
+        path = prim_path if prim_path else "/" + name
+        return self.add_chunk(ChunkBase(name, flags=ChunkFlags.GroupFlags.CONTEXT, prim_path=path))
 
     def set_chunks(self, chunks: NameSyncedContainer[ChunkBase]):
         """
@@ -4274,7 +4270,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         elif self._current_context and (ctx := self._current_context()):
             ctx.add_param(c, notify=notify)
-        elif ctx := self.add_context("Chunks"):
+        # The default catch-all context must map to the global chunks root ("/chunks",
+        # i.e. _CHUNKS_ROOT in the plugins layer) so chunks with no tab land there. Without
+        # an explicit path, add_context would give it "/Chunks" and break _resolve_chunk_root.
+        elif ctx := self.add_context("Chunks", prim_path="/chunks"):
             ctx.add_param(c, notify=notify)
         else:
             logger.error(f"Failed to add chunk {c}")

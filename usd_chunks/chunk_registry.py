@@ -876,6 +876,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         self._flags_listener = NoticeConnection(self._flags_changed, ChunkNoticeAlias.STATE_CHANGED, globally=True)
 
+        self._deleted_listener = NoticeConnection(
+            self._on_chunk_deleted_notice, ChunkNoticeAlias.CHUNK_DELETED, globally=True
+        )
+
         self.chunk_layers: Dict[core.ChunkHash, Sdf.Layer] = {}
         self.graph_layers: Dict[str, Sdf.Layer] = {}
         self._chunk_refs = weakref.WeakSet()
@@ -1055,9 +1059,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             bool: True when the layer is muted, False otherwise
         """
         layer = self.chunk_layers.get(c)
-        if self.stage and layer and layer.IsMuted():
-            return True
-        return False
+        if not (self.stage and layer):
+            return False
+        # A chunk layer can be muted stage-scoped (disable path) or Sdf-level (node graph
+        # view slots); treat either as muted.
+        return self.stage.IsLayerMuted(layer.identifier) or layer.IsMuted()
 
     def add_layer(self, target_layer: Sdf.Layer, c: "core.ChunkCommon", index: int = 0) -> Sdf.Layer:
         """
@@ -1152,6 +1158,15 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def iter_chunk_layers(self) -> Generator[Tuple[Sdf.Layer, Sdf.Layer], None, None]:
         yield from self._iter_sublayers(self.get_root_layer())
 
+    def _on_chunk_deleted_notice(self, notice, sender):
+        # Remove the chunk's edit layer immediately on delete. The layer is normally freed by
+        # a GC finalizer (add_layer), but a lingering reference — a node/widget or a reference
+        # cycle — can defer collection, leaving the layer and any baked edits (e.g. an RBD
+        # sim's time samples) composed into the scene. Idempotent with the finalizer.
+        get_hash = getattr(sender, "get_hash", None)
+        if callable(get_hash):
+            self._chunk_deleted(get_hash())
+
     def _chunk_deleted(self, chunk_hash):
         if not (layer := self.get_layer(chunk_hash)):
             return
@@ -1182,7 +1197,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not (layer := self.get_layer(c)):
             return
 
+        if not self.stage:
+            return
+
         if c.has_state(ChunkFlags.State.DISABLED):
-            layer.SetMuted(True)
+            # Mute through the stage (not Sdf.Layer.SetMuted) so usdview receives the
+            # recomposition notice and repaints. A plain layer-level mute recomposes lazily,
+            # leaving usdview showing sibling prims (e.g. a ScatterInstancer whose def lives
+            # in another chunk's layer) as if removed until the next edit forces a refresh.
+            self.stage.MuteLayer(layer.identifier)
         elif self.is_muted(c):
-            layer.SetMuted(False)
+            self.stage.UnmuteLayer(layer.identifier)

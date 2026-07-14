@@ -90,7 +90,6 @@ def _sdf_type_and_value(val):
     return sdf_type, val
 
 
-
 class ChunkStageSync(metaclass=RegistrySingleton):
     """
     Singleton that authors a Chunk prim on the stage whenever a Python chunk
@@ -137,7 +136,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._contents_changed_listener = NoticeConnection(
             self._on_contents_changed, ChunkNoticeAlias.STAGE_CONTENTS_CHANGED, globally=True
         )
-        
+        self._chunk_loaded_listener = NoticeConnection(
+            self._on_chunk_loaded, ChunkNoticeAlias.CHUNK_LOADED, globally=True
+        )
+
         if stage:
             self._loaded_stage = stage
             load_chunks(stage, scene, self._loaded_prim_paths)
@@ -495,7 +497,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             sdf_type = real_attr.GetTypeName()
         else:
             type_source = vector.default_value
-            sdf_type, _ = _sdf_vector_type(type_source) if type_source else (None, None)
+            if ChunkFlags.ParamType.FLOAT in vector.evaluate_type():
+                sdf_type, _ = _VECTOR_TYPE_MAP[(float, vector.length)]
+            else:
+                sdf_type, _ = _sdf_vector_type(type_source) if type_source else (None, None)
             if sdf_type is None:
                 return
             if not is_expr and vector.value == vector.default_value:
@@ -638,7 +643,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             sdf_type = _SDF_TYPE_MAP.get(type(type_source))
             if sdf_type is None:
                 continue
-
+            if ChunkFlags.ParamType.FLOAT in param.evaluate_type():
+                sdf_type = _SDF_TYPE_MAP[float]
             prefix = "outputs:" if param.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
             attr_name = f"{prefix}{path.replace('.', ':')}"
 
@@ -740,6 +746,25 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if is_group:
             chunk.prim_path = prim_path
 
+    def _on_chunk_loaded(self, notice, sender):
+        """Run a chunk's module execute() hook once on interactive creation.
+
+        We fire on CHUNK_LOADED rather than PARAM_ADDED because add_param
+        clears the chunk's edit layer *after* PARAM_ADDED — running execute earlier would
+        author into that layer only for it to be wiped. The load path already calls
+        execute() itself, so skip while a stage is loading to avoid a double run.
+        """
+        if not self.initialized or not self._stage:
+            return
+        if chunk_notice._loading_stage:
+            return
+        chunk = notice.data
+        if not isinstance(chunk, core.ChunkBase):
+            return
+        module = getattr(chunk, "_module", None)
+        if callable(getattr(module, "execute", None)):
+            chunk.execute()
+
     def _find_dag_tail(self, context, exclude=None) -> "core.ChunkBase | None":
         """Return the tail of the exec DAG for this context — the chunk whose outputs:chunk
         is not referenced by any other chunk's inputs:chunk. Used as prev_chunk when no
@@ -790,7 +815,19 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         return tail
 
     def _define_prim(self, chunk: core.ChunkBase, prev_chunk: "core.ChunkBase | None" = None) -> Usd.Prim:
-        chunk_root = _resolve_chunk_root(chunk)
+        # Author the prim at the exact path _on_param_added registered (chunk._exec_prim_path),
+        # so the prim is CREATED where it was REGISTERED. For CONTEXT group chunks these diverge:
+        # _on_param_added resolves the parent via _parent_context (e.g. "/MyTab"), but
+        # _resolve_chunk_root resolves via get_context() — None for a root-level group, giving
+        # "/chunks". A create/register mismatch defeats load_chunks' dedup and recurses forever
+        # (_define_prim → StageContentsChanged → load_chunks re-adds → _define_prim → …).
+        exec_path = getattr(chunk, "_exec_prim_path", None)
+        if exec_path:
+            target_path = str(exec_path)
+            chunk_root = str(Sdf.Path(target_path).GetParentPath())
+        else:
+            chunk_root = _resolve_chunk_root(chunk)
+            target_path = f"{chunk_root}/{chunk.name}"
 
         # All prim and attribute authoring must land on the user's chosen edit
         # target, never on a chunk's own anonymous execute layer (which gets
@@ -805,7 +842,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         )
 
         with self._chunk_prim_edit_context():
-            prim = self._stage.DefinePrim(Sdf.Path(f"{chunk_root}/{chunk.name}"), _CHUNK_PRIM_TYPENAME)
+            prim = self._stage.DefinePrim(Sdf.Path(target_path), _CHUNK_PRIM_TYPENAME)
 
             ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
             if not ui_api.GetPosAttr().HasAuthoredValue():
@@ -907,7 +944,7 @@ def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
 def _resolve_chunk_root(chunk: "core.ChunkBase") -> str:
     """Return the parent prim path for chunk based on its context's prim_path."""
     context = chunk.get_context()
-    if context and getattr(context, "prim_path", None):
+    if context and context.prim_path:
         return context.prim_path
     return _CHUNKS_ROOT
 

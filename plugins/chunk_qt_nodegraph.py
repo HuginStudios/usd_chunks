@@ -53,6 +53,11 @@ _CHUNK_PRIM_TYPENAME = "Chunk"
 _EXEC_INPUT = "inputs:chunk"
 _EXEC_OUTPUT = "outputs:chunk"
 _UNBUILT = object()  # sentinel for ChunkGraphScene._built_context
+# Child predicate that keeps disabled chunks: disabling sets the chunk prim inactive
+# (prim.SetActive(False)), and the default GetChildren() skips inactive prims — which would
+# drop the disabled node out of the graph. Include inactive-but-defined prims so a disabled
+# node stays put (greyed out) instead of vanishing.
+_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 
 # Hidden top-level sink widget: child QWidgets parented here avoid a native OS
 # window (and the Windows flash that comes with it) while staying off the viewport.
@@ -66,6 +71,10 @@ def _get_proxy_sink() -> QtWidgets.QWidget:
         # Logically visible (so children inherit WA_WState_Visible and isVisible()
         # returns True for port placement) but physically suppressed so nothing renders.
         _proxy_sink.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
+        # This persistent top-level sink is never closed. Without WA_QuitOnClose=False it
+        # counts as an open window, so usdview's quitOnLastWindowClosed never fires when the
+        # main window closes and the process hangs on exit.
+        _proxy_sink.setAttribute(QtCore.Qt.WA_QuitOnClose, False)
         _proxy_sink.show()
     return _proxy_sink
 
@@ -212,6 +221,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         self._build_ports(prim)
         self._apply_usd_pos(prim)
+        # Reflect disabled state on (re)build — otherwise a rebuilt disabled node renders at
+        # full opacity until the next state change (e.g. selecting it).
+        if chunk.has_state(ChunkFlags.State.DISABLED):
+            self.setOpacity(0.35)
 
     # ------------------------------------------------------------------
     # Build
@@ -253,6 +266,14 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         """Create the embedded ChunkWidget proxy. Called in deferred batches after scene build."""
         if self._is_dot:
             return
+        # Runs deferred; the node may have been removed by a rebuild before this fires.
+        # Building a proxy/ports on a detached node leaves a ghost (its C++ item lingers in
+        # the scene after its Python wrapper is GC'd). Bail if we're no longer in a scene.
+        try:
+            if self.scene() is None:
+                return
+        except RuntimeError:
+            return
         # Create as a child of the sink so the show() called during init (via
         # update_from_state → set_hidden(False)) doesn't flash a native OS window.
         chunk_widget = ChunkWidget(self.chunk, parent=_get_proxy_sink())
@@ -283,6 +304,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
 
     def _rebuild_typed_ports(self):
+        # This is deferred (singleShot), so by the time it runs the chunk may already be
+        # gone — disabled (prim inactive) or deleted (prim expired). Rebuilding ports reads
+        # prim attributes, so bail rather than crash; the scene rebuild will drop this node.
+        if not self.prim.IsValid():
+            return
         if self._proxy is None:
             return
         try:
@@ -429,6 +455,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 vec.unset_state(ChunkFlags.State.DISABLED)
 
     def _apply_usd_pos(self, prim: Usd.Prim):
+        # A position notice can arrive for a node whose cached prim is already invalid
+        # (e.g. a stale node removed but not yet cleared by the deferred rebuild). Schemas
+        # raise on an invalid prim, so bail.
+        if not prim or not prim.IsValid():
+            return
         ui_api = UsdUI.NodeGraphNodeAPI(prim)
         pos_attr = ui_api.GetPosAttr()
         if pos_attr and pos_attr.HasAuthoredValue():
@@ -459,6 +490,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         )
 
     def paint(self, painter: QtGui.QPainter, option, widget=None):
+        # The chunk may already be deleted while this node awaits its deferred removal
+        # (see ChunkGraphScene._on_chunk_deleted); painting reads live prim attributes,
+        # so skip it rather than touch an expired prim.
+        if not self.prim.IsValid():
+            return
         if self._is_dot:
             color = _COL_NODE_SELECTED if self._selected else _COL_PORT_EXEC
             painter.setBrush(color)
@@ -628,13 +664,19 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             scene.update_edges_for(self)
 
     def _on_state_changed(self, notice, sender):
-        selected = self.chunk.has_state(ChunkFlags.State.SELECTED)
-        if selected != self._selected:
-            self._selected = selected
-            self.update()
-        self._set_collapsed(self.chunk.has_state(ChunkFlags.State.COLLAPSED))
-        disabled = self.chunk.has_state(ChunkFlags.State.DISABLED)
-        self.setOpacity(0.35 if disabled else 1.0)
+        # This is a global STATE_CHANGED callback and can arrive after the node's chunk was
+        # removed — the node's C++ item (and its proxy) may already be destroyed, so any Qt
+        # call raises. Nothing to update in that case.
+        try:
+            selected = self.chunk.has_state(ChunkFlags.State.SELECTED)
+            if selected != self._selected:
+                self._selected = selected
+                self.update()
+            self._set_collapsed(self.chunk.has_state(ChunkFlags.State.COLLAPSED))
+            disabled = self.chunk.has_state(ChunkFlags.State.DISABLED)
+            self.setOpacity(0.35 if disabled else 1.0)
+        except RuntimeError:
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +760,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Disable the BSP spatial index. clear() (used on every rebuild) can leave a
+        # destroyed QGraphicsProxyWidget dangling in the BSP index, so a later itemAt()
+        # returns freed memory and usdview crashes on the next click. NoIndex makes itemAt
+        # linearly scan the live item list instead — fine for the small node counts here.
+        self.setItemIndexMethod(QtWidgets.QGraphicsScene.ItemIndexMethod.NoIndex)
         self._stage: Optional[Usd.Stage] = None
         self._scene_sender: Optional[core.SceneSender] = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
@@ -725,19 +772,21 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._objects_changed_conn: Optional[NoticeConnection] = None
         self._show_param_edges: bool = True
         self._built_context: object = _UNBUILT  # sentinel — tracks what context is currently rendered
+        self._dirty: bool = True  # set by invalidate(); cleared by a (re)build
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
         self._build_edges()
 
     def invalidate(self):
-        self._built_context = _UNBUILT
+        # Mark that a rebuild is needed WITHOUT clobbering _built_context. The scene's own
+        # notice-driven rebuild reads _built_context; nulling it to the sentinel here caused
+        # deletes to rebuild with no context and produce an empty graph until a tab-toggle.
+        self._dirty = True
 
     def build(self, stage: Usd.Stage, scene_sender: core.SceneSender, context=None):
         self._built_context = context
-        self.clear()
-        self._nodes.clear()
-        self._edges.clear()
+        self._dirty = False
         self._stage = stage
         self._scene_sender = scene_sender
 
@@ -748,24 +797,112 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             self._on_chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True
         )
 
-        chunks_by_path = {
-            f"{_resolve_chunk_root(c)}/{c.name}": c
-            for c in scene_sender.get_chunks()
-            if c.get_context() == context
-        }
+        self._rebuild_nodes()
+
+    def _schedule_rebuild(self):
+        """Queue one deferred, coalesced rebuild.
+
+        A structural change (add/remove/enable/disable) fires a burst of notices; debouncing
+        collapses them into a single rebuild, and deferring past the current notice means we
+        never destroy an embedded widget while its callback is still on the stack.
+        """
+        if getattr(self, "_rebuild_pending", False):
+            return
+        self._rebuild_pending = True
+        QtCore.QTimer.singleShot(0, self._do_rebuild)
+
+    def _do_rebuild(self):
+        self._rebuild_pending = False
+        self._rebuild_nodes()
+
+    def _teardown_items(self):
+        # Detach embedded widgets before their proxies are destroyed. QGraphicsScene.clear()
+        # tearing down live QGraphicsProxyWidgets (with complex embedded ChunkWidgets) can
+        # corrupt the scene, so a later itemAt()/click reads freed memory and crashes usdview.
+        # setWidget(None) hands each widget back and we delete it separately, so clear() only
+        # destroys now-empty proxies.
+        for node in self._nodes.values():
+            proxy = getattr(node, "_proxy", None)
+            if proxy is None:
+                continue
+            try:
+                w = proxy.widget()
+                proxy.setWidget(None)
+                if w is not None:
+                    w.setParent(None)
+                    w.deleteLater()
+            except RuntimeError:
+                pass
+        self.clear()
+
+    def _rebuild_nodes(self):
+        """Rebuild every node/edge from the current chunk prims.
+
+        Safe to call on any structural change. Deleted chunks drop out (their prim is gone);
+        disabled chunks stay (their prim is inactive but still included via _INCLUDE_INACTIVE)
+        and render greyed. Either way we rebuild from fresh prim handles rather than mutating
+        the graph around an expired prim.
+        """
+        if not self._stage or not self._scene_sender:
+            return
+        stage = self._stage
+        scene_sender = self._scene_sender
+        context = self._built_context
+        if context is _UNBUILT:
+            return  # not built yet — a real build() will render with a proper context
 
         # Derive the prim root for this context
         if context is not None and getattr(context, "prim_path", None):
-            chunks_root_path = Sdf.Path(f"{context.prim_path}/chunks")
+            chunks_root_path = chunk_usd._resolve_chunk_root(context)
         else:
             chunks_root_path = Sdf.Path(_CHUNKS_ROOT)
 
+        self._chunks_root_path = chunks_root_path
+
+        # Check the root is valid BEFORE clearing. A disable/delete recomposition can leave
+        # /chunks transiently invalid; if we cleared first and then bailed, the graph would
+        # be wiped and never rebuilt. Keep the current graph and retry once it settles.
         chunks_root = stage.GetPrimAtPath(chunks_root_path)
         if not chunks_root.IsValid():
+            # /chunks is invalid. Distinguish "no chunks left" (e.g. the last chunk was
+            # removed, so /chunks legitimately went away) from a transient recomposition.
+            # If no chunks are expected here, clear the graph; otherwise keep it and retry so
+            # we don't wipe a live graph mid-recomposition (which would leave it empty).
+            expected = any(c.get_context() == context for c in scene_sender.get_chunks())
+            if not expected:
+                self._rebuild_retries = 0
+                self._teardown_items()
+                self._nodes.clear()
+                self._edges.clear()
+                return
+            retries = getattr(self, "_rebuild_retries", 0)
+            if retries < 20:
+                self._rebuild_retries = retries + 1
+                QtCore.QTimer.singleShot(0, self._do_rebuild)
             return
+        self._rebuild_retries = 0
+
+        self._dirty = False
+        # Bump the build generation so any in-flight deferred proxy batch from a previous
+        # rebuild aborts instead of creating a ghost node (a proxy/ports on a stale node the
+        # clear() below just removed).
+        self._build_gen = getattr(self, "_build_gen", 0) + 1
+        self._teardown_items()
+        self._nodes.clear()
+        self._edges.clear()
+
+        chunks_by_path = {
+            f"{chunk_usd._resolve_chunk_root(c)}/{c.name}": c
+            for c in scene_sender.get_chunks()
+            # Exclude the context chunk itself: get_context() returns self for a CONTEXT chunk,
+            # so a group would otherwise map to "{its own prim}/{its name}" — the path of a child
+            # inside it — and shadow a real nested chunk of the same name (backing that node with
+            # the wrong chunk, so double-clicking it dives into the parent instead of the child).
+            if c.get_context() == context and c is not context
+        }
 
         # Also include CONTEXT group chunks whose prims live directly under this root
-        for prim in chunks_root.GetChildren():
+        for prim in chunks_root.GetFilteredChildren(_INCLUDE_INACTIVE):
             path = str(prim.GetPath())
             if path not in chunks_by_path:
                 ctx_chunk = scene_sender.get_context_for_prim_path(path)
@@ -777,7 +914,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         root_id = stage.GetRootLayer().identifier
         edit_id = stage.GetEditTarget().GetLayer().identifier
 
-        for prim in chunks_root.GetChildren():
+        for prim in chunks_root.GetFilteredChildren(_INCLUDE_INACTIVE):
             if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
                 continue
             path = str(prim.GetPath())
@@ -799,7 +936,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         # Proxy widgets (ChunkWidget) are created in small batches so the graph
         # renders immediately with node headers and fills in progressively.
-        self._create_proxies_batch(list(self._nodes.values()), on_complete=self._on_proxies_ready)
+        self._create_proxies_batch(list(self._nodes.values()), self._build_gen, on_complete=self._on_proxies_ready)
 
     def _on_proxies_ready(self):
         for view in self.views():
@@ -808,12 +945,14 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             else:
                 view._pending_frame = True
 
-    def _create_proxies_batch(self, remaining: list, on_complete=None):
+    def _create_proxies_batch(self, remaining: list, gen: int, on_complete=None):
+        if gen != getattr(self, "_build_gen", gen):
+            return  # a newer rebuild superseded this batch — don't touch its stale nodes
         batch, rest = remaining[:self._PROXY_BATCH_SIZE], remaining[self._PROXY_BATCH_SIZE:]
         for node in batch:
             node.create_proxy()
         if rest:
-            QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, on_complete))
+            QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, gen, on_complete))
         elif on_complete:
             QtCore.QTimer.singleShot(0, on_complete)
 
@@ -823,6 +962,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._edges.clear()
 
         for node in self._nodes.values():
+            # A stage change fired by deleting a chunk lands here before that node's
+            # removal (which _on_chunk_deleted defers via singleShot), so its prim can
+            # already be expired. Skip it rather than touch an invalid prim.
+            if not node.prim.IsValid():
+                continue
             for attr in node.prim.GetAttributes():
                 attr_name = attr.GetName()
                 if not attr_name.startswith("inputs:"):
@@ -858,7 +1002,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                     self._edges.append(edge)
 
         for node in self._nodes.values():
-            node._sync_vector_states()
+            if node.prim.IsValid():
+                node._sync_vector_states()
 
     def update_edges_for(self, node: ChunkNodeItem):
         node_ports = set(node._ports)
@@ -867,20 +1012,25 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 edge.update_path()
 
     def _on_chunk_deleted(self, notice, sender):
-        prim_path = next(
-            (p for p, n in self._nodes.items() if n.chunk is sender), None
-        )
-        if prim_path is None:
-            return
-        node = self._nodes.pop(prim_path)
-        # Defer so all CHUNK_DELETED callbacks (including ChunkWidget.delete_self)
-        # complete before Qt destroys the embedded widget.
-        QtCore.QTimer.singleShot(0, lambda: (self.removeItem(node), self._build_edges()))
+        # A deleted chunk drops its prim from the stage. Rebuild from scratch so its node
+        # and any dangling edges go away cleanly (deferred inside _schedule_rebuild).
+        self._schedule_rebuild()
 
     def _on_objects_changed(self, notice, sender):
         if not self._stage or not sender:
             return
         if sender.GetRootLayer().identifier != self._stage.GetRootLayer().identifier:
+            return
+        # A prim-level resync under our chunks root means a chunk was added/removed/enabled/
+        # disabled. Rebuild the whole graph from scratch — only active chunks survive —
+        # instead of editing nodes in place around expired or inactive prims. Property-level
+        # resyncs (e.g. wiring a connection) don't change the node set, so they fall through
+        # to the cheap edge rebuild below.
+        root = getattr(self, "_chunks_root_path", None)
+        if root is not None and any(
+            p.IsPrimPath() and p.HasPrefix(root) for p in notice.GetResyncedPaths()
+        ):
+            self._schedule_rebuild()
             return
         for path in notice.GetChangedInfoOnlyPaths():
             if path.IsPropertyPath() and path.name == "ui:nodegraph:node:pos":
@@ -1130,12 +1280,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # key events to it without relying on native focus (which usdview steals).
         # Find the specific child widget at the click position rather than the
         # top-level proxy widget, so key events reach e.g. QLineEdit directly.
-        if proxy:
-            proxy_local = proxy.mapFromScene(scene_pos).toPoint()
-            clicked_child = proxy.widget().childAt(proxy_local)
-            self._proxy_key_router.set_active(clicked_child or proxy.widget())
-        else:
-            self._proxy_key_router.set_active(None)
+        # itemAt can return a proxy whose C++ object was already freed by a rebuild (a stale
+        # item lingering in the scene). Touching it (mapFromScene/widget) dereferences freed
+        # memory → native crash, which no try/except can catch — so validity-check first.
+        # Do NOT call into the proxy's C++ (mapFromScene/widget/childAt) here: on some Qt/
+        # PySide6 builds that dereferences a proxy left in a bad state by a rebuild and crashes
+        # usdview. Resolve the key-router target from the live node's pinned ChunkWidget via
+        # Python identity instead — no C++ touch on the proxy.
+        target_widget = None
+        graph_scene = self.scene()
+        if proxy is not None and isinstance(graph_scene, ChunkGraphScene):
+            for n in graph_scene._nodes.values():
+                if getattr(n, "_proxy", None) is proxy:
+                    target_widget = getattr(n, "_chunk_widget", None)
+                    break
+        self._proxy_key_router.set_active(target_widget)
         self._proxy_key_router.set_view_active(True)
         if proxy is None:
             self.setFocus()
@@ -1461,7 +1620,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         scene.add_chunk(view_chunk)
 
-        view_prim_path = f"{_resolve_chunk_root(view_chunk)}/{view_chunk.name}"
+        view_prim_path = f"{chunk_usd._resolve_chunk_root(view_chunk)}/{view_chunk.name}"
         stage = registry.scene.get_stage()
         if not stage:
             return
@@ -1645,12 +1804,3 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             scene.add_chunk(c)
 
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-
-def _resolve_chunk_root(chunk: core.ChunkBase) -> str:
-    context = chunk.get_context()
-    if context and getattr(context, "prim_path", None):
-        return f"{context.prim_path}/chunks"
-    return _CHUNKS_ROOT

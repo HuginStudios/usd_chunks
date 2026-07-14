@@ -8,7 +8,9 @@ def execute(node):
     chunk_layer.Clear()
 
     primpath_param = node.get_param("primpath_location")
-    if not primpath_param.value:
+    # get_param returns None while the chunk's params are being torn down (remove re-runs
+    # execute via the DISABLED-unset). Bail rather than crash on None.value.
+    if not primpath_param or not primpath_param.value:
         return
 
     rotation = (

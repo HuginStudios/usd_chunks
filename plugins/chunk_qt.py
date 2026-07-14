@@ -145,6 +145,42 @@ def _guarded_paste():
     chunk_usd.paste_chunks()
 
 
+class ChunkTabContextStack(QtWidgets.QStackedWidget):
+    def __init__(self, ctx: chunk_core.ChunkBase, idx: int, parent=None):
+        super().__init__(parent)
+
+        params_widget = ChunkWidget(ctx, self, is_tab_context=True)
+        graph_view = ChunkGraphView(self)
+
+        vs = ViewSlotState(self)
+        params_widget.set_view_state(vs)
+        graph_view.set_view_state(vs)
+
+        self.addWidget(params_widget)  # page 0: params
+        self.addWidget(graph_view)  # page 1: graph
+
+        self.setCurrentIndex(idx)
+
+        copy_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Copy, self)
+        copy_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        copy_sc.activated.connect(_guarded_copy)
+
+        paste_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Paste, self)
+        paste_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        paste_sc.activated.connect(_guarded_paste)
+
+        self.ctx = weakref.ref(ctx, self._ctx_died)
+
+    def _ctx_died(self, ref):
+        # Weakref finalizer — can fire during app shutdown after Qt has already destroyed
+        # this stack's C++ object, so setParent/deleteLater would raise. Ignore that.
+        try:
+            self.setParent(None)
+            self.deleteLater()
+        except RuntimeError:
+            pass
+
+
 class ChunkTabWidget(QtWidgets.QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -276,39 +312,33 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
         w = self.widget(idx)
-        if isinstance(w, QtWidgets.QStackedWidget):
+        if isinstance(w, ChunkTabContextStack):
             w = w.widget(0)
-        assert w is None or isinstance(w, ChunkWidget)
-        return w
+        # Not every tab holds a context: index 0 is the "+" ChunkArea, and during
+        # async teardown (a ChunkTabContextStack removing itself on GC) the current
+        # widget can momentarily be something else. Return None rather than assert.
+        return w if isinstance(w, ChunkWidget) else None
 
     def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
         for i in range(self.count()):
             w = self.widget(i)
-            if isinstance(w, QtWidgets.QStackedWidget):
+            if isinstance(w, ChunkTabContextStack):
+                # Match on the stack's own context weakref. During delete the inner params
+                # ChunkWidget is torn down first, which shifts page 0 to the graph view and
+                # breaks a widget(0).group lookup — the stack's ctx stays valid until GC.
+                if w.ctx() is ctx:
+                    return i
                 w = w.widget(0)
-            if isinstance(w, ChunkWidget) and w.group == ctx:
-                return i
+            if isinstance(w, ChunkWidget):
+                try:
+                    if w.group == ctx:
+                        return i
+                except ReferenceError:
+                    continue
         return None
 
     def add_chunk_context(self, c: chunk.ChunkBase):
-        stack = QtWidgets.QStackedWidget(self)
-        params_widget = ChunkWidget(c, self, is_tab_context=True)
-        graph_view = ChunkGraphView(self)
-        vs = ViewSlotState(stack)
-        params_widget.set_view_state(vs)
-        graph_view.set_view_state(vs)
-        stack.addWidget(params_widget)   # page 0: params
-        stack.addWidget(graph_view)      # page 1: graph
-        stack.setCurrentIndex(self._view_mode)
-
-        copy_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Copy, stack)
-        copy_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        copy_sc.activated.connect(_guarded_copy)
-
-        paste_sc = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Paste, stack)
-        paste_sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        paste_sc.activated.connect(_guarded_paste)
-
+        stack = ChunkTabContextStack(c, self._view_mode, self)
         idx = self.addTab(stack, c.name)
         cfg = c.get_config() if hasattr(c, "get_config") else None
         if cfg and (desc := _clean_description(cfg.description)):
@@ -320,12 +350,12 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         self._view_mode = mode
         for i in range(self.count()):
             w = self.widget(i)
-            if isinstance(w, QtWidgets.QStackedWidget):
+            if isinstance(w, ChunkTabContextStack):
                 w.setCurrentIndex(mode)
 
     def get_current_graph_view(self):
         w = self.widget(self.currentIndex())
-        if isinstance(w, QtWidgets.QStackedWidget):
+        if isinstance(w, ChunkTabContextStack):
             gv = w.widget(1)
             if isinstance(gv, ChunkGraphView):
                 return gv
@@ -334,15 +364,18 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
     def add_chunk_to_tab(self, param: chunk_core.ChunkBase, tabidx=None):
         if tabidx is None:
             tabidx = self.tabBar().currentIndex()
-        if tabidx == 0:
+        # No context tab to receive the chunk: index 0 is the "+" button, and -1 means
+        # every tab was deleted. Either way, spin up a fresh tab and target it (add_new_tab
+        # selects the new tab, so read the current index back).
+        if tabidx <= 0 or self.get_chunk_context(tabidx) is None:
             self.add_new_tab()
-            tabidx = 1
+            tabidx = self.tabBar().currentIndex()
 
         if t := self.get_chunk_context(tabidx):
             if param in t.group.get_my_params():
                 return
 
-            cfg = getattr(param, 'get_config', lambda: None)()
+            cfg = getattr(param, "get_config", lambda: None)()
             if cfg and cfg.module and param.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                 param._parent_context = weakref.ref(t.group)
 
@@ -409,7 +442,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                 # User-created ChunkGroup: add a standalone ChunkWidget directly to
                 # the parent tab's content layout — NOT via add_param, which would
                 # propagate sub-chunk PARAM_ADDED notices up to the parent context.
-                parent_ctx = getattr(loaded_chunk, '_parent_context', None)
+                parent_ctx = getattr(loaded_chunk, "_parent_context", None)
                 parent_ctx = parent_ctx() if parent_ctx else None
                 if parent_ctx is not None:
                     idx = self.tab_widget.get_chunk_context_index(parent_ctx)
@@ -450,8 +483,9 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         if not graph_view:
             return
         context = self._current_context()
-        if graph_view.scene()._built_context == context:
-            return  # already built for this context — keep the cache
+        scene = graph_view.scene()
+        if not getattr(scene, "_dirty", True) and scene._built_context == context:
+            return  # already built for this context and not invalidated — keep the cache
         graph_view.build(stage, registry.scene, context)
         graph_view.dive_into.connect(self._on_dive_into, QtCore.Qt.UniqueConnection)
 
