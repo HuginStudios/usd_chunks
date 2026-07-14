@@ -1026,6 +1026,111 @@ def get_exec_downstream_chunks(
     return downstream
 
 
+def get_exec_upstream_chunks(
+    view_chunk: "core.ChunkBase",
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+) -> "list[core.ChunkBase]":
+    """Return the chunks feeding view_chunk, following inputs:chunk backward.
+
+    This is the *cook set* for a view: view-driven execution runs only these chunks.
+    Ordered roots-first (a node's sources appear before it) so executing in order
+    authors the node nearest the view last. The view chunk itself is excluded.
+    """
+    prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    view_path = get_chunk_prim_path(view_chunk)
+
+    def sources_of(path: str) -> "list[str]":
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        if not prim.IsValid():
+            return []
+        exec_in = prim.GetAttribute(_EXEC_INPUT)
+        if not exec_in.IsValid():
+            return []
+        return [str(conn.GetPrimPath()) for conn in exec_in.GetConnections()]
+
+    order: "list[core.ChunkBase]" = []
+    seen: set = set()
+
+    def visit(path: str) -> None:
+        if path in seen:
+            return
+        seen.add(path)
+        for src in sources_of(path):
+            visit(src)
+        if path != view_path and (c := prim_to_chunk.get(path)) is not None:
+            order.append(c)
+
+    visit(view_path)
+    return order
+
+
+def recook_for_view(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase | None",
+    view_chunk: "core.ChunkBase | None",
+) -> None:
+    """Apply view-driven execution for one context.
+
+    With a view_chunk: cook only its upstream tree (roots-first); every other non-view
+    chunk in the context is blocked + muted (dormant, hidden). With view_chunk=None:
+    legacy behaviour — unblock/unmute everything and re-run the exec heads.
+
+    Blocking a chunk both hides its result (its layer is muted) and stops it reacting to
+    param changes (see ChunkBase.value_changed) — so being outside the active view's tree
+    means "does not execute", live.
+    """
+    lm = chunk_registry.ChunkLayerManager()
+    disabled = ChunkFlags.State.DISABLED
+
+    def in_context(c: "core.ChunkBase") -> bool:
+        return not (context and c.get_context() != context)
+
+    def mute(layer, muted: bool) -> None:
+        # Use stage.Mute/UnmuteLayer, NOT layer.SetMuted — SetMuted recomposes lazily and
+        # clears geometry / expires prims (the "chunk layers disappear" bug). stage muting is
+        # the pattern the disable path already uses.
+        if layer is None:
+            return
+        if muted:
+            stage.MuteLayer(layer.identifier)
+        else:
+            stage.UnmuteLayer(layer.identifier)
+
+    if view_chunk is None:
+        for c in scene.get_chunks():
+            if is_view_chunk(c) or not in_context(c):
+                continue
+            c.set_blocked(False)
+            if not c.has_state(disabled):
+                mute(lm.get_layer(c), False)
+        for head in get_exec_head_chunks(stage, scene, context):
+            if not head.has_state(disabled):
+                head.execute()
+        return
+
+    cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)
+    cook_set = set(cook_list)
+
+    # Set block state (and mute) before executing: blocking non-cook chunks first means
+    # the ObjectsChanged from muting can't re-execute them.
+    for c in scene.get_chunks():
+        if is_view_chunk(c) or not in_context(c):
+            continue
+        if c in cook_set:
+            c.set_blocked(False)
+            if not c.has_state(disabled):
+                mute(lm.get_layer(c), False)
+        else:
+            c.set_blocked(True)
+            mute(lm.get_layer(c), True)
+
+    for c in cook_list:
+        if not c.has_state(disabled):
+            c.execute()
+
+
 def get_exec_head_chunks(
     stage: "Usd.Stage",
     scene: "core.SceneSender",

@@ -8,7 +8,6 @@ Edges follow inputs:chunk connections between prims.
 
 from __future__ import annotations
 
-import gc
 import re
 from typing import Optional
 
@@ -573,6 +572,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             )
 
     def mouseDoubleClickEvent(self, event):
+        # A recomposition (mute/unmute) can expire this node's prim before the graph
+        # rebuilds; touching it then raises. Bail rather than crash the event handler.
+        if self.prim is None or not self.prim.IsValid():
+            event.accept()
+            return
         if self._is_dot:
             event.accept()
             return
@@ -950,7 +954,13 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             return  # a newer rebuild superseded this batch — don't touch its stale nodes
         batch, rest = remaining[:self._PROXY_BATCH_SIZE], remaining[self._PROXY_BATCH_SIZE:]
         for node in batch:
-            node.create_proxy()
+            # Never let one bad proxy abort the whole batch (which would leave every remaining
+            # node without its widget — the "only the port dot shows" corruption). Log and skip.
+            try:
+                node.create_proxy()
+            except Exception as e:
+                print(f"[PROXY] create_proxy FAILED for {getattr(node.chunk, 'name', '?')}: "
+                      f"{type(e).__name__}: {e}")
         if rest:
             QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, gen, on_complete))
         elif on_complete:
@@ -1579,6 +1589,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     param.value = f"@{src_node_name}.{src_param_name}@"
 
         graph_scene._build_edges()
+        self._recook_active_view()
 
     def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: "ChunkGraphScene") -> None:
         # For exec ports: rewire predecessor → successor before clearing.
@@ -1618,6 +1629,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                             param.value = param.default_value
                 node.chunk.execute()
         graph_scene._build_edges()
+        self._recook_active_view()
 
     def _show_chunk_menu(self, node: "ChunkNodeItem", global_pos: QtCore.QPoint) -> None:
         self._view_state.show_chunk_menu(node.chunk, str(node.prim.GetPath()), global_pos)
@@ -1730,13 +1742,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._create_view_node_for_prim(prim_path)
 
     def _on_view_slot_changed(self, slot: int) -> None:
-        if slot == 0:
-            self._do_deactivate_view()
-        else:
-            self._do_activate_view_slot(slot)
+        self._recook_active_view()
         self.viewport().update()
 
-    def _do_deactivate_view(self) -> None:
+    def _recook_active_view(self) -> None:
+        """(Re)apply view-driven execution for this context's active view.
+
+        Call on every structural change (wire, disconnect, delete, create) and on view
+        switch so which chunks cook stays live. With no active view (slot 0) it falls back
+        to legacy "run everything". Must NOT be called from inside a graph rebuild — the
+        execute() it triggers would author, fire ObjectsChanged, and loop.
+        """
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
             return
@@ -1744,72 +1760,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if not stage:
             return
         context = self._graph_context()
-        lm = chunk_registry.ChunkLayerManager()
-        for c in registry.scene.get_chunks():
-            if chunk_usd.is_view_chunk(c):
-                continue
-            if context and c.get_context() != context:
-                continue
-            c.set_blocked(False)
-            layer = lm.get_layer(c)
-            if layer and not c.has_state(ChunkFlags.State.DISABLED):
-                layer.SetMuted(False)
-        for head in chunk_usd.get_exec_head_chunks(stage, registry.scene, context):
-            if not head.has_state(ChunkFlags.State.DISABLED):
-                head.execute()
-
-    def _do_activate_view_slot(self, slot: int) -> None:
-        registry = chunk_registry.ChunkRegistry()
-        if not registry.initialized:
-            return
-        stage = registry.scene.get_stage()
-        if not stage:
-            return
-        context = self._graph_context()
-
-        view_chunk = chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene)
-        if view_chunk is None:
-            return
-
-        gc.collect()  # break zombie NoticeConnection cycles before STATE_CHANGED fires
-        for c in registry.scene.get_chunks():
-            if c.has_state(ChunkFlags.State.SELECTED):
-                c.set_selected(False)
-        view_chunk.set_selected(True)
-
-        lm = chunk_registry.ChunkLayerManager()
-        src_chunks = chunk_usd.get_view_exec_sources(view_chunk, stage, registry.scene)
-        if not src_chunks:
-            return
-
-        downstream: set = set()
-        for src in src_chunks:
-            downstream |= chunk_usd.get_exec_downstream_chunks(src, stage, registry.scene)
-
-        # Block before mute: ObjectsChanged from SetMuted must not re-execute blocked nodes.
-        for c in registry.scene.get_chunks():
-            if chunk_usd.is_view_chunk(c):
-                continue
-            if context and c.get_context() != context:
-                continue
-            if c in downstream:
-                c.set_blocked(True)
-            else:
-                c.set_blocked(False)
-                layer = lm.get_layer(c)
-                if layer and not c.has_state(ChunkFlags.State.DISABLED):
-                    layer.SetMuted(False)
-
-        for c in downstream:
-            if chunk_usd.is_view_chunk(c):
-                continue
-            layer = lm.get_layer(c)
-            if layer:
-                layer.SetMuted(True)
-
-        for src in src_chunks:
-            if not src.has_state(ChunkFlags.State.DISABLED):
-                src.execute()
+        slot = self._view_state.active_slot
+        view_chunk = (
+            chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene) if slot else None
+        )
+        if view_chunk is not None:
+            for c in registry.scene.get_chunks():
+                if c.has_state(ChunkFlags.State.SELECTED):
+                    c.set_selected(False)
+            view_chunk.set_selected(True)
+        chunk_usd.recook_for_view(stage, registry.scene, context, view_chunk)
 
     def _graph_context(self) -> "Optional[core.ChunkBase]":
         graph_scene = self.scene()
@@ -1878,5 +1838,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         for c in chunks:
             scene.add_chunk(c)
+        # NOTE: intentionally no re-cook here. Re-cooking mid-create races with the create's
+        # own graph rebuild and leaves nodes without their proxy widget (corruption). A freshly
+        # created node is dangling anyway; it gets gated the moment it's wired (connect re-cooks).
 
 
