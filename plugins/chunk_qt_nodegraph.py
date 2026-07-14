@@ -1753,6 +1753,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         to legacy "run everything". Must NOT be called from inside a graph rebuild — the
         execute() it triggers would author, fire ObjectsChanged, and loop.
         """
+        # Every tab's graph view shares one ViewSlotState, so a slot change fires this on all
+        # of them. Only the visible view should cook — dedupes the redundant re-cook per tab.
+        if not self.isVisible():
+            return
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
             return
