@@ -1130,6 +1130,26 @@ def recook_for_view(
         if not c.has_state(disabled):
             c.execute()
 
+    # Layer-win order follows the exec traversal: the chunk nearest the view (last in
+    # cook_list) must win, so reorder each graph layer's sublayers to put the most
+    # downstream layer strongest (subLayerPaths[0]). This is what makes rewiring change
+    # who-wins for chunks that author to the same target. (Safe re: prim expiry — this
+    # reorders the result layers under the graph root, not the chunk prims in the edit layer.)
+    rank = {id(c): i for i, c in enumerate(cook_list)}  # higher = more downstream = stronger
+    ident_rank: dict = {}
+    for c in cook_list:
+        layer = lm.get_layer(c)
+        if layer is not None:
+            ident_rank[layer.identifier] = rank[id(c)]
+    for g_layer in lm.graph_layers.values():
+        ordered = sorted(
+            g_layer.subLayerPaths,
+            key=lambda ident: ident_rank.get(ident, -1),
+            reverse=True,
+        )
+        if list(g_layer.subLayerPaths) != ordered:
+            g_layer.subLayerPaths = ordered  # type: ignore
+
 
 def get_exec_head_chunks(
     stage: "Usd.Stage",
