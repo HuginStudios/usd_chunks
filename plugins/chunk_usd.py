@@ -1151,6 +1151,29 @@ def recook_for_view(
             g_layer.subLayerPaths = ordered  # type: ignore
 
 
+def get_exec_tail_chunks(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase | None" = None,
+) -> "list[core.ChunkBase]":
+    """Return non-view chunks whose outputs:chunk is not consumed by any inputs:chunk.
+
+    These are the downstream ends of the exec chains. Wiring a view to a tail makes the
+    view cook that tail's whole upstream chain. Used to auto-wire a default view.
+    """
+    candidates = [
+        c for c in scene.get_chunks()
+        if not is_view_chunk(c) and (context is None or c.get_context() == context)
+    ]
+    consumed: set = set()
+    for prim in stage.Traverse():
+        exec_in = prim.GetAttribute(_EXEC_INPUT)
+        if exec_in.IsValid():
+            for conn in exec_in.GetConnections():
+                consumed.add(str(conn.GetPrimPath()))
+    return [c for c in candidates if get_chunk_prim_path(c) not in consumed]
+
+
 def get_exec_head_chunks(
     stage: "Usd.Stage",
     scene: "core.SceneSender",

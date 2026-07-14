@@ -1241,6 +1241,26 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         scene = self.scene()
         scene.build(stage, scene_sender, context)
         scene.dive_into.connect(self.dive_into)
+        # Auto-create a default view when the graph is opened on a context that has chunks but
+        # no view yet (e.g. chunks were made in the params panel first). Deferred past this
+        # build's rebuild + proxy pass so view creation runs on a settled graph, not mid-build.
+        QtCore.QTimer.singleShot(80, lambda ctx=context: self._ensure_default_view(ctx))
+
+    def _ensure_default_view(self, context) -> None:
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+        # Nothing to do if this context already has a view.
+        for c in registry.scene.get_chunks():
+            if chunk_usd.is_view_chunk(c) and (context is None or c.get_context() == context):
+                return
+        tails = chunk_usd.get_exec_tail_chunks(stage, registry.scene, context)
+        if not tails:
+            return
+        self._create_view_node_for_prim(chunk_usd.get_chunk_prim_path(tails[0]))
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:
         super().showEvent(event)
