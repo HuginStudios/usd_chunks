@@ -3667,12 +3667,17 @@ class ChunkBase(ChunkGroupBase):
         return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
 
     def add_param(self, param: ChunkT, force_unique: bool = True, notify: bool = True) -> ChunkT:
-        res = super().add_param(param, force_unique)
-        if notify and self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(param, ChunkBase):
+        do_context_setup = notify and self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(param, ChunkBase)
+        if do_context_setup:
+            # Clear the chunk's edit layer to a fresh slate BEFORE adding — adding fires
+            # PARAM_ADDED, which can trigger the chunk's execute() (e.g. via _wire_inputs);
+            # clearing afterwards would wipe what execute just authored.
             lm = chunk_registry.ChunkLayerManager()
             if lm.initialized:
                 if layer := lm.get_or_create_layer(param):
                     layer.Clear()
+        res = super().add_param(param, force_unique)
+        if do_context_setup:
             chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, param, data=param)
         return res
 

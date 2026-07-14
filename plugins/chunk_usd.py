@@ -136,6 +136,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._contents_changed_listener = NoticeConnection(
             self._on_contents_changed, ChunkNoticeAlias.STAGE_CONTENTS_CHANGED, globally=True
         )
+        self._chunk_loaded_listener = NoticeConnection(
+            self._on_chunk_loaded, ChunkNoticeAlias.CHUNK_LOADED, globally=True
+        )
 
         if stage:
             self._loaded_stage = stage
@@ -742,6 +745,25 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # Set prim_path on group contexts so sub-chunks nest correctly under them.
         if is_group:
             chunk.prim_path = prim_path
+
+    def _on_chunk_loaded(self, notice, sender):
+        """Run a chunk's module execute() hook once on interactive creation.
+
+        We fire on CHUNK_LOADED rather than PARAM_ADDED because add_param
+        clears the chunk's edit layer *after* PARAM_ADDED — running execute earlier would
+        author into that layer only for it to be wiped. The load path already calls
+        execute() itself, so skip while a stage is loading to avoid a double run.
+        """
+        if not self.initialized or not self._stage:
+            return
+        if chunk_notice._loading_stage:
+            return
+        chunk = notice.data
+        if not isinstance(chunk, core.ChunkBase):
+            return
+        module = getattr(chunk, "_module", None)
+        if callable(getattr(module, "execute", None)):
+            chunk.execute()
 
     def _find_dag_tail(self, context, exclude=None) -> "core.ChunkBase | None":
         """Return the tail of the exec DAG for this context — the chunk whose outputs:chunk
