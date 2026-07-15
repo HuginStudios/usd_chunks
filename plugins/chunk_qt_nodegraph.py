@@ -1834,25 +1834,45 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         return True
 
     def _shake_disconnect_node(self, node: "ChunkNodeItem") -> None:
-        """Disconnect all of a node's wires — its own inputs and any downstream input that
-        references this node — leaving it isolated (shake-to-disconnect)."""
+        """Disconnect all of a node's wires, but heal the exec chain: for A -> C -> B, shaking C
+        rewires B's exec input to A (A -> B) before isolating C. Data/typed connections to C are
+        just cleared (no generic heal)."""
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage:
             return
+        stage = graph_scene._stage
         node_prim = str(node.prim.GetPath())
         changed = False
+
+        # Heal the exec chain: rewire each successor's inputs:chunk to this node's predecessor(s).
+        exec_in = stage.GetAttributeAtPath(Sdf.Path(node_prim + ".inputs:chunk"))
+        pred_conns = list(exec_in.GetConnections()) if (exec_in and exec_in.IsValid()) else []
+        out_chunk_path = node_prim + ".outputs:chunk"
+        for other in graph_scene._nodes.values():
+            if other is node:
+                continue
+            succ = stage.GetAttributeAtPath(Sdf.Path(str(other.prim.GetPath()) + ".inputs:chunk"))
+            if not (succ and succ.IsValid()):
+                continue
+            if any(str(c) == out_chunk_path for c in succ.GetConnections()):
+                if pred_conns:
+                    succ.SetConnections(pred_conns)
+                else:
+                    succ.ClearConnections()
+                changed = True
+
         # This node's own input connections.
         for port in node._ports:
             if port.is_input and self._clear_input_connection(port, graph_scene):
                 changed = True
-        # Any input on another node that connects back to this one.
+        # Any remaining input on another node still referencing this one (data/typed edges).
         for other in graph_scene._nodes.values():
             if other is node:
                 continue
             for port in other._ports:
                 if not port.is_input:
                     continue
-                attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
+                attr = stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
                 if not (attr and attr.IsValid()):
                     continue
                 if any(str(c.GetPrimPath()) == node_prim for c in attr.GetConnections()):
