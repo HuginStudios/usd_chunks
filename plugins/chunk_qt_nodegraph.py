@@ -9,6 +9,7 @@ Edges follow inputs:chunk connections between prims.
 from __future__ import annotations
 
 import re
+import time
 from typing import Optional
 
 from pxr import Gf, Sdf, Usd, UsdUI
@@ -27,6 +28,12 @@ _PORT_RADIUS = 5
 _NODE_WIDTH = 220
 _NODE_HEADER_H = 40
 _DOT_R = 10  # dot node circle radius
+
+# Shake-to-disconnect tuning: a fast back-and-forth drag disconnects the node.
+_SHAKE_WINDOW = 0.4  # seconds of drag samples to look at
+_SHAKE_MIN_STEP = 5.0  # scene px; smaller moves are jitter, ignored
+_SHAKE_MIN_TRAVEL = 140.0  # total scene px travelled in the window
+_SHAKE_REVERSALS = 4  # horizontal direction changes needed to fire
 
 
 _COL_NODE_BG = QtGui.QColor("#3a3a3a")
@@ -204,6 +211,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._is_dot = _chunk_type == "dot"
         self._drag_active = False
         self._drag_start = QtCore.QPointF()
+        self._shake_samples: list[tuple[float, float]] = []  # (time, scene x) during a drag
+        self._shake_fired = False
         self._proxy: Optional[QtWidgets.QGraphicsProxyWidget] = None
         self._port_rebuild_timer: Optional[QtCore.QTimer] = None
         self._height = _NODE_HEADER_H
@@ -643,6 +652,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self.setFocus()
                 self._drag_active = True
                 self._drag_start = event.pos()
+                self._shake_samples = []
+                self._shake_fired = False
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -651,9 +662,41 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._drag_active:
             delta = event.pos() - self._drag_start
             self.setPos(self.pos() + delta)
+            self._track_shake()
             event.accept()
             return
         super().mouseMoveEvent(event)
+
+    def _track_shake(self) -> None:
+        """Detect a fast back-and-forth drag and, once, disconnect all of this node's wires."""
+        if self._shake_fired:
+            return
+        now = time.monotonic()
+        self._shake_samples.append((now, self.pos().x()))
+        cutoff = now - _SHAKE_WINDOW
+        while self._shake_samples and self._shake_samples[0][0] < cutoff:
+            self._shake_samples.pop(0)
+        reversals = 0
+        travel = 0.0
+        last_dir = 0
+        prev_x: Optional[float] = None
+        for _, x in self._shake_samples:
+            if prev_x is not None:
+                dx = x - prev_x
+                if abs(dx) >= _SHAKE_MIN_STEP:
+                    travel += abs(dx)
+                    d = 1 if dx > 0 else -1
+                    if last_dir and d != last_dir:
+                        reversals += 1
+                    last_dir = d
+                    prev_x = x
+            else:
+                prev_x = x
+        if reversals >= _SHAKE_REVERSALS and travel >= _SHAKE_MIN_TRAVEL:
+            self._shake_fired = True
+            scene = self.scene()
+            if isinstance(scene, ChunkGraphScene) and scene.views():
+                scene.views()[0]._shake_disconnect_node(self)
 
     def mouseReleaseEvent(self, event):
         if self._drag_active:
@@ -1769,6 +1812,55 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 node.chunk.execute()
         graph_scene._build_edges()
         self._recook_active_view()
+
+    def _clear_input_connection(self, port: ChunkPortItem, graph_scene: "ChunkGraphScene") -> bool:
+        """Clear one input port's connections (no exec chain-heal). For typed ports also reset
+        the param and re-execute so shader-level connections clear. Returns True if it changed."""
+        attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
+        if not (attr and attr.IsValid()) or not attr.GetConnections():
+            return False
+        chunk_usd.ChunkStageSync().clear_attr_connections(attr)
+        if port.port_type != _PORT_EXEC:
+            prim_path = str(Sdf.Path(port.attr_path).GetPrimPath())
+            node = graph_scene._nodes.get(prim_path)
+            if node and getattr(node, "chunk", None):
+                attr_local = port.attr_path.rsplit(".", 1)[-1]
+                if attr_local.startswith("inputs:"):
+                    param_name = attr_local[len("inputs:"):].replace(":", ".")
+                    param = node.chunk.get_param(param_name)
+                    if param is not None:
+                        param.value = param.default_value
+                node.chunk.execute()
+        return True
+
+    def _shake_disconnect_node(self, node: "ChunkNodeItem") -> None:
+        """Disconnect all of a node's wires — its own inputs and any downstream input that
+        references this node — leaving it isolated (shake-to-disconnect)."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage:
+            return
+        node_prim = str(node.prim.GetPath())
+        changed = False
+        # This node's own input connections.
+        for port in node._ports:
+            if port.is_input and self._clear_input_connection(port, graph_scene):
+                changed = True
+        # Any input on another node that connects back to this one.
+        for other in graph_scene._nodes.values():
+            if other is node:
+                continue
+            for port in other._ports:
+                if not port.is_input:
+                    continue
+                attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
+                if not (attr and attr.IsValid()):
+                    continue
+                if any(str(c.GetPrimPath()) == node_prim for c in attr.GetConnections()):
+                    if self._clear_input_connection(port, graph_scene):
+                        changed = True
+        if changed:
+            graph_scene._build_edges()
+            self._recook_active_view()
 
     def _show_chunk_menu(self, node: "ChunkNodeItem", global_pos: QtCore.QPoint) -> None:
         self._view_state.show_chunk_menu(node.chunk, str(node.prim.GetPath()), global_pos)
