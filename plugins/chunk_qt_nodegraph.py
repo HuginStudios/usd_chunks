@@ -1534,7 +1534,65 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         elif self._drag_detach_attr is not None and hit is not self._drag_src_port:
             if isinstance(graph_scene, ChunkGraphScene):
                 self._disconnect_port(self._drag_src_port, self._drag_detach_attr, graph_scene)
+        elif hit is None and self._drag_detach_attr is None and self._drag_src_port is not None:
+            # Fresh wire dragged out to empty space → open the chunk menu; whatever the user
+            # picks is created and wired to the dragged port.
+            src_attr = self._drag_src_port.attr_path
+            src_is_input = self._drag_src_port.is_input
+            self._cancel_wire_drag()
+            self._create_and_connect_from_menu(src_attr, src_is_input, scene_pos)
+            return
         self._cancel_wire_drag()
+
+    def _create_and_connect_from_menu(
+        self, src_attr_path: str, src_is_input: bool, scene_pos: QtCore.QPointF
+    ) -> None:
+        """Pop the chunk menu at the wire release point; create the chosen chunk and wire it
+        to the dragged port. The connect is deferred until the create's rebuild has run (the
+        new node's ports don't exist yet)."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return
+        global_pos = self.viewport().mapToGlobal(self.mapFromScene(scene_pos))
+        mod = FilterableChunkMenu().select_module(global_pos)
+        if not mod:
+            return
+        chunks = mod.create() if mod.loaded else mod.load()
+        scene = _chunk.get_scene()
+        if not scene:
+            return
+        for c in chunks:
+            scene.add_chunk(c)
+        new_chunk = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
+        if new_chunk is None:
+            return
+        new_prim = chunk_usd.get_chunk_prim_path(new_chunk)
+        QtCore.QTimer.singleShot(
+            80, lambda: self._connect_ports_by_path(src_attr_path, src_is_input, new_prim)
+        )
+
+    def _connect_ports_by_path(self, src_attr_path: str, src_is_input: bool, new_prim_path: str) -> None:
+        """Wire the (still-present) source port to a compatible port on the newly created node."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        src_port = None
+        for node in graph_scene._nodes.values():
+            p = node.get_port(src_attr_path)
+            if p is not None:
+                src_port = p
+                break
+        new_node = graph_scene._nodes.get(new_prim_path)
+        if src_port is None or new_node is None:
+            return
+        # Target the opposite role on the new node (src output → new input, or new output → src input).
+        want_input = not src_is_input
+        target = next(
+            (p for p in new_node._ports if p.is_input == want_input and self._can_connect(src_port, p)),
+            None,
+        )
+        if target is not None:
+            self._author_connection(src_port, target)
 
     def _cancel_wire_drag(self) -> None:
         if self._drag_edge is not None:
