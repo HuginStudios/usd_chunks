@@ -37,6 +37,7 @@ _COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black — group/context nod
 _COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber — locked (external-layer) nodes
 _COL_LOCKED_BG = QtGui.QColor("#2e2e28")
 _COL_VIEW_HEADER = QtGui.QColor("#c87830")   # pale orange — view/terminal nodes
+_COL_VIEW_ACTIVE = QtGui.QColor("#5fd08a")   # green — the active view (driving execution)
 _COL_PORT_EXEC = QtGui.QColor("#999999")
 _COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
 _COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
@@ -488,6 +489,22 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._height,
         )
 
+    def _is_active_view(self) -> bool:
+        """True if this is the view node whose slot is currently active (driving execution)."""
+        if not self._is_view or not self.prim.IsValid():
+            return False
+        slot = self.prim.GetAttribute("view:slot").Get()
+        if not slot:
+            return False
+        sc = self.scene()
+        if sc is None:
+            return False
+        for v in sc.views():
+            vs = getattr(v, "_view_state", None)
+            if vs is not None and vs.active_slot == slot:
+                return True
+        return False
+
     def paint(self, painter: QtGui.QPainter, option, widget=None):
         # The chunk may already be deleted while this node awaits its deferred removal
         # (see ChunkGraphScene._on_chunk_deleted); painting reads live prim attributes,
@@ -507,10 +524,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         bg_color = _COL_LOCKED_BG if self._locked else _COL_NODE_BG
         body = QtCore.QRectF(0, 0, _NODE_WIDTH, self._height)
+        # The active view (the one currently driving execution) gets a green, thicker border
+        # so it's obvious which of several view nodes is live.
+        is_active_view = self._is_view and self._is_active_view()
         border_color = _COL_NODE_SELECTED if self._selected else _COL_NODE_BORDER
+        border_w = 1.5
+        if is_active_view:
+            border_color = _COL_VIEW_ACTIVE
+            border_w = 2.5
 
         painter.setBrush(bg_color)
-        painter.setPen(QtGui.QPen(border_color, 1.5))
+        painter.setPen(QtGui.QPen(border_color, border_w))
         painter.drawRoundedRect(body, 4, 4)
 
         # Header background — square bottom corners so it merges with body
@@ -536,6 +560,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._is_view:
             slot = self.prim.GetAttribute("view:slot").Get()
             label = f"View [{slot}]" if slot is not None else "View"
+            if is_active_view:
+                label = "● " + label  # ● marks the active view
         elif self._is_group:
             label = f"{label}  ▶"
         elif self._locked:
