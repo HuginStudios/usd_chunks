@@ -307,8 +307,14 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         else:
             chunks = mod.load()
 
-        for c in chunks:
-            self.add_chunk_to_tab(c)
+        # Flag the Params-tab origin so ChunkStageSync inserts the new chunk before the active
+        # view (view-follows-tail). Node-graph creates don't set this — there wiring is manual.
+        chunk_usd._params_tab_create = True
+        try:
+            for c in chunks:
+                self.add_chunk_to_tab(c)
+        finally:
+            chunk_usd._params_tab_create = False
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
         w = self.widget(idx)

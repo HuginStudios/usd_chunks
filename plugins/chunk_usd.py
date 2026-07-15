@@ -32,6 +32,11 @@ _CHUNKS_ROOT = "/chunks"
 
 _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
 
+# Set True by the Params-tab create path while adding a chunk, so _on_param_added inserts the new
+# chunk before the active view (view-follows-tail). Node-graph creates leave it False — there the
+# user wires manually.
+_params_tab_create = False
+
 _SDF_TYPE_MAP = {
     bool: Sdf.ValueTypeNames.Bool,
     int: Sdf.ValueTypeNames.Int,
@@ -755,10 +760,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if is_group:
             chunk.prim_path = prim_path
 
-        # View-follows-tail: the new chunk was chained after `prev` (prev -> new). If a view
-        # was fed by `prev`, move it onto `new` so the new chunk inserts itself just before the
-        # view (prev -> new -> view) instead of dangling outside the cook set.
-        if prev is not None and not is_view_chunk(chunk):
+        # View-follows-tail — ONLY for chunks created in the Params tab (_params_tab_create).
+        # The new chunk was chained after `prev` (prev -> new); if a view was fed by `prev`,
+        # move it onto `new` (prev -> new -> view). In the node graph the user wires manually,
+        # so we don't auto-repoint the view there.
+        if _params_tab_create and prev is not None and not is_view_chunk(chunk):
             self._rewire_views_from_source(prev, chunk)
 
     def _rewire_views_from_source(self, old_src: "core.ChunkBase", new_src: "core.ChunkBase") -> None:
