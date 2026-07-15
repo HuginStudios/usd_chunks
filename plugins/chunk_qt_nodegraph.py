@@ -659,9 +659,41 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._drag_active:
             self._drag_active = False
             self._write_pos_to_usd()
+            self._try_insert_on_edge()
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def _try_insert_on_edge(self) -> None:
+        """If this node was dropped on top of a wire A->B, splice it in as A->self->B."""
+        scene = self.scene()
+        if not isinstance(scene, ChunkGraphScene) or not scene.views():
+            return
+        view = scene.views()[0]
+        my_rect = self.sceneBoundingRect()
+        for edge in list(scene._edges):
+            # Skip edges already attached to this node.
+            if edge.src_port in self._ports or edge.dst_port in self._ports:
+                continue
+            try:
+                on_wire = edge.path().intersects(my_rect)
+            except RuntimeError:
+                continue
+            if not on_wire:
+                continue
+            a_out, b_in = edge.src_port, edge.dst_port  # wire is A.output -> B.input
+            my_in = next(
+                (p for p in self._ports if p.is_input and view._can_connect(a_out, p)), None
+            )
+            my_out = next(
+                (p for p in self._ports if not p.is_input and view._can_connect(p, b_in)), None
+            )
+            if my_in is None or my_out is None:
+                continue
+            # A -> self, then self -> B (the second replaces B's old input from A).
+            view._author_connection(a_out, my_in)
+            view._author_connection(my_out, b_in)
+            return
 
     def itemChange(self, change, value):
         if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
