@@ -753,7 +753,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             tail_context = pc() if pc else None
         else:
             tail_context = chunk.get_context()
-        prev = self._find_dag_tail(tail_context, exclude=chunk)
+        # Auto-chain (prev -> new via a default inputs:chunk dep) only in the Params tab, where
+        # creates build a linear chain. In the node graph, new nodes are created UNCONNECTED —
+        # the user wires them (or drops onto a wire); only the first node connects, via the
+        # view auto-wiring in _ensure_default_view.
+        prev = self._find_dag_tail(tail_context, exclude=chunk) if _params_tab_create else None
         prim = self._define_prim(chunk, prev)
         self._wire_inputs(prim, chunk)
         # Set prim_path on group contexts so sub-chunks nest correctly under them.
