@@ -769,7 +769,12 @@ def simulate_mujoco_instancer(
         proto_prim = stage.GetPrimAtPath(proto_targets[0])
         if proto_prim:
             bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
-            rng = bbox_cache.ComputeWorldBound(proto_prim).ComputeAlignedRange()
+            # Local, NOT world: the instancer's world transform (e.g. a Transform node feeding it)
+            # is already applied to the body positions via world_xf. Using ComputeWorldBound here
+            # would double-count it in the collider centre/extent — offsetting and rescaling the
+            # collision geometry away from the visible instance. Identical to the old result when
+            # the instancer is untransformed.
+            rng = bbox_cache.ComputeLocalBound(proto_prim).ComputeAlignedRange()
             if not rng.IsEmpty():
                 proto_ext = rng.GetMax() - rng.GetMin()
                 proto_ctr = (rng.GetMin() + rng.GetMax()) * 0.5
