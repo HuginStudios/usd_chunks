@@ -36,8 +36,9 @@ _COL_NODE_SELECTED = QtGui.QColor("#cab46a")  # matches ChunkWidget.SELECTED_COL
 _COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black — group/context nodes
 _COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber — locked (external-layer) nodes
 _COL_LOCKED_BG = QtGui.QColor("#2e2e28")
-_COL_VIEW_HEADER = QtGui.QColor("#c87830")   # pale orange — view/terminal nodes
-_COL_VIEW_ACTIVE = QtGui.QColor("#5fd08a")   # green — the active view (driving execution)
+_COL_VIEW_HEADER = QtGui.QColor("#c87830")   # pale orange — the ACTIVE view (driving execution)
+_COL_VIEW_INACTIVE = QtGui.QColor("#4a453e")  # dim grey-brown — an inactive view (not driving)
+_COL_VIEW_ACTIVE = QtGui.QColor("#5fd08a")   # green — active view border accent
 _COL_PORT_EXEC = QtGui.QColor("#999999")
 _COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
 _COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
@@ -539,7 +540,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         # Header background — square bottom corners so it merges with body
         if self._is_view:
-            header_color = _COL_VIEW_HEADER
+            # Only the active view gets the warm orange header; inactive views go dim/grey
+            # so it's obvious at a glance which one is driving execution.
+            header_color = _COL_VIEW_HEADER if is_active_view else _COL_VIEW_INACTIVE
         elif self._is_group:
             header_color = _COL_GROUP_HEADER
         elif self._locked:
