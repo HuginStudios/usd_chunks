@@ -32,6 +32,16 @@ _CHUNKS_ROOT = "/chunks"
 
 _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
 
+# Set True by the Params-tab create path while adding a chunk, so _on_param_added inserts the new
+# chunk before the active view (view-follows-tail). Node-graph creates leave it False — there the
+# user wires manually.
+_params_tab_create = False
+
+# Set by the node graph to the USD-space (x, y) a new chunk node should be created at (e.g. the
+# right-click / wire-drop point). _define_prim reads it for the node pos instead of the far-away
+# index default. None → use the default. Cleared by the caller after the create.
+_create_node_pos: "tuple[float, float] | None" = None
+
 _SDF_TYPE_MAP = {
     bool: Sdf.ValueTypeNames.Bool,
     int: Sdf.ValueTypeNames.Int,
@@ -213,8 +223,17 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             sdf_path = Sdf.Path(sender.prim_path)
             chunk_root = str(sdf_path.GetParentPath())
         else:
-            chunk_root = _resolve_chunk_root(sender)
-            sdf_path = Sdf.Path(f"{chunk_root}/{sender.name}")
+            # request_delete clears the owner before firing CHUNK_DELETED, so get_context()
+            # (and thus _resolve_chunk_root) is None here and would resolve to the wrong root
+            # (/chunks instead of e.g. /Tab1). Use the path recorded when the prim was authored;
+            # only recompute if we never tracked it.
+            stored = self._chunk_prim_paths.get(id(sender))
+            if stored:
+                sdf_path = Sdf.Path(stored)
+                chunk_root = str(sdf_path.GetParentPath())
+            else:
+                chunk_root = _resolve_chunk_root(sender)
+                sdf_path = Sdf.Path(f"{chunk_root}/{sender.name}")
         prim_path_str = str(sdf_path)
         self._loaded_prim_paths.discard(prim_path_str)
         self._chunk_prim_paths.pop(id(sender), None)
@@ -739,12 +758,42 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             tail_context = pc() if pc else None
         else:
             tail_context = chunk.get_context()
-        prev = self._find_dag_tail(tail_context, exclude=chunk)
+        # Auto-chain (prev -> new via a default inputs:chunk dep) only in the Params tab, where
+        # creates build a linear chain. In the node graph, new nodes are created UNCONNECTED —
+        # the user wires them (or drops onto a wire); only the first node connects, via the
+        # view auto-wiring in _ensure_default_view.
+        prev = self._find_dag_tail(tail_context, exclude=chunk) if _params_tab_create else None
         prim = self._define_prim(chunk, prev)
         self._wire_inputs(prim, chunk)
         # Set prim_path on group contexts so sub-chunks nest correctly under them.
         if is_group:
             chunk.prim_path = prim_path
+
+        # View-follows-tail — ONLY for chunks created in the Params tab (_params_tab_create).
+        # The new chunk was chained after `prev` (prev -> new); if a view was fed by `prev`,
+        # move it onto `new` (prev -> new -> view). In the node graph the user wires manually,
+        # so we don't auto-repoint the view there.
+        if _params_tab_create and prev is not None and not is_view_chunk(chunk):
+            self._rewire_views_from_source(prev, chunk)
+
+    def _rewire_views_from_source(self, old_src: "core.ChunkBase", new_src: "core.ChunkBase") -> None:
+        """Repoint any view whose inputs:chunk feeds off old_src onto new_src's output."""
+        def _path(c):
+            return self._chunk_prim_paths.get(id(c)) or f"{_resolve_chunk_root(c)}/{c.name}"
+        old_path = _path(old_src)
+        new_out = Sdf.Path(f"{_path(new_src)}.{_EXEC_OUTPUT}")
+        for c in self._scene.get_chunks():
+            if not is_view_chunk(c):
+                continue
+            vprim = self._stage.GetPrimAtPath(Sdf.Path(_path(c)))
+            if not vprim.IsValid():
+                continue
+            exec_in = vprim.GetAttribute(_EXEC_INPUT)
+            if not (exec_in and exec_in.IsValid()):
+                continue
+            if any(str(p.GetPrimPath()) == old_path for p in exec_in.GetConnections()):
+                with self._chunk_prim_edit_context():
+                    exec_in.SetConnections([new_out])
 
     def _on_chunk_loaded(self, notice, sender):
         """Run a chunk's module execute() hook once on interactive creation.
@@ -769,10 +818,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         """Return the tail of the exec DAG for this context — the chunk whose outputs:chunk
         is not referenced by any other chunk's inputs:chunk. Used as prev_chunk when no
         interactive history exists (e.g. first add after loading a .usda)."""
-        # Regular chunks in this context.
+        # Regular chunks in this context (never a view — a view consumes the tail and is
+        # terminal, so it must not be treated as the chain tail itself).
         context_chunks = [
             c for c in self._scene.get_chunks()
-            if c.get_context() == context and c is not exclude
+            if c.get_context() == context and c is not exclude and not is_view_chunk(c)
         ]
         # Also include ChunkGroup chunks (CONTEXT with a USD prim) that belong here.
         # Plain tab contexts are excluded — they have no prim and no exec connections.
@@ -846,7 +896,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
             ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
             if not ui_api.GetPosAttr().HasAuthoredValue():
-                ui_api.CreatePosAttr(Gf.Vec2f(index * _NODE_STEP, 0.0))
+                if _create_node_pos is not None:
+                    ui_api.CreatePosAttr(Gf.Vec2f(*_create_node_pos))
+                else:
+                    ui_api.CreatePosAttr(Gf.Vec2f(index * _NODE_STEP, 0.0))
 
             config = chunk.get_config()
             if config and config.module:
@@ -1024,6 +1077,162 @@ def get_exec_downstream_chunks(
                     downstream.add(c)
         frontier = next_frontier
     return downstream
+
+
+def get_exec_upstream_chunks(
+    view_chunk: "core.ChunkBase",
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+) -> "list[core.ChunkBase]":
+    """Return the chunks feeding view_chunk, following ALL input connections backward.
+
+    This is the *cook set* for a view: view-driven execution runs only these chunks.
+    Follows both the exec wire (inputs:chunk) AND data connections (any inputs:* → a
+    source prim), so a node feeding another purely via data (e.g. a Transform between a
+    Scatter and an RBD solver that reads its points) is still cooked — otherwise it would
+    be blocked and its downstream would read empty/stale input. Ordered roots-first (a
+    node's sources appear before it). The view chunk itself is excluded.
+    """
+    prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    view_path = get_chunk_prim_path(view_chunk)
+
+    def sources_of(path: str) -> "list[str]":
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        if not prim.IsValid():
+            return []
+        srcs: list[str] = []
+        for attr in prim.GetAttributes():
+            if not attr.GetName().startswith(_INPUTS_PREFIX):
+                continue
+            for conn in attr.GetConnections():
+                src = str(conn.GetPrimPath())
+                if src in prim_to_chunk:
+                    srcs.append(src)
+        return srcs
+
+    order: "list[core.ChunkBase]" = []
+    seen: set = set()
+
+    def visit(path: str) -> None:
+        if path in seen:
+            return
+        seen.add(path)
+        for src in sources_of(path):
+            visit(src)
+        if path != view_path and (c := prim_to_chunk.get(path)) is not None:
+            order.append(c)
+
+    visit(view_path)
+    return order
+
+
+def recook_for_view(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase | None",
+    view_chunk: "core.ChunkBase | None",
+) -> None:
+    """Apply view-driven execution for one context.
+
+    With a view_chunk: cook only its upstream tree (roots-first); every other non-view
+    chunk in the context is blocked + muted (dormant, hidden). With view_chunk=None:
+    legacy behaviour — unblock/unmute everything and re-run the exec heads.
+
+    Blocking a chunk both hides its result (its layer is muted) and stops it reacting to
+    param changes (see ChunkBase.value_changed) — so being outside the active view's tree
+    means "does not execute", live.
+    """
+    lm = chunk_registry.ChunkLayerManager()
+    disabled = ChunkFlags.State.DISABLED
+
+    def in_context(c: "core.ChunkBase") -> bool:
+        return not (context and c.get_context() != context)
+
+    def mute(layer, muted: bool) -> None:
+        # Use stage.Mute/UnmuteLayer, NOT layer.SetMuted — SetMuted recomposes lazily and
+        # clears geometry / expires prims (the "chunk layers disappear" bug). stage muting is
+        # the pattern the disable path already uses.
+        if layer is None:
+            return
+        if muted:
+            stage.MuteLayer(layer.identifier)
+        else:
+            stage.UnmuteLayer(layer.identifier)
+
+    if view_chunk is None:
+        for c in scene.get_chunks():
+            if is_view_chunk(c) or not in_context(c):
+                continue
+            c.set_blocked(False)
+            if not c.has_state(disabled):
+                mute(lm.get_layer(c), False)
+        for head in get_exec_head_chunks(stage, scene, context):
+            if not head.has_state(disabled):
+                head.execute()
+        return
+
+    cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)
+    cook_set = set(cook_list)
+
+    # Set block state (and mute) before executing: blocking non-cook chunks first means
+    # the ObjectsChanged from muting can't re-execute them.
+    for c in scene.get_chunks():
+        if is_view_chunk(c) or not in_context(c):
+            continue
+        if c in cook_set:
+            c.set_blocked(False)
+            if not c.has_state(disabled):
+                mute(lm.get_layer(c), False)
+        else:
+            c.set_blocked(True)
+            mute(lm.get_layer(c), True)
+
+    for c in cook_list:
+        if not c.has_state(disabled):
+            c.execute()
+
+    # Layer-win order follows the exec traversal: the chunk nearest the view (last in
+    # cook_list) must win, so reorder each graph layer's sublayers to put the most
+    # downstream layer strongest (subLayerPaths[0]). This is what makes rewiring change
+    # who-wins for chunks that author to the same target. (Safe re: prim expiry — this
+    # reorders the result layers under the graph root, not the chunk prims in the edit layer.)
+    rank = {id(c): i for i, c in enumerate(cook_list)}  # higher = more downstream = stronger
+    ident_rank: dict = {}
+    for c in cook_list:
+        layer = lm.get_layer(c)
+        if layer is not None:
+            ident_rank[layer.identifier] = rank[id(c)]
+    for g_layer in lm.graph_layers.values():
+        ordered = sorted(
+            g_layer.subLayerPaths,
+            key=lambda ident: ident_rank.get(ident, -1),
+            reverse=True,
+        )
+        if list(g_layer.subLayerPaths) != ordered:
+            g_layer.subLayerPaths = ordered  # type: ignore
+
+
+def get_exec_tail_chunks(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase | None" = None,
+) -> "list[core.ChunkBase]":
+    """Return non-view chunks whose outputs:chunk is not consumed by any inputs:chunk.
+
+    These are the downstream ends of the exec chains. Wiring a view to a tail makes the
+    view cook that tail's whole upstream chain. Used to auto-wire a default view.
+    """
+    candidates = [
+        c for c in scene.get_chunks()
+        if not is_view_chunk(c) and (context is None or c.get_context() == context)
+    ]
+    consumed: set = set()
+    for prim in stage.Traverse():
+        exec_in = prim.GetAttribute(_EXEC_INPUT)
+        if exec_in.IsValid():
+            for conn in exec_in.GetConnections():
+                consumed.add(str(conn.GetPrimPath()))
+    return [c for c in candidates if get_chunk_prim_path(c) not in consumed]
 
 
 def get_exec_head_chunks(
