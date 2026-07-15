@@ -1040,11 +1040,14 @@ def get_exec_upstream_chunks(
     stage: "Usd.Stage",
     scene: "core.SceneSender",
 ) -> "list[core.ChunkBase]":
-    """Return the chunks feeding view_chunk, following inputs:chunk backward.
+    """Return the chunks feeding view_chunk, following ALL input connections backward.
 
     This is the *cook set* for a view: view-driven execution runs only these chunks.
-    Ordered roots-first (a node's sources appear before it) so executing in order
-    authors the node nearest the view last. The view chunk itself is excluded.
+    Follows both the exec wire (inputs:chunk) AND data connections (any inputs:* → a
+    source prim), so a node feeding another purely via data (e.g. a Transform between a
+    Scatter and an RBD solver that reads its points) is still cooked — otherwise it would
+    be blocked and its downstream would read empty/stale input. Ordered roots-first (a
+    node's sources appear before it). The view chunk itself is excluded.
     """
     prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
     view_path = get_chunk_prim_path(view_chunk)
@@ -1053,10 +1056,15 @@ def get_exec_upstream_chunks(
         prim = stage.GetPrimAtPath(Sdf.Path(path))
         if not prim.IsValid():
             return []
-        exec_in = prim.GetAttribute(_EXEC_INPUT)
-        if not exec_in.IsValid():
-            return []
-        return [str(conn.GetPrimPath()) for conn in exec_in.GetConnections()]
+        srcs: list[str] = []
+        for attr in prim.GetAttributes():
+            if not attr.GetName().startswith(_INPUTS_PREFIX):
+                continue
+            for conn in attr.GetConnections():
+                src = str(conn.GetPrimPath())
+                if src in prim_to_chunk:
+                    srcs.append(src)
+        return srcs
 
     order: "list[core.ChunkBase]" = []
     seen: set = set()
