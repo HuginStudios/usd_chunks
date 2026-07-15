@@ -213,8 +213,17 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             sdf_path = Sdf.Path(sender.prim_path)
             chunk_root = str(sdf_path.GetParentPath())
         else:
-            chunk_root = _resolve_chunk_root(sender)
-            sdf_path = Sdf.Path(f"{chunk_root}/{sender.name}")
+            # request_delete clears the owner before firing CHUNK_DELETED, so get_context()
+            # (and thus _resolve_chunk_root) is None here and would resolve to the wrong root
+            # (/chunks instead of e.g. /Tab1). Use the path recorded when the prim was authored;
+            # only recompute if we never tracked it.
+            stored = self._chunk_prim_paths.get(id(sender))
+            if stored:
+                sdf_path = Sdf.Path(stored)
+                chunk_root = str(sdf_path.GetParentPath())
+            else:
+                chunk_root = _resolve_chunk_root(sender)
+                sdf_path = Sdf.Path(f"{chunk_root}/{sender.name}")
         prim_path_str = str(sdf_path)
         self._loaded_prim_paths.discard(prim_path_str)
         self._chunk_prim_paths.pop(id(sender), None)

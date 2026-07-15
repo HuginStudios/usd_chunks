@@ -2471,6 +2471,10 @@ class ChunkCommon(AttributesBase):
 
         # Make sure we're enabled when deleting as being disabled will block necessary notices from being sent
         self.unset_state(ChunkFlags.State.DISABLED)
+        # Same for the 'blocked' flag (set by view-driven re-cook on out-of-view chunks): a blocked
+        # chunk suppresses its own notices, so CHUNK_DELETED would never fire and the USD prim would
+        # be left behind on the stage.
+        self.set_blocked(False)
 
         if not self.can_delete():
             logger.warning(f"Deleting node: {self.name} with connected outputs. Stuff may break")
