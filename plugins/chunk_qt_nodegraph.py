@@ -1862,23 +1862,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
 
         context = self._graph_context()
-        # Auto-wire the first node in an empty context to a new view, so execution is
-        # view-driven from the start (user request). Guarded to a truly empty context so
-        # adding a node to a loaded scene never auto-blanks it.
-        auto_view_first = not [
-            c for c in scene.get_chunks()
-            if not chunk_usd.is_view_chunk(c) and (context is None or c.get_context() == context)
-        ]
-
         for c in chunks:
             scene.add_chunk(c)
 
-        # NOTE: no re-cook mid-create — it races the create's own rebuild and corrupts nodes.
-        first_new = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
-        if auto_view_first and first_new is not None:
-            path = chunk_usd.get_chunk_prim_path(first_new)
-            # Defer past the create's rebuild+proxy build so view creation runs on a settled
-            # graph (same as pressing V manually), not mid-rebuild.
-            QtCore.QTimer.singleShot(60, lambda p=path: self._create_view_node_for_prim(p))
+        # If this context has no view (e.g. it was just cleared, or nodes were made in the
+        # params panel), make a default one wired to the exec tail — so view-driven execution
+        # resumes without needing to re-open the graph. Deferred past the create's own rebuild
+        # so it runs on a settled graph (re-cook mid-create corrupts nodes). Wiring to the tail
+        # (not the new node) means it cooks the whole chain and can't blank a loaded scene.
+        # No-ops when a view already exists.
+        QtCore.QTimer.singleShot(60, lambda ctx=context: self._ensure_default_view(ctx))
 
 
