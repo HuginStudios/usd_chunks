@@ -210,6 +210,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._is_view = _chunk_type == "view"
         self._is_dot = _chunk_type == "dot"
         self._drag_active = False
+        self._drag_moved = False  # True once a drag actually moves — plain clicks stay False
         self._drag_start = QtCore.QPointF()
         self._shake_samples: list[tuple[float, float]] = []  # (time, scene x) during a drag
         self._shake_fired = False
@@ -651,6 +652,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if event.pos().y() <= _NODE_HEADER_H and not self._locked:
                 self.setFocus()
                 self._drag_active = True
+                self._drag_moved = False
                 self._drag_start = event.pos()
                 self._shake_samples = []
                 self._shake_fired = False
@@ -662,6 +664,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._drag_active:
             delta = event.pos() - self._drag_start
             self.setPos(self.pos() + delta)
+            if not self._drag_moved and (abs(delta.x()) + abs(delta.y())) > 2:
+                self._drag_moved = True
             self._track_shake()
             event.accept()
             return
@@ -701,8 +705,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     def mouseReleaseEvent(self, event):
         if self._drag_active:
             self._drag_active = False
-            self._write_pos_to_usd()
-            self._try_insert_on_edge()
+            # Only persist the move / consider a wire-splice if the node actually moved —
+            # a plain click on the header must not splice the node into an overlapping wire.
+            if self._drag_moved:
+                self._write_pos_to_usd()
+                self._try_insert_on_edge()
             event.accept()
             return
         super().mouseReleaseEvent(event)
