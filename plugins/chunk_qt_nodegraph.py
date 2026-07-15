@@ -1643,8 +1643,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         scene = _chunk.get_scene()
         if not scene:
             return
-        for c in chunks:
-            scene.add_chunk(c)
+        # Create the node at the wire-drop point instead of the far-away index default.
+        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        try:
+            for c in chunks:
+                scene.add_chunk(c)
+        finally:
+            chunk_usd._create_node_pos = None
         new_chunk = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
         if new_chunk is None:
             return
@@ -2100,8 +2105,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
 
         context = self._graph_context()
-        for c in chunks:
-            scene.add_chunk(c)
+        # Create the node(s) at the right-click point instead of the far-away index default.
+        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        try:
+            for c in chunks:
+                scene.add_chunk(c)
+        finally:
+            chunk_usd._create_node_pos = None
 
         # If this context has no view (e.g. it was just cleared, or nodes were made in the
         # params panel), make a default one wired to the exec tail — so view-driven execution

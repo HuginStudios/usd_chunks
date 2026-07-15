@@ -37,6 +37,11 @@ _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
 # user wires manually.
 _params_tab_create = False
 
+# Set by the node graph to the USD-space (x, y) a new chunk node should be created at (e.g. the
+# right-click / wire-drop point). _define_prim reads it for the node pos instead of the far-away
+# index default. None → use the default. Cleared by the caller after the create.
+_create_node_pos: "tuple[float, float] | None" = None
+
 _SDF_TYPE_MAP = {
     bool: Sdf.ValueTypeNames.Bool,
     int: Sdf.ValueTypeNames.Int,
@@ -891,7 +896,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
             ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
             if not ui_api.GetPosAttr().HasAuthoredValue():
-                ui_api.CreatePosAttr(Gf.Vec2f(index * _NODE_STEP, 0.0))
+                if _create_node_pos is not None:
+                    ui_api.CreatePosAttr(Gf.Vec2f(*_create_node_pos))
+                else:
+                    ui_api.CreatePosAttr(Gf.Vec2f(index * _NODE_STEP, 0.0))
 
             config = chunk.get_config()
             if config and config.module:
