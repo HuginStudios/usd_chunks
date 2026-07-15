@@ -755,6 +755,31 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if is_group:
             chunk.prim_path = prim_path
 
+        # View-follows-tail: the new chunk was chained after `prev` (prev -> new). If a view
+        # was fed by `prev`, move it onto `new` so the new chunk inserts itself just before the
+        # view (prev -> new -> view) instead of dangling outside the cook set.
+        if prev is not None and not is_view_chunk(chunk):
+            self._rewire_views_from_source(prev, chunk)
+
+    def _rewire_views_from_source(self, old_src: "core.ChunkBase", new_src: "core.ChunkBase") -> None:
+        """Repoint any view whose inputs:chunk feeds off old_src onto new_src's output."""
+        def _path(c):
+            return self._chunk_prim_paths.get(id(c)) or f"{_resolve_chunk_root(c)}/{c.name}"
+        old_path = _path(old_src)
+        new_out = Sdf.Path(f"{_path(new_src)}.{_EXEC_OUTPUT}")
+        for c in self._scene.get_chunks():
+            if not is_view_chunk(c):
+                continue
+            vprim = self._stage.GetPrimAtPath(Sdf.Path(_path(c)))
+            if not vprim.IsValid():
+                continue
+            exec_in = vprim.GetAttribute(_EXEC_INPUT)
+            if not (exec_in and exec_in.IsValid()):
+                continue
+            if any(str(p.GetPrimPath()) == old_path for p in exec_in.GetConnections()):
+                with self._chunk_prim_edit_context():
+                    exec_in.SetConnections([new_out])
+
     def _on_chunk_loaded(self, notice, sender):
         """Run a chunk's module execute() hook once on interactive creation.
 
@@ -778,10 +803,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         """Return the tail of the exec DAG for this context — the chunk whose outputs:chunk
         is not referenced by any other chunk's inputs:chunk. Used as prev_chunk when no
         interactive history exists (e.g. first add after loading a .usda)."""
-        # Regular chunks in this context.
+        # Regular chunks in this context (never a view — a view consumes the tail and is
+        # terminal, so it must not be treated as the chain tail itself).
         context_chunks = [
             c for c in self._scene.get_chunks()
-            if c.get_context() == context and c is not exclude
+            if c.get_context() == context and c is not exclude and not is_view_chunk(c)
         ]
         # Also include ChunkGroup chunks (CONTEXT with a USD prim) that belong here.
         # Plain tab contexts are excluded — they have no prim and no exec connections.
