@@ -1119,10 +1119,14 @@ def find_view_chunk_for_slot(
     slot: int,
     stage: "Usd.Stage",
     scene: "core.SceneSender",
+    context: "core.ChunkBase | None" = None,
 ) -> "core.ChunkBase | None":
-    """Return the view chunk assigned to slot, or None."""
+    """Return the view chunk assigned to slot, or None. Scoped to `context` when given — each
+    graph (tab or group) has its own slots, so a tab view and a group view can both be slot 1."""
     for c in scene.get_chunks():
         if not is_view_chunk(c):
+            continue
+        if context is not None and not is_node_in_context(c, context):
             continue
         prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
         if prim.IsValid() and prim.GetAttribute("view:slot").Get() == slot:

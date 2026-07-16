@@ -2063,8 +2063,19 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         context = self._graph_context()
         slot = self._view_state.active_slot
         view_chunk = (
-            chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene) if slot else None
+            chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
         )
+        # Subnet: if THIS graph is a group, persist its active view slot on the group prim so a
+        # parent cook of the group picks the same inner view (find_group_active_view reads it).
+        if context is not None and chunk_usd.is_group_chunk(context):
+            gp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(context)))
+            if gp and gp.IsValid():
+                prev_w = chunk_usd.chunk_notice._usd_write_active
+                chunk_usd.chunk_notice._usd_write_active = True
+                try:
+                    gp.CreateAttribute("chunk:activeView", Sdf.ValueTypeNames.Int, custom=True).Set(int(slot))
+                finally:
+                    chunk_usd.chunk_notice._usd_write_active = prev_w
         if view_chunk is not None:
             for c in registry.scene.get_chunks():
                 if c.has_state(ChunkFlags.State.SELECTED):
