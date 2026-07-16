@@ -24,6 +24,16 @@ def _author_collection(stage, owner, name, includes, excludes=(), rule=Usd.Token
     return coll
 
 
+def test_resolve_prim_paths_skips_pseudo_root():
+    """The pseudo-root '/' must never be a target — authoring an op on it raises. A param
+    value of '/' (e.g. an empty PRIM_SELECTION) previously resolved to ['/'] and crashed
+    chunks like Transform (AddTransformOp on the pseudo-root)."""
+    stage = _stage("/a")
+    assert CU.resolve_prim_paths(stage, "/") == []
+    assert CU.resolve_prim_paths(stage, "/a") == ["/a"]
+    assert CU.resolve_prim_paths(stage, "/, /a") == ["/a"]
+
+
 # --- find_collection -------------------------------------------------------
 
 

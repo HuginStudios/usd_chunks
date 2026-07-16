@@ -71,6 +71,8 @@ def resolve_prim_paths(stage, location_str):
             continue
         if not token.startswith("/"):
             token = "/" + token
+        if token == "/":
+            continue  # never target the pseudo-root (authoring an op on / raises)
         if "*" not in token and "?" not in token:
             paths.append(token)
             continue
