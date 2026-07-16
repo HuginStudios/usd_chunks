@@ -472,6 +472,38 @@ def test_chunk_stage_sync_rename_no_duplicate() -> None:
     assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/foo").IsValid()
 
 
+def test_chunk_stage_sync_rename_anonymous_edit_target() -> None:
+    """Rename must work when _user_edit_layer is None. In usdview the edit target is an
+    anonymous session/graph layer, which _on_edit_target_changed deliberately doesn't record,
+    so _user_edit_layer stays None; chunks still author via the edit-target fallback. If the
+    rename bails instead, the chunk is renamed but its prim isn't — the paths diverge and the
+    node vanishes from the graph."""
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    sync = ChunkStageSync()
+    sync.initialize(stage, scene)
+
+    c = _chunk_with_module("foo")
+    scene.add_chunk(c)
+    sync._user_edit_layer = None  # simulate usdview's anonymous edit target
+
+    c.name = "bar"
+
+    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/bar").IsValid()
+    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/foo").IsValid()
+    assert sum(1 for _ in scene.get_chunks()) == 1
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync lifecycle: param rename
 # ---------------------------------------------------------------------------

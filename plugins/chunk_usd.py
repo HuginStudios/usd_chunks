@@ -374,9 +374,30 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             self._handle_param_rename(owner, old_name, owner.name)
 
     def _handle_rename(self, old_path: str, new_path: str, old_name: str, new_name: str, chunk=None) -> None:
-        """Rename a chunk prim and patch all references to it."""
-        if not self._user_edit_layer:
+        """Rename a chunk prim and patch all references to it.
+
+        Renames the prim in every layer that actually authors it. _user_edit_layer can be
+        None (the edit target is an anonymous session/graph layer, which _on_edit_target_changed
+        deliberately doesn't record) — chunks still author fine because _chunk_prim_edit_context
+        falls back to the current edit target, so the rename must use the same fallback rather
+        than bail (bailing left the chunk renamed but the prim not, so the node vanished).
+        """
+        if not self._stage:
             return
+        old_prim = self._stage.GetPrimAtPath(Sdf.Path(old_path))
+        target_layers = []
+        if old_prim and old_prim.IsValid():
+            for spec in old_prim.GetPrimStack():
+                if spec.layer not in target_layers:
+                    target_layers.append(spec.layer)
+        # Fallbacks if the prim couldn't be resolved: the tracked edit layer, else the target.
+        if not target_layers:
+            fallback = self._user_edit_layer or self._stage.GetEditTarget().GetLayer()
+            if fallback is not None:
+                target_layers = [fallback]
+        if not target_layers:
+            return
+
         # Guard the whole rename as a chunk-driven write. Applying the namespace edit fires
         # StageContentsChanged synchronously; without this, _on_contents_changed re-enters
         # load_chunks before _loaded_prim_paths is updated below, sees the renamed prim as
@@ -384,19 +405,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         old_write = chunk_notice._usd_write_active
         chunk_notice._usd_write_active = True
         try:
-            edit = Sdf.BatchNamespaceEdit()
-            edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
-            if not self._user_edit_layer.Apply(edit):
+            applied_any = False
+            for lyr in target_layers:
+                edit = Sdf.BatchNamespaceEdit()
+                edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
+                if lyr.Apply(edit):
+                    applied_any = True
+            if not applied_any:
                 logger.warning("Failed to rename prim %s → %s", old_path, new_path)
                 return
             if chunk is not None:
-                lm = ChunkLayerManager()
-                if lm.initialized:
-                    chunk_layer = lm.get_layer(chunk)
-                    if chunk_layer:
-                        chunk_edit = Sdf.BatchNamespaceEdit()
-                        chunk_edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
-                        chunk_layer.Apply(chunk_edit)
                 object.__setattr__(chunk, "_exec_prim_path", new_path)
             _patch_expressions(self._stage, f"@{old_name}.", f"@{new_name}.")
             self._loaded_prim_paths.discard(old_path)
