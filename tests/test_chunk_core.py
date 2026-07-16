@@ -404,3 +404,32 @@ def test_select_deselect_chunk():
     B.unset_state(chunk.ChunkFlags.State.SELECTED)
     sel = scene.get_selected_chunks()
     assert len(sel) == 0
+
+
+def test_state_change_does_not_reexecute_module():
+    """A pure state change (e.g. selecting a node) must not re-run the chunk's module — only
+    data changes (a param value) should. Selection/collapse used to cascade into module.execute,
+    so selecting a node re-authored its output."""
+    scene = _DummyScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+
+    calls = []
+
+    class _Mod:
+        def execute(self, prop):
+            calls.append(1)
+
+    c = chunk.Chunk("c")
+    slider = chunk.Slider("s", default_value=0.0)
+    c.add_param(slider)
+    scene.add_chunk(c)
+    c._module = _Mod()
+
+    calls.clear()
+    c.set_state(chunk.ChunkFlags.State.SELECTED)
+    c.unset_state(chunk.ChunkFlags.State.SELECTED)
+    assert calls == []  # selection/deselection does not execute the module
+
+    slider.value = 5.0
+    assert len(calls) >= 1  # a data change does execute the module

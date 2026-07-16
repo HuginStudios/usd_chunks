@@ -374,25 +374,72 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             self._handle_param_rename(owner, old_name, owner.name)
 
     def _handle_rename(self, old_path: str, new_path: str, old_name: str, new_name: str, chunk=None) -> None:
-        """Rename a chunk prim and patch all references to it."""
-        if not self._user_edit_layer:
+        """Rename a chunk prim and patch all references to it.
+
+        Renames the prim in every layer that actually authors it. _user_edit_layer can be
+        None (the edit target is an anonymous session/graph layer, which _on_edit_target_changed
+        deliberately doesn't record) — chunks still author fine because _chunk_prim_edit_context
+        falls back to the current edit target, so the rename must use the same fallback rather
+        than bail (bailing left the chunk renamed but the prim not, so the node vanished).
+        """
+        if not self._stage:
             return
-        edit = Sdf.BatchNamespaceEdit()
-        edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
-        if not self._user_edit_layer.Apply(edit):
-            logger.warning("Failed to rename prim %s → %s", old_path, new_path)
+        old_prim = self._stage.GetPrimAtPath(Sdf.Path(old_path))
+        target_layers = []
+        if old_prim and old_prim.IsValid():
+            for spec in old_prim.GetPrimStack():
+                if spec.layer not in target_layers:
+                    target_layers.append(spec.layer)
+        # Fallbacks if the prim couldn't be resolved: the tracked edit layer, else the target.
+        if not target_layers:
+            fallback = self._user_edit_layer or self._stage.GetEditTarget().GetLayer()
+            if fallback is not None:
+                target_layers = [fallback]
+        if not target_layers:
             return
-        if chunk is not None:
-            lm = ChunkLayerManager()
-            if lm.initialized:
-                chunk_layer = lm.get_layer(chunk)
-                if chunk_layer:
-                    chunk_edit = Sdf.BatchNamespaceEdit()
-                    chunk_edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
-                    chunk_layer.Apply(chunk_edit)
-        _patch_expressions(self._stage, f"@{old_name}.", f"@{new_name}.")
-        self._loaded_prim_paths.discard(old_path)
-        self._loaded_prim_paths.add(new_path)
+
+        # Guard the whole rename as a chunk-driven write. Applying the namespace edit fires
+        # StageContentsChanged synchronously; without this, _on_contents_changed re-enters
+        # load_chunks before _loaded_prim_paths is updated below, sees the renamed prim as
+        # "new", and creates a duplicate chunk (the "renamed node vanishes / stale copy" bug).
+        old_write = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True
+        try:
+            applied_any = False
+            for lyr in target_layers:
+                edit = Sdf.BatchNamespaceEdit()
+                edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
+                if lyr.Apply(edit):
+                    applied_any = True
+            if not applied_any:
+                logger.warning("Failed to rename prim %s → %s", old_path, new_path)
+                return
+            if chunk is not None:
+                object.__setattr__(chunk, "_exec_prim_path", new_path)
+            # BatchNamespaceEdit renames the prim but does NOT fix up connections that target
+            # it (e.g. a view's inputs:chunk -> old.outputs:chunk), so they'd dangle and the
+            # wire would drop. Repoint every chunk-prim connection from old_path to new_path.
+            self._fixup_connection_targets(old_path, new_path)
+            _patch_expressions(self._stage, f"@{old_name}.", f"@{new_name}.")
+            self._loaded_prim_paths.discard(old_path)
+            self._loaded_prim_paths.add(new_path)
+        finally:
+            chunk_notice._usd_write_active = old_write
+
+    def _fixup_connection_targets(self, old_path: str, new_path: str) -> None:
+        """Repoint any chunk-prim attribute connection that references old_path onto new_path,
+        so wiring survives a rename (BatchNamespaceEdit leaves connection targets dangling)."""
+        old_sdf, new_sdf = Sdf.Path(old_path), Sdf.Path(new_path)
+        for prim in self._stage.Traverse():
+            if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+                continue
+            for attr in prim.GetAttributes():
+                conns = attr.GetConnections()
+                if not conns:
+                    continue
+                new_conns = [c.ReplacePrefix(old_sdf, new_sdf) for c in conns]
+                if new_conns != list(conns):
+                    attr.SetConnections(new_conns)
 
     def _handle_param_rename(self, param: "core.ChunkParamBase", old_name: str, new_name: str) -> None:
         """Rename a param's USD attribute and patch expression strings."""
@@ -811,8 +858,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not isinstance(chunk, core.ChunkBase):
             return
         module = getattr(chunk, "_module", None)
-        if callable(getattr(module, "execute", None)):
-            chunk.execute()
+        if not callable(getattr(module, "execute", None)):
+            return
+        # A blocked chunk (view-driven: created out of the active view's tree) must not execute —
+        # it cooks only once wired in and unblocked by recook.
+        if chunk.is_blocked():
+            return
+
+        chunk.execute()
 
     def _find_dag_tail(self, context, exclude=None) -> "core.ChunkBase | None":
         """Return the tail of the exec DAG for this context — the chunk whose outputs:chunk
@@ -1135,8 +1188,8 @@ def recook_for_view(
     """Apply view-driven execution for one context.
 
     With a view_chunk: cook only its upstream tree (roots-first); every other non-view
-    chunk in the context is blocked + muted (dormant, hidden). With view_chunk=None:
-    legacy behaviour — unblock/unmute everything and re-run the exec heads.
+    chunk in the context is blocked + muted (dormant, hidden). With view_chunk=None (no active
+    view): block + mute everything — nothing cooks until a view is activated.
 
     Blocking a chunk both hides its result (its layer is muted) and stops it reacting to
     param changes (see ChunkBase.value_changed) — so being outside the active view's tree
@@ -1160,15 +1213,16 @@ def recook_for_view(
             stage.UnmuteLayer(layer.identifier)
 
     if view_chunk is None:
+        # No active view → nothing cooks. Block + mute every non-view chunk so unconnected and
+        # out-of-tree nodes don't execute. (Was legacy "run everything", which unblocked and
+        # executed all nodes — so toggling the active view off ran the whole graph.) Activating
+        # a view re-cooks its tree.
         for c in scene.get_chunks():
             if is_view_chunk(c) or not in_context(c):
                 continue
-            c.set_blocked(False)
+            c.set_blocked(True)
             if not c.has_state(disabled):
-                mute(lm.get_layer(c), False)
-        for head in get_exec_head_chunks(stage, scene, context):
-            if not head.has_state(disabled):
-                head.execute()
+                mute(lm.get_layer(c), True)
         return
 
     cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)

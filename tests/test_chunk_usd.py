@@ -443,6 +443,98 @@ def test_chunk_stage_sync_rename_chunk() -> None:
     assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/bar").IsValid()
 
 
+def test_chunk_stage_sync_rename_no_duplicate() -> None:
+    """Rename must not spawn a duplicate chunk. Applying the namespace edit fires
+    StageContentsChanged synchronously; if that re-enters load_chunks before
+    _loaded_prim_paths is updated, the renamed prim looks 'new' and a stale copy is
+    created (the renamed node then vanishes in the graph rebuild). Uses a stage-backed
+    scene so _on_contents_changed actually runs load_chunks."""
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    c = _chunk_with_module("foo")
+    scene.add_chunk(c)
+    c.name = "bar"
+
+    assert sum(1 for _ in scene.get_chunks()) == 1  # no duplicate chunk
+    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/bar").IsValid()
+    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/foo").IsValid()
+
+
+def test_chunk_stage_sync_rename_anonymous_edit_target() -> None:
+    """Rename must work when _user_edit_layer is None. In usdview the edit target is an
+    anonymous session/graph layer, which _on_edit_target_changed deliberately doesn't record,
+    so _user_edit_layer stays None; chunks still author via the edit-target fallback. If the
+    rename bails instead, the chunk is renamed but its prim isn't — the paths diverge and the
+    node vanishes from the graph."""
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    sync = ChunkStageSync()
+    sync.initialize(stage, scene)
+
+    c = _chunk_with_module("foo")
+    scene.add_chunk(c)
+    sync._user_edit_layer = None  # simulate usdview's anonymous edit target
+
+    c.name = "bar"
+
+    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/bar").IsValid()
+    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/foo").IsValid()
+    assert sum(1 for _ in scene.get_chunks()) == 1
+
+
+def test_chunk_stage_sync_rename_preserves_connections() -> None:
+    """Renaming a chunk must repoint connections that target it (e.g. a view's
+    inputs:chunk -> foo.outputs:chunk), otherwise the wire dangles and drops."""
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    c = _chunk_with_module("foo")
+    scene.add_chunk(c)
+
+    # A downstream Chunk prim wired to foo's exec output.
+    view = stage.DefinePrim(f"{_CHUNKS_ROOT}/View1", _CHUNK_PRIM_TYPENAME)
+    vin = view.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+    vin.SetConnections([Sdf.Path(f"{_CHUNKS_ROOT}/foo.{_EXEC_OUTPUT}")])
+
+    c.name = "bar"
+
+    conns = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/View1").GetAttribute(_EXEC_INPUT).GetConnections()
+    assert list(conns) == [Sdf.Path(f"{_CHUNKS_ROOT}/bar.{_EXEC_OUTPUT}")]
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync lifecycle: param rename
 # ---------------------------------------------------------------------------
@@ -658,6 +750,92 @@ def test_chunk_stage_sync_disable_enable() -> None:
 
     c.unset_state(chunk.ChunkFlags.State.DISABLED)
     assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dis").IsActive()
+
+
+def test_blocked_chunk_does_not_execute_on_creation() -> None:
+    """A chunk blocked before it's added (view-driven: created out of the active view's tree)
+    must not run its module on creation — not via param-resolve and not via execute-on-creation.
+    Unblocking and cooking it (as recook does when it joins the view's tree) runs it."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    calls = []
+
+    class _Mod:
+        def execute(self, prop):
+            calls.append(1)
+
+    c = _chunk_with_module("blk")
+    c._module = _Mod()
+    c.set_blocked(True)
+    scene.add_chunk(c)
+    assert calls == []  # blocked → no execute on creation
+
+    c.execute()
+    assert calls == []  # blocked → even a direct execute() is suppressed (module guard)
+
+    c.set_blocked(False)
+    c.execute()
+    assert len(calls) >= 1  # unblocked + cooked → runs
+
+
+def test_recook_no_active_view_blocks_all() -> None:
+    """With no active view (view_chunk=None), recook must block every chunk so nothing cooks —
+    not run the whole graph (which used to unblock + execute all nodes, so toggling the active
+    view off ran everything, including unconnected nodes)."""
+    from plugins.chunk_usd import recook_for_view
+
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    a = _chunk_with_module("a")
+    b = _chunk_with_module("b")
+    scene.add_chunk(a)
+    scene.add_chunk(b)
+
+    recook_for_view(stage, scene, None, None)
+
+    assert a.is_blocked() and b.is_blocked()
+
+
+def test_state_change_keeps_view_blocked_layer_muted() -> None:
+    """A view-blocked chunk's layer is muted (hidden). A state change (e.g. selecting the node)
+    must NOT un-mute it — _flags_changed used to un-mute any non-disabled muted layer on every
+    state change, so selecting an out-of-view node showed its output."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+    lm = chunk_registry.ChunkLayerManager()
+
+    primmod = reg.get_chunk_module("prim")
+    chunks = primmod.create() if primmod.loaded else primmod.load()
+    for ch in chunks:
+        scene.add_chunk(ch)  # execute-on-creation authors output + creates the chunk layer
+    c = chunks[0]
+    layer = lm.get_layer(c)
+    assert layer is not None
+
+    # Simulate recook blocking + muting this out-of-active-view chunk.
+    c.set_blocked(True)
+    stage.MuteLayer(layer.identifier)
+    assert stage.IsLayerMuted(layer.identifier)
+
+    c.set_state(chunk.ChunkFlags.State.SELECTED)
+    assert stage.IsLayerMuted(layer.identifier)  # selection must not un-mute a block-muted layer
 
 
 # ---------------------------------------------------------------------------

@@ -960,6 +960,12 @@ class ContainerWidget(
         self._animation_value = 0
         self._depth = 0
         super().__init__(group, parent=parent)
+        # When Qt destroys this widget — e.g. the node graph rebuild calls deleteLater on the
+        # embedded ChunkWidget without going through delete_self — revoke our notice
+        # subscriptions. Otherwise a later notice (a rename firing _name_changed → update_label,
+        # a state change, …) invokes a method on the deleted C++ object and crashes. Safe post-
+        # delete: _disconnect_callbacks only touches Python NoticeConnections.
+        self.destroyed.connect(lambda *_: self._disconnect_callbacks())
 
     def _is_context_tab(self) -> bool:
         """True when this widget is the scrollable tab context (not a compact node)."""
@@ -1285,6 +1291,7 @@ class ViewSlotState(QtCore.QObject):
                 cb_actions[menu.addAction(meth.__name__)] = conn
 
         inspect_action = menu.addAction("Inspect Layer")
+        rename_action = menu.addAction("Rename…")
         menu.addSeparator()
 
         stage: Optional[Usd.Stage] = grp.get_stage()
@@ -1319,6 +1326,16 @@ class ViewSlotState(QtCore.QObject):
             layer = grp.get_edit_context()
             if layer:
                 source_code_dial(layer.ExportToString(), chunk_core.UsdSyntaxHighlightMapping())
+        elif res == rename_action:
+            old = grp.name
+            new, ok = QtWidgets.QInputDialog.getText(
+                QtWidgets.QApplication.activeWindow(), "Rename chunk", "New name:", text=old
+            )
+            new = new.strip() if new else ""
+            # Setting .name drives the framework rename (prim rename + expression patching);
+            # convert_attr sanitises it to a valid identifier, so no path validation needed here.
+            if ok and new and new != old:
+                grp.name = new
         elif view_action and res == view_action:
             if existing_view_slot is not None:
                 self.set_slot(existing_view_slot)
