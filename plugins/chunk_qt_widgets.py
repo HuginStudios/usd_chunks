@@ -867,6 +867,12 @@ class LabeledWidget(QtWidgets.QWidget):
         param = self.widget.param
         chunk_obj = param.get_chunk()
         context = chunk_obj.get_context() if chunk_obj else None
+        # If the param sits directly on a group, get_context() returns that group itself, so
+        # "Loft up" would loft to self. Go one level up to the parent context instead, so a
+        # param on a nested group lofts out to its enclosing group.
+        if chunk_obj is not None and context is chunk_obj:
+            pc = getattr(chunk_obj, "_parent_context", None)
+            context = pc() if pc else None
 
         t = param.evaluate_type()
         is_expr_capable = (
@@ -898,8 +904,12 @@ class LabeledWidget(QtWidgets.QWidget):
                 chunk_usd.loft_param_to_context(param, context)
             elif expr_action and action == expr_action:
                 current = str(raw) if isinstance(raw, str) else ""
+                # Parent the dialog to a real top-level window, not self: in the node graph this
+                # widget is embedded in a QGraphicsProxyWidget, which can't host a modal dialog
+                # (the popup never shows). activeWindow() is the usdview main window here.
+                parent = QtWidgets.QApplication.activeWindow() or self
                 text, ok = QtWidgets.QInputDialog.getText(
-                    self, "Set Expression", "Expression:", QtWidgets.QLineEdit.EchoMode.Normal, current
+                    parent, "Set Expression", "Expression:", QtWidgets.QLineEdit.EchoMode.Normal, current
                 )
                 if ok and text:
                     param.value = text
