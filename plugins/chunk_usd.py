@@ -1083,6 +1083,38 @@ def is_view_chunk(chunk: "core.ChunkBase") -> bool:
     return bool(cfg and cfg.module == "view")
 
 
+def is_group_chunk(chunk: "core.ChunkBase") -> bool:
+    """Return True if chunk is a chunkgroup (a CONTEXT chunk with a module — a subnet node)."""
+    cfg = chunk.get_config()
+    return bool(chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module)
+
+
+def find_group_active_view(
+    group: "core.ChunkBase", stage: "Usd.Stage", scene: "core.SceneSender"
+) -> "core.ChunkBase | None":
+    """The inner active view of a group — its output driver. Reads the group prim's
+    ``chunk:activeView`` slot (written by the Qt layer when the view is switched inside the
+    group), falling back to the first inner view. None if the group has no inner view.
+    """
+    inner_views = [
+        c for c in scene.get_chunks() if is_view_chunk(c) and is_node_in_context(c, group)
+    ]
+    if not inner_views:
+        return None
+    gp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(group)))
+    slot = None
+    if gp and gp.IsValid():
+        a = gp.GetAttribute("chunk:activeView")
+        if a and a.IsValid():
+            slot = a.Get()
+    if slot:
+        for v in inner_views:
+            vp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(v)))
+            if vp and vp.IsValid() and vp.GetAttribute("view:slot").Get() == slot:
+                return v
+    return inner_views[0]
+
+
 def find_view_chunk_for_slot(
     slot: int,
     stage: "Usd.Stage",
@@ -1281,6 +1313,17 @@ def recook_for_view(
         )
         if list(g_layer.subLayerPaths) != ordered:
             g_layer.subLayerPaths = ordered  # type: ignore
+
+    # A group has no execute() of its own — its result IS its inner graph. So recurse: a cooked
+    # group (in this view's tree) produces its output by cooking its inner active view's tree; a
+    # blocked group hides its whole inner tree. Prim-path nesting prevents cycles.
+    for c in scene.get_chunks():
+        if not is_group_chunk(c) or not in_context(c):
+            continue
+        if c in cook_set:
+            recook_for_view(stage, scene, c, find_group_active_view(c, stage, scene))
+        else:
+            recook_for_view(stage, scene, c, None)
 
 
 def get_exec_tail_chunks(

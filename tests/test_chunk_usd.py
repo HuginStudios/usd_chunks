@@ -1582,3 +1582,57 @@ def test_loft_output_param_creates_outputs_attr() -> None:
     grp_prim = stage.GetPrimAtPath(Sdf.Path(grp.prim_path))
     assert grp_prim.GetAttribute("outputs:myout").IsValid()
     assert not grp_prim.GetAttribute(f"{_INPUTS_PREFIX}myout").IsValid()
+
+
+def test_recook_recurses_into_group() -> None:
+    """A group has no execute() of its own — cooking a group (in the parent view's tree) must
+    cook its inner active view's tree; a hidden group mutes its whole inner tree."""
+    import weakref
+    from plugins.chunk_usd import recook_for_view, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    inner_node = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner_node)
+    scene._current_context = None
+    tab_view = _mk(viewmod)
+    _wire(tab_view, grp)
+
+    class _Root:
+        prim_path = _CHUNKS_ROOT
+
+    recook_for_view(stage, scene, _Root(), tab_view)
+    assert not inner_node.is_blocked()  # group cooked → inner tree cooks
+
+    recook_for_view(stage, scene, _Root(), None)
+    assert inner_node.is_blocked()  # group hidden → inner tree muted
