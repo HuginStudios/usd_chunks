@@ -1206,5 +1206,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             # leaving usdview showing sibling prims (e.g. a ScatterInstancer whose def lives
             # in another chunk's layer) as if removed until the next edit forces a refresh.
             self.stage.MuteLayer(layer.identifier)
-        elif self.is_muted(c):
+        elif self.is_muted(c) and not c.is_blocked():
+            # Only un-mute a disable-muted layer. A view-driven block also mutes the layer, and
+            # this handler runs on EVERY state change (incl. selection) — without the is_blocked
+            # guard, selecting an out-of-view node would un-mute it and show its output.
             self.stage.UnmuteLayer(layer.identifier)

@@ -802,6 +802,42 @@ def test_recook_no_active_view_blocks_all() -> None:
     assert a.is_blocked() and b.is_blocked()
 
 
+def test_state_change_keeps_view_blocked_layer_muted() -> None:
+    """A view-blocked chunk's layer is muted (hidden). A state change (e.g. selecting the node)
+    must NOT un-mute it — _flags_changed used to un-mute any non-disabled muted layer on every
+    state change, so selecting an out-of-view node showed its output."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+    lm = chunk_registry.ChunkLayerManager()
+
+    primmod = reg.get_chunk_module("prim")
+    chunks = primmod.create() if primmod.loaded else primmod.load()
+    for ch in chunks:
+        scene.add_chunk(ch)  # execute-on-creation authors output + creates the chunk layer
+    c = chunks[0]
+    layer = lm.get_layer(c)
+    assert layer is not None
+
+    # Simulate recook blocking + muting this out-of-active-view chunk.
+    c.set_blocked(True)
+    stage.MuteLayer(layer.identifier)
+    assert stage.IsLayerMuted(layer.identifier)
+
+    c.set_state(chunk.ChunkFlags.State.SELECTED)
+    assert stage.IsLayerMuted(layer.identifier)  # selection must not un-mute a block-muted layer
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync: param added after chunk already registered
 # ---------------------------------------------------------------------------
