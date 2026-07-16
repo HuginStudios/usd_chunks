@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import time
+import weakref
 from typing import Optional
 
 from pxr import Gf, Sdf, Usd, UsdUI
@@ -1364,6 +1365,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             for c in scene.get_chunks()
         )
 
+    def _push_nest_context(self, scene, context):
+        """When the graph is dived into a chunkgroup, make new chunks nest into it. add_chunk
+        uses scene._current_context, which isn't set for a dive — so without this, creating a
+        node inside a group silently added it to the tab instead. Returns (changed, previous) to
+        restore. No-op at the tab level (plain contexts have no module)."""
+        cfg = context.get_config() if context is not None else None
+        if context is not None and context.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module:
+            prev = scene._current_context
+            scene._current_context = weakref.ref(context)
+            return True, prev
+        return False, None
+
     def _ensure_default_view(self, context) -> None:
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
@@ -1657,15 +1670,19 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         # Block on creation (view-driven) — see contextMenuEvent. Here the node is about to be
         # wired to the dragged port, so the deferred connect's recook will unblock + cook it.
-        view_exists = self._context_has_view(scene, self._graph_context())
+        context = self._graph_context()
+        view_exists = self._context_has_view(scene, context)
         # Create the node at the wire-drop point instead of the far-away index default.
         chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        nested, prev_ctx = self._push_nest_context(scene, context)
         try:
             for c in chunks:
                 if view_exists and not chunk_usd.is_view_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
         finally:
+            if nested:
+                scene._current_context = prev_ctx
             chunk_usd._create_node_pos = None
         new_chunk = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
         if new_chunk is None:
@@ -2129,12 +2146,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         view_exists = self._context_has_view(scene, context)
         # Create the node(s) at the right-click point instead of the far-away index default.
         chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        nested, prev_ctx = self._push_nest_context(scene, context)
         try:
             for c in chunks:
                 if view_exists and not chunk_usd.is_view_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
         finally:
+            if nested:
+                scene._current_context = prev_ctx
             chunk_usd._create_node_pos = None
 
         # If this context has no view (e.g. it was just cleared, or nodes were made in the
