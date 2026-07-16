@@ -1093,10 +1093,8 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
 
             msg += f"solved: {n.name}\n"
 
-            for alias, iprop in n.iter_changes():
-                if not iprop:
-                    continue
-
+            changes = [(alias, iprop) for alias, iprop in n.iter_changes() if iprop]
+            for alias, iprop in changes:
                 if alias == prop.get_notice_alias():
                     continue
 
@@ -1106,7 +1104,12 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             if notice := prop.send_self():
                 msg += f"   {notice.alias.name}\n"
 
-            if module := getattr(prop, '_module', None):
+            # A pure state change (selection, collapse, disable) propagates only as
+            # STATE_CHANGED — it must not re-run the module. Data changes (params/inputs) and a
+            # direct dirty solve (execute-on-creation, which carries no propagated change) still
+            # execute. Selection/disable side effects run above via data_changed / send_self.
+            state_only = bool(changes) and all(a == ChunkNoticeAlias.STATE_CHANGED for a, _ in changes)
+            if not state_only and (module := getattr(prop, '_module', None)):
                 stage = prop.get_stage()
                 ctx = prop.get_edit_context()
                 # A disabled chunk's edit layer is muted, i.e. removed from the stage's local
