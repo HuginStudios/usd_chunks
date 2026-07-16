@@ -858,8 +858,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not isinstance(chunk, core.ChunkBase):
             return
         module = getattr(chunk, "_module", None)
-        if callable(getattr(module, "execute", None)):
-            chunk.execute()
+        if not callable(getattr(module, "execute", None)):
+            return
+        # A blocked chunk (view-driven: created out of the active view's tree) must not execute —
+        # it cooks only once wired in and unblocked by recook.
+        if chunk.is_blocked():
+            return
+
+        chunk.execute()
 
     def _find_dag_tail(self, context, exclude=None) -> "core.ChunkBase | None":
         """Return the tail of the exec DAG for this context — the chunk whose outputs:chunk

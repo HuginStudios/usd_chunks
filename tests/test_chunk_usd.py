@@ -752,6 +752,32 @@ def test_chunk_stage_sync_disable_enable() -> None:
     assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dis").IsActive()
 
 
+def test_blocked_chunk_does_not_execute_on_creation() -> None:
+    """A chunk blocked before it's added (view-driven: created out of the active view's tree)
+    must not run its module on creation — not via param-resolve and not via execute-on-creation.
+    Unblocking and cooking it (as recook does when it joins the view's tree) runs it."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    calls = []
+
+    class _Mod:
+        def execute(self, prop):
+            calls.append(1)
+
+    c = _chunk_with_module("blk")
+    c._module = _Mod()
+    c.set_blocked(True)
+    scene.add_chunk(c)
+    assert calls == []  # blocked → no execute on creation
+
+    c.set_blocked(False)
+    c.execute()
+    assert len(calls) >= 1  # unblocked + cooked → runs
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync: param added after chunk already registered
 # ---------------------------------------------------------------------------

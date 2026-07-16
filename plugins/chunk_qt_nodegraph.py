@@ -1357,6 +1357,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # build's rebuild + proxy pass so view creation runs on a settled graph, not mid-build.
         QtCore.QTimer.singleShot(80, lambda ctx=context: self._ensure_default_view(ctx))
 
+    def _context_has_view(self, scene, context) -> bool:
+        """True when this context (or the graph as a whole, if context is None) has a view chunk."""
+        return any(
+            chunk_usd.is_view_chunk(c) and (context is None or c.get_context() == context)
+            for c in scene.get_chunks()
+        )
+
     def _ensure_default_view(self, context) -> None:
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
@@ -1364,14 +1371,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         stage = registry.scene.get_stage()
         if not stage:
             return
-        # If this context already has a view, don't create another — but re-cook it. A node just
-        # created in the graph ran its execute-on-creation and authored visible output; if it's
-        # not in the active view's tree, the re-cook blocks + mutes it so it doesn't stay visible
-        # (e.g. a second, unconnected prim node leaving /prim1 in the stage).
-        for c in registry.scene.get_chunks():
-            if chunk_usd.is_view_chunk(c) and (context is None or c.get_context() == context):
-                self._recook_active_view()
-                return
+        # Nothing to do if this context already has a view. A newly created node is blocked at
+        # creation (see contextMenuEvent), so it doesn't execute until it's wired in and recook
+        # unblocks it — no need to re-cook here.
+        if self._context_has_view(registry.scene, context):
+            return
         tails = chunk_usd.get_exec_tail_chunks(stage, registry.scene, context)
         if not tails:
             return
@@ -1647,10 +1651,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         scene = _chunk.get_scene()
         if not scene:
             return
+        # Block on creation (view-driven) — see contextMenuEvent. Here the node is about to be
+        # wired to the dragged port, so the deferred connect's recook will unblock + cook it.
+        view_exists = self._context_has_view(scene, self._graph_context())
         # Create the node at the wire-drop point instead of the far-away index default.
         chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
         try:
             for c in chunks:
+                if view_exists and not chunk_usd.is_view_chunk(c):
+                    c.set_blocked(True)
                 scene.add_chunk(c)
         finally:
             chunk_usd._create_node_pos = None
@@ -2109,10 +2118,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
 
         context = self._graph_context()
+        # View-driven: if this context already has a view, a new node starts blocked so it does
+        # NOT execute on creation (its params resolve during add_chunk and would otherwise cascade
+        # into the module, and execute-on-creation would run too). It cooks only once wired into
+        # the active view's tree, where recook unblocks it. Must be set before add_chunk.
+        view_exists = self._context_has_view(scene, context)
         # Create the node(s) at the right-click point instead of the far-away index default.
         chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
         try:
             for c in chunks:
+                if view_exists and not chunk_usd.is_view_chunk(c):
+                    c.set_blocked(True)
                 scene.add_chunk(c)
         finally:
             chunk_usd._create_node_pos = None
