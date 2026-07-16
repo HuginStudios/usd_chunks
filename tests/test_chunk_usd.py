@@ -778,6 +778,27 @@ def test_blocked_chunk_does_not_execute_on_creation() -> None:
     assert len(calls) >= 1  # unblocked + cooked → runs
 
 
+def test_recook_no_active_view_blocks_all() -> None:
+    """With no active view (view_chunk=None), recook must block every chunk so nothing cooks —
+    not run the whole graph (which used to unblock + execute all nodes, so toggling the active
+    view off ran everything, including unconnected nodes)."""
+    from plugins.chunk_usd import recook_for_view
+
+    stage = Usd.Stage.CreateInMemory()
+    scene = _DummyScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    a = _chunk_with_module("a")
+    b = _chunk_with_module("b")
+    scene.add_chunk(a)
+    scene.add_chunk(b)
+
+    recook_for_view(stage, scene, None, None)
+
+    assert a.is_blocked() and b.is_blocked()
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync: param added after chunk already registered
 # ---------------------------------------------------------------------------

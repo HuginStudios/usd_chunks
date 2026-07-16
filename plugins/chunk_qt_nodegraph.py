@@ -1512,8 +1512,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         if event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2, QtCore.Qt.Key.Key_3):
             slot = event.key() - QtCore.Qt.Key.Key_0
-            cur = self._view_state.active_slot
-            self._view_state.set_slot(0 if cur == slot else slot)
+            # Switch to that view slot only if a view exists for it; never toggle to "no view"
+            # (slot 0), which would block the whole graph. Keeps an active view at all times.
+            registry = chunk_registry.ChunkRegistry()
+            stage = registry.scene.get_stage() if registry.initialized else None
+            if stage and chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene):
+                self._view_state.set_slot(slot)
             event.accept()
             return
         super().keyPressEvent(event)

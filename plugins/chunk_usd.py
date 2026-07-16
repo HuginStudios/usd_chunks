@@ -1188,8 +1188,8 @@ def recook_for_view(
     """Apply view-driven execution for one context.
 
     With a view_chunk: cook only its upstream tree (roots-first); every other non-view
-    chunk in the context is blocked + muted (dormant, hidden). With view_chunk=None:
-    legacy behaviour — unblock/unmute everything and re-run the exec heads.
+    chunk in the context is blocked + muted (dormant, hidden). With view_chunk=None (no active
+    view): block + mute everything — nothing cooks until a view is activated.
 
     Blocking a chunk both hides its result (its layer is muted) and stops it reacting to
     param changes (see ChunkBase.value_changed) — so being outside the active view's tree
@@ -1213,15 +1213,16 @@ def recook_for_view(
             stage.UnmuteLayer(layer.identifier)
 
     if view_chunk is None:
+        # No active view → nothing cooks. Block + mute every non-view chunk so unconnected and
+        # out-of-tree nodes don't execute. (Was legacy "run everything", which unblocked and
+        # executed all nodes — so toggling the active view off ran the whole graph.) Activating
+        # a view re-cooks its tree.
         for c in scene.get_chunks():
             if is_view_chunk(c) or not in_context(c):
                 continue
-            c.set_blocked(False)
+            c.set_blocked(True)
             if not c.has_state(disabled):
-                mute(lm.get_layer(c), False)
-        for head in get_exec_head_chunks(stage, scene, context):
-            if not head.has_state(disabled):
-                head.execute()
+                mute(lm.get_layer(c), True)
         return
 
     cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)
