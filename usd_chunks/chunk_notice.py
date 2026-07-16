@@ -1117,7 +1117,11 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                 # ("Layer ... is not in the local LayerStack"), and a disabled chunk must not
                 # execute anyway.
                 muted = bool(stage and ctx and stage.IsLayerMuted(ctx.identifier))
-                if callable(getattr(module, 'execute', None)) and not getattr(prop, '_executing', False) and not muted:
+                # A blocked chunk (view-driven: not in the active view's tree — e.g. connected to
+                # an inactive view) must never run its module, whatever triggered the solve. recook
+                # unblocks the active view's tree before executing it, so cooking is unaffected.
+                if (callable(getattr(module, 'execute', None)) and not getattr(prop, '_executing', False)
+                        and not muted and not prop.is_blocked()):
                     global _usd_write_active
                     prop._executing = True
                     _usd_write_active = True

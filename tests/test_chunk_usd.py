@@ -773,6 +773,9 @@ def test_blocked_chunk_does_not_execute_on_creation() -> None:
     scene.add_chunk(c)
     assert calls == []  # blocked → no execute on creation
 
+    c.execute()
+    assert calls == []  # blocked → even a direct execute() is suppressed (module guard)
+
     c.set_blocked(False)
     c.execute()
     assert len(calls) >= 1  # unblocked + cooked → runs
