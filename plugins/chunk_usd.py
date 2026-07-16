@@ -377,22 +377,32 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         """Rename a chunk prim and patch all references to it."""
         if not self._user_edit_layer:
             return
-        edit = Sdf.BatchNamespaceEdit()
-        edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
-        if not self._user_edit_layer.Apply(edit):
-            logger.warning("Failed to rename prim %s → %s", old_path, new_path)
-            return
-        if chunk is not None:
-            lm = ChunkLayerManager()
-            if lm.initialized:
-                chunk_layer = lm.get_layer(chunk)
-                if chunk_layer:
-                    chunk_edit = Sdf.BatchNamespaceEdit()
-                    chunk_edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
-                    chunk_layer.Apply(chunk_edit)
-        _patch_expressions(self._stage, f"@{old_name}.", f"@{new_name}.")
-        self._loaded_prim_paths.discard(old_path)
-        self._loaded_prim_paths.add(new_path)
+        # Guard the whole rename as a chunk-driven write. Applying the namespace edit fires
+        # StageContentsChanged synchronously; without this, _on_contents_changed re-enters
+        # load_chunks before _loaded_prim_paths is updated below, sees the renamed prim as
+        # "new", and creates a duplicate chunk (the "renamed node vanishes / stale copy" bug).
+        old_write = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True
+        try:
+            edit = Sdf.BatchNamespaceEdit()
+            edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
+            if not self._user_edit_layer.Apply(edit):
+                logger.warning("Failed to rename prim %s → %s", old_path, new_path)
+                return
+            if chunk is not None:
+                lm = ChunkLayerManager()
+                if lm.initialized:
+                    chunk_layer = lm.get_layer(chunk)
+                    if chunk_layer:
+                        chunk_edit = Sdf.BatchNamespaceEdit()
+                        chunk_edit.Add(Sdf.Path(old_path), Sdf.Path(new_path))
+                        chunk_layer.Apply(chunk_edit)
+                object.__setattr__(chunk, "_exec_prim_path", new_path)
+            _patch_expressions(self._stage, f"@{old_name}.", f"@{new_name}.")
+            self._loaded_prim_paths.discard(old_path)
+            self._loaded_prim_paths.add(new_path)
+        finally:
+            chunk_notice._usd_write_active = old_write
 
     def _handle_param_rename(self, param: "core.ChunkParamBase", old_name: str, new_name: str) -> None:
         """Rename a param's USD attribute and patch expression strings."""

@@ -443,6 +443,35 @@ def test_chunk_stage_sync_rename_chunk() -> None:
     assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/bar").IsValid()
 
 
+def test_chunk_stage_sync_rename_no_duplicate() -> None:
+    """Rename must not spawn a duplicate chunk. Applying the namespace edit fires
+    StageContentsChanged synchronously; if that re-enters load_chunks before
+    _loaded_prim_paths is updated, the renamed prim looks 'new' and a stale copy is
+    created (the renamed node then vanishes in the graph rebuild). Uses a stage-backed
+    scene so _on_contents_changed actually runs load_chunks."""
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    c = _chunk_with_module("foo")
+    scene.add_chunk(c)
+    c.name = "bar"
+
+    assert sum(1 for _ in scene.get_chunks()) == 1  # no duplicate chunk
+    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/bar").IsValid()
+    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/foo").IsValid()
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync lifecycle: param rename
 # ---------------------------------------------------------------------------
