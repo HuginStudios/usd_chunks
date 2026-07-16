@@ -1774,7 +1774,10 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
         logger.warning("loft_param_to_context: attribute not found at %s", param._param_attr_path)
         return
 
-    attr_name = f"{_INPUTS_PREFIX}{param.name}"
+    # OUTPUT-flagged params loft to outputs:name so a group can expose computed results, not
+    # just inputs (data-out ports); everything else is a data-in port (inputs:name).
+    prefix = "outputs:" if param.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
+    attr_name = f"{prefix}{param.name}"
     context_prim_path = Sdf.Path(context.prim_path if context.prim_path else _CHUNKS_ROOT)
     context_attr_path = context_prim_path.AppendProperty(attr_name)
 

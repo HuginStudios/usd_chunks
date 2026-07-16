@@ -1539,3 +1539,46 @@ def test_loft_default_valued_param_creates_attr() -> None:
     grp_prim = stage.GetPrimAtPath(Sdf.Path(grp.prim_path))
     assert grp_prim.GetAttribute(f"{_INPUTS_PREFIX}{p.name}").IsValid()
     assert p.name in [x.name for x in grp.get_my_params()]  # promoted onto the group
+
+
+def test_loft_output_param_creates_outputs_attr() -> None:
+    """Lofting an OUTPUT-flagged param exposes it as a data OUTPUT on the group (outputs:name),
+    so a chunkgroup can surface computed results — not just inputs."""
+    import weakref
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    leaf = _mk(primmod)
+
+    out_param = chunk.LineEdit(
+        "myout", "My Out", default_value="hi", flags=chunk.ChunkFlags.ParamFlags.OUTPUT
+    )
+    leaf.add_param(out_param)
+    loft_param_to_context(out_param, leaf.get_context())
+
+    grp_prim = stage.GetPrimAtPath(Sdf.Path(grp.prim_path))
+    assert grp_prim.GetAttribute("outputs:myout").IsValid()
+    assert not grp_prim.GetAttribute(f"{_INPUTS_PREFIX}myout").IsValid()
