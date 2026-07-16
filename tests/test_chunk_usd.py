@@ -504,6 +504,37 @@ def test_chunk_stage_sync_rename_anonymous_edit_target() -> None:
     assert sum(1 for _ in scene.get_chunks()) == 1
 
 
+def test_chunk_stage_sync_rename_preserves_connections() -> None:
+    """Renaming a chunk must repoint connections that target it (e.g. a view's
+    inputs:chunk -> foo.outputs:chunk), otherwise the wire dangles and drops."""
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    ChunkStageSync().initialize(stage, scene)
+
+    c = _chunk_with_module("foo")
+    scene.add_chunk(c)
+
+    # A downstream Chunk prim wired to foo's exec output.
+    view = stage.DefinePrim(f"{_CHUNKS_ROOT}/View1", _CHUNK_PRIM_TYPENAME)
+    vin = view.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+    vin.SetConnections([Sdf.Path(f"{_CHUNKS_ROOT}/foo.{_EXEC_OUTPUT}")])
+
+    c.name = "bar"
+
+    conns = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/View1").GetAttribute(_EXEC_INPUT).GetConnections()
+    assert list(conns) == [Sdf.Path(f"{_CHUNKS_ROOT}/bar.{_EXEC_OUTPUT}")]
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync lifecycle: param rename
 # ---------------------------------------------------------------------------

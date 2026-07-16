@@ -416,11 +416,30 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 return
             if chunk is not None:
                 object.__setattr__(chunk, "_exec_prim_path", new_path)
+            # BatchNamespaceEdit renames the prim but does NOT fix up connections that target
+            # it (e.g. a view's inputs:chunk -> old.outputs:chunk), so they'd dangle and the
+            # wire would drop. Repoint every chunk-prim connection from old_path to new_path.
+            self._fixup_connection_targets(old_path, new_path)
             _patch_expressions(self._stage, f"@{old_name}.", f"@{new_name}.")
             self._loaded_prim_paths.discard(old_path)
             self._loaded_prim_paths.add(new_path)
         finally:
             chunk_notice._usd_write_active = old_write
+
+    def _fixup_connection_targets(self, old_path: str, new_path: str) -> None:
+        """Repoint any chunk-prim attribute connection that references old_path onto new_path,
+        so wiring survives a rename (BatchNamespaceEdit leaves connection targets dangling)."""
+        old_sdf, new_sdf = Sdf.Path(old_path), Sdf.Path(new_path)
+        for prim in self._stage.Traverse():
+            if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+                continue
+            for attr in prim.GetAttributes():
+                conns = attr.GetConnections()
+                if not conns:
+                    continue
+                new_conns = [c.ReplacePrefix(old_sdf, new_sdf) for c in conns]
+                if new_conns != list(conns):
+                    attr.SetConnections(new_conns)
 
     def _handle_param_rename(self, param: "core.ChunkParamBase", old_name: str, new_name: str) -> None:
         """Rename a param's USD attribute and patch expression strings."""
