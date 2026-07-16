@@ -1064,6 +1064,19 @@ def get_chunk_prim_path(chunk: "core.ChunkBase") -> str:
     return f"{_resolve_chunk_root(chunk)}/{chunk.name}"
 
 
+def is_node_in_context(chunk: "core.ChunkBase", context: "core.ChunkBase | None") -> bool:
+    """True if chunk is a NODE in context's graph — its prim is a direct child of the context's
+    root prim. Matches how the graph rebuild picks nodes, and correctly separates 'group as a
+    node' from 'group as a container': a group is a node in its PARENT graph (its prim's parent
+    is the parent root), and the group's inner chunks are nodes in the group's graph. Using
+    get_context() here would conflate the two (it returns self for a context chunk).
+    """
+    if context is None:
+        return True
+    root = context.prim_path if getattr(context, "prim_path", None) else _CHUNKS_ROOT
+    return str(Sdf.Path(get_chunk_prim_path(chunk)).GetParentPath()) == str(root)
+
+
 def is_view_chunk(chunk: "core.ChunkBase") -> bool:
     """Return True if chunk is a view-type chunk."""
     cfg = chunk.get_config()
@@ -1201,7 +1214,9 @@ def recook_for_view(
     disabled = ChunkFlags.State.DISABLED
 
     def in_context(c: "core.ChunkBase") -> bool:
-        return not (context and c.get_context() != context)
+        # Node membership (prim-path based) so a group is managed by its PARENT graph's recook
+        # and the group's inner chunks by the group's own recook — not conflated by get_context().
+        return context is None or is_node_in_context(c, context)
 
     def mute(layer, muted: bool) -> None:
         # Use stage.Mute/UnmuteLayer, NOT layer.SetMuted — SetMuted recomposes lazily and
@@ -1280,7 +1295,7 @@ def get_exec_tail_chunks(
     """
     candidates = [
         c for c in scene.get_chunks()
-        if not is_view_chunk(c) and (context is None or c.get_context() == context)
+        if not is_view_chunk(c) and is_node_in_context(c, context)
     ]
     consumed: set = set()
     for prim in stage.Traverse():
@@ -1303,7 +1318,7 @@ def get_exec_head_chunks(
     """
     candidates = [
         c for c in scene.get_chunks()
-        if not is_view_chunk(c) and (context is None or c.get_context() == context)
+        if not is_view_chunk(c) and is_node_in_context(c, context)
     ]
     candidate_paths = {get_chunk_prim_path(c) for c in candidates}
     has_non_view_input: set = set()
