@@ -960,6 +960,12 @@ class ContainerWidget(
         self._animation_value = 0
         self._depth = 0
         super().__init__(group, parent=parent)
+        # When Qt destroys this widget — e.g. the node graph rebuild calls deleteLater on the
+        # embedded ChunkWidget without going through delete_self — revoke our notice
+        # subscriptions. Otherwise a later notice (a rename firing _name_changed → update_label,
+        # a state change, …) invokes a method on the deleted C++ object and crashes. Safe post-
+        # delete: _disconnect_callbacks only touches Python NoticeConnections.
+        self.destroyed.connect(lambda *_: self._disconnect_callbacks())
 
     def _is_context_tab(self) -> bool:
         """True when this widget is the scrollable tab context (not a compact node)."""
