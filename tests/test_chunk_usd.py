@@ -19,6 +19,7 @@ from plugins.chunk_usd import (
     export_chunks,
     initialize as _chunk_usd_init,
     load_chunks,
+    loft_param_to_context,
     rename_context_prim_path,
 )
 from usd_chunks.chunk_utils import get_unique_path
@@ -1495,3 +1496,46 @@ def test_load_chunks_restores_light_dynamic_params() -> None:
     color = light_chunks[0].get_param("attr_grp.inputs.color")
     assert color is not None, "attr_grp.inputs.color param not found after load"
     assert pytest.approx(tuple(color.value), abs=1e-3) == (-1.339, 1.0, 1.0)
+
+
+def test_loft_default_valued_param_creates_attr() -> None:
+    """Loft up must work right after creating a chunk, when the param is still at its default
+    and has no USD attribute yet — it force-creates the storage attr and promotes it."""
+    import weakref
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def mk(mod):
+        chunks = mod.create() if mod.loaded else mod.load()
+        for c in chunks:
+            scene.add_chunk(c)
+        return chunks[0]
+
+    grp = mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    prim_chunk = mk(primmod)
+
+    p = prim_chunk.get_param("primpath_location")
+    assert p._param_attr_path is None  # default value → no attr yet (the bug)
+
+    loft_param_to_context(p, prim_chunk.get_context())
+
+    assert p._param_attr_path is not None  # attr force-created
+    grp_prim = stage.GetPrimAtPath(Sdf.Path(grp.prim_path))
+    assert grp_prim.GetAttribute(f"{_INPUTS_PREFIX}{p.name}").IsValid()
+    assert p.name in [x.name for x in grp.get_my_params()]  # promoted onto the group

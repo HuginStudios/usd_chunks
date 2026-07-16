@@ -612,10 +612,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                         with Usd.EditContext(self._stage, chunk_layer):
                             old_attr.Set(cur)
 
-    def _sync_param_input(self, chunk: "core.ChunkBase", param: "core.ChunkParamBase") -> None:
+    def _sync_param_input(self, chunk: "core.ChunkBase", param: "core.ChunkParamBase", force: bool = False) -> None:
         """Create and wire a single param's chunk-prim input attr on first non-default change.
 
-        Skips immediately if the param is already bound to this chunk's prim attr.
+        Skips immediately if the param is already bound to this chunk's prim attr. With
+        force=True the attr is created even while the param is still at its default value
+        (used by Loft up, which needs a USD attr to promote to the context interface).
         """
         prim_path = self._chunk_prim_paths.get(id(chunk))
         if not prim_path:
@@ -634,7 +636,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if sdf_type is None:
             return
         default = getattr(param, 'default_value', None)
-        if not is_expr and raw == default:
+        if not force and not is_expr and raw == default:
             return  # still at default — don't create attr
 
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
@@ -1742,6 +1744,12 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
 
     stage = sync._stage
 
+    if not param._param_attr_path:
+        # A param still at its default has no USD attr yet — create it so there's something to
+        # promote (Loft up right after creating a chunk is the common case).
+        owner = param.get_chunk()
+        if owner is not None:
+            sync._sync_param_input(owner, param, force=True)
     if not param._param_attr_path:
         logger.warning("loft_param_to_context: param %r has no USD attribute bound", param.name)
         return
