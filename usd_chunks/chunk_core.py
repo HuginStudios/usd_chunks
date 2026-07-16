@@ -2069,8 +2069,16 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
             # as send_self() will propagate the notice to the owners
             self.send_removed(obj)
 
-            del self._names.maps[0][obj.name]
-            del self._params.maps[0][key]
+            # obj.name can drift from the name-map key (a rename or a partially-applied clone can
+            # desync the map). Remove the entry by matching value (the key) and fall back to name,
+            # popping defensively so delete never crashes with a KeyError.
+            names0 = self._names.maps[0]
+            if names0.get(obj.name) == key:
+                del names0[obj.name]
+            else:
+                for nm in [n for n, k in list(names0.items()) if k == key]:
+                    del names0[nm]
+            self._params.maps[0].pop(key, None)
 
             if obj.get_owner() == self:
                 obj.set_owner(None)
