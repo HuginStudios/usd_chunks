@@ -1364,9 +1364,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         stage = registry.scene.get_stage()
         if not stage:
             return
-        # Nothing to do if this context already has a view.
+        # If this context already has a view, don't create another — but re-cook it. A node just
+        # created in the graph ran its execute-on-creation and authored visible output; if it's
+        # not in the active view's tree, the re-cook blocks + mutes it so it doesn't stay visible
+        # (e.g. a second, unconnected prim node leaving /prim1 in the stage).
         for c in registry.scene.get_chunks():
             if chunk_usd.is_view_chunk(c) and (context is None or c.get_context() == context):
+                self._recook_active_view()
                 return
         tails = chunk_usd.get_exec_tail_chunks(stage, registry.scene, context)
         if not tails:
