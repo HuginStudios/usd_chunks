@@ -1508,6 +1508,12 @@ class NoticeConnection(chunk_serial.Serializeable):
             ctx = self.owner.get_edit_context()
             try:
                 if stage and ctx and context:
+                    # A muted chunk layer (view-driven: the chunk is dormant/hidden) is removed
+                    # from the local layer stack, so entering an EditContext on it raises
+                    # ("not in the local LayerStack"). A dormant chunk must not author anyway —
+                    # skip; it re-syncs when it unmutes and recooks. Same guard as the execute path.
+                    if stage.IsLayerMuted(ctx.identifier):
+                        return
                     with Usd.EditContext(stage, ctx):
                         meth(*args)
                 else:
