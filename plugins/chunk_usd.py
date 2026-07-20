@@ -361,7 +361,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             old_path = self._chunk_prim_paths.get(id(owner))
             if not old_path:
                 return  # chunk not yet registered — name collision during creation, not a user rename
-            new_path = f"{_resolve_chunk_root(owner)}/{owner.name}"
+            # Rename in place (sibling): keep the prim's parent, swap the leaf name. Do NOT use
+            # _resolve_chunk_root — for a group chunk get_context() returns self, so its root is the
+            # group's own prim, which would nest the rename inside itself (/G -> /G/newname).
+            new_path = str(Sdf.Path(old_path).GetParentPath().AppendChild(owner.name))
             self._handle_rename(
                 old_path=old_path,
                 new_path=new_path,
@@ -370,6 +373,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk=owner,
             )
             self._chunk_prim_paths[id(owner)] = new_path
+            if owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                # Renaming a group renames its whole subtree (BatchNamespaceEdit renames
+                # descendants too). Update the group's prim_path and rebase every descendant's
+                # tracked path so /old/... becomes /new/...
+                owner.prim_path = new_path
+                self._rebase_descendant_paths(old_path, new_path)
         elif isinstance(owner, core.ChunkParamBase):
             self._handle_param_rename(owner, old_name, owner.name)
 
@@ -440,6 +449,26 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 new_conns = [c.ReplacePrefix(old_sdf, new_sdf) for c in conns]
                 if new_conns != list(conns):
                     attr.SetConnections(new_conns)
+
+    def _rebase_descendant_paths(self, old_root: str, new_root: str) -> None:
+        """After a group is renamed (its subtree moved old_root/... -> new_root/...), rebase every
+        tracked descendant path (prim-path map, loaded set, _exec_prim_path, nested group
+        prim_path) so later lookups keep matching the moved prims."""
+        old_prefix = old_root + "/"
+
+        def rebase(p: str) -> str:
+            return new_root + p[len(old_root):] if p.startswith(old_prefix) else p
+
+        for cid, cpath in list(self._chunk_prim_paths.items()):
+            self._chunk_prim_paths[cid] = rebase(cpath)
+        self._loaded_prim_paths = {rebase(p) for p in self._loaded_prim_paths}
+        for c in self._scene.get_chunks():
+            ep = getattr(c, "_exec_prim_path", None)
+            if ep and ep.startswith(old_prefix):
+                object.__setattr__(c, "_exec_prim_path", rebase(ep))
+            if (c.has_flag(ChunkFlags.GroupFlags.CONTEXT) and getattr(c, "prim_path", None)
+                    and c.prim_path.startswith(old_prefix)):
+                c.prim_path = rebase(c.prim_path)
 
     def _handle_param_rename(self, param: "core.ChunkParamBase", old_name: str, new_name: str) -> None:
         """Rename a param's USD attribute and patch expression strings."""

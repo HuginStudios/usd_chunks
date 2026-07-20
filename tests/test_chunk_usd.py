@@ -1636,3 +1636,49 @@ def test_recook_recurses_into_group() -> None:
 
     recook_for_view(stage, scene, _Root(), None)
     assert inner_node.is_blocked()  # group hidden → inner tree muted
+
+
+def test_rename_group_is_sibling_and_rebases_children() -> None:
+    """Renaming a chunkgroup must rename it in place (sibling), not nest it inside itself
+    (/G -> /G/new — the get_context()-returns-self bug), and must move + rebase its children."""
+    import weakref
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    sync = _chunk_usd_init(stage, scene) or ChunkStageSync()
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    child = _mk(primmod)
+    old_root = get_chunk_prim_path(grp)
+
+    grp.name = "hahaha"
+
+    new_root = get_chunk_prim_path(grp)
+    assert new_root == str(Sdf.Path(old_root).GetParentPath().AppendChild("hahaha"))
+    assert new_root != old_root
+    assert not stage.GetPrimAtPath(Sdf.Path(old_root)).IsValid()
+    assert stage.GetPrimAtPath(Sdf.Path(new_root)).IsValid()
+    # child moved with the subtree and its tracked path was rebased
+    assert ChunkStageSync()._chunk_prim_paths[id(child)] == f"{new_root}/{child.name}"
+    assert stage.GetPrimAtPath(Sdf.Path(f"{new_root}/{child.name}")).IsValid()
