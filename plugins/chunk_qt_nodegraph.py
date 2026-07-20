@@ -2101,9 +2101,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         to legacy "run everything". Must NOT be called from inside a graph rebuild — the
         execute() it triggers would author, fire ObjectsChanged, and loop.
         """
-        # Every tab's graph view shares one ViewSlotState, so a slot change fires this on all
-        # of them. Only the visible view should cook — dedupes the redundant re-cook per tab.
-        if not self.isVisible():
+        # Only the CURRENTLY SELECTED tab should drive the (global) stage. Gate on the owning
+        # tab stack's visibility, NOT self.isVisible(): the graph is page 1 of a QStackedWidget,
+        # so in Params mode this widget is hidden even though its tab is current — self.isVisible()
+        # would then wrongly skip the recook and the viewport wouldn't follow tab switches while
+        # on the Params tab. The stack is visible whenever its tab is current, either page showing.
+        stack = self.parentWidget()
+        if stack is not None and not stack.isVisible():
             return
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
