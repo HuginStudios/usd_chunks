@@ -158,6 +158,20 @@ class ChunkNoticeAlias(IntEnum):
     CUSTOM = auto()  # Custom notices should be registered with aliases > CUSTOM
 
 
+# Notices that must be delivered even from a blocked chunk. Blocking (view-driven: the chunk is
+# dormant/hidden) suppresses data/execution notices, but STRUCTURAL edits — adding/removing
+# child chunks, load/delete — must still work so you can edit inside a group that isn't wired to
+# an active view (a blocked group otherwise swallows its children's PARAM_ADDED, so their prims
+# never get created). Execution is still gated separately (execute()/callback muted-layer guards).
+_STRUCTURAL_ALIASES = frozenset({
+    ChunkNoticeAlias.STATE_CHANGED,
+    ChunkNoticeAlias.PARAM_ADDED,
+    ChunkNoticeAlias.PARAM_REMOVED,
+    ChunkNoticeAlias.CHUNK_LOADED,
+    ChunkNoticeAlias.CHUNK_DELETED,
+})
+
+
 class RegistrySingleton(type):
     _instances = {}
 
@@ -1015,7 +1029,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             Optional[ChunkNotice]: The result from calling send_self
         """
 
-        if not notice or (notice and notice.alias != ChunkNoticeAlias.STATE_CHANGED):
+        if not notice or (notice and notice.alias not in _STRUCTURAL_ALIASES):
             if self.is_blocked():
                 return None
         if notice:
@@ -1039,7 +1053,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         if not alias:
             return None
 
-        if alias != ChunkNoticeAlias.STATE_CHANGED and self.is_blocked():
+        if alias not in _STRUCTURAL_ALIASES and self.is_blocked():
             return None
 
         notice_data = data if data is not None else self.get_notice_data()

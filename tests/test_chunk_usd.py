@@ -1682,3 +1682,39 @@ def test_rename_group_is_sibling_and_rebases_children() -> None:
     # child moved with the subtree and its tracked path was rebased
     assert ChunkStageSync()._chunk_prim_paths[id(child)] == f"{new_root}/{child.name}"
     assert stage.GetPrimAtPath(Sdf.Path(f"{new_root}/{child.name}")).IsValid()
+
+
+def test_can_create_chunk_inside_blocked_group() -> None:
+    """Editing inside a group must work even when the group is view-driven blocked (hidden). A
+    blocked group used to swallow its children's structural notices (PARAM_ADDED), so a child's
+    prim was never created — you couldn't add nodes inside a group not wired to an active view."""
+    import weakref
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    grp = (grpmod.create() if grpmod.loaded else grpmod.load())[0]
+    scene.add_chunk(grp)
+    grp.set_blocked(True)  # simulate: group hidden / out of the active view's tree
+
+    scene._current_context = weakref.ref(grp)
+    child = (primmod.create() if primmod.loaded else primmod.load())[0]
+    scene.add_chunk(child)
+
+    assert child.is_blocked()  # inherits the group's block (won't cook)
+    assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(child))).IsValid()  # but the node exists
