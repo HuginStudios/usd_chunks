@@ -513,6 +513,12 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             ctx = self._current_context()
             registry.scene._current_context = weakref.ref(ctx) if ctx is not None else None
         self._rebuild_graph()
+        # Re-establish the viewport for the tab we switched to: its active view must drive the
+        # (global) stage, muting a view left active in another context. _rebuild_graph skips
+        # build() when the graph is cached, so recook here too — covers the cached-tab switch.
+        gv = self.tab_widget.get_current_graph_view()
+        if gv is not None:
+            QtCore.QTimer.singleShot(0, gv._recook_active_view)
 
     def _on_view_mode_changed(self, mode: int):
         self.tab_widget.set_view_mode(mode)

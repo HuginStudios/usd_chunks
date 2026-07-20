@@ -1357,6 +1357,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # no view yet (e.g. chunks were made in the params panel first). Deferred past this
         # build's rebuild + proxy pass so view creation runs on a settled graph, not mid-build.
         QtCore.QTimer.singleShot(80, lambda ctx=context: self._ensure_default_view(ctx))
+        # Switching to this context must re-establish the viewport for ITS active view — the
+        # viewport is one global stage, so a view activated in another context (e.g. an inner
+        # group view) otherwise stays cooked and the wrong result shows. Deferred past the
+        # auto-view step. (On create we deliberately don't re-cook, to avoid churn.)
+        QtCore.QTimer.singleShot(100, self._recook_active_view)
 
     def _context_has_view(self, scene, context) -> bool:
         """True when this context (or the graph as a whole, if context is None) has a view chunk."""
