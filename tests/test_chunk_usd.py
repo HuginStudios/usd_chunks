@@ -1804,6 +1804,59 @@ def test_recook_focus_does_not_block_ancestor_container() -> None:
     assert not inner_node.is_blocked()   # inner active view's tree cooks
 
 
+def test_delete_middle_node_heals_exec_chain() -> None:
+    """Deleting a node in the middle of an exec chain (A -> X -> B) must leave A -> B, not a
+    broken chain. Regression: removing a chunk wired between a chunkgroup and a view left the
+    view with a dangling connection and the chunkgroup unconsumed."""
+    import weakref
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    a = _mk(grpmod)   # A: chunkgroup
+    x = _mk(primmod)  # X: middle chunk
+    b = _mk(viewmod)  # B: view
+    _wire(x, a)  # A -> X
+    _wire(b, x)  # X -> B
+
+    a_out = f"{get_chunk_prim_path(a)}.{_EXEC_OUTPUT}"
+    x_out = f"{get_chunk_prim_path(x)}.{_EXEC_OUTPUT}"
+    b_in = stage.GetAttributeAtPath(Sdf.Path(f"{get_chunk_prim_path(b)}.{_EXEC_INPUT}"))
+    assert [str(c) for c in b_in.GetConnections()] == [x_out]  # B <- X before delete
+
+    x.request_delete()  # fires CHUNK_DELETED -> heal runs before the prim is removed
+
+    b_in = stage.GetAttributeAtPath(Sdf.Path(f"{get_chunk_prim_path(b)}.{_EXEC_INPUT}"))
+    assert [str(c) for c in b_in.GetConnections()] == [a_out]  # B <- A after delete (healed)
+
+
 def test_rename_group_is_sibling_and_rebases_children() -> None:
     """Renaming a chunkgroup must rename it in place (sibling), not nest it inside itself
     (/G -> /G/new — the get_context()-returns-self bug), and must move + rebase its children."""

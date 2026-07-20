@@ -1142,8 +1142,13 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
     def _on_chunk_deleted(self, notice, sender):
         # A deleted chunk drops its prim from the stage. Rebuild from scratch so its node
-        # and any dangling edges go away cleanly (deferred inside _schedule_rebuild).
+        # and any dangling edges go away cleanly (deferred inside _schedule_rebuild). The exec
+        # chain is healed (A -> X -> B becomes A -> B) in ChunkStageSync._on_chunk_deleted,
+        # before the prim is removed; recook after the rebuild so the view follows the new chain.
         self._schedule_rebuild()
+        for v in self.views():
+            if isinstance(v, ChunkGraphView):
+                QtCore.QTimer.singleShot(0, v._recook_active_view)
 
     def _on_objects_changed(self, notice, sender):
         if not self._stage or not sender:
