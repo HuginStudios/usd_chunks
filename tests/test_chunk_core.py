@@ -248,6 +248,39 @@ def test_remove_chunk_with_layers():
         assert lreg.get_layer(h) is None
 
 
+def test_loft_connection_not_reconstructed_as_expression():
+    """A loft connection points UP to the param's own container (the group's interface attr).
+    _connect_param_attr must NOT rebuild it as a sibling expression @Container.attr@ — that made
+    an unresolvable ref ('Expression ref not found' spam) and briefly overwrote the forwarded
+    value with the expression text. Sibling connections must still reconstruct as expressions."""
+    from pxr import Usd, Sdf
+
+    scene = _DummyScene()
+    stage = Usd.Stage.CreateInMemory()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+
+    # /a/b (container) with inputs:tx ; /a/b/c (inner) whose inputs:tx lofts UP to /a/b.inputs:tx.
+    stage.DefinePrim("/a/b").CreateAttribute("inputs:tx", Sdf.ValueTypeNames.Float, custom=True).Set(1.0)
+    c_attr = stage.DefinePrim("/a/b/c").CreateAttribute("inputs:tx", Sdf.ValueTypeNames.Float, custom=True)
+    c_attr.Set(3.0)
+    c_attr.SetConnections([Sdf.Path("/a/b.inputs:tx")])
+
+    p = chunk.Slider("tx", default_value=0.0)
+    p._connect_param_attr(c_attr)
+    # A loft (upward) connection must not turn the value into an expression string.
+    assert not isinstance(p.raw_value, str)
+
+    # A sibling connection SHOULD still reconstruct as an expression.
+    stage.DefinePrim("/a/b/e").CreateAttribute("outputs:tx", Sdf.ValueTypeNames.Float, custom=True).Set(7.0)
+    d_attr = stage.DefinePrim("/a/b/d").CreateAttribute("inputs:tx", Sdf.ValueTypeNames.Float, custom=True)
+    d_attr.Set(2.0)
+    d_attr.SetConnections([Sdf.Path("/a/b/e.outputs:tx")])
+    p2 = chunk.Slider("tx", default_value=0.0)
+    p2._connect_param_attr(d_attr)
+    assert p2.raw_value == "@e.tx@"
+
+
 def test_sender_scoped_callback_triggers_only_for_matching_sender():
     received: list[str] = []
     root = chunk.Chunk("root")
