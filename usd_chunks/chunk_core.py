@@ -2558,18 +2558,28 @@ class ChunkUsdAttributeSupport(AttributesBase):
                     if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
                         if not is_expr:
                             current = usd_attr.Get(0)
-                            if current != val:
+                            # Don't write a string to a typed (non-String) attr — an unresolved
+                            # forwarded value can arrive as text and raise a type-mismatch.
+                            bad_str = isinstance(val, str) and usd_attr.GetTypeName() != Sdf.ValueTypeNames.String
+                            if not bad_str and current != val:
                                 usd_attr.Set(val)
                         if is_expr:
                             chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
-                            usd_attr.SetConnections([
-                                Sdf.Path(
-                                    f"{chunk_root}/{node}.outputs:{attr_name}"
-                                    if stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}")).GetAttribute(f"outputs:{attr_name}").IsValid()
-                                    else f"{chunk_root}/{node}.inputs:{attr_name}"
+                            conns = []
+                            for node, attr_name in chunk_utils.parse_expression(raw):
+                                ref_prim = stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}"))
+                                # The referenced node may not exist (a stale/renamed expression
+                                # ref, or a lofted chain pointing at a prim not on this stage) —
+                                # GetAttribute on a null prim raises, so guard it and default to
+                                # the inputs: port. USD lets a connection target a not-yet-present
+                                # path, so the connection is still authored.
+                                use_out = (
+                                    ref_prim.IsValid()
+                                    and ref_prim.GetAttribute(f"outputs:{attr_name}").IsValid()
                                 )
-                                for node, attr_name in chunk_utils.parse_expression(raw)
-                            ])
+                                suffix = f"outputs:{attr_name}" if use_out else f"inputs:{attr_name}"
+                                conns.append(Sdf.Path(f"{chunk_root}/{node}.{suffix}"))
+                            usd_attr.SetConnections(conns)
                             if usd_attr.GetTypeName() == Sdf.ValueTypeNames.String and usd_attr.Get(0) != raw:
                                 usd_attr.Set(raw)
                     self._write_driven_attrs(stage, val)
@@ -2628,7 +2638,13 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 store_val = raw if is_expr else sender.value
             chunk_notice._usd_write_active = True
             try:
-                if notice.data.Get(0) != store_val:
+                # A non-String attr must never receive raw expression text: if an expression ref
+                # can't resolve (e.g. a lofted cross-context ref like @ChunkGroup.tx@), sender.value
+                # stays the expression STRING and Set() on a typed (float/etc) attr raises a
+                # type-mismatch. The connection authored below carries the topology, so skip the
+                # value write in that case.
+                bad_str = isinstance(store_val, str) and notice.data.GetTypeName() != Sdf.ValueTypeNames.String
+                if not bad_str and notice.data.Get(0) != store_val:
                     notice.data.Set(store_val)
                 if is_expr:
                     chunk_root = str(notice.data.GetPrim().GetParent().GetPath())

@@ -1920,6 +1920,12 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     # we immediately wire it to the context attr.
     context_param = param.clone()
     context.add_param(context_param)
+    # clone() carries over the source param's cached _chunk_parent (the inner chunk), and
+    # add_param doesn't invalidate it — so get_chunk() would keep returning the inner chunk
+    # instead of the group this param now lives on. That broke lofting a group's own param up
+    # again (the "loft to parent group" case): the Loft-up target resolver couldn't tell the
+    # param sits on a group, so it re-lofted onto the same group. Clear it so it re-resolves.
+    context_param._chunk_parent = None
     context_param._connect_param_attr(context_attr)
 
     # Forward value changes from the context interface param back through the inner param

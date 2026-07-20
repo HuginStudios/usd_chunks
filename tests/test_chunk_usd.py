@@ -1584,6 +1584,66 @@ def test_loft_output_param_creates_outputs_attr() -> None:
     assert not grp_prim.GetAttribute(f"{_INPUTS_PREFIX}myout").IsValid()
 
 
+def test_loft_group_param_up_to_parent_group() -> None:
+    """A lofted param must be able to loft AGAIN up to the parent group (nested groups) instead
+    of duplicating onto the same group. clone() carried over the source param's cached
+    _chunk_parent (the inner chunk), so the lofted param's get_chunk() still pointed at the inner
+    chunk — the Loft-up resolver ('param sits on a group → target its parent') couldn't fire and
+    re-lofted onto the same group. loft_param_to_context must clear the cache so get_chunk()
+    re-resolves to the group the param now lives on."""
+    import weakref
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    # nested groups: grp1 -> grp2 -> inner
+    grp1 = _mk(grpmod)
+    scene._current_context = weakref.ref(grp1)
+    grp2 = _mk(grpmod)
+    scene._current_context = weakref.ref(grp2)
+    inner = _mk(primmod)
+    scene._current_context = None
+
+    p = inner.get_param("primpath_location")
+    loft_param_to_context(p, grp2)  # first loft: inner -> grp2
+
+    lofted = next(x for x in grp2.get_my_params() if x.name == "primpath_location")
+    # The lofted param must report the group it now lives on, not the original inner chunk.
+    assert lofted.get_chunk() is grp2
+
+    # Replicate the widget's Loft-up target resolution: a param on a group lofts to the parent.
+    chunk_obj = lofted.get_chunk()
+    context = chunk_obj.get_context()
+    assert context is chunk_obj  # get_context() returns the group itself
+    context = chunk_obj._parent_context()  # so resolve up to the parent group
+    assert context is grp1
+
+    loft_param_to_context(lofted, context)  # second loft: grp2 -> grp1
+    grp1_prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(grp1)))
+    assert grp1_prim.GetAttribute(f"{_INPUTS_PREFIX}primpath_location").IsValid()
+
+
 def test_recook_recurses_into_group() -> None:
     """A group has no execute() of its own — cooking a group (in the parent view's tree) must
     cook its inner active view's tree; a hidden group mutes its whole inner tree."""
