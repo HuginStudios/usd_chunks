@@ -361,7 +361,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             old_path = self._chunk_prim_paths.get(id(owner))
             if not old_path:
                 return  # chunk not yet registered — name collision during creation, not a user rename
-            new_path = f"{_resolve_chunk_root(owner)}/{owner.name}"
+            # Rename in place (sibling): keep the prim's parent, swap the leaf name. Do NOT use
+            # _resolve_chunk_root — for a group chunk get_context() returns self, so its root is the
+            # group's own prim, which would nest the rename inside itself (/G -> /G/newname).
+            new_path = str(Sdf.Path(old_path).GetParentPath().AppendChild(owner.name))
             self._handle_rename(
                 old_path=old_path,
                 new_path=new_path,
@@ -370,6 +373,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk=owner,
             )
             self._chunk_prim_paths[id(owner)] = new_path
+            if owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                # Renaming a group renames its whole subtree (BatchNamespaceEdit renames
+                # descendants too). Update the group's prim_path and rebase every descendant's
+                # tracked path so /old/... becomes /new/...
+                owner.prim_path = new_path
+                self._rebase_descendant_paths(old_path, new_path)
         elif isinstance(owner, core.ChunkParamBase):
             self._handle_param_rename(owner, old_name, owner.name)
 
@@ -440,6 +449,26 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 new_conns = [c.ReplacePrefix(old_sdf, new_sdf) for c in conns]
                 if new_conns != list(conns):
                     attr.SetConnections(new_conns)
+
+    def _rebase_descendant_paths(self, old_root: str, new_root: str) -> None:
+        """After a group is renamed (its subtree moved old_root/... -> new_root/...), rebase every
+        tracked descendant path (prim-path map, loaded set, _exec_prim_path, nested group
+        prim_path) so later lookups keep matching the moved prims."""
+        old_prefix = old_root + "/"
+
+        def rebase(p: str) -> str:
+            return new_root + p[len(old_root):] if p.startswith(old_prefix) else p
+
+        for cid, cpath in list(self._chunk_prim_paths.items()):
+            self._chunk_prim_paths[cid] = rebase(cpath)
+        self._loaded_prim_paths = {rebase(p) for p in self._loaded_prim_paths}
+        for c in self._scene.get_chunks():
+            ep = getattr(c, "_exec_prim_path", None)
+            if ep and ep.startswith(old_prefix):
+                object.__setattr__(c, "_exec_prim_path", rebase(ep))
+            if (c.has_flag(ChunkFlags.GroupFlags.CONTEXT) and getattr(c, "prim_path", None)
+                    and c.prim_path.startswith(old_prefix)):
+                c.prim_path = rebase(c.prim_path)
 
     def _handle_param_rename(self, param: "core.ChunkParamBase", old_name: str, new_name: str) -> None:
         """Rename a param's USD attribute and patch expression strings."""
@@ -612,10 +641,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                         with Usd.EditContext(self._stage, chunk_layer):
                             old_attr.Set(cur)
 
-    def _sync_param_input(self, chunk: "core.ChunkBase", param: "core.ChunkParamBase") -> None:
+    def _sync_param_input(self, chunk: "core.ChunkBase", param: "core.ChunkParamBase", force: bool = False) -> None:
         """Create and wire a single param's chunk-prim input attr on first non-default change.
 
-        Skips immediately if the param is already bound to this chunk's prim attr.
+        Skips immediately if the param is already bound to this chunk's prim attr. With
+        force=True the attr is created even while the param is still at its default value
+        (used by Loft up, which needs a USD attr to promote to the context interface).
         """
         prim_path = self._chunk_prim_paths.get(id(chunk))
         if not prim_path:
@@ -634,7 +665,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if sdf_type is None:
             return
         default = getattr(param, 'default_value', None)
-        if not is_expr and raw == default:
+        if not force and not is_expr and raw == default:
             return  # still at default — don't create attr
 
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
@@ -781,19 +812,31 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             parent_ctx = getattr(chunk, "_parent_context", None)
             parent_ctx = parent_ctx() if parent_ctx else None
             if parent_ctx and getattr(parent_ctx, "prim_path", None):
-                parent_root = parent_ctx.prim_path
+                root = parent_ctx.prim_path
             else:
-                parent_root = _CHUNKS_ROOT
-            prim_path = f"{parent_root}/{chunk.name}"
+                root = _CHUNKS_ROOT
         else:
-            prim_path = f"{_resolve_chunk_root(chunk)}/{chunk.name}"
-        # If the path is already tracked, this chunk is being loaded from USD
-        # (load_chunks pre-registers paths before add_chunk). Still register in
-        # _chunk_prim_paths so _sync_param_input can find it, but skip _define_prim —
-        # the prim already exists in the sublayer; load_chunks handles _wire_inputs.
+            root = _resolve_chunk_root(chunk)
+        prim_path = f"{root}/{chunk.name}"
+        # If the path is already tracked it's either (a) a load — load_chunks pre-registers paths
+        # before add_chunk — or (b) a name collision the add_chunk dedup missed. The dedup checks
+        # the scene-root container, but a group's siblings live under its parent context, so two
+        # same-named groups under one tab collide and this would wrongly skip the second's prim.
+        # Distinguish: (b) means the path already belongs to ANOTHER chunk → make the name unique.
         if prim_path in self._loaded_prim_paths:
-            self._chunk_prim_paths[id(chunk)] = prim_path
-            return
+            taken_by_other = any(
+                p == prim_path for cid, p in self._chunk_prim_paths.items() if cid != id(chunk)
+            )
+            if not taken_by_other:
+                # (a) load — the prim exists; register and skip _define_prim.
+                self._chunk_prim_paths[id(chunk)] = prim_path
+                return
+            # (b) collision — pick the next free sibling name.
+            base, i = chunk.name, 1
+            while f"{root}/{base}{i}" in self._loaded_prim_paths:
+                i += 1
+            chunk.name = f"{base}{i}"
+            prim_path = f"{root}/{chunk.name}"
         self._loaded_prim_paths.add(prim_path)
         self._chunk_prim_paths[id(chunk)] = prim_path
         # Use object.__setattr__ to store the prim path without going through
@@ -1062,20 +1105,69 @@ def get_chunk_prim_path(chunk: "core.ChunkBase") -> str:
     return f"{_resolve_chunk_root(chunk)}/{chunk.name}"
 
 
+def is_node_in_context(chunk: "core.ChunkBase", context: "core.ChunkBase | None") -> bool:
+    """True if chunk is a NODE in context's graph — its prim is a direct child of the context's
+    root prim. Matches how the graph rebuild picks nodes, and correctly separates 'group as a
+    node' from 'group as a container': a group is a node in its PARENT graph (its prim's parent
+    is the parent root), and the group's inner chunks are nodes in the group's graph. Using
+    get_context() here would conflate the two (it returns self for a context chunk).
+    """
+    if context is None:
+        return True
+    root = context.prim_path if getattr(context, "prim_path", None) else _CHUNKS_ROOT
+    return str(Sdf.Path(get_chunk_prim_path(chunk)).GetParentPath()) == str(root)
+
+
 def is_view_chunk(chunk: "core.ChunkBase") -> bool:
     """Return True if chunk is a view-type chunk."""
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "view")
 
 
+def is_group_chunk(chunk: "core.ChunkBase") -> bool:
+    """Return True if chunk is a chunkgroup (a CONTEXT chunk with a module — a subnet node)."""
+    cfg = chunk.get_config()
+    return bool(chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module)
+
+
+def find_group_active_view(
+    group: "core.ChunkBase", stage: "Usd.Stage", scene: "core.SceneSender"
+) -> "core.ChunkBase | None":
+    """The inner active view of a group — its output driver. Reads the group prim's
+    ``chunk:activeView`` slot (written by the Qt layer when the view is switched inside the
+    group), falling back to the first inner view. None if the group has no inner view.
+    """
+    inner_views = [
+        c for c in scene.get_chunks() if is_view_chunk(c) and is_node_in_context(c, group)
+    ]
+    if not inner_views:
+        return None
+    gp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(group)))
+    slot = None
+    if gp and gp.IsValid():
+        a = gp.GetAttribute("chunk:activeView")
+        if a and a.IsValid():
+            slot = a.Get()
+    if slot:
+        for v in inner_views:
+            vp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(v)))
+            if vp and vp.IsValid() and vp.GetAttribute("view:slot").Get() == slot:
+                return v
+    return inner_views[0]
+
+
 def find_view_chunk_for_slot(
     slot: int,
     stage: "Usd.Stage",
     scene: "core.SceneSender",
+    context: "core.ChunkBase | None" = None,
 ) -> "core.ChunkBase | None":
-    """Return the view chunk assigned to slot, or None."""
+    """Return the view chunk assigned to slot, or None. Scoped to `context` when given — each
+    graph (tab or group) has its own slots, so a tab view and a group view can both be slot 1."""
     for c in scene.get_chunks():
         if not is_view_chunk(c):
+            continue
+        if context is not None and not is_node_in_context(c, context):
             continue
         prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
         if prim.IsValid() and prim.GetAttribute("view:slot").Get() == slot:
@@ -1199,7 +1291,9 @@ def recook_for_view(
     disabled = ChunkFlags.State.DISABLED
 
     def in_context(c: "core.ChunkBase") -> bool:
-        return not (context and c.get_context() != context)
+        # Node membership (prim-path based) so a group is managed by its PARENT graph's recook
+        # and the group's inner chunks by the group's own recook — not conflated by get_context().
+        return context is None or is_node_in_context(c, context)
 
     def mute(layer, muted: bool) -> None:
         # Use stage.Mute/UnmuteLayer, NOT layer.SetMuted — SetMuted recomposes lazily and
@@ -1213,25 +1307,26 @@ def recook_for_view(
             stage.UnmuteLayer(layer.identifier)
 
     if view_chunk is None:
-        # No active view → nothing cooks. Block + mute every non-view chunk so unconnected and
-        # out-of-tree nodes don't execute. (Was legacy "run everything", which unblocked and
-        # executed all nodes — so toggling the active view off ran the whole graph.) Activating
-        # a view re-cooks its tree.
-        for c in scene.get_chunks():
-            if is_view_chunk(c) or not in_context(c):
-                continue
-            c.set_blocked(True)
-            if not c.has_state(disabled):
-                mute(lm.get_layer(c), True)
-        return
+        cook_list: "list[core.ChunkBase]" = []
+        cook_set: set = set()
+    else:
+        cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)
+        cook_set = set(cook_list)
 
-    cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)
-    cook_set = set(cook_list)
-
-    # Set block state (and mute) before executing: blocking non-cook chunks first means
-    # the ObjectsChanged from muting can't re-execute them.
+    # Block/mute leaf nodes by cook membership (blocking non-cook chunks first means the
+    # ObjectsChanged from muting can't re-execute them). Groups are NEVER blocked as a node — a
+    # group is its own cook domain, so its parent-visibility block must not propagate to its
+    # children via the owner chain (that left the inner view unable to cook unless the group was
+    # wired to a parent view). Instead recurse: a cooked group cooks its inner active view's tree;
+    # a hidden group mutes its whole inner tree. Prim-path nesting prevents cycles.
     for c in scene.get_chunks():
         if is_view_chunk(c) or not in_context(c):
+            continue
+        if is_group_chunk(c):
+            if c in cook_set:
+                recook_for_view(stage, scene, c, find_group_active_view(c, stage, scene))
+            else:
+                recook_for_view(stage, scene, c, None)
             continue
         if c in cook_set:
             c.set_blocked(False)
@@ -1242,8 +1337,11 @@ def recook_for_view(
             mute(lm.get_layer(c), True)
 
     for c in cook_list:
-        if not c.has_state(disabled):
+        if not c.has_state(disabled) and not is_group_chunk(c):
             c.execute()
+
+    if not cook_list:
+        return
 
     # Layer-win order follows the exec traversal: the chunk nearest the view (last in
     # cook_list) must win, so reorder each graph layer's sublayers to put the most
@@ -1266,6 +1364,46 @@ def recook_for_view(
             g_layer.subLayerPaths = ordered  # type: ignore
 
 
+def recook_focus(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase | None",
+    view_chunk: "core.ChunkBase | None",
+) -> None:
+    """Establish the GLOBAL stage for the tab/graph the user is looking at.
+
+    The stage is shared by every context, but only the focused one should drive it. Root
+    (context is None) is already a full global establish — recook_for_view(None) touches every
+    chunk and recurses into all groups. But a GROUP focus only manages its own children, so the
+    parent tab's active view (and sibling groups) would stay unmuted and bleed through ("switch
+    tabs, still see the previous view"). So when focusing a group, first mute + block everything
+    OUTSIDE the group's subtree, then recook inside it — leaving only the group's inner active
+    view driving the stage.
+    """
+    if context is not None:
+        lm = chunk_registry.ChunkLayerManager()
+        group_path = get_chunk_prim_path(context)
+        inside_prefix = group_path + "/"
+        for c in scene.get_chunks():
+            if is_view_chunk(c):
+                continue
+            cp = get_chunk_prim_path(c)
+            # Keep the focused group itself and its descendants — recook_for_view handles those.
+            if cp == group_path or cp.startswith(inside_prefix):
+                continue
+            # NEVER block a context/container (a tab or group). is_blocked() climbs the owner
+            # chain, so blocking the focused group's ANCESTOR would propagate down and block the
+            # focused inner tree itself — nothing would cook. Container chunks author nothing of
+            # their own; their leaf children are muted individually by this same loop.
+            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                continue
+            c.set_blocked(True)
+            layer = lm.get_layer(c)
+            if layer is not None:
+                stage.MuteLayer(layer.identifier)
+    recook_for_view(stage, scene, context, view_chunk)
+
+
 def get_exec_tail_chunks(
     stage: "Usd.Stage",
     scene: "core.SceneSender",
@@ -1278,7 +1416,7 @@ def get_exec_tail_chunks(
     """
     candidates = [
         c for c in scene.get_chunks()
-        if not is_view_chunk(c) and (context is None or c.get_context() == context)
+        if not is_view_chunk(c) and is_node_in_context(c, context)
     ]
     consumed: set = set()
     for prim in stage.Traverse():
@@ -1301,7 +1439,7 @@ def get_exec_head_chunks(
     """
     candidates = [
         c for c in scene.get_chunks()
-        if not is_view_chunk(c) and (context is None or c.get_context() == context)
+        if not is_view_chunk(c) and is_node_in_context(c, context)
     ]
     candidate_paths = {get_chunk_prim_path(c) for c in candidates}
     has_non_view_input: set = set()
@@ -1743,6 +1881,12 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     stage = sync._stage
 
     if not param._param_attr_path:
+        # A param still at its default has no USD attr yet — create it so there's something to
+        # promote (Loft up right after creating a chunk is the common case).
+        owner = param.get_chunk()
+        if owner is not None:
+            sync._sync_param_input(owner, param, force=True)
+    if not param._param_attr_path:
         logger.warning("loft_param_to_context: param %r has no USD attribute bound", param.name)
         return
 
@@ -1751,7 +1895,10 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
         logger.warning("loft_param_to_context: attribute not found at %s", param._param_attr_path)
         return
 
-    attr_name = f"{_INPUTS_PREFIX}{param.name}"
+    # OUTPUT-flagged params loft to outputs:name so a group can expose computed results, not
+    # just inputs (data-out ports); everything else is a data-in port (inputs:name).
+    prefix = "outputs:" if param.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
+    attr_name = f"{prefix}{param.name}"
     context_prim_path = Sdf.Path(context.prim_path if context.prim_path else _CHUNKS_ROOT)
     context_attr_path = context_prim_path.AppendProperty(attr_name)
 

@@ -158,6 +158,20 @@ class ChunkNoticeAlias(IntEnum):
     CUSTOM = auto()  # Custom notices should be registered with aliases > CUSTOM
 
 
+# Notices that must be delivered even from a blocked chunk. Blocking (view-driven: the chunk is
+# dormant/hidden) suppresses data/execution notices, but STRUCTURAL edits — adding/removing
+# child chunks, load/delete — must still work so you can edit inside a group that isn't wired to
+# an active view (a blocked group otherwise swallows its children's PARAM_ADDED, so their prims
+# never get created). Execution is still gated separately (execute()/callback muted-layer guards).
+_STRUCTURAL_ALIASES = frozenset({
+    ChunkNoticeAlias.STATE_CHANGED,
+    ChunkNoticeAlias.PARAM_ADDED,
+    ChunkNoticeAlias.PARAM_REMOVED,
+    ChunkNoticeAlias.CHUNK_LOADED,
+    ChunkNoticeAlias.CHUNK_DELETED,
+})
+
+
 class RegistrySingleton(type):
     _instances = {}
 
@@ -1015,7 +1029,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             Optional[ChunkNotice]: The result from calling send_self
         """
 
-        if not notice or (notice and notice.alias != ChunkNoticeAlias.STATE_CHANGED):
+        if not notice or (notice and notice.alias not in _STRUCTURAL_ALIASES):
             if self.is_blocked():
                 return None
         if notice:
@@ -1039,7 +1053,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         if not alias:
             return None
 
-        if alias != ChunkNoticeAlias.STATE_CHANGED and self.is_blocked():
+        if alias not in _STRUCTURAL_ALIASES and self.is_blocked():
             return None
 
         notice_data = data if data is not None else self.get_notice_data()
@@ -1508,6 +1522,12 @@ class NoticeConnection(chunk_serial.Serializeable):
             ctx = self.owner.get_edit_context()
             try:
                 if stage and ctx and context:
+                    # A muted chunk layer (view-driven: the chunk is dormant/hidden) is removed
+                    # from the local layer stack, so entering an EditContext on it raises
+                    # ("not in the local LayerStack"). A dormant chunk must not author anyway —
+                    # skip; it re-syncs when it unmutes and recooks. Same guard as the execute path.
+                    if stage.IsLayerMuted(ctx.identifier):
+                        return
                     with Usd.EditContext(stage, ctx):
                         meth(*args)
                 else:

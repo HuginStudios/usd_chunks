@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import time
+import weakref
 from typing import Optional
 
 from pxr import Gf, Sdf, Usd, UsdUI
@@ -630,6 +631,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 event.accept()
                 return
             if self._is_group:
+                # A collapsed group hides its whole embedded widget — including the minimize
+                # arrow — so the header double-click is the only way to expand it in the graph.
+                # Collapsed -> expand; expanded -> dive in.
+                if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
+                    self.chunk.unset_state(ChunkFlags.State.COLLAPSED)
+                    event.accept()
+                    return
                 scene = self.scene()
                 if scene and hasattr(scene, "dive_into"):
                     scene.dive_into.emit(self.chunk)
@@ -1356,6 +1364,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # no view yet (e.g. chunks were made in the params panel first). Deferred past this
         # build's rebuild + proxy pass so view creation runs on a settled graph, not mid-build.
         QtCore.QTimer.singleShot(80, lambda ctx=context: self._ensure_default_view(ctx))
+        # Switching to this context must re-establish the viewport for ITS active view — the
+        # viewport is one global stage, so a view activated in another context (e.g. an inner
+        # group view) otherwise stays cooked and the wrong result shows. Deferred past the
+        # auto-view step. (On create we deliberately don't re-cook, to avoid churn.)
+        QtCore.QTimer.singleShot(100, self._recook_active_view)
 
     def _context_has_view(self, scene, context) -> bool:
         """True when this context (or the graph as a whole, if context is None) has a view chunk."""
@@ -1363,6 +1376,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             chunk_usd.is_view_chunk(c) and (context is None or c.get_context() == context)
             for c in scene.get_chunks()
         )
+
+    def _push_nest_context(self, scene, context):
+        """When the graph is dived into a chunkgroup, make new chunks nest into it. add_chunk
+        uses scene._current_context, which isn't set for a dive — so without this, creating a
+        node inside a group silently added it to the tab instead. Returns (changed, previous) to
+        restore. No-op at the tab level (plain contexts have no module)."""
+        cfg = context.get_config() if context is not None else None
+        if context is not None and context.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module:
+            prev = scene._current_context
+            scene._current_context = weakref.ref(context)
+            return True, prev
+        return False, None
 
     def _ensure_default_view(self, context) -> None:
         registry = chunk_registry.ChunkRegistry()
@@ -1516,7 +1541,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # (slot 0), which would block the whole graph. Keeps an active view at all times.
             registry = chunk_registry.ChunkRegistry()
             stage = registry.scene.get_stage() if registry.initialized else None
-            if stage and chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene):
+            # Scope the check to THIS graph's context — slots are per-context now, so a global
+            # scan would accept a slot that only exists in another tab/group, then recook
+            # (context-scoped) finds no view here and mutes everything.
+            if stage and chunk_usd.find_view_chunk_for_slot(
+                slot, stage, registry.scene, self._graph_context()
+            ):
                 self._view_state.set_slot(slot)
             event.accept()
             return
@@ -1657,15 +1687,19 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         # Block on creation (view-driven) — see contextMenuEvent. Here the node is about to be
         # wired to the dragged port, so the deferred connect's recook will unblock + cook it.
-        view_exists = self._context_has_view(scene, self._graph_context())
+        context = self._graph_context()
+        view_exists = self._context_has_view(scene, context)
         # Create the node at the wire-drop point instead of the far-away index default.
         chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        nested, prev_ctx = self._push_nest_context(scene, context)
         try:
             for c in chunks:
-                if view_exists and not chunk_usd.is_view_chunk(c):
+                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
         finally:
+            if nested:
+                scene._current_context = prev_ctx
             chunk_usd._create_node_pos = None
         new_chunk = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
         if new_chunk is None:
@@ -1929,6 +1963,32 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _create_view_node_for(self, target_node: "ChunkNodeItem") -> None:
         self._create_view_node_for_prim(str(target_node.prim.GetPath()))
 
+    def _activate_menu_view(self, view_chunk, context, stage) -> None:
+        """A view created from the chunk menu is inert — it has no view:slot and isn't active,
+        so it does nothing. Assign it a free slot (scoped to this graph) on its prim and make it
+        the active view, so it behaves like a view from 'Set View' (just unwired until connected)."""
+        vp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(view_chunk)))
+        if not vp.IsValid():
+            return
+        if vp.GetAttribute("view:slot").Get() is not None:
+            return  # already set up
+        used = set()
+        for c in chunk_registry.ChunkRegistry().scene.get_chunks():
+            if not (chunk_usd.is_view_chunk(c) and c is not view_chunk
+                    and chunk_usd.is_node_in_context(c, context)):
+                continue
+            p = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(c)))
+            s = p.GetAttribute("view:slot").Get() if p.IsValid() else None
+            if s is not None:
+                used.add(s)
+        slot = next((s for s in (1, 2, 3) if s not in used), None)
+        if slot is None:
+            return
+        sa = vp.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
+        sa.SetVariability(Sdf.VariabilityUniform)
+        sa.Set(slot)
+        QtCore.QTimer.singleShot(0, lambda s=slot: self._view_state.set_slot(s))
+
     def _create_view_node_for_prim(self, target_prim_path: str) -> None:
         """Create a view node wired to target_prim_path using only USD stage data."""
         registry = chunk_registry.ChunkRegistry()
@@ -1957,9 +2017,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                             self._view_state.set_slot(existing_slot)
                         return
 
-        # Find an unused slot.
+        # Find an unused slot — scoped to the target's container (the view is created as a sibling
+        # of the target). Each graph (tab/group) has its own slots 1-3; a GLOBAL scan runs out of
+        # slots once views exist in a few contexts, so 'Set View' silently failed, and the View{slot}
+        # name incremented globally across contexts.
+        target_parent = str(Sdf.Path(target_prim_path).GetParentPath())
         used_slots: set = set()
         for prim in stage.Traverse():
+            if prim.GetAttribute("info:chunkType").Get() != "view":
+                continue
+            if str(prim.GetPath().GetParentPath()) != target_parent:
+                continue
             s = prim.GetAttribute("view:slot").Get()
             if s is not None:
                 used_slots.add(s)
@@ -2033,9 +2101,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         to legacy "run everything". Must NOT be called from inside a graph rebuild — the
         execute() it triggers would author, fire ObjectsChanged, and loop.
         """
-        # Every tab's graph view shares one ViewSlotState, so a slot change fires this on all
-        # of them. Only the visible view should cook — dedupes the redundant re-cook per tab.
-        if not self.isVisible():
+        # Only the CURRENTLY SELECTED tab should drive the (global) stage. Gate on the owning
+        # tab stack's visibility, NOT self.isVisible(): the graph is page 1 of a QStackedWidget,
+        # so in Params mode this widget is hidden even though its tab is current — self.isVisible()
+        # would then wrongly skip the recook and the viewport wouldn't follow tab switches while
+        # on the Params tab. The stack is visible whenever its tab is current, either page showing.
+        stack = self.parentWidget()
+        if stack is not None and not stack.isVisible():
             return
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
@@ -2046,14 +2118,25 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         context = self._graph_context()
         slot = self._view_state.active_slot
         view_chunk = (
-            chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene) if slot else None
+            chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
         )
+        # Subnet: if THIS graph is a group, persist its active view slot on the group prim so a
+        # parent cook of the group picks the same inner view (find_group_active_view reads it).
+        if context is not None and chunk_usd.is_group_chunk(context):
+            gp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(context)))
+            if gp and gp.IsValid():
+                prev_w = chunk_usd.chunk_notice._usd_write_active
+                chunk_usd.chunk_notice._usd_write_active = True
+                try:
+                    gp.CreateAttribute("chunk:activeView", Sdf.ValueTypeNames.Int, custom=True).Set(int(slot))
+                finally:
+                    chunk_usd.chunk_notice._usd_write_active = prev_w
         if view_chunk is not None:
             for c in registry.scene.get_chunks():
                 if c.has_state(ChunkFlags.State.SELECTED):
                     c.set_selected(False)
             view_chunk.set_selected(True)
-        chunk_usd.recook_for_view(stage, registry.scene, context, view_chunk)
+        chunk_usd.recook_focus(stage, registry.scene, context, view_chunk)
 
     def _graph_context(self) -> "Optional[core.ChunkBase]":
         graph_scene = self.scene()
@@ -2129,13 +2212,25 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         view_exists = self._context_has_view(scene, context)
         # Create the node(s) at the right-click point instead of the far-away index default.
         chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        nested, prev_ctx = self._push_nest_context(scene, context)
         try:
             for c in chunks:
-                if view_exists and not chunk_usd.is_view_chunk(c):
+                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
         finally:
+            if nested:
+                scene._current_context = prev_ctx
             chunk_usd._create_node_pos = None
+
+        # A view created straight from the chunk menu needs a slot + activation to work (the
+        # "Set View" path does this). Set it up so it's a usable, active view (unwired until the
+        # user connects it), and skip the default-view step below.
+        menu_view = next((c for c in chunks if chunk_usd.is_view_chunk(c)), None)
+        if menu_view is not None:
+            self._activate_menu_view(menu_view, context, scene.get_stage())
+            event.accept()
+            return
 
         # If this context has no view (e.g. it was just cleared, or nodes were made in the
         # params panel), make a default one wired to the exec tail — so view-driven execution

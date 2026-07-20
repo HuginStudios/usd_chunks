@@ -19,6 +19,7 @@ from plugins.chunk_usd import (
     export_chunks,
     initialize as _chunk_usd_init,
     load_chunks,
+    loft_param_to_context,
     rename_context_prim_path,
 )
 from usd_chunks.chunk_utils import get_unique_path
@@ -1495,3 +1496,486 @@ def test_load_chunks_restores_light_dynamic_params() -> None:
     color = light_chunks[0].get_param("attr_grp.inputs.color")
     assert color is not None, "attr_grp.inputs.color param not found after load"
     assert pytest.approx(tuple(color.value), abs=1e-3) == (-1.339, 1.0, 1.0)
+
+
+def test_loft_default_valued_param_creates_attr() -> None:
+    """Loft up must work right after creating a chunk, when the param is still at its default
+    and has no USD attribute yet — it force-creates the storage attr and promotes it."""
+    import weakref
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def mk(mod):
+        chunks = mod.create() if mod.loaded else mod.load()
+        for c in chunks:
+            scene.add_chunk(c)
+        return chunks[0]
+
+    grp = mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    prim_chunk = mk(primmod)
+
+    p = prim_chunk.get_param("primpath_location")
+    assert p._param_attr_path is None  # default value → no attr yet (the bug)
+
+    loft_param_to_context(p, prim_chunk.get_context())
+
+    assert p._param_attr_path is not None  # attr force-created
+    grp_prim = stage.GetPrimAtPath(Sdf.Path(grp.prim_path))
+    assert grp_prim.GetAttribute(f"{_INPUTS_PREFIX}{p.name}").IsValid()
+    assert p.name in [x.name for x in grp.get_my_params()]  # promoted onto the group
+
+
+def test_loft_output_param_creates_outputs_attr() -> None:
+    """Lofting an OUTPUT-flagged param exposes it as a data OUTPUT on the group (outputs:name),
+    so a chunkgroup can surface computed results — not just inputs."""
+    import weakref
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    leaf = _mk(primmod)
+
+    out_param = chunk.LineEdit(
+        "myout", "My Out", default_value="hi", flags=chunk.ChunkFlags.ParamFlags.OUTPUT
+    )
+    leaf.add_param(out_param)
+    loft_param_to_context(out_param, leaf.get_context())
+
+    grp_prim = stage.GetPrimAtPath(Sdf.Path(grp.prim_path))
+    assert grp_prim.GetAttribute("outputs:myout").IsValid()
+    assert not grp_prim.GetAttribute(f"{_INPUTS_PREFIX}myout").IsValid()
+
+
+def test_recook_recurses_into_group() -> None:
+    """A group has no execute() of its own — cooking a group (in the parent view's tree) must
+    cook its inner active view's tree; a hidden group mutes its whole inner tree."""
+    import weakref
+    from plugins.chunk_usd import recook_for_view, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    inner_node = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner_node)
+    scene._current_context = None
+    tab_view = _mk(viewmod)
+    _wire(tab_view, grp)
+
+    class _Root:
+        prim_path = _CHUNKS_ROOT
+
+    recook_for_view(stage, scene, _Root(), tab_view)
+    assert not inner_node.is_blocked()  # group cooked → inner tree cooks
+
+    recook_for_view(stage, scene, _Root(), None)
+    assert inner_node.is_blocked()  # group hidden → inner tree muted
+
+
+def test_recook_focus_group_mutes_outside_subtree() -> None:
+    """Focusing a group (the tab you're looking at) must mute everything OUTSIDE the group so
+    only its inner active view drives the shared stage. recook_for_view alone only manages the
+    focused context's own children, so a parent-tab chunk stayed unmuted and bled through when
+    switching into a group tab ('switch tabs, still see the previous view')."""
+    import weakref
+    from plugins.chunk_usd import recook_focus, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # A tab-level chunk driven by a tab view, plus a group with its own inner node + view.
+    tab_node = _mk(primmod)
+    tab_view = _mk(viewmod)
+    _wire(tab_view, tab_node)
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    inner_node = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner_node)
+    scene._current_context = None
+
+    # Focus the group: only its inner tree drives the stage.
+    recook_focus(stage, scene, grp, inner_view)
+    assert not inner_node.is_blocked()   # inner active view's tree cooks
+    assert tab_node.is_blocked()          # everything outside the group is muted
+
+
+def test_recook_focus_does_not_block_ancestor_container() -> None:
+    """Focusing a nested group must NOT block its ancestor container. is_blocked() climbs the
+    owner chain, so blocking an ancestor propagates down and blocks the focused inner tree —
+    'nothing in the chunkgroups gets cooked'. Ancestors (all context chunks) must be left alone."""
+    import weakref
+    from plugins.chunk_usd import recook_focus, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # An OUTER group (the ancestor container) holding an INNER group with its own node + view.
+    outer = _mk(grpmod)
+    scene._current_context = weakref.ref(outer)
+    inner_grp = _mk(grpmod)
+    scene._current_context = weakref.ref(inner_grp)
+    inner_node = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner_node)
+    scene._current_context = None
+
+    # Focus the inner group — the outer container must not be blocked, so the inner tree cooks.
+    recook_focus(stage, scene, inner_grp, inner_view)
+    assert not outer.is_blocked()        # ancestor container left alone
+    assert not inner_node.is_blocked()   # inner active view's tree cooks
+
+
+def test_rename_group_is_sibling_and_rebases_children() -> None:
+    """Renaming a chunkgroup must rename it in place (sibling), not nest it inside itself
+    (/G -> /G/new — the get_context()-returns-self bug), and must move + rebase its children."""
+    import weakref
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    sync = _chunk_usd_init(stage, scene) or ChunkStageSync()
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    child = _mk(primmod)
+    old_root = get_chunk_prim_path(grp)
+
+    grp.name = "hahaha"
+
+    new_root = get_chunk_prim_path(grp)
+    assert new_root == str(Sdf.Path(old_root).GetParentPath().AppendChild("hahaha"))
+    assert new_root != old_root
+    assert not stage.GetPrimAtPath(Sdf.Path(old_root)).IsValid()
+    assert stage.GetPrimAtPath(Sdf.Path(new_root)).IsValid()
+    # child moved with the subtree and its tracked path was rebased
+    assert ChunkStageSync()._chunk_prim_paths[id(child)] == f"{new_root}/{child.name}"
+    assert stage.GetPrimAtPath(Sdf.Path(f"{new_root}/{child.name}")).IsValid()
+
+
+def test_can_create_chunk_inside_blocked_group() -> None:
+    """Editing inside a group must work even when the group is view-driven blocked (hidden). A
+    blocked group used to swallow its children's structural notices (PARAM_ADDED), so a child's
+    prim was never created — you couldn't add nodes inside a group not wired to an active view."""
+    import weakref
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    grp = (grpmod.create() if grpmod.loaded else grpmod.load())[0]
+    scene.add_chunk(grp)
+    grp.set_blocked(True)  # simulate: group hidden / out of the active view's tree
+
+    scene._current_context = weakref.ref(grp)
+    child = (primmod.create() if primmod.loaded else primmod.load())[0]
+    scene.add_chunk(child)
+
+    assert child.is_blocked()  # inherits the group's block (won't cook)
+    assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(child))).IsValid()  # but the node exists
+
+
+def test_inner_view_cooks_when_group_hidden_at_parent() -> None:
+    """A group is its own cook domain: diving into it and activating its inner view must cook
+    the inner tree even when the group itself is hidden at the parent (not wired to a parent
+    view). Previously the group's block propagated to its children via the owner chain, so the
+    inner view was inert unless the group had a parent view."""
+    import weakref
+    from plugins.chunk_usd import recook_for_view, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # tab: a prim P with an active view V; a group G that is NOT wired to V (hidden).
+    P = _mk(primmod)
+    V = _mk(viewmod)
+    _wire(V, P)
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    inner = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner)
+    scene._current_context = None
+
+    class _Root:
+        prim_path = _CHUNKS_ROOT
+
+    recook_for_view(stage, scene, _Root(), V)  # tab active view = V; group hidden
+    assert inner.is_blocked()  # group hidden at parent -> inner tree muted
+
+    recook_for_view(stage, scene, grp, inner_view)  # dive in, inner view active
+    assert not inner.is_blocked()  # inner view cooks despite the group being hidden at parent
+
+
+# ---------------------------------------------------------------------------
+# Chunkgroup lifecycle
+# ---------------------------------------------------------------------------
+
+def _group_scene():
+    """A stage-backed scene with the sync initialised, plus the chunkgroup/prim modules."""
+    import weakref
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+    return stage, scene, reg, weakref
+
+
+def test_two_groups_get_unique_prim_paths() -> None:
+    """Creating two chunkgroups yields two distinct prims (no collision/skip)."""
+    stage, scene, reg, weakref = _group_scene()
+    grpmod = reg.get_chunk_module("chunkgroup")
+
+    def _mkgrp():
+        cs = grpmod.create() if grpmod.loaded else grpmod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    g1, g2 = _mkgrp(), _mkgrp()
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    assert get_chunk_prim_path(g1) != get_chunk_prim_path(g2)
+    assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(g1))).IsValid()
+    assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(g2))).IsValid()
+
+
+def test_nested_group_prim_paths() -> None:
+    """A group nested in a group gets a prim under the parent group; a leaf in it nests deeper."""
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage, scene, reg, weakref = _group_scene()
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    outer = _mk(grpmod)
+    scene._current_context = weakref.ref(outer)
+    inner = _mk(grpmod)
+    scene._current_context = weakref.ref(inner)
+    leaf = _mk(primmod)
+
+    outer_p = get_chunk_prim_path(outer)
+    assert get_chunk_prim_path(inner) == f"{outer_p}/{inner.name}"
+    assert get_chunk_prim_path(leaf) == f"{outer_p}/{inner.name}/{leaf.name}"
+    assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(leaf))).IsValid()
+
+
+def test_delete_group_removes_its_subtree() -> None:
+    """Deleting a chunkgroup removes the group prim and everything under it."""
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage, scene, reg, weakref = _group_scene()
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    child = _mk(primmod)
+    scene._current_context = None
+    grp_path = get_chunk_prim_path(grp)
+    child_path = get_chunk_prim_path(child)
+    assert stage.GetPrimAtPath(Sdf.Path(child_path)).IsValid()
+
+    grp.request_delete()
+
+    assert not stage.GetPrimAtPath(Sdf.Path(grp_path)).IsValid()
+    assert not stage.GetPrimAtPath(Sdf.Path(child_path)).IsValid()
