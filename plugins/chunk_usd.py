@@ -812,19 +812,31 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             parent_ctx = getattr(chunk, "_parent_context", None)
             parent_ctx = parent_ctx() if parent_ctx else None
             if parent_ctx and getattr(parent_ctx, "prim_path", None):
-                parent_root = parent_ctx.prim_path
+                root = parent_ctx.prim_path
             else:
-                parent_root = _CHUNKS_ROOT
-            prim_path = f"{parent_root}/{chunk.name}"
+                root = _CHUNKS_ROOT
         else:
-            prim_path = f"{_resolve_chunk_root(chunk)}/{chunk.name}"
-        # If the path is already tracked, this chunk is being loaded from USD
-        # (load_chunks pre-registers paths before add_chunk). Still register in
-        # _chunk_prim_paths so _sync_param_input can find it, but skip _define_prim —
-        # the prim already exists in the sublayer; load_chunks handles _wire_inputs.
+            root = _resolve_chunk_root(chunk)
+        prim_path = f"{root}/{chunk.name}"
+        # If the path is already tracked it's either (a) a load — load_chunks pre-registers paths
+        # before add_chunk — or (b) a name collision the add_chunk dedup missed. The dedup checks
+        # the scene-root container, but a group's siblings live under its parent context, so two
+        # same-named groups under one tab collide and this would wrongly skip the second's prim.
+        # Distinguish: (b) means the path already belongs to ANOTHER chunk → make the name unique.
         if prim_path in self._loaded_prim_paths:
-            self._chunk_prim_paths[id(chunk)] = prim_path
-            return
+            taken_by_other = any(
+                p == prim_path for cid, p in self._chunk_prim_paths.items() if cid != id(chunk)
+            )
+            if not taken_by_other:
+                # (a) load — the prim exists; register and skip _define_prim.
+                self._chunk_prim_paths[id(chunk)] = prim_path
+                return
+            # (b) collision — pick the next free sibling name.
+            base, i = chunk.name, 1
+            while f"{root}/{base}{i}" in self._loaded_prim_paths:
+                i += 1
+            chunk.name = f"{base}{i}"
+            prim_path = f"{root}/{chunk.name}"
         self._loaded_prim_paths.add(prim_path)
         self._chunk_prim_paths[id(chunk)] = prim_path
         # Use object.__setattr__ to store the prim path without going through
