@@ -1307,25 +1307,26 @@ def recook_for_view(
             stage.UnmuteLayer(layer.identifier)
 
     if view_chunk is None:
-        # No active view → nothing cooks. Block + mute every non-view chunk so unconnected and
-        # out-of-tree nodes don't execute. (Was legacy "run everything", which unblocked and
-        # executed all nodes — so toggling the active view off ran the whole graph.) Activating
-        # a view re-cooks its tree.
-        for c in scene.get_chunks():
-            if is_view_chunk(c) or not in_context(c):
-                continue
-            c.set_blocked(True)
-            if not c.has_state(disabled):
-                mute(lm.get_layer(c), True)
-        return
+        cook_list: "list[core.ChunkBase]" = []
+        cook_set: set = set()
+    else:
+        cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)
+        cook_set = set(cook_list)
 
-    cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)
-    cook_set = set(cook_list)
-
-    # Set block state (and mute) before executing: blocking non-cook chunks first means
-    # the ObjectsChanged from muting can't re-execute them.
+    # Block/mute leaf nodes by cook membership (blocking non-cook chunks first means the
+    # ObjectsChanged from muting can't re-execute them). Groups are NEVER blocked as a node — a
+    # group is its own cook domain, so its parent-visibility block must not propagate to its
+    # children via the owner chain (that left the inner view unable to cook unless the group was
+    # wired to a parent view). Instead recurse: a cooked group cooks its inner active view's tree;
+    # a hidden group mutes its whole inner tree. Prim-path nesting prevents cycles.
     for c in scene.get_chunks():
         if is_view_chunk(c) or not in_context(c):
+            continue
+        if is_group_chunk(c):
+            if c in cook_set:
+                recook_for_view(stage, scene, c, find_group_active_view(c, stage, scene))
+            else:
+                recook_for_view(stage, scene, c, None)
             continue
         if c in cook_set:
             c.set_blocked(False)
@@ -1336,8 +1337,11 @@ def recook_for_view(
             mute(lm.get_layer(c), True)
 
     for c in cook_list:
-        if not c.has_state(disabled):
+        if not c.has_state(disabled) and not is_group_chunk(c):
             c.execute()
+
+    if not cook_list:
+        return
 
     # Layer-win order follows the exec traversal: the chunk nearest the view (last in
     # cook_list) must win, so reorder each graph layer's sublayers to put the most
@@ -1358,17 +1362,6 @@ def recook_for_view(
         )
         if list(g_layer.subLayerPaths) != ordered:
             g_layer.subLayerPaths = ordered  # type: ignore
-
-    # A group has no execute() of its own — its result IS its inner graph. So recurse: a cooked
-    # group (in this view's tree) produces its output by cooking its inner active view's tree; a
-    # blocked group hides its whole inner tree. Prim-path nesting prevents cycles.
-    for c in scene.get_chunks():
-        if not is_group_chunk(c) or not in_context(c):
-            continue
-        if c in cook_set:
-            recook_for_view(stage, scene, c, find_group_active_view(c, stage, scene))
-        else:
-            recook_for_view(stage, scene, c, None)
 
 
 def get_exec_tail_chunks(

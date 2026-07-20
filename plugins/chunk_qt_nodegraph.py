@@ -1677,7 +1677,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         nested, prev_ctx = self._push_nest_context(scene, context)
         try:
             for c in chunks:
-                if view_exists and not chunk_usd.is_view_chunk(c):
+                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
         finally:
@@ -2186,7 +2186,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         nested, prev_ctx = self._push_nest_context(scene, context)
         try:
             for c in chunks:
-                if view_exists and not chunk_usd.is_view_chunk(c):
+                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
         finally:

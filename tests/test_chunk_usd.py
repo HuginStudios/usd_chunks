@@ -1718,3 +1718,61 @@ def test_can_create_chunk_inside_blocked_group() -> None:
 
     assert child.is_blocked()  # inherits the group's block (won't cook)
     assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(child))).IsValid()  # but the node exists
+
+
+def test_inner_view_cooks_when_group_hidden_at_parent() -> None:
+    """A group is its own cook domain: diving into it and activating its inner view must cook
+    the inner tree even when the group itself is hidden at the parent (not wired to a parent
+    view). Previously the group's block propagated to its children via the owner chain, so the
+    inner view was inert unless the group had a parent view."""
+    import weakref
+    from plugins.chunk_usd import recook_for_view, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # tab: a prim P with an active view V; a group G that is NOT wired to V (hidden).
+    P = _mk(primmod)
+    V = _mk(viewmod)
+    _wire(V, P)
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    inner = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner)
+    scene._current_context = None
+
+    class _Root:
+        prim_path = _CHUNKS_ROOT
+
+    recook_for_view(stage, scene, _Root(), V)  # tab active view = V; group hidden
+    assert inner.is_blocked()  # group hidden at parent -> inner tree muted
+
+    recook_for_view(stage, scene, grp, inner_view)  # dive in, inner view active
+    assert not inner.is_blocked()  # inner view cooks despite the group being hidden at parent
