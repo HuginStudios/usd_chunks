@@ -238,6 +238,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._loaded_prim_paths.discard(prim_path_str)
         self._chunk_prim_paths.pop(id(sender), None)
 
+        # Heal the exec chain while the prim (and its inputs:chunk predecessor) still exists:
+        # deleting a middle node A -> X -> B must leave A -> B, not a broken chain.
+        heal_exec_chain_on_delete(self._stage, prim_path_str)
+
         for layer in self._stage.GetLayerStack(includeSessionLayers=True):
             parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
             if parent and sdf_path.name in parent.nameChildren:
@@ -1222,6 +1226,39 @@ def get_exec_downstream_chunks(
                     downstream.add(c)
         frontier = next_frontier
     return downstream
+
+
+def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
+    """Rewire around a node about to be deleted so its exec chain survives.
+
+    For A -> X -> B, deleting X must leave A -> B (each successor B's inputs:chunk is repointed
+    to X's predecessor(s) A; cleared if X had none). Call while X's prim still exists — its
+    inputs:chunk predecessor is only readable before removal. Exec only (inputs/outputs:chunk);
+    data/typed connections to X are left to drop with the prim.
+    """
+    deleted = Sdf.Path(deleted_path)
+    del_prim = stage.GetPrimAtPath(deleted)
+    if not (del_prim and del_prim.IsValid()):
+        return
+    exec_in = del_prim.GetAttribute(_EXEC_INPUT)
+    pred_conns = list(exec_in.GetConnections()) if (exec_in and exec_in.IsValid()) else []
+    out_path = f"{deleted_path}.{_EXEC_OUTPUT}"
+    prev_w = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        for prim in stage.Traverse():
+            if prim.GetPath() == deleted:
+                continue
+            succ = prim.GetAttribute(_EXEC_INPUT)
+            if not (succ and succ.IsValid()):
+                continue
+            if any(str(c) == out_path for c in succ.GetConnections()):
+                if pred_conns:
+                    succ.SetConnections(pred_conns)
+                else:
+                    succ.ClearConnections()
+    finally:
+        chunk_notice._usd_write_active = prev_w
 
 
 def get_exec_upstream_chunks(
