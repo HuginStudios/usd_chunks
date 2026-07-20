@@ -237,6 +237,24 @@ class ChunksPluginContainer(PluginContainer):
         if file := chunk_qt.file_dial(flt, create_new=False):
             reg.import_chunk(file)
 
+    def openLayerStack(self, usdviewApi):
+        """Open the global Layer Stack inspector window."""
+        import importlib
+        try:
+            layer_stack = importlib.import_module("scripts.layer_stack")
+        except Exception:
+            import os
+            import importlib.util
+            path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                "scripts", "layer_stack.py",
+            )
+            spec = importlib.util.spec_from_file_location("layer_stack", path)
+            layer_stack = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(layer_stack)
+        # Keep a reference so the window isn't garbage-collected while open.
+        self._layerStackWin = layer_stack.open_window(usdviewApi)
+
     def registerPlugins(self, plugRegistry, plugCtx) -> None:
         """Register the UI Creator plugin with the plugin registry.
 
@@ -269,6 +287,10 @@ class ChunksPluginContainer(PluginContainer):
             "ChunksPlugin.reloadChunk", "Reload Chunks", self.reloadChunks
         )
 
+        self._layerStackCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.openLayerStack", "Layer Stack", self.openLayerStack
+        )
+
         launch_chunks(plugCtx)
 
     def configureView(self, plugRegistry, plugUIBuilder) -> None:
@@ -282,6 +304,7 @@ class ChunksPluginContainer(PluginContainer):
         menu.addItem(self._saveSceneAsCommand)
         menu.addItem(self._openSceneCommand)
         menu.addSeparator()
+        menu.addItem(self._layerStackCommand)
         menu.addItem(self._reloadChunkCommand, "SHIFT+R")
 
 
