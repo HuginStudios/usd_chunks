@@ -1776,3 +1776,100 @@ def test_inner_view_cooks_when_group_hidden_at_parent() -> None:
 
     recook_for_view(stage, scene, grp, inner_view)  # dive in, inner view active
     assert not inner.is_blocked()  # inner view cooks despite the group being hidden at parent
+
+
+# ---------------------------------------------------------------------------
+# Chunkgroup lifecycle
+# ---------------------------------------------------------------------------
+
+def _group_scene():
+    """A stage-backed scene with the sync initialised, plus the chunkgroup/prim modules."""
+    import weakref
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+    return stage, scene, reg, weakref
+
+
+def test_two_groups_get_unique_prim_paths() -> None:
+    """Creating two chunkgroups yields two distinct prims (no collision/skip)."""
+    stage, scene, reg, weakref = _group_scene()
+    grpmod = reg.get_chunk_module("chunkgroup")
+
+    def _mkgrp():
+        cs = grpmod.create() if grpmod.loaded else grpmod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    g1, g2 = _mkgrp(), _mkgrp()
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    assert get_chunk_prim_path(g1) != get_chunk_prim_path(g2)
+    assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(g1))).IsValid()
+    assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(g2))).IsValid()
+
+
+def test_nested_group_prim_paths() -> None:
+    """A group nested in a group gets a prim under the parent group; a leaf in it nests deeper."""
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage, scene, reg, weakref = _group_scene()
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    outer = _mk(grpmod)
+    scene._current_context = weakref.ref(outer)
+    inner = _mk(grpmod)
+    scene._current_context = weakref.ref(inner)
+    leaf = _mk(primmod)
+
+    outer_p = get_chunk_prim_path(outer)
+    assert get_chunk_prim_path(inner) == f"{outer_p}/{inner.name}"
+    assert get_chunk_prim_path(leaf) == f"{outer_p}/{inner.name}/{leaf.name}"
+    assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(leaf))).IsValid()
+
+
+def test_delete_group_removes_its_subtree() -> None:
+    """Deleting a chunkgroup removes the group prim and everything under it."""
+    from plugins.chunk_usd import get_chunk_prim_path
+
+    stage, scene, reg, weakref = _group_scene()
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    child = _mk(primmod)
+    scene._current_context = None
+    grp_path = get_chunk_prim_path(grp)
+    child_path = get_chunk_prim_path(child)
+    assert stage.GetPrimAtPath(Sdf.Path(child_path)).IsValid()
+
+    grp.request_delete()
+
+    assert not stage.GetPrimAtPath(Sdf.Path(grp_path)).IsValid()
+    assert not stage.GetPrimAtPath(Sdf.Path(child_path)).IsValid()
