@@ -1638,6 +1638,112 @@ def test_recook_recurses_into_group() -> None:
     assert inner_node.is_blocked()  # group hidden → inner tree muted
 
 
+def test_recook_focus_group_mutes_outside_subtree() -> None:
+    """Focusing a group (the tab you're looking at) must mute everything OUTSIDE the group so
+    only its inner active view drives the shared stage. recook_for_view alone only manages the
+    focused context's own children, so a parent-tab chunk stayed unmuted and bled through when
+    switching into a group tab ('switch tabs, still see the previous view')."""
+    import weakref
+    from plugins.chunk_usd import recook_focus, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # A tab-level chunk driven by a tab view, plus a group with its own inner node + view.
+    tab_node = _mk(primmod)
+    tab_view = _mk(viewmod)
+    _wire(tab_view, tab_node)
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    inner_node = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner_node)
+    scene._current_context = None
+
+    # Focus the group: only its inner tree drives the stage.
+    recook_focus(stage, scene, grp, inner_view)
+    assert not inner_node.is_blocked()   # inner active view's tree cooks
+    assert tab_node.is_blocked()          # everything outside the group is muted
+
+
+def test_recook_focus_does_not_block_ancestor_container() -> None:
+    """Focusing a nested group must NOT block its ancestor container. is_blocked() climbs the
+    owner chain, so blocking an ancestor propagates down and blocks the focused inner tree —
+    'nothing in the chunkgroups gets cooked'. Ancestors (all context chunks) must be left alone."""
+    import weakref
+    from plugins.chunk_usd import recook_focus, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # An OUTER group (the ancestor container) holding an INNER group with its own node + view.
+    outer = _mk(grpmod)
+    scene._current_context = weakref.ref(outer)
+    inner_grp = _mk(grpmod)
+    scene._current_context = weakref.ref(inner_grp)
+    inner_node = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner_node)
+    scene._current_context = None
+
+    # Focus the inner group — the outer container must not be blocked, so the inner tree cooks.
+    recook_focus(stage, scene, inner_grp, inner_view)
+    assert not outer.is_blocked()        # ancestor container left alone
+    assert not inner_node.is_blocked()   # inner active view's tree cooks
+
+
 def test_rename_group_is_sibling_and_rebases_children() -> None:
     """Renaming a chunkgroup must rename it in place (sibling), not nest it inside itself
     (/G -> /G/new — the get_context()-returns-self bug), and must move + rebase its children."""

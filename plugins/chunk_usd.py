@@ -1364,6 +1364,46 @@ def recook_for_view(
             g_layer.subLayerPaths = ordered  # type: ignore
 
 
+def recook_focus(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase | None",
+    view_chunk: "core.ChunkBase | None",
+) -> None:
+    """Establish the GLOBAL stage for the tab/graph the user is looking at.
+
+    The stage is shared by every context, but only the focused one should drive it. Root
+    (context is None) is already a full global establish — recook_for_view(None) touches every
+    chunk and recurses into all groups. But a GROUP focus only manages its own children, so the
+    parent tab's active view (and sibling groups) would stay unmuted and bleed through ("switch
+    tabs, still see the previous view"). So when focusing a group, first mute + block everything
+    OUTSIDE the group's subtree, then recook inside it — leaving only the group's inner active
+    view driving the stage.
+    """
+    if context is not None:
+        lm = chunk_registry.ChunkLayerManager()
+        group_path = get_chunk_prim_path(context)
+        inside_prefix = group_path + "/"
+        for c in scene.get_chunks():
+            if is_view_chunk(c):
+                continue
+            cp = get_chunk_prim_path(c)
+            # Keep the focused group itself and its descendants — recook_for_view handles those.
+            if cp == group_path or cp.startswith(inside_prefix):
+                continue
+            # NEVER block a context/container (a tab or group). is_blocked() climbs the owner
+            # chain, so blocking the focused group's ANCESTOR would propagate down and block the
+            # focused inner tree itself — nothing would cook. Container chunks author nothing of
+            # their own; their leaf children are muted individually by this same loop.
+            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                continue
+            c.set_blocked(True)
+            layer = lm.get_layer(c)
+            if layer is not None:
+                stage.MuteLayer(layer.identifier)
+    recook_for_view(stage, scene, context, view_chunk)
+
+
 def get_exec_tail_chunks(
     stage: "Usd.Stage",
     scene: "core.SceneSender",

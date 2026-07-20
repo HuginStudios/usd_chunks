@@ -631,6 +631,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 event.accept()
                 return
             if self._is_group:
+                # A collapsed group hides its whole embedded widget — including the minimize
+                # arrow — so the header double-click is the only way to expand it in the graph.
+                # Collapsed -> expand; expanded -> dive in.
+                if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
+                    self.chunk.unset_state(ChunkFlags.State.COLLAPSED)
+                    event.accept()
+                    return
                 scene = self.scene()
                 if scene and hasattr(scene, "dive_into"):
                     scene.dive_into.emit(self.chunk)
@@ -1534,7 +1541,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # (slot 0), which would block the whole graph. Keeps an active view at all times.
             registry = chunk_registry.ChunkRegistry()
             stage = registry.scene.get_stage() if registry.initialized else None
-            if stage and chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene):
+            # Scope the check to THIS graph's context — slots are per-context now, so a global
+            # scan would accept a slot that only exists in another tab/group, then recook
+            # (context-scoped) finds no view here and mutes everything.
+            if stage and chunk_usd.find_view_chunk_for_slot(
+                slot, stage, registry.scene, self._graph_context()
+            ):
                 self._view_state.set_slot(slot)
             event.accept()
             return
@@ -2005,9 +2017,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                             self._view_state.set_slot(existing_slot)
                         return
 
-        # Find an unused slot.
+        # Find an unused slot — scoped to the target's container (the view is created as a sibling
+        # of the target). Each graph (tab/group) has its own slots 1-3; a GLOBAL scan runs out of
+        # slots once views exist in a few contexts, so 'Set View' silently failed, and the View{slot}
+        # name incremented globally across contexts.
+        target_parent = str(Sdf.Path(target_prim_path).GetParentPath())
         used_slots: set = set()
         for prim in stage.Traverse():
+            if prim.GetAttribute("info:chunkType").Get() != "view":
+                continue
+            if str(prim.GetPath().GetParentPath()) != target_parent:
+                continue
             s = prim.GetAttribute("view:slot").Get()
             if s is not None:
                 used_slots.add(s)
@@ -2112,7 +2132,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 if c.has_state(ChunkFlags.State.SELECTED):
                     c.set_selected(False)
             view_chunk.set_selected(True)
-        chunk_usd.recook_for_view(stage, registry.scene, context, view_chunk)
+        chunk_usd.recook_focus(stage, registry.scene, context, view_chunk)
 
     def _graph_context(self) -> "Optional[core.ChunkBase]":
         graph_scene = self.scene()
