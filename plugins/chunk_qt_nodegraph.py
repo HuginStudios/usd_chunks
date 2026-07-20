@@ -1946,6 +1946,32 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _create_view_node_for(self, target_node: "ChunkNodeItem") -> None:
         self._create_view_node_for_prim(str(target_node.prim.GetPath()))
 
+    def _activate_menu_view(self, view_chunk, context, stage) -> None:
+        """A view created from the chunk menu is inert — it has no view:slot and isn't active,
+        so it does nothing. Assign it a free slot (scoped to this graph) on its prim and make it
+        the active view, so it behaves like a view from 'Set View' (just unwired until connected)."""
+        vp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(view_chunk)))
+        if not vp.IsValid():
+            return
+        if vp.GetAttribute("view:slot").Get() is not None:
+            return  # already set up
+        used = set()
+        for c in chunk_registry.ChunkRegistry().scene.get_chunks():
+            if not (chunk_usd.is_view_chunk(c) and c is not view_chunk
+                    and chunk_usd.is_node_in_context(c, context)):
+                continue
+            p = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(c)))
+            s = p.GetAttribute("view:slot").Get() if p.IsValid() else None
+            if s is not None:
+                used.add(s)
+        slot = next((s for s in (1, 2, 3) if s not in used), None)
+        if slot is None:
+            return
+        sa = vp.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
+        sa.SetVariability(Sdf.VariabilityUniform)
+        sa.Set(slot)
+        QtCore.QTimer.singleShot(0, lambda s=slot: self._view_state.set_slot(s))
+
     def _create_view_node_for_prim(self, target_prim_path: str) -> None:
         """Create a view node wired to target_prim_path using only USD stage data."""
         registry = chunk_registry.ChunkRegistry()
@@ -2167,6 +2193,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if nested:
                 scene._current_context = prev_ctx
             chunk_usd._create_node_pos = None
+
+        # A view created straight from the chunk menu needs a slot + activation to work (the
+        # "Set View" path does this). Set it up so it's a usable, active view (unwired until the
+        # user connects it), and skip the default-view step below.
+        menu_view = next((c for c in chunks if chunk_usd.is_view_chunk(c)), None)
+        if menu_view is not None:
+            self._activate_menu_view(menu_view, context, scene.get_stage())
+            event.accept()
+            return
 
         # If this context has no view (e.g. it was just cleared, or nodes were made in the
         # params panel), make a default one wired to the exec tail — so view-driven execution
