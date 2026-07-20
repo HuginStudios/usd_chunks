@@ -2742,9 +2742,20 @@ class ChunkUsdAttributeSupport(AttributesBase):
             elif isinstance(val, str) and chunk_utils.has_expression(val):
                 self.value = val
             else:
-                # Non-string (e.g. Float) expression attrs only ever store the
-                # connection, never the expression text, so reconstruct it here.
-                if expr := self._expression_from_connections(connections):
+                # Non-string (e.g. Float) expression attrs only ever store the connection, never
+                # the expression text, so reconstruct it here — but only from SIBLING refs. A loft
+                # connection points UP to this param's own container (the group's interface attr);
+                # it's driven by the loft forwarding callback, not the expression system. Rebuilding
+                # @Container.attr@ from it makes an unresolvable sibling ref (the "Expression ref
+                # not found" spam) and would overwrite the forwarded value with the expression text.
+                my_prim = Sdf.Path(path).GetPrimPath()
+                sibling_conns = []
+                for c in connections:
+                    target_prim = Sdf.Path(str(c)).GetPrimPath()
+                    if my_prim != target_prim and my_prim.HasPrefix(target_prim):
+                        continue  # ancestor target == loft (upward) connection
+                    sibling_conns.append(c)
+                if expr := self._expression_from_connections(sibling_conns):
                     self.value = expr
 
     @staticmethod
