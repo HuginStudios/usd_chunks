@@ -6,6 +6,7 @@ Handles layer management, stage synchronization, and chunk serialization.
 from __future__ import annotations
 
 import contextlib
+import difflib
 import logging
 from pathlib import Path
 from typing import Generator, Optional, Tuple
@@ -36,6 +37,21 @@ _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
 # chunk before the active view (view-follows-tail). Node-graph creates leave it False — there the
 # user wires manually.
 _params_tab_create = False
+
+# Auto-pin decision for the next chunk(s) about to be created, or None when no create/paste flow
+# is active (idle — e.g. during a scene load). Tri-state, not a plain bool, to fix a real race:
+# the Params-page widget's PARAM_ADDED listener can run BEFORE ChunkStageSync's own listener (both
+# react to the same notice; delivery order isn't guaranteed), so the widget may ask is_chunk_pinned()
+# before _define_prim has written chunk:pinned at all. is_chunk_pinned() falls back to this flag
+# for a chunk with no authored value yet — but only distinguishing "mid-creation, going to author
+# False" (this flag is True/False) from "not creating anything right now, this is a genuinely old
+# chunk with no attribute" (this flag is None, so the absent-means-pinned migration default holds)
+# requires the None state; a plain bool defaulting False can't tell those two apart.
+# True: created via the Params tab's own create menu, or pasted/duplicated while Params is showing.
+# False: created via the Graph page's create menu, or pasted/duplicated while Graph is showing.
+# Kept separate from _params_tab_create — that flag also drives view-follows-tail auto-chaining,
+# which paste must NOT pick up (it already copies the source's own wiring explicitly).
+_pin_new_chunks: "bool | None" = None
 
 # Set by the node graph to the USD-space (x, y) a new chunk node should be created at (e.g. the
 # right-click / wire-drop point). _define_prim reads it for the node pos instead of the far-away
@@ -1008,6 +1024,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if not attr.Get():
                     attr.Set(config.module)
 
+            pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
+            pinned_attr.SetVariability(Sdf.VariabilityUniform)
+            if not pinned_attr.HasAuthoredValue():
+                # Views are never auto-pinned, regardless of which surface/flow created them —
+                # see is_chunk_pinned's matching unconditional view special case.
+                pinned_attr.Set(False if is_view_chunk(chunk) else bool(_pin_new_chunks))
+
             config = chunk.get_config()
             if not (config and config.terminal):
                 exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
@@ -1132,6 +1155,205 @@ def is_group_chunk(chunk: "core.ChunkBase") -> bool:
     """Return True if chunk is a chunkgroup (a CONTEXT chunk with a module — a subnet node)."""
     cfg = chunk.get_config()
     return bool(chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module)
+
+
+def is_chunk_pinned(chunk: "core.ChunkBase") -> bool:
+    """Return whether chunk is pinned into its context's Params page.
+
+    Reads the persisted ``chunk:pinned`` custom attribute (see ADR-0003), following the
+    ``chunk:activeView`` precedent. An explicitly authored value (set by set_chunk_pinned, i.e.
+    the Pin/Unpin menu action, or already written by _define_prim for this chunk) always wins.
+
+    Otherwise — no authored value, which can mean the PRIM ITSELF doesn't exist yet, not just
+    a missing attribute on an existing one — fall back in order:
+
+    1. Views are graph-wiring utility nodes, never meant for Params curation: default unpinned,
+       whether genuinely legacy, mid-creation, or racing _define_prim's own write (below).
+    2. _pin_new_chunks, when a create/paste flow is actively deciding this chunk's pin state
+       right now. Set by the caller BEFORE the create notice is even sent, so it's correct
+       regardless of listener order. This matters because the Params-page widget and
+       ChunkStageSync both react to the same PARAM_ADDED notice for a newly-created chunk, and
+       delivery order between two independent listeners on one notice isn't guaranteed — the
+       widget's listener can run (and call this) before ChunkStageSync's has even started
+       _define_prim, let alone authored the attribute. Falling back to the migration default
+       in that window would show a freshly Graph-created chunk in Params for a moment, and
+       permanently, since nothing re-checks after _define_prim's write lands right after.
+    3. Migration default: pinned=true, so a genuinely legacy chunk (no creation flow involved
+       at all — e.g. a scene saved before this feature shipped) doesn't lose Params visibility.
+    """
+    stage = chunk.get_stage()
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))) if stage else None
+    attr = prim.GetAttribute("chunk:pinned") if (prim and prim.IsValid()) else None
+    val = attr.Get() if (attr and attr.IsValid()) else None
+    if val is not None:
+        return bool(val)
+    if is_view_chunk(chunk):
+        return False
+    if _pin_new_chunks is not None:
+        return _pin_new_chunks
+    return True
+
+
+def set_chunk_pinned(chunk: "core.ChunkBase", pinned: bool) -> None:
+    """Persist chunk's pinned state as a custom ``chunk:pinned`` attribute on its prim."""
+    stage = chunk.get_stage()
+    if not stage:
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    if not prim.IsValid():
+        return
+    prev_w = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(pinned))
+    finally:
+        chunk_notice._usd_write_active = prev_w
+
+
+def _context_own_prim_path(context: "core.ChunkBase") -> "str | None":
+    """Return a CONTEXT chunk's own prim path — NOT get_chunk_prim_path(context), which is for
+    a chunk resolving its path as a CHILD of some parent context. Called on the context itself,
+    get_chunk_prim_path double-appends: ChunkBase.get_context() returns self for a chunk that
+    already has the CONTEXT flag, so _resolve_chunk_root(context) resolves to context.prim_path,
+    and get_chunk_prim_path then appends "/{context.name}" a second time (only chunkgroups
+    dodge this, because their prim_path branch short-circuits before _resolve_chunk_root runs).
+    Both a plain tab and a chunkgroup already have .prim_path set directly at creation
+    (add_context / the group-node prim_path assignment in _on_param_added) — just use it.
+    """
+    return context.prim_path
+
+
+def is_pin_filter_enabled(context: "core.ChunkBase") -> bool:
+    """Return whether context's Params page currently applies the pin filter (only pinned
+    chunks show) or not (every chunk shows, regardless of pin state).
+
+    Reads the persisted ``filter:pinEnabled`` custom attribute on the context's own prim, same
+    pattern as ``chunk:pinned``. Absent attribute means enabled — a tab from before this filter-
+    bar feature shipped keeps behaving exactly as it does today (pin filter always applied).
+    """
+    stage = context.get_stage()
+    path = _context_own_prim_path(context)
+    prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
+    attr = prim.GetAttribute("filter:pinEnabled") if (prim and prim.IsValid()) else None
+    val = attr.Get() if (attr and attr.IsValid()) else None
+    return True if val is None else bool(val)
+
+
+def set_pin_filter_enabled(context: "core.ChunkBase", enabled: bool) -> None:
+    """Persist context's pin-filter toggle as a custom ``filter:pinEnabled`` attribute on its
+    own prim (the context/tab prim itself, not any of its children).
+
+    Unlike a regular chunk, a plain tab context's own prim is never explicitly authored by
+    _define_prim — a tab context is added with send_added=False (see SceneSender.add_chunk),
+    so PARAM_ADDED never fires for it and its prim only starts existing as an implicit ancestor
+    once some CHILD chunk is added under it. An empty, just-created tab therefore has no prim
+    at all yet — define one on demand here rather than silently no-op-ing.
+    """
+    stage = context.get_stage()
+    path = _context_own_prim_path(context)
+    if not stage or not path:
+        return
+    prev_w = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        if not prim.IsValid():
+            prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
+        prim.CreateAttribute("filter:pinEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(enabled))
+    finally:
+        chunk_notice._usd_write_active = prev_w
+
+
+_SEARCH_SCOPES = ("both", "name", "type")
+
+
+def get_search_query(context: "core.ChunkBase") -> str:
+    """Return context's persisted Params-page search query. Absent attribute means empty —
+    a tab from before this search feature shipped behaves as if nothing was ever typed."""
+    stage = context.get_stage()
+    path = _context_own_prim_path(context)
+    prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
+    attr = prim.GetAttribute("filter:searchQuery") if (prim and prim.IsValid()) else None
+    val = attr.Get() if (attr and attr.IsValid()) else None
+    return val or ""
+
+
+def set_search_query(context: "core.ChunkBase", query: str) -> None:
+    """Persist context's Params-page search query as a custom ``filter:searchQuery`` attribute
+    on its own prim. Defines the prim on demand — see set_pin_filter_enabled's docstring for
+    why a plain tab context may not have one yet."""
+    stage = context.get_stage()
+    path = _context_own_prim_path(context)
+    if not stage or not path:
+        return
+    prev_w = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        if not prim.IsValid():
+            prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
+        prim.CreateAttribute("filter:searchQuery", Sdf.ValueTypeNames.String, custom=True).Set(query)
+    finally:
+        chunk_notice._usd_write_active = prev_w
+
+
+def get_search_scope(context: "core.ChunkBase") -> str:
+    """Return context's persisted search scope — one of "both", "name", "type". Absent
+    attribute, or an unrecognized stored value, means "both" (search name and type)."""
+    stage = context.get_stage()
+    path = _context_own_prim_path(context)
+    prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
+    attr = prim.GetAttribute("filter:searchScope") if (prim and prim.IsValid()) else None
+    val = attr.Get() if (attr and attr.IsValid()) else None
+    return val if val in _SEARCH_SCOPES else "both"
+
+
+def set_search_scope(context: "core.ChunkBase", scope: str) -> None:
+    """Persist context's search scope ("both", "name", or "type") as a custom
+    ``filter:searchScope`` attribute on its own prim."""
+    if scope not in _SEARCH_SCOPES:
+        scope = "both"
+    stage = context.get_stage()
+    path = _context_own_prim_path(context)
+    if not stage or not path:
+        return
+    prev_w = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        if not prim.IsValid():
+            prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
+        prim.CreateAttribute("filter:searchScope", Sdf.ValueTypeNames.String, custom=True).Set(scope)
+    finally:
+        chunk_notice._usd_write_active = prev_w
+
+
+def fuzzy_matches(term: str, candidate: str, threshold: float = 0.6) -> bool:
+    """True if term matches candidate — an exact case-insensitive substring always matches
+    (the common case: the user typed the name/type correctly, or a meaningful fragment of it);
+    otherwise fall back to difflib's typo-tolerant ratio so a small typo still matches."""
+    term = term.strip().lower()
+    if not term:
+        return True
+    candidate = candidate.lower()
+    if term in candidate:
+        return True
+    return difflib.SequenceMatcher(None, term, candidate).ratio() >= threshold
+
+
+def chunk_matches_search(chunk: "core.ChunkBase", query: str, scope: str = "both") -> bool:
+    """True if chunk's name and/or type (per scope) fuzzy-matches query. Empty query always
+    matches (no search filtering in effect)."""
+    if not query.strip():
+        return True
+    candidates = []
+    if scope in ("both", "name"):
+        candidates.append(chunk.name)
+    if scope in ("both", "type"):
+        cfg = chunk.get_config()
+        if cfg and cfg.module:
+            candidates.append(cfg.module)
+    return any(fuzzy_matches(query, c) for c in candidates)
 
 
 def find_group_active_view(

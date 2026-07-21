@@ -138,11 +138,29 @@ def _guarded_copy():
     chunk_usd.copy_selected_chunks()
 
 
+def _focused_view_is_graph(focused: QtWidgets.QWidget | None) -> bool:
+    """True if focused sits inside a ChunkGraphView (the Graph page), for either page's
+    copy/paste shortcut — both pages of a tab share one QShortcut (WidgetWithChildrenShortcut),
+    so this is how paste tells which surface it was actually triggered from."""
+    w = focused
+    while w is not None:
+        if isinstance(w, ChunkGraphView):
+            return True
+        w = w.parentWidget()
+    return False
+
+
 def _guarded_paste():
     focused = QtWidgets.QApplication.focusWidget()
     if focused and isinstance(focused, _TEXT_INPUT_TYPES):
         return
-    chunk_usd.paste_chunks()
+    # Pasted chunks follow the active surface, same as a fresh create: pinned if pasted while
+    # looking at Params, not pinned if pasted while looking at the Graph.
+    chunk_usd._pin_new_chunks = not _focused_view_is_graph(focused)
+    try:
+        chunk_usd.paste_chunks()
+    finally:
+        chunk_usd._pin_new_chunks = None
 
 
 class ChunkTabContextStack(QtWidgets.QStackedWidget):
@@ -308,13 +326,16 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             chunks = mod.load()
 
         # Flag the Params-tab origin so ChunkStageSync inserts the new chunk before the active
-        # view (view-follows-tail). Node-graph creates don't set this — there wiring is manual.
+        # view (view-follows-tail) and auto-pins it — node-graph creates don't set either flag,
+        # there wiring is manual and pin is opt-in via the node's right-click menu.
         chunk_usd._params_tab_create = True
+        chunk_usd._pin_new_chunks = True
         try:
             for c in chunks:
                 self.add_chunk_to_tab(c)
         finally:
             chunk_usd._params_tab_create = False
+            chunk_usd._pin_new_chunks = None
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
         w = self.widget(idx)
@@ -532,6 +553,11 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._view_bar = QtWidgets.QTabBar(self)
         self._view_bar.addTab("Params")
         self._view_bar.addTab("Graph")
+        # Start on Graph, not Params — an empty graph rather than an empty Params tab.
+        # Set directly (not via setCurrentIndex) since no slot is connected yet and any
+        # tabs created below must pick up view mode 1 from the start.
+        self.tab_widget.set_view_mode(1)
+        self._view_bar.setCurrentIndex(1)
         self._view_bar.currentChanged.connect(self._on_view_mode_changed)
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
