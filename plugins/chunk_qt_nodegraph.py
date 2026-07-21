@@ -203,6 +203,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self.chunk = chunk
         self.prim = prim
         self._locked = locked
+        self._pinned = chunk_usd.is_chunk_pinned(chunk)
         self._is_group = chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT)
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
@@ -237,6 +238,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # full opacity until the next state change (e.g. selecting it).
         if chunk.has_state(ChunkFlags.State.DISABLED):
             self.setOpacity(0.35)
+
+    def set_pinned(self, pinned: bool) -> None:
+        """Update the cached pin badge state after a menu toggle and repaint just this node —
+        no full graph rebuild needed for a cosmetic change."""
+        self._pinned = pinned
+        self.update()
 
     # ------------------------------------------------------------------
     # Build
@@ -580,6 +587,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             label = f"{label}  ▶"
         elif self._locked:
             label = f"{label}  \U0001f512"
+        if self._pinned:
+            label = f"{label}  \U0001f4cc"
         painter.drawText(
             QtCore.QRectF(8, 4, _NODE_WIDTH - 16, 18),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
@@ -1317,6 +1326,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._view_state = ViewSlotState(self)
         self._view_state.slot_changed.connect(self._on_view_slot_changed)
         self._view_state.create_view_for.connect(self._on_create_view_for_path)
+        self._view_state.pin_changed.connect(self._on_pin_changed)
 
     def _on_toggle_param_edges(self, checked: bool):
         graph_scene = self.scene()
@@ -2087,9 +2097,19 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def set_view_state(self, vs: ViewSlotState) -> None:
         self._view_state.slot_changed.disconnect(self._on_view_slot_changed)
         self._view_state.create_view_for.disconnect(self._on_create_view_for_path)
+        self._view_state.pin_changed.disconnect(self._on_pin_changed)
         self._view_state = vs
         vs.slot_changed.connect(self._on_view_slot_changed)
         vs.create_view_for.connect(self._on_create_view_for_path)
+        vs.pin_changed.connect(self._on_pin_changed)
+
+    def _on_pin_changed(self, target_chunk: core.ChunkBase, pinned: bool) -> None:
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        node = graph_scene._nodes.get(chunk_usd.get_chunk_prim_path(target_chunk))
+        if node is not None:
+            node.set_pinned(pinned)
 
     def _on_create_view_for_path(self, prim_path: str) -> None:
         self._create_view_node_for_prim(prim_path)
@@ -2217,6 +2237,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         view_exists = self._context_has_view(scene, context)
         # Create the node(s) at the right-click point instead of the far-away index default.
         chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        # Explicitly flag "not pinned" (rather than leaving the flag at its idle None) — the
+        # Params-page widget's own PARAM_ADDED listener can race ahead of ChunkStageSync's and
+        # ask is_chunk_pinned() before _define_prim authors the attribute; an explicit False
+        # here is what lets it resolve correctly instead of falling back to the legacy default.
+        chunk_usd._pin_new_chunks = False
         nested, prev_ctx = self._push_nest_context(scene, context)
         try:
             for c in chunks:
@@ -2227,6 +2252,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if nested:
                 scene._current_context = prev_ctx
             chunk_usd._create_node_pos = None
+            chunk_usd._pin_new_chunks = None
 
         # A view created straight from the chunk menu needs a slot + activation to work (the
         # "Set View" path does this). Set it up so it's a usable, active view (unwired until the

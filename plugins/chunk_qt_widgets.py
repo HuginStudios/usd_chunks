@@ -1267,6 +1267,7 @@ class ViewSlotState(QtCore.QObject):
 
     slot_changed = QtCore.Signal(int)   # 0 = off, 1–3 = active slot
     create_view_for = QtCore.Signal(str)  # prim path — handled by ChunkGraphView
+    pin_changed = QtCore.Signal(object, bool)  # (chunk, pinned) — a Pin/Unpin menu toggle
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1302,6 +1303,9 @@ class ViewSlotState(QtCore.QObject):
 
         inspect_action = menu.addAction("Inspect Layer")
         rename_action = menu.addAction("Rename…")
+        pin_action = menu.addAction(
+            "Unpin from Params" if chunk_usd.is_chunk_pinned(grp) else "Pin to Params"
+        )
         menu.addSeparator()
 
         stage: Optional[Usd.Stage] = grp.get_stage()
@@ -1346,6 +1350,10 @@ class ViewSlotState(QtCore.QObject):
             # convert_attr sanitises it to a valid identifier, so no path validation needed here.
             if ok and new and new != old:
                 grp.name = new
+        elif res == pin_action:
+            new_pinned = not chunk_usd.is_chunk_pinned(grp)
+            chunk_usd.set_chunk_pinned(grp, new_pinned)
+            self.pin_changed.emit(grp, new_pinned)
         elif view_action and res == view_action:
             if existing_view_slot is not None:
                 self.set_slot(existing_view_slot)
@@ -1355,6 +1363,65 @@ class ViewSlotState(QtCore.QObject):
             conn.handle_callback(
                 chunk_notice.MenuActionNotice(grp.get_notice_data()), grp, False
             )
+
+
+class ParamsFilterBar(QtWidgets.QWidget):
+    """Per-tab filter bar shown at the top of a context's Params page: a pin-filter toggle plus
+    a fuzzy search box with a Name/Type/Both scope combobox — two independent, AND'd filters
+    over the same Params page (see chunk_usd.chunk_matches_search /
+    ChunkWidget._is_hidden_by_params_filter).
+    """
+
+    pin_filter_toggled = QtCore.Signal(bool)
+    search_changed = QtCore.Signal(str, str)  # (query, scope)
+
+    _SCOPE_ITEMS = (("Both", "both"), ("Name", "name"), ("Type", "type"))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(6)
+
+        self.pin_filter_checkbox = QtWidgets.QCheckBox("Pinned only")
+        self.pin_filter_checkbox.toggled.connect(self.pin_filter_toggled)
+        layout.addWidget(self.pin_filter_checkbox)
+
+        self.search_box = QtWidgets.QLineEdit(placeholderText="Search...")
+        self.search_box.textChanged.connect(self._on_search_changed)
+        layout.addWidget(self.search_box, 1)
+
+        self.scope_combo = QtWidgets.QComboBox()
+        for label, value in self._SCOPE_ITEMS:
+            self.scope_combo.addItem(label, value)
+        self.scope_combo.currentIndexChanged.connect(self._on_scope_changed)
+        layout.addWidget(self.scope_combo)
+
+    def set_pin_filter_checked(self, checked: bool) -> None:
+        self.pin_filter_checkbox.blockSignals(True)
+        self.pin_filter_checkbox.setChecked(checked)
+        self.pin_filter_checkbox.blockSignals(False)
+
+    def set_search_state(self, query: str, scope: str) -> None:
+        self.search_box.blockSignals(True)
+        self.search_box.setText(query)
+        self.search_box.blockSignals(False)
+
+        self.scope_combo.blockSignals(True)
+        idx = self.scope_combo.findData(scope)
+        self.scope_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.scope_combo.blockSignals(False)
+
+    def current_scope(self) -> str:
+        return self.scope_combo.currentData()
+
+    def _on_scope_changed(self, _index: int) -> None:
+        self.search_changed.emit(self.search_box.text(), self.current_scope())
+
+    def _on_search_changed(self, text: str) -> None:
+        self.search_changed.emit(text, self.current_scope())
 
 
 class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
@@ -1384,11 +1451,80 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     def set_view_state(self, vs: "ViewSlotState") -> None:
         if self._view_state is not None:
             self._view_state.slot_changed.disconnect(self._update_view_overlay)
+            self._view_state.pin_changed.disconnect(self._on_pin_changed)
         self._view_state = vs
         vs.slot_changed.connect(self._update_view_overlay)
+        vs.pin_changed.connect(self._on_pin_changed)
         if self._is_tab_context_widget:
             self._ensure_view_overlay()
             self._update_view_overlay(vs.active_slot)
+
+    def _on_pin_filter_toggled(self, enabled: bool) -> None:
+        """The filter bar's pin-filter checkbox changed for this tab. Unlike a single chunk's
+        pin toggle, this can change visibility for every chunk in the tab at once."""
+        chunk_usd.set_pin_filter_enabled(self.group, enabled)
+        self._reconcile_all_children()
+
+    def _on_search_changed(self, query: str, scope: str) -> None:
+        """The filter bar's search box or a scope chip changed for this tab — live, on every
+        keystroke, same as the create-menu's FilterableChunkMenu search. Can change visibility
+        for every chunk in the tab at once."""
+        chunk_usd.set_search_query(self.group, query)
+        chunk_usd.set_search_scope(self.group, scope)
+        self._reconcile_all_children()
+
+    def _on_pin_changed(self, target_chunk: "chunk.ChunkBase", pinned: bool) -> None:
+        """A chunk's pin state was toggled from the shared menu (graph or Params surface).
+
+        Only the tab-context widget owning target_chunk's Params page reacts — every other
+        ChunkWidget either has no _view_state set (never connected) or belongs to a different
+        tab's ViewSlotState instance. Reconciles rather than trusting `pinned` directly: if this
+        tab's pin filter is currently OFF, the chunk should stay visible either way.
+        """
+        if not self._is_tab_context_widget:
+            return
+        self._reconcile_chunk_visibility(target_chunk)
+
+    def _reconcile_chunk_visibility(self, target_chunk: "chunk.ChunkBase") -> None:
+        """Show or hide target_chunk in this tab's Params page to match the current combined
+        filter state (right now just the pin filter; issue #06 adds search on top). Used both
+        for a single chunk's pin toggle and, looped over every child, for a filter-bar change
+        that can affect many chunks in the tab at once."""
+        hidden = self._is_hidden_by_params_filter(target_chunk)
+        shown = target_chunk.get_hash() in self.group_widgets
+        if hidden and shown:
+            self._hide_chunk_widget(target_chunk)
+        elif not hidden and not shown:
+            self._show_chunk_widget(target_chunk)
+
+    def _reconcile_all_children(self) -> None:
+        """Re-apply the current filter state to every direct child chunk of this tab context.
+        Call after a filter-bar change (e.g. the pin-filter toggle) — unlike a single chunk's
+        pin toggle, that can change visibility for many chunks in the tab at once."""
+        if not self._is_tab_context_widget:
+            return
+        for child in self.group.get_my_params():
+            if isinstance(child, chunk.ChunkBase):
+                self._reconcile_chunk_visibility(child)
+
+    def _show_chunk_widget(self, target_chunk: "chunk.ChunkBase") -> None:
+        if target_chunk.get_hash() in self.group_widgets:
+            return  # already shown
+        if chunk_usd.is_group_chunk(target_chunk):
+            self._add_group_widget(target_chunk)
+        else:
+            self._add_group_layout(target_chunk)
+
+    def _hide_chunk_widget(self, target_chunk: "chunk.ChunkBase") -> None:
+        h = target_chunk.get_hash()
+        w = self.group_widgets.get(h)
+        if w is None:
+            return
+        self.remove_widget(w)
+        try:
+            del self.group_widgets[h]
+        except KeyError:
+            pass
 
     def _ensure_view_overlay(self) -> None:
         if self._view_overlay is not None:
@@ -1475,6 +1611,18 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             self._prim_path_field = self._build_prim_path_field()
             self.__layout__.insertWidget(2, self._prim_path_field)
+            next_idx = 3
+
+            if self._is_tab_context_widget:
+                self._filter_bar = ParamsFilterBar(self)
+                self._filter_bar.set_pin_filter_checked(chunk_usd.is_pin_filter_enabled(self.group))
+                self._filter_bar.set_search_state(
+                    chunk_usd.get_search_query(self.group), chunk_usd.get_search_scope(self.group)
+                )
+                self._filter_bar.pin_filter_toggled.connect(self._on_pin_filter_toggled)
+                self._filter_bar.search_changed.connect(self._on_search_changed)
+                self.__layout__.insertWidget(next_idx, self._filter_bar)
+                next_idx += 1
 
             self._lofted_container = QtWidgets.QWidget(self)
             self._lofted_container.setSizePolicy(
@@ -1486,8 +1634,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self._lofted_layout.setSpacing(2)
             self._lofted_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
             self._lofted_container.setVisible(False)
-            lofted_idx = 3 if hasattr(self, '_prim_path_field') else 2
-            self.__layout__.insertWidget(lofted_idx, self._lofted_container)
+            self.__layout__.insertWidget(next_idx, self._lofted_container)
 
         if self._is_group_chunk():
             self.minimize_button.installEventFilter(self)
@@ -1514,6 +1661,25 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         else:
             super().add_widget(widget, label)
 
+    def _is_hidden_by_params_filter(self, group_chunk) -> bool:
+        """True if group_chunk should be hidden from THIS tab's Params page under the current
+        combined filter state — the pin filter AND the search box, two independent filters
+        that both have to pass for a chunk to show. Only meaningful when self is the
+        tab-context widget — a context's own direct children are the only things this filter
+        applies to, never nested groups within a chunk's own UI."""
+        if not self._is_tab_context_widget:
+            return False
+        if not isinstance(group_chunk, chunk.ChunkBase):
+            return False
+        if chunk_usd.is_pin_filter_enabled(self.group) and not chunk_usd.is_chunk_pinned(group_chunk):
+            return True
+        query = chunk_usd.get_search_query(self.group)
+        if query and not chunk_usd.chunk_matches_search(
+            group_chunk, query, chunk_usd.get_search_scope(self.group)
+        ):
+            return True
+        return False
+
     def _add_group_layout(self, group):
         if self._is_group_chunk_node():
             # Don't create orphan Qt child widgets — they render at (0,0) as overlays.
@@ -1523,6 +1689,8 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 and (cfg := group.get_config()) and cfg.module):
             # ChunkGroup nodes are rendered via _add_group_widget (triggered by CHUNK_LOADED).
             # Suppress the normal nested-layout path to avoid a duplicate widget.
+            return None
+        if self._is_hidden_by_params_filter(group):
             return None
         return super()._add_group_layout(group)
 
@@ -1567,9 +1735,15 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         We bypass add_param so sub-chunk PARAM_ADDED notices never propagate
         into this tab context's ownership chain.
         """
+        if self._is_hidden_by_params_filter(group_chunk):
+            return
         w = ChunkWidget(group_chunk, self)
         w.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)
-        self.content_layout.addWidget(w, 0, QtCore.Qt.AlignTop)
+        # Route through add_widget (LabeledWidget wrapping, label hidden since none is passed)
+        # instead of a raw content_layout.addWidget, so this stays trackable in group_widgets
+        # and removable via remove_widget the same way a plain chunk's group layout is.
+        self.add_widget(w)
+        self.group_widgets[group_chunk.get_hash()] = w
 
     def _build_prim_path_field(self) -> QtWidgets.QWidget:
         container = QtWidgets.QWidget()
