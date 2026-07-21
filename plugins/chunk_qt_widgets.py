@@ -16,6 +16,10 @@ import textwrap
 
 _PLACEHOLDER_DESC = "Chunk description..."
 
+# Background tint for a tab's Params-page header panel (prim path field, lofted own-params,
+# filter bar) — distinct from the body's #333333 (CHUNK_STYLESHEET's default QFrame color).
+_PARAMS_HEADER_BG = "#242424"
+
 
 def _clean_description(desc: str) -> str:
     """Dedented/stripped chunk description for a tooltip; '' for the unset placeholder.
@@ -1631,11 +1635,20 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 self._header_container = QtWidgets.QFrame(self)
                 self._header_container.setObjectName("ParamsHeader")
                 self._header_container.setStyleSheet(
-                    "QFrame#ParamsHeader { background-color: #242424; }"
+                    f"QFrame#ParamsHeader {{ background-color: {_PARAMS_HEADER_BG}; }}"
                 )
                 header_layout = QtWidgets.QVBoxLayout(self._header_container)
                 header_layout.setContentsMargins(0, 0, 0, 0)
                 header_layout.setSpacing(0)
+
+                # Both are plain QWidgets with no background of their own — set explicitly
+                # rather than relying on transparency showing the panel's tint through, which
+                # isn't reliable across Qt styles/palettes. WA_StyledBackground is needed too:
+                # a bare QWidget's default paintEvent doesn't consult its own stylesheet for
+                # background-color without it (unlike QFrame, which paints it natively).
+                for w in (self._prim_path_field, self._lofted_container):
+                    w.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
+                    w.setStyleSheet(f"background-color: {_PARAMS_HEADER_BG};")
                 header_layout.addWidget(self._prim_path_field)
                 header_layout.addWidget(self._lofted_container)
 
@@ -1653,13 +1666,13 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
                 # A plain QFrame HLine would be invisible here — CHUNK_STYLESHEET sets
                 # `QFrame { border: none; }` globally, which strips the border Qt's frame-shape
-                # painting relies on. An explicit gradient bar instead gives it a subtle
-                # embossed edge (dark top lip fading to a lighter bottom) rather than a flat line.
+                # painting relies on. An explicit gradient bar instead gives it a clearly visible
+                # embossed edge (dark top lip fading to a bright bottom highlight).
                 self._filter_bar_separator = QtWidgets.QFrame(self)
-                self._filter_bar_separator.setFixedHeight(3)
+                self._filter_bar_separator.setFixedHeight(4)
                 self._filter_bar_separator.setStyleSheet(
                     "background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-                    " stop:0 #141414, stop:1 #555555);"
+                    " stop:0 #0d0d0d, stop:1 #7a7a7a);"
                 )
                 self.__layout__.insertWidget(next_idx, self._filter_bar_separator)
                 next_idx += 1

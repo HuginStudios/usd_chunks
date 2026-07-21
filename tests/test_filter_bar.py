@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pxr import Usd
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from plugins import chunk_usd
 from plugins.chunk_usd import initialize as _chunk_usd_init
@@ -478,3 +478,19 @@ def test_header_panel_has_a_distinct_tint_and_separator_is_visible(qapp) -> None
     top_level = _layout_widgets(w.__layout__)
     header_idx = _index_of(top_level, w._header_container)
     assert top_level[header_idx + 1] is w._filter_bar_separator
+
+
+def test_prim_path_and_lofted_container_match_header_panel_tint(qapp) -> None:
+    """Both are plain QWidgets with no background of their own by default — they must be
+    explicitly tinted to match the header panel rather than showing some other default,
+    with WA_StyledBackground set so a bare QWidget actually paints it."""
+    from plugins.chunk_qt_widgets import ChunkWidget, _PARAMS_HEADER_BG
+
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+    w = ChunkWidget(ctx, is_tab_context=True)
+
+    for widget in (w._prim_path_field, w._lofted_container):
+        assert _PARAMS_HEADER_BG in widget.styleSheet()
+        assert widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground) is True
