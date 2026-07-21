@@ -1068,16 +1068,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         # Proxy widgets (ChunkWidget) are created in small batches so the graph
         # renders immediately with node headers and fills in progressively.
-        self._create_proxies_batch(list(self._nodes.values()), self._build_gen, on_complete=self._on_proxies_ready)
+        self._create_proxies_batch(list(self._nodes.values()), self._build_gen)
 
-    def _on_proxies_ready(self):
-        for view in self.views():
-            if view.isVisible():
-                view._frame_nodes()
-            else:
-                view._pending_frame = True
-
-    def _create_proxies_batch(self, remaining: list, gen: int, on_complete=None):
+    def _create_proxies_batch(self, remaining: list, gen: int):
         if gen != getattr(self, "_build_gen", gen):
             return  # a newer rebuild superseded this batch — don't touch its stale nodes
         batch, rest = remaining[:self._PROXY_BATCH_SIZE], remaining[self._PROXY_BATCH_SIZE:]
@@ -1090,9 +1083,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 print(f"[PROXY] create_proxy FAILED for {getattr(node.chunk, 'name', '?')}: "
                       f"{type(e).__name__}: {e}")
         if rest:
-            QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, gen, on_complete))
-        elif on_complete:
-            QtCore.QTimer.singleShot(0, on_complete)
+            QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, gen))
 
     def _build_edges(self):
         for edge in self._edges:
@@ -1303,7 +1294,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.setSceneRect(-e, -e, e * 2, e * 2)
         self._pan_active = False
         self._pan_start = QtCore.QPoint()
-        self._pending_frame = False
 
         self._menubar = QtWidgets.QMenuBar(self)
         view_menu = self._menubar.addMenu("View")
@@ -1420,12 +1410,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if not tails:
             return
         self._create_view_node_for_prim(chunk_usd.get_chunk_prim_path(tails[0]))
-
-    def showEvent(self, event: QtGui.QShowEvent) -> None:
-        super().showEvent(event)
-        if self._pending_frame:
-            self._pending_frame = False
-            self._frame_nodes()
 
     # ------------------------------------------------------------------
     # Zoom
