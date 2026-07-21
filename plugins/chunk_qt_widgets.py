@@ -1613,17 +1613,6 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self.__layout__.insertWidget(2, self._prim_path_field)
             next_idx = 3
 
-            if self._is_tab_context_widget:
-                self._filter_bar = ParamsFilterBar(self)
-                self._filter_bar.set_pin_filter_checked(chunk_usd.is_pin_filter_enabled(self.group))
-                self._filter_bar.set_search_state(
-                    chunk_usd.get_search_query(self.group), chunk_usd.get_search_scope(self.group)
-                )
-                self._filter_bar.pin_filter_toggled.connect(self._on_pin_filter_toggled)
-                self._filter_bar.search_changed.connect(self._on_search_changed)
-                self.__layout__.insertWidget(next_idx, self._filter_bar)
-                next_idx += 1
-
             self._lofted_container = QtWidgets.QWidget(self)
             self._lofted_container.setSizePolicy(
                 QtWidgets.QSizePolicy.Policy.Preferred,
@@ -1635,6 +1624,32 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self._lofted_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
             self._lofted_container.setVisible(False)
             self.__layout__.insertWidget(next_idx, self._lofted_container)
+            next_idx += 1
+
+            if self._is_tab_context_widget:
+                # _lofted_container (above) is where a context's own top-level params land —
+                # e.g. scripts/chunkgroup.py's "doc" Description TextEdit — via add_widget's
+                # lofted-params branch. That's the pre-existing "description" for a chunkgroup;
+                # a plain tab has no own params, so _lofted_container stays empty/invisible and
+                # the filter bar just follows the prim path field directly either way.
+                self._filter_bar = ParamsFilterBar(self)
+                self._filter_bar.set_pin_filter_checked(chunk_usd.is_pin_filter_enabled(self.group))
+                self._filter_bar.set_search_state(
+                    chunk_usd.get_search_query(self.group), chunk_usd.get_search_scope(self.group)
+                )
+                self._filter_bar.pin_filter_toggled.connect(self._on_pin_filter_toggled)
+                self._filter_bar.search_changed.connect(self._on_search_changed)
+                self.__layout__.insertWidget(next_idx, self._filter_bar)
+                next_idx += 1
+
+                # A plain QFrame HLine would be invisible here — CHUNK_STYLESHEET sets
+                # `QFrame { border: none; }` globally, which strips the border Qt's frame-shape
+                # painting relies on. Paint a solid bar directly instead.
+                self._filter_bar_separator = QtWidgets.QFrame(self)
+                self._filter_bar_separator.setFixedHeight(2)
+                self._filter_bar_separator.setStyleSheet("background-color: #555555;")
+                self.__layout__.insertWidget(next_idx, self._filter_bar_separator)
+                next_idx += 1
 
         if self._is_group_chunk():
             self.minimize_button.installEventFilter(self)

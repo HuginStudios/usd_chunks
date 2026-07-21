@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pxr import Usd
+from PySide6 import QtWidgets
 
 from plugins import chunk_usd
 from plugins.chunk_usd import initialize as _chunk_usd_init
@@ -381,3 +382,89 @@ def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> No
     w2 = ChunkWidget(ctx, is_tab_context=True)
     assert w2._filter_bar.search_box.text() == "transform"
     assert w2._filter_bar.current_scope() == "type"
+
+
+# ---------------------------------------------------------------------------
+# filter bar placement: prim path -> lofted own-params (e.g. a chunkgroup's
+# "doc" Description field, from scripts/chunkgroup.py) -> filter bar -> separator -> chunks
+# ---------------------------------------------------------------------------
+
+def _layout_widgets(chunk_widget) -> list:
+    widgets = []
+    for i in range(chunk_widget.__layout__.count()):
+        widgets.append(chunk_widget.__layout__.itemAt(i).widget())
+    return widgets
+
+
+def _index_of(widgets: list, target) -> int:
+    for i, w in enumerate(widgets):
+        if w is target:
+            return i
+    raise AssertionError(f"{target!r} not found in layout")
+
+
+def test_filter_bar_follows_prim_path_on_a_plain_tab(qapp) -> None:
+    from plugins.chunk_qt_widgets import ChunkWidget, ParamsFilterBar
+
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+    w = ChunkWidget(ctx, is_tab_context=True)
+
+    assert w._lofted_container.isVisible() is False  # plain tabs have no own params to loft
+    widgets = _layout_widgets(w)
+    prim_path_idx = _index_of(widgets, w._prim_path_field)
+    lofted_idx = _index_of(widgets, w._lofted_container)
+    filter_bar_idx = _index_of(widgets, w._filter_bar)
+    assert lofted_idx == prim_path_idx + 1
+    assert filter_bar_idx == lofted_idx + 1
+    assert isinstance(w._filter_bar, ParamsFilterBar)
+
+
+def test_filter_bar_follows_lofted_description_on_a_chunkgroup_tab(qapp) -> None:
+    """A chunkgroup's own top-level params (e.g. scripts/chunkgroup.py's "doc" Description
+    TextEdit) render lofted, above the filter bar — via ChunkWidget.add_widget's existing
+    lofted-params branch for CONTEXT chunks, not anything the filter bar itself builds."""
+    from plugins.chunk_qt_widgets import ChunkWidget
+    from usd_chunks.chunk_flags import ChunkFlags
+
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    scene.add_context("Tab1")
+    grp = chunk.ChunkBase(
+        "mygroup",
+        flags=ChunkFlags.GroupFlags.CONTEXT | ChunkFlags.GroupFlags.LABELED,
+    )
+    grp._config = ChunkConfig(module="group")
+    doc = chunk.TextEdit("doc", "Description", rows=3, flags=ChunkFlags.ParamFlags.LABELED)
+    grp.add_param(doc)
+    scene.add_chunk(grp)
+
+    w = ChunkWidget(grp, is_tab_context=True)
+    assert w._lofted_container.isVisible() is True
+    assert w._lofted_layout.count() == 1  # the "doc" field landed here, not in the chunk list
+
+    widgets = _layout_widgets(w)
+    prim_path_idx = _index_of(widgets, w._prim_path_field)
+    lofted_idx = _index_of(widgets, w._lofted_container)
+    filter_bar_idx = _index_of(widgets, w._filter_bar)
+    assert lofted_idx == prim_path_idx + 1
+    assert filter_bar_idx == lofted_idx + 1
+
+
+def test_separator_is_a_visible_solid_bar_right_after_filter_bar(qapp) -> None:
+    """A plain QFrame HLine renders invisible under CHUNK_STYLESHEET's global
+    `QFrame { border: none; }` rule, which strips the border frame-shape painting relies on —
+    the separator must be an explicit colored bar instead."""
+    from plugins.chunk_qt_widgets import ChunkWidget
+
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+    w = ChunkWidget(ctx, is_tab_context=True)
+
+    assert w._filter_bar_separator.height() > 0
+    assert "background-color" in w._filter_bar_separator.styleSheet()
+    widgets = _layout_widgets(w)
+    filter_bar_idx = _index_of(widgets, w._filter_bar)
+    assert widgets[filter_bar_idx + 1] is w._filter_bar_separator
