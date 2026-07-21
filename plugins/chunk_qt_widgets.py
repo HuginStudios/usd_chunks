@@ -1610,8 +1610,6 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
         if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             self._prim_path_field = self._build_prim_path_field()
-            self.__layout__.insertWidget(2, self._prim_path_field)
-            next_idx = 3
 
             self._lofted_container = QtWidgets.QWidget(self)
             self._lofted_container.setSizePolicy(
@@ -1623,15 +1621,24 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self._lofted_layout.setSpacing(2)
             self._lofted_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
             self._lofted_container.setVisible(False)
-            self.__layout__.insertWidget(next_idx, self._lofted_container)
-            next_idx += 1
 
             if self._is_tab_context_widget:
-                # _lofted_container (above) is where a context's own top-level params land —
-                # e.g. scripts/chunkgroup.py's "doc" Description TextEdit — via add_widget's
-                # lofted-params branch. That's the pre-existing "description" for a chunkgroup;
-                # a plain tab has no own params, so _lofted_container stays empty/invisible and
-                # the filter bar just follows the prim path field directly either way.
+                # A distinct "toolbar" panel — prim path, a context's own lofted top-level
+                # params (e.g. scripts/chunkgroup.py's "doc" Description TextEdit — the
+                # pre-existing description for a chunkgroup; empty/invisible for a plain tab,
+                # which has no own params), and the filter bar — visually separated from the
+                # chunk list below by a tinted background + embossed edge, not just a plain line.
+                self._header_container = QtWidgets.QFrame(self)
+                self._header_container.setObjectName("ParamsHeader")
+                self._header_container.setStyleSheet(
+                    "QFrame#ParamsHeader { background-color: #242424; }"
+                )
+                header_layout = QtWidgets.QVBoxLayout(self._header_container)
+                header_layout.setContentsMargins(0, 0, 0, 0)
+                header_layout.setSpacing(0)
+                header_layout.addWidget(self._prim_path_field)
+                header_layout.addWidget(self._lofted_container)
+
                 self._filter_bar = ParamsFilterBar(self)
                 self._filter_bar.set_pin_filter_checked(chunk_usd.is_pin_filter_enabled(self.group))
                 self._filter_bar.set_search_state(
@@ -1639,17 +1646,26 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 )
                 self._filter_bar.pin_filter_toggled.connect(self._on_pin_filter_toggled)
                 self._filter_bar.search_changed.connect(self._on_search_changed)
-                self.__layout__.insertWidget(next_idx, self._filter_bar)
-                next_idx += 1
+                header_layout.addWidget(self._filter_bar)
+
+                self.__layout__.insertWidget(2, self._header_container)
+                next_idx = 3
 
                 # A plain QFrame HLine would be invisible here — CHUNK_STYLESHEET sets
                 # `QFrame { border: none; }` globally, which strips the border Qt's frame-shape
-                # painting relies on. Paint a solid bar directly instead.
+                # painting relies on. An explicit gradient bar instead gives it a subtle
+                # embossed edge (dark top lip fading to a lighter bottom) rather than a flat line.
                 self._filter_bar_separator = QtWidgets.QFrame(self)
-                self._filter_bar_separator.setFixedHeight(2)
-                self._filter_bar_separator.setStyleSheet("background-color: #555555;")
+                self._filter_bar_separator.setFixedHeight(3)
+                self._filter_bar_separator.setStyleSheet(
+                    "background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+                    " stop:0 #141414, stop:1 #555555);"
+                )
                 self.__layout__.insertWidget(next_idx, self._filter_bar_separator)
                 next_idx += 1
+            else:
+                self.__layout__.insertWidget(2, self._prim_path_field)
+                self.__layout__.insertWidget(3, self._lofted_container)
 
         if self._is_group_chunk():
             self.minimize_button.installEventFilter(self)

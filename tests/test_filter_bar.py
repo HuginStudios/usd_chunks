@@ -385,14 +385,15 @@ def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> No
 
 
 # ---------------------------------------------------------------------------
-# filter bar placement: prim path -> lofted own-params (e.g. a chunkgroup's
-# "doc" Description field, from scripts/chunkgroup.py) -> filter bar -> separator -> chunks
+# filter bar placement: a tinted "ParamsHeader" panel (prim path -> lofted own-
+# params, e.g. a chunkgroup's "doc" Description field from scripts/chunkgroup.py
+# -> filter bar) -> an embossed separator -> the chunk list
 # ---------------------------------------------------------------------------
 
-def _layout_widgets(chunk_widget) -> list:
+def _layout_widgets(layout) -> list:
     widgets = []
-    for i in range(chunk_widget.__layout__.count()):
-        widgets.append(chunk_widget.__layout__.itemAt(i).widget())
+    for i in range(layout.count()):
+        widgets.append(layout.itemAt(i).widget())
     return widgets
 
 
@@ -403,7 +404,7 @@ def _index_of(widgets: list, target) -> int:
     raise AssertionError(f"{target!r} not found in layout")
 
 
-def test_filter_bar_follows_prim_path_on_a_plain_tab(qapp) -> None:
+def test_filter_bar_follows_prim_path_in_the_header_panel_on_a_plain_tab(qapp) -> None:
     from plugins.chunk_qt_widgets import ChunkWidget, ParamsFilterBar
 
     stage = Usd.Stage.CreateInMemory()
@@ -412,19 +413,26 @@ def test_filter_bar_follows_prim_path_on_a_plain_tab(qapp) -> None:
     w = ChunkWidget(ctx, is_tab_context=True)
 
     assert w._lofted_container.isVisible() is False  # plain tabs have no own params to loft
-    widgets = _layout_widgets(w)
-    prim_path_idx = _index_of(widgets, w._prim_path_field)
-    lofted_idx = _index_of(widgets, w._lofted_container)
-    filter_bar_idx = _index_of(widgets, w._filter_bar)
+
+    top_level = _layout_widgets(w.__layout__)
+    header_idx = _index_of(top_level, w._header_container)
+    separator_idx = _index_of(top_level, w._filter_bar_separator)
+    assert separator_idx == header_idx + 1  # separator directly follows the tinted header panel
+
+    header_children = _layout_widgets(w._header_container.layout())
+    prim_path_idx = _index_of(header_children, w._prim_path_field)
+    lofted_idx = _index_of(header_children, w._lofted_container)
+    filter_bar_idx = _index_of(header_children, w._filter_bar)
     assert lofted_idx == prim_path_idx + 1
     assert filter_bar_idx == lofted_idx + 1
     assert isinstance(w._filter_bar, ParamsFilterBar)
 
 
-def test_filter_bar_follows_lofted_description_on_a_chunkgroup_tab(qapp) -> None:
+def test_filter_bar_follows_lofted_description_in_the_header_panel_on_a_chunkgroup_tab(qapp) -> None:
     """A chunkgroup's own top-level params (e.g. scripts/chunkgroup.py's "doc" Description
     TextEdit) render lofted, above the filter bar — via ChunkWidget.add_widget's existing
-    lofted-params branch for CONTEXT chunks, not anything the filter bar itself builds."""
+    lofted-params branch for CONTEXT chunks, not anything the filter bar itself builds. Both
+    live inside the same tinted header panel as the prim path field and the filter bar."""
     from plugins.chunk_qt_widgets import ChunkWidget
     from usd_chunks.chunk_flags import ChunkFlags
 
@@ -444,18 +452,18 @@ def test_filter_bar_follows_lofted_description_on_a_chunkgroup_tab(qapp) -> None
     assert w._lofted_container.isVisible() is True
     assert w._lofted_layout.count() == 1  # the "doc" field landed here, not in the chunk list
 
-    widgets = _layout_widgets(w)
-    prim_path_idx = _index_of(widgets, w._prim_path_field)
-    lofted_idx = _index_of(widgets, w._lofted_container)
-    filter_bar_idx = _index_of(widgets, w._filter_bar)
+    header_children = _layout_widgets(w._header_container.layout())
+    prim_path_idx = _index_of(header_children, w._prim_path_field)
+    lofted_idx = _index_of(header_children, w._lofted_container)
+    filter_bar_idx = _index_of(header_children, w._filter_bar)
     assert lofted_idx == prim_path_idx + 1
     assert filter_bar_idx == lofted_idx + 1
 
 
-def test_separator_is_a_visible_solid_bar_right_after_filter_bar(qapp) -> None:
-    """A plain QFrame HLine renders invisible under CHUNK_STYLESHEET's global
-    `QFrame { border: none; }` rule, which strips the border frame-shape painting relies on —
-    the separator must be an explicit colored bar instead."""
+def test_header_panel_has_a_distinct_tint_and_separator_is_visible(qapp) -> None:
+    """A plain QFrame HLine would be invisible here — CHUNK_STYLESHEET's global
+    `QFrame { border: none; }` rule strips the border frame-shape painting relies on — so the
+    header panel's tint and the separator both use explicit background styling instead."""
     from plugins.chunk_qt_widgets import ChunkWidget
 
     stage = Usd.Stage.CreateInMemory()
@@ -463,8 +471,10 @@ def test_separator_is_a_visible_solid_bar_right_after_filter_bar(qapp) -> None:
     ctx = scene.add_context("Tab1")
     w = ChunkWidget(ctx, is_tab_context=True)
 
+    assert "background-color" in w._header_container.styleSheet()
     assert w._filter_bar_separator.height() > 0
-    assert "background-color" in w._filter_bar_separator.styleSheet()
-    widgets = _layout_widgets(w)
-    filter_bar_idx = _index_of(widgets, w._filter_bar)
-    assert widgets[filter_bar_idx + 1] is w._filter_bar_separator
+    assert "background" in w._filter_bar_separator.styleSheet()
+
+    top_level = _layout_widgets(w.__layout__)
+    header_idx = _index_of(top_level, w._header_container)
+    assert top_level[header_idx + 1] is w._filter_bar_separator
