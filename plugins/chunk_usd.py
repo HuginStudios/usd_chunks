@@ -258,20 +258,30 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # deleting a middle node A -> X -> B must leave A -> B, not a broken chain.
         heal_exec_chain_on_delete(self._stage, prim_path_str)
 
-        for layer in self._stage.GetLayerStack(includeSessionLayers=True):
-            parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
-            if parent and sdf_path.name in parent.nameChildren:
-                del parent.nameChildren[sdf_path.name]
-
-        root_sdf = Sdf.Path(chunk_root)
-        root_prim = self._stage.GetPrimAtPath(root_sdf)
-        if root_prim.IsValid() and not any(
-            child.GetTypeName() == _CHUNK_PRIM_TYPENAME for child in root_prim.GetChildren()
-        ):
+        # The nameChildren edits below are raw Sdf writes that fire StageContentsChanged
+        # like any other stage edit. Without this guard, deleting a context with several
+        # children re-enters _on_contents_changed -> load_chunks after every single child
+        # removal (mid-cascade, before the remaining siblings are deleted), causing a full
+        # stage rescan per child instead of once for the whole delete.
+        prev_w = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True
+        try:
             for layer in self._stage.GetLayerStack(includeSessionLayers=True):
-                root_parent = layer.GetPrimAtPath(root_sdf.GetParentPath())
-                if root_parent and root_sdf.name in root_parent.nameChildren:
-                    del root_parent.nameChildren[root_sdf.name]
+                parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
+                if parent and sdf_path.name in parent.nameChildren:
+                    del parent.nameChildren[sdf_path.name]
+
+            root_sdf = Sdf.Path(chunk_root)
+            root_prim = self._stage.GetPrimAtPath(root_sdf)
+            if root_prim.IsValid() and not any(
+                child.GetTypeName() == _CHUNK_PRIM_TYPENAME for child in root_prim.GetChildren()
+            ):
+                for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+                    root_parent = layer.GetPrimAtPath(root_sdf.GetParentPath())
+                    if root_parent and root_sdf.name in root_parent.nameChildren:
+                        del root_parent.nameChildren[root_sdf.name]
+        finally:
+            chunk_notice._usd_write_active = prev_w
 
     def _on_state_changed(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
