@@ -43,6 +43,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 
 import usd_chunks.chunk_core as core
+import usd_chunks.chunk_notice as chunk_notice
 # from usd_chunks.chunk_core import ChunkBase, ChunkCommon, ChunkConfig, ChunkHash
 
 if TYPE_CHECKING:
@@ -1173,17 +1174,27 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         layer_hierarchy: Dict[Sdf.Layer, Sdf.Layer] = {}
 
-        for parent, sublayer in self.iter_chunk_layers():
-            layer_hierarchy[sublayer] = parent
+        # subLayerPaths edits below are plain Sdf writes that fire StageContentsChanged
+        # like any other stage edit. Without this guard, each one re-enters
+        # ChunkStageSync._on_contents_changed -> load_chunks mid-cascade (e.g. while
+        # request_delete() is still working through a context's other children),
+        # causing a full stage rescan per chunk deleted instead of once.
+        prev_w = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True
+        try:
+            for parent, sublayer in self.iter_chunk_layers():
+                layer_hierarchy[sublayer] = parent
 
-            if sublayer == layer:
-                sublayer_paths = parent.subLayerPaths.copy()
-                sublayer_paths.remove(layer.identifier)
+                if sublayer == layer:
+                    sublayer_paths = parent.subLayerPaths.copy()
+                    sublayer_paths.remove(layer.identifier)
 
-                if len(sublayer_paths) == 0 and (p := layer_hierarchy.get(parent)):
-                    p.subLayerPaths.remove(parent.identifier)
+                    if len(sublayer_paths) == 0 and (p := layer_hierarchy.get(parent)):
+                        p.subLayerPaths.remove(parent.identifier)
 
-                parent.subLayerPaths = sublayer_paths  # type: ignore
+                    parent.subLayerPaths = sublayer_paths  # type: ignore
+        finally:
+            chunk_notice._usd_write_active = prev_w
         self.chunk_layers.pop(chunk_hash)
 
     def _flags_changed(self, notice, sender):

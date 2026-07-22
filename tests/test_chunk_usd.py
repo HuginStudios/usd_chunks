@@ -696,6 +696,54 @@ def test_delete_then_readd_same_type_recreates_prim() -> None:
     assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Prim").IsValid()
 
 
+def test_delete_context_with_children_does_not_reenter_load_chunks(monkeypatch) -> None:
+    """Deleting a context with several children must not re-trigger load_chunks per child.
+
+    Regression: _on_chunk_deleted's nameChildren removal and ChunkLayerManager._chunk_deleted's
+    subLayerPaths removal both authored raw Sdf edits without the _usd_write_active guard used
+    everywhere else. Each edit fired StageContentsChanged, re-entering
+    ChunkStageSync._on_contents_changed -> load_chunks mid-cascade, while the context still had
+    unprocessed children. load_chunks unconditionally calls scene.add_context() for any root-layer
+    chunk it (spuriously) treats as unregistered, which doesn't dedupe against an existing tab of
+    the same name -- minting duplicate tabs ("MyTab1", "MyTab2", ...) with lost connections, as
+    seen live in usdview.
+    """
+    stage = Usd.Stage.CreateInMemory()
+
+    class _SyncScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _SyncScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    ctx = scene.add_context("MyTab")
+    children = [_chunk_with_module(f"c{i}") for i in range(5)]
+    for c in children:
+        scene.add_chunk(c)
+
+    import plugins.chunk_usd as chunk_usd_mod
+
+    calls: list = []
+    orig_load_chunks = chunk_usd_mod.load_chunks
+
+    def _traced(stage_, scene_, loaded_prim_paths=None):
+        calls.append(1)
+        return orig_load_chunks(stage_, scene_, loaded_prim_paths)
+
+    monkeypatch.setattr(chunk_usd_mod, "load_chunks", _traced)
+
+    ctx.request_delete()
+
+    assert not calls, f"load_chunks re-entered {len(calls)} time(s) during the delete cascade"
+
+    remaining_names = {c.name for c in scene.chunks.get_my_params()}
+    assert not any(n.startswith("MyTab") and n != "MyTab" for n in remaining_names), (
+        f"deletion must not spawn duplicate contexts, got: {remaining_names}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync: external USD active change syncs to chunk disabled state
 # ---------------------------------------------------------------------------
