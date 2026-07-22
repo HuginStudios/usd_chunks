@@ -19,6 +19,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
+from plugins import chunk_graph_layout
 from plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
@@ -1140,6 +1141,74 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             if edge.src_port in node_ports or edge.dst_port in node_ports:
                 edge.update_path()
 
+    # ------------------------------------------------------------------
+    # Auto-layout (L key)
+
+    def _build_layout_adjacency(self):
+        """Prim-path-keyed up/down adjacency from ALL connections (exec + typed data),
+        independent of the "Show param connections" view toggle — layout should account for
+        every real connection, not just the ones currently drawn on screen."""
+        up_of: dict = {}
+        down_of: dict = {}
+        for path, node in self._nodes.items():
+            if not node.prim.IsValid():
+                continue
+            for attr in node.prim.GetAttributes():
+                if not attr.GetName().startswith("inputs:"):
+                    continue
+                for conn_path in attr.GetConnections():
+                    src_path = str(conn_path.GetPrimPath())
+                    if src_path == path or src_path not in self._nodes:
+                        continue
+                    up_of.setdefault(path, set()).add(src_path)
+                    down_of.setdefault(src_path, set()).add(path)
+        return up_of, down_of
+
+    def layout_nodes(self, seed_paths: "list[str] | None" = None) -> None:
+        """Auto-layout — see plugins/chunk_graph_layout.py for the algorithm itself.
+
+        seed_paths: prim paths to grow into their full connected subgraph before laying out
+        (the "Layout Selected" case). None lays out every node currently in this context.
+        """
+        if not self._nodes:
+            return
+        up_of, down_of = self._build_layout_adjacency()
+
+        if seed_paths:
+            grown = chunk_graph_layout.grow_to_connected_subgraph(list(seed_paths), up_of, down_of)
+            node_ids = sorted(grown & set(self._nodes))
+        else:
+            node_ids = sorted(self._nodes)
+        if not node_ids:
+            return
+
+        node_id_set = set(node_ids)
+        scoped_up = {nid: {u for u in up_of.get(nid, ()) if u in node_id_set} for nid in node_ids}
+        scoped_down = {nid: {d for d in down_of.get(nid, ()) if d in node_id_set} for nid in node_ids}
+
+        def size_of(nid):
+            r = self._nodes[nid].boundingRect()
+            return r.width(), r.height()
+
+        def is_locked(nid):
+            return self._nodes[nid]._locked
+
+        def current_pos(nid):
+            p = self._nodes[nid].pos()
+            return p.x(), p.y()
+
+        positions = chunk_graph_layout.layout_positions(
+            node_ids, size_of, is_locked, current_pos, scoped_up, scoped_down
+        )
+
+        # Apply after the full layout is computed (not interleaved with computing it) — each
+        # setPos triggers itemChange -> update_edges_for automatically, and _write_pos_to_usd
+        # persists the same ui:nodegraph:node:pos attribute an interactive drag already writes.
+        for nid, (x, y) in positions.items():
+            node = self._nodes[nid]
+            node.setPos(x, y)
+            node._write_pos_to_usd()
+
     def _on_chunk_deleted(self, notice, sender):
         # A deleted chunk drops its prim from the stage. Rebuild from scratch so its node
         # and any dangling edges go away cleanly (deferred inside _schedule_rebuild). The exec
@@ -1250,6 +1319,20 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
+        # L-to-layout: same fallback pattern as F, for when a proxy widget has logical focus
+        # but the cursor is over the graph view.
+        if self._active is None and event.key() == QtCore.Qt.Key.Key_L:
+            view = self._view
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    view._layout_selected_or_all()
+                    event.accept()
+                    return True
+
         if self._active is None:
             return False
         if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -1272,6 +1355,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     """QGraphicsView with zoom, pan (middle mouse or Space+drag), and F to frame."""
 
     _SCENE_EXTENT = 50000
+    _GRID_SPACING = 200  # scene units — fixed world-space, so it scales naturally with zoom
+    _GRID_DOT_COLOR = QtGui.QColor("#3d4250")  # muted grey-blue, subtle against #252525
+    _GRID_DOT_WIDTH = 2
 
     dive_into = QtCore.Signal(object)  # re-emitted from scene when a group node is double-clicked
 
@@ -1326,6 +1412,48 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def resizeEvent(self, event: QtGui.QResizeEvent):
         super().resizeEvent(event)
         self._menubar.setFixedWidth(self.width())
+
+    @staticmethod
+    def _grid_points_in_rect(rect: QtCore.QRectF, spacing: int) -> list:
+        """Scene-space grid dot positions covering rect, snapped to fixed spacing-unit lines.
+
+        Pure math, no painter — kept separate from drawBackground so the snapping/coverage
+        logic is unit-testable without a real paint device.
+        """
+        # Snap down to the nearest grid line at or before rect's edges. Python's % on a
+        # negative left/top already returns a non-negative remainder (floor-division
+        # semantics), so this snaps correctly on the negative half of the scene too.
+        left = int(rect.left()) - (int(rect.left()) % spacing)
+        top = int(rect.top()) - (int(rect.top()) % spacing)
+
+        points = []
+        x = left
+        while x < rect.right():
+            y = top
+            while y < rect.bottom():
+                points.append(QtCore.QPointF(x, y))
+                y += spacing
+            x += spacing
+        return points
+
+    def drawBackground(self, painter: QtGui.QPainter, rect: QtCore.QRectF) -> None:
+        # super() fills with setBackgroundBrush's flat color; dots paint on top of that.
+        super().drawBackground(painter, rect)
+        # Only the exposed rect is ever painted here (never the full 100k-unit scene extent —
+        # Qt only calls drawBackground for the currently visible region).
+        points = self._grid_points_in_rect(rect, self._GRID_SPACING)
+        if not points:
+            return
+
+        # A single batched drawPoints call is far cheaper than one drawEllipse call per dot.
+        painter.save()
+        pen = QtGui.QPen(self._GRID_DOT_COLOR)
+        pen.setWidth(self._GRID_DOT_WIDTH)
+        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        pen.setCosmetic(True)  # constant screen-space dot size regardless of view zoom/scale
+        painter.setPen(pen)
+        painter.drawPoints(points)
+        painter.restore()
 
     def drawForeground(self, painter: QtGui.QPainter, rect) -> None:
         super().drawForeground(painter, rect)
@@ -1532,6 +1660,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         if event.key() == QtCore.Qt.Key.Key_V:
             self._create_view_node()
+            event.accept()
+            return
+        if event.key() == QtCore.Qt.Key.Key_L:
+            self._layout_selected_or_all()
             event.accept()
             return
         if event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2, QtCore.Qt.Key.Key_3):
@@ -2168,6 +2300,19 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             rect = rect.united(node.sceneBoundingRect())
         rect.adjust(-60, -60, 60, 60)
         self.fitInView(rect, QtCore.Qt.KeepAspectRatio)
+
+    # ------------------------------------------------------------------
+    # Auto-layout
+
+    def _layout_selected_or_all(self) -> None:
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._nodes:
+            return
+        selected_paths = [
+            path for path, node in graph_scene._nodes.items()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED)
+        ]
+        graph_scene.layout_nodes(selected_paths or None)
 
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
         scene_pos = self.mapToScene(event.pos())
