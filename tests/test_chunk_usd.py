@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import time
 import types as _types
 from pathlib import Path
 
 import pytest
-from pxr import Gf, Sdf, Usd
+from pxr import Gf, Sdf, Usd, UsdGeom
 
 from plugins.chunk_usd import (
     _CHUNK_PRIM_TYPENAME,
@@ -1746,6 +1747,139 @@ def test_recook_recurses_into_group() -> None:
     assert inner_node.is_blocked()  # group hidden → inner tree muted
 
 
+def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
+    """Regression reported live in usdview: Transform1 -> Scatter -> Transform2 (both
+    transforms targeting the same prim), with a real, properly-activated View wired to
+    Transform2. Merely creating an unrelated, unconnected new node elsewhere in the graph
+    re-triggers a recook of the active view (ChunkGraphView.build() unconditionally
+    schedules one) -- and that recook used to unmute recook_for_view's ENTIRE upstream tree
+    before executing any of it. Scatter (reactive, reads the target prim's composed
+    transform during its own execute()) would then see Transform2's stale, previously-
+    authored edit even though Scatter legitimately executes before Transform2 in cook_list
+    order, because that edit's layer was already unmuted and outranked Transform1's per the
+    "closer to view wins" ranking. Layers must instead be revealed one at a time, immediately
+    before each chunk's own turn.
+
+    Needs the real Qt graph widget: a hand-built recook_for_view() call in isolation doesn't
+    reproduce this (the live bug depends on state accumulated by the real view-activation
+    path -- ChunkGraphView._activate_menu_view's view:slot attribute + _view_state.set_slot
+    -- not just wiring the exec chain by hand)."""
+    from plugins.chunk_usd import get_chunk_prim_path
+    from plugins.chunk_qt import ChunkWidgetDocker
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    lm = chunk_registry.ChunkLayerManager()
+    lm.initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    docker = ChunkWidgetDocker()
+    docker.resize(500, 600)
+    docker.show()
+    qapp.processEvents()
+
+    transform_mod = reg.get_chunk_module("transform")
+    scatter_mod = reg.get_chunk_module("scatter_points")
+    prim_mod = reg.get_chunk_module("prim")  # any node type -- not specific to one chunk kind
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+        dst.add_dependency(src)
+
+    # A real mesh, not a bare Xform: Scatter's no-triangles-found fallback is a jittered grid
+    # in prim-local coordinates that never reads the prim's transform at all, which would make
+    # this test structurally incapable of ever exercising the bug regardless of which code is
+    # running (found the hard way -- an earlier draft of this test used a bare Xform target).
+    target = UsdGeom.Mesh.Define(stage, "/target")
+    target.GetPointsAttr().Set([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
+    target.GetFaceVertexCountsAttr().Set([3])
+    target.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+    target = target.GetPrim()
+
+    t1 = _mk(transform_mod)
+    scatter = _mk(scatter_mod)
+    t2 = _mk(transform_mod)
+    qapp.processEvents()
+
+    t1.get_param("primpath_location").value = "/target"
+    scatter.get_param("surface_prim").value = "/target"
+    scatter.get_param("max_count").value = 1
+    t2.get_param("primpath_location").value = "/target"
+    _wire(scatter, t1)
+    _wire(t2, scatter)
+    qapp.processEvents()
+
+    # Create + properly activate a view wired to t2 (the real tail), the same way the actual
+    # "Set View" / chunk-menu flow does: view:slot attribute + _view_state.set_slot -- not
+    # just wiring the exec chain by hand, which (confirmed while investigating this bug)
+    # leaves _view_state.active_slot at 0 and doesn't reproduce the live behaviour.
+    gv = docker.tab_widget.get_current_graph_view()
+    context = gv._graph_context()
+    view_mod = reg.get_chunk_module("view")
+    view = _mk(view_mod)
+    _wire(view, t2)
+    qapp.processEvents()
+    gv._activate_menu_view(view, context, stage)
+    qapp.processEvents()
+    assert gv._view_state.active_slot, "view must be properly activated for this repro to be faithful"
+
+    xform_cache = UsdGeom.XformCache()
+
+    def _target_tx() -> float:
+        xform_cache.Clear()
+        return xform_cache.GetLocalToWorldTransform(target).ExtractTranslation()[0]
+
+    def _scatter_tx() -> float:
+        xform_cache.Clear()
+        pos = stage.GetPrimAtPath("/ScatterInstancer").GetAttribute("positions").Get()
+        return pos[0][0]
+
+    def _pump(seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            qapp.processEvents()
+
+    t1.get_param("tx").value = 1.0
+    t2.get_param("tx").value = 99.0
+    _pump(0.5)
+    assert _target_tx() == pytest.approx(99.0), "precondition: the settled prim must show t2's result"
+
+    # This is the actual live trigger: creating any unrelated, unconnected new node
+    # re-triggers a recook of the still-active view (see ChunkGraphView.build()).
+    _mk(prim_mod)
+    _pump(1.0)
+
+    # Mesh points are (0,0,0),(1,0,0),(0,1,0) -- any barycentric sample has local X in [0, 1],
+    # so a fixed range check sidesteps needing an exact expected value (which depends on the
+    # sampler's internal RNG draws): t1's offset (tx=1) puts the correct answer in [1, 2];
+    # t2's offset (tx=99) -- the bug -- would put it in [99, 100].
+    final_x = _scatter_tx()
+    assert 1.0 <= final_x <= 2.0, (
+        f"Scatter must read only its real upstream (t1, tx=1), never t2 (tx=99, downstream of "
+        f"it) -- creating an unrelated node must not shift the scattered point to t2's offset. "
+        f"Got x={final_x}"
+    )
+    assert _target_tx() == pytest.approx(99.0), (
+        "the settled prim itself must still show t2's result -- the view's own 'closest wins' "
+        "ranking is unaffected by the incremental reveal during execution"
+    )
+
+
 def test_recook_focus_group_mutes_outside_subtree() -> None:
     """Focusing a group (the tab you're looking at) must mute everything OUTSIDE the group so
     only its inner active view drives the shared stage. recook_for_view alone only manages the
@@ -2140,3 +2274,101 @@ def test_delete_group_removes_its_subtree() -> None:
 
     assert not stage.GetPrimAtPath(Sdf.Path(grp_path)).IsValid()
     assert not stage.GetPrimAtPath(Sdf.Path(child_path)).IsValid()
+
+
+def test_get_upstream_stage_preserves_real_relative_order_among_included_chunks() -> None:
+    """Regression: get_upstream_stage's first draft built its scratch layer order from
+    scene.get_chunks()'s own iteration order -- reported live as a bowl (created by one chunk,
+    then rotated by a Transform wired after it) reading with the wrong orientation once RBD's
+    collision-prim read went through get_upstream_stage: both the creating chunk and the
+    rotating Transform are "not downstream" of RBD, so both get included, but which one *wins*
+    for their shared prim was being decided by creation order instead of the real, already-
+    correct order (the same sort-key/view-driven ranking recook_for_view relies on elsewhere).
+    Included layers must keep their real relative strength order -- filtered, not rebuilt."""
+    from plugins.chunk_usd import get_chunk_prim_path, get_upstream_stage
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    lm = chunk_registry.ChunkLayerManager()
+    lm.initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    transform_mod = reg.get_chunk_module("transform")
+    prim_mod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+        dst.add_dependency(src)
+
+    stage.DefinePrim("/bowl", "Xform")
+
+    # t1 "creates" the bowl (positions it); t2 (wired after t1) rotates it -- both authoring
+    # xformOp:transform on the same prim, exactly like a mesh-creation chunk followed by a
+    # Transform. A third, unrelated chunk (the "reference" -- standing in for RBD) reads
+    # through get_upstream_stage: neither t1 nor t2 is downstream of it, so both are included.
+    #
+    # t2 is created FIRST, t1 SECOND (still wired t1 -> t2, t1 upstream): scene.get_chunks()
+    # orders more-recently-created chunks first, so this creation order makes a naive
+    # "order by scene.get_chunks()" implementation put t1 ahead of t2 -- the opposite of the
+    # real, forced-below precondition -- so this setup actually exercises the bug rather than
+    # coincidentally agreeing with the fix regardless of which implementation is used.
+    t2 = _mk(transform_mod)
+    reference = _mk(prim_mod)
+    t1 = _mk(transform_mod)
+    _wire(t2, t1)
+
+    t1.get_param("primpath_location").value = "/bowl"
+    t1.get_param("tx").value = 1.0
+    t2.get_param("primpath_location").value = "/bowl"
+    t2.get_param("tx").value = 2.0
+
+    # Force the precondition this bug needs: t2 currently wins on the real stage. Plain
+    # creation-time ordering favours whichever chunk was created first (t1) by default in a
+    # short-lived test -- t2 only wins once something has established "downstream wins" (any
+    # view activation/recook, confirmed repeatedly earlier while investigating the Scatter/
+    # RBD bugs). This reproduces that real, ordinary state directly instead of depending on
+    # Qt/view machinery just to set it up.
+    lm = chunk_registry.ChunkLayerManager()
+    t1_layer = lm.get_layer(t1)
+    t2_layer = lm.get_layer(t2)
+    graph_layer = next(g for g in lm.graph_layers.values() if t1_layer.identifier in g.subLayerPaths)
+    graph_layer.subLayerPaths = [t2_layer.identifier] + [
+        p for p in graph_layer.subLayerPaths if p != t2_layer.identifier
+    ]
+
+    xform_cache = UsdGeom.XformCache()
+
+    def _real_tx() -> float:
+        xform_cache.Clear()
+        return xform_cache.GetLocalToWorldTransform(stage.GetPrimAtPath("/bowl")).ExtractTranslation()[0]
+
+    def _scratch_tx() -> float:
+        scratch_stage = get_upstream_stage(stage, scene, reference)
+        xform_cache.Clear()
+        return xform_cache.GetLocalToWorldTransform(scratch_stage.GetPrimAtPath("/bowl")).ExtractTranslation()[0]
+
+    # t2 must currently win on the real, live stage -- confirming the forced precondition,
+    # not the fix itself.
+    assert _real_tx() == pytest.approx(2.0)
+
+    # The scratch stage must agree: t2 must still win, not t1, even though neither is
+    # downstream of `reference` and both get included.
+    assert _scratch_tx() == pytest.approx(2.0), (
+        "get_upstream_stage must preserve the real relative order between two included "
+        "chunks that touch the same prim, not silently pick a different winner"
+    )

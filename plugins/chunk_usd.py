@@ -1460,6 +1460,42 @@ def get_exec_downstream_chunks(
     return downstream
 
 
+def get_upstream_stage(stage: "Usd.Stage", scene: "core.SceneSender", chunk: "core.ChunkBase") -> "Usd.Stage":
+    """A throwaway stage composing every chunk layer except `chunk` itself and its real
+    downstream (plus the raw root layer), for a read that must never be influenced by a
+    downstream chunk's edit to the same prim -- e.g. Scatter reading a mesh a Transform wired
+    *after* it also targets.
+
+    Unlike exec_with_hidden_view, this never mutates the real stage, mutes any real layer, or
+    executes anything -- it's a pure composition of already-existing layers into a scratch
+    root, discarded once the caller is done reading. That makes it safe to call unconditionally
+    from inside a chunk's own execute() (reactive param changes included), which is where it's
+    actually needed: a plain param edit never goes through recook_for_view at all, so nothing
+    else protects that path. Chunks are included by "not downstream of me", not "reachable
+    upstream of me" — a mesh from an unwired sibling chunk (e.g. an Add Mesh chunk the user
+    picked by path, never wired into the exec chain) still resolves correctly; only genuine
+    downstream chunks are excluded.
+
+    Included layers keep their REAL relative strength order (read off the actual graph layers'
+    subLayerPaths), not scene.get_chunks()'s iteration order. Two included chunks can both
+    touch the same prim without conflicting with each other (e.g. whatever created a mesh, and
+    a Transform rotating it, both authoring xformOp:transform on the same prim) -- the real
+    order already correctly resolves that via the existing sort-key/view-driven ranking, and
+    rebuilding it from scratch here would silently pick a different, wrong winner.
+    """
+    lm = chunk_registry.ChunkLayerManager()
+    excluded = get_exec_downstream_chunks(chunk, stage, scene) | {chunk}
+    excluded_ids = {layer.identifier for c in excluded if (layer := lm.get_layer(c)) is not None}
+    layer_ids: list = []
+    for g_layer in lm.graph_layers.values():
+        for ident in g_layer.subLayerPaths:
+            if ident not in excluded_ids and ident not in layer_ids:
+                layer_ids.append(ident)
+    scratch_root = Sdf.Layer.CreateAnonymous()
+    scratch_root.subLayerPaths = layer_ids + [stage.GetRootLayer().identifier]
+    return Usd.Stage.Open(scratch_root)
+
+
 def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
     """Rewire around a node about to be deleted so its exec chain survives.
 
@@ -1588,6 +1624,15 @@ def recook_for_view(
     # children via the owner chain (that left the inner view unable to cook unless the group was
     # wired to a parent view). Instead recurse: a cooked group cooks its inner active view's tree;
     # a hidden group mutes its whole inner tree. Prim-path nesting prevents cycles.
+    #
+    # Cook-set members are unblocked here but stay MUTED for now — revealed one at a time in the
+    # execute loop below, immediately before each one's own turn. Unmuting the whole upstream
+    # tree upfront (the previous behaviour) meant a chunk that reads composed state during its
+    # own execute() (e.g. Scatter reading a mesh's transform) could see a downstream chunk's
+    # stale content that hadn't re-executed yet in this pass — the final "closer to view wins"
+    # layer-strength ranking below is a real, correct rule for the settled result once everyone
+    # has run, but it has nothing to do with what should be visible mid-pass while a chunk is
+    # still reading its own upstream.
     for c in scene.get_chunks():
         if is_view_chunk(c) or not in_context(c):
             continue
@@ -1599,14 +1644,14 @@ def recook_for_view(
             continue
         if c in cook_set:
             c.set_blocked(False)
-            if not c.has_state(disabled):
-                mute(lm.get_layer(c), False)
+            mute(lm.get_layer(c), True)
         else:
             c.set_blocked(True)
             mute(lm.get_layer(c), True)
 
     for c in cook_list:
         if not c.has_state(disabled) and not is_group_chunk(c):
+            mute(lm.get_layer(c), False)
             c.execute()
 
     if not cook_list:

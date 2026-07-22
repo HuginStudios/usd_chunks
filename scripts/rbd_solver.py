@@ -12,6 +12,7 @@ from collections.abc import Generator
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_registry
+from plugins import chunk_usd
 
 try:
     import mujoco as _mj
@@ -40,9 +41,9 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     Returns a dict for spec.add_hfield() / a static body, or None if the prim
     can't be represented as a heightfield (degenerate / flat / no mesh).
 
-    Limitation: only the upper surface is captured (no overhangs), and for
-    Y-up the grid's lateral axis maps to world -Z (a harmless mirror for a
-    roughly symmetric bowl). Falls back to a box collider when None.
+    Limitation: only the upper surface is captured (no overhangs) -- fine for a bowl/plate/
+    terrain (single-valued height), wrong for a cup with a lip curling back over itself.
+    Falls back to a box collider when None.
     """
     if _np is None:
         return None
@@ -78,7 +79,13 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
         span = min(max0 - min0, max1 - min1)
         N = max(8, min(N, int(span / min_cell) + 1))
     col = _np.clip(((V[:, a0] - min0) / (max0 - min0) * (N - 1)).round().astype(int), 0, N - 1)
-    row = _np.clip(((V[:, a1] - min1) / (max1 - min1) * (N - 1)).round().astype(int), 0, N - 1)
+    # Flipped (max1 - ...), not (... - min1): MuJoCo's hfield row 0 sits at local -Y, row N-1
+    # at local +Y, but the -90-about-X quat below (needed to point local +Z, the height axis,
+    # along world up) sends local +Y to world -Z, not +Z -- a real rotation can't avoid that
+    # (X->X, Y->Z, Z->Y has determinant -1, a mirror, not a rotation). Flipping which end of
+    # the sampled range row 0 starts from cancels that inversion so the baked collider actually
+    # matches the source mesh's orientation instead of its Z-mirror.
+    row = _np.clip(((max1 - V[:, a1]) / (max1 - min1) * (N - 1)).round().astype(int), 0, N - 1)
 
     H = _np.full((N, N), -_np.inf)
     up = V[:, up_idx]
@@ -1115,12 +1122,9 @@ def _run(owner, notice, sender) -> None:
     if not stage:
         return
 
-    prims = _chunk.get_param("prim_path").get_prims()
-    if not prims:
+    prim_paths = _chunk.get_param("prim_path").resolve_paths()
+    if not prim_paths:
         print("[MuJoCoSolver] No target prim selected")
-        return
-    prim = prims[0]
-    if not prim.IsValid() or prim.GetPath() == Sdf.Path("/"):
         return
 
     # A typed param's .value already returns the correct type and falls back to its
@@ -1130,7 +1134,7 @@ def _run(owner, notice, sender) -> None:
     is_i = chunk.is_param_t(int)
     is_s = chunk.is_param_t(str)
 
-    collision_prims = _parse_collision_prims(_chunk.get_param("collision_path", is_s).value, stage)
+    collision_path_value = _chunk.get_param("collision_path", is_s).value
 
     frame_count = _chunk.get_param("frame_count", is_i).value
     fps = _chunk.get_param("fps", is_f).value
@@ -1158,6 +1162,22 @@ def _run(owner, notice, sender) -> None:
         return
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
+
+    # The target prim comes from the REAL stage, not a scratch one: simulate_mujoco[_instancer]
+    # write baked results back through the same instancer/attribute objects they read `prim`
+    # from (positions_attr.Set(...) inside a `with Usd.EditContext(stage, layer)`), and
+    # Usd.EditContext only governs the stage object it's given -- it has no effect on attributes
+    # bound to a *different* Usd.Stage. A scratch-stage-bound prim here silently bakes the whole
+    # simulation onto the throwaway stage instead of `layer`, discarded the moment this function
+    # returns (found the hard way: "Run Simulation" printed a successful bake, but the layer
+    # stayed empty). Collision prims are read-only -- never written back through -- so they're
+    # still safely scoped through get_upstream_stage: a downstream chunk's edit to a collision
+    # prim can't leak into the simulation, without risking the same silent-write-loss bug.
+    prim = stage.GetPrimAtPath(prim_paths[0])
+    if not prim.IsValid() or prim.GetPath() == Sdf.Path("/"):
+        return
+    scratch_stage = chunk_usd.get_upstream_stage(stage, owner.get_scene(), _chunk)
+    collision_prims = _parse_collision_prims(collision_path_value, scratch_stage)
 
     if UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
         simulate_mujoco_instancer(

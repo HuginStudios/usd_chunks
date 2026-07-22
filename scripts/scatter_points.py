@@ -19,6 +19,7 @@ import random
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
+from plugins import chunk_usd
 
 _ORIENT_MODES = ["Align to Normal", "Keep Original", "Up", "Random"]
 _RAND_AXES = ["Off", "X", "Y", "Z", "All"]
@@ -386,27 +387,24 @@ def _on_mode_changed(owner, notice, sender):
         region_grp.unset_state(chunk.ChunkFlags.State.HIDDEN)
 
 
-def _auto_scatter(owner, notice, sender):
-    """Re-scatter on any setting change, but only while Auto Scatter is on."""
-    chunk_obj = owner.get_chunk()
-    if not chunk_obj:
-        return
-    toggle = chunk_obj.get_param("auto_scatter")
-    if toggle and toggle.value:
-        _run(owner, notice, sender)
+def execute(node):
+    """Scatter prototype instances onto/into the surface.
 
-
-def _run(owner, notice, sender):
-    """Scatter prototype instances onto/into the surface — Scatter button."""
-    _chunk = owner.get_chunk()
-    stage = owner.get_stage()
+    Reactive: runs automatically whenever a param or an upstream dependency (e.g. a
+    Transform feeding surface_prim) changes. Being reactive keeps things correct across an
+    ordered DAG solve pass triggered by an *upstream* change (a chunk wired after this one is
+    never part of that pass yet) -- but a plain edit made directly on this chunk's own params
+    never goes through that ordered pass at all, so surface_prim/proto_prim are resolved
+    through get_upstream_stage(): a downstream chunk's edit to the same prim (e.g. a Transform
+    wired after Scatter, re-offsetting the same mesh) can't leak into this read regardless of
+    what triggered this execute().
+    """
+    stage = node.get_stage()
     if not stage:
         return
 
-    surface_prims = _chunk.get_param("surface_prim").get_prims()
-    surface_prim = surface_prims[0] if surface_prims else None
-    proto_prims = _chunk.get_param("proto_prim").get_prims()
-    proto_prim = proto_prims[0] if proto_prims else None
+    surface_paths = node.get_param("surface_prim").resolve_paths()
+    proto_paths = node.get_param("proto_prim").resolve_paths()
 
     is_f = chunk.is_param_t(float)
     is_i = chunk.is_param_t(int)
@@ -415,23 +413,23 @@ def _run(owner, notice, sender):
 
     # `.value` is already typed and defaults when unset — no cast/`or` needed. inst_path
     # keeps its fallback because an empty path (user cleared the field) is invalid here.
-    inst_path = _chunk.get_param("inst_path", is_s).value or "/ScatterInstancer"
-    scatter_mode = _chunk.get_param("scatter_mode", is_s).value
-    max_count = max(1, _chunk.get_param("max_count", is_i).value)
-    seed = _chunk.get_param("seed", is_i).value
-    auto_spacing = _chunk.get_param("auto_spacing", is_b).value
-    spacing = _chunk.get_param("spacing", is_f).value
-    max_slope = _chunk.get_param("max_slope", is_f).value
-    scale_min = _chunk.get_param("scale_min", is_f).value
-    scale_max = _chunk.get_param("scale_max", is_f).value
+    inst_path = node.get_param("inst_path", is_s).value or "/ScatterInstancer"
+    scatter_mode = node.get_param("scatter_mode", is_s).value
+    max_count = max(1, node.get_param("max_count", is_i).value)
+    seed = node.get_param("seed", is_i).value
+    auto_spacing = node.get_param("auto_spacing", is_b).value
+    spacing = node.get_param("spacing", is_f).value
+    max_slope = node.get_param("max_slope", is_f).value
+    scale_min = node.get_param("scale_min", is_f).value
+    scale_max = node.get_param("scale_max", is_f).value
     if scale_max < scale_min:
         scale_min, scale_max = scale_max, scale_min
-    normal_offset = _chunk.get_param("normal_offset", is_f).value
-    orient_mode = _chunk.get_param("orient_mode", is_s).value
-    rand_axis = _chunk.get_param("rand_axis", is_s).value
-    rand_amount = _chunk.get_param("rand_amount", is_f).value
+    normal_offset = node.get_param("normal_offset", is_f).value
+    orient_mode = node.get_param("orient_mode", is_s).value
+    rand_axis = node.get_param("rand_axis", is_s).value
+    rand_amount = node.get_param("rand_amount", is_f).value
 
-    layer = owner.get_edit_context()
+    layer = node.get_edit_context()
     if not layer:
         return
     if lreg := chunk.get_layer_manager():
@@ -450,6 +448,10 @@ def _run(owner, notice, sender):
                 _lyr.EraseTimeSample(_pp, _t)
             if _spec := _lyr.GetAttributeAtPath(_pp):
                 _spec.ClearDefaultValue()
+
+    scratch_stage = chunk_usd.get_upstream_stage(stage, node.get_scene(), node)
+    surface_prim = scratch_stage.GetPrimAtPath(surface_paths[0]) if surface_paths else None
+    proto_prim = scratch_stage.GetPrimAtPath(proto_paths[0]) if proto_paths else None
 
     triangles = _collect_triangles(surface_prim)
     rng = random.Random(seed)
@@ -682,42 +684,6 @@ def main():
         )
     )
     chunk_api.add_param(var_grp)
-
-    chunk_api.add_param(
-        chunk.Checkbox(
-            "auto_scatter",
-            "Auto Scatter",
-            default_value=False,
-            tooltip="Re-scatter automatically whenever a setting changes — no need to press Scatter. "
-            "Off by default to avoid lag on heavy meshes.",
-        )
-    )
-
-    scatter_btn = chunk.Button("scatter", "Scatter", tooltip="Place the instances now.")
-    scatter_btn.add_callback(_run)
-    chunk_api.add_param(scatter_btn)
-
-    # Re-run on change while Auto Scatter is on. Wire every tuning param (and the
-    # toggle itself, so turning it on does an immediate scatter). inst_path is
-    # left out so editing the path doesn't spawn orphan instancers per keystroke.
-    for name in (
-        "surface_prim",
-        "proto_prim",
-        "scatter_mode",
-        "auto_spacing",
-        "spacing",
-        "max_count",
-        "seed",
-        "max_slope",
-        "scale_min",
-        "scale_max",
-        "normal_offset",
-        "orient_mode",
-        "rand_axis",
-        "rand_amount",
-        "auto_scatter",
-    ):
-        chunk_api.get_param(name).add_callback(_auto_scatter)
 
     return chunk_api
 

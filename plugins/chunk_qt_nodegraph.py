@@ -1214,10 +1214,19 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # and any dangling edges go away cleanly (deferred inside _schedule_rebuild). The exec
         # chain is healed (A -> X -> B becomes A -> B) in ChunkStageSync._on_chunk_deleted,
         # before the prim is removed; recook after the rebuild so the view follows the new chain.
+        #
+        # Deleting a chunk cascades request_delete() through every one of its own params
+        # (ChunkGroupBase.request_delete()), each firing its own CHUNK_DELETED -- so a chunk
+        # with many params (e.g. the RBD solver) fires this handler dozens of times per delete.
+        # _schedule_rebuild() below is already debounced; recook must be too, or each of those
+        # notices schedules its own redundant re-execution of the whole upstream chain -- harmless
+        # when upstream chunks were side-effect-free on cook, but a real chunk (e.g. a reactive
+        # Scatter) now re-runs, once per param, every time anything with many params is deleted.
         self._schedule_rebuild()
         for v in self.views():
-            if isinstance(v, ChunkGraphView):
-                QtCore.QTimer.singleShot(0, v._recook_active_view)
+            if isinstance(v, ChunkGraphView) and not getattr(v, "_recook_pending", False):
+                v._recook_pending = True
+                QtCore.QTimer.singleShot(0, v._run_pending_recook)
 
     def _on_objects_changed(self, notice, sender):
         if not self._stage or not sender:
@@ -2278,6 +2287,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     c.set_selected(False)
             view_chunk.set_selected(True)
         chunk_usd.recook_focus(stage, registry.scene, context, view_chunk)
+
+    def _run_pending_recook(self) -> None:
+        """Run one debounced recook queued by ChunkGraphScene._on_chunk_deleted.
+
+        Deleting a chunk fires CHUNK_DELETED once per param it owns (request_delete()
+        cascades through them), each of which queues a recook -- without this guard that's
+        one redundant re-execution of the whole upstream chain per param on the deleted
+        chunk. Clear the flag before recooking (not after) so a genuinely new delete arriving
+        while this one runs queues its own follow-up instead of being swallowed.
+        """
+        self._recook_pending = False
+        self._recook_active_view()
 
     def _graph_context(self) -> "Optional[core.ChunkBase]":
         graph_scene = self.scene()
