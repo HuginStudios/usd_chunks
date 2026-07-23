@@ -22,7 +22,9 @@ def test_chunk_deleted_debounces_recook_across_many_notices(qapp, monkeypatch) -
     view.setScene(scene)
 
     recook_calls = []
-    monkeypatch.setattr(ChunkGraphView, "_recook_active_view", lambda self: recook_calls.append(1))
+    monkeypatch.setattr(
+        ChunkGraphView, "_recook_active_view", lambda self, changed_chunks=None: recook_calls.append(1)
+    )
 
     # Simulate the burst: one CHUNK_DELETED notice per param on the deleted chunk.
     for _ in range(30):

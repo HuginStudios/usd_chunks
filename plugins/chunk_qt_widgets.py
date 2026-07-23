@@ -1364,6 +1364,15 @@ class ViewSlotState(QtCore.QObject):
             else:
                 self.create_view_for.emit(prim_path)
         elif conn := cb_actions.get(res):
+            meth = conn.get_method()
+            if meth is not None and meth == getattr(grp, "remove", None):
+                # ChunkBase.remove (every chunk registers it as a default MENU_ACTION_NOTICE
+                # callback) calls request_delete() directly, bypassing
+                # ChunkGraphView._delete_selected() entirely (that's the Delete-key path).
+                # Capture relevance the same way, right before it runs -- see
+                # mark_pending_delete_relevance's docstring for why it can't be judged after.
+                from plugins.chunk_qt_nodegraph import ChunkGraphView
+                ChunkGraphView.mark_pending_delete_relevance([grp])
             conn.handle_callback(
                 chunk_notice.MenuActionNotice(grp.get_notice_data()), grp, False
             )

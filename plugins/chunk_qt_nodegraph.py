@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import time
 import weakref
-from typing import Optional
+from typing import Iterable, Optional
 
 from pxr import Gf, Sdf, Usd, UsdUI
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -1253,9 +1253,23 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # notices schedules its own redundant re-execution of the whole upstream chain -- harmless
         # when upstream chunks were side-effect-free on cook, but a real chunk (e.g. a reactive
         # Scatter) now re-runs, once per param, every time anything with many params is deleted.
+        #
+        # Default to a full recook -- safe/correct, matches pre-existing behaviour -- UNLESS
+        # ChunkGraphView._delete_selected already proved this specific delete can't matter and
+        # flagged it via _recook_skip_next_delete. That flag has to be set BEFORE
+        # request_delete() runs: request_delete() force-unblocks the chunk as a prerequisite for
+        # its own CHUNK_DELETED to fire (a blocked chunk suppresses its own notices), so by the
+        # time this notice arrives, is_blocked() always reads False regardless of whether the
+        # chunk was ever really cooking -- the delete itself erases that signal, so it can't be
+        # judged here after the fact. Deletes triggered from elsewhere (e.g. the Params panel)
+        # never set the flag, so they keep recooking unconditionally, same as before this fix.
         self._schedule_rebuild()
         for v in self.views():
-            if isinstance(v, ChunkGraphView) and not getattr(v, "_recook_pending", False):
+            if not isinstance(v, ChunkGraphView):
+                continue
+            if not getattr(v, "_recook_skip_next_delete", False):
+                v._recook_force_full = True
+            if not getattr(v, "_recook_pending", False):
                 v._recook_pending = True
                 QtCore.QTimer.singleShot(0, v._run_pending_recook)
 
@@ -1529,19 +1543,31 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def minimumSizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(0, 0)
 
-    def build(self, stage: Usd.Stage, scene_sender: core.SceneSender, context=None):
+    def build(self, stage: Usd.Stage, scene_sender: core.SceneSender, context=None, changed_chunks=None):
+        """changed_chunks: forwarded to the post-build recook -- see _recook_active_view's
+        docstring. build() isn't only called on a genuine context/view switch (which always
+        needs a full recook): ChunkWidgetDocker._loaded_module_callback also re-invokes it
+        (via _rebuild_graph) every time ANY chunk is created while the Graph tab is active, since
+        it invalidates every graph scene first and _rebuild_graph() then rebuilds whichever one
+        is current. Without this, creating one chunk unconditionally re-executed the whole
+        active view's cook set 100ms later -- a stray "Scattered N instances" print from a
+        totally unrelated create, and a visible re-mute/dim of every other chunk -- reported
+        live in usdview. Omit changed_chunks (the default) for a real view/tab switch.
+        """
         scene = self.scene()
         scene.build(stage, scene_sender, context)
         scene.dive_into.connect(self.dive_into)
         # Auto-create a default view when the graph is opened on a context that has chunks but
         # no view yet (e.g. chunks were made in the params panel first). Deferred past this
         # build's rebuild + proxy pass so view creation runs on a settled graph, not mid-build.
+        # Cheap (just a membership scan) even when re-triggered by an unrelated create, so this
+        # one stays unconditional.
         QtCore.QTimer.singleShot(80, lambda ctx=context: self._ensure_default_view(ctx))
         # Switching to this context must re-establish the viewport for ITS active view — the
         # viewport is one global stage, so a view activated in another context (e.g. an inner
         # group view) otherwise stays cooked and the wrong result shows. Deferred past the
-        # auto-view step. (On create we deliberately don't re-cook, to avoid churn.)
-        QtCore.QTimer.singleShot(100, self._recook_active_view)
+        # auto-view step.
+        QtCore.QTimer.singleShot(100, lambda cc=changed_chunks: self._recook_active_view(cc))
 
     def _context_has_view(self, scene, context) -> bool:
         """True when this context (or the graph as a whole, if context is None) has a view chunk."""
@@ -1727,9 +1753,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
             return
-        for node in list(graph_scene._nodes.values()):
-            if node.chunk.has_state(ChunkFlags.State.SELECTED):
-                node.chunk.request_delete()
+        selected = [
+            node.chunk for node in graph_scene._nodes.values()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED)
+        ]
+        if not selected:
+            return
+        # Capture relevance BEFORE request_delete() touches anything -- see
+        # mark_pending_delete_relevance's docstring for why it can't be judged afterward.
+        self.mark_pending_delete_relevance(selected)
+        for c in selected:
+            c.request_delete()
 
     def _toggle_disable_selected(self) -> None:
         graph_scene = self.scene()
@@ -1994,20 +2028,28 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # The user can clear it from the QLineEdit to keep the wiring without expression eval.
         # ChunkVectorBase supports this too (whole-vector references, e.g. @Node.vecParam@ —
         # no per-component wiring).
+        dst_node = graph_scene._nodes.get(str(Sdf.Path(dst.attr_path).GetPrimPath()))
         if src.port_type != _PORT_EXEC:
             src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
             src_param_name = src.attr_path.rsplit(":", 1)[-1]
             dst_param_name = dst.attr_path.rsplit(":", 1)[-1]
-            dst_node = graph_scene._nodes.get(str(Sdf.Path(dst.attr_path).GetPrimPath()))
             if dst_node:
                 param = dst_node.chunk.get_param(dst_param_name)
                 if param is not None:
                     param.value = f"@{src_node_name}.{src_param_name}@"
 
         graph_scene._build_edges()
-        self._recook_active_view()
+        # A new connection can only change the active view's cook set if its destination side
+        # is (or feeds) the view -- wiring two nodes off in an unrelated part of the graph can't
+        # add anything reachable from the view. Unresolvable dst_node (shouldn't happen once
+        # dst_attr validated above) falls back to an unconditional recook to stay safe.
+        self._recook_active_view({dst_node.chunk} if dst_node else None)
 
     def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: "ChunkGraphScene") -> None:
+        changed_nodes = set()
+        port_node = graph_scene._nodes.get(str(Sdf.Path(port.attr_path).GetPrimPath()))
+        if port_node:
+            changed_nodes.add(port_node)
         # For exec ports: rewire predecessor → successor before clearing.
         if port.port_type == _PORT_EXEC:
             prim_path = Sdf.Path(port.attr_path).GetPrimPath()
@@ -2025,6 +2067,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                             succ_attr.SetConnections(list(pred_conns))
                         else:
                             succ_attr.ClearConnections()
+                        changed_nodes.add(node)
                         break
         chunk_usd.ChunkStageSync().clear_attr_connections(attr)
         # For typed ports, re-execute the owning chunk so shader-level connections
@@ -2045,7 +2088,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                             param.value = param.default_value
                 node.chunk.execute()
         graph_scene._build_edges()
-        self._recook_active_view()
+        # See _author_connection: a disconnect can only affect the view's cook set if the
+        # touched node(s) were themselves reachable from the view.
+        self._recook_active_view({n.chunk for n in changed_nodes} if changed_nodes else None)
 
     def _clear_input_connection(self, port: ChunkPortItem, graph_scene: "ChunkGraphScene") -> bool:
         """Clear one input port's connections (no exec chain-heal). For typed ports also reset
@@ -2274,13 +2319,25 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._recook_active_view()
         self.viewport().update()
 
-    def _recook_active_view(self) -> None:
+    def _recook_active_view(self, changed_chunks: Optional[Iterable[core.ChunkBase]] = None) -> None:
         """(Re)apply view-driven execution for this context's active view.
 
-        Call on every structural change (wire, disconnect, delete, create) and on view
+        Called on every structural change (wire, disconnect, delete, create) and on view
         switch so which chunks cook stays live. With no active view (slot 0) it falls back
         to legacy "run everything". Must NOT be called from inside a graph rebuild — the
         execute() it triggers would author, fire ObjectsChanged, and loop.
+
+        changed_chunks: the specific chunk(s) a caller knows triggered this call (e.g. the
+        node just created/deleted/(dis)connected). recook_for_view re-*executes* its whole
+        cook set every time it runs (not just chunks that actually changed — see its own
+        docstring), so calling it unconditionally on every structural edit anywhere in the
+        graph was re-running unrelated upstream chunks (a stray "Scattered N instances" print
+        from creating/deleting a node nowhere near the active view) and re-dimming every
+        blocked chunk for no reason. When changed_chunks is given and none of them are the
+        view or already reachable from it, the edit provably can't change what the view cooks
+        (cook-set membership is exactly graph reachability from the view), so it's skipped.
+        Omit changed_chunks (the default) to always recook, as before — used for genuinely
+        graph-wide triggers like a view switch.
         """
         # Only the CURRENTLY SELECTED tab should drive the (global) stage. Gate on the owning
         # tab stack's visibility, NOT self.isVisible(): the graph is page 1 of a QStackedWidget,
@@ -2301,6 +2358,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         view_chunk = (
             chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
         )
+        if changed_chunks is not None and not self._could_affect_view_cook(
+            changed_chunks, stage, registry.scene, view_chunk
+        ):
+            return
         # Subnet: if THIS graph is a group, persist its active view slot on the group prim so a
         # parent cook of the group picks the same inner view (find_group_active_view reads it).
         if context is not None and chunk_usd.is_group_chunk(context):
@@ -2319,6 +2380,57 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             view_chunk.set_selected(True)
         chunk_usd.recook_focus(stage, registry.scene, context, view_chunk)
 
+    @staticmethod
+    def _could_affect_view_cook(changed_chunks, stage, scene, view_chunk) -> bool:
+        """True if any of changed_chunks could plausibly change what view_chunk's recook
+        computes -- i.e. one of them IS the view, or is already reachable from it. Cook-set
+        membership is exactly graph reachability from the view (get_exec_upstream_chunks), so
+        a chunk that was never part of that reachable set can't affect it: a brand-new
+        disconnected node can't be reachable (nothing points to/from it yet), and
+        deleting/disconnecting something that was never reachable can't remove anything from
+        the set either. No active view means nothing is cooking regardless of graph structure,
+        so it can't matter there either.
+        """
+        if view_chunk is None:
+            return False
+        cook_set = set(chunk_usd.get_exec_upstream_chunks(view_chunk, stage, scene))
+        return any(c is view_chunk or c in cook_set for c in changed_chunks)
+
+    @staticmethod
+    def mark_pending_delete_relevance(chunks) -> None:
+        """Capture, for every live ChunkGraphView, whether deleting `chunks` could affect its
+        active view's cook set -- BEFORE request_delete() runs on any of them.
+
+        Must be called from wherever a delete is actually triggered, not from inside the
+        CHUNK_DELETED handler: request_delete() force-unblocks the chunk as a prerequisite for
+        its own notice to fire at all, and a sibling listener (ChunkStageSync) may have already
+        healed the exec chain around it by the time the notice arrives -- both erase the very
+        state this needs to read. See ChunkGraphView._delete_selected for the original case
+        this covers (Delete key in the graph); also called from the shared right-click "remove"
+        menu action (chunk_qt_widgets.show_chunk_menu), which deletes a chunk directly and
+        bypasses _delete_selected entirely -- any future UI surface that deletes chunks needs
+        this same call before it, or it silently falls back to always recooking.
+        """
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        for w in app.allWidgets():
+            if not isinstance(w, ChunkGraphView):
+                continue
+            context = w._graph_context()
+            slot = w._view_state.active_slot
+            view_chunk = (
+                chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
+            )
+            if not w._could_affect_view_cook(chunks, stage, registry.scene, view_chunk):
+                w._recook_skip_next_delete = True
+
     def _run_pending_recook(self) -> None:
         """Run one debounced recook queued by ChunkGraphScene._on_chunk_deleted.
 
@@ -2329,7 +2441,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         while this one runs queues its own follow-up instead of being swallowed.
         """
         self._recook_pending = False
-        self._recook_active_view()
+        force_full = getattr(self, "_recook_force_full", False)
+        self._recook_force_full = False
+        self._recook_skip_next_delete = False  # consume -- must not leak into a later delete
+        # None = always recook (a relevant chunk was deleted); () = definitely irrelevant, skip.
+        self._recook_active_view(None if force_full else ())
 
     def _graph_context(self) -> "Optional[core.ChunkBase]":
         graph_scene = self.scene()
