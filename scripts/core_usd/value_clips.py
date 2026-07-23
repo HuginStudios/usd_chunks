@@ -170,12 +170,27 @@ def _on_change(owner, notice, sender):
     clip_prim_path = _chunk.get_param("clip_prim_path").value or ""
     manifest_path = _chunk.get_param("manifest_path").value or ""
 
-    prims = prim_param.get_prims()
-    if not prims or not template_path:
+    if not template_path or not _validate_template(template_path):
         return
 
-    if not _validate_template(template_path):
+    # Get prims — either from viewport selection or by resolving the typed path
+    prims = prim_param.get_prims()
+    if not prims:
+        # Try resolving typed path directly
+        prim_value = prim_param.value.strip() if prim_param.value else ""
+        if not prim_value:
+            return
+        for path_str in prim_value.replace(",", " ").split():
+            path_str = path_str.strip()
+            if path_str:
+                prim = stage.GetPrimAtPath(path_str)
+                if prim and prim.IsValid():
+                    prims = [prim]
+                    break
+    if not prims:
         return
+
+    print(f"[Value Clips] Authoring clips on {prims[0].GetPath()}, template={template_path}")
 
     for prim in prims:
         prim_path = str(prim.GetPath())
@@ -270,6 +285,11 @@ def main():
     frame_grp.add_param(stride)
 
     chunk_api.add_param(frame_grp)
+
+    # Apply button for explicit trigger
+    apply_btn = chunk.Button("apply", "Apply Clips")
+    apply_btn.add_callback(_on_change)
+    chunk_api.add_param(apply_btn)
 
     # Optional manifest
     manifest_path = chunk.LineEdit(
