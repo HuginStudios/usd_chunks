@@ -292,11 +292,6 @@ def main():
 
     chunk_api.add_param(frame_grp)
 
-    # Apply button for explicit trigger
-    apply_btn = chunk.Button("apply", "Apply Clips")
-    apply_btn.add_callback(_on_change)
-    chunk_api.add_param(apply_btn)
-
     # Optional manifest
     manifest_path = chunk.LineEdit(
         "manifest_path",
