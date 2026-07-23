@@ -14,7 +14,7 @@ from pxr import Usd, UsdGeom
 from usd_chunks import chunk, chunk_utils
 
 
-# Standard metadata keys that can be set on a prim
+# Default metadata keys shown when no prim is selected
 _METADATA_KEYS = [
     "kind",
     "active",
@@ -113,6 +113,38 @@ def _parse_custom_value(value_str: str):
     return v
 
 
+def _get_prim_metadata_keys(prim: Usd.Prim) -> list[str]:
+    """Get settable metadata keys from a prim, combining authored + standard."""
+    if not prim or not prim.IsValid():
+        return list(_METADATA_KEYS)
+
+    authored = prim.GetAllAuthoredMetadata()
+    keys = list(authored.keys()) if authored else []
+
+    # Always include common settable keys
+    for essential in ("kind", "active", "hidden", "documentation", "purpose", "customData"):
+        if essential not in keys:
+            keys.append(essential)
+
+    keys.sort()
+    return keys
+
+
+def _update_menu_items(chunk_obj, prim: Usd.Prim):
+    """Update the metadata dropdown with keys from the actual prim."""
+    menu_param = chunk_obj.get_param("metadata_key")
+    if not menu_param:
+        return
+
+    keys = _get_prim_metadata_keys(prim)
+    current = menu_param.value
+    menu_param.menu_items = keys
+    if current and current in keys:
+        menu_param.value = current
+    elif keys:
+        menu_param.value = keys[0]
+
+
 def execute(node):
     stage = node.get_stage()
     if not stage:
@@ -134,6 +166,19 @@ def execute(node):
         if not prim.IsValid():
             prim = stage.OverridePrim(target_path)
         _set_metadata_value(stage, prim, meta_key, value_str, custom_key)
+
+
+def _on_prim_change(owner, notice, sender):
+    """When prim selection changes, update the menu with that prim's metadata keys."""
+    _chunk = owner.get_chunk()
+    stage = owner.get_stage()
+    if not stage or not _chunk:
+        return
+
+    prim_param = _chunk.get_param("prim_path")
+    prims = prim_param.get_prims()
+    if prims:
+        _update_menu_items(_chunk, prims[0])
 
 
 def _on_change(owner, notice, sender):
@@ -200,9 +245,9 @@ def main():
         "prim_path",
         "Prim",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-        tooltip="Select the prim(s) to set metadata on. Supports globs and multi-selection.",
+        tooltip="Select the prim(s) to set metadata on. The dropdown updates with its keys.",
     )
-    prim_path.add_callback(_on_change)
+    prim_path.add_callback(_on_prim_change)
     chunk_api.add_param(prim_path)
 
     metadata_key = chunk.Menu(

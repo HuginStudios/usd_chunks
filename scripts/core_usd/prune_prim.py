@@ -87,17 +87,13 @@ def main():
         "prim_path",
         "Prims",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-        tooltip="Select prim(s) to prune. Supports glob patterns and multi-selection.",
+        tooltip=(
+            "Select prim(s) to prune. Supports glob patterns and multi-selection.\n"
+            "Pruned prims are deactivated and flagged for removal on export/flatten."
+        ),
     )
     prim_path.add_callback(_on_change)
     chunk_api.add_param(prim_path)
-
-    # Info label explaining the difference from Mute
-    info = chunk.Label(
-        "info_label",
-        "Pruned prims are deactivated and flagged for removal on export/flatten.",
-    )
-    chunk_api.add_param(info)
 
     return chunk_api
 
