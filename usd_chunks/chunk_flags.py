@@ -31,6 +31,9 @@ class ChunkFlags:
             DISABLED: Hint the ui to disable this param or group
             COLLAPSED: For COLLAPSABLE groups, this should collapse the group if set
             SELECTED: The chunk is selected
+            STALE: The chunk's last computed result no longer reflects its current inputs
+                (e.g. an expensive, manually-triggered chunk whose params or upstream changed
+                since it last ran). Purely a UI hint -- nothing clears or checks it automatically.
         """
 
         NONE = 0
@@ -38,6 +41,7 @@ class ChunkFlags:
         DISABLED = auto()
         COLLAPSED = auto()
         SELECTED = auto()
+        STALE = auto()
 
     class GroupFlags(_FlagRepr):
         """Flags for chunk constainer type objects (Chunk, Group)

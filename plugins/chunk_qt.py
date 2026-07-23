@@ -431,7 +431,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.create_chunk_widget(sender)
         self._invalidate_graph_views()
         if self._view_bar.currentIndex() == 1:
-            self._rebuild_graph()
+            self._rebuild_graph(changed_chunks={sender})
         if chunk_usd.is_view_chunk(sender):
             self._reposition_view_chunk(sender)
         elif not chunk_notice._loading_stage:
@@ -499,7 +499,11 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                 if isinstance(gv, ChunkGraphView):
                     gv.scene().invalidate()
 
-    def _rebuild_graph(self):
+    def _rebuild_graph(self, changed_chunks=None):
+        """changed_chunks: passed through to ChunkGraphView.build()'s post-build recook when the
+        caller knows exactly which chunk(s) triggered this rebuild (e.g. one chunk was just
+        created) -- see build()'s docstring for why this matters. Omit for a genuine view/tab
+        switch, which always needs a full recook."""
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
             return
@@ -513,7 +517,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         scene = graph_view.scene()
         if not getattr(scene, "_dirty", True) and scene._built_context == context:
             return  # already built for this context and not invalidated — keep the cache
-        graph_view.build(stage, registry.scene, context)
+        graph_view.build(stage, registry.scene, context, changed_chunks=changed_chunks)
         graph_view.dive_into.connect(self._on_dive_into, QtCore.Qt.UniqueConnection)
 
     def _on_dive_into(self, context_chunk):
