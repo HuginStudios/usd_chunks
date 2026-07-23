@@ -1,0 +1,9 @@
+#usda 1.0
+(
+    defaultPrim = "CubeGeo"
+)
+
+def Mesh "CubeGeo"
+{
+    point3f[] points
+}
