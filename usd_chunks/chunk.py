@@ -257,6 +257,16 @@ class Menu(ChunkParamBase[str]):
     def convert_attr(self, attr: "Attribute", val: Any) -> Any:
         if attr.name in ["default_value", "value"]:
             if self.menu_items and val is not None and val not in self.menu_items:
+                if isinstance(val, str) and chunk_utils.has_expression(val):
+                    # A node-graph connection (_author_connection) writes an @Node.param@
+                    # expression here, resolved live at read time — trust it even though
+                    # it isn't a literal menu_items entry, rather than discarding it back
+                    # to menu_items[0]. Checking get_usd_prop().GetConnections() instead
+                    # doesn't work here: for a param at its untouched default, nothing has
+                    # ever wired _param_attr_path yet, so get_usd_prop() always returns
+                    # None right when the connection is first being authored — the one
+                    # moment this check actually needs to succeed.
+                    return val
                 return self.menu_items[0]
 
         return super().convert_attr(attr, val)

@@ -13,6 +13,12 @@ from usd_chunks import chunk, chunk_registry, chunk_core
 from plugins.chunk_usd import load_chunks, ChunkLayerManager
 
 
+# ANSI colors for CLI output
+RED = "\033[31m"
+GREEN = "\033[32m"
+RESET = "\033[0m"
+
+
 class HeadlessScene(chunk_core.SceneSender):
     def __init__(self, stage):
         super().__init__()
@@ -137,10 +143,6 @@ def cmd_validate(args):
     print(f"Validating: {stage.GetRootLayer().identifier}")
     print()
 
-    RED   = "\033[31m"
-    GREEN = "\033[32m"
-    RESET = "\033[0m"
-
     missing = set()
     passed = 0
     total = 0
@@ -177,6 +179,53 @@ def cmd_validate(args):
         sys.exit(1)
     else:
         print(f"{GREEN}All {passed} chunk{'s' if passed != 1 else ''} passed. Network is working nicely!{RESET}")
+
+
+def cmd_pin(args):
+    from usd_chunks import pin as pinmod
+
+    if args.list:
+        try:
+            pins = pinmod.read_scene_lock(args.usda)
+        except pinmod.PinError as exc:
+            print(f"pin failed: {exc}")
+            sys.exit(1)
+        if not pins:
+            print("No pins recorded (run `usdchunks pin` first).")
+            return
+        for chunk_type in sorted(pins):
+            store, _, version = pins[chunk_type].partition(":")
+            print(f"  {chunk_type:<24} {store}:{version}")
+        print(f"\n{len(pins)} pinned chunk(s).")
+        return
+
+    try:
+        result = pinmod.pin(
+            args.usda, pin_dir=args.pin_dir, copy=args.copy, wrapper=args.wrapper
+        )
+    except pinmod.PinError as exc:
+        print(f"pin failed: {exc}")
+        sys.exit(1)
+
+    for m in result.materialized:
+        print(f"  {m.chunk_type:<24} {m.store}:{m.version:<10} {m.mode:<8} -> {m.path}")
+
+    if result.problems:
+        print()
+        for p in result.problems:
+            print(f"  {RED}!!{RESET} {p}")
+        print()
+        print(f"{RED}{len(result.problems)} unresolved -- lock not written.{RESET}")
+        sys.exit(1)
+
+    if not result.materialized:
+        print("No Chunk prims found -- nothing to pin.")
+        return
+
+    print()
+    print(f"{GREEN}Pinned {len(result.materialized)} chunk(s){RESET} -> {result.pin_dir}")
+    print(f"Lock recorded in {result.lock_location} ({result.lock_mode})")
+    print(f"Prepend to USD_CHUNK_DIRS:  {result.pin_dir}")
 
 
 def cmd_run(args):
@@ -275,6 +324,34 @@ def main():
     validate_parser.add_argument("usda", help="Path to the .usda chunk network file")
     validate_parser.add_argument("-v", "--verbose", action="store_true", help="Show result for every chunk prim")
 
+    pin_parser = sub.add_parser(
+        "pin",
+        help="Freeze a network to exact store versions (mdl-pin style)",
+        description=(
+            "Resolve every chunk in the network to a concrete version from a\n"
+            "registered store, materialize those exact impls into a flat pin/\n"
+            "folder, and record the lock in the entry layer's customLayerData.\n"
+            "Read-only on source prims. Re-pinning a scene that already carries a\n"
+            "lock restores exactly those versions (vendor handoff)."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  usdchunks pin myshot.usda\n"
+            "  usdchunks pin myshot.usda --list       # show recorded pins, resolve nothing\n"
+            "  usdchunks pin myshot.usda --pin-dir /farm/tmp/pin\n"
+            "  usdchunks pin myshot.usda --copy       # portable/sealed bundle\n"
+            "\n"
+            "Then run against the pinned versions:\n"
+            "  USD_CHUNK_DIRS=./pin:$USD_CHUNK_DIRS usdchunks run myshot.usda\n"
+        ),
+        formatter_class=RawDescriptionHelpFormatter,
+    )
+    pin_parser.add_argument("usda", help="Path to the .usda chunk network file")
+    pin_parser.add_argument("--list", action="store_true", help="List the recorded pins (read-only) and exit")
+    pin_parser.add_argument("--pin-dir", metavar="DIR", default=None, help="Where to materialize impls (default ./pin)")
+    pin_parser.add_argument("--copy", action="store_true", help="Copy impls instead of symlinking (portable/sealed)")
+    pin_parser.add_argument("--wrapper", action="store_true", help="Always write the lock to a wrapper layer, never in place")
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -283,6 +360,8 @@ def main():
         cmd_info(args)
     elif args.command == "validate":
         cmd_validate(args)
+    elif args.command == "pin":
+        cmd_pin(args)
     else:
         parser.print_help()
 

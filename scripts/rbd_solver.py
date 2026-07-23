@@ -1064,18 +1064,28 @@ def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
     if not lreg or not layer:
         return
     try:
-        root = lreg.get_root_layer()
+        # Each graph layer's own parent is whatever real layer it's currently sublayered
+        # under (session layer by default, or an Edit-Target-chosen layer) — build the
+        # hierarchy from iter_chunk_layers() rather than a single fixed root, since a
+        # chunk's graph layer no longer always attaches to the same place.
+        hierarchy: dict = {}
         for parent, sub in lreg.iter_chunk_layers():
+            hierarchy[sub.identifier] = parent
             if sub.identifier != layer.identifier:
                 continue
             # Strongest sibling within its parent graph layer.
             if sub.identifier in parent.subLayerPaths and parent.subLayerPaths[0] != sub.identifier:
                 parent.subLayerPaths.remove(sub.identifier)
                 parent.subLayerPaths.insert(0, sub.identifier)
-            # Strongest graph layer under the chunks root.
-            if parent.identifier in root.subLayerPaths and root.subLayerPaths[0] != parent.identifier:
-                root.subLayerPaths.remove(parent.identifier)
-                root.subLayerPaths.insert(0, parent.identifier)
+            # Strongest graph layer under its own parent.
+            grandparent = hierarchy.get(parent.identifier)
+            if (
+                grandparent
+                and parent.identifier in grandparent.subLayerPaths
+                and grandparent.subLayerPaths[0] != parent.identifier
+            ):
+                grandparent.subLayerPaths.remove(parent.identifier)
+                grandparent.subLayerPaths.insert(0, parent.identifier)
             break
     except Exception as e:
         print(f"[MuJoCoSolver] Could not promote bake layer: {e}")

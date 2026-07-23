@@ -1,4 +1,5 @@
-"""Export USD chunk — exports the current stage or a specific layer to disk.
+"""Export USD chunk — exports every real layer in the stage to its own file, or,
+with Flatten into one file checked, merges everything into a single file instead.
 
 Requires: pxr (OpenUSD), usd_chunks.
 """
@@ -7,93 +8,569 @@ from __future__ import annotations
 
 import os
 
-from pxr import Sdf
+from pxr import Sdf, Usd, UsdUtils
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_registry, chunk_utils
+from plugins import chunk_usd
+from plugins.chunk_usd import get_chunk_prim_path
 
 
-def _refresh_layers(owner, notice, sender):
-    """Rebuild the layer menu from the current stage."""
+def _discover_export_layers(stage):
+    """Return [(name, layer), ...] for every real layer Export All Layers would write,
+    excluding Session Layer — it's handled separately and always holds full bookkeeping."""
+    internal_ids = chunk_utils.chunk_internal_layer_ids()
+    session_layer = stage.GetSessionLayer()
+    layers = []
+    for layer in stage.GetLayerStack(includeSessionLayers=True):
+        if layer.identifier == session_layer.identifier or layer.identifier in internal_ids:
+            continue
+        layers.append((layer.GetDisplayName() or layer.identifier, layer))
+    return layers
+
+
+def _refresh_layer_rows(owner, notice, sender):
+    """Rebuild the per-layer export list from the real layers currently in the stage.
+
+    Live: rebuilt whenever the stage's contents change (a Create Layer chunk adding a
+    new sublayer, etc.) rather than preserving previous checkbox state by matching names
+    across a resize — simpler, and avoids the match-by-name bugs that would need to get
+    right. Registered globally so this updates automatically, no manual refresh step
+    needed.
+
+    Must no-op when the layer set hasn't actually changed: this list's own row params
+    live on the Export USD chunk prim like any other param, so toggling a checkbox here
+    authors a USD attribute change, which re-fires this same STAGE_CONTENTS_CHANGED
+    listener — without this guard, checking a box would immediately trigger a rebuild
+    that resets it straight back to the default before it could ever be read.
+    """
     _chunk = owner.get_chunk()
-    stage = owner.get_stage()
+    stage = _chunk.get_stage() if _chunk else None
     if not stage:
         return
 
-    items = ["Stage (Flattened)"]
-    items.append("Session Layer")
-    for layer in stage.GetLayerStack(includeSessionLayers=False):
-        items.append(layer.identifier)
-
-    menu = _chunk.get_param("layer")
-    menu.menu_items = items
-    menu.value = items[0]
-
-
-def export(owner, notice, sender):
-    _chunk = owner.get_chunk()
-    stage = owner.get_stage()
-    if not stage:
+    rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
+    if rows is None:
         return
 
+    layers = _discover_export_layers(stage)
+    name_t = rows.get_param("layer_name")
+    bake_t = rows.get_param("bake")
+    export_t = rows.get_param("export_enabled")
+
+    current_names = [rows.get_indexed_param(name_t, i).value for i in range(rows.size)]
+    new_names = [name for name, _layer in layers]
+    if current_names == new_names:
+        return
+
+    # Only indices >= old_size get a genuinely new ChunkGroupBase (and therefore a
+    # fresh export_enabled proxy) from ChunkListGroupBase.value_changed's row-creation
+    # loop — rows below that persist across the resize. Wiring the per-row callback
+    # only for those new indices avoids piling up duplicate NoticeConnections on rows
+    # that survive multiple refreshes.
+    old_size = rows.size
+    rows.size = len(layers)
+    bake_all = _chunk.get_param("bake_all")
+    bake_default = bool(bake_all.value) if bake_all is not None else False
+    for i, (name, _layer) in enumerate(layers):
+        rows.get_indexed_param(name_t, i).value = name
+        rows.get_indexed_param(bake_t, i).value = bake_default
+        export_row = rows.get_indexed_param(export_t, i)
+        export_row.value = True
+        if i >= old_size:
+            # add_callback must be called on this specific row's proxy, not the
+            # export_t template — a proxy's own value change never replays through
+            # callbacks registered on the template (see _export_enabled_changed).
+            export_row.add_callback(_export_enabled_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+
+
+def _unchecked_layer_names(_chunk, checkbox_name: str) -> set:
+    """Return the set of layer names whose row checkbox `checkbox_name` is unchecked."""
+    rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
+    if rows is None:
+        return set()
+    name_t = rows.get_param("layer_name")
+    box_t = rows.get_param(checkbox_name)
+    return {
+        rows.get_indexed_param(name_t, i).value
+        for i in range(rows.size)
+        if not rows.get_indexed_param(box_t, i).value
+    }
+
+
+def _read_procedural_layer_names(_chunk) -> set:
+    """Layer names whose "Bake chunk outputs" checkbox is unchecked (Procedural)."""
+    return _unchecked_layer_names(_chunk, "bake")
+
+
+def _read_export_disabled_layer_names(_chunk) -> set:
+    """Layer names whose "Export" checkbox is unchecked — these are skipped entirely
+    by Export All Layers, not just baked differently."""
+    return _unchecked_layer_names(_chunk, "export_enabled")
+
+
+def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
+    """Replace any reference to a ChunkLayerManager-internal layer in dst_layer's own
+    subLayerPaths with that layer's fully-flattened real content, inlined directly —
+    rather than dropping the reference outright.
+
+    Internal layers (graph_layer / per-chunk procedural layers) are pure implementation
+    detail with no meaning outside this session, so they were never meant to be their own
+    output file — but since the Edit-Target reparenting work, a chunk's own real driven
+    content (e.g. an actual DiskLight prim) can live nested *inside* one, so simply
+    dropping the reference (the old behavior) silently discarded real content along with
+    it. Sibling references to other layers being exported for real (light.usda, etc.) are
+    untouched here — those get rewritten to the sibling filename separately, not inlined.
+    """
+    remaining = []
+    for path in dst_layer.subLayerPaths:
+        if path not in internal_ids:
+            remaining.append(path)
+            continue
+        internal_layer = Sdf.Layer.Find(path)
+        if not internal_layer:
+            continue
+        flat = UsdUtils.FlattenLayerStack(Usd.Stage.Open(internal_layer))
+        for prim_spec in flat.rootPrims.values():
+            Sdf.CopySpec(flat, prim_spec.path, dst_layer, prim_spec.path)
+    dst_layer.subLayerPaths = remaining
+
+
+def _strip_chunk_prims(flat_layer, only_paths=None) -> None:
+    """Remove Chunk-typed prim specs from flat_layer, in place.
+
+    Chunk-prim bookkeeping now follows Edit Target (see chunk_utils.get_bookkeeping_layer),
+    so it's directly inside whichever real layer was active when each chunk last
+    authored — a real layer's export (or a full UsdUtils.FlattenLayerStack(stage)) can
+    carry chunk-graph prims mixed in alongside real content. This turns that into
+    "Baked": real content only, no chunk graph. Mirrors usdchunks_cli.py's --printout
+    stripping: sorted shallowest-first so removing a parent Chunk prim's spec also
+    removes its descendants, with an existence guard for children already gone by the
+    time their turn comes up.
+
+    only_paths, if given, restricts stripping to those specific prim paths — used by
+    "Based on Settings" to strip only chunks whose target layer is marked Baked,
+    leaving Procedural-marked chunks' bookkeeping in place. Otherwise every Chunk-typed
+    prim found in flat_layer is stripped.
+    """
+    if only_paths is not None:
+        candidates = (Sdf.Path(p) for p in only_paths)
+    else:
+        tmp = Usd.Stage.Open(flat_layer)
+        candidates = (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == "Chunk")
+    chunk_paths = sorted(candidates, key=lambda p: p.pathElementCount)
+    for path in chunk_paths:
+        spec = flat_layer.GetPrimAtPath(path)
+        if not spec:
+            continue
+        parent = spec.nameParent
+        if parent:
+            del parent.nameChildren[spec.name]
+        else:
+            del flat_layer.pseudoRoot.nameChildren[spec.name]
+
+
+def _baked_chunk_prim_paths(_chunk, stage) -> list:
+    """Chunk prim paths (get_chunk_prim_path) whose current target layer's row in
+    Layers to Export is checked (Bake chunk outputs; off by default) — used by "Based on
+    Settings" to strip those chunks' bookkeeping from a full flatten, leaving
+    Procedural-marked chunks' bookkeeping in place (it's already there, wherever that
+    chunk's Edit Target put it — see chunk_utils.get_bookkeeping_layer)."""
+    procedural_names = _read_procedural_layer_names(_chunk)
+    layer_name_by_id = {layer.identifier: name for name, layer in _discover_export_layers(stage)}
+    scene = chunk_registry.ChunkRegistry().scene
+    lm = chunk_registry.ChunkLayerManager()
+
+    paths = []
+    for c in scene.get_chunks():
+        target = lm.get_chunk_target(c.get_hash())
+        target_name = layer_name_by_id.get(target.identifier) if target else None
+        if target_name is not None and target_name not in procedural_names:
+            paths.append(get_chunk_prim_path(c))
+    return paths
+
+
+def _export_flattened(_chunk, stage) -> None:
+    """Export the whole stage merged into a single file (the "Flatten into one file"
+    path), per Mode:
+    - Procedural: only the chunk graph, no driven content. Chunk-prim bookkeeping now
+      follows Edit Target, so it's scattered across whichever real layers were active
+      when each chunk last authored — the session layer alone no longer holds the
+      complete graph, so this delegates to the same rebuild-from-scratch mechanism as
+      the Export ChunkGroup chunk (plugins.chunk_usd.export_chunks) instead.
+    - Baked: a full flatten with every Chunk-typed prim stripped back out (a real
+      layer's own composed content can carry chunk-graph prims mixed in with real
+      content now — see _strip_chunk_prims).
+    - Based on Settings: a full flatten with only the Baked-marked chunks' bookkeeping
+      stripped out — Procedural-marked chunks' bookkeeping is already there, wherever
+      their Edit Target put it, so nothing needs to be added back in. Unlike the
+      per-layer path's Procedural (recipe only, real content left in its own private
+      layer, not copied in), a Procedural-marked chunk's real content is still present
+      here too — FlattenLayerStack composes everything in regardless, and there's no
+      per-chunk manifest of "which prims are this chunk's real content" to selectively
+      exclude just theirs from one shared flat layer.
+    """
     is_s = chunk.is_param_t(str)
     output_path = _chunk.get_param("output_file", is_s).value.strip()
     if not output_path:
-        print("[ExportUSD] No output path set.")
+        print("[ExportUSD] No output file set.")
         return
 
     _, ext = os.path.splitext(output_path)
     if ext.lower() not in (".usd", ".usda", ".usdc", ".usdz"):
         output_path += ".usda"
 
-    selection = _chunk.get_param("layer", is_s).value
+    mode = _chunk.get_param("export_mode", is_s).value
+    if mode == "Procedural":
+        scene = chunk_registry.ChunkRegistry().scene
+        chunk_usd.export_chunks(scene, output_path)
+        print(f"[ExportUSD] Chunk graph (Procedural) exported to {output_path}")
+        return
 
-    if selection == "Stage (Flattened)":
-        stage.Export(output_path)
-        print(f"[ExportUSD] Stage exported to {output_path}")
-    elif selection == "Session Layer":
-        stage.GetSessionLayer().Export(output_path)
-        print(f"[ExportUSD] Session layer exported to {output_path}")
+    flat = UsdUtils.FlattenLayerStack(stage)
+    if mode == "Based on Settings":
+        _strip_chunk_prims(flat, only_paths=_baked_chunk_prim_paths(_chunk, stage))
     else:
-        layer = Sdf.Layer.Find(selection)
-        if layer:
-            layer.Export(output_path)
-            print(f"[ExportUSD] Layer '{selection}' exported to {output_path}")
+        _strip_chunk_prims(flat)
+    flat.Export(output_path)
+    print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
+
+
+def export_all(owner, notice, sender):
+    """Export every real layer in the composed stack to its own file, named after
+    the layer's own display name (e.g. an anon layer created with tag "MyEdits"
+    exports as "MyEdits.usda") — or, if Flatten into one file is checked, merge
+    everything into a single file instead (see _export_flattened).
+
+    Anon layer identifiers (anon:0x...:tag) only resolve within this session — Export()
+    copies subLayerPaths verbatim, so without rewriting them the output files would
+    reference sublayers that don't exist once the session is gone. Every cross-reference
+    between the layers we're exporting gets rewritten to the sibling filename we assign
+    it below; references to the chunk graph's own internal layers (excluded from export
+    entirely — see chunk_internal_layer_ids) are dropped rather than left dangling.
+
+    Layers to Export lists every real layer currently in the stage, each with an Export
+    checkbox (checked by default) and a Bake chunk outputs checkbox (unchecked by
+    default; the Bake all switch flips every row at once). Export
+    unchecked skips that layer entirely — it isn't written, and any other exported
+    layer that sublayers it has that reference dropped, not inlined. Bake chunk outputs
+    checked brings each chunk's real content in from its own private layer and
+    strips the chunk-graph bookkeeping prims (chunk-prim bookkeeping follows Edit
+    Target now, so it can be directly inside this layer's own composed content — see
+    chunk_utils.get_bookkeeping_layer) — the baked result. Unchecked (Procedural)
+    exports the bookkeeping only, leaving each chunk's real content where it already
+    is (its own private layer, not copied in) — a re-editable recipe; reloading it
+    re-runs execute() to regenerate the content, rather than the file already holding
+    a baked-out copy.
+    """
+    _chunk = owner.get_chunk()
+    stage = _chunk.get_stage() if _chunk else None
+    if not stage:
+        return
+
+    if _chunk.get_param("flatten", chunk.is_param_t(bool)).value:
+        _export_flattened(_chunk, stage)
+        return
+
+    is_s = chunk.is_param_t(str)
+    output_dir = _chunk.get_param("output_dir", is_s).value.strip()
+    if not output_dir:
+        print("[ExportUSD] No output directory set.")
+        return
+    os.makedirs(output_dir, exist_ok=True)
+
+    ext = _chunk.get_param("layer_format", is_s).value or ".usda"
+
+    internal_ids = chunk_utils.chunk_internal_layer_ids()
+    session_layer = stage.GetSessionLayer()
+
+    disabled_names = _read_export_disabled_layer_names(_chunk)
+    procedural_names = _read_procedural_layer_names(_chunk)
+    discovered = _discover_export_layers(stage)
+    real_layers = [(n, l) for n, l in discovered if n not in disabled_names]
+    skipped_ids = {l.identifier for n, l in discovered if n in disabled_names}
+    baked_names = {n for n, _l in discovered if n not in procedural_names}
+
+    layers = []
+    if _chunk.get_param("keep_session_layer", chunk.is_param_t(bool)).value:
+        layers.append(("SessionLayer", session_layer))
+    layers.extend(real_layers)
+
+    # Assign every exported layer its output filename up front, so cross-references
+    # between them can be rewritten regardless of which order they're processed in.
+    filenames = {}
+    used_names = set()
+    for name, layer in layers:
+        base, _ext = os.path.splitext(name or "layer")
+        base = base or "layer"
+        candidate = base
+        i = 1
+        while candidate in used_names:
+            candidate = f"{base}_{i}"
+            i += 1
+        used_names.add(candidate)
+        filenames[layer.identifier] = candidate + ext
+
+    def _relocate(path):
+        if path in filenames:
+            return filenames[path]
+        if path in internal_ids or path in skipped_ids:
+            return ""  # drop — either has no meaning outside this session, or its Export
+            # checkbox was unchecked, so it was never written as a file to reference
+        return path
+
+    for name, layer in layers:
+        out_path = os.path.join(output_dir, filenames[layer.identifier])
+        baked = name in baked_names
+
+        export_layer = layer
+        needs_copy = baked or any(
+            p in filenames or p in internal_ids or p in skipped_ids for p in layer.subLayerPaths
+        )
+        if needs_copy:
+            # Rewrite on a throwaway copy — never mutate the live session's own layers.
+            export_layer = Sdf.Layer.CreateAnonymous()
+            export_layer.TransferContent(layer)
+            if baked:
+                # Baked: bring each chunk's real content in from its own private layer
+                # (only on choosing to bake does it get copied into this edit target),
+                # then strip the now-redundant chunk-graph bookkeeping.
+                _inline_internal_sublayers(export_layer, internal_ids)
+                UsdUtils.ModifyAssetPaths(export_layer, _relocate)
+                _strip_chunk_prims(export_layer)
+            else:
+                # Procedural: the recipe only — leave each chunk's real content where it
+                # already lives (its own private layer), dropping the reference to it
+                # here rather than inlining, via _relocate's internal_ids handling below.
+                UsdUtils.ModifyAssetPaths(export_layer, _relocate)
+
+        export_layer.Export(out_path)
+        print(f"[ExportUSD] Layer '{name}' exported to {out_path}")
+
+
+def _update_export_visibility(owner):
+    """Toggle Output File/Mode (flatten path) vs Output Directory/Format (per-layer
+    path) to match the Flatten into one file checkbox. Layers to Export stays visible
+    either way — Based on Settings (flatten) and per-layer Procedural both read it."""
+    flatten = owner.get_param("flatten", chunk.is_param_t(bool)).value
+
+    def _set_hidden(name, hidden):
+        param = owner.get_param(name)
+        if hidden:
+            param.set_state(chunk.ChunkFlags.State.HIDDEN)
         else:
-            print(f"[ExportUSD] Could not find layer: {selection}")
+            param.unset_state(chunk.ChunkFlags.State.HIDDEN)
+
+    _set_hidden("output_file", not flatten)
+    _set_hidden("export_mode", not flatten)
+    _set_hidden("output_dir", flatten)
+    _set_hidden("layer_format", flatten)
+    _set_hidden("keep_session_layer", flatten)
+
+
+def _flatten_changed(owner, notice, sender):
+    _update_export_visibility(owner.get_chunk())
+
+
+def _bake_all_changed(owner, notice, sender):
+    """Set every row's Bake chunk outputs checkbox to the Bake all switch's value.
+    Rows created later inherit it too — _refresh_layer_rows seeds new rows from the
+    switch rather than a hardcoded default."""
+    _chunk = owner.get_chunk()
+    rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup)) if _chunk else None
+    if rows is None:
+        return
+    bake_t = rows.get_param("bake")
+    for i in range(rows.size):
+        rows.get_indexed_param(bake_t, i).value = bool(sender.value)
+
+
+def _export_enabled_changed(owner, notice, sender):
+    """Gray out that row's Bake chunk outputs checkbox when its own Export checkbox is
+    unchecked. Must be add_callback'd directly on each row's own export_enabled proxy
+    (done in _refresh_layer_rows, once per new row) rather than on the export_enabled
+    template — a proxy's own value change fires with sender=that exact proxy, and a
+    callback registered on the template (sender=template) never matches it; only
+    template-level changes (name, label, flags, ...) replay down to every row.
+    sender.get_owner() is that same row, letting this reach only its sibling fields.
+    """
+    row = sender.get_owner()
+    if row is None:
+        return
+    bake = row.get_param("bake")
+    if bake is None:
+        return
+    if sender.value:
+        bake.unset_state(chunk.ChunkFlags.State.DISABLED)
+    else:
+        bake.set_state(chunk.ChunkFlags.State.DISABLED)
 
 
 def main():
     chunk_api = chunk.Chunk("Export USD")
+
+    flatten = chunk.Checkbox(
+        "flatten",
+        "Flatten into one file",
+        default_value=False,
+        tooltip="Off (default): Export writes every real layer to Output Directory, one "
+        "file per layer — the common case. On: Export merges everything into the single "
+        "Output File instead, per Mode below.",
+    )
+    flatten.add_callback(_flatten_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+    chunk_api.add_param(flatten)
 
     chunk_api.add_param(
         chunk.FileBrowser(
             "output_file",
             "Output File",
             extensions=["usd", "usda", "usdc", "usdz"],
-            tooltip="Destination file. The extension picks the format: .usda (text), "
-            ".usdc (binary), .usd (either), or .usdz (package).",
+            tooltip="Destination file when Flatten into one file is checked. The extension "
+            "picks the format: .usda (text), .usdc (binary), .usd (either), or .usdz "
+            "(package).",
         )
     )
 
-    layer_menu = chunk.Menu(
-        "layer",
+    chunk_api.add_param(
+        chunk.Menu(
+            "export_mode",
+            "Mode",
+            menu_items=["Baked", "Procedural", "Based on Settings"],
+            default_value="Baked",
+            tooltip="Only shown when Flatten into one file is checked.\n\n"
+            "Baked: every chunk's real driven content, merged into one file, no chunk "
+            "graph at all.\n"
+            "Procedural: only the chunk graph, no driven content — same rebuild-from-"
+            "scratch mechanism as the Export ChunkGroup chunk, since chunk-prim bookkeeping "
+            "follows Edit Target now and is no longer all in one place to export directly. "
+            "Reloading it regenerates everything.\n"
+            "Based on Settings: Baked, but leaving in the bookkeeping of chunks whose "
+            "target layer is marked Procedural in Layers to Export below (it's already "
+            "there, wherever their Edit Target put it).",
+        )
+    )
+
+    output_dir = chunk.FileBrowser(
+        "output_dir",
+        "Output Directory",
+        tooltip="Folder to export every real layer into, one file per layer, named after "
+        "each layer's own name (e.g. a Create Layer chunk's Layer Name). Includes the root "
+        "layer under its own file name — pick a folder that won't collide with existing "
+        "scene files unless that's what you want.\n\nShown when Flatten into one file is "
+        "unchecked.",
+    )
+    output_dir.set_flag(chunk.ChunkFlags.ParamFlags.DIRECTORY)
+    chunk_api.add_param(output_dir)
+    chunk_api.add_param(
+        chunk.Menu(
+            "layer_format",
+            "Format",
+            menu_items=[".usda", ".usdc", ".usd"],
+            default_value=".usda",
+            tooltip="File extension used for every exported layer. Shown when Flatten "
+            "into one file is unchecked.",
+        )
+    )
+    chunk_api.add_param(
+        chunk.Checkbox(
+            "keep_session_layer",
+            "Keep Session Layer",
+            default_value=True,
+            tooltip="Checked (default): also write SessionLayer.usda. Chunk-prim bookkeeping "
+            "follows Edit Target now, so this is only whatever wasn't redirected (CONTEXT "
+            "chunks like Edit Target itself, plus anything authored before any Edit Target "
+            "ran) — not the complete chunk graph; use the Export ChunkGroup chunk for that. "
+            "Unchecked: skip it — write only the real, driven-content layers.\n\nShown when "
+            "Flatten into one file is unchecked.",
+        )
+    )
+
+    bake_all = chunk.Checkbox(
+        "bake_all",
+        "Bake all",
+        default_value=False,
+        tooltip="Master switch for the per-layer Bake chunk outputs checkboxes below: "
+        "toggling it sets every row at once, and newly discovered layers default to it.",
+    )
+    bake_all.add_callback(_bake_all_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+    chunk_api.add_param(bake_all)
+
+    export_layers = chunk.ListGroup(
+        "export_layers",
+        "Layers to Export",
+        # Drop the LIST flag (ListGroup's default) so no "+"/"-" controls are shown —
+        # this list is entirely auto-managed from the stage, never user-added-to/removed-from.
+        flags=chunk.ChunkFlags.GroupFlags.LABELED | chunk.ChunkFlags.GroupFlags.FRAMED,
+        tooltip="Every real layer currently in the stage (one row per Edit Target — the "
+        "output of Export All Layers), refreshed automatically as the stage changes.\n\n"
+        "Export (checked by default): whether this layer is exported at all. Unchecked "
+        "skips it entirely and grays out Bake chunk outputs below.\n\n"
+        "Bake chunk outputs (unchecked by default — use Bake all above to flip every "
+        "row): checked brings each chunk's real content in "
+        "from its own private layer and strips the chunk-graph bookkeeping prims — the "
+        "baked result. Unchecked (Procedural): bookkeeping only, leaving each chunk's "
+        "real content where it already is (not copied in) — a re-editable recipe; "
+        "reloading it re-runs execute() to regenerate the content. To keep some chunks "
+        "baked and others procedural within what would otherwise be one layer, route "
+        "them through two separate Edit Target layers instead.",
+    )
+    layer_name = chunk.LineEdit(
+        "layer_name",
         "Layer",
-        menu_items=["Stage (Flattened)"],
-        default_value="Stage (Flattened)",
-        tooltip="What to export: the whole flattened stage, the session layer, or a "
-        "specific sublayer. Press Refresh Layers to populate this list from the stage.",
+        # Every row would otherwise show the same static "Layer" caption above its
+        # actual value (ProxyParam only lets .value differ per row, not the label) —
+        # pure clutter since the value below it already says which layer this is.
+        # Unset LABELED entirely rather than passing an empty label: get_label() falls
+        # back to the param's internal name ("layer_name") whenever label is falsy.
+        flags=chunk.ChunkFlags.ParamFlags.NONE,
     )
-    chunk_api.add_param(layer_menu)
+    # chunk.Label displays its static configured caption text, not its value — the wrong
+    # type for a dynamic per-row name. LineEdit shows .value correctly; DISABLED (a group
+    # flag, so it applies to every row's proxy, unlike .value which is per-row) makes it
+    # read-only so it doesn't look like something the user should type into.
+    layer_name.set_state(chunk.ChunkFlags.State.DISABLED)
+    export_layers.add_param(layer_name)
 
-    refresh_btn = chunk.Button(
-        "refresh", "↻ Refresh Layers", tooltip="Rebuild the Layer menu from the current stage's layers."
+    export_enabled = chunk.Checkbox(
+        "export_enabled",
+        "Export",
+        default_value=True,
+        tooltip="Checked (default): this layer is written as its own file. Unchecked: "
+        "skip it entirely — any other exported layer that sublayers it has that "
+        "reference dropped, not inlined, so its content isn't written anywhere. Bake "
+        "chunk outputs below is grayed out while this is unchecked, since it has "
+        "nothing to apply to.",
     )
-    refresh_btn.add_callback(_refresh_layers)
-    chunk_api.add_param(refresh_btn)
+    # Not wired here: a callback registered on this template never fires for a row's
+    # own value change (see _export_enabled_changed's docstring). Each row's own proxy
+    # gets add_callback'd individually, once, in _refresh_layer_rows.
+    export_layers.add_param(export_enabled)
 
-    export_btn = chunk.Button("export", "Export", tooltip="Write the selected layer/stage to the output file.")
-    export_btn.add_callback(export)
-    chunk_api.add_param(export_btn)
+    export_layers.add_param(chunk.Checkbox("bake", "Bake chunk outputs", default_value=False))
+    chunk_api.add_param(export_layers)
+    chunk_api.add_callback(
+        _refresh_layer_rows,
+        notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
+        listen_globally=True,
+        send_on_create=True,
+    )
+
+    export_all_btn = chunk.Button(
+        "export_all",
+        "Export",
+        tooltip="Unchecked Flatten (default): export every real layer in the composed stack "
+        "(session layer, root layer, and every sublayer — excluding the chunk graph's own "
+        "internal layers) to Output Directory, one file per layer named after that layer's "
+        "own name.\n\n"
+        "Each layer's own Bake chunk outputs checkbox (Layers to Export) decides whether "
+        "its real content is baked in and the bookkeeping stripped (Baked), or "
+        "the bookkeeping is exported alone with content left in its own private layer "
+        "(Procedural, the default; Bake all flips every row).\n\n"
+        "Checked Flatten: merge everything into the single Output File instead, per Mode.",
+    )
+    export_all_btn.add_callback(export_all)
+    chunk_api.add_param(export_all_btn)
+
+    _update_export_visibility(chunk_api)
 
     return chunk_api
 
@@ -102,8 +579,28 @@ def config():
     return chunk.DefaulConfig(
         category="Composition",
         description=(
-            "Exports the current stage — fully flattened, the session layer, or a single\n"
-            "chosen sublayer — to a USD file on disk. Press Refresh Layers to populate\n"
-            "the Layer menu, pick a target, then Export."
+            "Exports every real layer in the composed stack to Output Directory, one file\n"
+            "per layer, named after that layer's own name — e.g. a Create Layer chunk with\n"
+            "Layer Name \"MyEdits\" exports as MyEdits.usda. Name collisions get a _1, _2...\n"
+            "suffix. Format picks the extension used for all of them. This is the common\n"
+            "case and needs no other settings — just pick Output Directory and press Export.\n"
+            "\n"
+            "Check Flatten into one file to merge everything into a single Output File\n"
+            "instead, per Mode: Baked (default) is every chunk's real driven content merged\n"
+            "into one file, no chunk graph. Procedural is just the chunk graph, no driven\n"
+            "content, via the same rebuild-from-scratch mechanism as the Export ChunkGroup\n"
+            "chunk (chunk-prim bookkeeping follows Edit Target now, so it's no longer all in\n"
+            "the session layer to export directly); reloading it regenerates everything by\n"
+            "re-running each chunk's execute(). Based on Settings is Baked, but leaving in\n"
+            "the bookkeeping of chunks whose target layer is marked Procedural in Layers to\n"
+            "Export below.\n"
+            "\n"
+            "Layers to Export lists every real layer in the stage (refreshed automatically),\n"
+            "each with an Export checkbox and a Bake chunk outputs checkbox (off by default;\n"
+            "the Bake all switch sets every row at once). Export unchecked\n"
+            "skips that layer entirely. Bake chunk outputs checked brings each\n"
+            "bookkeeping — the baked result. Unchecked (Procedural) exports the bookkeeping\n"
+            "only, leaving each chunk's real content where it already is (not copied in) —\n"
+            "a re-editable recipe; reloading it re-runs execute() to regenerate the content."
         ),
     )

@@ -369,6 +369,10 @@ def test_export_load_roundtrip(tmp_path) -> None:
 
     scene_src = _Src()
     chunk_registry.ChunkRegistry().initialize(scene_src, "pytest")
+    # export_chunks now copies each chunk's already-composed prim spec straight from
+    # the live stage (rather than re-deriving it from Python state via _author_prim),
+    # so the stage must actually be wired up to author those prims in the first place.
+    _chunk_usd_init(stage_src, scene_src)
 
     c = chunk.Chunk("testChunk")
     c._config = ChunkConfig(module="prim")
@@ -380,6 +384,11 @@ def test_export_load_roundtrip(tmp_path) -> None:
     out = tmp_path / "chunks.usda"
     export_chunks(scene_src, out)
     assert out.exists()
+
+    # ChunkLayerManager is a singleton — reset it before switching to the destination
+    # stage, or its state from stage_src (graph_layers, etc.) leaks in and load_chunks'
+    # execute() cascade tries to use layers that aren't part of stage_dst's stack.
+    chunk_registry.ChunkLayerManager().reset()
 
     stage_dst = Usd.Stage.Open(str(out))
 
@@ -394,6 +403,152 @@ def test_export_load_roundtrip(tmp_path) -> None:
     loaded = scene_dst.get_chunks()
     assert len(loaded) == 1
     assert loaded[0].get_param("prim_type").value == "Scope"
+
+
+def test_reload_for_stage_resets_on_same_path_fresh_stage(tmp_path) -> None:
+    """Re-exporting to the same path and reloading it (a common iteration workflow)
+    gives a genuinely new Usd.Stage whose root layer nonetheless shares the same
+    identifier (Sdf's layer registry caches by identifier/path) as the previously
+    loaded one. reload_for_stage must still reset in that case — comparing stage
+    *object identity*, not the identifier string — or the previous file's chunk
+    objects stay registered, orphaned, alongside the freshly loaded content.
+    """
+    out = tmp_path / "roundtrip.usda"
+    Sdf.Layer.CreateNew(str(out)).Save()
+
+    stage1 = Usd.Stage.Open(str(out))
+
+    class _Scene(_DummyScene):
+        def __init__(self):
+            super().__init__()
+            self._stage = stage1
+
+        def get_stage(self):
+            return self._stage
+
+    scene = _Scene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    sync = ChunkStageSync()
+    _chunk_usd_init(stage1, scene)
+
+    a = chunk.Chunk("first")
+    a._config = ChunkConfig(module="prim")
+    scene.add_chunk(a)
+    assert any(c.name == "first" for c in scene.get_chunks())
+
+    stage2 = Usd.Stage.Open(str(out))
+    assert stage2 is not stage1
+    assert stage2.GetRootLayer().identifier == stage1.GetRootLayer().identifier
+
+    scene._stage = stage2
+    sync.reload_for_stage(stage2)
+
+    assert sync._loaded_stage is stage2
+    assert all(c.name != "first" for c in scene.get_chunks())
+
+
+def test_load_chunks_preserves_named_tab_context_on_reload(tmp_path) -> None:
+    """A named top-level Tab context (e.g. "Tab1"), saved via export_chunks and
+    reloaded into a fresh session/stage, must come back as that same context — not
+    get orphaned into a brand-new tab named after whatever file happens to be open.
+
+    load_chunks only ever recognized two cases: a chunk with a chunkType (a real
+    module-backed chunk) or an untyped root-level orphan (wrapped in a tab named
+    after the current file, stem-derived from GetRootLayer()). A Tab/ChunkGroup
+    context prim (Chunk-typed, no chunkType) fell into neither: get_chunk_module()
+    was never even consulted for it, so its children's source layer resolved to
+    the file's own root layer (_find_prim_layer excludes the root layer entirely),
+    landing them in the untyped-orphan bucket and wrapping them in a *new*,
+    incorrectly-named tab instead of recognizing "Tab1" as their real home.
+    """
+    stage = Usd.Stage.CreateInMemory()
+
+    class _Src(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _Src()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    tab = scene.add_context("Tab1")
+    a = _chunk_with_module("a")
+    tab.add_param(a)
+    b = _chunk_with_module("b")
+    tab.add_param(b)
+
+    out = tmp_path / "chunks.usda"
+    export_chunks(scene, out)
+
+    out_stage = Usd.Stage.Open(str(out))
+
+    class _Dst(_DummyScene):
+        def get_stage(self):
+            return out_stage
+
+    scene2 = _Dst()
+    chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
+    load_chunks(out_stage, scene2)
+
+    loaded = scene2.get_chunks()
+    assert len(loaded) == 2
+    for c in loaded:
+        ctx = c.get_context()
+        assert ctx is not None and ctx.name == "Tab1", (
+            f"{c.name} should be homed under Tab1, got context {ctx.name if ctx else None!r}"
+        )
+
+
+def test_export_chunks_preserves_live_exec_order_not_scene_order(tmp_path) -> None:
+    """export_chunks must follow each chunk's LIVE inputs:chunk connection (the real
+    wiring, as authored by the node-graph UI's drag-to-connect) rather than falling
+    back to scene.get_chunks() iteration order — which is what happened before this
+    fix, since chunk.get_dependencies() (the Python DAG) stays empty for a graph
+    wired live: drag-to-connect authors the USD-level connection directly and never
+    calls add_dependency(), that reconstruction only happens on load_chunks().
+    """
+    stage = Usd.Stage.CreateInMemory()
+
+    class _Src(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _Src()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    # Registered in scrambled order (b, c, a) relative to the intended exec chain
+    # (a -> b -> c) — the old scene.get_chunks()-order fallback would export b -> c -> a.
+    b = _chunk_with_module("b")
+    scene.add_chunk(b)
+    c = _chunk_with_module("c")
+    scene.add_chunk(c)
+    a = _chunk_with_module("a")
+    scene.add_chunk(a)
+
+    # Wire a -> b -> c directly on the USD prims, exactly like the node-graph UI's
+    # drag-to-connect — never calling add_dependency().
+    b_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/b")
+    c_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/c")
+    b_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False).SetConnections(
+        [Sdf.Path(f"{_CHUNKS_ROOT}/a.{_EXEC_OUTPUT}")]
+    )
+    c_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False).SetConnections(
+        [Sdf.Path(f"{_CHUNKS_ROOT}/b.{_EXEC_OUTPUT}")]
+    )
+    assert a.get_dependencies() == [] and b.get_dependencies() == [] and c.get_dependencies() == []
+
+    out = tmp_path / "chunks.usda"
+    export_chunks(scene, out)
+
+    out_stage = Usd.Stage.Open(str(out))
+    b_conns = out_stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/b").GetAttribute(_EXEC_INPUT).GetConnections()
+    c_conns = out_stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/c").GetAttribute(_EXEC_INPUT).GetConnections()
+    a_attr = out_stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/a").GetAttribute(_EXEC_INPUT)
+
+    assert any("a" in str(p) for p in b_conns), f"expected b -> a, got {b_conns}"
+    assert any("b" in str(p) for p in c_conns), f"expected c -> b, got {c_conns}"
+    assert not a_attr.IsValid() or not a_attr.GetConnections()
 
 
 # ---------------------------------------------------------------------------
@@ -475,11 +630,10 @@ def test_chunk_stage_sync_rename_no_duplicate() -> None:
 
 
 def test_chunk_stage_sync_rename_anonymous_edit_target() -> None:
-    """Rename must work when _user_edit_layer is None. In usdview the edit target is an
-    anonymous session/graph layer, which _on_edit_target_changed deliberately doesn't record,
-    so _user_edit_layer stays None; chunks still author via the edit-target fallback. If the
-    rename bails instead, the chunk is renamed but its prim isn't — the paths diverge and the
-    node vanishes from the graph."""
+    """Rename must work with no Edit Target chunk in play — bookkeeping then resolves to the
+    session layer (nearest_upstream_edit_layer's default). If the rename bails when the prim
+    can't be pre-resolved instead of falling back to the current edit target, the chunk is
+    renamed but its prim isn't — the paths diverge and the node vanishes from the graph."""
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -497,7 +651,6 @@ def test_chunk_stage_sync_rename_anonymous_edit_target() -> None:
 
     c = _chunk_with_module("foo")
     scene.add_chunk(c)
-    sync._user_edit_layer = None  # simulate usdview's anonymous edit target
 
     c.name = "bar"
 
@@ -1462,7 +1615,10 @@ def test_load_chunks_subchunk_in_group() -> None:
     assert ctx is not None, "No CONTEXT group chunk found after load_chunks"
     sub = [p for p in ctx.get_my_params() if isinstance(p, ChunkBase)]
     assert len(sub) == 1
-    assert sub[0].name == "Prim"
+    # The chunk's name is restored from its prim (prims are authored at
+    # <root>/<chunk.name>), not reset to the module default — otherwise two
+    # chunks of the same type can swap identities on load.
+    assert sub[0].name == "c1"
 
 
 # ---------------------------------------------------------------------------

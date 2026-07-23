@@ -356,6 +356,11 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         self.button.setHidden(not self.param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION))
 
         self.setup_chunk_widget()
+        # setup_chunk_widget() doesn't call update_from_state() and the reactive
+        # ATTRIBUTE_CHANGED/state path isn't reliable for state set before this widget
+        # existed (e.g. a ListGroup template's DISABLED state, already set when each
+        # row's proxy widget gets created) — apply current state explicitly, once, now.
+        self.update_from_state()
 
     def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: chunk.ChunkParamBase):
         if notice.alias == chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED and notice.data.value:
@@ -376,6 +381,13 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
     def set_enabled(self, val: bool):
         self.setEnabled(val)
+
+    def update_from_state(self):
+        # Base ChunkParamWidgetBase.update_from_state is a no-op stub with no default
+        # implementation — without this override, DISABLED never actually renders as
+        # disabled for a LineEdit (only reactively, and only if this were overridden).
+        self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
+        self.set_enabled(not self.param.has_state(ChunkFlags.State.DISABLED))
 
 
 class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidget):
@@ -464,9 +476,14 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
             pattern = " ".join([pattern + x for x in self.param.extensions])
 
         directory = self.param.has_flag(ChunkFlags.ParamFlags.DIRECTORY)
-        create_new = False
-        if directory:
-            create_new = not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
+        # FILE_EXISTING unset (the default) means the file need not exist yet — an
+        # output/destination picker like Export ChunkGroup's Output File. Previously
+        # this only applied to DIRECTORY params; a plain FILE param always got
+        # create_new=False (an Open dialog requiring the file to already exist),
+        # regardless of the flag. file_dial() ignores create_new for directory=True
+        # anyway (always getExistingDirectory), so computing it unconditionally here
+        # only changes behavior for the FILE case.
+        create_new = not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
 
         if file := file_dial(pattern, create_new, directory):
             self.set_value(file)
@@ -515,23 +532,42 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
 
     def update_menu_items(self, param: chunk.Menu):
         menu_items = self.param.menu_items
-        self.clear()
+        # clear()/addItems() make Qt auto-select (and emit currentTextChanged for) the
+        # first item as the list goes from empty to populated. That signal is wired to
+        # value_changed, which would write that transient first item straight into the
+        # param model — clobbering the real value — before set_value() below even runs.
+        with QtCore.QSignalBlocker(self):
+            self.clear()
+            if menu_items:
+                self.addItems(menu_items)
 
         if menu_items:
-            self.addItems(menu_items)
             val = self.param.value if self.param.value is not None else self.param.default_value
             if val:
                 self.set_value(val)
-
-        if self.param.default_value:
-            self.setCurrentIndex(menu_items.index(self.param.default_value))
 
     def get_value(self):
         return self.currentText()
 
     def set_value(self, value):
+        if isinstance(value, str) and chunk_utils.has_expression(value):
+            # setup_chunk_widget()/handle_param_changed() (ChunkParamWidgetBase) pass
+            # param.raw_value — for a node-graph-connected Menu that's the literal
+            # "@Node.param@" expression text, not a menu_items entry. Resolve it for
+            # display; menu_items themselves are never expression strings.
+            value = self.param.value
         with QtCore.QSignalBlocker(self):
-            self.setCurrentText(value)
+            index = self.findText(value)
+            if index < 0 and value:
+                # A resolved connection value (e.g. a Create Layer chunk's Layer
+                # Name) is a plain name, not one of the raw identifiers/sentinels in
+                # menu_items — setCurrentText() would silently no-op on a
+                # non-editable combo box, leaving the old selection on screen. Show
+                # it via a transient extra item instead; update_menu_items() clears
+                # and rebuilds the list from scratch on every refresh anyway.
+                index = self.count()
+                self.addItem(value)
+            self.setCurrentIndex(index)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() != QtCore.Qt.LeftButton:
@@ -1239,6 +1275,10 @@ class ContainerWidget(
     def delete_self(self):
         try:
             self.deleteLater()
+            # A visible widget reparented to no parent becomes a real top-level window and
+            # Qt shows it immediately, before deleteLater() actually runs — set this first
+            # or a still-visible widget flashes a native window on its way out.
+            self.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
             self.setParent(None)
         except RuntimeError:
             # C++ object already destroyed (e.g. by QGraphicsProxyWidget teardown)
@@ -1259,6 +1299,10 @@ class ContainerWidget(
                     # LabeledWidget stays a child of this container, keeping a strong ref
                     # to the param widget -> chunk, so the chunk never GCs and its layer's
                     # weakref.finalize (which removes the layer) never fires.
+                    # removeItem() only drops layout management — iw is still a visible
+                    # child of self, so reparenting it to none would flash a real top-level
+                    # window unless suppressed first.
+                    iw.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
                     iw.setParent(None)
                     iw.deleteLater()
                     break

@@ -2571,43 +2571,52 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 chunk_notice._usd_write_active = True
                 try:
                     if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
-                        if not is_expr:
-                            # Auto-key: once this attr carries >=1 time sample (authored by K),
-                            # a plain Set(val) (no timeCode) only touches the now-largely-irrelevant
-                            # default value and is a silent no-op for time-varying resolution -- so
-                            # every subsequent edit must land as a time sample at the current frame
-                            # instead, inserting a new keyframe or overwriting the existing one at
-                            # that frame. get_current_frame() is only ever called in this branch
-                            # (i.e. only once a param has actually been keyframed via K), so a host's
-                            # SceneSender that never implements it stays unaffected for non-animated
-                            # params -- see CONTEXT.md's "Attribute Animation" section.
-                            animated = usd_attr.GetNumTimeSamples() > 0
-                            time_code = Usd.TimeCode(chunk_registry.ChunkRegistry().scene.get_current_frame()) if animated else Usd.TimeCode.Default()
-                            current = usd_attr.Get(time_code)
-                            # Don't write a string to a typed (non-String) attr — an unresolved
-                            # forwarded value can arrive as text and raise a type-mismatch.
-                            bad_str = isinstance(val, str) and usd_attr.GetTypeName() != Sdf.ValueTypeNames.String
-                            if not bad_str and current != val:
-                                usd_attr.Set(val, time_code)
-                        if is_expr:
-                            chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
-                            conns = []
-                            for node, attr_name in chunk_utils.parse_expression(raw):
-                                ref_prim = stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}"))
-                                # The referenced node may not exist (a stale/renamed expression
-                                # ref, or a lofted chain pointing at a prim not on this stage) —
-                                # GetAttribute on a null prim raises, so guard it and default to
-                                # the inputs: port. USD lets a connection target a not-yet-present
-                                # path, so the connection is still authored.
-                                use_out = (
-                                    ref_prim.IsValid()
-                                    and ref_prim.GetAttribute(f"outputs:{attr_name}").IsValid()
-                                )
-                                suffix = f"outputs:{attr_name}" if use_out else f"inputs:{attr_name}"
-                                conns.append(Sdf.Path(f"{chunk_root}/{node}.{suffix}"))
-                            usd_attr.SetConnections(conns)
-                            if usd_attr.GetTypeName() == Sdf.ValueTypeNames.String and usd_attr.Get(0) != raw:
-                                usd_attr.Set(raw)
+                        # self._param_attr_path is always the chunk-prim's own storage attr —
+                        # bookkeeping, independent of the stage's ambient/Edit-Target-driven
+                        # edit target (which _write_driven_attrs below correctly targets
+                        # separately via get_edit_context()). It already exists (that's what
+                        # having a _param_attr_path means), so update it wherever its spec
+                        # already lives — not wherever Edit Target currently resolves to,
+                        # which may have moved on since it was first authored.
+                        home = chunk_utils.get_attr_home_layer(usd_attr) or stage.GetSessionLayer()
+                        with Usd.EditContext(stage, home):
+                            if not is_expr:
+                                # Auto-key: once this attr carries >=1 time sample (authored by K),
+                                # a plain Set(val) (no timeCode) only touches the now-largely-irrelevant
+                                # default value and is a silent no-op for time-varying resolution -- so
+                                # every subsequent edit must land as a time sample at the current frame
+                                # instead, inserting a new keyframe or overwriting the existing one at
+                                # that frame. get_current_frame() is only ever called in this branch
+                                # (i.e. only once a param has actually been keyframed via K), so a host's
+                                # SceneSender that never implements it stays unaffected for non-animated
+                                # params -- see CONTEXT.md's "Attribute Animation" section.
+                                animated = usd_attr.GetNumTimeSamples() > 0
+                                time_code = Usd.TimeCode(chunk_registry.ChunkRegistry().scene.get_current_frame()) if animated else Usd.TimeCode.Default()
+                                current = usd_attr.Get(time_code)
+                                # Don't write a string to a typed (non-String) attr — an unresolved
+                                # forwarded value can arrive as text and raise a type-mismatch.
+                                bad_str = isinstance(val, str) and usd_attr.GetTypeName() != Sdf.ValueTypeNames.String
+                                if not bad_str and current != val:
+                                    usd_attr.Set(val, time_code)
+                            if is_expr:
+                                chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
+                                conns = []
+                                for node, attr_name in chunk_utils.parse_expression(raw):
+                                    ref_prim = stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}"))
+                                    # The referenced node may not exist (a stale/renamed expression
+                                    # ref, or a lofted chain pointing at a prim not on this stage) —
+                                    # GetAttribute on a null prim raises, so guard it and default to
+                                    # the inputs: port. USD lets a connection target a not-yet-present
+                                    # path, so the connection is still authored.
+                                    use_out = (
+                                        ref_prim.IsValid()
+                                        and ref_prim.GetAttribute(f"outputs:{attr_name}").IsValid()
+                                    )
+                                    suffix = f"outputs:{attr_name}" if use_out else f"inputs:{attr_name}"
+                                    conns.append(Sdf.Path(f"{chunk_root}/{node}.{suffix}"))
+                                usd_attr.SetConnections(conns)
+                                if usd_attr.GetTypeName() == Sdf.ValueTypeNames.String and usd_attr.Get(0) != raw:
+                                    usd_attr.Set(raw)
                     self._write_driven_attrs(stage, val)
                 finally:
                     chunk_notice._usd_write_active = False
@@ -2670,20 +2679,31 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 store_val = raw if is_expr else sender.value
             chunk_notice._usd_write_active = True
             try:
-                # A non-String attr must never receive raw expression text: if an expression ref
-                # can't resolve (e.g. a lofted cross-context ref like @ChunkGroup.tx@), sender.value
-                # stays the expression STRING and Set() on a typed (float/etc) attr raises a
-                # type-mismatch. The connection authored below carries the topology, so skip the
-                # value write in that case.
-                bad_str = isinstance(store_val, str) and notice.data.GetTypeName() != Sdf.ValueTypeNames.String
-                if not bad_str and notice.data.Get(0) != store_val:
-                    notice.data.Set(store_val)
-                if is_expr:
-                    chunk_root = str(notice.data.GetPrim().GetParent().GetPath())
-                    notice.data.SetConnections([
-                        Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
-                        for node, attr_name in chunk_utils.parse_expression(raw)
-                    ])
+                # notice.data here is always the chunk-prim's own storage attr (bound via
+                # _connect_param_attr — connect_usd_attr's driven-content path is a
+                # separate mechanism, _author_driven_connections, scoped via
+                # get_edit_context()). It already exists (that's what being bound via
+                # _connect_param_attr means), so update it wherever its spec already
+                # lives, rather than wherever the stage's ambient/Edit-Target-driven
+                # edit target currently points — that may have moved on since it was
+                # first authored.
+                stage = notice.data.GetStage()
+                home = chunk_utils.get_attr_home_layer(notice.data) or stage.GetSessionLayer()
+                with Usd.EditContext(stage, home):
+                    # A non-String attr must never receive raw expression text: if an expression ref
+                    # can't resolve (e.g. a lofted cross-context ref like @ChunkGroup.tx@), sender.value
+                    # stays the expression STRING and Set() on a typed (float/etc) attr raises a
+                    # type-mismatch. The connection authored below carries the topology, so skip the
+                    # value write in that case.
+                    bad_str = isinstance(store_val, str) and notice.data.GetTypeName() != Sdf.ValueTypeNames.String
+                    if not bad_str and notice.data.Get(0) != store_val:
+                        notice.data.Set(store_val)
+                    if is_expr:
+                        chunk_root = str(notice.data.GetPrim().GetParent().GetPath())
+                        notice.data.SetConnections([
+                            Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
+                            for node, attr_name in chunk_utils.parse_expression(raw)
+                        ])
             finally:
                 chunk_notice._usd_write_active = False
 
@@ -3563,7 +3583,7 @@ class ChunkListGroupBase(ChunkGroupBase):
         if len(self.proxy_params) == 0 and not predicate:
             return
 
-        if index > len(self.proxy_params):
+        if index >= len(self.proxy_params):
             raise IndexError("Index out of range")
 
         res = self.proxy_params[index].get_param(param)
@@ -3584,7 +3604,12 @@ class ChunkListGroupBase(ChunkGroupBase):
 
         if value > old_value:
             for i in range(old_value, value):
-                group = ChunkGroupBase(str(i), flags=ChunkFlags.GroupFlags.LABELED)
+                # No LABELED: the index string ("0", "1", ...) as a row header serves
+                # little purpose and just costs vertical space — the row's own fields
+                # already identify it (e.g. a name/label field, per-row). Inherit the
+                # list's own layout (e.g. HORIZONTAL) so a list author can lay each row's
+                # fields out side by side instead of always stacked.
+                group = ChunkGroupBase(str(i), flags=ChunkFlags.GroupFlags.NONE, layout=self.layout)
                 group.set_owner(self)
                 self.proxy_params.append(group)
 
@@ -3592,7 +3617,11 @@ class ChunkListGroupBase(ChunkGroupBase):
                 self.send_self(chunk_notice.ChunkNoticeAlias.PARAM_ADDED, group)
 
         elif value < old_value and len(self.proxy_params) > value:
-            for i in range(value, old_value):
+            # Pop from the tail inward: popping ascending indices while iterating shifts
+            # every later element down one, so proxy_params[i] would run off the end (and
+            # delete the wrong rows). Removing the highest index first keeps the lower ones
+            # stable. Clamp the top to the actual length in case it's already shorter.
+            for i in range(min(old_value, len(self.proxy_params)) - 1, value - 1, -1):
                 self.proxy_params[i].request_delete()
                 self.proxy_params.pop(i)
 

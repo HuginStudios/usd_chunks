@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pxr import Usd
+from pxr import Usd, UsdUtils
 
 from plugins import chunk_usd
 from plugins.chunk_usd import initialize as _chunk_usd_init
@@ -36,8 +36,19 @@ def _make_scene(stage: Usd.Stage):
 def _make_legacy(stage: Usd.Stage, prim_path: str) -> None:
     """Strip chunk:pinned back off a prim to simulate a scene saved before this feature
     shipped — issue 03 means every *newly* created chunk now gets the attribute explicitly
-    authored (true or false), so 'absent' no longer occurs naturally in a fresh test chunk."""
-    stage.GetPrimAtPath(prim_path).RemoveProperty("chunk:pinned")
+    authored (true or false), so 'absent' no longer occurs naturally in a fresh test chunk.
+
+    Usd.Prim.RemoveProperty() only removes a spec from the stage's *ambient* edit
+    target (the root layer by default for a fresh stage) — chunk:pinned is chunk-prim
+    bookkeeping, authored via chunk_utils.get_bookkeeping_layer (session layer, absent
+    an active Edit Target chunk), so RemoveProperty would silently no-op here. Search
+    every layer directly instead, matching how the production code itself finds a
+    chunk-prim spec wherever it actually lives (e.g. ChunkStageSync._handle_rename).
+    """
+    for layer in stage.GetLayerStack(includeSessionLayers=True):
+        spec = layer.GetPrimAtPath(prim_path)
+        if spec and "chunk:pinned" in spec.properties:
+            del spec.properties["chunk:pinned"]
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +86,16 @@ def test_set_chunk_pinned_roundtrips_through_usd_attribute() -> None:
 
 
 def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
-    """The actual save/reload path: export the composed stage to a .usda string and open a
-    fresh stage from it, rather than reading the same in-memory attribute back."""
+    """The actual save/reload path: export the *composed* stage to a .usda string and
+    open a fresh stage from it, rather than reading the same in-memory attribute back.
+
+    Chunk-prim bookkeeping (chunk:pinned included) is authored via
+    chunk_utils.get_bookkeeping_layer — the session layer, absent an active Edit
+    Target chunk — not the root layer. stage.GetRootLayer().ExportToString() alone
+    would only ever capture root-layer content, missing it entirely; flatten the full
+    layer stack first so this genuinely tests "the composed result survives a
+    save/reload", regardless of which real layer bookkeeping happens to live in.
+    """
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     scene.add_context("Tab1")
@@ -84,7 +103,7 @@ def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
     scene.add_chunk(c)
     chunk_usd.set_chunk_pinned(c, False)
 
-    usda = stage.GetRootLayer().ExportToString()
+    usda = UsdUtils.FlattenLayerStack(stage).ExportToString()
 
     reloaded = Usd.Stage.CreateInMemory()
     reloaded.GetRootLayer().ImportFromString(usda)

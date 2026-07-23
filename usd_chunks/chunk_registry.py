@@ -55,6 +55,10 @@ import importlib.abc
 import logging
 import subprocess
 
+# Suppresses the console window Windows otherwise flashes for every pip subprocess
+# spawned from a GUI host (usdview, Maya, etc.) that has no console of its own.
+_NO_WINDOW_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
 from timeit import default_timer as timer
 
 logger = logging.getLogger(__name__)
@@ -96,16 +100,42 @@ class ChunkEnvVar(Generic[_T]):
         if isinstance(default, list) and isinstance(envvar, str):
             res = envvar.split(os.pathsep)
 
-            return [x for x in set(res + default) if x]
+            # Preserve order: env-provided dirs first (they take precedence on
+            # duplicate module names -- first registered wins, see
+            # ChunkRegistry.register_module), then defaults. Dedupe keeping the
+            # first occurrence rather than collapsing to a set (which dropped
+            # ordering, so precedence was previously non-deterministic).
+            ordered: list = []
+            for x in res + default:
+                if x and x not in ordered:
+                    ordered.append(x)
+            return ordered
         return envvar
 
     def __call__(self, fallback: Optional[_T] = None, /, *args: Any, **kwds: Any):
         return self._get(self.default, fallback)
 
 
-USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", ["scripts"], True)
+USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", [], True)
 USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", "_installed_deps", True)
 USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
+
+# The marketplace install location (where `usdchunks install` deposits chunks).
+# It is appended to USD_CHUNK_DIRS during discovery -- last, so proprietary /
+# on-prem chunks on USD_CHUNK_DIRS win on a duplicate name. Default lives under
+# the user home (independent of the CLI's USDCHUNKS_HOME) so both sides agree.
+GLOBAL_USDCHUNKS = ChunkEnvVar[str | None](
+    "GLOBAL_USDCHUNKS", str(Path.home() / ".usdchunks" / "global")
+)
+# When truthy, list every shadowed chunk (a name found in more than one place)
+# at the end of discovery. Off by default: only same-tier collisions get a
+# one-line summary -- an intentional USD_CHUNK_DIRS-over-GLOBAL override is
+# silent (that's the feature, not a warning).
+USD_CHUNK_VERBOSE = ChunkEnvVar[str | None]("USD_CHUNK_VERBOSE", None)
+
+
+def _is_truthy(value) -> bool:
+    return bool(value) and str(value).strip().lower() not in ("0", "false", "no", "off")
 
 
 class ChunkDependencyManager(metaclass=RegistrySingleton):
@@ -186,7 +216,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
 
         args = [sys.executable, "-m", "pip", "install", "-t", self.package_dir]
         args.extend(packages)
-        subprocess.run(args)
+        subprocess.run(args, creationflags=_NO_WINDOW_FLAGS)
 
         if (pip_dir := self.package_dir) and pip_dir in sys.path_importer_cache:
             sys.path_importer_cache.pop(pip_dir)
@@ -204,7 +234,10 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         # Search the current interpreters' environment
         args = [sys.executable, "-m", "pip", "list", "--format", "freeze"]
 
-        proc = subprocess.run(args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.run(
+            args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW_FLAGS,
+        )
         pip_packages = proc.stdout.decode().split()
         for p in pip_packages:
             pname, pversion = self.package_info(p)
@@ -213,7 +246,10 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         # Search the pip_dep_dir
         args = [sys.executable, "-m", "pip", "list", "--path", self.package_dir, "--format", "freeze"]
 
-        proc = subprocess.run(args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.run(
+            args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW_FLAGS,
+        )
         pip_packages = proc.stdout.decode().split()
         for p in pip_packages:
             pname, pversion = self.package_info(p)
@@ -668,6 +704,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
     scene: core.SceneSender
     plugin: str
 
+    # Duplicate module names skipped during registration, as
+    # (name, winner_file, loser_file). Reported after discovery. See
+    # _report_shadows / _tier_of.
+    shadowed_modules: List[Tuple[str, Path, Path]] = []
+    _global_dir: Optional[Path] = None
+
     initialized: bool = False
 
     def initialize(self, scene_sender: core.SceneSender, plugin: str, scene_file: Optional[Path] = None) -> None:
@@ -685,21 +727,46 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         ChunkDependencyManager().initialize()
 
-        self.register_chunk_environ_directories()
-        self.register_chunk_modules(self.registered_directories.copy())
+        self.shadowed_modules = []
+        ordered_dirs = self.register_chunk_environ_directories()
+        # Scan in precedence order (env dirs, then GLOBAL_USDCHUNKS). Include any
+        # directories registered out-of-band before initialize at the tail, so
+        # they still get scanned but never override the explicit env dirs.
+        extras = [p for p in self.registered_directories if p not in ordered_dirs]
+        self.register_chunk_modules(ordered_dirs + extras)
 
         c = len(self.get_chunk_modules(loaded=True))
         logger.info(f"Found {len(self.registered_modules)} chunks. Loaded {c}")
+        self._report_shadows()
         self.initialized = True
 
         if scene_file:
             self.scene.open_scene(scene_file)
 
-    def register_chunk_environ_directories(self):
-        """Register the USD_CHUNK_DIRS directories to find Python modules."""
+    def register_chunk_environ_directories(self) -> list[Path]:
+        """Register USD_CHUNK_DIRS, then append the GLOBAL_USDCHUNKS directory.
 
-        for chunk_dir in USD_CHUNK_DIRS():
+        Returns the registered directories in precedence order. On a duplicate
+        module name the first-registered wins (see register_module), so the
+        USD_CHUNK_DIRS entries -- your proprietary / on-prem chunks -- override
+        marketplace chunks installed into the appended GLOBAL_USDCHUNKS dir.
+        """
+        dirs = list(USD_CHUNK_DIRS())
+        # Append the marketplace install dir last (lowest precedence). Skip it
+        # when it doesn't exist yet (nothing installed) to avoid a spurious
+        # "directory not found" warning on a clean machine.
+        global_dir = GLOBAL_USDCHUNKS()
+        self._global_dir = Path(global_dir) if global_dir else None
+        if global_dir and global_dir not in dirs and Path(global_dir).exists():
+            dirs.append(global_dir)
+
+        ordered: list[Path] = []
+        for chunk_dir in dirs:
             self.register_directory(chunk_dir)
+            p = Path(chunk_dir)
+            if p.exists() and p not in ordered:
+                ordered.append(p)
+        return ordered
 
     def register_directory(self, chunk_dir: str | Path):
         """Add a single directory to the register
@@ -778,11 +845,58 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         name = module.module_name
 
         if name in self.registered_modules:
+            winner = self.registered_modules[name]
+            self.shadowed_modules.append(
+                (name, Path(winner.module_file), Path(module.module_file))
+            )
             logger.debug(f"Skipping {module.module_file}. Duplicate module: {name}")
             return
 
         self.registered_modules[name] = module
         return self.registered_modules[name]
+
+    def _tier_of(self, file: Path) -> str:
+        """Which precedence tier a module file belongs to: the appended
+        GLOBAL_USDCHUNKS install dir, or an explicit USD_CHUNK_DIRS entry."""
+        if self._global_dir is not None:
+            try:
+                if file.resolve().is_relative_to(self._global_dir.resolve()):
+                    return "GLOBAL_USDCHUNKS"
+            except (OSError, ValueError):
+                pass
+        return "USD_CHUNK_DIRS"
+
+    def _report_shadows(self) -> None:
+        """Summarize duplicate chunk names found during discovery.
+
+        A USD_CHUNK_DIRS chunk shadowing one in GLOBAL_USDCHUNKS is the intended
+        override -- silent. Only same-tier collisions (two files at the same
+        precedence level claiming one name -- the genuinely ambiguous case) get
+        a one-line nudge. USD_CHUNK_VERBOSE lists every shadow, cross-tier ones
+        included.
+        """
+        if not self.shadowed_modules:
+            return
+
+        if _is_truthy(USD_CHUNK_VERBOSE()):
+            for name, winner, loser in self.shadowed_modules:
+                logger.info(
+                    f"shadowed chunk '{name}': using {winner} [{self._tier_of(winner)}], "
+                    f"ignoring {loser} [{self._tier_of(loser)}]"
+                )
+            return
+
+        same_tier = [
+            (name, winner, loser)
+            for name, winner, loser in self.shadowed_modules
+            if self._tier_of(winner) == self._tier_of(loser)
+        ]
+        if same_tier:
+            names = ", ".join(sorted({s[0] for s in same_tier}))
+            logger.info(
+                f"usd_chunks: {len(same_tier)} shadowed chunk name(s) at the same "
+                f"precedence tier ({names}) -- set USD_CHUNK_VERBOSE=1 to list"
+            )
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
         """Get the ChunkModule object in the registry where module_name matches the
@@ -882,14 +996,37 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         )
 
         self.chunk_layers: Dict[core.ChunkHash, Sdf.Layer] = {}
-        self.graph_layers: Dict[str, Sdf.Layer] = {}
+        # Keyed by (graph_id, target_layer_identifier) — a graph's chunks get split into a
+        # separate sibling group per Edit Target they're actually authored against, since a
+        # single graph_layer can only ever be a sublayer of one target at a time.
+        self.graph_layers: Dict[tuple, Sdf.Layer] = {}
+        # Which real layer each graph_layer entry is currently sublayered under — needed to
+        # detect and reparent when the resolved Edit Target changes between calls.
+        self._graph_layer_target: Dict[tuple, Sdf.Layer] = {}
+        # Which real layer each individual chunk's content currently resolves against (same
+        # value as its graph_layer's entry above, but keyed per-chunk for easy lookup) — lets
+        # export tooling group a chunk's own bookkeeping prim with whichever layer its driven
+        # content nests in (see scripts/export_usd.py's per-layer export mode).
+        self._chunk_target: Dict[core.ChunkHash, Sdf.Layer] = {}
         self._chunk_refs = weakref.WeakSet()
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
         self.stage: Usd.Stage = stage
-        self._root_layer = None
 
         self.initialized = True
+
+    def reset(self):
+        """Return the singleton to its pre-initialize state, dropping every layer
+        mapping. Used when switching stages (reload, tests) so state from the old
+        stage's stack doesn't leak into the new one. Keeps this class the single
+        owner of its private field list — callers must not clear fields directly.
+        """
+        self.initialized = False
+        self.stage = None
+        self.chunk_layers = {}
+        self.graph_layers = {}
+        self._graph_layer_target = {}
+        self._chunk_target = {}
 
     def get_layer_file_name(self, layer: Sdf.Layer):
         return "_".join(layer.GetDisplayName().split("_")[:-1]) + ".usda"
@@ -931,21 +1068,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def get_layer_usda(self, layer: Sdf.Layer):
         return layer.ExportToString()
 
-    def get_root_layer(self) -> Sdf.Layer:
-        """
-        Get the parent layer for all chunk layers. This may be a custom layer in the future,
-        for now this returns the session layer of the stage
-
-        Raises:
-            AttributeError: If stage is invalid
-
-        Returns:
-            Sdf.Layer: The root layer which holds the chunk sublayers
-        """
-        if self._root_layer is None:
-            self._root_layer = Sdf.Layer.CreateAnonymous("chunks")
-        return self._root_layer
-
     def get_stage_root(self) -> Sdf.Layer:
         return self.stage.GetRootLayer()
 
@@ -961,6 +1083,15 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             None: If the layer does not exist
         """
         return self.chunk_layers.get(c)
+
+    def get_chunk_target(self, c: "core.ChunkHash") -> Sdf.Layer | None:
+        """Return the real layer this chunk's content last resolved against — the session
+        layer by default, or an Edit-Target-chosen layer — as tracked by get_or_create_layer.
+
+        Used by export tooling to group a chunk's own bookkeeping prim (always in the
+        session layer) with whichever real layer its driven content actually nests in.
+        """
+        return self._chunk_target.get(c)
 
     def register_chunk_layer(self, c: "core.ChunkCommon", layer: Sdf.Layer) -> None:
         """Associate an existing layer as this chunk's edit layer."""
@@ -997,28 +1128,49 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             if ctx_layer and not ctx_layer.anonymous:
                 return ctx_layer
 
-        root = self.get_root_layer()
-        # Chunk edits live on the session layer (strongest in composition) so they override
-        # opinions authored in the scene's own layers — e.g. an RBD bake must beat the prim's
-        # existing xformOp:transform. Insert at the top so the chunks root wins over other sublayers.
-        sesh = self.stage.GetSessionLayer()
-
-        # If the root has been detached from the session layer, reapply it at the top
-        if root.identifier not in sesh.subLayerPaths:
-            sesh.subLayerPaths.insert(0, root.identifier)
+        # Resolve where this chunk's content should nest: the user's chosen Edit Target,
+        # or the session layer by default — the same resolution chunk-prim redirect
+        # opinions already follow (chunk_utils.get_edit_layer). CONTEXT chunks (Tab-like
+        # containers) are structural scaffolding, not content — they always stay pinned
+        # to the session layer regardless of Edit Target, same as chunk-prim bookkeeping;
+        # only a regular content-producing chunk's own driven data should move.
+        # Local import: chunk_utils imports this module at module scope, so importing it
+        # back at module scope here would fail depending on which of the two loads first.
+        if isinstance(c, core.ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            target = self.stage.GetSessionLayer()
+        else:
+            from usd_chunks import chunk_utils
+            # Pass c as the owner so the target is resolved from c's own exec-chain position
+            # (nearest upstream Edit Target), not from whichever chunk executed last.
+            owner_chunk = c if isinstance(c, core.ChunkBase) else None
+            target = chunk_utils.get_edit_layer(self.stage, owner_chunk)
+        self._chunk_target[c.get_hash()] = target
 
         # Create a graph layer - these are used for organising the layers. When chunks are part of
-        # the same graph, they will become siblings in the same graph layer
-        graph_layer_id = f"graph_{c.get_dag_node().get_graph_id()}"
+        # the same graph AND currently resolve to the same target, they become siblings in the
+        # same graph layer (a graph_layer can only ever be a sublayer of one real layer at a time,
+        # so chunks split into separate groups per target they're actually authored against).
+        graph_id = c.get_dag_node().get_graph_id()
+        graph_key = (graph_id, target.identifier)
 
-        if not (parent := self.graph_layers.get(graph_layer_id)):
-            parent = Sdf.Layer.CreateAnonymous(graph_layer_id)
-            self.graph_layers[graph_layer_id] = parent
-            root.subLayerPaths.insert(0, parent.identifier)
-
-        # If the root has been detached from the stage's root, reapply it
-        if parent.identifier not in root.subLayerPaths:
-            root.subLayerPaths.insert(0, parent.identifier)
+        if not (parent := self.graph_layers.get(graph_key)):
+            parent = Sdf.Layer.CreateAnonymous(f"graph_{graph_id}")
+            self.graph_layers[graph_key] = parent
+            self._graph_layer_target[graph_key] = target
+            # Insert at the top so this graph's layers win over other sublayers already on
+            # the target — e.g. an RBD bake must beat the prim's existing xformOp:transform.
+            target.subLayerPaths.insert(0, parent.identifier)
+        else:
+            prev_target = self._graph_layer_target.get(graph_key)
+            if prev_target and prev_target.identifier != target.identifier:
+                # The resolved Edit Target changed since this graph layer was created (e.g.
+                # an upstream Edit Target chunk's selection changed) — reparent rather than
+                # leave it sublayered under a now-stale target.
+                if parent.identifier in prev_target.subLayerPaths:
+                    prev_target.subLayerPaths.remove(parent.identifier)
+                self._graph_layer_target[graph_key] = target
+            if parent.identifier not in target.subLayerPaths:
+                target.subLayerPaths.insert(0, parent.identifier)
 
         # The sort_key is used to determine the order of the chunk sublayers
         index = c.get_dag_node().get_sort_key()
@@ -1039,13 +1191,22 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             parent.subLayerPaths.insert(index, layer.identifier)
 
         # If a chunk connection changed after the chunk layer was created, the layer may have been
-        # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice
+        # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice.
+        # Only inspect pl for emptiness right after we've just removed its child above — never as
+        # a blanket sweep over every tracked graph layer, since a graph layer can legitimately be
+        # momentarily empty while it's still being constructed (its own first leaf not yet added).
         for pl, sl in self.iter_chunk_layers():
             if sl.identifier == layer.identifier and pl.identifier != parent.identifier:
                 pl.subLayerPaths.remove(sl.identifier)
-
-            if len(pl.subLayerPaths) == 0:
-                root.subLayerPaths.remove(pl.identifier)
+                if len(pl.subLayerPaths) == 0:
+                    for gkey, g_layer in list(self.graph_layers.items()):
+                        if g_layer.identifier != pl.identifier:
+                            continue
+                        gtarget = self._graph_layer_target.pop(gkey, None)
+                        if gtarget and pl.identifier in gtarget.subLayerPaths:
+                            gtarget.subLayerPaths.remove(pl.identifier)
+                        self.graph_layers.pop(gkey, None)
+                        break
 
         return layer
 
@@ -1099,14 +1260,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         for c, lay in self.chunk_layers.items():
             self.clear_layer(lay.identifier)
 
-        sublayer_paths = self.get_root_layer().subLayerPaths.copy()
+        for gkey, g_layer in list(self.graph_layers.items()):
+            target = self._graph_layer_target.pop(gkey, None)
+            if target and g_layer.identifier in target.subLayerPaths:
+                target.subLayerPaths.remove(g_layer.identifier)
 
-        for i, sublayer in reversed(list(enumerate(sublayer_paths))):
-            if sublayer in self.chunk_layers.values():
-                sublayer_paths.pop(i)
-
-        self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
+        self.graph_layers.clear()
         self.chunk_layers.clear()
+        self._chunk_target.clear()
 
     def clear_layer(self, layer_id: str | core.ChunkBase):
         """
@@ -1127,17 +1288,17 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
         clear the chunk layer stack and recreate them
         """
-        sublayer_paths = self.get_root_layer().subLayerPaths.copy()
+        for gkey, g_layer in list(self.graph_layers.items()):
+            target = self._graph_layer_target.pop(gkey, None)
+            if target and g_layer.identifier in target.subLayerPaths:
+                target.subLayerPaths.remove(g_layer.identifier)
 
-        for i, sublayer in reversed(list(enumerate(sublayer_paths))):
-            if sublayer in self.chunk_layers.values():
-                sublayer_paths.pop(i)
-
-        self.get_root_layer().subLayerPaths = sublayer_paths  # type: ignore
+        self.graph_layers.clear()
         self.chunk_layers.clear()
+        self._chunk_target.clear()
 
         for c in ChunkRegistry().scene.get_chunks():
-            self.add_layer(self.get_root_layer(), c)
+            self.get_or_create_layer(c)
 
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
         stage = notice.GetStage()
@@ -1157,7 +1318,19 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 yield from self._iter_sublayers(slayer, visited)
 
     def iter_chunk_layers(self) -> Generator[Tuple[Sdf.Layer, Sdf.Layer], None, None]:
-        yield from self._iter_sublayers(self.get_root_layer())
+        """Yield (parent, sublayer) for every graph layer and chunk leaf layer currently
+        tracked, regardless of which real layer (session, or an Edit-Target-chosen
+        sublayer) each graph layer is actually attached under.
+        """
+        # Don't pre-mark g_layer as visited here — _iter_sublayers does that itself as
+        # its first action, and would otherwise immediately bail (thinking it's already
+        # walked) before ever descending into g_layer's own chunk leaf layers.
+        visited: set = set()
+        for gkey, g_layer in list(self.graph_layers.items()):
+            target = self._graph_layer_target.get(gkey)
+            if target:
+                yield (target, g_layer)
+            yield from self._iter_sublayers(g_layer, visited)
 
     def _on_chunk_deleted_notice(self, notice, sender):
         # Remove the chunk's edit layer immediately on delete. The layer is normally freed by
@@ -1169,6 +1342,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self._chunk_deleted(get_hash())
 
     def _chunk_deleted(self, chunk_hash):
+        self._chunk_target.pop(chunk_hash, None)
         if not (layer := self.get_layer(chunk_hash)):
             return
 

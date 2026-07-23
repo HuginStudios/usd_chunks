@@ -21,8 +21,9 @@ from usd_chunks import chunk_animation
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
 from plugins import chunk_graph_layout
+from usd_chunks import chunk_utils
 from plugins import chunk_usd
-from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Slider, Spinbox, TextEdit
+from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, CHUNK_STYLESHEET, ViewSlotState, _force_author_param
@@ -160,9 +161,9 @@ def _sdf_to_port_type(sdf_type_name) -> str:
 
 
 def _iter_connectable_params(obj: core.ChunkCommon):
-    """Recursively yield float/int/bool/string/color params and vectors from a chunk or group."""
+    """Recursively yield float/int/bool/string/menu/color params and vectors from a chunk or group."""
     for param in obj.get_my_params():
-        if isinstance(param, (Slider, Spinbox, Checkbox, LineEdit, TextEdit, FileBrowser, ColorPicker)):
+        if isinstance(param, (Slider, Spinbox, Checkbox, LineEdit, TextEdit, FileBrowser, ColorPicker, Menu)):
             yield param
         elif isinstance(param, core.ChunkVectorBase):
             yield param  # vector as a single port — children are not connectable individually
@@ -186,7 +187,7 @@ def _param_port_type(param) -> str:
         return _PORT_VECTOR
     if isinstance(param, Checkbox):
         return _PORT_BOOL
-    if isinstance(param, (LineEdit, TextEdit, FileBrowser)):
+    if isinstance(param, (LineEdit, TextEdit, FileBrowser, Menu)):
         return _PORT_STRING
     if param.value is not None and isinstance(param.value, int) and not isinstance(param.value, bool):
         return _PORT_INT
@@ -812,7 +813,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     def _write_pos_to_usd(self):
         p = self.pos()
         ui_api = UsdUI.NodeGraphNodeAPI(self.prim)
-        ui_api.GetPosAttr().Set(Gf.Vec2f(p.x(), -p.y()))
+        pos_attr = ui_api.GetPosAttr() or ui_api.CreatePosAttr()
+        # Chunk-prim bookkeeping (this attr) follows Edit Target now, not always the
+        # session layer — writing without an EditContext relies on the stage's ambient
+        # edit target, which may not match wherever this attr's spec actually lives
+        # (or, for the very first write, wherever it *should* go). Update an existing
+        # spec in place; only resolve a fresh target for a genuinely new one.
+        stage = self.prim.GetStage()
+        home = chunk_utils.get_attr_home_layer(pos_attr)
+        target = home or chunk_utils.get_bookkeeping_layer(stage, getattr(self, "chunk", None))
+        with Usd.EditContext(stage, target):
+            pos_attr.Set(Gf.Vec2f(p.x(), -p.y()))
 
     def _set_collapsed(self, collapsed: bool):
         self.prepareGeometryChange()
@@ -1010,6 +1021,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 w = proxy.widget()
                 proxy.setWidget(None)
                 if w is not None:
+                    # A visible widget reparented to no parent becomes a real top-level
+                    # window and Qt shows it immediately — set this before setParent(None)
+                    # or every rebuild flashes one native window per node (see create_proxy).
+                    w.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
                     w.setParent(None)
                     w.deleteLater()
             except RuntimeError:
@@ -1649,8 +1664,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Switching to this context must re-establish the viewport for ITS active view — the
         # viewport is one global stage, so a view activated in another context (e.g. an inner
         # group view) otherwise stays cooked and the wrong result shows. Deferred past the
-        # auto-view step.
-        QtCore.QTimer.singleShot(100, lambda cc=changed_chunks: self._recook_active_view(cc))
+        # auto-view step. (On create we deliberately don't re-cook, to avoid churn.)
+        QtCore.QTimer.singleShot(100, self._restore_active_view)
 
     def _context_has_view(self, scene, context) -> bool:
         """True when this context (or the graph as a whole, if context is None) has a view chunk."""
@@ -2130,7 +2145,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             src_conn_path = Sdf.Path(src.attr_path)
         else:
             src_conn_path = Sdf.Path(src.attr_path.replace(".outputs:", ".inputs:", 1))
-        dst_attr.SetConnections([src_conn_path])
+        # Chunk-prim bookkeeping (this connection) follows Edit Target now — update in
+        # place if the attr already had a spec somewhere, else resolve where a brand
+        # new one should go, rather than relying on the stage's ambient edit target.
+        home = chunk_utils.get_attr_home_layer(dst_attr)
+        if home:
+            target = home
+        else:
+            dst_node = graph_scene._nodes.get(str(Sdf.Path(dst.attr_path).GetPrimPath()))
+            target = chunk_utils.get_bookkeeping_layer(graph_scene._stage, getattr(dst_node, "chunk", None))
+        with Usd.EditContext(graph_scene._stage, target):
+            dst_attr.SetConnections([src_conn_path])
 
         # For typed params, also write an expression so the value resolves at runtime.
         # The user can clear it from the QLineEdit to keep the wiring without expression eval.
@@ -2146,6 +2171,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 if param is not None:
                     param.value = f"@{src_node_name}.{src_param_name}@"
 
+        # Wiring a new exec edge can put the node (and everything downstream) under a
+        # different Edit Target — re-home them to honor the target at their new position.
+        # (This drag-drop path authors inputs:chunk directly, so DEPENDENCY_ADDED — which
+        # ChunkStageSync._on_dependency_added also reconciles on — never fires here.)
+        if src.port_type == _PORT_EXEC:
+            chunk_usd.reconcile_edit_targets(graph_scene._stage, chunk_usd.ChunkStageSync()._scene)
         graph_scene._build_edges()
         # A new connection can only change the active view's cook set if its destination side
         # is (or feeds) the view -- wiring two nodes off in an unrelated part of the graph can't
@@ -2195,6 +2226,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         if param is not None:
                             param.value = param.default_value
                 node.chunk.execute()
+        # Detaching an exec wire can change which Edit Target applies to the node (and its
+        # downstream) — re-home them to the target that survives at their new position.
+        chunk_usd.reconcile_edit_targets(graph_scene._stage, chunk_usd.ChunkStageSync()._scene)
         graph_scene._build_edges()
         # See _author_connection: a disconnect can only affect the view's cook set if the
         # touched node(s) were themselves reachable from the view.
@@ -2266,6 +2300,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     if self._clear_input_connection(port, graph_scene):
                         changed = True
         if changed:
+            chunk_usd.reconcile_edit_targets(stage, chunk_usd.ChunkStageSync()._scene)
             graph_scene._build_edges()
             self._recook_active_view()
 
@@ -2388,18 +2423,23 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if not view_prim.IsValid():
             return
 
-        exec_in = view_prim.GetAttribute(_EXEC_INPUT)
-        if not exec_in.IsValid():
-            exec_in = view_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-        exec_in.SetConnections([Sdf.Path(f"{target_prim_path}.{_EXEC_OUTPUT}")])
+        # This is all first-time bookkeeping for a freshly-created view_chunk — the
+        # chunk-prim's exec wiring, its view:slot marker, and its initial position —
+        # so it belongs wherever this chunk's Edit Target currently resolves to, not
+        # wherever the stage's ambient edit target happens to be.
+        with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, view_chunk)):
+            exec_in = view_prim.GetAttribute(_EXEC_INPUT)
+            if not exec_in.IsValid():
+                exec_in = view_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+            exec_in.SetConnections([Sdf.Path(f"{target_prim_path}.{_EXEC_OUTPUT}")])
 
-        slot_attr = view_prim.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
-        slot_attr.SetVariability(Sdf.VariabilityUniform)
-        slot_attr.Set(slot)
+            slot_attr = view_prim.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
+            slot_attr.SetVariability(Sdf.VariabilityUniform)
+            slot_attr.Set(slot)
 
-        UsdUI.NodeGraphNodeAPI.Apply(view_prim).CreatePosAttr().Set(
-            Gf.Vec2f(tx + _NODE_WIDTH + 40, ty - 80)
-        )
+            UsdUI.NodeGraphNodeAPI.Apply(view_prim).CreatePosAttr().Set(
+                Gf.Vec2f(tx + _NODE_WIDTH + 40, ty - 80)
+            )
 
         QtCore.QTimer.singleShot(0, lambda: self._view_state.set_slot(slot))
 
@@ -2437,7 +2477,55 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._recook_active_view()
         self.viewport().update()
 
+<<<<<<< HEAD
     def _recook_active_view(self, changed_chunks: Optional[Iterable[core.ChunkBase]] = None) -> None:
+=======
+    def _restore_active_view(self) -> None:
+        """Adopt this context's saved view as the active view after a (re)build.
+
+        A freshly built graph starts at slot 0 ("no view"), which cooks everything — but a
+        loaded file whose graph has view chunks should come up with its view driving
+        execution, as it was when saved. Both groups and tabs persist their slot on the
+        context prim (chunk:activeView, written by _recook_active_view); files saved
+        before that marker existed fall back to the lowest existing view:slot. With a
+        slot already active (context switch, not a load) this is just the recook the
+        build always did.
+        """
+        if self._view_state.active_slot != 0:
+            self._recook_active_view()
+            return
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        if not stage:
+            return
+        context = self._graph_context()
+        slot = None
+        if context is not None:
+            gp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(context)))
+            if gp and gp.IsValid():
+                a = gp.GetAttribute("chunk:activeView")
+                if a and a.IsValid():
+                    slot = a.Get()
+        if not slot or not chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context):
+            slots = []
+            for c in registry.scene.get_chunks():
+                if not (chunk_usd.is_view_chunk(c) and chunk_usd.is_node_in_context(c, context)):
+                    continue
+                p = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(c)))
+                s = p.GetAttribute("view:slot").Get() if p.IsValid() else None
+                if s:
+                    slots.append(int(s))
+            slot = min(slots) if slots else None
+        if slot:
+            # set_slot fires slot_changed → _on_view_slot_changed → recook
+            self._view_state.set_slot(int(slot))
+        else:
+            self._recook_active_view()
+
+    def _recook_active_view(self) -> None:
+>>>>>>> 8758ef0 (✨topo-based EditTargets + per-layer export ctrls)
         """(Re)apply view-driven execution for this context's active view.
 
         Called on every structural change (wire, disconnect, delete, create) and on view
@@ -2476,6 +2564,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         view_chunk = (
             chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
         )
+<<<<<<< HEAD
         if changed_chunks is not None and not self._could_affect_view_cook(
             changed_chunks, stage, registry.scene, view_chunk
         ):
@@ -2483,12 +2572,32 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Subnet: if THIS graph is a group, persist its active view slot on the group prim so a
         # parent cook of the group picks the same inner view (find_group_active_view reads it).
         if context is not None and chunk_usd.is_group_chunk(context):
+=======
+        # Persist the active view slot on the context prim. For groups a parent cook picks
+        # the same inner view from it (find_group_active_view); for tabs it round-trips the
+        # last-active view through save/load (_restore_active_view reads it). Only a real
+        # slot is written — 0 just means "not restored yet" and must not clobber the saved
+        # value before the deferred restore has read it.
+        if context is not None and slot:
+>>>>>>> 8758ef0 (✨topo-based EditTargets + per-layer export ctrls)
             gp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(context)))
             if gp and gp.IsValid():
                 prev_w = chunk_usd.chunk_notice._usd_write_active
                 chunk_usd.chunk_notice._usd_write_active = True
                 try:
-                    gp.CreateAttribute("chunk:activeView", Sdf.ValueTypeNames.Int, custom=True).Set(int(slot))
+                    # Bookkeeping like any other chunk-prim attr — update in place if it
+                    # already has a spec, else resolve fresh via the group's current Edit
+                    # Target, rather than relying on the stage's ambient one (see
+                    # set_chunk_pinned for the same "second mutation doesn't propagate"
+                    # class of bug this avoids).
+                    active_view_attr = gp.GetAttribute("chunk:activeView")
+                    home = (
+                        chunk_utils.get_attr_home_layer(active_view_attr)
+                        if active_view_attr and active_view_attr.IsValid() else None
+                    )
+                    target = home or chunk_utils.get_bookkeeping_layer(stage, context)
+                    with Usd.EditContext(stage, target):
+                        gp.CreateAttribute("chunk:activeView", Sdf.ValueTypeNames.Int, custom=True).Set(int(slot))
                 finally:
                     chunk_usd.chunk_notice._usd_write_active = prev_w
         if view_chunk is not None:

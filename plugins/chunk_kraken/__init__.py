@@ -6,7 +6,7 @@ from pxr import Tf
 from kraken.plugin import KrakenPluginContainer
 from kraken.scene import SceneManager, PrimSelectionNotice, StageLoadedNotice
 
-from usd_chunks import chunk_registry, chunk_core, chunk_serial
+from usd_chunks import chunk_registry, chunk_core
 from plugins import chunk_qt, chunk_usd
 
 
@@ -81,31 +81,10 @@ class ChunksPluginContainer(KrakenPluginContainer):
             print("save layer: ", path)
             layer.Export(path)
 
-    def saveScene(self):
-        reg = chunk_registry.ChunkRegistry()
-
-        if reg.get_scene_file():
-            return reg.save_scene()
-
-        flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=True):
-            reg.export_scene(file)
-            reg.set_scene_file(file)
-
-    def saveSceneAs(self):
-        reg = chunk_registry.ChunkRegistry()
-
-        flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=True):
-            reg.export_scene(file)
-            reg.set_scene_file(file)
-
-    def openScene(self):
-        reg = chunk_registry.ChunkRegistry()
-
-        flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(filter=flt, create_new=False):
-            reg.open_scene(file)
+    def saveChunkGroup(self):
+        """Export the current chunk graph as one clean, portable USD layer.
+        See chunk_qt.save_chunkgroup_dialog."""
+        chunk_qt.save_chunkgroup_dialog()
 
 
     def load(self, scene) -> None:
@@ -120,9 +99,7 @@ class ChunksPluginContainer(KrakenPluginContainer):
         self.add_command_plugin("Chunks", "Modules", self.openModuleSettings)
         self.add_command_plugin("Chunks", "Save Layers", self.saveLayers)
 
-        self.add_command_plugin("Chunks", "Save Scene", self.saveScene)
-        self.add_command_plugin("Chunks", "Save Scene As", self.saveSceneAs)
-        self.add_command_plugin("Chunks", "Open Scene", self.openScene)
+        self.add_command_plugin("Chunks", "Save ChunkGroup", self.saveChunkGroup)
 
     def configure(self, scene, window) -> None:
         chunk_qt.build_chunk_docker(window)
