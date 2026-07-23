@@ -48,6 +48,7 @@ _COL_LOCKED_BG = QtGui.QColor("#2e2e28")
 _COL_VIEW_HEADER = QtGui.QColor("#c87830")   # pale orange — the ACTIVE view (driving execution)
 _COL_VIEW_INACTIVE = QtGui.QColor("#4a453e")  # dim grey-brown — an inactive view (not driving)
 _COL_VIEW_ACTIVE = QtGui.QColor("#5fd08a")   # green — active view border accent
+_COL_STALE = QtGui.QColor("#e0902a")   # amber — chunk's result no longer reflects its inputs
 _COL_PORT_EXEC = QtGui.QColor("#999999")
 _COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
 _COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
@@ -209,6 +210,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
+        self._stale = chunk.has_state(ChunkFlags.State.STALE)
+        self._update_stale_tooltip()
         _chunk_type = prim.GetAttribute("info:chunkType").Get()
         self._is_view = _chunk_type == "view"
         self._is_dot = _chunk_type == "dot"
@@ -606,6 +609,22 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             str(chunk_type),
         )
 
+        # Stale badge — a small fixed-position corner icon rather than a border-color swap,
+        # so it never fights with the selected (gold) or active-view (green) border colors.
+        if self._stale:
+            badge_r = 7.0
+            badge_c = QtCore.QPointF(_NODE_WIDTH - 15, 13)
+            painter.setBrush(_COL_STALE)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawEllipse(badge_c, badge_r, badge_r)
+            painter.setPen(QtGui.QPen(_COL_NODE_HEADER))
+            painter.setFont(QtGui.QFont("Arial", 9, QtGui.QFont.Bold))
+            painter.drawText(
+                QtCore.QRectF(badge_c.x() - badge_r, badge_c.y() - badge_r, badge_r * 2, badge_r * 2),
+                QtCore.Qt.AlignCenter,
+                "↻",
+            )
+
         # Typed outputs section — separator line + darker strip
         if self._outputs_start_y > _NODE_HEADER_H and self._height > self._outputs_start_y:
             outputs_rect = QtCore.QRectF(
@@ -805,11 +824,23 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if selected != self._selected:
                 self._selected = selected
                 self.update()
+            stale = self.chunk.has_state(ChunkFlags.State.STALE)
+            if stale != self._stale:
+                self._stale = stale
+                self._update_stale_tooltip()
+                self.update()
             self._set_collapsed(self.chunk.has_state(ChunkFlags.State.COLLAPSED))
             disabled = self.chunk.has_state(ChunkFlags.State.DISABLED)
             self.setOpacity(0.35 if disabled else 1.0)
         except RuntimeError:
             return
+
+    def _update_stale_tooltip(self) -> None:
+        self.setToolTip(
+            "Needs recook — inputs changed since this last ran. Press Run/Recompute to update it."
+            if self._stale
+            else ""
+        )
 
 
 # ---------------------------------------------------------------------------

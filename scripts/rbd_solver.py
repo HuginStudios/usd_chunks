@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from collections.abc import Generator
 
+from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_registry
@@ -1082,6 +1083,7 @@ def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
 
 def reset(owner, notice, sender) -> None:
     _clear_chunk_bake(owner)
+    owner.get_chunk().set_state(chunk.ChunkFlags.State.STALE)
     print("[MuJoCoSolver] Reset — bake cleared.")
 
 
@@ -1270,6 +1272,74 @@ def _run(owner, notice, sender) -> None:
     except Exception:
         pass
 
+    _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+
+
+_AUTO_RUN_DELAY_MS = 600
+# Params that don't represent a real simulation input -- clicking/toggling them must not
+# flip the staleness indicator (Run/Reset explicitly manage it themselves; Auto Simulate and
+# the collision-list buttons are controls, not sim inputs).
+_STALE_IGNORE_PARAMS = {
+    "run_sim",
+    "run_sim_top",
+    "reset_sim",
+    "auto_sim",
+    "add_collision",
+    "clear_collision",
+}
+
+
+def _mark_stale(owner, notice, sender) -> None:
+    _chunk = owner.get_chunk()
+    _chunk.set_state(chunk.ChunkFlags.State.STALE)
+    if _chunk.get_param("auto_sim", chunk.is_param_t(bool)).value:
+        _schedule_auto_run(_chunk)
+
+
+def _on_auto_sim_toggled(owner, notice, sender) -> None:
+    _chunk = owner.get_chunk()
+    if _chunk.get_param("auto_sim", chunk.is_param_t(bool)).value and _chunk.has_state(
+        chunk.ChunkFlags.State.STALE
+    ):
+        _schedule_auto_run(_chunk)
+
+
+def _on_any_chunk_changed(owner, notice, sender) -> None:
+    """Global CHUNK_CHANGED listener -- catches an upstream chunk (e.g. a Transform feeding
+    the collider or target prim) changing, even though it's wired via a live-drawn graph
+    connection rather than DagNode.add_dependency(). Real graph wiring (_author_connection in
+    chunk_qt_nodegraph.py) only authors the USD inputs:chunk/inputs:* connection -- it never
+    calls add_dependency, so ChunkNoticeAlias.INPUT_CHANGED (which is purely a DagNode concept)
+    never fires between two chunks connected that way. get_exec_upstream_chunks walks the same
+    real USD connections recook_for_view and get_upstream_stage already trust, so membership in
+    it is the correct, already-battle-tested definition of "is this chunk really upstream of me".
+    """
+    _chunk = owner.get_chunk()
+    if sender is None or sender is _chunk:
+        return
+    scene = chunk_registry.ChunkRegistry().scene
+    stage = _chunk.get_stage()
+    if not scene or not stage:
+        return
+    if sender not in chunk_usd.get_exec_upstream_chunks(_chunk, stage, scene):
+        return
+    _chunk.set_state(chunk.ChunkFlags.State.STALE)
+    if _chunk.get_param("auto_sim", chunk.is_param_t(bool)).value:
+        _schedule_auto_run(_chunk)
+
+
+def _schedule_auto_run(root_chunk) -> None:
+    """Debounce auto-runs: a sim bake is comparatively expensive, so wait for input changes to
+    settle for _AUTO_RUN_DELAY_MS before re-running, rather than baking on every keystroke/drag
+    tick while a param is being edited."""
+    timer = getattr(root_chunk, "_auto_run_timer", None)
+    if timer is None:
+        timer = QtCore.QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: _run(root_chunk, None, None))
+        root_chunk._auto_run_timer = timer
+    timer.start(_AUTO_RUN_DELAY_MS)
+
 
 def main() -> chunk.Chunk:
     chunk_api = chunk.Chunk("RBD Solver")
@@ -1281,6 +1351,23 @@ def main() -> chunk.Chunk:
         tooltip="The prim to simulate — a single mesh, or a PointInstancer to simulate every instance.",
     )
     chunk_api.add_param(prim_path)
+
+    run_btn_top = chunk.Button(
+        "run_sim_top", "Run Simulation", tooltip="Simulate and bake the animation onto the target prim."
+    )
+    run_btn_top.add_callback(_run)
+    chunk_api.add_param(run_btn_top)
+
+    auto_sim = chunk.Checkbox(
+        "auto_sim",
+        "Auto Simulate",
+        default_value=False,
+        tooltip="Automatically re-run the simulation shortly after any input changes. Off by "
+        "default since a bake is comparatively expensive -- watch the node's orange border "
+        "(needs simulation) and press Run Simulation manually for heavy scenes.",
+    )
+    auto_sim.add_callback(_on_auto_sim_toggled)
+    chunk_api.add_param(auto_sim)
 
     _GF = (
         chunk.ChunkFlags.GroupFlags.COLLAPSABLE
@@ -1455,6 +1542,19 @@ def main() -> chunk.Chunk:
     reset_btn = chunk.Button("reset_sim", "Reset", tooltip="Clear the baked animation from this chunk's layer.")
     reset_btn.add_callback(reset)
     chunk_api.add_param(reset_btn)
+
+    # Any real simulation input marks the chunk stale (orange node border) until the next
+    # successful Run; an upstream chunk changing does the same via the global listener above.
+    for p in chunk_api.get_params():
+        if getattr(p, "name", None) not in _STALE_IGNORE_PARAMS:
+            p.add_callback(_mark_stale, notice_alias=chunk.ChunkNoticeAlias.PARAM_CHANGED, send_on_create=False)
+    chunk_api.add_callback(
+        _on_any_chunk_changed,
+        notice_alias=chunk.ChunkNoticeAlias.CHUNK_CHANGED,
+        listen_globally=True,
+        send_on_create=False,
+    )
+    chunk_api.set_state(chunk.ChunkFlags.State.STALE)
 
     return chunk_api
 
