@@ -10,7 +10,7 @@ property value that can be wired into downstream nodes.
 
 from __future__ import annotations
 
-from pxr import Usd, Sdf
+from pxr import Usd
 
 from usd_chunks import chunk
 

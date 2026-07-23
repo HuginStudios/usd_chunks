@@ -9,7 +9,7 @@ All edits authored on the chunk's own layer.
 
 from __future__ import annotations
 
-from pxr import Usd, UsdGeom, Kind
+from pxr import Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_utils
 

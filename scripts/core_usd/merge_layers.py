@@ -12,15 +12,15 @@ from __future__ import annotations
 
 from pxr import Usd, Sdf
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk
 
 
 def _flatten_layers_into(target_layer: Sdf.Layer, source_layers: list[Sdf.Layer]):
     """Flatten multiple source layers into the target layer.
 
-    Layers are applied in order: later entries override earlier entries.
-    This means the first layer in the list is the weakest, last is strongest.
-    The caller should reverse input ordering if "top = strongest" is desired.
+    Layers are stacked as sublayers in the order given: the first layer in
+    the list is the strongest (same as USD sublayer ordering where earlier
+    sublayers have higher strength).
     """
     if not source_layers:
         return

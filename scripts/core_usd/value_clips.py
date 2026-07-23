@@ -12,10 +12,9 @@ The template approach (clipTemplateAssetPath) is the most common for sim caches.
 
 from __future__ import annotations
 
-import os
 import re
 
-from pxr import Usd, Sdf
+from pxr import Usd, Sdf, Vt, Gf
 
 from usd_chunks import chunk, chunk_utils
 
@@ -23,6 +22,15 @@ from usd_chunks import chunk, chunk_utils
 def _validate_template(template: str) -> bool:
     """Validate that the template has '#' padding characters for frame numbers."""
     return bool(re.search(r"#+", template))
+
+
+def _make_active_clips(start: float, end: float):
+    """Create the 'active' metadata: list of (time, clip_index) pairs.
+
+    For template clips, this is simply [[startTime, 0], [endTime, 0]]
+    indicating the single clip set is active for the entire range.
+    """
+    return Vt.Vec2dArray([Gf.Vec2d(start, 0), Gf.Vec2d(end, 0)])
 
 
 def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
@@ -62,20 +70,10 @@ def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
 
     # Active — the time range for which this clip set is active
     # By default, active for the entire template range
-    clip_set["active"] = Vt_DoubleArray_pairs(start_frame, end_frame)
+    clip_set["active"] = _make_active_clips(start_frame, end_frame)
 
     clips[clip_set_name] = clip_set
     prim.SetMetadata("clips", clips)
-
-
-def Vt_DoubleArray_pairs(start: float, end: float):
-    """Create the 'active' metadata: list of (time, clip_index) pairs.
-
-    For template clips, this is simply [[startTime, 0], [endTime, 0]]
-    indicating the single clip set is active for the entire range.
-    """
-    from pxr import Vt, Gf
-    return Vt.Vec2dArray([Gf.Vec2d(start, 0), Gf.Vec2d(end, 0)])
 
 
 def execute(node):
@@ -190,11 +188,10 @@ def main():
     chunk_api.add_param(clip_prim_path)
 
     # Frame range group
-    from usd_chunks import chunk_core
     frame_grp = chunk.Group(
         "frame_range",
         "Frame Range",
-        flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
+        flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED,
     )
 
     start_frame = chunk.Spinbox(

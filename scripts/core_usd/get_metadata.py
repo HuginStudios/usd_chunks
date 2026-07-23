@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pxr import Usd, UsdGeom
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk
 
 
 # Standard metadata keys that can be read from any prim

@@ -8,9 +8,9 @@ Handles name collisions by auto-incrementing a numeric suffix.
 
 from __future__ import annotations
 
-from pxr import Usd, Sdf, UsdGeom
+from pxr import Usd
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk
 
 
 def _generate_dest_path(stage: Usd.Stage, source_path: str) -> str:
@@ -125,7 +125,7 @@ def execute(node):
 
     # Handle collision
     if stage.GetPrimAtPath(dest_path).IsValid():
-        dest_path = _generate_dest_path(stage, dest_path.rstrip("_copy").rstrip("0123456789"))
+        dest_path = _generate_dest_path(stage, source_path)
         dest_param.value = dest_path
 
     _copy_prim_recursive(stage, source_prim, dest_path)

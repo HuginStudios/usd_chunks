@@ -9,7 +9,7 @@ All edits authored on the chunk's own layer for non-destructive isolation.
 
 from __future__ import annotations
 
-from pxr import Usd, Sdf, Gf, Vt
+from pxr import Usd, Sdf, Gf
 
 from usd_chunks import chunk, chunk_utils
 
@@ -103,9 +103,8 @@ def _parse_value(value_str: str, attr: Usd.Attribute):
                 # Let USD handle the conversion via the attribute's Set method
                 return parsed
 
-        # Fallback: try direct conversion with Python eval for complex types
-        # This handles cases like "Gf.Vec3f(1, 2, 3)" if the user typed that
-        return value_str
+        # Fallback: unrecognized type — return None so caller knows parsing failed
+        return None
 
     except (ValueError, IndexError, TypeError):
         return None
