@@ -3,8 +3,6 @@
     defaultPrim = "CubeGeo"
     metersPerUnit = 1
     upAxis = "Y"
-    startTimeCode = 1
-    endTimeCode = 10
 )
 
 def Mesh "CubeGeo" (

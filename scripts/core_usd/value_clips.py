@@ -69,10 +69,42 @@ def _make_active_clips(start: float, end: float):
 
 
 def _set_stage_frame_range(stage: Usd.Stage, start_frame: float, end_frame: float):
-    """Set the stage time code range on the session layer so usdview shows the timeline."""
+    """Set the stage time code range on the session layer so usdview shows the timeline.
+
+    If the stage didn't already have a time range, usdview's timeline widget
+    won't pick up the new range dynamically. In that case, we write the
+    existing default points value as a time sample at frame 0 on the session
+    layer — this triggers usdview's time-varying attribute detection which
+    refreshes the timeline as a side effect.
+    """
+    had_range = stage.HasAuthoredTimeCodeRange()
+
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         stage.SetStartTimeCode(start_frame)
         stage.SetEndTimeCode(end_frame)
+
+    # If the stage already had a time range, usdview's timeline is already
+    # active — no hack needed.
+    if had_range:
+        return
+
+    # Stage had no time range at load — usdview's timeline widget is dormant.
+    # Write the static points value as a time sample to wake it up.
+    # This causes ObjectsChanged → usdview refreshes its animation cache
+    # and discovers the new time range.
+    try:
+        root_layer = stage.GetRootLayer()
+        # Find the first prim with a points attribute to poke
+        for prim in stage.Traverse():
+            attr = prim.GetAttribute("points")
+            if attr and attr.IsValid() and attr.HasValue():
+                static_val = attr.Get(Usd.TimeCode.Default())
+                if static_val is not None:
+                    with Usd.EditContext(stage, stage.GetSessionLayer()):
+                        attr.Set(static_val, Usd.TimeCode(start_frame))
+                    break
+    except Exception:
+        pass
 
 
 def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
@@ -114,17 +146,8 @@ def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
 
         over_prim.SetMetadata("clips", {clip_set_name: clip_set})
 
-    # Set the stage frame range
+    # Set the stage frame range (with usdview timeline refresh if needed)
     _set_stage_frame_range(stage, start_frame, end_frame)
-
-    # Force usdview to refresh: writing time samples triggers ObjectsChanged
-    # notice which updates Hydra and the timeline widget. Without this,
-    # metadata-only changes don't cause a viewport/timeline refresh.
-    with Usd.EditContext(stage, stage.GetSessionLayer()):
-        over = stage.OverridePrim(prim.GetPath())
-        marker = over.CreateAttribute("_clips:refresh", Sdf.ValueTypeNames.Int)
-        marker.Set(1, Usd.TimeCode(start_frame))
-        marker.Set(1, Usd.TimeCode(end_frame))
 
 
 def execute(node):
