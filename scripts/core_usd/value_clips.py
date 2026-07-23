@@ -62,55 +62,51 @@ def _make_active_clips(start: float, end: float):
 
 def _set_stage_frame_range(stage: Usd.Stage, start_frame: float, end_frame: float):
     """Set the stage time code range on the session layer so usdview shows the timeline."""
-    session = stage.GetSessionLayer()
-    session.startTimeCode = start_frame
-    session.endTimeCode = end_frame
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        stage.SetStartTimeCode(start_frame)
+        stage.SetEndTimeCode(end_frame)
 
 
 def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
                           template_path: str, start_frame: float,
                           end_frame: float, stride: float,
                           clip_prim_path: str, manifest_path: str = ""):
-    """Author all value clip template metadata on the target prim."""
+    """Author all value clip template metadata on the target prim.
+
+    Clips metadata is authored on the session layer (not the chunk's anonymous
+    layer) because USD's clip resolution requires the authoring layer to have
+    a real file path for relative asset path resolution. The session layer is
+    the standard place for interactive overrides in usdview.
+    """
     if not prim.IsValid():
         return
 
-    # Resolve paths so they work from any layer (including anonymous chunk layers)
+    # Resolve paths relative to root layer
     resolved_template = _resolve_clip_path(stage, template_path)
     resolved_manifest = _resolve_clip_path(stage, manifest_path) if manifest_path else ""
 
-    # USD Value Clips are authored as metadata on the prim.
-    clip_set_name = "default"
+    # Author on the session layer so clip paths resolve correctly
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        over_prim = stage.OverridePrim(prim.GetPath())
 
-    # Get or create the clips metadata dictionary
-    clips = prim.GetMetadata("clips") or {}
-    clips = dict(clips)
+        clip_set_name = "default"
 
-    clip_set = clips.get(clip_set_name, {})
-    clip_set = dict(clip_set) if clip_set else {}
+        # Build the clip set dictionary
+        clip_set = {
+            "templateAssetPath": resolved_template,
+            "templateStartTime": float(start_frame),
+            "templateEndTime": float(end_frame),
+            "templateStride": float(stride),
+            "primPath": clip_prim_path,
+            "active": _make_active_clips(start_frame, end_frame),
+        }
 
-    # Template asset path — the pattern with # for frame numbers
-    clip_set["templateAssetPath"] = resolved_template
+        if resolved_manifest:
+            clip_set["manifestAssetPath"] = Sdf.AssetPath(resolved_manifest)
 
-    # Frame range
-    clip_set["templateStartTime"] = float(start_frame)
-    clip_set["templateEndTime"] = float(end_frame)
-    clip_set["templateStride"] = float(stride)
+        over_prim.SetMetadata("clips", {clip_set_name: clip_set})
 
-    # The prim path inside the clip files that maps to this prim
-    clip_set["primPath"] = clip_prim_path
-
-    # Manifest (optional) — identifies which attributes are clipped
-    if resolved_manifest:
-        clip_set["manifestAssetPath"] = Sdf.AssetPath(resolved_manifest)
-
-    # Active — the time range for which this clip set is active
-    clip_set["active"] = _make_active_clips(start_frame, end_frame)
-
-    clips[clip_set_name] = clip_set
-    prim.SetMetadata("clips", clips)
-
-    # Also set the stage frame range so the timeline is visible
+    # Set the stage frame range
     _set_stage_frame_range(stage, start_frame, end_frame)
 
 
@@ -119,6 +115,7 @@ def execute(node):
     if not stage:
         return
 
+    # Clips are authored on session layer (not chunk layer), but clear for cleanliness
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
@@ -139,18 +136,19 @@ def execute(node):
     for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
+            # Need the prim to exist — create an over on root layer context
             prim = stage.OverridePrim(target_path)
 
         _author_clip_metadata(
             stage, prim, template_path,
             start_frame, end_frame, stride,
-            clip_prim_path or target_path,
+            clip_prim_path or str(prim.GetPath()),
             manifest_path,
         )
 
 
 def _on_change(owner, notice, sender):
-    """Callback for the chunk panel — author clip metadata."""
+    """Callback for the chunk panel — author clip metadata on session layer."""
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage or not _chunk:
@@ -170,12 +168,6 @@ def _on_change(owner, notice, sender):
 
     if not _validate_template(template_path):
         return
-
-    layer = owner.get_edit_context()
-    if not layer:
-        return
-    if lreg := chunk.get_layer_manager():
-        lreg.clear_layer(layer.identifier)
 
     for prim in prims:
         prim_path = str(prim.GetPath())
