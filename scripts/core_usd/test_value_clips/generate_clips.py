@@ -3,6 +3,10 @@
 Each frame moves the top 4 vertices of the cube upward, creating a
 stretching animation over 10 frames. The bottom stays at y=-0.5,
 the top goes from y=0.5 (frame 1) to y=3.0 (frame 10).
+
+IMPORTANT: Value clips require the attribute to be authored as a TIME SAMPLE
+in each clip file, not a default value. Each clip file has the points
+authored at its own frame number.
 """
 
 import os
@@ -22,16 +26,18 @@ TEMPLATE = '''#usda 1.0
 
 def Mesh "CubeGeo"
 {{
-    point3f[] points = [
-        (-0.5, {bottom}, -0.5),
-        ( 0.5, {bottom}, -0.5),
-        ( 0.5, {bottom},  0.5),
-        (-0.5, {bottom},  0.5),
-        (-0.5, {top}, -0.5),
-        ( 0.5, {top}, -0.5),
-        ( 0.5, {top},  0.5),
-        (-0.5, {top},  0.5)
-    ]
+    point3f[] points.timeSamples = {{
+        {frame}: [
+            (-0.5, {bottom}, -0.5),
+            ( 0.5, {bottom}, -0.5),
+            ( 0.5, {bottom},  0.5),
+            (-0.5, {bottom},  0.5),
+            (-0.5, {top}, -0.5),
+            ( 0.5, {top}, -0.5),
+            ( 0.5, {top},  0.5),
+            (-0.5, {top},  0.5)
+        ]
+    }}
 }}
 '''
 
@@ -45,6 +51,7 @@ def generate():
         top_y = START_TOP_Y + t * (END_TOP_Y - START_TOP_Y)
 
         content = TEMPLATE.format(
+            frame=frame,
             bottom=f"{BOTTOM_Y:.4f}",
             top=f"{top_y:.4f}",
         )
@@ -54,7 +61,7 @@ def generate():
         with open(filepath, "w") as f:
             f.write(content)
 
-        print(f"  Written: {filename}  (top_y = {top_y:.4f})")
+        print(f"  Written: {filename}  (frame={frame}, top_y = {top_y:.4f})")
 
     # Also generate a manifest file listing which attributes are clipped
     manifest = '''#usda 1.0

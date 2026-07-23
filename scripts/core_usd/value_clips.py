@@ -29,26 +29,34 @@ def _resolve_clip_path(stage: Usd.Stage, path_str: str) -> str:
     """Resolve a clip asset path to be findable from the stage.
 
     Relative paths are resolved against the stage's root layer directory.
-    If already absolute, returned as-is.
+    If already absolute, returned as-is. Strips file: URI prefix if present.
     """
     if not path_str:
         return path_str
 
+    # Strip file: or file:/ or file:// or file:/// URI prefix
+    cleaned = path_str
+    if cleaned.startswith("file:"):
+        cleaned = cleaned[5:]
+        while cleaned.startswith("/") and len(cleaned) > 1 and cleaned[1] == "/":
+            cleaned = cleaned[1:]
+        # On Windows, file:///C:/... becomes /C:/... — strip leading /
+        if len(cleaned) > 2 and cleaned[0] == "/" and cleaned[2] == ":":
+            cleaned = cleaned[1:]
+
     # If it's already absolute, use as-is
-    if os.path.isabs(path_str):
-        return path_str.replace("\\", "/")
+    if os.path.isabs(cleaned):
+        return cleaned.replace("\\", "/")
 
     # Resolve relative to the root layer's directory
     root_layer = stage.GetRootLayer()
     if root_layer and root_layer.realPath:
         root_dir = os.path.dirname(root_layer.realPath)
-        # For templates with #, we can't use os.path.abspath directly on them
-        # but we can prepend the root dir
-        resolved = os.path.normpath(os.path.join(root_dir, path_str))
+        resolved = os.path.normpath(os.path.join(root_dir, cleaned))
         return resolved.replace("\\", "/")
 
-    # Fallback: return as-is (will likely fail for anonymous layers)
-    return path_str.replace("\\", "/")
+    # Fallback: return as-is
+    return cleaned.replace("\\", "/")
 
 
 def _make_active_clips(start: float, end: float):
