@@ -117,6 +117,15 @@ def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
     # Set the stage frame range
     _set_stage_frame_range(stage, start_frame, end_frame)
 
+    # Force usdview to refresh: writing time samples triggers ObjectsChanged
+    # notice which updates Hydra and the timeline widget. Without this,
+    # metadata-only changes don't cause a viewport/timeline refresh.
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        over = stage.OverridePrim(prim.GetPath())
+        marker = over.CreateAttribute("_clips:refresh", Sdf.ValueTypeNames.Int)
+        marker.Set(1, Usd.TimeCode(start_frame))
+        marker.Set(1, Usd.TimeCode(end_frame))
+
 
 def execute(node):
     stage = node.get_stage()
