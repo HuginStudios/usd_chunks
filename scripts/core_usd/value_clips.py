@@ -12,6 +12,7 @@ The template approach (clipTemplateAssetPath) is the most common for sim caches.
 
 from __future__ import annotations
 
+import os
 import re
 
 from pxr import Usd, Sdf, Vt, Gf
@@ -24,6 +25,32 @@ def _validate_template(template: str) -> bool:
     return bool(re.search(r"#+", template))
 
 
+def _resolve_clip_path(stage: Usd.Stage, path_str: str) -> str:
+    """Resolve a clip asset path to be findable from the stage.
+
+    Relative paths are resolved against the stage's root layer directory.
+    If already absolute, returned as-is.
+    """
+    if not path_str:
+        return path_str
+
+    # If it's already absolute, use as-is
+    if os.path.isabs(path_str):
+        return path_str.replace("\\", "/")
+
+    # Resolve relative to the root layer's directory
+    root_layer = stage.GetRootLayer()
+    if root_layer and root_layer.realPath:
+        root_dir = os.path.dirname(root_layer.realPath)
+        # For templates with #, we can't use os.path.abspath directly on them
+        # but we can prepend the root dir
+        resolved = os.path.normpath(os.path.join(root_dir, path_str))
+        return resolved.replace("\\", "/")
+
+    # Fallback: return as-is (will likely fail for anonymous layers)
+    return path_str.replace("\\", "/")
+
+
 def _make_active_clips(start: float, end: float):
     """Create the 'active' metadata: list of (time, clip_index) pairs.
 
@@ -31,6 +58,13 @@ def _make_active_clips(start: float, end: float):
     indicating the single clip set is active for the entire range.
     """
     return Vt.Vec2dArray([Gf.Vec2d(start, 0), Gf.Vec2d(end, 0)])
+
+
+def _set_stage_frame_range(stage: Usd.Stage, start_frame: float, end_frame: float):
+    """Set the stage time code range on the session layer so usdview shows the timeline."""
+    session = stage.GetSessionLayer()
+    session.startTimeCode = start_frame
+    session.endTimeCode = end_frame
 
 
 def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
@@ -41,8 +75,11 @@ def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
     if not prim.IsValid():
         return
 
+    # Resolve paths so they work from any layer (including anonymous chunk layers)
+    resolved_template = _resolve_clip_path(stage, template_path)
+    resolved_manifest = _resolve_clip_path(stage, manifest_path) if manifest_path else ""
+
     # USD Value Clips are authored as metadata on the prim.
-    # Template-based clips use these metadata keys:
     clip_set_name = "default"
 
     # Get or create the clips metadata dictionary
@@ -53,8 +90,7 @@ def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
     clip_set = dict(clip_set) if clip_set else {}
 
     # Template asset path — the pattern with # for frame numbers
-    # e.g. "./cache/points.###.usd" where ### = 3-digit frame padding
-    clip_set["templateAssetPath"] = template_path
+    clip_set["templateAssetPath"] = resolved_template
 
     # Frame range
     clip_set["templateStartTime"] = float(start_frame)
@@ -65,15 +101,17 @@ def _author_clip_metadata(stage: Usd.Stage, prim: Usd.Prim,
     clip_set["primPath"] = clip_prim_path
 
     # Manifest (optional) — identifies which attributes are clipped
-    if manifest_path:
-        clip_set["manifestAssetPath"] = Sdf.AssetPath(manifest_path)
+    if resolved_manifest:
+        clip_set["manifestAssetPath"] = Sdf.AssetPath(resolved_manifest)
 
     # Active — the time range for which this clip set is active
-    # By default, active for the entire template range
     clip_set["active"] = _make_active_clips(start_frame, end_frame)
 
     clips[clip_set_name] = clip_set
     prim.SetMetadata("clips", clips)
+
+    # Also set the stage frame range so the timeline is visible
+    _set_stage_frame_range(stage, start_frame, end_frame)
 
 
 def execute(node):
@@ -168,7 +206,8 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
         tooltip=(
             "Template asset path with # padding for frame numbers.\n"
-            "e.g. ./cache/points.###.usd or /shots/fx/sim.####.usdc"
+            "e.g. ./clips/points.###.usd or C:/cache/sim.####.usdc\n"
+            "Relative paths are resolved against the stage's root layer directory."
         ),
     )
     template_path.add_callback(_on_change)
@@ -233,13 +272,15 @@ def main():
     chunk_api.add_param(frame_grp)
 
     # Optional manifest
-    manifest_path = chunk.FileBrowser(
+    manifest_path = chunk.LineEdit(
         "manifest_path",
-        extensions=[".usd", ".usda", ".usdc"],
+        "Manifest",
+        default_value="",
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
         tooltip=(
-            "Optional: manifest file listing which attributes are clipped.\n"
-            "If not provided, USD will try to determine clipped attributes automatically."
+            "Optional: path to manifest file listing which attributes are clipped.\n"
+            "e.g. ./clips/manifest.usda\n"
+            "If not provided, USD determines clipped attributes automatically."
         ),
     )
     manifest_path.add_callback(_on_change)
@@ -260,22 +301,24 @@ def config():
         Parameters:
           - Target Prim: the prim to apply clips to (static geo in scene).
           - Clip Template: template asset path with # padding for frame numbers,
-            e.g. ./cache/points.###.usd (### = 3-digit zero-padded frame).
+            e.g. ./clips/points.###.usd (### = 3-digit zero-padded frame).
+            Relative paths resolved against the root layer directory.
           - Clip Prim Path: which prim in the clip files maps to the target.
             If empty, uses the target prim's own path.
           - Frame Range: start, end, stride for the clip sequence.
-          - Manifest Path: optional manifest file (speeds up attribute resolution).
+            Also sets the stage time range on the session layer.
+          - Manifest: optional manifest file path (speeds up attribute resolution).
 
         Authors the following metadata on the target prim:
-          - clips["default"].templateAssetPath
+          - clips["default"].templateAssetPath (resolved to absolute)
           - clips["default"].templateStartTime
           - clips["default"].templateEndTime
           - clips["default"].templateStride
           - clips["default"].primPath
-          - clips["default"].manifestAssetPath (if provided)
+          - clips["default"].manifestAssetPath (if provided, resolved)
           - clips["default"].active
 
         All edits go to the chunk's own layer (non-destructive).
-        In the node graph, accepts prim input for the target prim.
+        Stage frame range set on the session layer for timeline visibility.
         """,
     )
