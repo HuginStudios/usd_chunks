@@ -249,6 +249,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._pinned = pinned
         self.update()
 
+    def set_locked(self, locked: bool) -> None:
+        """Update the cached locked state (edit-target changed, or this node is reused across a
+        rebuild) and repaint just this node — no full node reconstruction needed."""
+        if locked != self._locked:
+            self._locked = locked
+            self.update()
+
     # ------------------------------------------------------------------
     # Build
 
@@ -999,13 +1006,40 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 pass
         self.clear()
 
+    def _teardown_node(self, node: "ChunkNodeItem") -> None:
+        """Same detach-then-destroy sequence as _teardown_items, but for one node — used by the
+        incremental path in _rebuild_nodes so a node that's actually gone doesn't wait for (or
+        force) a full-scene wipe."""
+        proxy = getattr(node, "_proxy", None)
+        if proxy is not None:
+            try:
+                w = proxy.widget()
+                proxy.setWidget(None)
+                if w is not None:
+                    w.setParent(None)
+                    w.deleteLater()
+            except RuntimeError:
+                pass
+        try:
+            self.removeItem(node)
+        except RuntimeError:
+            pass
+
     def _rebuild_nodes(self):
-        """Rebuild every node/edge from the current chunk prims.
+        """Reconcile nodes/edges with the current chunk prims.
 
         Safe to call on any structural change. Deleted chunks drop out (their prim is gone);
         disabled chunks stay (their prim is inactive but still included via _INCLUDE_INACTIVE)
-        and render greyed. Either way we rebuild from fresh prim handles rather than mutating
-        the graph around an expired prim.
+        and render greyed.
+
+        A node whose chunk is still present and unchanged is REUSED, not torn down and
+        recreated — tearing down and rebuilding every node's ChunkWidget proxy (a native Qt
+        window under the hood) on every single structural change, even for one unrelated
+        new/deleted node, made the whole graph visibly flash/collapse/expand and could show a
+        genuine OS-level popup-window flicker (reported live): create_proxy()'s "never let the
+        OS show a top-level window" workaround was being exercised once per EXISTING node, every
+        time, not just for the node that actually changed. Only nodes whose chunk no longer
+        exists are torn down, and only nodes that are newly created get a new proxy built.
         """
         if not self._stage or not self._scene_sender:
             return
@@ -1023,9 +1057,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         self._chunks_root_path = chunks_root_path
 
-        # Check the root is valid BEFORE clearing. A disable/delete recomposition can leave
-        # /chunks transiently invalid; if we cleared first and then bailed, the graph would
-        # be wiped and never rebuilt. Keep the current graph and retry once it settles.
+        # Check the root is valid BEFORE tearing anything down. A disable/delete recomposition
+        # can leave /chunks transiently invalid; if we wiped first and then bailed, the graph
+        # would be emptied and never rebuilt. Keep the current graph and retry once it settles.
         chunks_root = stage.GetPrimAtPath(chunks_root_path)
         if not chunks_root.IsValid():
             # /chunks is invalid. Distinguish "no chunks left" (e.g. the last chunk was
@@ -1047,13 +1081,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._rebuild_retries = 0
 
         self._dirty = False
-        # Bump the build generation so any in-flight deferred proxy batch from a previous
-        # rebuild aborts instead of creating a ghost node (a proxy/ports on a stale node the
-        # clear() below just removed).
+        # Bump the build generation so any in-flight deferred proxy batch from a superseded
+        # rebuild aborts instead of creating a ghost proxy on a node that got torn down below.
         self._build_gen = getattr(self, "_build_gen", 0) + 1
-        self._teardown_items()
-        self._nodes.clear()
-        self._edges.clear()
 
         chunks_by_path = {
             f"{chunk_usd._resolve_chunk_root(c)}/{c.name}": c
@@ -1078,6 +1108,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         root_id = stage.GetRootLayer().identifier
         edit_id = stage.GetEditTarget().GetLayer().identifier
 
+        desired_paths: set[str] = set()
+        new_nodes: list[ChunkNodeItem] = []
         for prim in chunks_root.GetFilteredChildren(_INCLUDE_INACTIVE):
             if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
                 continue
@@ -1085,22 +1117,47 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             chunk = chunks_by_path.get(path)
             if chunk is None:
                 continue
+            desired_paths.add(path)
+
             src_layer = next(
                 (spec.layer for spec in prim.GetPrimStack()
                  if not spec.layer.anonymous and spec.layer.identifier != root_id),
                 None,
             )
             locked = src_layer is not None and src_layer.identifier != edit_id
-            node = ChunkNodeItem(chunk, prim, locked=locked)
-            self.addItem(node)
-            self._nodes[path] = node
+
+            existing = self._nodes.get(path)
+            if existing is not None and existing.chunk is chunk:
+                # Same chunk, same node — refresh what a fresh construction would have picked
+                # up (the prim handle itself may have been recomposed) and keep everything
+                # else, including its proxy widget, exactly as-is.
+                try:
+                    existing.prim = prim
+                    existing.set_locked(locked)
+                except RuntimeError:
+                    existing = None  # its C++ item was already destroyed somehow — rebuild it
+            else:
+                existing = None
+
+            if existing is None:
+                if path in self._nodes:
+                    self._teardown_node(self._nodes[path])
+                node = ChunkNodeItem(chunk, prim, locked=locked)
+                self.addItem(node)
+                self._nodes[path] = node
+                new_nodes.append(node)
+
+        # Remove nodes for chunks that no longer exist under this root.
+        for path in [p for p in self._nodes if p not in desired_paths]:
+            self._teardown_node(self._nodes.pop(path))
 
         # Exec edges are built immediately (exec ports always exist).
         self._build_edges()
 
-        # Proxy widgets (ChunkWidget) are created in small batches so the graph
-        # renders immediately with node headers and fills in progressively.
-        self._create_proxies_batch(list(self._nodes.values()), self._build_gen)
+        # Proxy widgets (ChunkWidget) are created in small batches so newly-added nodes fill
+        # in progressively — existing nodes already have theirs and are left untouched.
+        if new_nodes:
+            self._create_proxies_batch(new_nodes, self._build_gen)
 
     def _create_proxies_batch(self, remaining: list, gen: int):
         if gen != getattr(self, "_build_gen", gen):
