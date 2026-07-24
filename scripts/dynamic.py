@@ -1,4 +1,4 @@
-"""Dynamic Attribute Editor — select a prim and edit all its attributes interactively.
+"""Property Editor chunk — select a prim and edit all its attributes interactively.
 
 Dynamically creates typed UI widgets (sliders, menus, text fields, etc.) for
 every attribute and relationship on the selected prim. Changes write directly
@@ -41,7 +41,7 @@ def main():
     connected to their UsdAttributes respectively.
     """
 
-    myChunk = chunk.Chunk("Dynamic")
+    myChunk = chunk.Chunk("Property Editor")
 
     primSel = chunk.LineEdit(
         "prim",
@@ -63,8 +63,8 @@ def config():
     return chunk.DefaulConfig(
         category="Core USD",
         description="""
-        Dynamic Attribute Editor — select a prim and interactively edit all
-        its attributes and relationships.
+        Property Editor — select a prim and interactively edit all its
+        attributes and relationships.
 
         Parameters:
           - Prim: select one or more prims (supports viewport picking, globs).
