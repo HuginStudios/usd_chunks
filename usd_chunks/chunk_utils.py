@@ -309,3 +309,79 @@ def author_in_variant_context(stage, path_str):
             stack.callback(_restore)
             stack.enter_context(vset.GetVariantEditContext())
         yield target_path
+
+
+def show_attribute(prim, target_group, collapse_non_inputs=True):
+    """Populate a group with typed editable params for all attributes and relationships on a prim.
+
+    This is the shared utility for dynamically building attribute editor UIs.
+    Used by the Dynamic chunk, Light chunk, and any chunk that needs to expose
+    a prim's attributes as interactive widgets.
+
+    Args:
+        prim: The Usd.Prim whose attributes to display.
+        target_group: A ChunkGroupBase to populate with params. Existing children
+            are cleared before populating.
+        collapse_non_inputs: If True, namespace groups other than 'inputs' start
+            collapsed. Keeps the UI tidy for prims with many attributes.
+    """
+    # Late imports to avoid circular dependency (chunk imports chunk_utils)
+    from usd_chunks import chunk
+    from usd_chunks import chunk_core
+
+    # Clean existing params
+    for grp in target_group.get_my_params():
+        grp.request_delete()
+
+    if not prim or not prim.IsValid():
+        return
+
+    # Generate params from attributes
+    attributes = prim.GetAttributes()
+    groups = {}
+    for attr in attributes:
+        if not (param := chunk.param_from_attr(attr)):
+            continue
+
+        if not isinstance(param, chunk.ChunkGroupBase):
+            param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
+
+        ns = attr.GetNamespace()
+        tgt_grp = target_group if not ns else groups.get(ns)
+
+        if not tgt_grp:
+            tgt_grp = chunk.Group(
+                ns,
+                flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
+            )
+            if collapse_non_inputs and ns and ns != "inputs":
+                tgt_grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
+
+            target_group.add_param(tgt_grp)
+            groups[ns] = tgt_grp
+
+        if param:
+            tgt_grp.add_param(param)
+
+    # Generate params from relationships
+    relationships = prim.GetRelationships()
+    for rel in relationships:
+        if not (param := chunk.param_from_rel(rel)):
+            continue
+
+        if not isinstance(param, chunk.ChunkGroupBase):
+            param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
+
+        ns = rel.GetNamespace()
+        tgt_grp = target_group if not ns else groups.get(ns)
+
+        if not tgt_grp:
+            tgt_grp = chunk.Group(
+                ns,
+                flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
+            )
+            target_group.add_param(tgt_grp)
+            groups[ns] = tgt_grp
+
+        if param and tgt_grp:
+            tgt_grp.add_param(param)
