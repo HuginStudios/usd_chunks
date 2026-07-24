@@ -196,8 +196,6 @@ def _on_change(owner, notice, sender):
     if not prims:
         return
 
-    print(f"[Value Clips] Authoring clips on {prims[0].GetPath()}, template={template_path}")
-
     for prim in prims:
         prim_path = str(prim.GetPath())
         _author_clip_metadata(

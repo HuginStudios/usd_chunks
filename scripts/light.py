@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_core, chunk_utils
+from usd_chunks import chunk, chunk_utils
 from pxr import UsdGeom
 
 
