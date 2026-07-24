@@ -2532,6 +2532,20 @@ class ChunkUsdAttributeSupport(AttributesBase):
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
 
+    # Set while a value assignment is a *pull* from an already-authored USD value (e.g. the
+    # animation frame-change hook refreshing a keyframed param's displayed value from the attr
+    # it was just read from) rather than a user edit. Mirrors ChunkVectorBase's own
+    # _suppress_storage_write (which predates this and stays local to that class's override) —
+    # this is the equivalent guard for the scalar-param write branch below, so re-authoring the
+    # same value back onto the attr we just resolved it from is skipped, while notices/DAG
+    # dirtying below (via super().data_changed()) still propagate so widgets and dependents
+    # still refresh.
+    _suppress_storage_write: bool = attrs.field(
+        default=False,
+        init=False,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
+
     def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> Optional[chunk_notice.ChunkNotice]:
         my_notice = super().data_changed(notice)
 
@@ -2541,6 +2555,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             and stage
             and self._param_attr_path
             and not self.is_blocked()
+            and not self._suppress_storage_write
             and isinstance(notice.data, AttributeSender)
             and notice.data.name == "value"
             and hasattr(self, 'raw_value')
@@ -2557,12 +2572,23 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 try:
                     if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
                         if not is_expr:
-                            current = usd_attr.Get(0)
+                            # Auto-key: once this attr carries >=1 time sample (authored by K),
+                            # a plain Set(val) (no timeCode) only touches the now-largely-irrelevant
+                            # default value and is a silent no-op for time-varying resolution -- so
+                            # every subsequent edit must land as a time sample at the current frame
+                            # instead, inserting a new keyframe or overwriting the existing one at
+                            # that frame. get_current_frame() is only ever called in this branch
+                            # (i.e. only once a param has actually been keyframed via K), so a host's
+                            # SceneSender that never implements it stays unaffected for non-animated
+                            # params -- see CONTEXT.md's "Attribute Animation" section.
+                            animated = usd_attr.GetNumTimeSamples() > 0
+                            time_code = Usd.TimeCode(chunk_registry.ChunkRegistry().scene.get_current_frame()) if animated else Usd.TimeCode.Default()
+                            current = usd_attr.Get(time_code)
                             # Don't write a string to a typed (non-String) attr — an unresolved
                             # forwarded value can arrive as text and raise a type-mismatch.
                             bad_str = isinstance(val, str) and usd_attr.GetTypeName() != Sdf.ValueTypeNames.String
                             if not bad_str and current != val:
-                                usd_attr.Set(val)
+                                usd_attr.Set(val, time_code)
                         if is_expr:
                             chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
                             conns = []
@@ -2606,9 +2632,15 @@ class ChunkUsdAttributeSupport(AttributesBase):
         for path in self._driven_attr_paths:
             sdf_path = Sdf.Path(path)
             if driven_attr := stage.GetAttributeAtPath(sdf_path):
-                if driven_attr.Get(0) != val:
+                # Auto-key, mirrored onto driven attrs -- see the matching comment in
+                # data_changed() above. Checked per-driven-attr rather than once for the
+                # whole param: K keyframes storage + driven together so counts normally
+                # match, but this stays correct even if they ever diverge.
+                animated = driven_attr.GetNumTimeSamples() > 0
+                time_code = Usd.TimeCode(chunk_registry.ChunkRegistry().scene.get_current_frame()) if animated else Usd.TimeCode.Default()
+                if driven_attr.Get(time_code) != val:
                     with Usd.EditContext(stage, chunk_layer):
-                        driven_attr.Set(val)
+                        driven_attr.Set(val, time_code)
 
     @abstractmethod
     def update_usd_prop(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
@@ -3877,9 +3909,13 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                 try:
                     if self._param_attr_path and (usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path))):
                         if not is_expr:
-                            current = usd_attr.Get(0)
+                            # Auto-key -- see the matching comment in
+                            # ChunkUsdAttributeSupport.data_changed() above.
+                            animated = usd_attr.GetNumTimeSamples() > 0
+                            time_code = Usd.TimeCode(chunk_registry.ChunkRegistry().scene.get_current_frame()) if animated else Usd.TimeCode.Default()
+                            current = usd_attr.Get(time_code)
                             if current != val:
-                                usd_attr.Set(val)
+                                usd_attr.Set(val, time_code)
                         else:
                             chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
                             usd_attr.SetConnections([

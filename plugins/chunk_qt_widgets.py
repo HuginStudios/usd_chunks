@@ -3,7 +3,7 @@ from typing import Any, Optional, Generic
 
 from pxr import Sdf, Tf, Usd
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_serial, chunk_utils
+from usd_chunks import chunk, chunk_animation, chunk_notice, chunk_registry, chunk_resources, chunk_serial, chunk_utils
 import usd_chunks.chunk_flags
 from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
@@ -739,6 +739,20 @@ class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
         return widget
 
 
+def _force_author_param(param) -> None:
+    """Force-create param's USD storage attr even if it's still at its default value.
+
+    A param never edited away from its default has no real Usd.Attribute yet — see
+    chunk_usd.py's _sync_param_input docstring ("Skips ... on first non-default change").
+    Without this, keyframing a freshly-created node's untouched param silently finds
+    nothing to keyframe. Mirrors the exact same force=True idiom loft_param_to_context
+    already uses for the identical reason.
+    """
+    owner = param.get_chunk()
+    if owner is not None:
+        chunk_usd.ChunkStageSync()._sync_param_input(owner, param, force=True)
+
+
 class LabeledWidget(QtWidgets.QWidget):
     def __init__(self, widget, parent=None):
         super().__init__(parent)
@@ -789,10 +803,26 @@ class LabeledWidget(QtWidgets.QWidget):
         self.label.installEventFilter(self)
 
         self.setMouseTracking(True)
+        self._refresh_animated_style()
 
     def _sync_hidden(self, notice=None, sender=None):
         if self._model is not None:
             self.setHidden(self._model.has_state(ChunkFlags.State.HIDDEN))
+
+    def _refresh_animated_style(self) -> None:
+        """Tint the label green while this param carries >=1 keyframe.
+
+        Explicitly called right after Set Keyframe/Clear Keyframe (immediate feedback,
+        same code path as the action itself) and from update_value() on every "value"
+        notice (covers the animated-tracked-param push ChunkAnimationManager.on_frame_changed
+        does on every scrub/frame change) -- so it stays live without its own dedicated
+        signal plumbing, unlike the graph node's glyph (see CONTEXT.md's per-param keyframe
+        menu section for that gap and why it's harder to close from here)."""
+        param = getattr(self.widget, "param", None)
+        if param is None or not chunk_animation.is_animatable_param(param):
+            return
+        animated = chunk_animation.is_param_animated(param)
+        self.label.setStyleSheet("color: #6FCF7A;" if animated else "")
 
     def should_show_tooltip(self):
         if not isinstance(self.widget, ChunkParamWidgetBase):
@@ -840,8 +870,10 @@ class LabeledWidget(QtWidgets.QWidget):
         name = notice.data.name
         if name in ["label", "name"]:
             self.update_label(notice.data.value)
-        elif name == "value" and self.should_show_tooltip():
-            self.show_tooltip()
+        elif name == "value":
+            self._refresh_animated_style()
+            if self.should_show_tooltip():
+                self.show_tooltip()
 
     def update_label(self, text):
         self.label.setHidden(not bool(text))
@@ -887,6 +919,9 @@ class LabeledWidget(QtWidgets.QWidget):
         raw = param.raw_value
         has_expr = is_expr_capable and isinstance(raw, str) and chunk_utils.has_expression(raw)
 
+        is_animatable = chunk_animation.is_animatable_param(param) and not chunk_animation.is_expression_driven(param)
+        has_keyframes = is_animatable and chunk_animation.is_param_animated(param)
+
         menu = QtWidgets.QMenu()
         value_rect = QtCore.QRect(self.widget.pos(), self.widget.size())
         loft_action = menu.addAction("Loft up") if context and not value_rect.contains(event.pos()) else None
@@ -898,6 +933,13 @@ class LabeledWidget(QtWidgets.QWidget):
                 clear_expr_action = menu.addAction("Clear Expression")
             else:
                 expr_action = menu.addAction("Set Expression...")
+
+        keyframe_action = None
+        clear_keyframe_action = None
+        if is_animatable:
+            keyframe_action = menu.addAction("Set Keyframe")
+            if has_keyframes:
+                clear_keyframe_action = menu.addAction("Clear Keyframe")
 
         if not menu.actions():
             event.ignore()
@@ -919,6 +961,18 @@ class LabeledWidget(QtWidgets.QWidget):
                     param.value = text
             elif clear_expr_action and action == clear_expr_action:
                 param.value = param.default_value
+            elif keyframe_action and action == keyframe_action:
+                registry = chunk_registry.ChunkRegistry()
+                if registry.initialized:
+                    frame = registry.scene.get_current_frame()
+                    if chunk_animation.keyframe_param(param, frame, force_author=_force_author_param):
+                        chunk_animation.ensure_frame_range_covers(frame)
+                        self._refresh_animated_style()
+            elif clear_keyframe_action and action == clear_keyframe_action:
+                registry = chunk_registry.ChunkRegistry()
+                if registry.initialized:
+                    chunk_animation.clear_keyframes_for_param(param, registry.scene.get_current_frame())
+                    self._refresh_animated_style()
 
 
 class ChunkArea(QtWidgets.QScrollArea):
@@ -1272,6 +1326,7 @@ class ViewSlotState(QtCore.QObject):
     slot_changed = QtCore.Signal(int)   # 0 = off, 1–3 = active slot
     create_view_for = QtCore.Signal(str)  # prim path — handled by ChunkGraphView
     pin_changed = QtCore.Signal(object, bool)  # (chunk, pinned) — a Pin/Unpin menu toggle
+    keyframes_cleared = QtCore.Signal(object)  # chunk — a Clear Keyframes menu action
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1310,6 +1365,7 @@ class ViewSlotState(QtCore.QObject):
         pin_action = menu.addAction(
             "Unpin from Params" if chunk_usd.is_chunk_pinned(grp) else "Pin to Params"
         )
+        clear_keyframes_action = menu.addAction("Clear Keyframes")
         menu.addSeparator()
 
         stage: Optional[Usd.Stage] = grp.get_stage()
@@ -1358,6 +1414,11 @@ class ViewSlotState(QtCore.QObject):
             new_pinned = not chunk_usd.is_chunk_pinned(grp)
             chunk_usd.set_chunk_pinned(grp, new_pinned)
             self.pin_changed.emit(grp, new_pinned)
+        elif res == clear_keyframes_action:
+            registry = chunk_registry.ChunkRegistry()
+            if registry.initialized:
+                chunk_animation.clear_keyframes_for_chunk(grp, registry.scene.get_current_frame())
+                self.keyframes_cleared.emit(grp)
         elif view_action and res == view_action:
             if existing_view_slot is not None:
                 self.set_slot(existing_view_slot)
