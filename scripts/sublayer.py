@@ -1,7 +1,7 @@
 from usd_chunks import chunk
 
 
-def import_sublayer(owner: chunk.Chunk, notice, sender):
+def execute(owner: chunk.Chunk, notice, sender):
     """Callback for changing sublayer paths."""
     
     if notice.data.name not in ["size", "value"]:
@@ -48,7 +48,7 @@ def main():
     # Although, we'd like to listen to ATTRIBUTE_CHANGED to catch 'size' changes, and 'value' changes. We dont have a nice way to
     # filter the senders, so doing it inside the callback by checking the name of the notice data
 
-    sublayerChunk.add_callback(import_sublayer, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+    sublayerChunk.add_callback(execute, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
     return sublayerChunk
 
 

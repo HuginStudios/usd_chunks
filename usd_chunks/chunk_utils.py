@@ -1,8 +1,103 @@
 import re
 from contextlib import contextmanager, ExitStack
-from pxr import Usd
+from pxr import Sdf, Usd
+
+from usd_chunks import chunk_registry
+from usd_chunks.chunk_flags import ChunkFlags
 
 _EXPR_RE = re.compile(r'@(\w+)\.(\w+)@')
+
+
+def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
+    """Return the layer a chunk should author into for its exec-chain position: the layer
+    published by the nearest Edit Target chunk reachable by walking the exec chain upstream
+    from `owner`, or the session layer if there is no upstream Edit Target.
+
+    A pure function of graph topology (see chunk_usd.nearest_upstream_edit_layer) — this
+    replaces the old global ChunkStageSync._user_edit_layer state, so resolution no longer
+    depends on which chunk happened to execute last.
+
+    Use this instead of hardcoding stage.GetSessionLayer() for override/redirect-style
+    opinions (variant selections, shader input redirects, etc.) so they follow whatever
+    Edit Target applies at the authoring chunk's place in the graph, same as chunk prim
+    bookkeeping does.
+
+    owner is the authoring chunk. When None, falls back to the chunk whose execute() is
+    currently running (chunk_notice._executing_chunk) — so callers invoked from inside a
+    chunk's execute() (author_in_variant_context, wire_shader_input, …) resolve correctly
+    without threading owner through every call site. With no owner at all, returns the
+    session layer.
+
+    The fallback is safe despite being ambient state because its sole writer
+    (chunk_notice.py:1171-1185) save/restores it around each module run — set to the running
+    module's own chunk right before module.execute(), popped back to the prior value in the
+    finally — so it can never transiently point at the wrong chunk, even when a reconcile
+    re-executes a chunk from inside another chunk's execute(). Anything running outside a
+    module execute() (e.g. reconcile_edit_targets) passes owner explicitly rather than
+    relying on this fallback.
+
+    Local imports: plugins.chunk_usd imports this module at module scope, so importing it
+    back at module scope here would fail depending on which of the two loads first.
+    """
+    if stage is None:
+        return None
+    if owner is None:
+        from usd_chunks import chunk_notice
+        owner = chunk_notice._executing_chunk
+    if owner is None:
+        return stage.GetSessionLayer()
+    from plugins.chunk_usd import nearest_upstream_edit_layer, get_chunk_prim_path
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
+    return nearest_upstream_edit_layer(stage, prim)
+
+
+def get_bookkeeping_layer(stage: Usd.Stage, owner) -> Sdf.Layer:
+    """Return where a chunk's own bookkeeping (its node prim's storage attrs, wiring,
+    node-graph position) should be authored: get_edit_layer(stage, owner) for a regular
+    chunk, or always the session layer for a CONTEXT chunk (Tab containers, groups),
+    regardless of what target is currently active.
+
+    CONTEXT chunks are structural scaffolding for the graph itself, not content —
+    letting their own bookkeeping follow whatever target applies at their position would
+    split a single container's own prim across layers over its lifetime, recreating the
+    exact per-layer graph scatter get_edit_layer avoids for content. Regular (non-CONTEXT)
+    chunks have no such risk, so they follow get_edit_layer like everything else.
+
+    owner may be None (caller couldn't resolve an owning chunk) — treated as non-CONTEXT.
+    """
+    if owner is not None and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+        return stage.GetSessionLayer()
+    return get_edit_layer(stage, owner)
+
+
+def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
+    """Return the layer holding attr's strongest existing property spec, or None if it
+    has no spec anywhere yet.
+
+    Use this to update an attribute that already exists (value, connections, a rename),
+    rather than re-resolving "the current Edit Target" on every change — a chunk's own
+    bookkeeping attr can now live in whatever layer was active when it was first
+    authored (get_bookkeeping_layer), and Edit Target may have moved on to somewhere
+    else by the time it's edited again. Always writing new edits back to the attr's own
+    existing home avoids splitting one attribute's opinions across multiple layers.
+    """
+    stack = attr.GetPropertyStack(Usd.TimeCode.Default())
+    return stack[0].layer if stack else None
+
+
+def chunk_internal_layer_ids() -> set:
+    """Identifiers of layers owned by the chunk graph itself — every per-graph and
+    per-chunk procedural layer, wherever they're currently sublayered (session layer
+    by default, or an Edit-Target-chosen real layer if one is active).
+
+    These are implementation details managed and Clear()ed by the chunk execution
+    system; utility chunks that let a user pick a layer (e.g. edit-target or export
+    pickers) should exclude them.
+    """
+    lm = chunk_registry.ChunkLayerManager()
+    if not lm.initialized:
+        return set()
+    return {sublayer.identifier for _, sublayer in lm.iter_chunk_layers()}
 
 
 def find_collection(stage: Usd.Stage, name: str):
@@ -196,10 +291,11 @@ def wire_shader_input(
     shader output in the session layer. This function follows that two-hop chain and sets
     shader_attr directly to the upstream shader's output path.
 
-    Writes redirects into the session layer so they override the connect_usd_attr opinion
-    (which _author_driven_connections also authors in the session layer). When no upstream
-    connection is found the session-layer opinion is cleared, letting the anonymous-layer
-    connect_usd_attr link (or nothing when clear_on_miss=True) take effect.
+    Writes redirects into the current edit layer (get_edit_layer — the user's chosen Edit
+    Target if set, else the session layer) so they override the connect_usd_attr opinion
+    (which _author_driven_connections also authors there). When no upstream connection is
+    found that redirect is cleared, letting the anonymous-layer connect_usd_attr link (or
+    nothing when clear_on_miss=True) take effect.
 
     Call after all connect_usd_attr calls in a chunk execute() for any shader input that
     can receive connections from other shader chunks in the nodegraph.
@@ -215,7 +311,7 @@ def wire_shader_input(
     Returns:
         True if an upstream shader connection was found and applied, False otherwise.
     """
-    session_layer = stage.GetSessionLayer()
+    edit_layer = get_edit_layer(stage)
 
     if chunk_prim and chunk_prim.IsValid():
         chunk_input = chunk_prim.GetAttribute(f"inputs:{param_name}")
@@ -232,13 +328,13 @@ def wire_shader_input(
                     continue
                 shader_conns = upstream_output.GetConnections()
                 if shader_conns:
-                    with Usd.EditContext(stage, session_layer):
+                    with Usd.EditContext(stage, edit_layer):
                         shader_attr.SetConnections([shader_conns[0]])
                     return True
 
-    # No upstream connection found. Clear any session-layer redirect so the
-    # anonymous-layer connect_usd_attr opinion (or cleared state) can take effect.
-    with Usd.EditContext(stage, session_layer):
+    # No upstream connection found. Clear any redirect so the anonymous-layer
+    # connect_usd_attr opinion (or cleared state) can take effect.
+    with Usd.EditContext(stage, edit_layer):
         shader_attr.ClearConnections()
     if clear_on_miss:
         shader_attr.ClearConnections()
@@ -276,9 +372,8 @@ def author_in_variant_context(stage, path_str):
     """
     _, target_path, var_selections = split_variant_path(path_str)
 
-    session_target = Usd.EditTarget(stage.GetSessionLayer())
-
-    session_layer = stage.GetSessionLayer()
+    edit_layer = get_edit_layer(stage)
+    edit_target = Usd.EditTarget(edit_layer)
 
     with ExitStack() as stack:
         for anchor_prim_path, vs_name, variant in var_selections:
@@ -287,20 +382,20 @@ def author_in_variant_context(stage, path_str):
                 anchor_prim = stage.OverridePrim(anchor_prim_path)
             vset = anchor_prim.GetVariantSets().GetVariantSet(vs_name)
 
-            # Record only the session-layer opinion — not the composed selection.
+            # Record only the edit-layer opinion — not the composed selection.
             # Restoring the composed prev would bleed upstream chunk-layer defaults
-            # back into the session layer, overriding downstream overrides.
-            spec = session_layer.GetPrimAtPath(anchor_prim_path)
+            # back into the edit layer, overriding downstream overrides.
+            spec = edit_layer.GetPrimAtPath(anchor_prim_path)
             prev_session = dict(spec.variantSelections).get(vs_name, "") if spec else ""
 
-            with Usd.EditContext(stage, session_target):
+            with Usd.EditContext(stage, edit_target):
                 vset.SetVariantSelection(variant)
 
-            # On exit, restore only what was already in the session layer.
-            # If the session layer had no prior opinion, clear it so the
-            # session layer stays free of composed (chunk-layer) opinions.
+            # On exit, restore only what was already in the edit layer.
+            # If the edit layer had no prior opinion, clear it so the
+            # edit layer stays free of composed (chunk-layer) opinions.
             def _restore(v=vset, p=prev_session):
-                with Usd.EditContext(stage, session_target):
+                with Usd.EditContext(stage, edit_target):
                     if p:
                         v.SetVariantSelection(p)
                     else:

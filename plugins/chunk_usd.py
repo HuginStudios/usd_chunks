@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Generator, Optional, Tuple
 
-from pxr import Gf, Sdf, Usd, UsdUI, Vt
+from pxr import Gf, Sdf, Usd, UsdUI, UsdUtils, Vt
 
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
@@ -30,6 +30,14 @@ _EXEC_OUTPUT = "outputs:chunk"
 _EXEC_INPUT = "inputs:chunk"
 _CHUNK_PRIM_TYPENAME = "Chunk"
 _CHUNKS_ROOT = "/chunks"
+
+# An Edit Target chunk publishes the identifier of the layer it currently points at onto
+# its own prim under this attribute. The presence of the attr marks an exec-chain boundary
+# for chunk_utils.get_edit_layer's upstream walk; its value names the layer everything
+# downstream of it authors into. Publishing it (rather than importing the Edit Target
+# script's resolution logic into core) keeps core decoupled from the script — same
+# published-marker pattern as chunk:pinned / set_chunk_pinned.
+_EDIT_TARGET_MARKER = "chunk:editTargetLayer"
 
 _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
 
@@ -132,10 +140,6 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._loaded_stage = None
         self._loaded_prim_paths: set[str] = set()
         self._chunk_prim_paths: dict[int, str] = {}  # id(chunk) → current prim path
-        # Track the user's intended edit target separately from temporary anonymous-layer
-        # contexts that chunks set during execute(). Anonymous layers are never a valid
-        # target for persistent chunk-prim inputs: attrs.
-        self._user_edit_layer = stage.GetEditTarget().GetLayer() if stage else None
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
         )
@@ -144,11 +148,6 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         )
         self._dependency_added_listener = NoticeConnection(
             self._on_dependency_added, ChunkNoticeAlias.DEPENDENCY_ADDED, globally=True
-        )
-        # Listen for edit-target changes but only update when the new layer is not
-        # anonymous (chunk callbacks temporarily set anonymous layers during execute()).
-        self._edit_target_listener = NoticeConnection(
-            self._on_edit_target_changed, ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED, globally=True
         )
         self._objects_changed_listener = NoticeConnection(
             self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True
@@ -170,26 +169,47 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             self._loaded_stage = stage
             load_chunks(stage, scene, self._loaded_prim_paths)
         self.initialized = True
+        if stage:
+            restore_edit_target_selections(stage, scene)
+            reconcile_edit_targets(stage, scene)
 
-    def _on_edit_target_changed(self, _notice, _sender):
-        if not self._stage:
-            return
-        layer = self._stage.GetEditTarget().GetLayer()
-        if layer and not layer.anonymous:
-            self._user_edit_layer = layer
+    def _chunk_prim_edit_context(self, owner: "core.ChunkBase | None" = None):
+        """Return an EditContext for authoring a *new* chunk-prim bookkeeping attr spec
+        (inputs:/outputs:/exec connections, node position, etc.).
 
-    def _chunk_prim_edit_context(self):
-        """Return an EditContext that targets the user's persistent edit layer."""
-        if not self.initialized:
+        Targets chunk_utils.get_bookkeeping_layer(stage, owner) — the Edit Target resolved
+        for the chunk's exec-chain position (nearest_upstream_edit_layer) for a regular
+        chunk, or always the session layer for a CONTEXT chunk (Tab containers, groups)
+        regardless of what's active, since letting a CONTEXT chunk's own bookkeeping follow
+        a target would split its prim across layers over its lifetime. owner=None (caller
+        couldn't resolve one) also falls back to session via get_bookkeeping_layer.
+
+        Only for *first-time* attr/prim creation, where "where should this new content
+        go" is the right question. Updating an *existing* attr's value must instead
+        target wherever its spec already lives (see chunk_core.py's update_usd_prop /
+        data_changed) — re-resolving the current target on every value change would
+        scatter a single attr's opinions across layers as Edit Target moves on.
+        """
+        if not (self.initialized and self._stage):
             return contextlib.nullcontext()
-        if self._user_edit_layer and self._stage:
-            return Usd.EditContext(self._stage, self._user_edit_layer)
-        return contextlib.nullcontext()
+        return Usd.EditContext(self._stage, chunk_utils.get_bookkeeping_layer(self._stage, owner))
 
     def clear_attr_connections(self, attr: Usd.Attribute) -> None:
-        """Clear connections from a chunk prim attr in the correct edit layer."""
-        with self._chunk_prim_edit_context():
-            attr.ClearConnections()
+        """Clear connections from a chunk prim attr in every layer where a connection
+        opinion actually exists — not just the current edit layer.
+
+        A connection may have been authored while a different Edit Target was active
+        (or before any Edit Target chunk ran at all); clearing only the current edit
+        layer would silently no-op, leaving that original opinion composed in as a stale,
+        seemingly-undeletable connection.
+        """
+        if not (self.initialized and self._stage):
+            return
+        for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+            spec = layer.GetAttributeAtPath(attr.GetPath())
+            if spec and spec.connectionPathList.explicitItems:
+                with Usd.EditContext(self._stage, layer):
+                    attr.ClearConnections()
 
     def _expr_connections(self, prim: Usd.Prim, raw: str) -> list:
         """Build Sdf.Path connection targets for an expression string, preferring outputs: over inputs:."""
@@ -213,8 +233,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not self._stage:
             return
         path = driven_attr.GetPath()
-        if self._user_edit_layer:
-            spec = self._user_edit_layer.GetAttributeAtPath(path)
+        # The default may have been authored in whatever layer was the edit target at the
+        # time — clear it wherever it exists across the stack, not just one tracked layer.
+        for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+            spec = layer.GetAttributeAtPath(path)
             if spec and spec.HasDefaultValue():
                 spec.ClearDefaultValue()
 
@@ -283,6 +305,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         finally:
             chunk_notice._usd_write_active = prev_w
 
+        # Deleting an Edit Target chunk changes the target that now applies to everything
+        # that was downstream of it (heal_exec_chain_on_delete has just rewired the chain
+        # around it) — re-home those chunks to the target that survives at their position.
+        reconcile_edit_targets(self._stage, self._scene)
+
     def _on_state_changed(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
             return
@@ -345,11 +372,18 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
     def reload_for_stage(self, stage: Usd.Stage) -> None:
         """Reinitialize for a newly opened stage (File > Open).  Safe to call from a
-        deferred context (e.g. QTimer.singleShot) once the stage has fully settled."""
+        deferred context (e.g. QTimer.singleShot) once the stage has fully settled.
+
+        Compares stage *object identity*, not the root layer's identifier string —
+        re-exporting to the same path and reloading (a common iteration workflow)
+        gives a genuinely new Usd.Stage with the same file path, so comparing
+        identifiers would wrongly skip the reset here, leaving the previous file's
+        chunk objects (and their now-orphaned bookkeeping/positions) still registered
+        and silently re-wrapped alongside the freshly loaded content.
+        """
         if not stage or not self._scene:
             return
-        loaded_root = self._loaded_stage.GetRootLayer().identifier if self._loaded_stage else None
-        if stage.GetRootLayer().identifier == loaded_root:
+        if stage is self._loaded_stage:
             return
         self._loaded_stage = stage
         self._stage = stage
@@ -358,6 +392,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             ctx.request_delete()
         self._loaded_prim_paths.clear()
         load_chunks(stage, self._scene, self._loaded_prim_paths)
+        # Re-apply Edit Target selections dropped during load (Menu rejected them before their
+        # layers existed), then consolidate any chunk whose saved home doesn't match its
+        # topology-resolved target (e.g. a file authored before Edit Target became position-based).
+        restore_edit_target_selections(stage, self._scene)
+        reconcile_edit_targets(stage, self._scene)
 
     def _on_attr_changed(self, notice, sender):
         if not self.initialized or not self._stage:
@@ -415,11 +454,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     def _handle_rename(self, old_path: str, new_path: str, old_name: str, new_name: str, chunk=None) -> None:
         """Rename a chunk prim and patch all references to it.
 
-        Renames the prim in every layer that actually authors it. _user_edit_layer can be
-        None (the edit target is an anonymous session/graph layer, which _on_edit_target_changed
-        deliberately doesn't record) — chunks still author fine because _chunk_prim_edit_context
-        falls back to the current edit target, so the rename must use the same fallback rather
-        than bail (bailing left the chunk renamed but the prim not, so the node vanished).
+        Renames the prim in every layer that actually authors it. If the prim can't be
+        resolved to any spec, fall back to the stage's current edit target rather than bail
+        (bailing left the chunk renamed but the prim not, so the node vanished).
         """
         if not self._stage:
             return
@@ -429,9 +466,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             for spec in old_prim.GetPrimStack():
                 if spec.layer not in target_layers:
                     target_layers.append(spec.layer)
-        # Fallbacks if the prim couldn't be resolved: the tracked edit layer, else the target.
+        # Fallback if the prim couldn't be resolved: the stage's current edit target.
         if not target_layers:
-            fallback = self._user_edit_layer or self._stage.GetEditTarget().GetLayer()
+            fallback = self._stage.GetEditTarget().GetLayer()
             if fallback is not None:
                 target_layers = [fallback]
         if not target_layers:
@@ -502,7 +539,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
     def _handle_param_rename(self, param: "core.ChunkParamBase", old_name: str, new_name: str) -> None:
         """Rename a param's USD attribute and patch expression strings."""
-        if not self._user_edit_layer:
+        if not (self.initialized and self._stage):
             return
         chunk = next(
             (c for c in self._scene.get_chunks() if any(p is param for _, p in _iter_chunk_params(c))),
@@ -518,7 +555,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         new_attr = f"{_INPUTS_PREFIX}{new_name}"
         edit = Sdf.BatchNamespaceEdit()
         edit.Add(Sdf.Path(f"{prim_path}.{old_attr}"), Sdf.Path(f"{prim_path}.{new_attr}"))
-        self._user_edit_layer.Apply(edit)
+        # Wherever the attr's spec currently lives — its Edit Target when first
+        # authored, not necessarily the session layer anymore.
+        for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+            prim_spec = layer.GetPrimAtPath(Sdf.Path(prim_path))
+            if prim_spec and old_attr in prim_spec.properties:
+                layer.Apply(edit)
         _patch_expressions(self._stage, f".{old_name}@", f".{new_name}@")
 
     def _sync_list_proxy_to_usd(self, proxy_param) -> None:
@@ -559,13 +601,17 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         attr_name = f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{template_name}"
         chunk_notice._usd_write_active = True
         try:
-            attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
-            attr.Set(usd_value)
+            # Rewritten wholesale on every change (not incrementally) — if it already
+            # exists, keep updating it wherever its spec already lives; only a genuinely
+            # new attr needs a target resolved via the chunk's current Edit Target.
+            existing = prim.GetAttribute(attr_name)
+            home = chunk_utils.get_attr_home_layer(existing) if existing.IsValid() else None
+            ctx = Usd.EditContext(self._stage, home) if home else self._chunk_prim_edit_context(chunk)
+            with ctx:
+                attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+                attr.Set(usd_value)
         finally:
             chunk_notice._usd_write_active = False
-
-    def _on_edit_target_changed(self, notice, sender):
-        pass  # Kept for compatibility; listener is disabled — see initialize()
 
     def _on_dependency_added(self, notice, sender):
         if not self.initialized or not self._stage:
@@ -578,11 +624,15 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not dep_prim.IsValid():
             return
         src_path = Sdf.Path(f"{_resolve_chunk_root(dependency)}/{dependency.name}.{_EXEC_OUTPUT}")
-        with self._chunk_prim_edit_context():
+        with self._chunk_prim_edit_context(dependent):
             exec_in = dep_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
             existing = list(exec_in.GetConnections())
             if src_path not in existing:
                 exec_in.SetConnections(existing + [src_path])
+        # Wiring a chunk into the exec chain can change the Edit Target that now applies at
+        # its position (e.g. it's now downstream of an Edit Target chunk) — re-home it and
+        # everything downstream to honor the target at that place.
+        reconcile_edit_targets(self._stage, self._scene)
 
     def _sync_vector_input(self, chunk: "core.ChunkBase", vector: "core.ChunkVectorBase") -> None:
         """Create/restore a chunk-prim attr for a vector and wire it.
@@ -643,27 +693,25 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             current_val = real_attr.Get()
             if current_val is None:
                 return
-            with self._chunk_prim_edit_context():
+            with self._chunk_prim_edit_context(chunk):
                 attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 attr.Set(current_val)
         else:
-            # Unscoped (ambient edit target), matching _sync_param_input's equivalent
-            # branch for scalars — must land in the same layer as ChunkVectorBase's own
-            # later data_changed writes, or connections split across two layers and
-            # clearing (ChunkStageSync.clear_attr_connections, which does target the
-            # chunk layer) only removes the wrong one, leaving a stale composed opinion.
-            attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
-            if is_expr:
-                attr.SetConnections(self._expr_connections(prim, raw))
-            else:
-                attr.Set(vector.value)
+            # Chunk-prim bookkeeping — the chunk's currently active Edit Target (session
+            # by default), matching _sync_param_input's equivalent branch for scalars.
+            with self._chunk_prim_edit_context(chunk):
+                attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+                if is_expr:
+                    attr.SetConnections(self._expr_connections(prim, raw))
+                else:
+                    attr.Set(vector.value)
 
         vector._connect_param_attr(attr)
 
         if real_attr_path and real_attr_path != str(attr.GetPath()):
             if old_attr := self._stage.GetAttributeAtPath(Sdf.Path(real_attr_path)):
                 if old_attr.IsValid():
-                    with self._chunk_prim_edit_context():
+                    with self._chunk_prim_edit_context(chunk):
                         vector.connect_usd_attr(old_attr)
                     self._clear_driven_attr_value(old_attr)
                     chunk_layer = vector.get_edit_context()
@@ -718,21 +766,21 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         attr_name = f"{prefix}{param_path.replace('.', ':')}"
         saved = prim.GetAttribute(attr_name)
         if saved.IsValid() and saved.GetTypeName() != sdf_type:
-            layer = self._user_edit_layer or self._stage.GetSessionLayer()
-            prim_spec = layer.GetPrimAtPath(prim.GetPath())
-            if prim_spec and attr_name in prim_spec.properties:
-                del prim_spec.properties[attr_name]
+            self._delete_stale_attr_specs(prim, attr_name)
             saved = prim.GetAttribute(attr_name)
         if saved.IsValid() and saved.Get() is not None:
             attr = saved
         else:
-            attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
-            if is_expr:
-                attr.SetConnections(self._expr_connections(prim, raw))
-                if sdf_type == Sdf.ValueTypeNames.String:
+            # Chunk-prim bookkeeping — the chunk's currently active Edit Target (session
+            # by default, see chunk_utils.get_bookkeeping_layer).
+            with self._chunk_prim_edit_context(chunk):
+                attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+                if is_expr:
+                    attr.SetConnections(self._expr_connections(prim, raw))
+                    if sdf_type == Sdf.ValueTypeNames.String:
+                        attr.Set(raw)
+                else:
                     attr.Set(raw)
-            else:
-                attr.Set(raw)
         param._connect_param_attr(attr)
 
         if existing and existing != str(attr.GetPath()):
@@ -746,6 +794,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     with Usd.EditContext(self._stage, chunk_layer):
                         if old_attr.Get(0) != raw:
                             old_attr.Set(raw)
+
+    def _delete_stale_attr_specs(self, prim: "Usd.Prim", attr_name: str) -> None:
+        """Remove attr_name's spec from every layer in the stack where it's found.
+        The stale spec may live in whichever layer was the edit target when it was
+        first authored — not necessarily the current one — so scan the whole stack
+        rather than just one layer."""
+        for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+            prim_spec = layer.GetPrimAtPath(prim.GetPath())
+            if prim_spec and attr_name in prim_spec.properties:
+                del prim_spec.properties[attr_name]
 
     def _sync_chunk_inputs(self, chunk: "core.ChunkBase") -> None:
         """Wire dynamically-added params to chunk prim inputs: attrs.
@@ -779,10 +837,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # restore the param from it rather than overwriting with the current default.
             saved = prim.GetAttribute(attr_name)
             if saved.IsValid() and saved.GetTypeName() != sdf_type:
-                layer = self._user_edit_layer or self._stage.GetSessionLayer()
-                prim_spec = layer.GetPrimAtPath(prim.GetPath())
-                if prim_spec and attr_name in prim_spec.properties:
-                    del prim_spec.properties[attr_name]
+                self._delete_stale_attr_specs(prim, attr_name)
                 saved = prim.GetAttribute(attr_name)
             if saved.IsValid() and saved.Get() is not None:
                 attr = saved
@@ -798,7 +853,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                         default = getattr(param, 'default_value', None)
                         if raw == default:
                             continue  # pure-Python param at its default — skip
-                with self._chunk_prim_edit_context():
+                with self._chunk_prim_edit_context(chunk):
                     attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                     if is_expr:
                         attr.SetConnections(self._expr_connections(prim, raw))
@@ -912,7 +967,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if not (exec_in and exec_in.IsValid()):
                 continue
             if any(str(p.GetPrimPath()) == old_path for p in exec_in.GetConnections()):
-                with self._chunk_prim_edit_context():
+                # exec_in already exists — update wherever its spec already lives, not
+                # wherever c's Edit Target currently resolves to (see get_attr_home_layer).
+                home = chunk_utils.get_attr_home_layer(exec_in)
+                ctx = Usd.EditContext(self._stage, home) if home else self._chunk_prim_edit_context(c)
+                with ctx:
                     exec_in.SetConnections([new_out])
 
     def _on_chunk_loaded(self, notice, sender):
@@ -990,6 +1049,32 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 tail = c
         return tail
 
+    def _new_chunk_bookkeeping_layer(self, chunk: core.ChunkBase, prev_chunk: "core.ChunkBase | None") -> "Sdf.Layer | None":
+        """Resolve where a *brand new* chunk's bookkeeping prim should be authored, from its
+        exec-chain predecessor(s) — the chunk's own prim isn't wired into the chain yet, so
+        nearest_upstream_edit_layer on it would resolve to the session-layer default.
+
+        CONTEXT chunks (containers) always pin to the session layer, like get_bookkeeping_layer.
+        Otherwise: if a predecessor is itself an Edit Target chunk, its published layer applies;
+        else recurse up from that predecessor. Falls back to the session layer.
+        """
+        session = self._stage.GetSessionLayer() if self._stage else None
+        if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            return session
+        deps = [d for _, d in chunk.get_dependencies() if isinstance(d, core.ChunkBase)]
+        if not deps and prev_chunk is not None:
+            deps = [prev_chunk]
+        for dep in deps:
+            dep_prim = self._stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dep)))
+            if not dep_prim.IsValid():
+                continue
+            layer = _prim_edit_target_layer(self._stage, dep_prim)
+            if layer is None:
+                layer = nearest_upstream_edit_layer(self._stage, dep_prim)
+            if layer is not None:
+                return layer
+        return session
+
     def _define_prim(self, chunk: core.ChunkBase, prev_chunk: "core.ChunkBase | None" = None) -> Usd.Prim:
         # Author the prim at the exact path _on_param_added registered (chunk._exec_prim_path),
         # so the prim is CREATED where it was REGISTERED. For CONTEXT group chunks these diverge:
@@ -1005,10 +1090,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             chunk_root = _resolve_chunk_root(chunk)
             target_path = f"{chunk_root}/{chunk.name}"
 
-        # All prim and attribute authoring must land on the user's chosen edit
-        # target, never on a chunk's own anonymous execute layer (which gets
-        # cleared on every execute run and is not saved to disk).
-        with self._chunk_prim_edit_context():
+        # Resolve the layer this new chunk's bookkeeping should live in from its exec-chain
+        # predecessor, BEFORE authoring — the chunk isn't wired into the chain yet, so
+        # nearest_upstream_edit_layer on its own (still-unconnected) prim would wrongly say
+        # "session". Authoring straight into the right layer here avoids a fragile post-hoc
+        # migration (and the inputs:chunk it would author would otherwise land in session and
+        # need moving). All authoring must land here, never on a chunk's own anonymous execute
+        # layer (Clear()ed every run, not saved).
+        book_layer = self._new_chunk_bookkeeping_layer(chunk, prev_chunk)
+        book_ctx = lambda: Usd.EditContext(self._stage, book_layer) if book_layer else contextlib.nullcontext()
+        with book_ctx():
             self._stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
 
         root_prim = self._stage.GetPrimAtPath(Sdf.Path(chunk_root))
@@ -1017,7 +1108,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if child.GetTypeName() == _CHUNK_PRIM_TYPENAME
         )
 
-        with self._chunk_prim_edit_context():
+        with book_ctx():
             prim = self._stage.DefinePrim(Sdf.Path(target_path), _CHUNK_PRIM_TYPENAME)
 
             ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
@@ -1119,11 +1210,25 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
 
 def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
-    """Replace all occurrences of old with new in string attributes across the stage."""
+    """Replace all occurrences of old with new in string attributes across the stage.
+
+    Each chunk-prim bookkeeping attr (the expression strings this patches) can now live
+    in a different layer — whichever was the active Edit Target when it was first
+    authored — rather than always the session layer, so there's no single EditContext
+    that's correct for every attr in this traversal. Patch each one wherever its
+    existing spec already lives instead (see chunk_utils.get_attr_home_layer); writing
+    to the stage's ambient edit target (unscoped) would author a weaker opinion that
+    gets silently overridden by the original in composition.
+    """
     for prim in stage.TraverseAll():
         for attr in prim.GetAttributes():
             val = attr.Get()
-            if isinstance(val, str) and old in val:
+            if not (isinstance(val, str) and old in val):
+                continue
+            home = chunk_utils.get_attr_home_layer(attr)
+            if not home:
+                continue
+            with Usd.EditContext(stage, home):
                 attr.Set(val.replace(old, new))
 
 
@@ -1205,7 +1310,17 @@ def is_chunk_pinned(chunk: "core.ChunkBase") -> bool:
 
 
 def set_chunk_pinned(chunk: "core.ChunkBase", pinned: bool) -> None:
-    """Persist chunk's pinned state as a custom ``chunk:pinned`` attribute on its prim."""
+    """Persist chunk's pinned state as a custom ``chunk:pinned`` attribute on its prim.
+
+    This is chunk-prim bookkeeping like any other inputs:/outputs: attr — it must not
+    rely on the stage's ambient edit target (chunk_utils.get_bookkeeping_layer resolves
+    it instead, following Edit Target for a regular chunk / pinned to session for a
+    CONTEXT chunk). Update an existing spec in place (chunk_utils.get_attr_home_layer)
+    so toggling this repeatedly never leaves an older, stronger opinion in one layer
+    shadowing a newer one authored into a different, weaker layer — the exact
+    "second mutation doesn't propagate" bug this same class of fix addresses elsewhere
+    (see ChunkParamBase.data_changed / update_usd_prop).
+    """
     stage = chunk.get_stage()
     if not stage:
         return
@@ -1215,7 +1330,11 @@ def set_chunk_pinned(chunk: "core.ChunkBase", pinned: bool) -> None:
     prev_w = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
-        prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(pinned))
+        attr = prim.GetAttribute("chunk:pinned")
+        home = chunk_utils.get_attr_home_layer(attr) if attr and attr.IsValid() else None
+        target = home or chunk_utils.get_bookkeeping_layer(stage, chunk)
+        with Usd.EditContext(stage, target):
+            prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(pinned))
     finally:
         chunk_notice._usd_write_active = prev_w
 
@@ -1529,6 +1648,252 @@ def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
         chunk_notice._usd_write_active = prev_w
 
 
+def is_edit_target_chunk(chunk: "core.ChunkBase") -> bool:
+    """Return True if chunk is an Edit Target chunk (scripts/edit_target.py)."""
+    cfg = chunk.get_config()
+    return bool(cfg and cfg.module == "edit_target")
+
+
+def _prim_edit_target_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.Layer | None":
+    """If prim carries the Edit Target marker, return the Sdf.Layer it names — but only if
+    that layer is actually in the stage's current layer stack (so the result is always safe
+    to author into). Otherwise None."""
+    attr = prim.GetAttribute(_EDIT_TARGET_MARKER)
+    if not (attr and attr.IsValid()):
+        return None
+    ident = attr.Get()
+    if not ident:
+        return None
+    for layer in stage.GetLayerStack(includeSessionLayers=True):
+        if layer.identifier == ident:
+            return layer
+    return None
+
+
+def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
+    """Breadth-first walk of the exec chain (inputs:chunk connections) upstream from
+    start, yielding each reachable (path, prim) exactly once, start itself excluded.
+    prim may be invalid (dangling connection) — such nodes are yielded but not walked
+    through. Shared by every "look upstream" consumer so the traversal semantics
+    (dedup, ordering, dangling handling) live in one place.
+
+    Deliberately exec-only (inputs:chunk), NOT the exec+data walk get_exec_upstream_chunks
+    does: Edit Target resolution follows the execution chain that actually defines
+    authoring position, and must ignore incidental data wiring — a chunk reading another's
+    points shouldn't drag its Edit Target upstream. The two are separate on purpose."""
+    seen = {start}
+    frontier = [start]
+    while frontier:
+        next_frontier: list = []
+        for path in frontier:
+            p = stage.GetPrimAtPath(path)
+            if path != start:
+                yield path, p
+            if not (p and p.IsValid()):
+                continue
+            exec_in = p.GetAttribute(_EXEC_INPUT)
+            if exec_in and exec_in.IsValid():
+                for conn in exec_in.GetConnections():
+                    conn_prim = conn.GetPrimPath()
+                    if conn_prim not in seen:
+                        seen.add(conn_prim)
+                        next_frontier.append(conn_prim)
+        frontier = next_frontier
+
+
+def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.Layer | None":
+    """Return the layer a chunk at prim's position should author into: the layer published
+    by the nearest Edit Target chunk reachable by walking the exec chain (inputs:chunk)
+    upstream from prim, or the session layer if there is no upstream Edit Target.
+
+    A pure function of graph topology — this is what replaces the old global
+    ChunkStageSync._user_edit_layer state. prim's own marker is deliberately skipped (an
+    Edit Target chunk defines the target for everything *downstream* of it, not for its own
+    bookkeeping — that follows whatever is upstream of it, or the session layer).
+    """
+    if not stage:
+        return None
+    session = stage.GetSessionLayer()
+    if not (prim and prim.IsValid()):
+        return session
+    for _path, p in _iter_exec_upstream(stage, prim.GetPath()):
+        if not (p and p.IsValid()):
+            continue
+        layer = _prim_edit_target_layer(stage, p)
+        if layer is not None:
+            return layer
+    return session
+
+
+def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "Sdf.Layer") -> bool:
+    """Consolidate a chunk prim's bookkeeping spec into dst_layer, removing it from any other
+    migratable layer it currently sits in. Returns True if anything moved.
+
+    "Migratable" excludes the chunk graph's own internal per-chunk procedural layers — those
+    hold driven content that is Clear()ed and regenerated on execute (and re-nested under the
+    right target by ChunkLayerManager), never hand-moved. The strongest existing spec is the
+    copy source so the composed opinion is preserved; weaker strays (only ever left behind by
+    the pre-migration scatter this whole change removes) are dropped, not merged.
+    """
+    sdf_path = Sdf.Path(prim_path)
+    internal = chunk_utils.chunk_internal_layer_ids()
+    sources = [
+        layer for layer in stage.GetLayerStack(includeSessionLayers=True)
+        if layer != dst_layer and layer.identifier not in internal
+        and layer.GetPrimAtPath(sdf_path)
+    ]
+    if not sources:
+        return False
+    strongest = sources[0]  # GetLayerStack is strong -> weak
+    prev = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        Sdf.CreatePrimInLayer(dst_layer, sdf_path)
+        Sdf.CopySpec(strongest, sdf_path, dst_layer, sdf_path)
+        for layer in sources:
+            parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
+            if parent and sdf_path.name in parent.nameChildren:
+                del parent.nameChildren[sdf_path.name]
+    finally:
+        chunk_notice._usd_write_active = prev
+    return True
+
+
+_reconciling = False
+
+
+def reconcile_edit_targets(stage: "Usd.Stage", scene: "core.SceneSender") -> None:
+    """Make every chunk's bookkeeping consistent with the Edit Target resolved for its
+    exec-chain position.
+
+    For each regular (non-CONTEXT) chunk whose effective edit layer
+    (nearest_upstream_edit_layer) no longer matches where its bookkeeping prim lives, move
+    the prim spec there and re-execute it so ChunkLayerManager.get_chunk_layer re-nests the
+    chunk's driven content under the new target too (its graph layer reparents — see
+    chunk_registry.get_chunk_layer). A chunk already homed correctly moves nothing and is
+    NOT re-executed, so on the common paths (creation authors bookkeeping into the right
+    layer up front via _new_chunk_bookkeeping_layer) this is a cheap no-op and never
+    oscillates. It does real work only when a target actually changes — which is exactly
+    when publish_edit_target gates its call on the marker having changed.
+
+    Idempotent, so safe after any structural change (attach/detach/delete of an exec wire,
+    or an Edit Target changing its layer). CONTEXT chunks (Tab containers, groups) are
+    structural scaffolding pinned to the session layer, not content, so they are left alone.
+    """
+    global _reconciling
+    if _reconciling or not (stage and scene):
+        return
+    _reconciling = True
+    try:
+        for chunk in scene.get_chunks():
+            if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                continue
+            prim_path = get_chunk_prim_path(chunk)
+            prim = stage.GetPrimAtPath(Sdf.Path(prim_path))
+            if not prim.IsValid():
+                continue
+            dst = nearest_upstream_edit_layer(stage, prim)
+            if dst is None:
+                continue
+            if _migrate_chunk_bookkeeping(stage, prim_path, dst):
+                # The chunk moved layers — re-run it so its driven content re-nests under
+                # the new target (bookkeeping is hand-moved above; driven content follows
+                # via ChunkLayerManager on execute).
+                chunk.execute()
+    finally:
+        _reconciling = False
+
+
+def restore_edit_target_selections(stage: "Usd.Stage", scene: "core.SceneSender") -> None:
+    """After a load, re-apply each Edit Target chunk's stored selection from USD.
+
+    A chunk.Menu rejects a value not in its menu_items, and on load the stored selection
+    ("shot") is restored before the anon layer it names is recreated by the upstream Create
+    Layer chunk — so the Menu silently drops it and keeps the default ("Session Layer"). By
+    the time the whole graph has loaded, every Create Layer chunk has run, so the layers (and
+    therefore the menu items) exist; re-reading the raw stored value and re-applying it here
+    restores the selection. The resulting value change re-publishes the marker and reconciles
+    downstream via the normal path.
+
+    Runs strictly post-load — NOT from the refresh callback mid-load — so a chain of Edit
+    Targets settles deterministically. Applied UPSTREAM-FIRST: re-applying a downstream Edit
+    Target before an upstream one leaves the upstream still on its (rejected) default while
+    the downstream's execute/reconcile cascade runs, which corrupts the upstream's selection.
+    Ordering by how many Edit Targets sit upstream keeps each chain settling from its root out.
+    """
+    if not (stage and scene):
+        return
+    edit_targets = [c for c in scene.get_chunks() if is_edit_target_chunk(c)]
+    if not edit_targets:
+        return
+    et_paths = {get_chunk_prim_path(c) for c in edit_targets}
+
+    def _upstream_et_count(chunk) -> int:
+        start = Sdf.Path(get_chunk_prim_path(chunk))
+        return sum(
+            1 for path, _p in _iter_exec_upstream(stage, start) if str(path) in et_paths
+        )
+
+    # Snapshot each stored selection from USD BEFORE applying any of them. Applying one
+    # target's value triggers an execute/reconcile cascade that can overwrite a *different*
+    # target's stored inputs:edit_target attr, so re-reading per-iteration would pick up a
+    # corrupted value. Read first, then apply.
+    snapshot = []
+    for chunk in edit_targets:
+        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+        if not prim.IsValid():
+            continue
+        attr = prim.GetAttribute("inputs:edit_target")
+        stored = attr.Get() if (attr and attr.IsValid()) else None
+        param = chunk.get_param("edit_target")
+        if param is not None and stored:
+            snapshot.append((chunk, param, stored))
+
+    # Apply upstream-first: each set's own publish_edit_target reconcile re-homes the
+    # downstream part of the chain before the next (more-downstream) selection is applied,
+    # so every target settles against an already-correct upstream.
+    for chunk, param, stored in sorted(snapshot, key=lambda t: _upstream_et_count(t[0])):
+        # Only re-apply once the stored selection is actually a valid menu item now (its
+        # layer exists); a genuinely missing layer is left at whatever the Menu settled on.
+        if param.value != stored and stored in getattr(param, "menu_items", []):
+            param.value = stored
+
+
+def publish_edit_target(chunk: "core.ChunkBase", stage: "Usd.Stage", layer: "Sdf.Layer | None") -> None:
+    """Record on chunk's prim the layer it currently targets (the _EDIT_TARGET_MARKER attr
+    read by nearest_upstream_edit_layer), then reconcile so everything downstream re-homes
+    to it. The single entry point the Edit Target chunk's execute() calls — keeps the marker
+    format and the downstream migration owned by core, not the script.
+
+    The marker is updated in place at its existing home (get_attr_home_layer) so re-pointing
+    the Edit Target repeatedly never leaves a stale stronger opinion shadowing the new one —
+    same discipline as set_chunk_pinned.
+    """
+    sync = ChunkStageSync()
+    if not (stage and chunk):
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    if not prim.IsValid():
+        return
+    ident = layer.identifier if layer else ""
+    prev = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        attr = prim.GetAttribute(_EDIT_TARGET_MARKER)
+        old_ident = attr.Get() if attr and attr.IsValid() else None
+        home = chunk_utils.get_attr_home_layer(attr) if attr and attr.IsValid() else None
+        target = home or chunk_utils.get_bookkeeping_layer(stage, chunk)
+        with Usd.EditContext(stage, target):
+            prim.CreateAttribute(_EDIT_TARGET_MARKER, Sdf.ValueTypeNames.String, custom=True).Set(ident)
+    finally:
+        chunk_notice._usd_write_active = prev
+    # Only re-home downstream when the target actually changed. The Edit Target chunk
+    # re-executes on every stage content change (its refresh callback), so reconciling
+    # unconditionally here would run — and thrash — on every unrelated edit.
+    if old_ident != ident:
+        reconcile_edit_targets(stage, sync._scene)
+
+
 def get_exec_upstream_chunks(
     view_chunk: "core.ChunkBase",
     stage: "Usd.Stage",
@@ -1832,11 +2197,17 @@ def paste_chunks() -> None:
             dst_attr = new_prim.GetAttribute(name)
             if not dst_attr.IsValid():
                 continue
-            val = attr.Get()
-            if val is not None:
-                dst_attr.Set(val)
-            if attr.HasAuthoredConnections():
-                dst_attr.SetConnections(attr.GetConnections())
+            # dst_attr was just authored moments ago by create_chunks() -> _define_prim,
+            # via the chunk's own current Edit Target — update it there, not wherever
+            # ambient happens to point.
+            home = chunk_utils.get_attr_home_layer(dst_attr)
+            ctx = Usd.EditContext(stage, home) if home else contextlib.nullcontext()
+            with ctx:
+                val = attr.Get()
+                if val is not None:
+                    dst_attr.Set(val)
+                if attr.HasAuthoredConnections():
+                    dst_attr.SetConnections(attr.GetConnections())
         _load_wire_inputs(new_prim, new_chunk)
 
 
@@ -1898,6 +2269,11 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
         return
 
     to_load = []
+    # Top-level (direct child of the pseudo-root) Chunk-typed prims with no chunkType —
+    # a structural context prim (a Tab/ChunkGroup saved via export_chunks), not a
+    # module-backed chunk. Nested ChunkGroups use a separate parent-context mechanism
+    # (_parent_context) not covered by this reload path yet.
+    context_prims = []
     for prim in stage.Traverse():
         if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
             continue
@@ -1905,6 +2281,8 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
             continue
         chunk_type = prim.GetAttribute(_CHUNK_TYPE_ATTR).Get()
         if not chunk_type:
+            if prim.GetParent().IsPseudoRoot():
+                context_prims.append(prim)
             continue
         mod = chunk_registry.ChunkRegistry().get_chunk_module(str(chunk_type))
         if not mod:
@@ -1925,11 +2303,40 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
         for prim, _ in to_load:
             loaded_prim_paths.add(str(prim.GetPath()))
 
-    # Group prims by their source layer so each sublayer file gets its own context
+    # Recreate each existing named top-level context under its own saved name/path —
+    # before grouping below, so its children are recognized as already having a home
+    # instead of falling through as "no source layer" orphans wrapped in a brand-new
+    # tab named after whatever file happens to be open right now.
+    group_chunk_by_path: dict[str, "core.ChunkBase"] = {}
+    context_paths: set[str] = set()
+    for prim in context_prims:
+        prim_path = str(prim.GetPath())
+        if loaded_prim_paths is not None:
+            loaded_prim_paths.add(prim_path)
+        ctx = scene.add_context(prim.GetName(), prim_path)
+        if ctx is not None:
+            group_chunk_by_path[prim_path] = ctx
+            context_paths.add(prim_path)
+
+    def _has_recreated_context_ancestor(prim) -> bool:
+        p = prim.GetParent()
+        while p and not p.IsPseudoRoot():
+            if str(p.GetPath()) in context_paths:
+                return True
+            p = p.GetParent()
+        return False
+
+    # Group prims by their source layer so each sublayer file gets its own context —
+    # except ones already homed under a context just recreated above.
+    _EXISTING_CONTEXT = object()
     groups = {}
     for prim, mod in to_load:
-        src = _find_prim_layer(prim)
-        key = src.identifier if src else None
+        src = None
+        if context_paths and _has_recreated_context_ancestor(prim):
+            key = _EXISTING_CONTEXT
+        else:
+            src = _find_prim_layer(prim)
+            key = src.identifier if src else None
         if key not in groups:
             groups[key] = (src, [])
         groups[key][1].append((prim, mod))
@@ -1940,7 +2347,6 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
         try:
             deferred = []  # (prim, chunk)
             top_level_chunk_ids: set[int] = set()
-            group_chunk_by_path: dict[str, "core.ChunkBase"] = {}
             for prim, mod in prim_mods:
                 # Walk up the prim's parent chain to find the nearest loaded ChunkGroup.
                 ancestor_group = None
@@ -1954,6 +2360,13 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
 
                 chunks = mod.create() if mod.loaded else mod.load()
                 for c in chunks:
+                    # Restore the saved chunk name from its prim (prims are authored at
+                    # <root>/<chunk.name>, so this is a lossless round-trip). Freshly
+                    # created chunks otherwise get default names uniquified in
+                    # traversal order, which need not match the prims — two chunks of
+                    # the same type could swap identities, scrambling the name-keyed
+                    # wiring below into a cyclic DAG from a perfectly linear file.
+                    c.name = prim.GetName()
                     if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                         c.prim_path = str(prim.GetPath())
                         object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
@@ -1995,15 +2408,18 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
 
             # Restore DAG dependencies from inputs:chunk connections so execution
             # order is driven by the explicit graph, not just prim appearance order.
-            chunk_by_name = {c.name: c for _, c in deferred}
+            # Resolve connection targets by prim path — names are scene-wide and can
+            # be uniquified/renamed, so a name lookup can bind to the wrong chunk.
+            chunk_by_path = {str(p.GetPath()): c for p, c in deferred}
             chunks_with_dependencies: set[int] = set()
             for prim, chunk in deferred:
                 exec_attr = prim.GetAttribute(_EXEC_INPUT)
                 if not (exec_attr and exec_attr.IsValid()):
                     continue
+                existing_deps = {id(d) for _, d in chunk.get_dependencies()}
                 for conn_path in exec_attr.GetConnections():
-                    dep_name = str(conn_path.GetPrimPath()).rsplit("/", 1)[-1]
-                    if dep := chunk_by_name.get(dep_name):
+                    dep = chunk_by_path.get(str(conn_path.GetPrimPath()))
+                    if dep is not None and id(dep) not in existing_deps:
                         chunk.add_dependency(dep)
                         chunks_with_dependencies.add(id(chunk))
 
@@ -2041,7 +2457,12 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
                     for _, c in deferred
                     if (lay := lm.get_layer(c))
                 }
-                for g_layer in lm.graph_layers.values():
+                # Snapshot before iterating: reassigning subLayerPaths below can
+                # reactively cascade into chunk execute()s (e.g. an Edit Target chunk
+                # reacting to the resulting STAGE_CONTENTS_CHANGED), which can call
+                # get_or_create_layer() and add/remove graph_layers entries — mutating
+                # the dict this loop is reading, mid-iteration.
+                for g_layer in list(lm.graph_layers.values()):
                     sl = list(g_layer.subLayerPaths)
                     sl.sort(key=lambda ident: layer_to_sk.get(ident, 0), reverse=True)
                     g_layer.subLayerPaths = sl  # type: ignore
@@ -2064,6 +2485,11 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
         finally:
             chunk_notice._loading_stage = old_loading_stage
 
+    # Chunks already homed under a context recreated above — no new tab needed, and
+    # the context chunk already exists, so just process them directly.
+    if _EXISTING_CONTEXT in groups:
+        _add_prim_mods(groups.pop(_EXISTING_CONTEXT)[1])
+
     # Root-layer chunks first — create a context tab named after the file.
     if None in groups:
         layer = stage.GetRootLayer()
@@ -2079,12 +2505,45 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
 
 
 def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
-    stage = Usd.Stage.CreateInMemory()
-    prev_chunk = None
-    for index, chunk in enumerate(scene.get_chunks()):
-        _author_prim(stage, chunk, prev_chunk, index)
-        prev_chunk = chunk
-    stage.GetRootLayer().Export(str(path))
+    """Export the current chunk graph as one clean, portable USD layer.
+
+    Copies each chunk's already-composed, already-correctly-wired prim spec straight
+    across from the live stage — connections (inputs:chunk exec wiring, expression
+    refs), values, node positions, everything, exactly as currently authored — rather
+    than re-deriving them from Python object state via _author_prim. That
+    reconstruction was error-prone: chunk.get_dependencies() (the Python DAG) is
+    empty for a graph wired live via the node-graph UI's drag-to-connect (which
+    authors the USD-level inputs:chunk connection directly and never calls
+    add_dependency()) — so _author_prim's prev_chunk fallback silently chained
+    chunks in scene.get_chunks() iteration order instead of their real exec order,
+    scrambling the graph on export.
+
+    UsdUtils.FlattenLayerStack resolves the live composition first — chunk-prim
+    bookkeeping can now be split across several layers (chunk_utils.get_bookkeeping_layer,
+    since it follows Edit Target) — giving each prim/attr its correct final composed
+    state to copy from, regardless of which layer(s) it's actually scattered across.
+    """
+    stage = scene.get_stage()
+    if not stage:
+        return
+
+    flat = UsdUtils.FlattenLayerStack(stage)
+    tmp_stage = Usd.Stage.Open(flat)
+    chunk_paths = sorted(
+        (p.GetPath() for p in tmp_stage.TraverseAll() if p.GetTypeName() == _CHUNK_PRIM_TYPENAME),
+        key=lambda p: p.pathElementCount,
+    )
+
+    dst = Sdf.Layer.CreateAnonymous()
+    for prim_path in chunk_paths:
+        if dst.GetPrimAtPath(prim_path):
+            continue  # already brought in as part of an ancestor's subtree copy
+        parent = prim_path.GetParentPath()
+        if not parent.isEmpty and parent != Sdf.Path.absoluteRootPath and not dst.GetPrimAtPath(parent):
+            Sdf.CreatePrimInLayer(dst, parent)
+        Sdf.CopySpec(flat, prim_path, dst, prim_path)
+
+    dst.Export(str(path))
 
 
 def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | None") -> None:
@@ -2293,6 +2752,13 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
                     if parent.size < len(values):
                         parent.size = len(values)
                     for i, v in enumerate(values):
+                        # Setting size/values above can reactively rebuild the list
+                        # (e.g. export_usd's stage-driven Layers to Export refresh
+                        # fires mid-restore and resizes to the loading stage's layer
+                        # count) — re-check the bound every iteration or a shrink
+                        # leaves this loop indexing past the end.
+                        if i >= len(parent.get_my_params()):
+                            break
                         if px := parent.get_indexed_param(template_name, i):
                             px.value = v
                 continue
@@ -2317,6 +2783,28 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
         if not name.startswith(_INPUTS_PREFIX):
             continue
         param_path = name[len(_INPUTS_PREFIX):].replace(":", ".")
+
+        # List-group arrays (inputs:list_name:param_name = Vt array of per-row values) must
+        # be distributed across the list's indexed rows, exactly like _load_wire_inputs does
+        # — never set whole onto the scalar row-template param (that raises a type error). A
+        # list's rows can be (re)created during execute (e.g. Export USD rebuilding its layer
+        # rows), so restoring the saved per-row values here, after execute, is what makes them
+        # survive a load.
+        parts = param_path.split(".")
+        if len(parts) >= 2:
+            parent = chunk.get_param(".".join(parts[:-1]))
+            if isinstance(parent, core.ChunkListGroupBase):
+                val = attr.Get()
+                if val is not None and hasattr(val, "__iter__") and not isinstance(val, str):
+                    values = list(val)
+                    if parent.size < len(values):
+                        parent.size = len(values)
+                    template_name = parts[-1]
+                    for i, v in enumerate(values):
+                        if px := parent.get_indexed_param(template_name, i):
+                            px.value = v
+                continue
+
         param = chunk.get_param(param_path)
         if param is None:
             continue
@@ -2401,6 +2889,41 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             )
 
 
+def _live_exec_dependencies(chunk: "core.ChunkBase") -> list:
+    """Return the chunks chunk's *live* inputs:chunk connection currently points at,
+    read directly from the live session's stage.
+
+    This is the authoritative wiring for a graph built interactively — the node-graph
+    UI's drag-to-connect authors the USD-level connection directly, never calling
+    add_dependency(), so chunk.get_dependencies() (the Python DAG) stays empty until a
+    save+reload cycle reconstructs it (load_chunks does this same lookup). Without
+    this, _author_prim's prev_chunk fallback would chain chunks in scene.get_chunks()
+    iteration order instead of their real exec order — silently scrambling the graph
+    on export (and breaking anything, like an Edit Target chunk, whose correctness
+    depends on running in the right sequence relative to what it references).
+    """
+    stage = chunk.get_stage()
+    if not stage:
+        return []
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    if not prim.IsValid():
+        return []
+    exec_attr = prim.GetAttribute(_EXEC_INPUT)
+    if not (exec_attr and exec_attr.IsValid()):
+        return []
+    # Resolve by prim path, not chunk name — names are scene-wide and can be
+    # uniquified/renamed, so a name lookup can bind to the wrong chunk (same
+    # rationale as load_chunks' dependency restore).
+    chunk_by_path = {
+        get_chunk_prim_path(c): c for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+    }
+    deps = []
+    for conn_path in exec_attr.GetConnections():
+        if dep := chunk_by_path.get(str(conn_path.GetPrimPath())):
+            deps.append(dep)
+    return deps
+
+
 def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:
     chunk_root = _resolve_chunk_root(chunk)
     stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
@@ -2428,6 +2951,8 @@ def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.Ch
                 prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
 
     deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
+    if not deps:
+        deps = _live_exec_dependencies(chunk)
     if not deps and prev_chunk:
         deps = [prev_chunk]
     if deps:

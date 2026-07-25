@@ -1,3 +1,4 @@
+import os
 import weakref
 
 from PySide6 import QtWidgets, QtCore, QtGui
@@ -36,6 +37,21 @@ from plugins.chunk_qt_widgets import (
     _clean_description,
 )
 from plugins.chunk_qt_nodegraph import ChunkGraphView
+
+
+def save_chunkgroup_dialog(scene=None) -> None:
+    """Export the current chunk graph as one clean, portable USD layer — every
+    chunk's own bookkeeping freshly authored into a brand-new layer, with no
+    subLayerPaths at all. Same mechanism as the Export ChunkGroup chunk.
+    Shared by the DCC plugins' Save ChunkGroup menu entries."""
+    scene = scene or chunk_registry.ChunkRegistry().scene
+
+    flt = "*.usda *.usd *.usdc *.usdz"
+    if not (file := file_dial(flt, create_new=True)):
+        return
+    if not os.path.splitext(file)[1]:
+        file += ".usda"
+    chunk_usd.export_chunks(scene, file)
 
 
 class EditableTabBar(QtWidgets.QTabBar):
@@ -193,6 +209,9 @@ class ChunkTabContextStack(QtWidgets.QStackedWidget):
         # Weakref finalizer — can fire during app shutdown after Qt has already destroyed
         # this stack's C++ object, so setParent/deleteLater would raise. Ignore that.
         try:
+            # Visible widget reparented to no parent becomes a real top-level window that
+            # Qt shows immediately — suppress that before detaching.
+            self.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
             self.setParent(None)
             self.deleteLater()
         except RuntimeError:

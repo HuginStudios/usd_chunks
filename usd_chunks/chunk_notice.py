@@ -19,6 +19,7 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 
 """
 
+import functools
 import inspect
 import logging
 import weakref
@@ -54,6 +55,12 @@ logger = logging.getLogger(__name__)
 # ChunkStageSync._on_objects_changed skips those synchronous ObjectsChanged callbacks.
 _usd_write_active: bool = False
 _loading_stage = None  # Set during load_chunks so callbacks can access the stage during file open
+
+# The chunk whose module.execute() is currently running, or None. Execution-scoped (set and
+# cleared around each execute() call below), NOT persistent config — it only answers "who is
+# authoring right now" so chunk_utils.get_edit_layer can resolve that chunk's Edit Target from
+# graph topology when a caller (e.g. author_in_variant_context) didn't pass an explicit owner.
+_executing_chunk = None
 
 
 _T = TypeVar("_T")
@@ -482,10 +489,25 @@ class DagGraphID:
     def __init__(self):
         self._store: Optional[DagGraphID] = None
 
+    def root(self) -> "DagGraphID":
+        """
+        Resolve the terminal DagGraphID of the _store chain iteratively, compressing
+        the path so every visited id points directly at the root afterwards.
+        """
+        node = self
+        while node._store is not None:
+            node = node._store
+
+        # Path compression: repoint the whole chain at the root
+        current = self
+        while current is not node:
+            nxt = current._store
+            current._store = node
+            current = nxt  # type: ignore[assignment]
+        return node
+
     def get_identifier(self):
-        if self._store:
-            return self._store.get_identifier()
-        return id(self)
+        return id(self.root())
 
 
 class DagNode:
@@ -578,7 +600,12 @@ class DagNode:
         if not (node._part_of_graph and self._part_of_graph):
             return
 
-        node._graph_id._store = self._graph_id
+        my_root = self._graph_id.root()
+        other_root = node._graph_id.root()
+        if my_root is other_root:
+            # Already the same graph; linking again would create a cycle
+            return
+        other_root._store = my_root
 
     def add_dependency(self, node: "DagNode", connect_reverse=True) -> int:
         """
@@ -818,7 +845,12 @@ class DagNode:
         self.dirty = False
         yield self
 
-        for _, node in self.get_outputs():
+        # Snapshot the outputs: get_outputs() is a live view over a WeakValueDictionary, and
+        # a downstream solve_outputs() can add new output nodes (e.g. a chunk that grows a
+        # dynamic list of rows during load), which would otherwise raise "dictionary changed
+        # size during iteration". Newly-added nodes drive their own solve when created, so
+        # skipping them in this pass is fine.
+        for _, node in list(self.get_outputs()):
             yield from node.solve_outputs()
 
         if node := self.get_owner_node():
@@ -1136,9 +1168,11 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                 # unblocks the active view's tree before executing it, so cooking is unaffected.
                 if (callable(getattr(module, 'execute', None)) and not getattr(prop, '_executing', False)
                         and not muted and not prop.is_blocked()):
-                    global _usd_write_active
+                    global _usd_write_active, _executing_chunk
+                    prev_executing_chunk = _executing_chunk
                     prop._executing = True
                     _usd_write_active = True
+                    _executing_chunk = getattr(prop, "get_chunk", lambda: None)()
                     try:
                         if stage and ctx:
                             with Usd.EditContext(stage, ctx):
@@ -1147,6 +1181,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                             module.execute(prop)
                     finally:
                         _usd_write_active = False
+                        _executing_chunk = prev_executing_chunk
                         prop._executing = False
 
         msg += "====== FINISHED ======\n"
@@ -1378,6 +1413,80 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         pass
 
 
+class _GlobalDispatch:
+    """Bookkeeping for the one real Tf.Notice.RegisterGlobally() per alias shared by
+    every globally=True NoticeConnection for that alias. See _register_global.
+
+    `callback` must be kept here: Tf.Notice.RegisterGlobally only holds a *weak*
+    reference to the Python callable, so a functools.partial passed in without a
+    surviving strong reference elsewhere gets garbage-collected almost immediately —
+    the registration then silently goes dead (Tf logs "expired python callback" and
+    never calls it again). Keeping it as an attribute here ties its lifetime to
+    `listener`, which is what we actually want.
+    """
+
+    __slots__ = ("listener", "callback", "subscribers")
+
+    def __init__(self):
+        self.listener: Optional[Tf.Notice.Listener] = None
+        self.callback: Optional[Callable] = None
+        self.subscribers: "weakref.WeakSet[NoticeConnection]" = weakref.WeakSet()
+
+
+class _SharedGlobalListener:
+    """Stand-in for NoticeConnection._listener when it shares a _GlobalDispatch.
+
+    Revoke() (called by NoticeConnection.disconnect()) must only drop this one
+    connection from the shared subscriber set — never the underlying Tf listener,
+    since other connections for the same alias may still be alive and depend on it.
+    """
+
+    __slots__ = ("_dispatch", "_connection")
+
+    def __init__(self, dispatch: "_GlobalDispatch", connection: "NoticeConnection"):
+        self._dispatch = dispatch
+        self._connection = connection
+
+    def Revoke(self):
+        self._dispatch.subscribers.discard(self._connection)
+
+
+# One entry per alias, for the lifetime of the process — never torn down, same as the
+# infrastructure singletons (ChunkLayerManager, ChunkStageSync) that already register
+# real Usd notices exactly once and keep them alive forever.
+_global_dispatches: Dict["ChunkNoticeAlias", _GlobalDispatch] = {}
+
+
+def _dispatch_global(alias: "ChunkNoticeAlias", notice, sender):
+    dispatch = _global_dispatches.get(alias)
+    if not dispatch:
+        return
+    for connection in list(dispatch.subscribers):
+        connection.handle_callback(notice, sender)
+
+
+def _register_global(alias: "ChunkNoticeAlias", notice_type, connection: "NoticeConnection") -> _SharedGlobalListener:
+    """Ensure exactly one Tf.Notice.RegisterGlobally() exists for `alias`, and add
+    `connection` as one of its subscribers.
+
+    A separate NoticeConnection created per chunk instance for the same alias used to
+    each call Tf.Notice.RegisterGlobally() directly — harmless for rarely-fired custom
+    notices (e.g. CAMERA_CHANGED), but for the notices backed by real Usd.Notice types
+    (STAGE_CONTENTS_CHANGED, STAGE_CHANGED, OBJECT_CHANGED, STAGE_EDIT_TARGET_CHANGED)
+    2+ independent registrations reliably hung the interpreter on shutdown. Routing all
+    globally=True connections for the same alias through one shared listener avoids the
+    whole class of bug, for every alias, not just the ones we've hit so far.
+    """
+    dispatch = _global_dispatches.get(alias)
+    if dispatch is None:
+        dispatch = _GlobalDispatch()
+        dispatch.callback = functools.partial(_dispatch_global, alias)
+        dispatch.listener = Tf.Notice.RegisterGlobally(notice_type, dispatch.callback)
+        _global_dispatches[alias] = dispatch
+    dispatch.subscribers.add(connection)
+    return _SharedGlobalListener(dispatch, connection)
+
+
 class NoticeConnection(chunk_serial.Serializeable):
     """
     A storage for a TfListener object. This class provides a simple client-facing interface for
@@ -1559,7 +1668,9 @@ class NoticeConnection(chunk_serial.Serializeable):
         if sender is not None:
             self._sender = weakref.ref(sender, self._connection_broke)
 
-        if self.sender is None or self.globally:
+        if self.globally:
+            self._listener = _register_global(self.alias, notice, self)
+        elif self.sender is None:
             self._listener = Tf.Notice.RegisterGlobally(notice, self.handle_callback)
         elif self.sender:
             self._listener = Tf.Notice.Register(notice, self.handle_callback, self.sender)

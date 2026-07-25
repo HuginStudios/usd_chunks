@@ -258,29 +258,10 @@ class ChunksPluginContainer(PluginContainer):
 
         reg.save_layers(path)
 
-    def saveScene(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry().scene
-
-        if reg.get_scene_file():
-            return reg.save_scene()
-
-        flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(flt, create_new=True):
-            reg.export_scene(file)
-
-    def saveSceneAs(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry().scene
-
-        flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(flt, create_new=True):
-            reg.export_scene(file)
-
-    def openScene(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry().scene
-
-        flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(flt, create_new=False):
-            reg.open_scene(file)
+    def saveChunkGroup(self, usdviewApi):
+        """Export the current chunk graph as one clean, portable USD layer.
+        See chunk_qt.save_chunkgroup_dialog."""
+        chunk_qt.save_chunkgroup_dialog()
 
     def importChunk(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
@@ -326,14 +307,8 @@ class ChunksPluginContainer(PluginContainer):
             "ChunksPlugin.saveLayers", "Save Layers", self.saveLayers
         )
 
-        self._saveSceneCommand = plugRegistry.registerCommandPlugin(
-            "ChunksPlugin.saveScene", "Save Scene", self.saveScene
-        )
-        self._saveSceneAsCommand = plugRegistry.registerCommandPlugin(
-            "ChunksPlugin.saveSceneAs", "Save Scene As", self.saveSceneAs
-        )
-        self._openSceneCommand = plugRegistry.registerCommandPlugin(
-            "ChunksPlugin.openScene", "Open Scene", self.openScene
+        self._saveChunkGroupCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.saveChunkGroup", "Save ChunkGroup", self.saveChunkGroup
         )
 
         self._importChunkCommand = plugRegistry.registerCommandPlugin(
@@ -357,9 +332,7 @@ class ChunksPluginContainer(PluginContainer):
         menu.addSeparator()
         menu.addItem(self._saveLayersCommand)
         menu.addSeparator()
-        menu.addItem(self._saveSceneCommand)
-        menu.addItem(self._saveSceneAsCommand)
-        menu.addItem(self._openSceneCommand)
+        menu.addItem(self._saveChunkGroupCommand)
         menu.addSeparator()
         menu.addItem(self._layerStackCommand)
         menu.addItem(self._reloadChunkCommand, "SHIFT+R")

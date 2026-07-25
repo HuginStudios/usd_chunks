@@ -26,7 +26,9 @@ class _LayerContext:
         pass
 
     def __exit__(self, exc_type, exc, tb):
-        self._mgr.get_root_layer().Clear()
+        for g_layer in self._mgr.graph_layers.values():
+            g_layer.Clear()
+        self._mgr.graph_layers.clear()
         self._mgr.chunk_layers.clear()
         self._mgr.initialized = False
 
