@@ -165,12 +165,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             self._on_chunk_loaded, ChunkNoticeAlias.CHUNK_LOADED, globally=True
         )
 
+        saved_targets: "dict[str, str]" = {}
         if stage:
             self._loaded_stage = stage
+            # Before load_chunks: rebuilding an Edit Target whose layer doesn't exist yet
+            # overwrites its saved selection in USD (see snapshot_edit_target_selections).
+            saved_targets = snapshot_edit_target_selections(stage)
             load_chunks(stage, scene, self._loaded_prim_paths)
         self.initialized = True
         if stage:
-            restore_edit_target_selections(stage, scene)
+            restore_edit_target_selections(stage, scene, saved_targets)
             reconcile_edit_targets(stage, scene)
 
     def _chunk_prim_edit_context(self, owner: "core.ChunkBase | None" = None):
@@ -391,11 +395,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         for ctx in list(self._scene.chunks.get_my_params()):
             ctx.request_delete()
         self._loaded_prim_paths.clear()
+        # Snapshot before load_chunks — the load itself overwrites any selection whose layer
+        # isn't back yet (see snapshot_edit_target_selections).
+        saved_targets = snapshot_edit_target_selections(stage)
         load_chunks(stage, self._scene, self._loaded_prim_paths)
         # Re-apply Edit Target selections dropped during load (Menu rejected them before their
         # layers existed), then consolidate any chunk whose saved home doesn't match its
         # topology-resolved target (e.g. a file authored before Edit Target became position-based).
-        restore_edit_target_selections(stage, self._scene)
+        restore_edit_target_selections(stage, self._scene, saved_targets)
         reconcile_edit_targets(stage, self._scene)
 
     def _on_attr_changed(self, notice, sender):
@@ -1731,25 +1738,49 @@ def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "S
 
     "Migratable" excludes the chunk graph's own internal per-chunk procedural layers — those
     hold driven content that is Clear()ed and regenerated on execute (and re-nested under the
-    right target by ChunkLayerManager), never hand-moved. The strongest existing spec is the
-    copy source so the composed opinion is preserved; weaker strays (only ever left behind by
-    the pre-migration scatter this whole change removes) are dropped, not merged.
+    right target by ChunkLayerManager), never hand-moved.
+
+    Consolidation is per-property, resolved strong -> weak across every holder INCLUDING
+    dst_layer, so what survives is exactly what was composing before the move. A whole-spec
+    Sdf.CopySpec cannot do this: it REPLACES the destination, so it drops every field the
+    copy source happens not to carry. Both directions of that actually bite here, because a
+    chunk's bookkeeping is routinely split — the real spec (info:chunkType, view:slot,
+    ui:nodegraph:node:pos) in the session layer, plus a bare `over` holding just inputs:chunk
+    left in the root layer by a write that went through the stage's ambient edit target:
+
+      - copying the root `over` over the session spec loses view:slot, and without it
+        find_view_chunk_for_slot finds no view at all, collapsing the cook set to
+        "nothing cooks";
+      - keeping the session spec and merely pruning the root `over` loses inputs:chunk,
+        which unwires the chunk from its exec chain.
+
+    dst_layer keeps its own prim-level metadata (specifier, typeName) when it already has a
+    spec; only a dst with nothing there yet takes those from the strongest holder.
     """
     sdf_path = Sdf.Path(prim_path)
     internal = chunk_utils.chunk_internal_layer_ids()
-    sources = [
+    holders = [
         layer for layer in stage.GetLayerStack(includeSessionLayers=True)
-        if layer != dst_layer and layer.identifier not in internal
-        and layer.GetPrimAtPath(sdf_path)
+        if layer.identifier not in internal and layer.GetPrimAtPath(sdf_path)
     ]
+    sources = [layer for layer in holders if layer != dst_layer]
     if not sources:
         return False
-    strongest = sources[0]  # GetLayerStack is strong -> weak
+    winners: "dict[str, Sdf.Layer]" = {}
+    for layer in holders:  # GetLayerStack is strong -> weak, so first seen is strongest
+        for name in layer.GetPrimAtPath(sdf_path).properties.keys():
+            winners.setdefault(name, layer)
     prev = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
-        Sdf.CreatePrimInLayer(dst_layer, sdf_path)
-        Sdf.CopySpec(strongest, sdf_path, dst_layer, sdf_path)
+        if dst_layer.GetPrimAtPath(sdf_path) is None:
+            Sdf.CreatePrimInLayer(dst_layer, sdf_path)
+            Sdf.CopySpec(holders[0], sdf_path, dst_layer, sdf_path)
+        for name, layer in winners.items():
+            if layer == dst_layer:
+                continue  # already the winning opinion, and copying onto itself is a no-op
+            prop_path = sdf_path.AppendProperty(name)
+            Sdf.CopySpec(layer, prop_path, dst_layer, prop_path)
         for layer in sources:
             parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
             if parent and sdf_path.name in parent.nameChildren:
@@ -1804,16 +1835,55 @@ def reconcile_edit_targets(stage: "Usd.Stage", scene: "core.SceneSender") -> Non
         _reconciling = False
 
 
-def restore_edit_target_selections(stage: "Usd.Stage", scene: "core.SceneSender") -> None:
-    """After a load, re-apply each Edit Target chunk's stored selection from USD.
+def snapshot_edit_target_selections(stage: "Usd.Stage") -> "dict[str, str]":
+    """Read every Edit Target prim's stored selection straight off the stage, keyed by prim
+    path. Must be called BEFORE load_chunks — restore_edit_target_selections needs it.
+
+    Loading is itself destructive to these values. When a chunk.Menu is handed a value that
+    isn't (yet) one of its menu_items, edit_target.py's refresh handler resets it to the
+    default, and that reset is a param write, so it lands back in USD — overwriting the saved
+    selection with "Session Layer". Mid-load that happens routinely: an Edit Target pointing
+    at "A" is rebuilt before the upstream Create Layer chunk has recreated layer A, so "A"
+    isn't a menu item yet and the selection is destroyed on the way in.
+
+    Reading afterwards therefore can't recover it, however carefully — by then USD holds
+    "Session Layer" and the real answer exists only in the file on disk. This runs first,
+    while the stage still has exactly what was saved, and needs no chunks to exist yet since
+    it reads raw attrs off prims.
+    """
+    saved: "dict[str, str]" = {}
+    if not stage:
+        return saved
+    for prim in stage.Traverse():
+        type_attr = prim.GetAttribute(_CHUNK_TYPE_ATTR)
+        if not (type_attr and type_attr.IsValid()) or type_attr.Get() != "edit_target":
+            continue
+        attr = prim.GetAttribute("inputs:edit_target")
+        stored = attr.Get() if (attr and attr.IsValid()) else None
+        if stored:
+            saved[str(prim.GetPath())] = stored
+    return saved
+
+
+def restore_edit_target_selections(
+    stage: "Usd.Stage", scene: "core.SceneSender", saved: "dict[str, str] | None" = None
+) -> None:
+    """After a load, re-apply each Edit Target chunk's stored selection.
 
     A chunk.Menu rejects a value not in its menu_items, and on load the stored selection
     ("shot") is restored before the anon layer it names is recreated by the upstream Create
     Layer chunk — so the Menu silently drops it and keeps the default ("Session Layer"). By
     the time the whole graph has loaded, every Create Layer chunk has run, so the layers (and
-    therefore the menu items) exist; re-reading the raw stored value and re-applying it here
-    restores the selection. The resulting value change re-publishes the marker and reconciles
-    downstream via the normal path.
+    therefore the menu items) exist; re-applying the stored value here restores the selection.
+    The resulting value change re-publishes the marker and reconciles downstream via the
+    normal path.
+
+    saved is the pre-load snapshot from snapshot_edit_target_selections, and is the only
+    trustworthy source for these values: the Menu's rejection does not merely drop the value
+    in memory, it writes the default back to USD, so a selection whose layer didn't exist yet
+    at the moment its chunk was rebuilt is already gone from the stage by the time this runs.
+    Falls back to reading the stage when no snapshot is supplied, which still covers any
+    selection that happened to survive load.
 
     Runs strictly post-load — NOT from the refresh callback mid-load — so a chain of Edit
     Targets settles deterministically. Applied UPSTREAM-FIRST: re-applying a downstream Edit
@@ -1834,17 +1904,20 @@ def restore_edit_target_selections(stage: "Usd.Stage", scene: "core.SceneSender"
             1 for path, _p in _iter_exec_upstream(stage, start) if str(path) in et_paths
         )
 
-    # Snapshot each stored selection from USD BEFORE applying any of them. Applying one
-    # target's value triggers an execute/reconcile cascade that can overwrite a *different*
-    # target's stored inputs:edit_target attr, so re-reading per-iteration would pick up a
-    # corrupted value. Read first, then apply.
+    # Resolve each stored selection BEFORE applying any of them. Applying one target's value
+    # triggers an execute/reconcile cascade that can overwrite a *different* target's stored
+    # inputs:edit_target attr, so re-reading per-iteration would pick up a corrupted value.
+    # Resolve first, then apply.
     snapshot = []
     for chunk in edit_targets:
-        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+        prim_path = get_chunk_prim_path(chunk)
+        prim = stage.GetPrimAtPath(Sdf.Path(prim_path))
         if not prim.IsValid():
             continue
-        attr = prim.GetAttribute("inputs:edit_target")
-        stored = attr.Get() if (attr and attr.IsValid()) else None
+        stored = (saved or {}).get(prim_path)
+        if not stored:
+            attr = prim.GetAttribute("inputs:edit_target")
+            stored = attr.Get() if (attr and attr.IsValid()) else None
         param = chunk.get_param("edit_target")
         if param is not None and stored:
             snapshot.append((chunk, param, stored))
