@@ -1633,6 +1633,8 @@ def recook_for_view(
     # layer-strength ranking below is a real, correct rule for the settled result once everyone
     # has run, but it has nothing to do with what should be visible mid-pass while a chunk is
     # still reading its own upstream.
+    mute_idents: list = []
+    seen_idents: set = set()
     for c in scene.get_chunks():
         if is_view_chunk(c) or not in_context(c):
             continue
@@ -1642,12 +1644,18 @@ def recook_for_view(
             else:
                 recook_for_view(stage, scene, c, None)
             continue
-        if c in cook_set:
-            c.set_blocked(False)
-            mute(lm.get_layer(c), True)
-        else:
-            c.set_blocked(True)
-            mute(lm.get_layer(c), True)
+        c.set_blocked(c not in cook_set)
+        layer = lm.get_layer(c)
+        if layer is not None and layer.identifier not in seen_idents:
+            seen_idents.add(layer.identifier)
+            mute_idents.append(layer.identifier)
+
+    # One recomposition for the whole "hide every non-view leaf" pass — each stage.MuteLayer
+    # recomposes the stage, so muting N leaves one at a time was N recompositions on every view
+    # switch. All set_blocked() calls above run first, so the block-before-mute ordering the
+    # comment relies on holds even more strictly (every block precedes the single mute).
+    if mute_idents:
+        stage.MuteAndUnmuteLayers(mute_idents, [])
 
     for c in cook_list:
         if not c.has_state(disabled) and not is_group_chunk(c):
