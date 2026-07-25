@@ -1665,7 +1665,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # viewport is one global stage, so a view activated in another context (e.g. an inner
         # group view) otherwise stays cooked and the wrong result shows. Deferred past the
         # auto-view step. (On create we deliberately don't re-cook, to avoid churn.)
-        QtCore.QTimer.singleShot(100, self._restore_active_view)
+        QtCore.QTimer.singleShot(100, lambda cc=changed_chunks: self._restore_active_view(cc))
 
     def _context_has_view(self, scene, context) -> bool:
         """True when this context (or the graph as a whole, if context is None) has a view chunk."""
@@ -2343,9 +2343,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         slot = next((s for s in (1, 2, 3) if s not in used), None)
         if slot is None:
             return
-        sa = vp.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
-        sa.SetVariability(Sdf.VariabilityUniform)
-        sa.Set(slot)
+        # Same first-time chunk-prim bookkeeping as _create_view_node_for_prim's slot write:
+        # author it wherever THIS chunk's Edit Target resolves to, not wherever the stage's
+        # ambient edit target happens to point. Left ambient, the marker lands in a layer
+        # outside the composed result, view:slot reads back invalid, find_view_chunk_for_slot
+        # finds no view, and the whole cook set collapses to "nothing cooks".
+        with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, view_chunk)):
+            sa = vp.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
+            sa.SetVariability(Sdf.VariabilityUniform)
+            sa.Set(slot)
         QtCore.QTimer.singleShot(0, lambda s=slot: self._view_state.set_slot(s))
 
     def _create_view_node_for_prim(self, target_prim_path: str) -> None:
@@ -2477,10 +2483,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._recook_active_view()
         self.viewport().update()
 
-<<<<<<< HEAD
-    def _recook_active_view(self, changed_chunks: Optional[Iterable[core.ChunkBase]] = None) -> None:
-=======
-    def _restore_active_view(self) -> None:
+    def _restore_active_view(self, changed_chunks: Optional[Iterable[core.ChunkBase]] = None) -> None:
         """Adopt this context's saved view as the active view after a (re)build.
 
         A freshly built graph starts at slot 0 ("no view"), which cooks everything — but a
@@ -2490,9 +2493,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         before that marker existed fall back to the lowest existing view:slot. With a
         slot already active (context switch, not a load) this is just the recook the
         build always did.
+
+        changed_chunks is passed straight through to _recook_active_view (see its docstring)
+        on the paths that recook the CURRENT slot. The set_slot path below deliberately does
+        not scope: changing slot is a genuine view switch and always needs a full recook.
         """
         if self._view_state.active_slot != 0:
-            self._recook_active_view()
+            self._recook_active_view(changed_chunks)
             return
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
@@ -2522,10 +2529,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # set_slot fires slot_changed → _on_view_slot_changed → recook
             self._view_state.set_slot(int(slot))
         else:
-            self._recook_active_view()
+            self._recook_active_view(changed_chunks)
 
-    def _recook_active_view(self) -> None:
->>>>>>> 8758ef0 (✨topo-based EditTargets + per-layer export ctrls)
+    def _recook_active_view(self, changed_chunks: Optional[Iterable[core.ChunkBase]] = None) -> None:
         """(Re)apply view-driven execution for this context's active view.
 
         Called on every structural change (wire, disconnect, delete, create) and on view
@@ -2564,22 +2570,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         view_chunk = (
             chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
         )
-<<<<<<< HEAD
         if changed_chunks is not None and not self._could_affect_view_cook(
             changed_chunks, stage, registry.scene, view_chunk
         ):
             return
-        # Subnet: if THIS graph is a group, persist its active view slot on the group prim so a
-        # parent cook of the group picks the same inner view (find_group_active_view reads it).
-        if context is not None and chunk_usd.is_group_chunk(context):
-=======
         # Persist the active view slot on the context prim. For groups a parent cook picks
         # the same inner view from it (find_group_active_view); for tabs it round-trips the
         # last-active view through save/load (_restore_active_view reads it). Only a real
         # slot is written — 0 just means "not restored yet" and must not clobber the saved
         # value before the deferred restore has read it.
         if context is not None and slot:
->>>>>>> 8758ef0 (✨topo-based EditTargets + per-layer export ctrls)
             gp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(context)))
             if gp and gp.IsValid():
                 prev_w = chunk_usd.chunk_notice._usd_write_active
