@@ -1,62 +1,5 @@
-from usd_chunks import chunk, chunk_core, chunk_utils
+from usd_chunks import chunk, chunk_utils
 from pxr import UsdGeom
-
-def show_attribute(prim, node):
-    attr_grp = node.get_param("attr_grp", chunk.is_group)
-
-    # clean params.
-    for grp in attr_grp.get_my_params():
-        grp.request_delete()
-
-    # generate params
-    attributes = prim.GetAttributes()
-    groups = {}
-    for attr in attributes:
-        if not (param := chunk.param_from_attr(attr)):
-            continue
-
-        if not isinstance(param, chunk.ChunkGroupBase):
-            param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
-
-        ns = attr.GetNamespace()
-        tgt_grp = attr_grp if not ns else groups.get(ns)
-
-        if not tgt_grp:
-            tgt_grp = chunk.Group(
-                ns,
-                flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
-            )
-            if ns and ns != "inputs":
-                tgt_grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
-
-            attr_grp.add_param(tgt_grp)
-            groups[ns] = tgt_grp
-
-        if param:
-            tgt_grp.add_param(param)
-
-    relationships = prim.GetRelationships()
-    # Do the same for relationships
-    for rel in relationships:
-        if not (param := chunk.param_from_rel(rel)):
-            continue
-
-        if not isinstance(param, chunk.ChunkGroupBase):
-            param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
-
-        ns = rel.GetNamespace()
-        tgt_grp = attr_grp if not ns else groups.get(ns)
-
-        if not tgt_grp:
-            tgt_grp = chunk.Group(
-                ns,
-                flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
-            )
-            attr_grp.add_param(tgt_grp)
-            groups[ns] = tgt_grp
-
-        if param and tgt_grp:
-            tgt_grp.add_param(param)
 
 
 def main():
@@ -112,7 +55,8 @@ def execute(node):
         if not var_selections and prim.GetPath().pathString != target_path:
             node.get_param("primpath_location").value = prim.GetPath().pathString
             node._last_light_path = prim.GetPath().pathString
-        show_attribute(prim, node)
+        attr_grp = node.get_param("attr_grp", chunk.is_group)
+        chunk_utils.show_attribute(prim, attr_grp)
 
 
 def config():
