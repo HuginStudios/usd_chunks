@@ -37,7 +37,10 @@ Issues = "https://github.com/HuginStudios/usd_chunks/issues"
 [project.optional-dependencies]
 # For hosts that do not already supply Qt. usdview and Houdini bring their own.
 ui = ["PySide6"]
-dev = ["pytest", "ruff", "build", "types-usd"]
+# `requests` is not a library dependency — the suite loads example chunks from scripts/
+# that import it. Chunks whose imports fail are skipped by the registry, so the heavier
+# example deps (numpy, opencv) are deliberately left out.
+dev = ["pytest", "ruff", "build", "types-usd", "requests"]
 docs = [
     "mkdocs",
     "mkdocs-material",
