@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-from pxr import Usd
-from pxr.Usdviewq.rootDataModel import RootDataModel
+import pytest
 
-from plugins.chunk_usdview import _install_frame_change_hook
+from pxr import Usd
+
+# usdview is not part of the usd-core wheels on PyPI, so this module only runs against a
+# full USD build that provides pxr.Usdviewq.
+pytest.importorskip("pxr.Usdviewq", reason="requires a USD build with usdview")
+
+from pxr.Usdviewq.rootDataModel import RootDataModel  # noqa: E402
+
+from usd_chunks.plugins.chunk_usdview import _install_frame_change_hook
 from usd_chunks import chunk_animation
 
 

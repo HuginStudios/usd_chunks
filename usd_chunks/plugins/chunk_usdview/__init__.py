@@ -12,7 +12,7 @@ from pxr.Usdviewq.qt import QtCore
 from pxr.Usdviewq.rootDataModel import RootDataModel
 
 from usd_chunks import chunk_animation, chunk_registry, chunk_core, chunk_serial
-from plugins import chunk_qt, chunk_usd
+from usd_chunks.plugins import chunk_qt, chunk_usd
 
 from typing import List
 

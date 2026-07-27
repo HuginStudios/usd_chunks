@@ -7,7 +7,7 @@ import threading
 import requests
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core
-from plugins.chunk_usd import ChunkStageSync
+from usd_chunks.plugins.chunk_usd import ChunkStageSync
 from PySide6 import QtWidgets, QtCore, QtGui
 
 API_ROOT = "https://api.matlib.gpuopen.com/api"

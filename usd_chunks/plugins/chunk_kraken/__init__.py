@@ -7,7 +7,7 @@ from kraken.plugin import KrakenPluginContainer
 from kraken.scene import SceneManager, PrimSelectionNotice, StageLoadedNotice
 
 from usd_chunks import chunk_registry, chunk_core
-from plugins import chunk_qt, chunk_usd
+from usd_chunks.plugins import chunk_qt, chunk_usd
 
 
 class KrakenScene(chunk_core.SceneSender):

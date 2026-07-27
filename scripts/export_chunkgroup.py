@@ -10,7 +10,7 @@ import os
 import traceback
 
 from usd_chunks import chunk, chunk_registry
-from plugins.chunk_usd import export_chunks
+from usd_chunks.plugins.chunk_usd import export_chunks
 
 
 def export(owner, notice, sender):

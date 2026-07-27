@@ -7,7 +7,7 @@ from usd_chunks import chunk, chunk_animation, chunk_notice, chunk_registry, chu
 import usd_chunks.chunk_flags
 from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
-from plugins import chunk_usd
+from usd_chunks.plugins import chunk_usd
 
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
@@ -1476,7 +1476,7 @@ class ViewSlotState(QtCore.QObject):
                 # ChunkGraphView._delete_selected() entirely (that's the Delete-key path).
                 # Capture relevance the same way, right before it runs -- see
                 # mark_pending_delete_relevance's docstring for why it can't be judged after.
-                from plugins.chunk_qt_nodegraph import ChunkGraphView
+                from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
                 ChunkGraphView.mark_pending_delete_relevance([grp])
             conn.handle_callback(
                 chunk_notice.MenuActionNotice(grp.get_notice_data()), grp, False

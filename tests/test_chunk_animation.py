@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pxr import Sdf, Usd
 
-from plugins.chunk_usd import _author_prim, _CHUNKS_ROOT, _INPUTS_PREFIX
+from usd_chunks.plugins.chunk_usd import _author_prim, _CHUNKS_ROOT, _INPUTS_PREFIX
 from usd_chunks import chunk, chunk_animation, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 

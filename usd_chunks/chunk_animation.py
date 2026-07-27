@@ -68,7 +68,7 @@ def keyframe_param(param, frame: float, force_author=None) -> bool:
     A param still at its default value has no live USD attribute yet — chunk_usd.py's
     _sync_param_input only creates one on first non-default change (or via force=True,
     the same mechanism "Loft up" already relies on for the identical reason). This module
-    stays host-agnostic and can't import plugins.chunk_usd directly, so a caller that can
+    stays host-agnostic and can't import usd_chunks.plugins.chunk_usd directly, so a caller that can
     (e.g. ChunkGraphView's K handler) may pass force_author=callable(param) -> None to
     force-create the attr before we give up on a param with no _param_attr_path.
 

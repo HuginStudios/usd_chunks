@@ -1,0 +1,16 @@
+include README.md
+include NOTICE
+recursive-include usd_chunks/resources *.png
+recursive-include usd_chunks/plugins *.json *.shelf
+
+exclude build_docs.bat
+recursive-exclude tests *
+recursive-exclude docs *
+recursive-exclude scripts *
+recursive-exclude chunkgroups *
+
+# The web client is shelved and not part of a release.
+recursive-exclude usd_chunks/plugins/chunk_web_client *
+recursive-exclude usd_chunks/plugins/chunk_web_client_react *
+
+global-exclude __pycache__ *.py[cod]

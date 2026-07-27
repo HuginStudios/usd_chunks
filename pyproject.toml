@@ -1,3 +1,69 @@
 [build-system]
 requires = ["setuptools >= 77.0.3"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "usd-chunks"
+version = "0.1.0"
+description = "UI and execution interface for OpenUSD"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Hugin Studios" }]
+keywords = ["usd", "openusd", "usdview", "vfx", "pipeline"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+]
+dependencies = [
+    "attrs>=25.4.0",
+    "typing-extensions",
+    "usd-core",
+]
+
+[project.urls]
+Homepage = "https://github.com/HuginStudios/usd_chunks"
+Repository = "https://github.com/HuginStudios/usd_chunks"
+Issues = "https://github.com/HuginStudios/usd_chunks/issues"
+
+[project.optional-dependencies]
+# For hosts that do not already supply Qt. usdview and Houdini bring their own.
+ui = ["PySide6"]
+dev = ["pytest", "ruff", "build", "types-usd"]
+docs = [
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings-python",
+    "markdown-include",
+    "griffe-fieldz",
+    "mkdocs_gen_files",
+    "mkdocs-git-committers-plugin",
+    "mkdocs-git-revision-date-localized-plugin",
+]
+
+[project.scripts]
+usdchunks = "usd_chunks.plugins.usdchunks_cli:main"
+
+[tool.setuptools.packages.find]
+include = ["usd_chunks*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"usd_chunks" = ["resources/icons/*.png"]
+"usd_chunks.plugins.chunk_usdview" = ["plugInfo.json"]
+"usd_chunks.plugins.chunk_kraken" = ["plugInfo.json"]
+# chunk_houdini is a HOUDINI_PATH package directory, not an importable python package,
+# so its contents ship as data of the parent package.
+"usd_chunks.plugins" = [
+    "chunk_houdini/packages/*.json",
+    "chunk_houdini/toolbar/*.shelf",
+    "chunk_houdini/python3.11libs/*.py",
+]

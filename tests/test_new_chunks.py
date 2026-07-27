@@ -10,7 +10,7 @@ from pxr import Usd, UsdShade, Sdf
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
-from plugins.chunk_usd import _author_prim, _CHUNKS_ROOT, ChunkStageSync, initialize as init_chunk_usd
+from usd_chunks.plugins.chunk_usd import _author_prim, _CHUNKS_ROOT, ChunkStageSync, initialize as init_chunk_usd
 
 
 class _DummyScene(SceneSender):
@@ -212,6 +212,10 @@ class _FakeZipResponse:
         pass
 
 
+@pytest.mark.skipif(
+    Sdf.FileFormat.FindByExtension("mtlx") is None,
+    reason="requires a USD build with the MaterialX file format plugin (absent from the usd-core wheels)",
+)
 class TestAMDMaterialXLibraryChildCreation:
     @pytest.fixture(autouse=True)
     def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only

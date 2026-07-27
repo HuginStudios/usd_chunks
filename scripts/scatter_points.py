@@ -19,7 +19,7 @@ import random
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
-from plugins import chunk_usd
+from usd_chunks.plugins import chunk_usd
 
 _ORIENT_MODES = ["Align to Normal", "Keep Original", "Up", "Random"]
 _RAND_AXES = ["Off", "X", "Y", "Z", "All"]

@@ -20,8 +20,8 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from plugins.chunk_usd import initialize as init_chunk_usd, get_chunk_prim_path
-import plugins.chunk_usd as chunk_usd
+from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd, get_chunk_prim_path
+import usd_chunks.plugins.chunk_usd as chunk_usd
 
 
 class _DummyScene(SceneSender):

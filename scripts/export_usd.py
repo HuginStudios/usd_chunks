@@ -11,8 +11,8 @@ import os
 from pxr import Sdf, Usd, UsdUtils
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from plugins import chunk_usd
-from plugins.chunk_usd import get_chunk_prim_path
+from usd_chunks.plugins import chunk_usd
+from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 
 
 def _discover_export_layers(stage):

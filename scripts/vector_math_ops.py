@@ -1,7 +1,7 @@
 import math
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from plugins.chunk_usd import ChunkStageSync
+from usd_chunks.plugins.chunk_usd import ChunkStageSync
 
 Vec3 = tuple
 
