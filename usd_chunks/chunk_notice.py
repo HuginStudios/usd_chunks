@@ -33,7 +33,6 @@ from typing import (
     Iterator,
     List,
     Optional,
-    Set,
     Tuple,
     Type,
     TypeAlias,
@@ -47,7 +46,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self
-from usd_chunks import chunk_serial
+from usd_chunks import chunk_scheduler, chunk_serial
 
 logger = logging.getLogger(__name__)
 
@@ -525,10 +524,10 @@ class DagNode:
 
     __slots__ = (
         "_index",
-        "_sort_key",
         "_graph_id",
         "_part_of_graph",
-        "_input_data",
+        "_changes",
+        "_owned",
         "_dirty",
         "_connections",
         "_propagator",
@@ -536,13 +535,19 @@ class DagNode:
     )
 
     def __init__(self, propagator: "ChunkNoticePropagator"):
-        self._input_data: Set[Tuple[ChunkNoticeAlias, "DagNode"]] = set()
+        # Insertion-ordered set of the change reasons that dirtied this node, maintained
+        # by chunk_scheduler.propagate_dirty and replayed by iter_changes().
+        self._changes: Dict[Tuple[ChunkNoticeAlias, "DagNode"], None] = {}
         self._dirty = True
         self._connections: DagConnections = DagConnections()
         self._propagator = weakref.ref(propagator)
         self._index: int = 0
 
-        self._sort_key: int = 0
+        # Reverse index of the owner link, so the scheduler can walk ownership in both
+        # directions without a global node registry. Created on demand: most nodes are
+        # owned by something but own nothing themselves, and a WeakSet per node is real
+        # allocation and GC pressure at the scale this graph reaches.
+        self._owned: Optional[weakref.WeakSet["DagNode"]] = None
         self._graph_id: DagGraphID = DagGraphID()
         self._part_of_graph = True
 
@@ -570,6 +575,7 @@ class DagNode:
     def disconnect(self):
         self._connections.inputs.clear()
         self._connections.outputs.clear()
+        chunk_scheduler.topology_changed()
 
     def next_key(self, items: ConnSetT) -> int:
         """
@@ -592,7 +598,10 @@ class DagNode:
     def iter_changes(
         self,
     ) -> Generator[Tuple[ChunkNoticeAlias, Optional["ChunkNoticePropagator"]], None, StopIteration]:
-        for alias, node in sorted(self._input_data, key=lambda x: x[1]._index):
+        # Sorted by how often the source node was itself dirtied, so the shallowest
+        # change is reported first; _changes is insertion-ordered, which makes the
+        # tie-break between equally-dirtied sources the order they arrived in.
+        for alias, node in sorted(self._changes, key=lambda x: x[1]._index):
             yield alias, node.propagator
         return StopIteration()
 
@@ -618,20 +627,12 @@ class DagNode:
         key = self.next_key(self._connections.inputs)
         self._connections.inputs[key] = node
         self.set_graph_id(node)
+        chunk_scheduler.topology_changed()
 
         if connect_reverse:
             node.add_dependant(self)
         else:
             self.dirty = True
-
-        self._sort_key += 1 + node._sort_key
-        for _, o in self.get_outputs():
-            o._sort_key += 1 + node._sort_key
-
-        owner = self.get_owner_node()
-        while owner:
-            owner._sort_key += 1 + node._sort_key
-            owner = owner.get_owner_node()
 
         return key
 
@@ -643,6 +644,7 @@ class DagNode:
             node (DagNode): The dependant node
         """
         self._connections.outputs[self.next_key(self._connections.outputs)] = node
+        chunk_scheduler.topology_changed()
         self.dirty = True
 
     def set_owner(self, owner: Optional["ChunkNoticePropagator"]):
@@ -658,12 +660,20 @@ class DagNode:
 
         assert isinstance(owner, ChunkNoticePropagator) or owner is None
 
+        if (previous := self.get_owner_node()) and previous._owned is not None:
+            previous._owned.discard(self)
+
         if owner is None:
             self._connections.owner = None
         else:
             self._connections.owner = weakref.ref(owner)
 
+        chunk_scheduler.topology_changed()
+
         if node := self.get_owner_node():
+            if node._owned is None:
+                node._owned = weakref.WeakSet()
+            node._owned.add(self)
             node.dirty = True
             node.set_graph_id(self)
 
@@ -760,39 +770,38 @@ class DagNode:
             return True
         return False
 
-    def get_sort_key(self):
-        return self._sort_key
+    def get_owned(self) -> Iterator["DagNode"]:
+        """
+        Get the nodes that have this node as their owner. This is the reverse of
+        get_owner_node(), maintained by set_owner() so the scheduler can walk ownership
+        downward without a global registry of nodes.
+
+        Returns:
+            Iterator[DagNode]: An iterator over the owned nodes
+        """
+        return iter(() if self._owned is None else list(self._owned))
+
+    def get_sort_key(self) -> int:
+        """
+        Get the position of this node in the dependency order, as the length of the
+        longest chain of dependencies ending here. Derived from the graph on demand by
+        chunk_scheduler rather than maintained on every connect.
+
+        Returns:
+            int: The sort key, 0 for a node with no dependencies
+        """
+        return chunk_scheduler.get_depth(self)
 
     def get_graph_id(self):
         return self._graph_id.get_identifier()
 
-    def dirty_dependants(self, searched: Optional[Set["DagNode"]] = None):
+    def dirty_dependants(self):
         """
-        Dirty all dependants. This will recursively set dependant (output) nodes dirty=True
+        Dirty all dependants. This will set dependant (output) nodes and the owner
+        dirty=True, transitively, recording on each of them which change caused it. See
+        chunk_scheduler.propagate_dirty.
         """
-
-        if searched is None:
-            searched = set()
-
-        if self in searched:
-            # If the node was added to the local copy of the searched set, then it is a circular dependency
-            raise RecursionError("DAG has circular dependencies at node:", self.propagator)
-
-        self._dirty = True
-        searched.add(self)
-
-        for _, node in self.get_outputs():
-            node._index += 1
-            node._input_data.add((ChunkNoticeAlias.INPUT_CHANGED, self))
-            node.dirty_dependants(searched.copy())
-
-        if owner := self.get_owner_node():
-            owner._index += 1
-
-            owner._input_data |= self._input_data
-            if self.propagator and (alias := self.propagator.get_notice_alias()):
-                owner._input_data.add((alias, self))
-            owner.dirty_dependants(searched.copy())
+        chunk_scheduler.propagate_dirty(self)
 
     def is_inputs_dirty(self) -> bool:
         """
@@ -803,27 +812,14 @@ class DagNode:
         """
         return any([x.dirty for _, x in self.get_inputs()])
 
-    def solve_inputs(self) -> Generator:
-        """
-        Safely solve all inputs of this node. Will find all dirty input paths and solve their outputs, consequently solving this node
-
-        Returns:
-            Optional[ChunkNotice]: The result of the solve if successful, otherwise None
-        """
-        dirty_inputs = False
-        for _, node in filter(lambda x: x[1].dirty, self.get_inputs()):
-            if res := node.solve_inputs():
-                yield from res
-
-            dirty_inputs = True
-
-        if not dirty_inputs:
-            yield from self.solve_outputs()
-
     def solve_outputs(self) -> Generator["DagNode", None, None]:
         """
         Solve self + outputs + owner. This is the main solve method that clients should use, as it will trigger all dependent nodes
         to solve when this node has solved.
+
+        The solve starts at the dirty frontier upstream of this node, so a node whose own
+        dependencies have not run yet still solves in the right order. See
+        chunk_scheduler.solve.
 
         Returns:
             None: If the node should not solve
@@ -831,33 +827,7 @@ class DagNode:
         Yields:
             DagNode: All solved outputs, including self
         """
-        if not self.should_solve():
-            return None
-
-        if self.is_inputs_dirty():
-            if g := self.solve_inputs():
-                yield from g
-
-            self._input_data.clear()
-            self._index = 0
-            return
-
-        self.dirty = False
-        yield self
-
-        # Snapshot the outputs: get_outputs() is a live view over a WeakValueDictionary, and
-        # a downstream solve_outputs() can add new output nodes (e.g. a chunk that grows a
-        # dynamic list of rows during load), which would otherwise raise "dictionary changed
-        # size during iteration". Newly-added nodes drive their own solve when created, so
-        # skipping them in this pass is fine.
-        for _, node in list(self.get_outputs()):
-            yield from node.solve_outputs()
-
-        if node := self.get_owner_node():
-            yield from node.solve_outputs()
-
-        self._input_data.clear()
-        self._index = 0
+        yield from chunk_scheduler.solve(self)
 
 
 class CallbackContainer(chunk_serial.Serializeable):
