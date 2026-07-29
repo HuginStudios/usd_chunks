@@ -1962,6 +1962,21 @@ def restore_edit_target_selections(
             param.value = stored
 
 
+def _active_scene() -> "core.SceneSender | None":
+    """The SceneSender to reconcile against, or None if there is no scene yet.
+
+    ChunkStageSync is the usual holder, but it only gains a _scene once initialize() has run,
+    and the headless CLI (usdchunks run) deliberately never initializes it — it loads chunks
+    straight onto a stage with no live sync. The registry's scene is set by every host
+    including that one, so it's the reliable fallback.
+    """
+    sync = ChunkStageSync()
+    if sync.initialized and getattr(sync, "_scene", None):
+        return sync._scene
+    registry = chunk_registry.ChunkRegistry()
+    return registry.scene if registry.initialized else None
+
+
 def publish_edit_target(chunk: "core.ChunkBase", stage: "Usd.Stage", layer: "Sdf.Layer | None") -> None:
     """Record on chunk's prim the layer it currently targets (the _EDIT_TARGET_MARKER attr
     read by nearest_upstream_edit_layer), then reconcile so everything downstream re-homes
@@ -1972,7 +1987,6 @@ def publish_edit_target(chunk: "core.ChunkBase", stage: "Usd.Stage", layer: "Sdf
     the Edit Target repeatedly never leaves a stale stronger opinion shadowing the new one —
     same discipline as set_chunk_pinned.
     """
-    sync = ChunkStageSync()
     if not (stage and chunk):
         return
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
@@ -1994,7 +2008,7 @@ def publish_edit_target(chunk: "core.ChunkBase", stage: "Usd.Stage", layer: "Sdf
     # re-executes on every stage content change (its refresh callback), so reconciling
     # unconditionally here would run — and thrash — on every unrelated edit.
     if old_ident != ident:
-        reconcile_edit_targets(stage, sync._scene)
+        reconcile_edit_targets(stage, _active_scene())
 
 
 def get_exec_upstream_chunks(
