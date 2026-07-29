@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk
 from pxr import UsdGeom, Gf, UsdLux, Sdf
 from scripts.modelling import add_mesh
 
@@ -116,7 +116,7 @@ def build_pedestal(owner, notice, sender):
 
     c = bounds.ComputeCentroid() - Gf.Vec3d(0, (h - height) / 2, 0)
 
-    tube = add_mesh.build_tube(stage, "/turntabler/geom/pedestal", 10, 50, rad, height, pos=c)
+    add_mesh.build_tube(stage, "/turntabler/geom/pedestal", 10, 50, rad, height, pos=c)
 
 
 def refererence_geom(owner: chunk.LineEdit, notice, sender):
@@ -142,7 +142,6 @@ def create_camera(owner: chunk.LineEdit, notice, sender):
 
     bbox_cache: UsdGeom.BBoxCache = owner.user_data["bbox_cache"]
     bounds = bbox_cache.ComputeWorldBound(prim)
-    c = bounds.ComputeCentroid()
     s = bounds.GetBox().GetSize().GetLength()
 
     camera = UsdGeom.Camera.Define(stage, "/turntabler/camera")

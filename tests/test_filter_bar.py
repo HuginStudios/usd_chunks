@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pxr import Usd
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore
 
 from usd_chunks.plugins import chunk_usd
 from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init

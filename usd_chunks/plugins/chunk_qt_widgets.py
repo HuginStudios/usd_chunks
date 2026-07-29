@@ -1,7 +1,7 @@
 from PySide6 import QtWidgets, QtCore, QtGui
 from typing import Any, Optional, Generic
 
-from pxr import Sdf, Tf, Usd
+from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_animation, chunk_notice, chunk_registry, chunk_resources, chunk_serial, chunk_utils
 import usd_chunks.chunk_flags

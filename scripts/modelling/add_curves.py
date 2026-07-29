@@ -1,4 +1,4 @@
-from pxr import Usd, UsdGeom, Sdf
+from pxr import UsdGeom, Sdf
 from usd_chunks import chunk
 
 import numpy as np

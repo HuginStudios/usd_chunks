@@ -286,8 +286,8 @@ def export_all(owner, notice, sender):
     disabled_names = _read_export_disabled_layer_names(_chunk)
     procedural_names = _read_procedural_layer_names(_chunk)
     discovered = _discover_export_layers(stage)
-    real_layers = [(n, l) for n, l in discovered if n not in disabled_names]
-    skipped_ids = {l.identifier for n, l in discovered if n in disabled_names}
+    real_layers = [(n, lyr) for n, lyr in discovered if n not in disabled_names]
+    skipped_ids = {lyr.identifier for n, lyr in discovered if n in disabled_names}
     baked_names = {n for n, _l in discovered if n not in procedural_names}
 
     layers = []

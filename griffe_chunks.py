@@ -3,7 +3,6 @@ This script is a griffe extension for adding __init__ function signatures to our
 """
 
 import griffe
-from pathlib import Path
 from inspect import isclass
 from attr import _make as attrMake
 

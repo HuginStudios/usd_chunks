@@ -179,7 +179,7 @@ class TestCreateLayerNestingAndExport:
     def test_export_all_layers_writes_shot_and_sublayers_separately(self, tmp_path):
         scene, stage = _setup_stage()
 
-        shot = self._create_layer(scene, "shot", "create_layer_shot")
+        self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
@@ -214,7 +214,7 @@ class TestCreateLayerNestingAndExport:
         real, driven-content layers get exported."""
         scene, stage = _setup_stage()
 
-        shot = self._create_layer(scene, "shot", "create_layer_shot")
+        self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
@@ -237,7 +237,7 @@ class TestCreateLayerNestingAndExport:
         than left dangling."""
         scene, stage = _setup_stage()
 
-        shot = self._create_layer(scene, "shot", "create_layer_shot")
+        self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
@@ -292,7 +292,7 @@ class TestCreateLayerNestingAndExport:
         light_mod = _load("scripts.light")
         scene, stage = _setup_stage()
 
-        shot = self._create_layer(scene, "shot", "create_layer_shot")
+        self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
@@ -354,7 +354,7 @@ class TestCreateLayerNestingAndExport:
         light_mod = _load("scripts.light")
         scene, stage = _setup_stage()
 
-        shot = self._create_layer(scene, "shot", "create_layer_shot")
+        self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
@@ -402,7 +402,7 @@ class TestCreateLayerNestingAndExport:
         light_mod = _load("scripts.light")
         scene, stage = _setup_stage()
 
-        shot = self._create_layer(scene, "shot", "create_layer_shot")
+        self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
@@ -428,7 +428,7 @@ class TestCreateLayerNestingAndExport:
         light_mod = _load("scripts.light")
         scene, stage = _setup_stage()
 
-        shot = self._create_layer(scene, "shot", "create_layer_shot")
+        self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
@@ -522,7 +522,7 @@ class TestCreateLayerNestingAndExport:
         light_mod = _load("scripts.light")
         scene, stage = _setup_stage()
 
-        shot = self._create_layer(scene, "shot", "create_layer_shot")
+        self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.

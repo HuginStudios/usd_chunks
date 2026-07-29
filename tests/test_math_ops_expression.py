@@ -6,9 +6,9 @@ import importlib
 import pytest
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkBase, ChunkConfig, SceneSender
-from usd_chunks.plugins.chunk_usd import ChunkStageSync, initialize as init_chunk_usd
+from usd_chunks import chunk, chunk_registry
+from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
 
 
 class _Scene(SceneSender):

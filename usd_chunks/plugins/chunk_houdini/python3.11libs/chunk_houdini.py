@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_registry, chunk_notice, chunk_core
+from usd_chunks import chunk, chunk_registry, chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
 
 from typing import List, Optional

@@ -1,6 +1,6 @@
 import os
 from usd_chunks import chunk, chunk_notice, chunk_registry
-from pxr import Sdf, Usd, UsdShade
+from pxr import Sdf, UsdShade
 from PySide6 import QtWidgets
 
 

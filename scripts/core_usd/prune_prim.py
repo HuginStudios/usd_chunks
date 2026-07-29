@@ -12,7 +12,6 @@ All edits authored on the chunk's own layer.
 
 from __future__ import annotations
 
-from pxr import Usd
 
 from usd_chunks import chunk, chunk_utils
 
