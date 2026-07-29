@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import time
 import types as _types
 from pathlib import Path
@@ -25,7 +24,7 @@ from usd_chunks.plugins.chunk_usd import (
     rename_context_prim_path,
 )
 from usd_chunks.chunk_utils import get_unique_path
-from usd_chunks import chunk, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
 
 
@@ -1904,19 +1903,6 @@ def test_recook_recurses_into_group() -> None:
     assert inner_node.is_blocked()  # group hidden → inner tree muted
 
 
-@pytest.mark.xfail(
-    sys.version_info < (3, 11),
-    reason=(
-        "TODO: this test is order-dependent, not 3.10-specific. Run on its own it fails on "
-        "every version including 3.13 -- the precondition sees 0.0 instead of Transform2's "
-        "99.0, so Transform2's edit is never visible and setup never reaches the state under "
-        "test. It only passes because earlier tests leave the ChunkRegistry/ChunkLayerManager "
-        "singletons primed. On 3.10 that accidental priming does not survive, so it fails in "
-        "the full run too. The real fix is to make this test establish its own state; drop "
-        "this marker then. Not strict, so it still reports if 3.10 starts passing."
-    ),
-    strict=False,
-)
 def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     """Regression reported live in usdview: Transform1 -> Scatter -> Transform2 (both
     transforms targeting the same prim), with a real, properly-activated View wired to
@@ -1934,7 +1920,7 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     reproduce this (the live bug depends on state accumulated by the real view-activation
     path -- ChunkGraphView._activate_menu_view's view:slot attribute + _view_state.set_slot
     -- not just wiring the exec chain by hand)."""
-    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, get_exec_upstream_chunks
     from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
@@ -1966,10 +1952,22 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
         return cs[0]
 
     def _wire(dst, src):
-        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
-        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+        # Wire through the dependency API alone and let ChunkStageSync's listener author
+        # inputs:chunk. It writes into the chunk-prim bookkeeping (session) layer, which is
+        # where the live graph's own wiring lands. Hand-authoring the connection first (the
+        # SetConnections other recook tests in this file use) goes to the stage's AMBIENT edit
+        # target -- the root layer -- and is doubly wrong here: the listener then sees the
+        # connection already present, skips its own session-layer write, and the root-layer
+        # opinion is later dropped, leaving inputs:chunk with no connections at all. The exec
+        # chain then reads as three unwired nodes, get_exec_upstream_chunks returns [], and the
+        # whole cook set collapses to "nothing cooks" -- 0.0 instead of 99.0 at the
+        # precondition below, before the behaviour under test is ever reached.
         dst.add_dependency(src)
+
+    def _pump(seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            qapp.processEvents()
 
     # A real mesh, not a bare Xform: Scatter's no-triangles-found fallback is a jittered grid
     # in prim-local coordinates that never reads the prim's transform at all, which would make
@@ -1992,7 +1990,11 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     t2.get_param("primpath_location").value = "/target"
     _wire(scatter, t1)
     _wire(t2, scatter)
-    qapp.processEvents()
+    # Settle before touching views. Creating a node arms ChunkGraphView._ensure_default_view on
+    # a 60ms timer, which makes its own view on the exec tail and claims a slot. Pumping past it
+    # here pins down which view exists first instead of letting chunk-module load times decide,
+    # so the slot our view gets below (and therefore which view is active) is deterministic.
+    _pump(0.2)
 
     # Create + properly activate a view wired to t2 (the real tail), the same way the actual
     # "Set View" / chunk-menu flow does: view:slot attribute + _view_state.set_slot -- not
@@ -2005,8 +2007,14 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     _wire(view, t2)
     qapp.processEvents()
     gv._activate_menu_view(view, context, stage)
-    qapp.processEvents()
-    assert gv._view_state.active_slot, "view must be properly activated for this repro to be faithful"
+    _pump(0.1)  # _activate_menu_view defers set_slot through a 0ms timer
+    view_slot = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(view))).GetAttribute("view:slot").Get()
+    assert gv._view_state.active_slot == view_slot, (
+        "our view must be the active one for this repro to be faithful"
+    )
+    assert [c.name for c in get_exec_upstream_chunks(view, stage, scene)] == [
+        t1.name, scatter.name, t2.name
+    ], "the exec chain must be wired roots-first before the behaviour under test can be reached"
 
     xform_cache = UsdGeom.XformCache()
 
@@ -2018,11 +2026,6 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
         xform_cache.Clear()
         pos = stage.GetPrimAtPath("/ScatterInstancer").GetAttribute("positions").Get()
         return pos[0][0]
-
-    def _pump(seconds: float) -> None:
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            qapp.processEvents()
 
     t1.get_param("tx").value = 1.0
     t2.get_param("tx").value = 99.0
@@ -2160,7 +2163,6 @@ def test_delete_middle_node_heals_exec_chain() -> None:
     """Deleting a node in the middle of an exec chain (A -> X -> B) must leave A -> B, not a
     broken chain. Regression: removing a chunk wired between a chunkgroup and a view left the
     view with a dangling connection and the chunkgroup unconsumed."""
-    import weakref
     from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 
     stage = Usd.Stage.CreateInMemory()
@@ -2227,7 +2229,7 @@ def test_rename_group_is_sibling_and_rebases_children() -> None:
     scene = _StageScene()
     reg = chunk_registry.ChunkRegistry()
     reg.initialize(scene, "pytest")
-    sync = _chunk_usd_init(stage, scene) or ChunkStageSync()
+    _chunk_usd_init(stage, scene) or ChunkStageSync()
 
     grpmod = reg.get_chunk_module("chunkgroup")
     primmod = reg.get_chunk_module("prim")
@@ -2480,9 +2482,9 @@ def test_get_upstream_stage_preserves_real_relative_order_among_included_chunks(
         return cs[0]
 
     def _wire(dst, src):
-        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
-        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+        # add_dependency alone -- see the _wire in
+        # test_recook_for_view_reveals_upstream_incrementally for why hand-authoring the
+        # connection alongside it silently leaves inputs:chunk unconnected.
         dst.add_dependency(src)
 
     stage.DefinePrim("/bowl", "Xform")
