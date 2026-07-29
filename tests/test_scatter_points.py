@@ -3,14 +3,9 @@ from __future__ import annotations
 import time
 
 import pytest
-from pxr import Sdf, Usd, UsdGeom
+from pxr import Usd, UsdGeom
 
-from usd_chunks.plugins.chunk_usd import (
-    _EXEC_INPUT,
-    _EXEC_OUTPUT,
-    get_chunk_prim_path,
-    initialize as _chunk_usd_init,
-)
+from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 
@@ -30,10 +25,15 @@ def _mk(mod, scene):
     return cs[0]
 
 
-def _wire(dst, src, stage):
-    p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
-    a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-    a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+def _wire(dst, src):
+    # Wire through the dependency API alone and let ChunkStageSync's listener author
+    # inputs:chunk. It writes into the chunk-prim bookkeeping (session) layer, which is where
+    # the live graph's own wiring lands. Hand-authoring the connection first goes to the
+    # stage's AMBIENT edit target -- the root layer -- and is doubly wrong: the listener then
+    # sees the connection already present, skips its own session-layer write, and the
+    # root-layer opinion is later dropped, leaving inputs:chunk with no connections at all.
+    # The exec chain then reads as unwired nodes and the whole cook set collapses to "nothing
+    # cooks" -- no /ScatterInstancer to read at all, rather than a wrong position.
     dst.add_dependency(src)
 
 
@@ -71,8 +71,8 @@ def test_scatter_is_reactive_and_ignores_downstream_transform() -> None:
     t1 = _mk(transform_mod, scene)
     scatter = _mk(scatter_mod, scene)
     t2 = _mk(transform_mod, scene)
-    _wire(scatter, t1, stage)
-    _wire(t2, scatter, stage)
+    _wire(scatter, t1)
+    _wire(t2, scatter)
 
     t1.get_param("primpath_location").value = "/apple"
     scatter.get_param("surface_prim").value = "/apple"
@@ -118,7 +118,6 @@ def test_scatter_direct_param_edit_ignores_downstream_transform(qapp) -> None:
     establish that ranking in the first place -- a hand-wired chunk graph with no view/recook
     activity doesn't reach the same layer-strength state (confirmed while investigating the
     equivalent recook_for_view bug earlier)."""
-    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
     from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
@@ -155,7 +154,7 @@ def test_scatter_direct_param_edit_ignores_downstream_transform(qapp) -> None:
     scatter.get_param("surface_prim").value = "/apple"
     scatter.get_param("max_count").value = 1
     transform.get_param("primpath_location").value = "/apple"  # same mesh scatter reads from
-    _wire(transform, scatter, stage)
+    _wire(transform, scatter)
     qapp.processEvents()
 
     def _pump(seconds: float) -> None:
@@ -168,7 +167,7 @@ def test_scatter_direct_param_edit_ignores_downstream_transform(qapp) -> None:
     gv = docker.tab_widget.get_current_graph_view()
     context = gv._graph_context()
     view = _mk(view_mod, scene)
-    _wire(view, transform, stage)
+    _wire(view, transform)
     qapp.processEvents()
     gv._activate_menu_view(view, context, stage)
     _pump(0.5)
