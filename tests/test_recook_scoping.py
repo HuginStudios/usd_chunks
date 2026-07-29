@@ -2,14 +2,9 @@ from __future__ import annotations
 
 import time
 
-from pxr import Sdf, Usd, UsdGeom
+from pxr import Usd, UsdGeom
 
-from usd_chunks.plugins.chunk_usd import (
-    _EXEC_INPUT,
-    _EXEC_OUTPUT,
-    get_chunk_prim_path,
-    initialize as _chunk_usd_init,
-)
+from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 
@@ -29,10 +24,14 @@ def _mk(mod, scene):
     return cs[0]
 
 
-def _wire(dst, src, stage):
-    p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
-    a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-    a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+def _wire(dst, src):
+    # Wire through the dependency API alone and let ChunkStageSync's listener author
+    # inputs:chunk into the chunk-prim bookkeeping (session) layer, where the live graph's own
+    # wiring lands. Hand-authoring the connection first goes to the stage's AMBIENT edit target
+    # -- the root layer -- and is doubly wrong: the listener then sees the connection already
+    # present and skips its own session-layer write, and the root-layer opinion is later
+    # dropped, leaving inputs:chunk with no connections at all and the exec chain reading as
+    # unwired nodes.
     dst.add_dependency(src)
 
 
@@ -75,7 +74,7 @@ def _setup(qapp):
     gv = docker.tab_widget.get_current_graph_view()
     context = gv._graph_context()
     view = _mk(view_mod, scene)
-    _wire(view, scatter, stage)
+    _wire(view, scatter)
     qapp.processEvents()
     gv._activate_menu_view(view, context, stage)
 
@@ -206,8 +205,8 @@ def test_relevant_chunk_delete_still_recooks(qapp) -> None:
     # Insert Transform between Scatter and the view: Scatter -> Transform -> View.
     transform = _mk(transform_mod, scene)
     qapp.processEvents()
-    _wire(transform, scatter, stage)
-    _wire(view, transform, stage)
+    _wire(transform, scatter)
+    _wire(view, transform)
     qapp.processEvents()
     gv._recook_active_view()
     _pump(0.5)

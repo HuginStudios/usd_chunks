@@ -2482,9 +2482,9 @@ def test_get_upstream_stage_preserves_real_relative_order_among_included_chunks(
         return cs[0]
 
     def _wire(dst, src):
-        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
-        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+        # add_dependency alone -- see the _wire in
+        # test_recook_for_view_reveals_upstream_incrementally for why hand-authoring the
+        # connection alongside it silently leaves inputs:chunk unconnected.
         dst.add_dependency(src)
 
     stage.DefinePrim("/bowl", "Xform")
