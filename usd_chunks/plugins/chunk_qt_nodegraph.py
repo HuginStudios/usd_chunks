@@ -1399,10 +1399,25 @@ class _ProxyKeyRouter(QtCore.QObject):
 
     def __init__(self, view: "ChunkGraphView"):
         super().__init__(view)
-        self._view = view
+        # Weak, deliberately. Installing this router on the QApplication pins the router,
+        # and a strong back-reference here would pin the whole ChunkGraphView through it —
+        # leaking the entire scene and widget tree for every view ever constructed, and
+        # preventing the destroyed signal that uninstall() hangs off from ever firing.
+        self._view = weakref.ref(view)
         self._busy = False
         self._active: Optional[QtWidgets.QWidget] = None  # proxy widget last clicked
         self._view_active: bool = False  # True while graph view was most recently clicked
+
+    def uninstall(self) -> None:
+        """Detach from the QApplication.
+
+        An application-level filter outlives the view that owns it: Qt keeps dispatching
+        to eventFilter after the view is gone, and once the Python wrapper is torn down
+        that raises on the first attribute access. The owning view connects this to its
+        destroyed signal so the filter's lifetime matches its own.
+        """
+        if (app := QtWidgets.QApplication.instance()) is not None:
+            app.removeEventFilter(self)
 
     def set_active(self, widget: Optional[QtWidgets.QWidget]) -> None:
         self._active = widget
@@ -1420,7 +1435,14 @@ class _ProxyKeyRouter(QtCore.QObject):
     )
 
     def eventFilter(self, _obj, event) -> bool:
-        if self._busy:
+        # Read defensively: if a filter ever outlives its wrapper's __dict__, degrade to a
+        # no-op rather than raising AttributeError inside Qt's dispatch. uninstall() is
+        # what prevents that happening; this only keeps the failure mode harmless.
+        if getattr(self, "_busy", False):
+            return False
+        if (view := self._view()) is None:
+            # Owning view collected: self-heal a filter nothing detached, then stand down.
+            self.uninstall()
             return False
         etype = event.type()
         if etype not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
@@ -1444,7 +1466,6 @@ class _ProxyKeyRouter(QtCore.QObject):
 
         # F-to-frame: intercept only when cursor is over the graph view and no proxy active.
         if self._active is None and event.key() == QtCore.Qt.Key.Key_F:
-            view = self._view
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -1458,7 +1479,6 @@ class _ProxyKeyRouter(QtCore.QObject):
         # L-to-layout: same fallback pattern as F, for when a proxy widget has logical focus
         # but the cursor is over the graph view.
         if self._active is None and event.key() == QtCore.Qt.Key.Key_L:
-            view = self._view
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -1473,7 +1493,6 @@ class _ProxyKeyRouter(QtCore.QObject):
         # side panel's ChunkWidget, which is what's focused right after selecting a node)
         # has logical focus but the cursor is over the graph view.
         if self._active is None and event.key() == QtCore.Qt.Key.Key_K:
-            view = self._view
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -1544,6 +1563,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         self._proxy_key_router = _ProxyKeyRouter(self)
         QtWidgets.QApplication.instance().installEventFilter(self._proxy_key_router)
+        # Pair the install with a removal, or every view ever built leaves a filter
+        # receiving key events for the rest of the session. Bind the router directly
+        # rather than reaching through self: the view is mid-destruction when destroyed
+        # fires. The router is a plain QObject child, so it is still alive at that point
+        # -- ~QObject emits destroyed() before deleting children.
+        self.destroyed.connect(lambda *_, _router=self._proxy_key_router: _router.uninstall())
 
         self._drag_src_port: Optional[ChunkPortItem] = None
         self._drag_edge: Optional[QtWidgets.QGraphicsPathItem] = None
