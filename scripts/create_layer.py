@@ -23,6 +23,11 @@ def _refresh_after_layer(owner, notice, sender):
 
     after_items = ["(none)"] + [p for p in parent_layer.subLayerPaths if p not in internal_ids]
     after_menu = _chunk.get_param("after_layer")
+    if after_menu is None:
+        # Deleting this chunk tears its params down, but the layer-stack edits that teardown
+        # makes are themselves stage content changes — so this global handler still fires for
+        # the half-dismantled chunk. Nothing left to refresh.
+        return
     after_menu.menu_items = after_items
     if after_menu.value not in after_items:
         after_menu.value = after_items[0]

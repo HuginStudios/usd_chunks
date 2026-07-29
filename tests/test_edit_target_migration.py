@@ -239,6 +239,33 @@ class TestEditTargetMigration:
         assert prim.IsDefined()
         assert prim.GetTypeName() == "Chunk"
 
+    def test_deleting_a_context_never_leaves_a_gutted_chunk(self):
+        """Tearing down a context must delete its sub-chunks, not reach past them and delete
+        their params.
+
+        The teardown's own PARAM_REMOVED / layer-stack notices cascade straight back into the
+        graph — an Edit Target's refresh callback re-runs, reconcile_edit_targets re-executes
+        chunks. Any chunk that lost its params without being asked to delete is still live to
+        all of that, and every chunk script crashes on a get_param() that now returns None.
+        """
+        scene, stage = self._setup()
+        self._create_layer(scene, "layerA")
+        et = _make(scene, self.edit_mod, "edit_target")
+        et.get_param("edit_target").value = "layerA"
+        et.execute()
+        prim = _make(scene, self.prim_mod, "prim")
+        prim.execute()
+
+        chunks = list(scene.get_chunks())
+        assert len(chunks) == 3
+
+        for ctx in list(scene.chunks.get_my_params()):
+            ctx.request_delete()
+
+        # Marked before its own params go, so nothing re-executes it half-dismantled.
+        assert all(getattr(c, "_deleting", False) for c in chunks)
+        assert not scene.get_chunks()
+
     def test_deleting_edit_target_falls_back_to_session(self):
         """Deleting the Edit Target leaves the downstream chunk with no upstream target, so
         its bookkeeping falls back to the session layer (removed from layerA)."""
