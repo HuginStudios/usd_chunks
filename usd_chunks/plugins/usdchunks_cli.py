@@ -8,9 +8,12 @@ Usage:
 
 import sys
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
+from importlib.resources import files
+from pathlib import Path
+
 from pxr import Usd, UsdUtils
 from usd_chunks import chunk, chunk_registry, chunk_core
-from plugins.chunk_usd import load_chunks, ChunkLayerManager
+from usd_chunks.plugins.chunk_usd import load_chunks, ChunkLayerManager
 
 
 # ANSI colors for CLI output
@@ -266,6 +269,20 @@ def cmd_run(args):
         print(flat.ExportToString())
 
 
+def cmd_plugin_path(args):
+    """Print the directory to put on PXR_PLUGINPATH_NAME for a given host.
+
+    Resolved from the installed package rather than the source tree, so the printed path
+    is correct whether usd_chunks was pip-installed or is being run from a checkout.
+    """
+    host_dirs = {"usdview": "chunk_usdview", "kraken": "chunk_kraken", "houdini": "chunk_houdini"}
+    path = Path(files("usd_chunks.plugins")) / host_dirs[args.host]
+    if not path.is_dir():
+        print(f"{RED}plugin directory not found: {path}{RESET}", file=sys.stderr)
+        sys.exit(1)
+    print(path)
+
+
 def main():
     parser = ArgumentParser(
         prog="usdchunks",
@@ -278,6 +295,7 @@ def main():
             "  usdchunks run setup.usda MyChunk.primpath_location=/geo\n"
             "  usdchunks info setup.usda\n"
             "  usdchunks validate setup.usda -v\n"
+            "  usdchunks plugin-path\n"
         ),
         formatter_class=RawDescriptionHelpFormatter,
     )
@@ -352,6 +370,25 @@ def main():
     pin_parser.add_argument("--copy", action="store_true", help="Copy impls instead of symlinking (portable/sealed)")
     pin_parser.add_argument("--wrapper", action="store_true", help="Always write the lock to a wrapper layer, never in place")
 
+    plugin_path_parser = sub.add_parser(
+        "plugin-path",
+        help="Print the directory to add to PXR_PLUGINPATH_NAME",
+        description=(
+            "Print the installed host-integration directory, so the plugin can be\n"
+            "registered without knowing where pip put the package."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  usdchunks plugin-path\n"
+            "  set PXR_PLUGINPATH_NAME=%usdchunks plugin-path%          (Windows)\n"
+            '  export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"    (POSIX)\n'
+        ),
+        formatter_class=RawDescriptionHelpFormatter,
+    )
+    plugin_path_parser.add_argument(
+        "--host", choices=["usdview", "kraken", "houdini"], default="usdview", help="Which host integration (default: usdview)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -362,6 +399,8 @@ def main():
         cmd_validate(args)
     elif args.command == "pin":
         cmd_pin(args)
+    elif args.command == "plugin-path":
+        cmd_plugin_path(args)
     else:
         parser.print_help()
 

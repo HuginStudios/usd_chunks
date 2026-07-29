@@ -1,6 +1,6 @@
 import os
 from usd_chunks import chunk, chunk_registry
-from plugins import chunk_usdview
+from usd_chunks.plugins import chunk_usdview
 
 
 def set_shademode(owner: chunk.ChunkParamBase, notice, sender: chunk.Button):

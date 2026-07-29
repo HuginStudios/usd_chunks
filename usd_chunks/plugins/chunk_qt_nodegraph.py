@@ -20,13 +20,13 @@ from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_animation
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
-from plugins import chunk_graph_layout
+from usd_chunks.plugins import chunk_graph_layout
 from usd_chunks import chunk_utils
-from plugins import chunk_usd
+from usd_chunks.plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, CHUNK_STYLESHEET, ViewSlotState, _force_author_param
+from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, CHUNK_STYLESHEET, ViewSlotState, _force_author_param
 
 _PORT_RADIUS = 5
 _NODE_WIDTH = 220

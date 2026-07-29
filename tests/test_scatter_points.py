@@ -5,7 +5,7 @@ import time
 import pytest
 from pxr import Sdf, Usd, UsdGeom
 
-from plugins.chunk_usd import (
+from usd_chunks.plugins.chunk_usd import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
     get_chunk_prim_path,
@@ -118,8 +118,8 @@ def test_scatter_direct_param_edit_ignores_downstream_transform(qapp) -> None:
     establish that ranking in the first place -- a hand-wired chunk graph with no view/recook
     activity doesn't reach the same layer-strength state (confirmed while investigating the
     equivalent recook_for_view bug earlier)."""
-    from plugins.chunk_usd import get_chunk_prim_path
-    from plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 

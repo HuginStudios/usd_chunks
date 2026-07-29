@@ -4,7 +4,7 @@ import importlib
 
 from pxr import Sdf, Usd, UsdGeom
 
-from plugins.chunk_usd import (
+from usd_chunks.plugins.chunk_usd import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
     get_chunk_prim_path,

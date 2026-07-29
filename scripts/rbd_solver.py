@@ -13,7 +13,7 @@ from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_registry
-from plugins import chunk_usd
+from usd_chunks.plugins import chunk_usd
 
 try:
     import mujoco as _mj

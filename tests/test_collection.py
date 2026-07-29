@@ -11,7 +11,7 @@ from pxr import Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, SceneSender
-from plugins.chunk_usd import initialize as init_chunk_usd
+from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
 
 
 def _exec(mod, node):

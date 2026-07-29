@@ -1,7 +1,7 @@
 from pxr import Sdf
 
 from usd_chunks import chunk, chunk_utils
-from plugins import chunk_usd
+from usd_chunks.plugins import chunk_usd
 
 # Selecting this instead of a specific layer identifier follows whatever layer the
 # upstream Create Layer chunk (found via the exec-chain dependency already wiring the

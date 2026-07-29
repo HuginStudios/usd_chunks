@@ -70,13 +70,35 @@ This means we trade off some readability for cleaner code and easier maintanence
 Most of the attrs interfacing has been abstracted away execpt for using attrs.field() for class attributes. Users do not need to think about this unless creating custom parameters or otherwise extending the chunk_core module.
 
 ## Setup
-To set this up you need to set two environment variables after having cloned or downloaded this repo. The environment variables to be set are:
 
-**PXR_PLUGINPATH_NAME** -  Add the path to the chunk usd plugin. for UsdView, this is **plugins/chunk_usdview**.
+### Install
 
-**PYTHONPATH** - Add this repo location path to this envar for usdview to find our python modules
+```
+pip install usd-chunks
+```
 
-**USD_CHUNK_DIRS** - Add your chunk directory to this envar. This can be a list of directories, separated by ; on windows, and : on unix systems. Nested directories are scanned for chunks as well.
+This pulls in `usd-core` and gives you the library plus the `usdchunks` command, with
+no USD build required:
+
+```
+usdchunks run my_setup.usda
+```
+
+Note that the `usd-core` wheels on PyPI do not include usdview — it is not part of that
+build. Using the usdview integration needs a full USD build that provides
+`pxr.Usdviewq`; see below.
+
+### Environment variables
+
+**USD_CHUNK_DIRS** - Add your chunk directory to this envar. This can be a list of directories, separated by ; on windows, and : on unix systems. Nested directories are scanned for chunks as well. Chunks installed by a store are picked up automatically from **GLOBAL_USDCHUNKS** (default `~/.usdchunks/global`), which is appended after this.
+
+**PXR_PLUGINPATH_NAME** - Only needed for the usdview integration. Point it at the installed plugin directory, which `usdchunks` will print for you:
+
+```
+usdchunks plugin-path
+```
+
+**PYTHONPATH** - Only needed when running from a clone rather than an install; add this repo's location so usdview can find the python modules.
 
 ## Build documentation
 In order to build the documentation, your environment must be set to run the usd_chunks modules.
@@ -86,3 +108,8 @@ griffe. When all is setup and the virtual env is active, make sure to install th
 and be viewable in the browser.
 
 Run docs/gen_ref_nav.py to generate the docs/reference markdown files
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE). This is the same license OpenUSD itself
+ships under, so usd_chunks is compatible with the ecosystem it plugs into.

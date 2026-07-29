@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # The widget tests import PySide6 at module scope, so the suite needs the ui extra
+      # too. tests/conftest.py already forces QT_QPA_PLATFORM=offscreen, but PySide6
+      # still links against these system libs, which the runner image does not ship.
+      - name: Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3
+      - run: pip install -e ".[dev,ui]"
+
+      # Non-blocking: the tree currently has 66 pre-existing violations (mostly unused
+      # imports). Flip continue-on-error off once that backlog is cleared, so lint
+      # regressions actually fail the build.
+      - run: ruff check .
+        continue-on-error: true
+      - name: pytest
+        # USD_CHUNK_DIRS must point at scripts/ or ChunkRegistry.get_chunk_module finds
+        # nothing and the suite fails with NoneType 'loaded'.
+        env:
+          USD_CHUNK_DIRS: scripts
+        run: pytest
+
+  wheel:
+    # Builds and installs the wheel into a clean venv to catch packaging bugs that an
+    # editable install hides: missing runtime deps, package data left out of the wheel,
+    # and console scripts that resolve against the source tree only.
+    # The wheel is a CI artifact; nothing is uploaded to a package index.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build
+      - run: python -m build
+
+      - name: Install the wheel into a clean venv
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+
+      - name: Import and CLI smoke test
+        run: |
+          cd /tmp
+          /tmp/smoke/bin/python -c "import usd_chunks, usd_chunks.plugins.chunk_usd"
+          /tmp/smoke/bin/usdchunks --help
+          /tmp/smoke/bin/usdchunks plugin-path
+
+      - name: Bundled package data survived the build
+        run: |
+          cd /tmp
+          /tmp/smoke/bin/python - <<'PY'
+          from pathlib import Path
+          from usd_chunks import chunk_resources
+          from importlib.resources import files
+
+          icon = chunk_resources.get_icon("pin")
+          assert icon.is_file(), f"icon missing from wheel: {icon}"
+
+          plug = Path(files("usd_chunks.plugins")) / "chunk_usdview" / "plugInfo.json"
+          assert plug.is_file(), f"plugInfo.json missing from wheel: {plug}"
+          print("package data OK")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

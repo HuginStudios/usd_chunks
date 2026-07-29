@@ -1,8 +1,16 @@
+"""Locators for bundled resource files (icons).
+
+These must resolve *inside* the installed package. An earlier version walked up to a
+``resources`` directory sitting next to the package, which works from a checkout but
+resolves to a non-existent ``site-packages/resources`` once pip-installed.
+"""
+
+from importlib.resources import files
 from pathlib import Path
 
 
 def get_resource_path():
-    return Path(__file__).parent.parent / "resources"
+    return Path(files("usd_chunks")) / "resources"
 
 
 def get_icons_path():

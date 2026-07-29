@@ -46,7 +46,7 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
         owner = chunk_notice._executing_chunk
     if owner is None:
         return stage.GetSessionLayer()
-    from plugins.chunk_usd import nearest_upstream_edit_layer, get_chunk_prim_path
+    from usd_chunks.plugins.chunk_usd import nearest_upstream_edit_layer, get_chunk_prim_path
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
     return nearest_upstream_edit_layer(stage, prim)
 
