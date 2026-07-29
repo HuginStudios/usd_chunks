@@ -1138,7 +1138,14 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                 # unblocks the active view's tree before executing it, so cooking is unaffected.
                 # A chunk being deleted must not run its module — teardown notices can land
                 # back here after its params are already detached (see request_delete).
-                if (callable(getattr(module, 'execute', None)) and not getattr(prop, '_executing', False)
+                # With no stage there is nothing for a module to author into: every chunk module
+                # works through get_stage(), so running one stage-less is never useful and
+                # crashes on the first stage call. The host can genuinely have no stage for a
+                # window — usdview clears its stage before opening the next file while still
+                # pumping the Qt event loop, so a deferred rebuild, or a click landing in that
+                # window, used to reach here and take the chunk down with it.
+                if (callable(getattr(module, 'execute', None)) and stage is not None
+                        and not getattr(prop, '_executing', False)
                         and not getattr(prop, '_deleting', False)
                         and not muted and not prop.is_blocked()):
                     global _usd_write_active, _executing_chunk
@@ -1147,10 +1154,11 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                     _usd_write_active = True
                     _executing_chunk = getattr(prop, "get_chunk", lambda: None)()
                     try:
-                        if stage and ctx:
+                        if ctx:
                             with Usd.EditContext(stage, ctx):
                                 module.execute(prop)
                         else:
+                            # No edit layer of its own — author into the stage's current target.
                             module.execute(prop)
                     finally:
                         _usd_write_active = False

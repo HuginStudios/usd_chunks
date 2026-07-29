@@ -1047,7 +1047,12 @@ def test_blocked_chunk_does_not_execute_on_creation() -> None:
     must not run its module on creation — not via param-resolve and not via execute-on-creation.
     Unblocking and cooking it (as recook does when it joins the view's tree) runs it."""
     stage = Usd.Stage.CreateInMemory()
-    scene = _DummyScene()
+
+    class _Scene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _Scene()
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
     ChunkStageSync().initialize(stage, scene)
 
