@@ -9,7 +9,7 @@ import contextlib
 import difflib
 import logging
 from pathlib import Path
-from typing import Generator, Optional, Tuple
+from typing import Generator, Tuple
 
 from pxr import Gf, Sdf, Usd, UsdUI, UsdUtils, Vt
 
@@ -1105,7 +1105,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # need moving). All authoring must land here, never on a chunk's own anonymous execute
         # layer (Clear()ed every run, not saved).
         book_layer = self._new_chunk_bookkeeping_layer(chunk, prev_chunk)
-        book_ctx = lambda: Usd.EditContext(self._stage, book_layer) if book_layer else contextlib.nullcontext()
+
+        def book_ctx():
+            if book_layer:
+                return Usd.EditContext(self._stage, book_layer)
+            return contextlib.nullcontext()
+
         with book_ctx():
             self._stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
 
@@ -2365,9 +2370,6 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
 
     if not to_load:
         return
-
-    # Save before pre-registration so initial-load detection is accurate
-    is_initial_load = not loaded_prim_paths
 
     # Pre-register all prim paths before processing to prevent StageContentsChanged
     # callbacks (from add_layer subLayerPaths inserts) from triggering recursive loads

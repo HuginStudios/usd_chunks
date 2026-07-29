@@ -77,7 +77,7 @@ def Mesh "CubeGeo"
     manifest_path = os.path.join(CLIP_DIR, "manifest.usda")
     with open(manifest_path, "w") as f:
         f.write(manifest)
-    print(f"  Written: manifest.usda")
+    print("  Written: manifest.usda")
 
     print(f"\nDone! {NUM_FRAMES} clip files generated in: {CLIP_DIR}")
 

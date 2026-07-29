@@ -1,5 +1,4 @@
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_notice import ChunkNoticeAlias
 
 from pxr import Usd, Tf
 

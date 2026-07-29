@@ -2457,7 +2457,7 @@ def test_get_upstream_stage_preserves_real_relative_order_among_included_chunks(
     for their shared prim was being decided by creation order instead of the real, already-
     correct order (the same sort-key/view-driven ranking recook_for_view relies on elsewhere).
     Included layers must keep their real relative strength order -- filtered, not rebuilt."""
-    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, get_upstream_stage
+    from usd_chunks.plugins.chunk_usd import get_upstream_stage
 
     stage = Usd.Stage.CreateInMemory()
 

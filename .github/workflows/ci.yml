@@ -26,11 +26,7 @@ jobs:
           sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3
       - run: pip install -e ".[dev,ui]"
 
-      # Non-blocking: the tree currently has 66 pre-existing violations (mostly unused
-      # imports). Flip continue-on-error off once that backlog is cleared, so lint
-      # regressions actually fail the build.
       - run: ruff check .
-        continue-on-error: true
       - name: pytest
         # USD_CHUNK_DIRS must point at scripts/ or ChunkRegistry.get_chunk_module finds
         # nothing and the suite fails with NoneType 'loaded'.

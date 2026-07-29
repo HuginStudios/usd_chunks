@@ -54,12 +54,11 @@ import ast
 import importlib.abc
 import logging
 import subprocess
+from timeit import default_timer as timer
 
 # Suppresses the console window Windows otherwise flashes for every pip subprocess
 # spawned from a GUI host (usdview, Maya, etc.) that has no console of its own.
 _NO_WINDOW_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-
-from timeit import default_timer as timer
 
 logger = logging.getLogger(__name__)
 

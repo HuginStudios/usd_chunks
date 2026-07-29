@@ -1,5 +1,5 @@
 from usd_chunks import chunk
-from pxr import Sdf, Tf
+from pxr import Tf
 
 
 def text_changed(owner: chunk.TextEdit, notice, sender):

@@ -193,7 +193,9 @@ class TestEditTargetMigration:
         prim2 = next(c for c in chunks2 if (c.get_config() and c.get_config().module) == "prim")
         ppath = Sdf.Path(get_chunk_prim_path(prim2))
         layer_b = next(
-            l for l in stage2.GetLayerStack(includeSessionLayers=True) if l.GetDisplayName() == "B"
+            lyr
+            for lyr in stage2.GetLayerStack(includeSessionLayers=True)
+            if lyr.GetDisplayName() == "B"
         )
         assert layer_b.GetPrimAtPath(ppath) is not None
         assert stage2.GetSessionLayer().GetPrimAtPath(ppath) is None

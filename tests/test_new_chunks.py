@@ -296,7 +296,6 @@ class TestAMDMaterialXLibraryChildCreation:
         execute() run, and they are never saved to disk.
         """
         stage = Usd.Stage.CreateInMemory()
-        session_layer = stage.GetSessionLayer()
 
         class _StageScene(_DummyScene):
             def get_stage(self):
