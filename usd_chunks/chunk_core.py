@@ -2477,6 +2477,15 @@ class ChunkCommon(AttributesBase):
         In addition, all callbacks will be removed from this object, and the owner will be set to None.
         """
 
+        # Retire the chunk from module execution before anything is dismantled. Teardown
+        # detaches params and edits the layer stack, and both cascade as notices that can
+        # re-enter the DAG solve and call this chunk's module.execute() again — against a
+        # half-dismantled chunk whose get_param() now returns None, which is an AttributeError
+        # in essentially every chunk script (none of them defend against their own params
+        # vanishing mid-run, nor should they have to). Never cleared: a chunk is not reusable
+        # after request_delete. Read by chunk_notice's execute dispatch.
+        self._deleting = True
+
         # Make sure we're enabled when deleting as being disabled will block necessary notices from being sent
         self.unset_state(ChunkFlags.State.DISABLED)
         # Same for the 'blocked' flag (set by view-driven re-cook on out-of-view chunks): a blocked
@@ -3178,9 +3187,23 @@ class ChunkContainerBase(ChunkCommon):
         Request delete this container, and subsequently clear its children
         """
 
+        # Retire from module execution up here, not in the super() call at the end: the child
+        # loop below detaches this container's own params, and its PARAM_REMOVED notices can
+        # re-enter the DAG solve long before super().request_delete() would set the flag. See
+        # ChunkCommon.request_delete for what the flag protects against.
+        self._deleting = True
+
         # Call request_delete on all children. This will send PARAM_REMOVED on the removed
-        # children
-        for param in self.get_params():
+        # children.
+        #
+        # get_my_params(), not get_params(): the latter walks the whole nested ChainMap, so a
+        # context would delete a grandchild param (a sub-chunk's own Menu/Slider) directly,
+        # leaving that sub-chunk alive but gutted — get_param() returning None on a chunk that
+        # was never asked to delete, and so never marked _deleting. Anything the teardown then
+        # cascades into (reconcile_edit_targets re-running an Edit Target, a refresh callback)
+        # crashes on the missing param. Deleting only direct children keeps the order right:
+        # each child container tears down its own subtree, marking itself first.
+        for param in self.get_my_params():
             param.request_delete()
 
         self.children.clear()

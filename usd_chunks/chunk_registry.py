@@ -962,6 +962,24 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 self.scene.add_chunks(chunks)
 
 
+def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
+    """parent's subLayerPaths with identifier dropped, order preserved, duplicates collapsed.
+
+    Both the "drop every occurrence" and the de-dup matter, because an anonymous layer's
+    identifier embeds its address (anon:<address>:<tag>) and addresses get recycled: once a
+    tracked layer is freed while its identifier is still listed here, a later anon layer can
+    be handed the same address and produce a byte-identical identifier. subLayerPaths is a
+    list editor that rejects duplicates outright, so assigning such a list raises rather than
+    edits, and the delete never completes. Collapsing them is the only legal state anyway —
+    two entries could never have named two different live layers at once.
+    """
+    seen: set = set()
+    return [
+        p for p in parent.subLayerPaths
+        if p != identifier and not (p in seen or seen.add(p))
+    ]
+
+
 class ChunkLayerManager(metaclass=RegistrySingleton):
     """
     A singleton class for managing the chunk layers. All chunks will be associated with a layer, on to
@@ -1007,6 +1025,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # export tooling group a chunk's own bookkeeping prim with whichever layer its driven
         # content nests in (see scripts/export_usd.py's per-layer export mode).
         self._chunk_target: Dict[core.ChunkHash, Sdf.Layer] = {}
+        # Hashes of chunks whose layer has been torn down. Never served a layer again, so a
+        # notice fired by the teardown itself can't resurrect one — see _chunk_deleted.
+        self._retired_chunks: set = set()
         self._chunk_refs = weakref.WeakSet()
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
@@ -1026,6 +1047,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.graph_layers = {}
         self._graph_layer_target = {}
         self._chunk_target = {}
+        self._retired_chunks = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
         return "_".join(layer.GetDisplayName().split("_")[:-1]) + ".usda"
@@ -1113,6 +1135,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             AttributeError: If the stage has not been initialized
         """
         if not self.stage:
+            return
+
+        # A deleted chunk never gets a layer back — see _chunk_deleted for why re-creating
+        # one mid-teardown is what corrupts the graph layer's sublayer list.
+        if c.get_hash() in self._retired_chunks:
             return
 
         existing = self.chunk_layers.get(c.get_hash())
@@ -1341,6 +1368,18 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self._chunk_deleted(get_hash())
 
     def _chunk_deleted(self, chunk_hash):
+        # Retire the chunk before touching any layer. The subLayerPaths edits below fire
+        # StageContentsChanged, and a chunk script listening for it (create_layer's and
+        # edit_target's menu-refresh callbacks) re-executes off that notice — landing back in
+        # get_or_create_layer, which would hand this same chunk a BRAND NEW anon layer to
+        # replace the one being torn down and sublayer it right back in. Every delete then
+        # feeds the next: the leftovers pile up under the graph layer until two of them are
+        # handed recycled addresses, at which point their anon:<address>:<tag> identifiers
+        # collide and subLayerPaths refuses the edit outright. Retiring first breaks the loop
+        # at the source, and doubles as the idempotence the finalizer/notice pair needs.
+        if chunk_hash in self._retired_chunks:
+            return
+        self._retired_chunks.add(chunk_hash)
         self._chunk_target.pop(chunk_hash, None)
         if not (layer := self.get_layer(chunk_hash)):
             return
@@ -1359,16 +1398,16 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 layer_hierarchy[sublayer] = parent
 
                 if sublayer == layer:
-                    sublayer_paths = parent.subLayerPaths.copy()
-                    sublayer_paths.remove(layer.identifier)
+                    sublayer_paths = _without_sublayer(parent, layer.identifier)
 
                     if len(sublayer_paths) == 0 and (p := layer_hierarchy.get(parent)):
-                        p.subLayerPaths.remove(parent.identifier)
+                        if parent.identifier in p.subLayerPaths:
+                            p.subLayerPaths.remove(parent.identifier)
 
                     parent.subLayerPaths = sublayer_paths  # type: ignore
         finally:
             chunk_notice._usd_write_active = prev_w
-        self.chunk_layers.pop(chunk_hash)
+        self.chunk_layers.pop(chunk_hash, None)
 
     def _flags_changed(self, notice, sender):
         c = sender

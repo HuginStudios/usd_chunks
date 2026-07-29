@@ -200,6 +200,72 @@ class TestEditTargetMigration:
         assert layer_b.GetPrimAtPath(ppath) is not None
         assert stage2.GetSessionLayer().GetPrimAtPath(ppath) is None
 
+        # Every chunk prim must survive the reload's migrations still *defined* — the node
+        # graph iterates Usd.PrimIsDefined, so one demoted to a bare `over` stops drawing.
+        undefined = [
+            str(c2path)
+            for c2 in chunks2
+            if not stage2.GetPrimAtPath(c2path := Sdf.Path(get_chunk_prim_path(c2))).IsDefined()
+        ]
+        assert not undefined
+
+    def test_migration_promotes_a_bare_over_at_the_destination(self):
+        """A chunk prim whose destination layer already holds a bare `over` (left by an
+        ordinary attr write that landed there while the `def` still lived elsewhere) must
+        still end up defined.
+
+        _migrate_chunk_bookkeeping deletes the source specs, so if the destination keeps its
+        `over` specifier and empty typeName the prim becomes undefined and typeless across
+        the whole stack — invisible to every Usd.PrimIsDefined traversal, which is what the
+        node graph iterates, so the chunk silently stops drawing a node.
+        """
+        scene, stage = self._setup()
+        _, layer_a = self._create_layer(scene, "layerA")
+        c = _make(scene, self.prim_mod, "prim")
+        c.execute()
+
+        cpath = Sdf.Path(get_chunk_prim_path(c))
+        assert stage.GetSessionLayer().GetPrimAtPath(cpath) is not None
+        # Seed the destination with the bare `over` an attr write would have left there.
+        Sdf.CreatePrimInLayer(layer_a, cpath)
+        assert layer_a.GetPrimAtPath(cpath).specifier == Sdf.SpecifierOver
+
+        assert chunk_usd._migrate_chunk_bookkeeping(stage, str(cpath), layer_a) is True
+
+        spec = layer_a.GetPrimAtPath(cpath)
+        assert spec.specifier == Sdf.SpecifierDef
+        assert spec.typeName == "Chunk"
+        prim = stage.GetPrimAtPath(cpath)
+        assert prim.IsDefined()
+        assert prim.GetTypeName() == "Chunk"
+
+    def test_deleting_a_context_never_leaves_a_gutted_chunk(self):
+        """Tearing down a context must delete its sub-chunks, not reach past them and delete
+        their params.
+
+        The teardown's own PARAM_REMOVED / layer-stack notices cascade straight back into the
+        graph — an Edit Target's refresh callback re-runs, reconcile_edit_targets re-executes
+        chunks. Any chunk that lost its params without being asked to delete is still live to
+        all of that, and every chunk script crashes on a get_param() that now returns None.
+        """
+        scene, stage = self._setup()
+        self._create_layer(scene, "layerA")
+        et = _make(scene, self.edit_mod, "edit_target")
+        et.get_param("edit_target").value = "layerA"
+        et.execute()
+        prim = _make(scene, self.prim_mod, "prim")
+        prim.execute()
+
+        chunks = list(scene.get_chunks())
+        assert len(chunks) == 3
+
+        for ctx in list(scene.chunks.get_my_params()):
+            ctx.request_delete()
+
+        # Marked before its own params go, so nothing re-executes it half-dismantled.
+        assert all(getattr(c, "_deleting", False) for c in chunks)
+        assert not scene.get_chunks()
+
     def test_deleting_edit_target_falls_back_to_session(self):
         """Deleting the Edit Target leaves the downstream chunk with no upstream target, so
         its bookkeeping falls back to the session layer (removed from layerA)."""

@@ -89,6 +89,11 @@ def _refresh_edit_target(owner, notice, sender):
         target_items.insert(0, _FOLLOW_UPSTREAM)
 
     target_menu = _chunk.get_param("edit_target")
+    if target_menu is None:
+        # Deleting this chunk tears its params down, but the layer-stack edits that teardown
+        # makes are themselves stage content changes — so this global handler still fires for
+        # the half-dismantled chunk. Nothing left to refresh.
+        return
     # Only assign when the items actually changed — this handler fires on essentially
     # every authoring op, and reassigning identical menu_items itself authors attr
     # changes that re-fire this same notice (feedback churn).

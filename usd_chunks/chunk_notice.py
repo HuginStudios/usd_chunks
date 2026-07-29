@@ -1136,7 +1136,10 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                 # A blocked chunk (view-driven: not in the active view's tree — e.g. connected to
                 # an inactive view) must never run its module, whatever triggered the solve. recook
                 # unblocks the active view's tree before executing it, so cooking is unaffected.
+                # A chunk being deleted must not run its module — teardown notices can land
+                # back here after its params are already detached (see request_delete).
                 if (callable(getattr(module, 'execute', None)) and not getattr(prop, '_executing', False)
+                        and not getattr(prop, '_deleting', False)
                         and not muted and not prop.is_blocked()):
                     global _usd_write_active, _executing_chunk
                     prev_executing_chunk = _executing_chunk
