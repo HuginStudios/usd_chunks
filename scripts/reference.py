@@ -66,6 +66,7 @@ def main():
 
     # import
     reference_fb = chunk.FileBrowser("file_path", extensions=[".usd*", ".usd", ".usda", ".usdc", ".usdz"])
+    reference_fb.set_flag(chunk.ChunkFlags.ParamFlags.FILE_EXISTING)
     reference_fb.add_callback(file_changed)
     import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     referenceChunk.add_param(reference_fb)
