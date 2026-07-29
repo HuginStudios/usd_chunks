@@ -1737,6 +1737,24 @@ def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.La
     return session
 
 
+def _promote_prim_spec(dst_spec: "Sdf.PrimSpec", holders: "list[Sdf.Layer]", sdf_path: "Sdf.Path") -> None:
+    """Give dst_spec the specifier/typeName the composed prim currently has, if it lacks them.
+
+    Only fills gaps: an existing `def` or an already-authored typeName on dst_spec is left
+    alone, so a destination that already carries the real spec keeps its own prim metadata.
+    Resolution matches composition — `def` anywhere in the stack wins over `over` regardless
+    of strength, while typeName is strongest-wins (holders is strong -> weak).
+    """
+    if dst_spec.specifier != Sdf.SpecifierDef and any(
+        layer.GetPrimAtPath(sdf_path).specifier == Sdf.SpecifierDef for layer in holders
+    ):
+        dst_spec.specifier = Sdf.SpecifierDef
+    if not dst_spec.typeName:
+        dst_spec.typeName = next(
+            (tn for layer in holders if (tn := layer.GetPrimAtPath(sdf_path).typeName)), ""
+        )
+
+
 def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "Sdf.Layer") -> bool:
     """Consolidate a chunk prim's bookkeeping spec into dst_layer, removing it from any other
     migratable layer it currently sits in. Returns True if anything moved.
@@ -1760,7 +1778,12 @@ def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "S
         which unwires the chunk from its exec chain.
 
     dst_layer keeps its own prim-level metadata (specifier, typeName) when it already has a
-    spec; only a dst with nothing there yet takes those from the strongest holder.
+    spec; only a dst with nothing there yet takes those from the strongest holder. The one
+    exception is a dst spec that is a bare `over` with no typeName — the shape left behind by
+    an ordinary attr write that happened to target dst while this chunk's `def` still lived
+    elsewhere. Keeping that as-is while the sources (holding the only `def`) are pruned below
+    would leave the chunk prim undefined and typeless across the whole stack, so it vanishes
+    from any Usd.PrimIsDefined traversal — the node graph stops drawing a node for it.
     """
     sdf_path = Sdf.Path(prim_path)
     internal = chunk_utils.chunk_internal_layer_ids()
@@ -1781,6 +1804,8 @@ def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "S
         if dst_layer.GetPrimAtPath(sdf_path) is None:
             Sdf.CreatePrimInLayer(dst_layer, sdf_path)
             Sdf.CopySpec(holders[0], sdf_path, dst_layer, sdf_path)
+        else:
+            _promote_prim_spec(dst_layer.GetPrimAtPath(sdf_path), holders, sdf_path)
         for name, layer in winners.items():
             if layer == dst_layer:
                 continue  # already the winning opinion, and copying onto itself is a no-op
