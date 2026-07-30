@@ -133,10 +133,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     """
 
     initialized: bool = False
+    # True only while reload_for_stage tears down the previous file's chunks — see
+    # _on_chunk_deleted, which must not touch USD during that window.
+    _reloading: bool = False
 
     def initialize(self, stage: Usd.Stage, scene: "core.SceneSender") -> None:
         self._stage = stage
         self._scene = scene
+        self._reloading = False
         self._loaded_stage = None
         self._loaded_prim_paths: set[str] = set()
         self._chunk_prim_paths: dict[int, str] = {}  # id(chunk) → current prim path
@@ -259,6 +263,17 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     def _on_chunk_deleted(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
             return
+        if self._reloading:
+            # File > Open: these chunks belong to the file being *replaced*, but self._stage
+            # is already the newly opened one. Everything below addresses prims by path, and
+            # the outgoing graph's paths routinely collide with the incoming file's (both
+            # sides came from the same tab, e.g. /Tab1/Prim) — so the teardown would delete
+            # the new file's own prim specs and heal_exec_chain_on_delete would rewire its
+            # exec chain, all before load_chunks ever reads it. Nothing to unauthor either
+            # way: the outgoing stage is being discarded whole.
+            self._loaded_prim_paths.discard(self._chunk_prim_paths.get(id(sender), ""))
+            self._chunk_prim_paths.pop(id(sender), None)
+            return
         if sender.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             if not getattr(sender, "prim_path", None):
                 return  # tab context — no USD prim to remove
@@ -374,6 +389,24 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             elif is_active and is_disabled:
                 chunk.unset_state(ChunkFlags.State.DISABLED)
 
+    def _teardown_chunks(self) -> None:
+        """Drop every chunk in the scene, Python-side only.
+
+        _reloading keeps _on_chunk_deleted off the stage: by the time this runs self._stage
+        is the stage being switched TO, and the outgoing chunks' prim paths routinely match
+        the incoming file's, so the usual per-chunk prim removal would delete the new file's
+        own content. The outgoing stage is discarded whole anyway, so there is nothing to
+        unauthor on either side.
+        """
+        self._reloading = True
+        try:
+            for ctx in list(self._scene.chunks.get_my_params()):
+                ctx.request_delete()
+        finally:
+            self._reloading = False
+        self._loaded_prim_paths.clear()
+        self._chunk_prim_paths.clear()
+
     def reload_for_stage(self, stage: Usd.Stage) -> None:
         """Reinitialize for a newly opened stage (File > Open).  Safe to call from a
         deferred context (e.g. QTimer.singleShot) once the stage has fully settled.
@@ -385,16 +418,25 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         chunk objects (and their now-orphaned bookkeeping/positions) still registered
         and silently re-wrapped alongside the freshly loaded content.
         """
-        if not stage or not self._scene:
+        if not self._scene:
+            return
+        if stage is None:
+            # The host dropped its stage — usdview clears it before opening the next file,
+            # notifying twice (None, then the new stage). Drop the graph now instead of
+            # waiting for the second notice: it belongs to a stage that no longer exists,
+            # and usdview keeps pumping the Qt event loop across the gap (it even clears
+            # the prim selection in there), so anything the previous graph still reacts to
+            # — a selection sync, a deferred rebuild, a click — ran against no stage at all.
+            self._teardown_chunks()
+            self._loaded_stage = None
+            self._stage = None
             return
         if stage is self._loaded_stage:
             return
         self._loaded_stage = stage
         self._stage = stage
         chunk_registry.ChunkLayerManager().initialize(stage)
-        for ctx in list(self._scene.chunks.get_my_params()):
-            ctx.request_delete()
-        self._loaded_prim_paths.clear()
+        self._teardown_chunks()
         # Snapshot before load_chunks — the load itself overwrites any selection whose layer
         # isn't back yet (see snapshot_edit_target_selections).
         saved_targets = snapshot_edit_target_selections(stage)
@@ -1755,6 +1797,24 @@ def _promote_prim_spec(dst_spec: "Sdf.PrimSpec", holders: "list[Sdf.Layer]", sdf
         )
 
 
+def _apply_connection_list_op(spec: "Sdf.PropertySpec", op: "Sdf.PathListOp") -> None:
+    """Author op onto spec's connections, replacing whatever it had.
+
+    connectionPaths is a read-only field for SetInfo, so the list op has to be replayed
+    through the connectionPathList proxy one edit list at a time.
+    """
+    proxy = spec.connectionPathList
+    proxy.ClearEdits()
+    if op.isExplicit:
+        proxy.explicitItems = list(op.explicitItems)
+        return
+    proxy.addedItems = list(op.addedItems)
+    proxy.prependedItems = list(op.prependedItems)
+    proxy.appendedItems = list(op.appendedItems)
+    proxy.deletedItems = list(op.deletedItems)
+    proxy.orderedItems = list(op.orderedItems)
+
+
 def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "Sdf.Layer") -> bool:
     """Consolidate a chunk prim's bookkeeping spec into dst_layer, removing it from any other
     migratable layer it currently sits in. Returns True if anything moved.
@@ -1795,9 +1855,19 @@ def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "S
     if not sources:
         return False
     winners: "dict[str, Sdf.Layer]" = {}
+    # Connections resolve as their own field, not with the property spec that holds them.
+    # A bare attr spec (a CreateAttribute that authored no connection) can sit in a stronger
+    # layer than the spec actually carrying the wire — it wins `winners` below, its
+    # connection-less spec is what gets copied, and pruning the sources then drops the
+    # connection for good: a view loaded from file loses the inputs:chunk feeding it. So
+    # snapshot the strongest *authored* connection opinion per property up front — before
+    # any copying rewrites dst — and re-apply it after the copies.
+    conn_ops: "dict[str, Sdf.PathListOp]" = {}
     for layer in holders:  # GetLayerStack is strong -> weak, so first seen is strongest
-        for name in layer.GetPrimAtPath(sdf_path).properties.keys():
+        for name, prop in layer.GetPrimAtPath(sdf_path).properties.items():
             winners.setdefault(name, layer)
+            if name not in conn_ops and prop.HasInfo("connectionPaths"):
+                conn_ops[name] = prop.GetInfo("connectionPaths")
     prev = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
@@ -1811,6 +1881,10 @@ def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "S
                 continue  # already the winning opinion, and copying onto itself is a no-op
             prop_path = sdf_path.AppendProperty(name)
             Sdf.CopySpec(layer, prop_path, dst_layer, prop_path)
+        for name, op in conn_ops.items():
+            dst_prop = dst_layer.GetPropertyAtPath(sdf_path.AppendProperty(name))
+            if dst_prop is not None:
+                _apply_connection_list_op(dst_prop, op)
         for layer in sources:
             parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
             if parent and sdf_path.name in parent.nameChildren:

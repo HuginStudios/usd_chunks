@@ -447,6 +447,93 @@ def test_reload_for_stage_resets_on_same_path_fresh_stage(tmp_path) -> None:
     assert all(c.name != "first" for c in scene.get_chunks())
 
 
+def test_reload_for_stage_leaves_the_opened_files_prims_alone(tmp_path) -> None:
+    """File > Open must not let the OUTGOING graph's teardown edit the INCOMING file.
+
+    reload_for_stage switches self._stage to the new stage before dropping the previous
+    file's chunks, and _on_chunk_deleted addresses prims by path — so with the same paths
+    on both sides (the usual case: the file being opened was exported from this very tab)
+    the teardown deleted the new file's own prim specs and heal_exec_chain_on_delete
+    rewired its exec chain, all before load_chunks ever read it. The file came up with
+    chunks missing and wires dropped.
+    """
+    src = tmp_path / "graph.usda"
+    Sdf.Layer.CreateNew(str(src)).Save()
+    stage1 = Usd.Stage.Open(str(src))
+
+    class _Scene(_DummyScene):
+        def __init__(self):
+            super().__init__()
+            self._stage = stage1
+
+        def get_stage(self):
+            return self._stage
+
+    scene = _Scene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    sync = ChunkStageSync()
+    _chunk_usd_init(stage1, scene)
+
+    tab = scene.add_context("Tab1")
+    a = _chunk_with_module("a")
+    tab.add_param(a)
+    b = _chunk_with_module("b")
+    tab.add_param(b)
+    b.add_dependency(a)
+
+    out = tmp_path / "exported.usda"
+    export_chunks(scene, out)
+
+    # Open it: same prim paths (/Tab1/a, /Tab1/b) as the graph still in the session.
+    stage2 = Usd.Stage.Open(str(out))
+    scene._stage = stage2
+    sync.reload_for_stage(stage2)
+
+    for name in ("a", "b"):
+        assert stage2.GetPrimAtPath(Sdf.Path(f"/Tab1/{name}")).IsValid(), (
+            f"/Tab1/{name} was deleted from the file being opened"
+        )
+    exec_in = stage2.GetAttributeAtPath(Sdf.Path(f"/Tab1/b.{_EXEC_INPUT}"))
+    assert exec_in and exec_in.IsValid()
+    assert [str(p) for p in exec_in.GetConnections()] == [f"/Tab1/a.{_EXEC_OUTPUT}"]
+    reloaded = {c.name: c for c in scene.get_chunks()}
+    assert set(reloaded) == {"a", "b"}
+    assert [d.name for _, d in reloaded["b"].get_dependencies()] == ["a"]
+
+
+def test_migrate_bookkeeping_keeps_connection_held_by_a_weaker_spec() -> None:
+    """A bare attr spec must not out-strength the spec that carries the connection.
+
+    Loading a file authors chunk-prim attrs into the session layer while the connection
+    itself is still only in the (weaker) root layer. _migrate_chunk_bookkeeping resolved
+    per property, so the session's connection-less inputs:chunk won and the root spec —
+    the one holding the wire — was pruned, silently unwiring the chunk.
+    """
+    from usd_chunks.plugins.chunk_usd import _migrate_chunk_bookkeeping
+
+    root = Sdf.Layer.CreateAnonymous(".usda")
+    session = Sdf.Layer.CreateAnonymous(".usda")
+    stage = Usd.Stage.Open(root, session)
+
+    view_path = Sdf.Path("/Tab1/View1")
+    conn = Sdf.Path(f"/Tab1/Prim.{_EXEC_OUTPUT}")
+    with Usd.EditContext(stage, root):
+        prim = stage.DefinePrim(view_path, _CHUNK_PRIM_TYPENAME)
+        prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False).SetConnections([conn])
+    with Usd.EditContext(stage, session):
+        # A bare CreateAttribute, no connection authored — what load does on the way in.
+        stage.GetPrimAtPath(view_path).CreateAttribute(
+            _EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False
+        )
+
+    assert _migrate_chunk_bookkeeping(stage, str(view_path), session)
+
+    exec_in = stage.GetAttributeAtPath(view_path.AppendProperty(_EXEC_INPUT))
+    assert [str(p) for p in exec_in.GetConnections()] == [str(conn)]
+    assert session.GetAttributeAtPath(view_path.AppendProperty(_EXEC_INPUT)) is not None
+    assert root.GetPrimAtPath(view_path) is None
+
+
 def test_load_chunks_preserves_named_tab_context_on_reload(tmp_path) -> None:
     """A named top-level Tab context (e.g. "Tab1"), saved via export_chunks and
     reloaded into a fresh session/stage, must come back as that same context — not
@@ -960,7 +1047,12 @@ def test_blocked_chunk_does_not_execute_on_creation() -> None:
     must not run its module on creation — not via param-resolve and not via execute-on-creation.
     Unblocking and cooking it (as recook does when it joins the view's tree) runs it."""
     stage = Usd.Stage.CreateInMemory()
-    scene = _DummyScene()
+
+    class _Scene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _Scene()
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
     ChunkStageSync().initialize(stage, scene)
 

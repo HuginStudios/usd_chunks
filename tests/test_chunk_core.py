@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 # import usd_chunks.chunk_registry  # noqa: F401  # import-order workaround for chunk_core/chunk_registry circular init
+from pxr import Usd
+
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ProxyParam, SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
@@ -445,7 +447,13 @@ def test_state_change_does_not_reexecute_module():
     """A pure state change (e.g. selecting a node) must not re-run the chunk's module — only
     data changes (a param value) should. Selection/collapse used to cascade into module.execute,
     so selecting a node re-authored its output."""
-    scene = _DummyScene()
+    stage = Usd.Stage.CreateInMemory()
+
+    class _Scene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _Scene()
     reg = chunk_registry.ChunkRegistry()
     reg.initialize(scene, "pytest")
 
@@ -468,3 +476,30 @@ def test_state_change_does_not_reexecute_module():
 
     slider.value = 5.0
     assert len(calls) >= 1  # a data change does execute the module
+
+
+def test_module_does_not_execute_without_a_stage():
+    """Every chunk module works through get_stage(), so a stage-less solve must not run one.
+
+    Hosts do go stageless for a window — usdview clears its stage before opening the next
+    file while still pumping the Qt event loop, clearing the prim selection in there — and a
+    param write from that churn used to reach the module and crash it on its first stage
+    call ('NoneType' object has no attribute 'DefinePrim')."""
+    scene = _DummyScene()  # get_stage() -> None
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+
+    calls = []
+
+    class _Mod:
+        def execute(self, prop):
+            calls.append(1)
+
+    c = chunk.Chunk("stageless")
+    slider = chunk.Slider("s", default_value=0.0)
+    c.add_param(slider)
+    scene.add_chunk(c)
+    c._module = _Mod()
+
+    calls.clear()
+    slider.value = 5.0
+    assert calls == []
