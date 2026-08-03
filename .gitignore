@@ -14,9 +14,14 @@ build
 # AI tool working directories and issue tracker (local only)
 .scratch/
 issues/
-.claude/
 .kilocode/
 .kiro/
 .planning/
 .vexp/
 .sven/
+
+# .claude/ is shared (settings.json, skills/, agents/, commands/) except these
+# personal/machine-specific bits:
+.claude/settings.local.json
+.claude/CLAUDE.md
+.claude/hooks/
