@@ -41,6 +41,13 @@ ui = ["PySide6"]
 # that import it. Chunks whose imports fail are skipped by the registry, so the heavier
 # example deps (numpy, opencv) are deliberately left out.
 dev = ["pytest", "ruff", "build", "types-usd", "requests"]
+# Every optional third-party import used by a bundled chunk (scripts/, not the core
+# library) — mujoco/scipy for rbd_solver.py, numpy for several modelling/example chunks,
+# opencv-python (cv2) + requests for examples/, polars for csv_plot.py. None of these are
+# core dependencies: a chunk whose import fails is silently skipped by the registry, so
+# installing without this extra just means those specific chunks don't show up. Install
+# this to actually exercise every chunk in the repo, e.g. for full local testing.
+full = ["mujoco", "scipy", "numpy", "opencv-python", "requests", "polars"]
 docs = [
     "mkdocs",
     "mkdocs-material",

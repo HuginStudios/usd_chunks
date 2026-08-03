@@ -100,6 +100,25 @@ usdchunks plugin-path
 
 **PYTHONPATH** - Only needed when running from a clone rather than an install; add this repo's location so usdview can find the python modules.
 
+### Development setup
+
+Contributors working from a clone (not a `pip install`) should use [uv](https://docs.astral.sh/uv/) instead of ad hoc `pip install` — it resolves against the committed `uv.lock`, so everyone ends up on identical dependency versions rather than whatever happened to be current the day they ran `pip install`.
+
+```
+uv sync --extra dev --extra ui --extra full
+```
+
+This creates `.venv` with the project installed editable, plus:
+- `dev` — pytest, ruff, build, types-usd, requests
+- `ui` — PySide6
+- `full` — every optional third-party import a bundled chunk in `scripts/` uses (mujoco, scipy, numpy, opencv-python, requests, polars). None of these are core library dependencies — a chunk whose import fails is silently skipped by the registry — but without this extra, chunks like the RBD solver or AMD MaterialX library won't be exercisable locally.
+
+Run the test suite with `uv run pytest`, or activate `.venv` directly.
+
+If `pyproject.toml`'s dependencies change, run `uv lock` and commit the updated `uv.lock` alongside it — don't hand-edit the lockfile.
+
+Note: this venv's `usd-core` is the plain PyPI wheel and does **not** include usdview (`pxr.Usdviewq`) — tests that need it skip automatically. For the full usdview integration, use a full USD build and the `PYTHONPATH`/`PXR_PLUGINPATH_NAME` setup above instead of this venv.
+
 ## Build documentation
 In order to build the documentation, your environment must be set to run the usd_chunks modules.
 PXR_PLUGINPATH_NAME and PYTHONPATH mut be properly initialized as we do some dynamic code checking using
