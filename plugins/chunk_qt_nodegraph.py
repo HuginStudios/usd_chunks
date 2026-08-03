@@ -1875,14 +1875,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if not registry.initialized:
             return
         frame = registry.scene.get_current_frame()
-        any_keyframed = False
+        keyframed_chunks = []
         for node in list(graph_scene._nodes.values()):
             if node.chunk.has_state(ChunkFlags.State.SELECTED):
                 if chunk_animation.keyframe_chunk(node.chunk, frame, force_author=_force_author_param):
                     node.set_animated(True)
-                    any_keyframed = True
-        if any_keyframed:
+                    keyframed_chunks.append(node.chunk)
+        if keyframed_chunks:
+            # Range must settle before baking scrubs across it.
             chunk_animation.ensure_frame_range_covers(frame)
+            for c in keyframed_chunks:
+                chunk_animation.bake_procedural_output(c)
 
     # ------------------------------------------------------------------
     # Wire drag

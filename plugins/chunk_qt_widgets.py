@@ -810,7 +810,8 @@ class LabeledWidget(QtWidgets.QWidget):
             self.setHidden(self._model.has_state(ChunkFlags.State.HIDDEN))
 
     def _refresh_animated_style(self) -> None:
-        """Tint the label green while this param carries >=1 keyframe.
+        """Tint the value widget's background green while this param carries >=1 keyframe
+        (the widget itself, not its label -- this is where the user's eye actually is).
 
         Explicitly called right after Set Keyframe/Clear Keyframe (immediate feedback,
         same code path as the action itself) and from update_value() on every "value"
@@ -822,7 +823,7 @@ class LabeledWidget(QtWidgets.QWidget):
         if param is None or not chunk_animation.is_animatable_param(param):
             return
         animated = chunk_animation.is_param_animated(param)
-        self.label.setStyleSheet("color: #6FCF7A;" if animated else "")
+        self.widget.setStyleSheet("background-color: #2E5233;" if animated else "")
 
     def should_show_tooltip(self):
         if not isinstance(self.widget, ChunkParamWidgetBase):
@@ -966,13 +967,18 @@ class LabeledWidget(QtWidgets.QWidget):
                 if registry.initialized:
                     frame = registry.scene.get_current_frame()
                     if chunk_animation.keyframe_param(param, frame, force_author=_force_author_param):
+                        # Range must settle before baking scrubs across it.
                         chunk_animation.ensure_frame_range_covers(frame)
                         self._refresh_animated_style()
+                        if chunk_obj is not None:
+                            chunk_animation.bake_procedural_output(chunk_obj)
             elif clear_keyframe_action and action == clear_keyframe_action:
                 registry = chunk_registry.ChunkRegistry()
                 if registry.initialized:
                     chunk_animation.clear_keyframes_for_param(param, registry.scene.get_current_frame())
                     self._refresh_animated_style()
+                    if chunk_obj is not None:
+                        chunk_animation.bake_procedural_output(chunk_obj)
 
 
 class ChunkArea(QtWidgets.QScrollArea):

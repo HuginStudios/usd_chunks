@@ -630,3 +630,84 @@ def test_ensure_frame_range_covers_tolerates_host_without_frame_range_api(monkey
     monkeypatch.setattr(chunk_registry.ChunkRegistry(), "initialized", True)
 
     chunk_animation.ensure_frame_range_covers(24.0)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# bake_procedural_output
+# ---------------------------------------------------------------------------
+
+class _FakeModuleWithBake:
+    def __init__(self):
+        self.bake_calls: list = []
+
+    def bake(self, node, start_frame, end_frame):
+        self.bake_calls.append((node, start_frame, end_frame))
+
+
+class _FakeModuleWithoutBake:
+    """Stands in for a chunk module with no bake() hook at all (most chunks)."""
+    pass
+
+
+class _FakeProceduralChunk:
+    def __init__(self, module=None):
+        self._module = module
+        self.executed = 0
+
+    def execute(self):
+        self.executed += 1
+
+
+def test_bake_procedural_output_calls_module_bake_hook_with_frame_range(monkeypatch) -> None:
+    """The whole point of this design (vs. an earlier version that scrubbed the timeline
+    to force reactive recomputation): bake() is a plain, direct call with the frame
+    range -- no touching the current frame, no re-triggering any OTHER chunk's own
+    reactive hooks along the way (which was exactly the earlier version's problem: an
+    expensive "auto-simulate" chunk downstream would re-run on every single frame of the
+    scrub, not just the one chunk actually being baked)."""
+    module = _FakeModuleWithBake()
+    chunk_obj = _FakeProceduralChunk(module)
+    scene = _DummyScene(start_frame=1.0, end_frame=24.0, current_frame=3.0)
+    monkeypatch.setattr(chunk_registry.ChunkRegistry(), "scene", scene)
+    monkeypatch.setattr(chunk_registry.ChunkRegistry(), "initialized", True)
+    monkeypatch.setattr(chunk_animation, "chunk_has_animated_params", lambda c: True)
+
+    chunk_animation.bake_procedural_output(chunk_obj)
+
+    assert module.bake_calls == [(chunk_obj, 1.0, 24.0)]
+    assert chunk_obj.executed == 0  # execute() itself must not be touched by baking
+    assert scene.get_current_frame() == 3.0  # untouched -- no scrubbing
+
+
+def test_bake_procedural_output_noop_when_module_has_no_bake_hook(monkeypatch) -> None:
+    """Most chunks won't define bake() -- must be a clean no-op, not an AttributeError."""
+    chunk_obj = _FakeProceduralChunk(_FakeModuleWithoutBake())
+    scene = _DummyScene(start_frame=1.0, end_frame=24.0)
+    monkeypatch.setattr(chunk_registry.ChunkRegistry(), "scene", scene)
+    monkeypatch.setattr(chunk_registry.ChunkRegistry(), "initialized", True)
+    monkeypatch.setattr(chunk_animation, "chunk_has_animated_params", lambda c: True)
+
+    chunk_animation.bake_procedural_output(chunk_obj)  # must not raise
+
+    assert chunk_obj.executed == 0
+
+
+def test_bake_procedural_output_settles_via_direct_execute_when_not_animated(monkeypatch) -> None:
+    """Once nothing is animated anymore (e.g. right after Clear Keyframes removed the
+    last sample), one direct execute() call is enough to settle the output back to a
+    static value via the module's own normal (non-animated) code path."""
+    chunk_obj = _FakeProceduralChunk(_FakeModuleWithBake())
+    scene = _DummyScene()
+    monkeypatch.setattr(chunk_registry.ChunkRegistry(), "scene", scene)
+    monkeypatch.setattr(chunk_registry.ChunkRegistry(), "initialized", True)
+    monkeypatch.setattr(chunk_animation, "chunk_has_animated_params", lambda c: False)
+
+    chunk_animation.bake_procedural_output(chunk_obj)
+
+    assert chunk_obj.executed == 1
+    assert chunk_obj._module.bake_calls == []  # bake() itself must not run
+
+
+def test_bake_procedural_output_noop_when_registry_not_initialized(monkeypatch) -> None:
+    monkeypatch.setattr(chunk_registry.ChunkRegistry(), "initialized", False)
+    chunk_animation.bake_procedural_output(None)  # must not raise

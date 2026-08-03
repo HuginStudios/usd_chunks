@@ -213,6 +213,62 @@ def chunk_has_animated_params(chunk_obj) -> bool:
     return any(is_param_animated(param) for param in iter_animatable_params(chunk_obj))
 
 
+def bake_procedural_output(chunk_obj) -> None:
+    """Author real per-frame time samples for a procedural chunk's computed output, by
+    calling its module-level `bake(node, start_frame, end_frame)` reserved hook if the
+    module defines one (see scripts/transform.py's bake() for the reference
+    implementation). See CONTEXT.md's "Baking procedural chunk output" section for why
+    this matters -- e.g. the RBD solver's mocap-collider path needs real
+    GetNumTimeSamples() > 1 on the collider's own xformOps, not just a live per-frame
+    recompute that only ever shows up in this interactive session.
+
+    Deliberately does NOT scrub the timeline / re-trigger the reactive execute() cascade
+    to force recomputation (an earlier version of this function did, and it had real
+    problems: it re-triggered *every* animated chunk's own reactive hooks on every frame
+    of the scrub -- not just this one -- which is exactly the kind of thing that makes an
+    expensive reactive chunk elsewhere in the graph (e.g. an "auto-simulate" RBD solver)
+    re-run on every single frame of the bake, and it temporarily moved the user's own
+    playhead. bake() is expected to be a pure, self-contained function that resolves each
+    animated input directly from its own already-keyframed storage attribute at each
+    frame and writes the result with an explicit Usd.TimeCode -- no dependency on
+    execute()'s own per-run Clear() idiom, no transient "currently baking" flag needed.
+
+    Called automatically after every keyframe / clear-keyframe action (K and the
+    per-param menu). No-op if chunk_obj's module has no bake() hook at all, or the host
+    has no current-frame API (chunk_core.py's SceneSender base raises NotImplementedError;
+    this feature is usdview-only for v1, per CONTEXT.md). Falls back to one direct
+    chunk_obj.execute() call (settling the output to a static value via the module's
+    normal, non-animated code path) if nothing is animated anymore -- e.g. right after
+    Clear Keyframes removes the last remaining sample.
+    """
+    registry = chunk_registry.ChunkRegistry()
+    if not registry.initialized:
+        return
+    scene = registry.scene
+
+    if not chunk_has_animated_params(chunk_obj):
+        try:
+            chunk_obj.execute()
+        except NotImplementedError:
+            pass
+        return
+
+    module = getattr(chunk_obj, "_module", None)
+    bake_fn = getattr(module, "bake", None)
+    if not callable(bake_fn):
+        return
+
+    try:
+        start = scene.get_start_frame()
+        end = scene.get_end_frame()
+    except NotImplementedError:
+        return
+    if start is None or end is None:
+        return
+
+    bake_fn(chunk_obj, start, end)
+
+
 def keyframe_chunk(chunk_obj, frame: float, force_author=None) -> List:
     """Keyframe every animatable, non-expression-driven param on chunk_obj at `frame`.
 
