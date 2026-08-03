@@ -21,6 +21,7 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, someParam, {"any": "data"}):
 
 import functools
 import inspect
+import itertools
 import logging
 import weakref
 from abc import abstractmethod
@@ -484,9 +485,26 @@ class DagConnections:
     outputs: ConnSetT = field(factory=ConnSetT)
 
 
+_dag_graph_id_counter = itertools.count()
+
+
 class DagGraphID:
     def __init__(self):
         self._store: Optional[DagGraphID] = None
+        # A real, monotonically-increasing counter, NOT id(self) -- CPython only
+        # guarantees an object's id() is unique among objects alive at the same time; once
+        # a DagGraphID is garbage-collected, its address is fair game for reuse by an
+        # unrelated later object, which would make the two report the same identifier.
+        # That's a real, seen-in-CI bug: a full scene reload's chunk/DagNode churn creates
+        # and drops DagGraphID instances fast enough that two unrelated ones landed at the
+        # same freed address on one CI matrix cell (macOS, Python 3.10) -- specifically the
+        # combination where CPython's allocator and GC timing differ most from the
+        # Windows/Linux/newer-Python combinations that never hit it -- producing a
+        # duplicate graph_layers dict key and an attempt to insert the same anonymous
+        # layer identifier into a stage's subLayerPaths twice (Sdf raises: "Duplicate item
+        # ... not allowed for field 'subLayers'"). A counter is unique for the process's
+        # entire lifetime regardless of when any instance is freed.
+        self._uid = next(_dag_graph_id_counter)
 
     def root(self) -> "DagGraphID":
         """
@@ -506,7 +524,7 @@ class DagGraphID:
         return node
 
     def get_identifier(self):
-        return id(self.root())
+        return self.root()._uid
 
 
 class DagNode:
