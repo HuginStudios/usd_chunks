@@ -17,7 +17,6 @@ from pxr import Gf, Sdf, Usd, UsdUI
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks import chunk as _chunk
-from usd_chunks import chunk_animation
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
 from usd_chunks.plugins import chunk_graph_layout
@@ -26,7 +25,7 @@ from usd_chunks.plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, CHUNK_STYLESHEET, ViewSlotState, _force_author_param
+from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, CHUNK_STYLESHEET, ViewSlotState
 
 _PORT_RADIUS = 5
 _NODE_WIDTH = 220
@@ -208,7 +207,6 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self.prim = prim
         self._locked = locked
         self._pinned = chunk_usd.is_chunk_pinned(chunk)
-        self._animated = chunk_animation.chunk_has_animated_params(chunk)
         self._is_group = chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT)
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
@@ -250,12 +248,6 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         """Update the cached pin badge state after a menu toggle and repaint just this node —
         no full graph rebuild needed for a cosmetic change."""
         self._pinned = pinned
-        self.update()
-
-    def set_animated(self, animated: bool) -> None:
-        """Update the cached animated-glyph state after K / Clear Keyframes and repaint just
-        this node — no full graph rebuild needed for a cosmetic change."""
-        self._animated = animated
         self.update()
 
     def set_locked(self, locked: bool) -> None:
@@ -609,8 +601,6 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             label = f"{label}  \U0001f512"
         if self._pinned:
             label = f"{label}  \U0001f4cc"
-        if self._animated:
-            label = f"{label}  ⏱"
         painter.drawText(
             QtCore.QRectF(8, 4, _NODE_WIDTH - 16, 18),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
@@ -1489,20 +1479,6 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
-        # K-to-keyframe: same fallback pattern as F/L, for when a proxy widget (e.g. the
-        # side panel's ChunkWidget, which is what's focused right after selecting a node)
-        # has logical focus but the cursor is over the graph view.
-        if self._active is None and event.key() == QtCore.Qt.Key.Key_K:
-            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
-            if view_global.contains(QtGui.QCursor.pos()):
-                if etype == QtCore.QEvent.Type.ShortcutOverride:
-                    event.accept()
-                    return True
-                if etype == QtCore.QEvent.Type.KeyPress:
-                    view._keyframe_selected()
-                    event.accept()
-                    return True
-
         if self._active is None:
             return False
         if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -1579,7 +1555,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._view_state.slot_changed.connect(self._on_view_slot_changed)
         self._view_state.create_view_for.connect(self._on_create_view_for_path)
         self._view_state.pin_changed.connect(self._on_pin_changed)
-        self._view_state.keyframes_cleared.connect(self._on_keyframes_cleared)
 
     def _on_toggle_param_edges(self, checked: bool):
         graph_scene = self.scene()
@@ -1847,10 +1822,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._toggle_disable_selected()
             event.accept()
             return
-        if event.key() == QtCore.Qt.Key.Key_K:
-            self._keyframe_selected()
-            event.accept()
-            return
         if event.key() == QtCore.Qt.Key.Key_V:
             self._create_view_node()
             event.accept()
@@ -1902,27 +1873,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     node.chunk.unset_state(ChunkFlags.State.DISABLED)
                 else:
                     node.chunk.set_state(ChunkFlags.State.DISABLED)
-
-    def _keyframe_selected(self) -> None:
-        """K — author a keyframe at the current frame on every animatable param of every
-        selected chunk (Slider/Spinbox/Checkbox/ChunkVectorBase; skips Menu/LineEdit/Button
-        and any param currently driven by a live @Node.attr@ expression). See
-        chunk_animation.keyframe_chunk and CONTEXT.md's "Attribute Animation" section."""
-        graph_scene = self.scene()
-        if not isinstance(graph_scene, ChunkGraphScene):
-            return
-        registry = chunk_registry.ChunkRegistry()
-        if not registry.initialized:
-            return
-        frame = registry.scene.get_current_frame()
-        any_keyframed = False
-        for node in list(graph_scene._nodes.values()):
-            if node.chunk.has_state(ChunkFlags.State.SELECTED):
-                if chunk_animation.keyframe_chunk(node.chunk, frame, force_author=_force_author_param):
-                    node.set_animated(True)
-                    any_keyframed = True
-        if any_keyframed:
-            chunk_animation.ensure_frame_range_covers(frame)
 
     # ------------------------------------------------------------------
     # Wire drag
@@ -2478,12 +2428,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._view_state.slot_changed.disconnect(self._on_view_slot_changed)
         self._view_state.create_view_for.disconnect(self._on_create_view_for_path)
         self._view_state.pin_changed.disconnect(self._on_pin_changed)
-        self._view_state.keyframes_cleared.disconnect(self._on_keyframes_cleared)
         self._view_state = vs
         vs.slot_changed.connect(self._on_view_slot_changed)
         vs.create_view_for.connect(self._on_create_view_for_path)
         vs.pin_changed.connect(self._on_pin_changed)
-        vs.keyframes_cleared.connect(self._on_keyframes_cleared)
 
     def _on_pin_changed(self, target_chunk: core.ChunkBase, pinned: bool) -> None:
         graph_scene = self.scene()
@@ -2492,14 +2440,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         node = graph_scene._nodes.get(chunk_usd.get_chunk_prim_path(target_chunk))
         if node is not None:
             node.set_pinned(pinned)
-
-    def _on_keyframes_cleared(self, target_chunk: core.ChunkBase) -> None:
-        graph_scene = self.scene()
-        if not isinstance(graph_scene, ChunkGraphScene):
-            return
-        node = graph_scene._nodes.get(chunk_usd.get_chunk_prim_path(target_chunk))
-        if node is not None:
-            node.set_animated(chunk_animation.chunk_has_animated_params(target_chunk))
 
     def _on_create_view_for_path(self, prim_path: str) -> None:
         self._create_view_node_for_prim(prim_path)
