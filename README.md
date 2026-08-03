@@ -113,11 +113,37 @@ This creates `.venv` with the project installed editable, plus:
 - `ui` — PySide6
 - `full` — every optional third-party import a bundled, tracked chunk in `scripts/` uses (mujoco, scipy, numpy, opencv-python, requests). None of these are core library dependencies — a chunk whose import fails is silently skipped by the registry — but without this extra, chunks like the RBD solver or AMD MaterialX library won't be exercisable locally. Kept as one bundle rather than split per feature area while the team is small — revisit if that changes.
 
-Run the test suite with `uv run pytest`, or activate `.venv` directly.
-
-If `pyproject.toml`'s dependencies change, run `uv lock` and commit the updated `uv.lock` alongside it — don't hand-edit the lockfile.
-
 Note: this venv's `usd-core` is the plain PyPI wheel and does **not** include usdview (`pxr.Usdviewq`) — tests that need it skip automatically. For the full usdview integration, use a full USD build and the `PYTHONPATH`/`PXR_PLUGINPATH_NAME` setup above instead of this venv.
+
+#### Jumping into the env
+
+Either prefix commands with `uv run` (no activation needed):
+```
+uv run pytest
+uv run python
+```
+
+...or activate it once per terminal session, then use `python`/`pytest`/etc. directly:
+```
+.venv\Scripts\Activate.ps1     # PowerShell (Windows)
+source .venv/bin/activate      # bash/zsh (macOS/Linux)
+```
+Run `deactivate` to leave it. (If PowerShell refuses to run the activation script, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first, just for that terminal.)
+
+#### Adding a new dependency
+
+Don't hand-edit `pyproject.toml`'s dependency lists or `uv.lock` — use `uv add`, which updates both together:
+
+```
+uv add some-package                    # core dependency
+uv add some-package --optional ui      # add to the `ui` extra
+uv add some-package --optional full    # add to the `full` extra
+uv add some-package --dev              # dev-only tool, not shipped to users
+```
+
+`uv remove some-package` (with the matching `--optional <extra>`/`--dev` flag) removes it the same way. One gotcha: `uv add`/`uv remove` can silently drop an inline `# comment` on the line they touch — check `git diff pyproject.toml` after and restore any comment that got dropped.
+
+If you ever need to re-resolve without changing any dependency (e.g. after pulling someone else's `pyproject.toml` change), run `uv lock` and commit the updated `uv.lock`.
 
 ## Build documentation
 In order to build the documentation, your environment must be set to run the usd_chunks modules.
