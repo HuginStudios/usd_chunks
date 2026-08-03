@@ -41,17 +41,16 @@ ui = ["PySide6"]
 # that import it. Chunks whose imports fail are skipped by the registry, so the heavier
 # example deps (numpy, opencv) are deliberately left out.
 dev = ["pytest", "ruff", "build", "types-usd", "requests"]
-# Every optional third-party import used by a bundled, tracked chunk (scripts/, not the
-# core library) — mujoco/scipy for rbd_solver.py, numpy for several modelling/example
-# chunks, opencv-python (cv2) + requests for examples/. None of these are core
-# dependencies: a chunk whose import fails is silently skipped by the registry, so
-# installing without this extra just means those specific chunks don't show up. Kept as
-# one bundle (not split per feature area) deliberately, while the team is still small and
-# every chunk here is actively worked on together — split later if/when that stops being
-# true (many more chunk categories, or external users who care about install size).
-# polars is NOT here even though scripts/csv_plot.py imports it -- that file is untracked
-# local scratch work, not part of the repo.
-full = ["mujoco", "scipy", "numpy", "opencv-python", "requests"]
+# Optional deps used by individual bundled chunks (not core deps — a chunk whose import
+# fails is just skipped by the registry). One shared bundle for now; split per feature
+# area later if that starts making sense.
+full = [
+    "mujoco",        # rbd_solver.py
+    "scipy",         # rbd_solver.py (heightfield smoothing)
+    "numpy",         # rbd_solver.py, modelling/add_curves.py, modelling/add_mesh.py, examples/serialize.py
+    "opencv-python", # examples/requirements.py (cv2)
+    "requests",      # examples/AMDMaterialXLibrary.py
+]
 docs = [
     "mkdocs",
     "mkdocs-material",
