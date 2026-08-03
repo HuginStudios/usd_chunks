@@ -30,16 +30,3 @@ def reset_chunk_layer_manager():
     """
     yield
     ChunkLayerManager().reset()
-
-
-@pytest.fixture(autouse=True)
-def reset_chunk_animation_manager():
-    """Reset ChunkAnimationManager's tracked-param set between tests for isolation.
-
-    Without this, a param object kept alive by a previous test's local variables would
-    stay tracked, and on_frame_changed() in a later test would try to touch a param whose
-    backing stage no longer matches ChunkRegistry().scene.
-    """
-    yield
-    from usd_chunks.chunk_animation import ChunkAnimationManager
-    ChunkAnimationManager().clear()

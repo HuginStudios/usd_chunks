@@ -3,53 +3,15 @@
 This module provides a framework for dynamically loading and managing custom UI modules
 """
 
-import logging
-
 from pxr import Tf, Usd, Gf
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
-from pxr.Usdviewq.rootDataModel import RootDataModel
 
-from usd_chunks import chunk_animation, chunk_registry, chunk_core, chunk_serial
+from usd_chunks import chunk_registry, chunk_core, chunk_serial
 from usd_chunks.plugins import chunk_qt, chunk_usd
 
 from typing import List
-
-logger = logging.getLogger(__name__)
-
-_frame_hook_installed = False
-
-
-def _install_frame_change_hook() -> None:
-    """Patch RootDataModel.currentFrame so every frame-change path notifies
-    ChunkAnimationManager -- interactive timeline scrubbing, playback, our own
-    UsdviewScene.set_current_frame()/appController.setFrame(), and usdview's own startup
-    frame-range init all assign to this one property.
-
-    appController exposes no signal for frame changes. Wrapping appController.setFrame()
-    alone was tried and rejected during design: scrubbing and playback both go through
-    appController.frameSlider.valueChanged -> _setFrameIndex() -> dataModel.currentFrame
-    directly, bypassing setFrame() entirely. RootDataModel.currentFrame's setter
-    (rootDataModel.py) is the one point every path actually shares. See CONTEXT.md's
-    "Attribute Animation (keyframes)" section for the full trace.
-    """
-    global _frame_hook_installed
-    if _frame_hook_installed:
-        return
-    _frame_hook_installed = True
-
-    original_property = RootDataModel.currentFrame
-    original_setter = original_property.fset
-
-    def _patched_setter(self, value):
-        original_setter(self, value)
-        try:
-            chunk_animation.ChunkAnimationManager().on_frame_changed(value.GetValue())
-        except Exception:
-            logger.exception("chunk_animation frame-change hook failed")
-
-    RootDataModel.currentFrame = property(original_property.fget, _patched_setter)
 
 
 class UsdviewScene(chunk_core.SceneSender):
@@ -60,8 +22,6 @@ class UsdviewScene(chunk_core.SceneSender):
 
     def __init__(self, usdviewAPI: UsdviewModule.UsdviewApi):
         self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
-
-        _install_frame_change_hook()
 
         # Usdview stubs are not up to date, so need to ignore typing
         data_model = self.usdviewAPI.dataModel
@@ -86,25 +46,13 @@ class UsdviewScene(chunk_core.SceneSender):
         super().__init__()
 
     def get_current_frame(self) -> float:
-        # dataModel.currentFrame is actually a Usd.TimeCode (RootDataModel's setter enforces
-        # this), not a plain float, despite this method's own -> float annotation. Usd.TimeCode(x)
-        # tolerates being handed an already-TimeCode value almost everywhere, which is why this
-        # went unnoticed -- but Stage.SetStartTimeCode/SetEndTimeCode strictly require a plain
-        # double and reject a TimeCode outright (Boost.Python ArgumentError). GetValue() is the
-        # actual, always-correct plain-float extraction.
-        return self.usdviewAPI.dataModel.currentFrame.GetValue()
+        return self.usdviewAPI.dataModel.currentFrame
 
     def get_end_frame(self) -> float:
-        # dataModel has no frameRangeEnd of its own -- the real, always-initialized state
-        # usdview itself uses for playback range is appController.realEndTimeCode (see
-        # _UpdateTimeSamples). set_end_frame below writes both; only realEndTimeCode is
-        # guaranteed to exist before the first set_end_frame call.
-        appCtrl = getattr(self.usdviewAPI, "_UsdviewApi__appController")
-        return appCtrl.realEndTimeCode
+        return self.usdviewAPI.dataModel.frameRangeEnd
 
     def get_start_frame(self) -> float:
-        appCtrl = getattr(self.usdviewAPI, "_UsdviewApi__appController")
-        return appCtrl.realStartTimeCode
+        return self.usdviewAPI.dataModel.frameRangeBegin
 
     def set_current_frame(self, frame: float):
         appCtrl = self.usdviewAPI._UsdviewApi__appController
@@ -118,15 +66,9 @@ class UsdviewScene(chunk_core.SceneSender):
 
         appCtrl = getattr(self.usdviewAPI, "_UsdviewApi__appController")
         with Usd.EditContext(self.get_stage(), stage.GetSessionLayer()):
-            # SetEndTimeCode (not SetMetadata("endFrame", ...), a nonstandard key USD's own
-            # HasAuthoredTimeCodeRange()/GetEndTimeCode() don't recognize) persists the real
-            # stage metadata. But _UpdateTimeSamples() (below) does NOT re-derive
-            # realStartTimeCode/realEndTimeCode from that metadata -- only _reloadFixedUI()
-            # does, and it's heavier than needed here (recomputes FPS, step, etc). So
-            # realEndTimeCode must also be assigned directly, or _UpdateTimeSamples() just
-            # recomputes _timeSamples from whatever (possibly still None) value it already had.
-            stage.SetEndTimeCode(frame)
-        appCtrl.realEndTimeCode = frame
+            stage.SetMetadata("endFrame", frame)
+            self.usdviewAPI.dataModel.frameRangeEnd = frame
+            appCtrl.realEndTimeCode = frame
         appCtrl._UpdateTimeSamples()
 
     def set_start_frame(self, frame: float):
@@ -136,8 +78,9 @@ class UsdviewScene(chunk_core.SceneSender):
 
         appCtrl = getattr(self.usdviewAPI, "_UsdviewApi__appController")
         with Usd.EditContext(self.get_stage(), stage.GetSessionLayer()):
-            stage.SetStartTimeCode(frame)
-        appCtrl.realStartTimeCode = frame
+            stage.SetMetadata("startFrame", frame)
+            self.usdviewAPI.dataModel.frameRangeBegin = frame
+            appCtrl.realStartTimeCode = frame
         appCtrl._UpdateTimeSamples()
 
     def request_save(self) -> bool:
