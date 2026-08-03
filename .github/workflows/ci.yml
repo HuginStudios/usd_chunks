@@ -5,22 +5,51 @@ on:
     branches: [main]
   pull_request:
 
+# Superseded runs are pure waste: pushing twice to a PR in quick succession
+# otherwise bills both, and the macOS rows are expensive. main is excluded from
+# cancellation so every merged commit keeps a result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test:
-    # usd_chunks runs inside DCCs, so the matrix tracks where those actually live:
-    # Windows and macOS as much as Linux, and 3.11 in particular (Houdini 20.5,
-    # Maya 2025). Trim the non-Linux rows with `exclude:` if CI minutes get tight.
+    # usd_chunks runs inside DCCs, so the matrix tracks where those actually live.
+    # Runner minutes are billed at 1x/2x/10x for Linux/Windows/macOS, so the full
+    # cross product got expensive fast.
+    #
+    # macOS is dropped for now purely on cost: at 10x it was more than half the
+    # bill on its own. Nothing about the suite is macOS-specific, and the POSIX
+    # behaviour it covered (os.pathsep, bin/ vs Scripts/) is also exercised on
+    # Linux. Restore it by adding macos-latest back to `os` below.
+    #
+    # 3.13 is the version worth running on every OS, since the OS axis is what
+    # catches real bugs here (os.pathsep, .exe console scripts, path layout).
+    # The other versions ride along on Linux only:
+    #   3.10 - the requires-python floor declared in pyproject.toml
+    #   3.11 - what the DCCs actually ship today (Houdini 20.5, Maya 2025)
+    # 3.12 is dropped outright: nothing targets it and it sits between two
+    # versions that are both covered.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.13"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.11"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          # Dependencies come from pyproject.toml, so the cache key has to hash
+          # that rather than the requirements.txt setup-python looks for.
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       # The widget tests import PySide6 at module scope, so the suite needs the ui extra
       # too. tests/conftest.py already forces QT_QPA_PLATFORM=offscreen, but PySide6
@@ -63,6 +92,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - run: pip install build
       - run: python -m build
 
