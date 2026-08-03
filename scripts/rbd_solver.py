@@ -136,6 +136,38 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     return {"nrow": N, "ncol": N, "size": size, "heights": heights, "pos": pos, "quat": quat}
 
 
+def _is_world_animated(cp: Usd.Prim) -> bool:
+    """Whether cp's world transform is driven by real time samples anywhere in its
+    ancestor chain, at any time -- not just cp's own xformOps.
+
+    Checking only cp's own xformOps misses the common case where the animation lives on
+    an ancestor Xform instead of the collision prim itself -- e.g. this codebase's
+    Transform chunk authors xformOp:transform directly on whatever prim its "Prim Path"
+    field names, which for a typical asset (a wrapping Xform around the actual
+    renderable mesh) is very often *not* the same prim passed here as the collision
+    geometry.
+
+    Deliberately does NOT try to detect "does the world transform actually change during
+    this specific simulated window" (an earlier version sampled GetLocalToWorldTransform()
+    across the solver's own start_frame/frame_count and compared) -- that's wrong on its
+    own terms: a Transform's keyframes can sit entirely outside that window (e.g. the
+    bowl rotates across frames 0-18, but the solver's own start_frame is 30), in which
+    case USD holds the last keyframe's value for the whole window and the world
+    transform is genuinely static *within it* despite being real animated data. What
+    actually matters for choosing the mocap-vs-static collider path is "does this ever
+    move", not "does it move during this specific window" -- the mocap per-frame update
+    loop already correctly resolves the HELD value at whatever frame it's asked for
+    regardless, so treating a currently-held-but-animated prim as mocap is always safe,
+    just occasionally does a hair more work than strictly needed.
+    """
+    prim = cp
+    while prim and prim.IsValid():
+        if any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(prim).GetOrderedXformOps()):
+            return True
+        prim = prim.GetParent()
+    return False
+
+
 def _add_colliders(
     spec: _mj.MjSpec,
     collision_prims: list[Usd.Prim] | None,
@@ -145,6 +177,7 @@ def _add_colliders(
     dyn_radius: float,
     hfield_res: int,
     floor_drop: float = 0.0,
+    start_frame: float = 0.0,
 ) -> list[tuple[str, Usd.Prim]]:
     """Add static/kinematic collision bodies to *spec*.
 
@@ -153,9 +186,22 @@ def _add_colliders(
     bbox-fitted box (animated prims fall back to a mocap-driven box).
 
     *dyn_radius* sizes the heightfield cell-size cap to the dynamic body.
+    *start_frame* is the time every one-off setup measurement (ground height, mocap
+    body's initial spawn position, box size) is taken at -- NOT Usd.TimeCode.Default().
+    An animated collider's xformOp only ever carries real time samples (see
+    chunk_animation.py's bake_procedural_output / scripts/transform.py's bake()), no
+    separate default value, and Usd.Attribute.Get(Default()) on such an attribute
+    resolves to nothing at all (confirmed against the installed USD build) -- silently
+    falling back to identity, which put every one-off measurement below at the wrong
+    world position/orientation (mocap body spawning far from the actual collision
+    geometry, wrongly-shaped/rotated box colliders, a ground plane at the wrong height).
+    Harmless for a genuinely static prim: with no time samples authored at all, any
+    time-coded query (start_frame or Default()) resolves to the same single value.
+    Per-frame mocap updates elsewhere already correctly use a real frame, not Default().
     Returns mocap_col_names: list of (body_name, prim) needing per-frame updates.
     """
     mocap_col_names = []
+    setup_time = Usd.TimeCode(start_frame)
 
     if not collision_prims:
         # Infinite ground plane, oriented to the scene's up axis.
@@ -179,7 +225,7 @@ def _add_colliders(
     # the bowl sits on. An infinite plane is a rock-solid (non-singular) contact,
     # so it reliably catches anything the concave heightfield bottom ejects AND
     # any body that rolls/spills off the rim, instead of letting it fall forever.
-    bc = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    bc = UsdGeom.BBoxCache(setup_time, [UsdGeom.Tokens.default_])
     ground_up = None
     for cp in collision_prims:
         cr = bc.ComputeWorldBound(cp).ComputeAlignedRange()
@@ -203,11 +249,25 @@ def _add_colliders(
         gpg.condim = 3
 
     for i, cp in enumerate(collision_prims):
-        xfc = UsdGeom.XformCache()
+        xfc = UsdGeom.XformCache(setup_time)
         world_xf = xfc.GetLocalToWorldTransform(cp)
         col_t = world_xf.ExtractTranslation()
+        # Same extraction the per-frame mocap update loop already uses -- needed here too
+        # since a mocap body's *initial* spec pose (this) is what the very first
+        # mj_forward() call (before the per-frame loop even starts) sees, and it was
+        # never set at all previously (silently defaulting to MuJoCo's identity quat).
+        col_q = world_xf.RemoveScaleShear().ExtractRotation().GetQuat()
+        col_qi = col_q.GetImaginary()
+        col_quat = [col_q.GetReal(), float(col_qi[0]), float(col_qi[1]), float(col_qi[2])]
 
-        is_anim = any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(cp).GetOrderedXformOps())
+        is_anim = _is_world_animated(cp)
+
+        print(
+            f"[RBDSolver/debug] collider {cp.GetPath()}: is_anim={is_anim} "
+            f"pos=({col_t[0]:.3f}, {col_t[1]:.3f}, {col_t[2]:.3f}) "
+            f"quat=({col_quat[0]:.3f}, {col_quat[1]:.3f}, {col_quat[2]:.3f}, {col_quat[3]:.3f}) "
+            f"at setup_time={setup_time}"
+        )
 
         # Concave collision via heightfield (static, non-X-up prims only).
         # MuJoCo collides mesh geoms as their convex hull, so a bowl would be
@@ -251,13 +311,28 @@ def _add_colliders(
         col_body = spec.worldbody.add_body()
         col_body.name = bname
         col_body.pos = [float(col_t[0]), float(col_t[1]), float(col_t[2])]
+        col_body.quat = col_quat
         if is_anim:
             # Mocap body: MuJoCo updates its pose each frame via data.mocap_pos/quat.
+            # The initial pos/quat set above still matter even so -- the very first
+            # mj_forward() call (below, before the per-frame update loop starts) uses
+            # whatever the compiled spec says, not yet the per-frame USD-sampled values.
             col_body.mocap = True
             mocap_col_names.append((bname, cp))
 
-        fb = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
-        cr = fb.ComputeWorldBound(cp).ComputeAlignedRange()
+        fb = UsdGeom.BBoxCache(setup_time, [UsdGeom.Tokens.default_])
+        # Local (pre-rotation) bound, NOT ComputeWorldBound -- a world-axis-aligned bound
+        # of a rotated flat/wide shape (e.g. a plate tipped ~90 degrees) balloons in
+        # whichever world axis its widest local axis now happens to point along, giving a
+        # collision box far taller (or wider) than the object's true shape. Live-reported:
+        # a bowl/plate collider ended up with a box roughly as tall as its own radius,
+        # putting the collision surface tens of units above the real geometry -- confirmed
+        # directly (world-aligned size (60, 60, 1) vs local size (60, 1, 60) for a wide,
+        # thin disc rotated -90 degrees about X). col_body.quat (set above) already
+        # correctly orients this local-frame box in world space, so using the local bound
+        # for size and the world rotation for orientation together give a tight,
+        # correctly-shaped box regardless of how the collider is rotated.
+        cr = fb.ComputeLocalBound(cp).ComputeAlignedRange()
         if not cr.IsEmpty():
             csz = cr.GetMax() - cr.GetMin()
             half = [csz[0] / 2, csz[1] / 2, csz[2] / 2]
@@ -398,7 +473,8 @@ def _sim_prim_gen_mj(
     # --- static / kinematic collision bodies ---
     dyn_radius = max(half_extents) + max(collision_margin, 0.0)
     mocap_col_names = _add_colliders(
-        spec, collision_prims, up_idx, friction, contact_tc, dyn_radius, hfield_res, floor_drop
+        spec, collision_prims, up_idx, friction, contact_tc, dyn_radius, hfield_res, floor_drop,
+        start_frame=start_frame,
     )
 
     # --- initial orientation (offset already applied above) ---
@@ -410,6 +486,12 @@ def _sim_prim_gen_mj(
     # --- initial position: body origin == prim transform origin (no z_offset;
     # the geometry offset is carried by the geom, see geom_offset) ---
     init_pos = [translate[0] + otx, translate[1] + oty, translate[2] + otz]
+
+    print(
+        f"[RBDSolver/debug] dynamic body: prim translate=({translate[0]:.3f}, "
+        f"{translate[1]:.3f}, {translate[2]:.3f}) offset=({otx:.3f}, {oty:.3f}, {otz:.3f}) "
+        f"-> init_pos=({init_pos[0]:.3f}, {init_pos[1]:.3f}, {init_pos[2]:.3f}) up_idx={up_idx}"
+    )
 
     lat = [j for j in range(3) if j != up_idx]
 
@@ -828,7 +910,8 @@ def simulate_mujoco_instancer(
 
     # Same colliders as the single-prim path (bowl heightfield + backstop, etc.)
     mocap_col_names = _add_colliders(
-        spec, collision_prims, up_idx, friction, contact_tc, max_radius, hfield_res, floor_drop
+        spec, collision_prims, up_idx, friction, contact_tc, max_radius, hfield_res, floor_drop,
+        start_frame=start_frame,
     )
 
     dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
