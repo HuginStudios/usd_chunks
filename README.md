@@ -111,7 +111,7 @@ uv sync --extra dev --extra ui --extra full
 This creates `.venv` with the project installed editable, plus:
 - `dev` — pytest, ruff, build, types-usd, requests
 - `ui` — PySide6
-- `full` — every optional third-party import a bundled chunk in `scripts/` uses (mujoco, scipy, numpy, opencv-python, requests, polars). None of these are core library dependencies — a chunk whose import fails is silently skipped by the registry — but without this extra, chunks like the RBD solver or AMD MaterialX library won't be exercisable locally.
+- `full` — every optional third-party import a bundled, tracked chunk in `scripts/` uses (mujoco, scipy, numpy, opencv-python, requests). None of these are core library dependencies — a chunk whose import fails is silently skipped by the registry — but without this extra, chunks like the RBD solver or AMD MaterialX library won't be exercisable locally. Kept as one bundle rather than split per feature area while the team is small — revisit if that changes.
 
 Run the test suite with `uv run pytest`, or activate `.venv` directly.
 
