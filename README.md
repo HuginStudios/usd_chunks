@@ -145,7 +145,7 @@ uv add some-package --dev              # dev-only tool, not shipped to users
 
 Don't use `uv pip install some-package` for anything you're keeping — it installs into your local `.venv` only, without touching `pyproject.toml`/`uv.lock`, so it's invisible to everyone else and disappears the next time anyone runs `uv sync`. Fine for a quick "let me just try this," wrong for anything you're about to `import` in committed code.
 
-If you ever need to re-resolve without changing any dependency (e.g. after pulling someone else's `pyproject.toml` change), run `uv lock` and commit the updated `uv.lock`.
+If `pyproject.toml` ever changes without `uv add`/`uv remove` — a hand-edit (e.g. a version pin or classifier), or pulling someone else's change to it — run `uv lock` and commit the updated `uv.lock` alongside it. Skipping this leaves the lockfile stale, so `uv sync` keeps resolving against the old one and silently never picks up the change.
 
 ## Build documentation
 In order to build the documentation, your environment must be set to run the usd_chunks modules.
