@@ -1179,60 +1179,72 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         graph_id = c.get_dag_node().get_graph_id()
         graph_key = (graph_id, target.identifier)
 
-        if not (parent := self.graph_layers.get(graph_key)):
-            parent = Sdf.Layer.CreateAnonymous(f"graph_{graph_id}")
-            self.graph_layers[graph_key] = parent
-            self._graph_layer_target[graph_key] = target
-            # Insert at the top so this graph's layers win over other sublayers already on
-            # the target — e.g. an RBD bake must beat the prim's existing xformOp:transform.
-            target.subLayerPaths.insert(0, parent.identifier)
-        else:
-            prev_target = self._graph_layer_target.get(graph_key)
-            if prev_target and prev_target.identifier != target.identifier:
-                # The resolved Edit Target changed since this graph layer was created (e.g.
-                # an upstream Edit Target chunk's selection changed) — reparent rather than
-                # leave it sublayered under a now-stale target.
-                if parent.identifier in prev_target.subLayerPaths:
-                    prev_target.subLayerPaths.remove(parent.identifier)
+        # Every subLayerPaths edit below is a plain Sdf write that fires StageContentsChanged
+        # like any other stage edit. Without this guard, one can synchronously re-enter this
+        # same method (via ChunkStageSync._on_contents_changed -> load_chunks, the same
+        # reentrancy class documented on _chunk_deleted's own guard below) for a sibling chunk
+        # targeting the same graph_key, before this call's own bookkeeping/insert has settled
+        # — seen live in CI as a genuine, if intermittent, "Duplicate item ... not allowed for
+        # field 'subLayers'" Sdf error on the exact same graph layer being inserted twice.
+        prev_w = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True
+        try:
+            if not (parent := self.graph_layers.get(graph_key)):
+                parent = Sdf.Layer.CreateAnonymous(f"graph_{graph_id}")
+                self.graph_layers[graph_key] = parent
                 self._graph_layer_target[graph_key] = target
-            if parent.identifier not in target.subLayerPaths:
+                # Insert at the top so this graph's layers win over other sublayers already on
+                # the target — e.g. an RBD bake must beat the prim's existing xformOp:transform.
                 target.subLayerPaths.insert(0, parent.identifier)
+            else:
+                prev_target = self._graph_layer_target.get(graph_key)
+                if prev_target and prev_target.identifier != target.identifier:
+                    # The resolved Edit Target changed since this graph layer was created (e.g.
+                    # an upstream Edit Target chunk's selection changed) — reparent rather than
+                    # leave it sublayered under a now-stale target.
+                    if parent.identifier in prev_target.subLayerPaths:
+                        prev_target.subLayerPaths.remove(parent.identifier)
+                    self._graph_layer_target[graph_key] = target
+                if parent.identifier not in target.subLayerPaths:
+                    target.subLayerPaths.insert(0, parent.identifier)
 
-        # The sort_key is used to determine the order of the chunk sublayers
-        index = c.get_dag_node().get_sort_key()
-        if index > len(parent.subLayerPaths) - 1:
-            index = len(parent.subLayerPaths)
+            # The sort_key is used to determine the order of the chunk sublayers
+            index = c.get_dag_node().get_sort_key()
+            if index > len(parent.subLayerPaths) - 1:
+                index = len(parent.subLayerPaths)
 
-        # Reverse the order
-        index = len(parent.subLayerPaths) - index
+            # Reverse the order
+            index = len(parent.subLayerPaths) - index
 
-        layer = self.get_layer(c)
+            layer = self.get_layer(c)
 
-        if not layer:
-            if self.is_muted(c):
-                return
-            layer = self.add_layer(parent, c, index)
+            if not layer:
+                if self.is_muted(c):
+                    return
+                layer = self.add_layer(parent, c, index)
 
-        if layer.identifier not in parent.subLayerPaths:
-            parent.subLayerPaths.insert(index, layer.identifier)
+            if layer.identifier not in parent.subLayerPaths:
+                parent.subLayerPaths.insert(index, layer.identifier)
 
-        # If a chunk connection changed after the chunk layer was created, the layer may have been
-        # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice.
-        # Only inspect pl for emptiness right after we've just removed its child above — never as
-        # a blanket sweep over every tracked graph layer, since a graph layer can legitimately be
-        # momentarily empty while it's still being constructed (its own first leaf not yet added).
-        for pl, sl in self.iter_chunk_layers():
-            if sl.identifier == layer.identifier and pl.identifier != parent.identifier:
-                pl.subLayerPaths.remove(sl.identifier)
-                if len(pl.subLayerPaths) == 0:
-                    for gkey, g_layer in list(self.graph_layers.items()):
-                        if g_layer.identifier != pl.identifier:
-                            continue
-                        gtarget = self._graph_layer_target.pop(gkey, None)
-                        if gtarget and pl.identifier in gtarget.subLayerPaths:
-                            gtarget.subLayerPaths.remove(pl.identifier)
-                        self.graph_layers.pop(gkey, None)
-                        break
+            # If a chunk connection changed after the chunk layer was created, the layer may have been
+            # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice.
+            # Only inspect pl for emptiness right after we've just removed its child above — never as
+            # a blanket sweep over every tracked graph layer, since a graph layer can legitimately be
+            # momentarily empty while it's still being constructed (its own first leaf not yet added).
+            for pl, sl in self.iter_chunk_layers():
+                if sl.identifier == layer.identifier and pl.identifier != parent.identifier:
+                    pl.subLayerPaths.remove(sl.identifier)
+                    if len(pl.subLayerPaths) == 0:
+                        for gkey, g_layer in list(self.graph_layers.items()):
+                            if g_layer.identifier != pl.identifier:
+                                continue
+                            gtarget = self._graph_layer_target.pop(gkey, None)
+                            if gtarget and pl.identifier in gtarget.subLayerPaths:
+                                gtarget.subLayerPaths.remove(pl.identifier)
+                            self.graph_layers.pop(gkey, None)
+                            break
+        finally:
+            chunk_notice._usd_write_active = prev_w
 
         return layer
 
