@@ -1195,7 +1195,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 self._graph_layer_target[graph_key] = target
                 # Insert at the top so this graph's layers win over other sublayers already on
                 # the target — e.g. an RBD bake must beat the prim's existing xformOp:transform.
-                target.subLayerPaths.insert(0, parent.identifier)
+                # Checked rather than unconditional: a freshly minted anon layer's identifier
+                # can still collide with one already sitting in target.subLayerPaths — e.g. a
+                # stale reference left over from before a reload (anon identifiers are reused
+                # once the process's underlying slot is freed), which USD's Sdf list editor
+                # rejects outright as a duplicate ("Duplicate item ... not allowed for field
+                # 'subLayers'") rather than silently no-opping.
+                if parent.identifier not in target.subLayerPaths:
+                    target.subLayerPaths.insert(0, parent.identifier)
             else:
                 prev_target = self._graph_layer_target.get(graph_key)
                 if prev_target and prev_target.identifier != target.identifier:
