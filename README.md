@@ -143,6 +143,8 @@ uv add some-package --dev              # dev-only tool, not shipped to users
 
 `uv remove some-package` (with the matching `--optional <extra>`/`--dev` flag) removes it the same way. One gotcha: `uv add`/`uv remove` can silently drop an inline `# comment` on the line they touch — check `git diff pyproject.toml` after and restore any comment that got dropped.
 
+Don't use `uv pip install some-package` for anything you're keeping — it installs into your local `.venv` only, without touching `pyproject.toml`/`uv.lock`, so it's invisible to everyone else and disappears the next time anyone runs `uv sync`. Fine for a quick "let me just try this," wrong for anything you're about to `import` in committed code.
+
 If you ever need to re-resolve without changing any dependency (e.g. after pulling someone else's `pyproject.toml` change), run `uv lock` and commit the updated `uv.lock`.
 
 ## Build documentation
