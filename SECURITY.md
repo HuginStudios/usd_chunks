@@ -5,7 +5,7 @@
 Please report security issues privately rather than opening a public issue.
 
 Use GitHub's [private vulnerability reporting](https://github.com/HuginStudios/usd_chunks/security/advisories/new)
-on this repository, or email **viktor.lanner@huginstudios.com**.
+on this repository, or email **info@huginstudios.com**.
 
 Include what you were running (usd_chunks version, Python version, OS, and whether under
 usdview, another DCC, or the CLI) and enough detail to reproduce. We will acknowledge
