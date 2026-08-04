@@ -2881,7 +2881,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._recook_active_view()
 
     def _show_chunk_menu(self, node: "ChunkNodeItem", global_pos: QtCore.QPoint) -> None:
-        self._view_state.show_chunk_menu(node.chunk, str(node.prim.GetPath()), global_pos)
+        # Copy/Cut/Duplicate act on the current selection, not just this one right-clicked
+        # node -- right-clicking a node that's already part of a multi-selection must leave
+        # that selection alone, but right-clicking an unselected node should select just it
+        # first (matching a plain left-click), or those actions would silently act on
+        # whatever else happened to be selected instead.
+        graph_scene = self.scene()
+        sender = getattr(graph_scene, "_scene_sender", None) if graph_scene else None
+        if sender and not node.chunk.has_state(ChunkFlags.State.SELECTED):
+            sender.set_selected_chunks([node.chunk])
+        self._view_state.show_chunk_menu(node.chunk, str(node.prim.GetPath()), global_pos, graph_view=self)
+
+    def _exec_menu(self, menu: QtWidgets.QMenu, pos: QtCore.QPoint):
+        """Thin, overridable seam around QMenu.exec() -- see ViewSlotState._exec_menu's
+        docstring for why (PySide6 won't let tests monkeypatch QMenu.exec itself)."""
+        return menu.exec(pos)
 
     # ------------------------------------------------------------------
     # View nodes
@@ -3307,6 +3321,23 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if isinstance(item, ChunkNodeItem):
                 self._show_chunk_menu(item, event.globalPos())
                 event.accept()
+                return
+
+        # Empty canvas: offer Paste alongside the existing "New Chunk" fuzzy-search popup,
+        # but only when there's actually something to paste -- otherwise this behaves exactly
+        # as before (straight into the fuzzy search, no extra menu step).
+        if _node_clipboard:
+            quick_menu = QtWidgets.QMenu()
+            paste_action = quick_menu.addAction("Paste")
+            new_chunk_action = quick_menu.addAction("New Chunk...")
+            res = self._exec_menu(quick_menu, event.globalPos())
+            if res is None:
+                return
+            if res == paste_action:
+                self._paste_clipboard_at(scene_pos)
+                event.accept()
+                return
+            if res != new_chunk_action:
                 return
 
         mod = FilterableChunkMenu().select_module(event.globalPos())
