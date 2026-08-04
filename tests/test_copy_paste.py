@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import time
+
 import pytest
-from pxr import Usd
+from pxr import Sdf, Usd
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
@@ -59,9 +61,11 @@ def _clear_selection_and_clipboard(graph):
     _qapp, _reg, scene, _docker = graph
     scene.clear_chunk_selection()
     nodegraph._node_clipboard.clear()
+    nodegraph._edge_clipboard.clear()
     yield
     scene.clear_chunk_selection()
     nodegraph._node_clipboard.clear()
+    nodegraph._edge_clipboard.clear()
 
 
 def _make_nodes(graph, module="transform", n=1):
@@ -72,6 +76,17 @@ def _make_nodes(graph, module="transform", n=1):
     gv = docker.tab_widget.get_current_graph_view()
     nodes = [gv.scene()._nodes[get_chunk_prim_path(c)] for c in chunks]
     return scene, gv, chunks, nodes
+
+
+def _pump(qapp, seconds: float) -> None:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        qapp.processEvents()
+
+
+def _exec_ports(node):
+    prim_path = str(node.prim.GetPath())
+    return node.get_port(f"{prim_path}.inputs:chunk"), node.get_port(f"{prim_path}.outputs:chunk")
 
 
 def test_copy_paste_creates_independent_duplicate_with_same_param_values(graph) -> None:
@@ -198,3 +213,121 @@ def test_ctrl_c_copies_current_selection(graph) -> None:
 
     assert len(nodegraph._node_clipboard) == 1
     assert nodegraph._node_clipboard[0].module_name == a.chunk.get_config().module
+
+
+def test_copying_a_connected_chain_preserves_internal_wiring_on_paste(graph) -> None:
+    qapp, reg, scene, docker = graph
+    _scene, gv, chunks, nodes = _make_nodes(graph, n=3)
+    a, b, c = nodes
+
+    a_in, a_out = _exec_ports(a)
+    b_in, b_out = _exec_ports(b)
+    c_in, c_out = _exec_ports(c)
+    gv._author_connection(a_out, b_in)
+    gv._author_connection(b_out, c_in)
+    gv.scene()._build_edges()
+
+    # Copy only A and B -- C (and the real B->C wire) is deliberately left out.
+    scene.set_selected_chunks([a.chunk, b.chunk])
+    gv._copy_selected_to_clipboard()
+    assert len(nodegraph._edge_clipboard) == 1  # only the internal A->B wire
+
+    pasted = gv._paste_clipboard_at(QtCore.QPointF(3000, 3000))
+    assert len(pasted) == 2
+    _pump(qapp, 0.3)  # let the deferred (80ms) wiring pass run
+
+    a2, b2 = pasted
+    a2_path = get_chunk_prim_path(a2)
+    b2_path = get_chunk_prim_path(b2)
+    stage = docker.tab_widget.get_current_graph_view().scene()._stage
+
+    b2_in_attr = stage.GetAttributeAtPath(Sdf.Path(f"{b2_path}.inputs:chunk"))
+    assert b2_in_attr and b2_in_attr.IsValid()
+    conns = [str(p) for p in b2_in_attr.GetConnections()]
+    assert conns == [f"{a2_path}.outputs:chunk"]
+
+    # The pasted B' must NOT pick up any connection to the real (uncopied) C.
+    b2_out_attr = stage.GetAttributeAtPath(Sdf.Path(f"{b2_path}.outputs:chunk"))
+    if b2_out_attr and b2_out_attr.IsValid():
+        assert str(c.prim.GetPath()) not in "".join(str(p) for p in b2_out_attr.GetConnections())
+
+
+def test_copying_without_the_wires_source_drops_it_on_paste(graph) -> None:
+    qapp, reg, scene, docker = graph
+    _scene, gv, chunks, nodes = _make_nodes(graph, n=2)
+    a, b = nodes
+
+    a_in, a_out = _exec_ports(a)
+    b_in, b_out = _exec_ports(b)
+    gv._author_connection(a_out, b_in)
+    gv.scene()._build_edges()
+
+    # Copy only B -- A (the real source of B's exec input) is left out.
+    scene.set_selected_chunks([b.chunk])
+    gv._copy_selected_to_clipboard()
+    assert nodegraph._edge_clipboard == []
+
+    pasted = gv._paste_clipboard_at(QtCore.QPointF(3500, 3500))
+    assert len(pasted) == 1
+    _pump(qapp, 0.3)
+
+    b2_path = get_chunk_prim_path(pasted[0])
+    stage = docker.tab_widget.get_current_graph_view().scene()._stage
+    b2_in_attr = stage.GetAttributeAtPath(Sdf.Path(f"{b2_path}.inputs:chunk"))
+    assert not b2_in_attr or not b2_in_attr.IsValid() or not b2_in_attr.GetConnections()
+
+
+def test_typed_param_connection_is_preserved_on_paste(qapp) -> None:
+    # Deliberately NOT the shared module-scoped `graph` fixture: a "no active view in this
+    # context" recook falls back to re-executing every chunk (see
+    # ChunkGraphView._recook_active_view's docstring), and transform.py's own execute()
+    # unconditionally Clear()s its chunk's bookkeeping layer on every run -- which, with 9
+    # other tests' worth of nodes and timers sharing one stage, was observed to occasionally
+    # race and wipe the very connection this test just authored before it could assert on it.
+    # An isolated stage sidesteps that cross-test interference for this one assertion.
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    lm = chunk_registry.ChunkLayerManager()
+    lm.initialize(stage)
+    _chunk_usd_init(stage, scene)
+    docker = ChunkWidgetDocker()
+    docker.resize(500, 600)
+    docker.show()
+    qapp.processEvents()
+
+    mod = reg.get_chunk_module("transform")
+    a, b = _mk(mod, scene), _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    a = gv.scene()._nodes[get_chunk_prim_path(a)]
+    b = gv.scene()._nodes[get_chunk_prim_path(b)]
+    _pump(qapp, 0.5)  # let proxy widgets + typed ports build (deferred singleShot chain)
+
+    a_path = str(a.prim.GetPath())
+    b_path = str(b.prim.GetPath())
+    a_tx_out = a.get_port(f"{a_path}.outputs:tx")
+    b_tx_in = b.get_port(f"{b_path}.inputs:tx")
+    assert a_tx_out is not None and b_tx_in is not None, "typed ports must exist by now"
+    gv._author_connection(a_tx_out, b_tx_in)
+    gv.scene()._build_edges()
+
+    scene.set_selected_chunks([a.chunk, b.chunk])
+    gv._copy_selected_to_clipboard()
+    assert any(e.dst_attr == "inputs:tx" for e in nodegraph._edge_clipboard)
+
+    pasted = gv._paste_clipboard_at(QtCore.QPointF(4000, 4000))
+    assert len(pasted) == 2
+    _pump(qapp, 0.5)
+
+    a2, b2 = pasted
+    b2_path = get_chunk_prim_path(b2)
+    stage = docker.tab_widget.get_current_graph_view().scene()._stage
+    b2_tx_in_attr = stage.GetAttributeAtPath(Sdf.Path(f"{b2_path}.inputs:tx"))
+    assert b2_tx_in_attr and b2_tx_in_attr.IsValid() and b2_tx_in_attr.GetConnections()

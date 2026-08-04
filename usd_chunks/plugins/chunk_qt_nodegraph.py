@@ -209,7 +209,49 @@ class _ClipboardNode:
         self.rel_pos = rel_pos  # position relative to the copied selection's top-left corner
 
 
+class _ClipboardEdge:
+    """A wire between two copied nodes, referenced by index into the node clipboard rather
+    than by prim path (paths don't exist yet at copy time for a not-yet-pasted node, and
+    change on every paste anyway). src_attr/dst_attr are ChunkPortItem-suffix form
+    ("outputs:chunk"/"inputs:tx", ...), not raw Sdf connection-target form -- see
+    `_iter_node_connections`."""
+
+    __slots__ = ("src_index", "src_attr", "dst_index", "dst_attr")
+
+    def __init__(self, src_index: int, src_attr: str, dst_index: int, dst_attr: str):
+        self.src_index = src_index
+        self.src_attr = src_attr
+        self.dst_index = dst_index
+        self.dst_attr = dst_attr
+
+
 _node_clipboard: list[_ClipboardNode] = []
+_edge_clipboard: list[_ClipboardEdge] = []
+
+
+def _iter_node_connections(node: "ChunkNodeItem"):
+    """Yield (dst_attr_suffix, src_prim_path, src_attr_suffix) for every real inputs:*
+    connection on this node's prim, in ChunkPortItem.attr_path suffix form for BOTH ends
+    (e.g. dst "inputs:tx", src "outputs:tx") -- independent of the "Show param connections"
+    view toggle (unlike ChunkGraphScene._build_edges, which only builds what's currently
+    drawn), since copy/paste needs every real connection, not just the visible ones."""
+    if not node.prim.IsValid():
+        return
+    for attr in node.prim.GetAttributes():
+        attr_name = attr.GetName()
+        if not attr_name.startswith("inputs:"):
+            continue
+        for conn_path in attr.GetConnections():
+            src_prim_path = str(conn_path.GetPrimPath())
+            if attr_name == _EXEC_INPUT:
+                # Exec connections point straight at the source's outputs:chunk already.
+                src_attr_suffix = conn_path.name
+            else:
+                # Typed connections point at the source's OWN inputs:param (see
+                # ChunkGraphView._author_connection) -- normalize back to the
+                # ChunkPortItem-suffix "outputs:param" form used on both ends elsewhere.
+                src_attr_suffix = "outputs:" + conn_path.name[len("inputs:"):]
+            yield attr_name, src_prim_path, src_attr_suffix
 
 
 def _snapshot_param_values(chunk: core.ChunkCommon) -> list:
@@ -1813,9 +1855,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         return primary, list(chunks)
 
     def _copy_selected_to_clipboard(self) -> None:
-        """Ctrl+C: snapshot the selected chunks' type + param values + position into the
-        module-level clipboard. View chunks are never included -- they're per-context slot
-        machinery, not content worth duplicating."""
+        """Ctrl+C: snapshot the selected chunks' type + param values + position, and the
+        wires between them, into the module-level clipboard. View chunks are never included
+        -- they're per-context slot machinery, not content worth duplicating. A wire to a
+        node OUTSIDE the selection is dropped, not recreated against the original outside
+        node on paste -- only wires between two copied nodes survive."""
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
             return
@@ -1827,20 +1871,37 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         min_x = min(n.pos().x() for n in selected)
         min_y = min(n.pos().y() for n in selected)
-        clip = []
+        kept_index: dict[str, int] = {}
+        clip_nodes: list[_ClipboardNode] = []
         for node in selected:
             cfg = node.chunk.get_config()
             module_name = cfg.module if cfg else None
             if not module_name:
                 continue
-            clip.append(_ClipboardNode(
+            kept_index[str(node.prim.GetPath())] = len(clip_nodes)
+            clip_nodes.append(_ClipboardNode(
                 module_name=module_name,
                 values=_snapshot_param_values(node.chunk),
                 rel_pos=QtCore.QPointF(node.pos().x() - min_x, node.pos().y() - min_y),
             ))
-        if clip:
-            _node_clipboard.clear()
-            _node_clipboard.extend(clip)
+        if not clip_nodes:
+            return
+
+        clip_edges: list[_ClipboardEdge] = []
+        for node in selected:
+            dst_index = kept_index.get(str(node.prim.GetPath()))
+            if dst_index is None:
+                continue
+            for dst_attr, src_prim_path, src_attr in _iter_node_connections(node):
+                src_index = kept_index.get(src_prim_path)
+                if src_index is None:
+                    continue  # source outside the copied selection -- wire dropped
+                clip_edges.append(_ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
+
+        _node_clipboard.clear()
+        _node_clipboard.extend(clip_nodes)
+        _edge_clipboard.clear()
+        _edge_clipboard.extend(clip_edges)
 
     def _paste_at_cursor(self) -> None:
         global_pos = QtGui.QCursor.pos()
@@ -1866,8 +1927,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         view_exists = self._context_has_view(scene, context)
         nested, prev_ctx = self._push_nest_context(scene, context)
         new_chunks: list[core.ChunkBase] = []
+        new_path_by_index: dict[int, str] = {}
         try:
-            for item in _node_clipboard:
+            for index, item in enumerate(_node_clipboard):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
                     continue
@@ -1884,12 +1946,44 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     chunk_usd._create_node_pos = None
                 _apply_param_values(primary, item.values)
                 new_chunks.append(primary)
+                new_path_by_index[index] = chunk_usd.get_chunk_prim_path(primary)
         finally:
             if nested:
                 scene._current_context = prev_ctx
         if new_chunks and graph_scene._scene_sender:
             graph_scene._scene_sender.set_selected_chunks(new_chunks)
+        if _edge_clipboard:
+            # The new nodes' ports (typed ones especially) don't exist yet -- their proxy
+            # widgets are built in deferred batches (see ChunkGraphScene._create_proxies_batch).
+            # Same deferred-wiring pattern _create_and_connect_from_menu already uses.
+            QtCore.QTimer.singleShot(
+                80, lambda paths=new_path_by_index, edges=list(_edge_clipboard): self._wire_pasted_edges(paths, edges)
+            )
         return new_chunks
+
+    def _wire_pasted_edges(self, new_path_by_index: "dict[int, str]", edges: "list[_ClipboardEdge]") -> None:
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        changed_chunks: set = set()
+        for edge in edges:
+            src_path = new_path_by_index.get(edge.src_index)
+            dst_path = new_path_by_index.get(edge.dst_index)
+            if not src_path or not dst_path:
+                continue
+            src_node = graph_scene._nodes.get(src_path)
+            dst_node = graph_scene._nodes.get(dst_path)
+            if src_node is None or dst_node is None:
+                continue
+            src_port = src_node.get_port(f"{src_path}.{edge.src_attr}")
+            dst_port = dst_node.get_port(f"{dst_path}.{edge.dst_attr}")
+            if src_port is None or dst_port is None:
+                continue
+            self._author_connection(src_port, dst_port)
+            changed_chunks.add(dst_node.chunk)
+        if changed_chunks:
+            graph_scene._build_edges()
+            self._recook_active_view(changed_chunks)
 
     def _ensure_default_view(self, context) -> None:
         registry = chunk_registry.ChunkRegistry()
