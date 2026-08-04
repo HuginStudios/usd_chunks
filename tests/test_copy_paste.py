@@ -72,9 +72,15 @@ def _make_nodes(graph, module="transform", n=1):
     qapp, reg, scene, docker = graph
     mod = reg.get_chunk_module(module)
     chunks = [_mk(mod, scene) for _ in range(n)]
-    qapp.processEvents()
     gv = docker.tab_widget.get_current_graph_view()
-    nodes = [gv.scene()._nodes[get_chunk_prim_path(c)] for c in chunks]
+    # The deferred rebuild (QTimer.singleShot(0, ...)) needs more than one processEvents()
+    # tick to settle once earlier tests in this module have left other timers queued up --
+    # poll with a short timeout instead of assuming a single tick is enough.
+    paths = [get_chunk_prim_path(c) for c in chunks]
+    end = time.monotonic() + 2.0
+    while time.monotonic() < end and any(p not in gv.scene()._nodes for p in paths):
+        qapp.processEvents()
+    nodes = [gv.scene()._nodes[p] for p in paths]
     return scene, gv, chunks, nodes
 
 
@@ -277,14 +283,112 @@ def test_copying_without_the_wires_source_drops_it_on_paste(graph) -> None:
     assert not b2_in_attr or not b2_in_attr.IsValid() or not b2_in_attr.GetConnections()
 
 
+def test_duplicate_creates_offset_copy_without_touching_the_clipboard(graph) -> None:
+    scene, gv, chunks, nodes = _make_nodes(graph, n=2)
+    a, b = nodes
+    a.setPos(100, 100)
+
+    # Pre-populate the clipboard with B, distinct from what we're about to duplicate (A).
+    scene.set_selected_chunks([b.chunk])
+    gv._copy_selected_to_clipboard()
+    assert nodegraph._node_clipboard[0].module_name == b.chunk.get_config().module
+
+    scene.set_selected_chunks([a.chunk])
+    gv._duplicate_selected()
+
+    # Clipboard from the earlier Ctrl+C is untouched by Ctrl+D.
+    assert len(nodegraph._node_clipboard) == 1
+    assert nodegraph._node_clipboard[0].module_name == b.chunk.get_config().module
+
+    selected = scene.get_selected_chunks()
+    assert len(selected) == 1
+    dup = selected[0]
+    assert dup is not a.chunk
+    dup_node = gv.scene()._nodes[get_chunk_prim_path(dup)]
+    assert abs(dup_node.pos().x() - 140) < 1e-6
+    assert abs(dup_node.pos().y() - 140) < 1e-6
+
+
+def test_duplicate_preserves_internal_wiring(graph) -> None:
+    qapp, reg, scene, docker = graph
+    _scene, gv, chunks, nodes = _make_nodes(graph, n=2)
+    a, b = nodes
+    a.setPos(200, 200)
+    b.setPos(400, 200)
+
+    a_in, a_out = _exec_ports(a)
+    b_in, b_out = _exec_ports(b)
+    gv._author_connection(a_out, b_in)
+    gv.scene()._build_edges()
+
+    scene.set_selected_chunks([a.chunk, b.chunk])
+    gv._duplicate_selected()
+    _pump(qapp, 0.3)
+
+    dup_chunks = list(scene.get_selected_chunks())
+    assert len(dup_chunks) == 2
+    # Identify a2/b2 by position instead of assuming order: whichever is at (240,240) is A'.
+    a2_node = None
+    b2_node = None
+    for c in dup_chunks:
+        node = gv.scene()._nodes[get_chunk_prim_path(c)]
+        if abs(node.pos().x() - 240) < 1e-6:
+            a2_node = node
+        elif abs(node.pos().x() - 440) < 1e-6:
+            b2_node = node
+    assert a2_node is not None and b2_node is not None
+
+    stage = docker.tab_widget.get_current_graph_view().scene()._stage
+    b2_path = str(b2_node.prim.GetPath())
+    a2_path = str(a2_node.prim.GetPath())
+    b2_in_attr = stage.GetAttributeAtPath(Sdf.Path(f"{b2_path}.inputs:chunk"))
+    assert b2_in_attr and b2_in_attr.IsValid()
+    assert [str(p) for p in b2_in_attr.GetConnections()] == [f"{a2_path}.outputs:chunk"]
+
+
+def test_ctrl_d_duplicates_and_does_not_also_toggle_disable(graph, monkeypatch) -> None:
+    scene, gv, chunks, nodes = _make_nodes(graph)
+    (a,) = nodes
+    scene.set_selected_chunks([a.chunk])
+
+    dup_calls = []
+    disable_calls = []
+    monkeypatch.setattr(gv, "_duplicate_selected", lambda: dup_calls.append(True))
+    monkeypatch.setattr(gv, "_toggle_disable_selected", lambda: disable_calls.append(True))
+
+    ctrl_d = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_D, QtCore.Qt.KeyboardModifier.ControlModifier
+    )
+    gv.keyPressEvent(ctrl_d)
+    assert dup_calls == [True]
+    assert disable_calls == []
+
+    plain_d = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_D, QtCore.Qt.KeyboardModifier.NoModifier
+    )
+    gv.keyPressEvent(plain_d)
+    assert disable_calls == [True]
+    assert dup_calls == [True]
+
+
 def test_typed_param_connection_is_preserved_on_paste(qapp) -> None:
-    # Deliberately NOT the shared module-scoped `graph` fixture: a "no active view in this
-    # context" recook falls back to re-executing every chunk (see
+    # Deliberately NOT the shared module-scoped `graph` fixture, and deliberately the LAST
+    # test in this file: ChunkRegistry/ChunkLayerManager are process-wide singletons, and
+    # this test's own chunk_usd.initialize()/ChunkLayerManager.initialize() calls repoint
+    # them at THIS test's isolated stage. conftest.py's autouse reset_chunk_layer_manager
+    # fixture then resets ChunkLayerManager to uninitialized once this test function
+    # returns -- which silently breaks prim/layer bookkeeping for any LATER test still using
+    # the shared `graph` fixture's stage (observed as newly created chunks never showing up
+    # in the graph at all). Keeping this test last, after every shared-`graph` test in this
+    # file, avoids that ordering hazard entirely.
+    #
+    # The isolation itself is for a different reason: a "no active view in this context"
+    # recook falls back to re-executing every chunk (see
     # ChunkGraphView._recook_active_view's docstring), and transform.py's own execute()
-    # unconditionally Clear()s its chunk's bookkeeping layer on every run -- which, with 9
-    # other tests' worth of nodes and timers sharing one stage, was observed to occasionally
-    # race and wipe the very connection this test just authored before it could assert on it.
-    # An isolated stage sidesteps that cross-test interference for this one assertion.
+    # unconditionally Clear()s its chunk's bookkeeping layer on every run -- which, with
+    # many other tests' worth of nodes and timers sharing one stage, was observed to
+    # occasionally race and wipe the very connection this test just authored before it
+    # could assert on it.
     stage = Usd.Stage.CreateInMemory()
 
     class _StageScene(_DummyScene):

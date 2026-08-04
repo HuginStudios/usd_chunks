@@ -1609,9 +1609,10 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
-        # Ctrl+C / Ctrl+V: same fallback pattern as F/L.
+        # Ctrl+C / Ctrl+V / Ctrl+D: same fallback pattern as F/L.
         ctrl_down = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
-        if self._active is None and ctrl_down and event.key() in (QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V):
+        _CVD_KEYS = (QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V, QtCore.Qt.Key.Key_D)
+        if self._active is None and ctrl_down and event.key() in _CVD_KEYS:
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -1620,8 +1621,10 @@ class _ProxyKeyRouter(QtCore.QObject):
                 if etype == QtCore.QEvent.Type.KeyPress:
                     if event.key() == QtCore.Qt.Key.Key_C:
                         view._copy_selected_to_clipboard()
-                    else:
+                    elif event.key() == QtCore.Qt.Key.Key_V:
                         view._paste_at_cursor()
+                    else:
+                        view._duplicate_selected()
                     event.accept()
                     return True
 
@@ -1854,21 +1857,22 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         primary = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
         return primary, list(chunks)
 
-    def _copy_selected_to_clipboard(self) -> None:
-        """Ctrl+C: snapshot the selected chunks' type + param values + position, and the
-        wires between them, into the module-level clipboard. View chunks are never included
-        -- they're per-context slot machinery, not content worth duplicating. A wire to a
-        node OUTSIDE the selection is dropped, not recreated against the original outside
-        node on paste -- only wires between two copied nodes survive."""
+    def _snapshot_selection(self):
+        """Build (clip_nodes, clip_edges, top_left) from the current selection -- the shared
+        core of both Copy (into the module clipboard) and Duplicate (straight to paste,
+        clipboard untouched). View chunks are never included -- they're per-context slot
+        machinery, not content worth duplicating. A wire to a node OUTSIDE the selection is
+        dropped, not recreated against the original outside node -- only wires between two
+        selected nodes survive. Returns ([], [], None) if there's nothing selected to copy."""
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
-            return
+            return [], [], None
         selected = [
             node for node in graph_scene._nodes.values()
             if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._is_view
         ]
         if not selected:
-            return
+            return [], [], None
         min_x = min(n.pos().x() for n in selected)
         min_y = min(n.pos().y() for n in selected)
         kept_index: dict[str, int] = {}
@@ -1885,7 +1889,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 rel_pos=QtCore.QPointF(node.pos().x() - min_x, node.pos().y() - min_y),
             ))
         if not clip_nodes:
-            return
+            return [], [], None
 
         clip_edges: list[_ClipboardEdge] = []
         for node in selected:
@@ -1898,6 +1902,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     continue  # source outside the copied selection -- wire dropped
                 clip_edges.append(_ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
 
+        return clip_nodes, clip_edges, QtCore.QPointF(min_x, min_y)
+
+    def _copy_selected_to_clipboard(self) -> None:
+        """Ctrl+C: snapshot the selected chunks' type + param values + position, and the
+        wires between them, into the module-level clipboard."""
+        clip_nodes, clip_edges, _top_left = self._snapshot_selection()
+        if not clip_nodes:
+            return
         _node_clipboard.clear()
         _node_clipboard.extend(clip_nodes)
         _edge_clipboard.clear()
@@ -1909,13 +1921,22 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._paste_clipboard_at(scene_pos)
 
     def _paste_clipboard_at(self, scene_pos: QtCore.QPointF) -> "list[core.ChunkBase]":
-        """Materialize the clipboard as new chunk(s) centered at scene_pos, nested into
-        whatever context/tab this view is currently showing -- same mechanism right-click
-        "New Chunk" already uses (_push_nest_context), which is what makes pasting into a
-        chunkgroup work for free, including a selection copied from a different context.
-        Returns the list of newly created primary chunks (for callers that need to select
-        or further wire them, e.g. Duplicate)."""
+        """Materialize the module-level clipboard as new chunk(s) centered at scene_pos."""
         if not _node_clipboard:
+            return []
+        return self._materialize_at(_node_clipboard, _edge_clipboard, scene_pos)
+
+    def _materialize_at(
+        self, clip_nodes: "list[_ClipboardNode]", clip_edges: "list[_ClipboardEdge]", scene_pos: QtCore.QPointF
+    ) -> "list[core.ChunkBase]":
+        """Create new chunk(s) from clip_nodes centered at scene_pos, wire clip_edges between
+        them, and select the result -- nested into whatever context/tab this view is
+        currently showing, same mechanism right-click "New Chunk" already uses
+        (_push_nest_context), which is what makes pasting/duplicating into a chunkgroup work
+        for free, including a selection copied from a different context. Shared by both Paste
+        (module clipboard) and Duplicate (clipboard-free, straight from the selection).
+        Returns the list of newly created primary chunks."""
+        if not clip_nodes:
             return []
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
@@ -1929,7 +1950,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         new_chunks: list[core.ChunkBase] = []
         new_path_by_index: dict[int, str] = {}
         try:
-            for index, item in enumerate(_node_clipboard):
+            for index, item in enumerate(clip_nodes):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
                     continue
@@ -1952,14 +1973,24 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 scene._current_context = prev_ctx
         if new_chunks and graph_scene._scene_sender:
             graph_scene._scene_sender.set_selected_chunks(new_chunks)
-        if _edge_clipboard:
+        if clip_edges:
             # The new nodes' ports (typed ones especially) don't exist yet -- their proxy
             # widgets are built in deferred batches (see ChunkGraphScene._create_proxies_batch).
             # Same deferred-wiring pattern _create_and_connect_from_menu already uses.
             QtCore.QTimer.singleShot(
-                80, lambda paths=new_path_by_index, edges=list(_edge_clipboard): self._wire_pasted_edges(paths, edges)
+                80, lambda paths=new_path_by_index, edges=list(clip_edges): self._wire_pasted_edges(paths, edges)
             )
         return new_chunks
+
+    def _duplicate_selected(self) -> None:
+        """Ctrl+D: copy+paste the current selection in one step, without touching the
+        Ctrl+C/Ctrl+V clipboard (so it never clobbers whatever was last explicitly copied).
+        Lands at a fixed +40/+40 offset from the originals rather than the mouse cursor."""
+        clip_nodes, clip_edges, top_left = self._snapshot_selection()
+        if not clip_nodes or top_left is None:
+            return
+        anchor = QtCore.QPointF(top_left.x() + 40, top_left.y() + 40)
+        self._materialize_at(clip_nodes, clip_edges, anchor)
 
     def _wire_pasted_edges(self, new_path_by_index: "dict[int, str]", edges: "list[_ClipboardEdge]") -> None:
         graph_scene = self.scene()
@@ -2146,7 +2177,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_D:
-            self._toggle_disable_selected()
+            # Ctrl+D duplicates; bare D (no modifier) toggles disable -- same disambiguation
+            # as Ctrl+V/bare-V below.
+            if event.modifiers() & QtCore.Qt.ControlModifier:
+                self._duplicate_selected()
+            else:
+                self._toggle_disable_selected()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_C and (event.modifiers() & QtCore.Qt.ControlModifier):
