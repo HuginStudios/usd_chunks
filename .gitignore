@@ -9,6 +9,7 @@ scripts/user
 _installed_deps
 dist
 build
+site
 *.egg-info
 
 # AI tool working directories and issue tracker (local only)

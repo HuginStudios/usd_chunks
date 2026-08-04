@@ -229,6 +229,19 @@ That serves the site locally; `mkdocs build` writes it to `site/` instead. CI pu
 from `.github/workflows/docs.yml` on every push to main, and builds it (without deploying)
 on pull requests so a broken reference fails there first.
 
+On Windows, `build_docs.bat` wraps both. With no arguments it serves locally; with
+`--share` it builds and mirrors the site to a fileshare:
+
+```
+build_docs.bat --share \\server\share\usd_chunks_docs
+```
+
+The share build uses `--no-directory-urls`, because a browser opening the site over a UNC
+path or `file://` will not resolve a directory to its `index.html`, which breaks navigation
+under the default layout. Note that the search box only works when the site is served over
+http — the search index is fetched by XHR, which browsers block for `file://` origins.
+Everything else works either way.
+
 Run `docs/gen_ref_nav.py` to regenerate the `docs/reference` markdown files.
 
 ## License
