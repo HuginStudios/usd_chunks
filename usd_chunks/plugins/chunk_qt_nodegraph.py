@@ -404,16 +404,40 @@ def _author_raw_connection(
             param.value = f"@{src_node_name}.{src_param_name}@"
 
 
+def _iter_copyable_params(chunk: core.ChunkCommon):
+    """`_iter_connectable_params`, minus anything flagged State.HIDDEN.
+
+    A HIDDEN param is a chunk module's own internal bookkeeping, never meant for a user to
+    see or set directly -- e.g. scripts/create_layer.py's _new_layer_id/_layer_name_used/
+    _parent_layer_id, which cache identifiers for the anon Sdf.Layer *that specific chunk
+    instance* created. Copying those verbatim onto a pasted chunk hands it the ORIGINAL
+    instance's cached identifier; since that layer is still alive (Sdf.Layer.Find succeeds
+    process-wide, not scoped to this chunk), the pasted chunk's own next execute() silently
+    adopts and reuses the original's real layer object instead of creating an independent one
+    of its own -- the two nodes end up secretly sharing state. Not scoped to
+    scripts/create_layer.py specifically -- any chunk module using a HIDDEN param the same way
+    has the identical hazard, so the exclusion lives at this shared, module-agnostic level
+    rather than as a create_layer-specific special case.
+
+    Deliberately a separate generator from `_iter_connectable_params` itself (used elsewhere
+    for port placement) rather than changing what that one yields -- copy/paste is the only
+    caller that needs this narrower set."""
+    for param in _iter_connectable_params(chunk):
+        if param.has_state(ChunkFlags.State.HIDDEN):
+            continue
+        yield param
+
+
 def _snapshot_param_values(chunk: core.ChunkCommon) -> list:
-    """Positional snapshot of every copyable param's value, in `_iter_connectable_params`
+    """Positional snapshot of every copyable param's value, in `_iter_copyable_params`
     order. Two instances of the same chunk module build their param tree in the same code
     order, so a plain positional zip (see `_apply_param_values`) is enough to pair them back
     up -- no param-path bookkeeping needed."""
-    return [p.value for p in _iter_connectable_params(chunk)]
+    return [p.value for p in _iter_copyable_params(chunk)]
 
 
 def _apply_param_values(chunk: core.ChunkCommon, values: list) -> None:
-    for param, value in zip(_iter_connectable_params(chunk), values):
+    for param, value in zip(_iter_copyable_params(chunk), values):
         try:
             param.value = value
         except Exception:

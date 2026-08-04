@@ -166,6 +166,37 @@ def test_copy_paste_creates_independent_duplicate_with_same_param_values(graph) 
     assert a.chunk.get_param("tx").value == 5.5
 
 
+def test_copy_skips_hidden_bookkeeping_params(graph) -> None:
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("create_layer")
+    cl = _mk(mod, scene)
+    gv = docker.tab_widget.get_current_graph_view()
+    cl_path = get_chunk_prim_path(cl)
+    end = time.monotonic() + 2.0
+    while time.monotonic() < end and cl_path not in gv.scene()._nodes:
+        qapp.processEvents()
+
+    cl.get_param("layer_name").value = "asd"
+    # _new_layer_id is HIDDEN, execute()-owned bookkeeping caching this SPECIFIC chunk
+    # instance's real anon Sdf.Layer identifier -- fake one in directly (as if execute()
+    # had already run) rather than relying on a real cook, which this stage has no view
+    # driving.
+    cl.get_param("_new_layer_id").value = "anon:deadbeef:asd"
+
+    scene.set_selected_chunks([cl])
+    gv._copy_selected_to_clipboard()
+    pasted = gv._paste_clipboard_at(QtCore.QPointF(7000, 7000))
+    assert len(pasted) == 1
+    new_cl = pasted[0]
+
+    # The real, user-facing value copies...
+    assert new_cl.get_param("layer_name").value == "asd"
+    # ...but the HIDDEN bookkeeping param does not -- copying it verbatim would hand the
+    # pasted node the original's cached layer identifier, so its own next execute() would
+    # silently adopt and reuse the original's real Sdf.Layer instead of creating its own.
+    assert new_cl.get_param("_new_layer_id").value != "anon:deadbeef:asd"
+
+
 def test_paste_excludes_view_chunks_from_clipboard(graph) -> None:
     scene, gv, chunks, nodes = _make_nodes(graph, n=2)
     a, b = nodes
