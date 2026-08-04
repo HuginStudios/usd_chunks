@@ -1,0 +1,56 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Only one deployment at a time, and never cancel one midway — a half-finished
+# deploy would leave the published site in an inconsistent state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # mkdocs-git-revision-date-localized reads each page's history, and the
+          # config sets fallback_to_build_date: false — a shallow clone makes it fail.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # The docs are generated from the source: mkdocstrings + griffe_chunks.py
+      # introspect usd_chunks, so the package has to be importable, not just present.
+      - run: pip install -e ".[docs]"
+
+      - name: Build
+        env:
+          USD_CHUNK_DIRS: scripts
+        run: python -m mkdocs build --site-dir _site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  # Publishing is a separate job so pull requests still build the docs (catching a
+  # broken reference or a dead inventory URL) without deploying anything.
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
