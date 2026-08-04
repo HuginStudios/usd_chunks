@@ -371,6 +371,62 @@ def test_ctrl_d_duplicates_and_does_not_also_toggle_disable(graph, monkeypatch) 
     assert dup_calls == [True]
 
 
+def test_cut_copies_and_deletes_the_selection(graph) -> None:
+    qapp, reg, scene, docker = graph
+    _scene, gv, chunks, nodes = _make_nodes(graph, n=2)
+    a, b = nodes
+    a_path = get_chunk_prim_path(a.chunk)
+    b_path = get_chunk_prim_path(b.chunk)
+
+    scene.set_selected_chunks([a.chunk, b.chunk])
+    gv._cut_selected_to_clipboard()
+
+    assert len(nodegraph._node_clipboard) == 2
+
+    _pump(qapp, 0.3)
+    assert a_path not in gv.scene()._nodes
+    assert b_path not in gv.scene()._nodes
+
+    # A subsequent paste from the cut clipboard still works, independent of the originals.
+    pasted = gv._paste_clipboard_at(QtCore.QPointF(5000, 5000))
+    assert len(pasted) == 2
+
+
+def test_cut_skips_a_locked_node_but_still_cuts_the_rest_of_the_selection(graph) -> None:
+    qapp, reg, scene, docker = graph
+    _scene, gv, chunks, nodes = _make_nodes(graph, n=2)
+    locked, normal = nodes
+    locked._locked = True
+    locked_path = get_chunk_prim_path(locked.chunk)
+    normal_path = get_chunk_prim_path(normal.chunk)
+
+    scene.set_selected_chunks([locked.chunk, normal.chunk])
+    gv._cut_selected_to_clipboard()
+
+    # Both are still copied...
+    assert len(nodegraph._node_clipboard) == 2
+
+    _pump(qapp, 0.3)
+    # ...but only the unlocked one is actually removed from the graph.
+    assert normal_path not in gv.scene()._nodes
+    assert locked_path in gv.scene()._nodes
+
+
+def test_ctrl_x_triggers_cut(graph, monkeypatch) -> None:
+    scene, gv, chunks, nodes = _make_nodes(graph)
+    (a,) = nodes
+    scene.set_selected_chunks([a.chunk])
+
+    cut_calls = []
+    monkeypatch.setattr(gv, "_cut_selected_to_clipboard", lambda: cut_calls.append(True))
+
+    ctrl_x = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_X, QtCore.Qt.KeyboardModifier.ControlModifier
+    )
+    gv.keyPressEvent(ctrl_x)
+    assert cut_calls == [True]
+
+
 def test_typed_param_connection_is_preserved_on_paste(qapp) -> None:
     # Deliberately NOT the shared module-scoped `graph` fixture, and deliberately the LAST
     # test in this file: ChunkRegistry/ChunkLayerManager are process-wide singletons, and

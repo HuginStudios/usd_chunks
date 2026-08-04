@@ -1609,10 +1609,10 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
-        # Ctrl+C / Ctrl+V / Ctrl+D: same fallback pattern as F/L.
+        # Ctrl+C / Ctrl+V / Ctrl+D / Ctrl+X: same fallback pattern as F/L.
         ctrl_down = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
-        _CVD_KEYS = (QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V, QtCore.Qt.Key.Key_D)
-        if self._active is None and ctrl_down and event.key() in _CVD_KEYS:
+        _CVDX_KEYS = (QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V, QtCore.Qt.Key.Key_D, QtCore.Qt.Key.Key_X)
+        if self._active is None and ctrl_down and event.key() in _CVDX_KEYS:
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -1623,8 +1623,10 @@ class _ProxyKeyRouter(QtCore.QObject):
                         view._copy_selected_to_clipboard()
                     elif event.key() == QtCore.Qt.Key.Key_V:
                         view._paste_at_cursor()
-                    else:
+                    elif event.key() == QtCore.Qt.Key.Key_D:
                         view._duplicate_selected()
+                    else:
+                        view._cut_selected_to_clipboard()
                     event.accept()
                     return True
 
@@ -1915,6 +1917,28 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         _edge_clipboard.clear()
         _edge_clipboard.extend(clip_edges)
 
+    def _cut_selected_to_clipboard(self) -> None:
+        """Ctrl+X: copy (as above), then delete the selection via the same path Delete
+        already uses -- no deferred/pending-cut state, since there's no undo system in this
+        codebase to make that meaningful. A locked node (from an external/referenced layer)
+        is still copied, but skipped by the delete step -- it can't be removed from its
+        source layer -- while the rest of a mixed selection is still cut normally."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        self._copy_selected_to_clipboard()
+        if not _node_clipboard:
+            return
+        deletable = [
+            node.chunk for node in graph_scene._nodes.values()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._locked and not node._is_view
+        ]
+        if not deletable:
+            return
+        self.mark_pending_delete_relevance(deletable)
+        for c in deletable:
+            c.request_delete()
+
     def _paste_at_cursor(self) -> None:
         global_pos = QtGui.QCursor.pos()
         scene_pos = self.mapToScene(self.mapFromGlobal(global_pos))
@@ -2187,6 +2211,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         if event.key() == QtCore.Qt.Key.Key_C and (event.modifiers() & QtCore.Qt.ControlModifier):
             self._copy_selected_to_clipboard()
+            event.accept()
+            return
+        if event.key() == QtCore.Qt.Key.Key_X and (event.modifiers() & QtCore.Qt.ControlModifier):
+            self._cut_selected_to_clipboard()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_V:
