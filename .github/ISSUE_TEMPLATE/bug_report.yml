@@ -1,0 +1,69 @@
+name: Bug report
+description: Something in the usd_chunks core behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The two things that make a bug actionable are the exact
+        steps and the environment it happened in.
+
+        If the problem is in a chunk you wrote rather than in the core, please raise it
+        wherever that chunk lives — this tracker is for the runtime itself.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: >
+        The exact commands or actions. A minimal chunk module or .usda that triggers it is
+        the single most useful thing you can include.
+      placeholder: |
+        1. USD_CHUNK_DIRS=... usdchunks run scene.usda
+        2. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host
+    attributes:
+      label: Where are you running it
+      options:
+        - usdview
+        - usdchunks CLI (headless)
+        - Houdini
+        - Other DCC
+        - Imported as a library
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: usd_chunks version
+      description: "`pip show usd-chunks`, or the commit if running from a checkout."
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python version
+      placeholder: "Windows 11, Python 3.11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Traceback or log output
+      description: Paste any traceback in full. It will be formatted automatically.
+      render: text
