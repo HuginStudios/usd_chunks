@@ -225,9 +225,11 @@ pip install -e ".[docs]"
 USD_CHUNK_DIRS=scripts mkdocs serve
 ```
 
-That serves the site locally; `mkdocs build` writes it to `site/` instead. CI publishes it
-from `.github/workflows/docs.yml` on every push to main, and builds it (without deploying)
-on pull requests so a broken reference fails there first.
+That serves the site locally; `mkdocs build` writes it to `site/` instead.
+`.github/workflows/docs.yml` builds the site on every push and pull request, so a change
+that breaks the docs fails there rather than at publish time. It does not deploy — the
+built site is attached to the run as an artifact, and publishing is done from
+`build_docs.bat --share` below.
 
 On Windows, `build_docs.bat` wraps both. With no arguments it serves locally; with
 `--share` it builds and mirrors the site to a destination of your choosing — a UNC share, a

@@ -6,11 +6,15 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Only one deployment at a time, and never cancel one midway — a half-finished
-# deploy would leave the published site in an inconsistent state.
+# Build only, for now: the site is published to our own web root via
+# `build_docs.bat --share`, not from here. To publish from CI later, add a deploy job
+# using actions/upload-pages-artifact + actions/deploy-pages, and set the repository's
+# Pages source to "GitHub Actions".
+#
+# Since nothing is deployed, a superseded run is pure waste and can be cancelled.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build:
@@ -30,27 +34,18 @@ jobs:
       # introspect usd_chunks, so the package has to be importable, not just present.
       - run: pip install -e ".[docs]"
 
+      # Deliberately not --strict. Strict promotes warnings to failures, and griffe
+      # currently emits five for undocumented return values (chunk.py and chunk_notice.py),
+      # so it would fail on arrival. Worth turning on once those are annotated -- it is
+      # what would catch a broken cross-reference or an unreachable inventory.
       - name: Build
         env:
           USD_CHUNK_DIRS: scripts
         run: python -m mkdocs build --site-dir _site
 
-      - uses: actions/upload-pages-artifact@v3
+      # Downloadable from the run, so a build can be inspected without reproducing the
+      # environment locally.
+      - uses: actions/upload-artifact@v4
         with:
+          name: docs-site
           path: _site
-
-  # Publishing is a separate job so pull requests still build the docs (catching a
-  # broken reference or a dead inventory URL) without deploying anything.
-  deploy:
-    if: github.ref == 'refs/heads/main'
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
