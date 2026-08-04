@@ -25,10 +25,23 @@ if "%~2"=="" (
 )
 set "DEST=%~2"
 
-REM --no-directory-urls emits example.html rather than example\index.html. A browser
-REM opening the site from a UNC path or file:// will not resolve a directory to its
-REM index.html, so the default directory URLs break navigation on a fileshare.
-call python -m mkdocs build --no-directory-urls -d "%~dp0site"
+REM Default to flat filenames (example.html rather than example\index.html), because that
+REM is the portable option: a browser opening the site over a UNC path or file:// will not
+REM resolve a directory to its index.html, and a web server serves flat files perfectly
+REM well. Pass --directory-urls for the tidier /example/ style once the destination is
+REM definitely behind a web server such as nginx.
+set "URLSTYLE=--no-directory-urls"
+if not "%~3"=="" (
+    if /I "%~3"=="--directory-urls" (
+        set "URLSTYLE="
+    ) else (
+        echo ERROR: unknown argument "%~3"
+        echo.
+        goto :usage
+    )
+)
+
+call python -m mkdocs build %URLSTYLE% -d "%~dp0site"
 if errorlevel 1 (
     echo ERROR: mkdocs build failed. Nothing was copied.
     exit /b 1
@@ -55,11 +68,20 @@ echo.
 
 :usage
 echo Usage:
-echo   build_docs.bat                   Serve the docs locally on http://127.0.0.1:8000
-echo   build_docs.bat --share ^<path^>    Build and mirror the site to a fileshare
+echo   build_docs.bat
+echo       Serve the docs locally on http://127.0.0.1:8000
 echo.
-echo Note: browser search does not work when the site is opened over file://,
-echo because the search index is fetched by XHR. Serving the share over http fixes it.
+echo   build_docs.bat --share ^<path^>
+echo       Build and mirror the site to ^<path^>. Any destination robocopy can
+echo       write to: a UNC share, a mapped drive, or an nginx web root.
+echo       Uses flat filenames, which work both over file:// and over http.
+echo.
+echo   build_docs.bat --share ^<path^> --directory-urls
+echo       As above but with /example/ style URLs. Only use this when the
+echo       destination is served by a web server -- these break over file://.
+echo.
+echo Note: the search box needs the site to be served over http, because the
+echo search index is fetched by XHR. Everything else works either way.
 exit /b 1
 
 :end

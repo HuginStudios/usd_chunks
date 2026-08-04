@@ -230,17 +230,23 @@ from `.github/workflows/docs.yml` on every push to main, and builds it (without 
 on pull requests so a broken reference fails there first.
 
 On Windows, `build_docs.bat` wraps both. With no arguments it serves locally; with
-`--share` it builds and mirrors the site to a fileshare:
+`--share` it builds and mirrors the site to a destination of your choosing — a UNC share, a
+mapped drive, or a web root:
 
 ```
 build_docs.bat --share \\server\share\usd_chunks_docs
+build_docs.bat --share E:\www\usd_chunks --directory-urls
 ```
 
-The share build uses `--no-directory-urls`, because a browser opening the site over a UNC
-path or `file://` will not resolve a directory to its `index.html`, which breaks navigation
-under the default layout. Note that the search box only works when the site is served over
-http — the search index is fetched by XHR, which browsers block for `file://` origins.
-Everything else works either way.
+By default it builds flat filenames (`example.html`), which work both over `file://` and
+over http. A browser opening the site from a share will not resolve a directory to its
+`index.html`, so the default `/example/` style URLs would break navigation there. Once the
+destination is definitely behind a web server such as nginx, pass `--directory-urls` for
+the tidier form.
+
+Either way the search box only works when the site is served over http, since the search
+index is fetched by XHR and browsers block that for `file://` origins. Everything else
+works from a plain fileshare.
 
 Run `docs/gen_ref_nav.py` to regenerate the `docs/reference` markdown files.
 
