@@ -591,8 +591,28 @@ class DagNode:
             self.dirty_dependants()
 
     def disconnect(self):
+        """Drop every edge into and out of this node, on both sides.
+
+        Clearing only this node's own dicts leaves each peer still pointing back here, so a
+        disconnected node stays reachable as somebody else's input or output. That was
+        invisible while chunk-level edges were rarely populated, but request_delete calls
+        this on any node with outputs — a stale reverse link there resurrects the deleted
+        chunk as a live dependency of its former successor.
+        """
+        # Snapshot before mutating: the peer loops write to dicts these views come from, and
+        # _connections.inputs/outputs are WeakValueDictionaries, which raise if they change
+        # size mid-iteration.
+        inputs = list(self._connections.inputs.values())
+        outputs = list(self._connections.outputs.values())
+
         self._connections.inputs.clear()
         self._connections.outputs.clear()
+
+        for node in inputs:
+            node.remove_dependant(self)
+        for node in outputs:
+            node.remove_dependency(self, disconnect_reverse=False)
+
         chunk_scheduler.topology_changed()
 
     def next_key(self, items: ConnSetT) -> int:
@@ -664,6 +684,57 @@ class DagNode:
         self._connections.outputs[self.next_key(self._connections.outputs)] = node
         chunk_scheduler.topology_changed()
         self.dirty = True
+
+    def remove_dependency(self, node: "DagNode", disconnect_reverse=True) -> bool:
+        """
+        Remove a dependency (aka input) from this node. This will dirty self, since losing an
+        input changes what this node evaluates to.
+
+        The counterpart to add_dependency. disconnect() drops every edge at once and is not a
+        substitute when a single wire is detached.
+
+        Args:
+            node (DagNode): The dependency to remove
+            disconnect_reverse (bool, optional): If the input node should drop this node from
+                its outputs. Defaults to True.
+
+        Returns:
+            bool: True if node was an input and got removed
+        """
+        # Keys are collected before deleting: _connections.inputs is a WeakValueDictionary,
+        # so mutating it while iterating raises.
+        keys = [key for key, value in self._connections.inputs.items() if value is node]
+        if not keys:
+            return False
+
+        for key in keys:
+            del self._connections.inputs[key]
+        chunk_scheduler.topology_changed()
+
+        if disconnect_reverse:
+            node.remove_dependant(self)
+
+        self.dirty = True
+        return True
+
+    def remove_dependant(self, node: "DagNode") -> bool:
+        """
+        Remove a node that is dependant of this node (aka output)
+
+        Args:
+            node (DagNode): The dependant node to remove
+
+        Returns:
+            bool: True if node was an output and got removed
+        """
+        keys = [key for key, value in self._connections.outputs.items() if value is node]
+        if not keys:
+            return False
+
+        for key in keys:
+            del self._connections.outputs[key]
+        chunk_scheduler.topology_changed()
+        return True
 
     def set_owner(self, owner: Optional["ChunkNoticePropagator"]):
         """
@@ -1199,6 +1270,23 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         idx = self.get_dag_node().add_dependency(input.get_dag_node())
         send_notice(ChunkNoticeAlias.DEPENDENCY_ADDED, self, data=input)
         return idx
+
+    def remove_dependency(self, input: "ChunkNoticePropagator") -> bool:
+        """
+        Remove an input previously added with add_dependency. Dirties this propagator so the
+        loss of the input propagates downstream like any other change.
+
+        No DEPENDENCY_ADDED counterpart notice is sent: the only listener
+        (ChunkStageSync._on_dependency_added) exists to author the USD connection, and every
+        caller of this method is reacting to that connection already being gone.
+
+        Args:
+            input (ChunkNoticePropagator): The node to drop as input
+
+        Returns:
+            bool: True if input was a dependency and got removed
+        """
+        return self.get_dag_node().remove_dependency(input.get_dag_node())
 
     @overload
     def get_dependency(self, index: int = 0) -> Optional["ChunkNoticePropagator"]: ...
