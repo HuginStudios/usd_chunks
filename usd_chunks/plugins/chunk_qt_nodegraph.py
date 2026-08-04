@@ -193,6 +193,43 @@ def _param_port_type(param) -> str:
     return _PORT_FLOAT
 
 
+# ---------------------------------------------------------------------------
+# Copy / Cut / Paste / Duplicate clipboard
+#
+# In-process only (a plain Python object, not the OS clipboard/QMimeData) -- same-session
+# paste is the only use case this needs to serve. Module-level so it's shared across every
+# ChunkGraphView/tab/chunkgroup in the process, matching how a real clipboard behaves.
+
+class _ClipboardNode:
+    __slots__ = ("module_name", "values", "rel_pos")
+
+    def __init__(self, module_name: str, values: list, rel_pos: QtCore.QPointF):
+        self.module_name = module_name
+        self.values = values
+        self.rel_pos = rel_pos  # position relative to the copied selection's top-left corner
+
+
+_node_clipboard: list[_ClipboardNode] = []
+
+
+def _snapshot_param_values(chunk: core.ChunkCommon) -> list:
+    """Positional snapshot of every copyable param's value, in `_iter_connectable_params`
+    order. Two instances of the same chunk module build their param tree in the same code
+    order, so a plain positional zip (see `_apply_param_values`) is enough to pair them back
+    up -- no param-path bookkeeping needed."""
+    return [p.value for p in _iter_connectable_params(chunk)]
+
+
+def _apply_param_values(chunk: core.ChunkCommon, values: list) -> None:
+    for param, value in zip(_iter_connectable_params(chunk), values):
+        try:
+            param.value = value
+        except Exception:
+            # A param whose value can't be re-applied as-is (e.g. a stale expression string
+            # for a wire that wasn't copied along with it) shouldn't abort the rest of the
+            # paste -- leave it at its default and move on.
+            continue
+
 
 class ChunkNodeItem(QtWidgets.QGraphicsItem):
     """Represents a single Chunk prim as a compact draggable node.
@@ -1530,6 +1567,22 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
+        # Ctrl+C / Ctrl+V: same fallback pattern as F/L.
+        ctrl_down = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
+        if self._active is None and ctrl_down and event.key() in (QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V):
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    if event.key() == QtCore.Qt.Key.Key_C:
+                        view._copy_selected_to_clipboard()
+                    else:
+                        view._paste_at_cursor()
+                    event.accept()
+                    return True
+
         if self._active is None:
             return False
         if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -1741,6 +1794,103 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return True, prev
         return False, None
 
+    # ------------------------------------------------------------------
+    # Copy / Paste
+
+    def _instantiate_chunk_of_type(self, module_name: str):
+        """Build a fresh chunk instance of the given module, not yet added to the scene.
+        Returns (primary_chunk, all_chunks) -- a module's create() can spawn auxiliary
+        chunks alongside the main one (mirrors the pattern already used by
+        contextMenuEvent/_create_and_connect_from_menu); primary is the first non-view one."""
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return None, []
+        mod = registry.get_chunk_module(module_name)
+        if mod is None:
+            return None, []
+        chunks = mod.create() if mod.loaded else mod.load()
+        primary = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
+        return primary, list(chunks)
+
+    def _copy_selected_to_clipboard(self) -> None:
+        """Ctrl+C: snapshot the selected chunks' type + param values + position into the
+        module-level clipboard. View chunks are never included -- they're per-context slot
+        machinery, not content worth duplicating."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        selected = [
+            node for node in graph_scene._nodes.values()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._is_view
+        ]
+        if not selected:
+            return
+        min_x = min(n.pos().x() for n in selected)
+        min_y = min(n.pos().y() for n in selected)
+        clip = []
+        for node in selected:
+            cfg = node.chunk.get_config()
+            module_name = cfg.module if cfg else None
+            if not module_name:
+                continue
+            clip.append(_ClipboardNode(
+                module_name=module_name,
+                values=_snapshot_param_values(node.chunk),
+                rel_pos=QtCore.QPointF(node.pos().x() - min_x, node.pos().y() - min_y),
+            ))
+        if clip:
+            _node_clipboard.clear()
+            _node_clipboard.extend(clip)
+
+    def _paste_at_cursor(self) -> None:
+        global_pos = QtGui.QCursor.pos()
+        scene_pos = self.mapToScene(self.mapFromGlobal(global_pos))
+        self._paste_clipboard_at(scene_pos)
+
+    def _paste_clipboard_at(self, scene_pos: QtCore.QPointF) -> "list[core.ChunkBase]":
+        """Materialize the clipboard as new chunk(s) centered at scene_pos, nested into
+        whatever context/tab this view is currently showing -- same mechanism right-click
+        "New Chunk" already uses (_push_nest_context), which is what makes pasting into a
+        chunkgroup work for free, including a selection copied from a different context.
+        Returns the list of newly created primary chunks (for callers that need to select
+        or further wire them, e.g. Duplicate)."""
+        if not _node_clipboard:
+            return []
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return []
+        scene = _chunk.get_scene()
+        if not scene:
+            return []
+        context = self._graph_context()
+        view_exists = self._context_has_view(scene, context)
+        nested, prev_ctx = self._push_nest_context(scene, context)
+        new_chunks: list[core.ChunkBase] = []
+        try:
+            for item in _node_clipboard:
+                primary, chunks = self._instantiate_chunk_of_type(item.module_name)
+                if primary is None:
+                    continue
+                pos = (scene_pos.x() + item.rel_pos.x(), scene_pos.y() + item.rel_pos.y())
+                # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_usd in USD
+                # space (see chunk_usd._create_node_pos usage elsewhere in this file).
+                chunk_usd._create_node_pos = (pos[0], -pos[1])
+                try:
+                    for c in chunks:
+                        if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+                            c.set_blocked(True)
+                        scene.add_chunk(c)
+                finally:
+                    chunk_usd._create_node_pos = None
+                _apply_param_values(primary, item.values)
+                new_chunks.append(primary)
+        finally:
+            if nested:
+                scene._current_context = prev_ctx
+        if new_chunks and graph_scene._scene_sender:
+            graph_scene._scene_sender.set_selected_chunks(new_chunks)
+        return new_chunks
+
     def _ensure_default_view(self, context) -> None:
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
@@ -1905,8 +2055,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._toggle_disable_selected()
             event.accept()
             return
+        if event.key() == QtCore.Qt.Key.Key_C and (event.modifiers() & QtCore.Qt.ControlModifier):
+            self._copy_selected_to_clipboard()
+            event.accept()
+            return
         if event.key() == QtCore.Qt.Key.Key_V:
-            self._create_view_node()
+            # Ctrl+V pastes; bare V (no modifier) creates a view node -- same key, disambiguated
+            # by modifier so the two long-standing single-key shortcuts don't collide.
+            if event.modifiers() & QtCore.Qt.ControlModifier:
+                self._paste_at_cursor()
+            else:
+                self._create_view_node()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_L:
