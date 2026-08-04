@@ -498,9 +498,17 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                 parent_ctx = parent_ctx() if parent_ctx else None
                 if parent_ctx is not None:
                     idx = self.tab_widget.get_chunk_context_index(parent_ctx)
-                    tab_cw = self.tab_widget.get_chunk_context(idx)
-                    if tab_cw is not None:
-                        tab_cw._add_group_widget(loaded_chunk)
+                    # A nested group's parent may itself be a just-created group nobody has
+                    # dived into yet (no tab exists for it) -- e.g. recursively
+                    # pasting/duplicating a group that contains a nested sub-group. No tab
+                    # to attach a widget to in that case; the sub-group's contents still
+                    # exist on the stage and become visible once the parent group is dived
+                    # into for the first time (ChunkTabWidget.dive_into builds its tab fresh
+                    # from the stage at that point).
+                    if idx is not None:
+                        tab_cw = self.tab_widget.get_chunk_context(idx)
+                        if tab_cw is not None:
+                            tab_cw._add_group_widget(loaded_chunk)
                     return
             # Plain tab context: create its tab immediately.
             self.tab_widget.add_chunk_context(loaded_chunk)

@@ -371,6 +371,39 @@ def test_ctrl_d_duplicates_and_does_not_also_toggle_disable(graph, monkeypatch) 
     assert dup_calls == [True]
 
 
+def _wait_for_node(qapp, gv, path, timeout=2.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end and path not in gv.scene()._nodes:
+        qapp.processEvents()
+    return gv.scene()._nodes.get(path)
+
+
+def _isolated_graph(qapp):
+    """A fresh, private stage/registry/docker -- see test_typed_param_connection_is_preserved
+    _on_paste's docstring for why: isolation here is specifically to get a deterministic
+    chunk count unaffected by whatever auto-view/reactive-rebuild timers a shared module
+    stage's earlier tests may have left in flight (recursive group duplication triggers
+    several chunk creations + a real exec connection, which was observed to be sensitive to
+    that leftover activity in a way the simpler flat-node tests weren't)."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    lm = chunk_registry.ChunkLayerManager()
+    lm.initialize(stage)
+    _chunk_usd_init(stage, scene)
+    docker = ChunkWidgetDocker()
+    docker.resize(500, 600)
+    docker.show()
+    qapp.processEvents()
+    return reg, scene, docker
+
+
 def test_cut_copies_and_deletes_the_selection(graph) -> None:
     qapp, reg, scene, docker = graph
     _scene, gv, chunks, nodes = _make_nodes(graph, n=2)
@@ -425,6 +458,138 @@ def test_ctrl_x_triggers_cut(graph, monkeypatch) -> None:
     )
     gv.keyPressEvent(ctrl_x)
     assert cut_calls == [True]
+
+
+def test_copying_a_group_recursively_duplicates_its_children(qapp) -> None:
+    # Isolated stage, and placed after every shared-`graph` test in this file -- see
+    # test_typed_param_connection_is_preserved_on_paste's docstring for why an isolated
+    # ChunkLayerManager.initialize() call must not run before a later shared-`graph` test.
+    reg, scene, docker = _isolated_graph(qapp)
+    transform_mod = reg.get_chunk_module("transform")
+    group_mod = reg.get_chunk_module("chunkgroup")
+    # A ChunkGroup created as the very first-ever chunk on a stage becomes its own root tab
+    # (create_chunk_widget's "no parent context yet" branch) instead of a node inside the
+    # default root context -- bootstrap that default context with a throwaway leaf chunk
+    # first, same as every shared-`graph` test in this file implicitly already has by the
+    # time it creates its own first group.
+    _mk(transform_mod, scene)
+    qapp.processEvents()
+    group = _mk(group_mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+
+    nested, prev = gv._push_nest_context(scene, group)
+    try:
+        child_a = _mk(transform_mod, scene)
+        child_b = _mk(transform_mod, scene)
+    finally:
+        if nested:
+            scene._current_context = prev
+    qapp.processEvents()
+    assert child_a.get_context() is group
+    assert child_b.get_context() is group
+
+    stage = gv.scene()._stage
+    a_path = get_chunk_prim_path(child_a)
+    b_path = get_chunk_prim_path(child_b)
+    # No live Qt ports exist for a group's children unless someone's dived into it -- wire
+    # them directly at the USD level, the same mechanism recursive paste itself uses.
+    nodegraph._author_raw_connection(stage, b_path, "inputs:chunk", child_b, a_path, "outputs:chunk")
+
+    group_path = get_chunk_prim_path(group)
+    assert _wait_for_node(qapp, gv, group_path) is not None
+
+    scene.set_selected_chunks([group])
+    gv._copy_selected_to_clipboard()
+    assert len(nodegraph._node_clipboard) == 1
+    clip = nodegraph._node_clipboard[0]
+    assert len(clip.children) == 2
+    assert len(clip.child_edges) == 1
+
+    pasted = gv._paste_clipboard_at(QtCore.QPointF(6000, 6000))
+    assert len(pasted) == 1
+    new_group = pasted[0]
+    assert new_group is not group
+
+    # get_context() returns self for a CONTEXT-flagged chunk, so filtering "children of
+    # new_group" by get_context() equality alone would also match new_group against itself --
+    # exclude it explicitly, same as production's _iter_group_children does.
+    new_children = [
+        c for c in scene.get_chunks()
+        if c.get_context() is new_group and c is not new_group and not nodegraph.chunk_usd.is_view_chunk(c)
+    ]
+    assert len(new_children) == 2
+    assert child_a not in new_children and child_b not in new_children
+
+    new_paths = [get_chunk_prim_path(c) for c in new_children]
+    wired = False
+    for i, c in enumerate(new_children):
+        attr = stage.GetAttributeAtPath(Sdf.Path(f"{new_paths[i]}.inputs:chunk"))
+        if attr and attr.IsValid() and attr.GetConnections():
+            other_path = new_paths[1 - i]
+            assert [str(p) for p in attr.GetConnections()] == [f"{other_path}.outputs:chunk"]
+            wired = True
+    assert wired, "the new children must be wired to each other, not left disconnected"
+
+
+def test_duplicating_a_nested_group_in_group_produces_independent_copies_at_both_levels(qapp) -> None:
+    reg, scene, docker = _isolated_graph(qapp)
+    transform_mod = reg.get_chunk_module("transform")
+    group_mod = reg.get_chunk_module("chunkgroup")
+    # See test_copying_a_group_recursively_duplicates_its_children's comment: a ChunkGroup
+    # as the very first-ever chunk becomes its own root tab instead of a node inside the
+    # default root context.
+    _mk(transform_mod, scene)
+    qapp.processEvents()
+    outer = _mk(group_mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+
+    nested_o, prev_o = gv._push_nest_context(scene, outer)
+    try:
+        inner = _mk(group_mod, scene)
+    finally:
+        if nested_o:
+            scene._current_context = prev_o
+    qapp.processEvents()
+    # A nested ChunkGroup's own get_context() returns itself (documented quirk -- see
+    # nodegraph._iter_group_children's docstring), never its structural parent, so "is inner
+    # a child of outer" has to be checked via the same combined lookup _iter_group_children
+    # (and _rebuild_nodes) use instead of get_context() equality.
+    stage = gv.scene()._stage
+    assert inner in nodegraph._iter_group_children(outer, scene, stage)
+
+    nested_i, prev_i = gv._push_nest_context(scene, inner)
+    try:
+        leaf = _mk(transform_mod, scene)
+    finally:
+        if nested_i:
+            scene._current_context = prev_i
+    qapp.processEvents()
+    assert leaf.get_context() is inner
+
+    outer_path = get_chunk_prim_path(outer)
+    assert _wait_for_node(qapp, gv, outer_path) is not None
+
+    scene.set_selected_chunks([outer])
+    gv._duplicate_selected()
+
+    dup_selection = list(scene.get_selected_chunks())
+    assert len(dup_selection) == 1
+    new_outer = dup_selection[0]
+    assert new_outer is not outer
+
+    new_inners = [
+        c for c in nodegraph._iter_group_children(new_outer, scene, stage)
+        if nodegraph.chunk_usd.is_group_chunk(c)
+    ]
+    assert len(new_inners) == 1
+    new_inner = new_inners[0]
+    assert new_inner is not inner
+
+    new_leaves = [c for c in scene.get_chunks() if c.get_context() is new_inner and c is not new_inner]
+    assert len(new_leaves) == 1
+    assert new_leaves[0] is not leaf
 
 
 def test_typed_param_connection_is_preserved_on_paste(qapp) -> None:
