@@ -8,8 +8,8 @@ try:
     __version__ = version("usd_chunks")
 except PackageNotFoundError:
     __version__ = "uninstalled"
-__author__ = "Viktor Lanner"
-__email__ = "viktor.lanner@huginstudios.com"
+__author__ = "Hugin Studios"
+__email__ = "info@huginstudios.com"
 
 _logger = logging.getLogger("usd_chunks")
 _logger.setLevel(logging.INFO)
