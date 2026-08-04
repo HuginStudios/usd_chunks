@@ -221,6 +221,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._drag_start = QtCore.QPointF()
         self._shake_samples: list[tuple[float, float]] = []  # (time, scene x) during a drag
         self._shake_fired = False
+        # Multi-select drag: other selected (unlocked) nodes moved alongside this one, and
+        # whether a plain (no-drag) click on an already-multi-selected node should collapse
+        # the selection down to just this node once the press/release completes without moving.
+        self._drag_companions: list["ChunkNodeItem"] = []
+        self._drag_pending_collapse = False
         self._proxy: Optional[QtWidgets.QGraphicsProxyWidget] = None
         self._port_rebuild_timer: Optional[QtCore.QTimer] = None
         self._height = _NODE_HEADER_H
@@ -692,8 +697,28 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             scene = self.scene()
-            if scene and hasattr(scene, "_scene_sender") and scene._scene_sender:
-                scene._scene_sender.set_selected_chunks([self.chunk])
+            sender = getattr(scene, "_scene_sender", None) if scene else None
+            modifiers = event.modifiers()
+            toggle = bool(modifiers & (QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier))
+            already_selected = self.chunk.has_state(ChunkFlags.State.SELECTED)
+            self._drag_pending_collapse = False
+            if sender:
+                if toggle:
+                    current = list(sender.get_selected_chunks())
+                    if self.chunk in current:
+                        current.remove(self.chunk)
+                    else:
+                        current.append(self.chunk)
+                    sender.set_selected_chunks(current)
+                elif not already_selected:
+                    # Plain click on a node not already part of the selection replaces it.
+                    sender.set_selected_chunks([self.chunk])
+                else:
+                    # Plain click on a node that's already part of a (possibly multi-node)
+                    # selection: keep the whole selection for now (so it can be drag-moved as
+                    # a group) and only collapse to just this node if the click ends up being
+                    # a plain click with no drag movement — see mouseReleaseEvent.
+                    self._drag_pending_collapse = True
             if event.pos().y() <= _NODE_HEADER_H and not self._locked:
                 self.setFocus()
                 self._drag_active = True
@@ -701,6 +726,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._drag_start = event.pos()
                 self._shake_samples = []
                 self._shake_fired = False
+                self._drag_companions = []
+                if isinstance(scene, ChunkGraphScene):
+                    self._drag_companions = [
+                        node for node in scene._nodes.values()
+                        if node is not self and not node._locked
+                        and node.chunk.has_state(ChunkFlags.State.SELECTED)
+                    ]
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -709,6 +741,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._drag_active:
             delta = event.pos() - self._drag_start
             self.setPos(self.pos() + delta)
+            for companion in self._drag_companions:
+                try:
+                    companion.setPos(companion.pos() + delta)
+                except RuntimeError:
+                    continue
             if not self._drag_moved and (abs(delta.x()) + abs(delta.y())) > 2:
                 self._drag_moved = True
             self._track_shake()
@@ -754,7 +791,21 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # a plain click on the header must not splice the node into an overlapping wire.
             if self._drag_moved:
                 self._write_pos_to_usd()
+                for companion in self._drag_companions:
+                    try:
+                        companion._write_pos_to_usd()
+                    except RuntimeError:
+                        continue
                 self._try_insert_on_edge()
+            elif self._drag_pending_collapse:
+                # A plain click (no movement) on a node that was already part of a multi-node
+                # selection — collapse the selection down to just this node now.
+                scene = self.scene()
+                sender = getattr(scene, "_scene_sender", None) if scene else None
+                if sender:
+                    sender.set_selected_chunks([self.chunk])
+            self._drag_companions = []
+            self._drag_pending_collapse = False
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -1526,6 +1577,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.setSceneRect(-e, -e, e * 2, e * 2)
         self._pan_active = False
         self._pan_start = QtCore.QPoint()
+        self._rubber_band = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Shape.Rectangle, self.viewport())
+        self._rubber_band_active = False
+        self._rubber_band_origin = QtCore.QPoint()
+        self._rubber_band_add = False  # Shift held: add boxed nodes to selection instead of replacing
 
         self._menubar = QtWidgets.QMenuBar(self)
         view_menu = self._menubar.addMenu("View")
@@ -1769,12 +1824,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             and QtWidgets.QApplication.keyboardModifiers() == QtCore.Qt.AltModifier
         ):
             self._start_pan(event.pos())
+        elif event.button() == QtCore.Qt.LeftButton and hit is None:
+            # Empty canvas: start a rubber-band box-select. A plain click with no drag
+            # movement resolves to an empty box on release, which clears the selection —
+            # same end result as the old immediate-clear-on-press behavior.
+            self._rubber_band_add = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+            self._rubber_band_origin = event.pos()
+            self._rubber_band.setGeometry(QtCore.QRect(self._rubber_band_origin, QtCore.QSize()))
+            self._rubber_band.show()
+            self._rubber_band_active = True
         else:
-            if event.button() == QtCore.Qt.LeftButton:
-                if hit is None:
-                    graph_scene = self.scene()
-                    if isinstance(graph_scene, ChunkGraphScene) and graph_scene._scene_sender:
-                        graph_scene._scene_sender.set_selected_chunks([])
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent):
@@ -1786,6 +1845,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._pan_start = event.pos()
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+        elif self._rubber_band_active:
+            rect = QtCore.QRect(self._rubber_band_origin, event.pos()).normalized()
+            self._rubber_band.setGeometry(rect)
         else:
             super().mouseMoveEvent(event)
 
@@ -1795,8 +1857,29 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         if self._pan_active and event.button() in (QtCore.Qt.MiddleButton, QtCore.Qt.LeftButton):
             self._stop_pan()
+        elif self._rubber_band_active and event.button() == QtCore.Qt.LeftButton:
+            self._finish_rubber_band()
         else:
             super().mouseReleaseEvent(event)
+
+    def _finish_rubber_band(self) -> None:
+        self._rubber_band_active = False
+        rect_view = self._rubber_band.geometry()
+        self._rubber_band.hide()
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return
+        scene_rect = self.mapToScene(rect_view).boundingRect()
+        boxed = [
+            node.chunk for node in graph_scene._nodes.values()
+            if node.sceneBoundingRect().intersects(scene_rect)
+        ]
+        if self._rubber_band_add:
+            current = list(graph_scene._scene_sender.get_selected_chunks())
+            merged = current + [c for c in boxed if c not in current]
+            graph_scene._scene_sender.set_selected_chunks(merged)
+        else:
+            graph_scene._scene_sender.set_selected_chunks(boxed)
 
     # ------------------------------------------------------------------
     # Keyboard
