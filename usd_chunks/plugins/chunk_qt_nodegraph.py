@@ -2148,6 +2148,19 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
                     continue
+                # Apply the copied values BEFORE add_chunk, not after: add_chunk's own
+                # CHUNK_LOADED/PARAM_ADDED notice dispatch can synchronously build this
+                # chunk's Params-panel widget as a side effect (chunk_qt.py's
+                # create_chunk_widget, when the target context already has an open tab --
+                # confirmed live, not deferred the way the *graph* node's own proxy widget
+                # is). A widget reads its initial displayed text once, synchronously, at
+                # construction (ChunkParamWidgetBase.setup_chunk_widget) -- applying values
+                # after add_chunk meant that first read saw the still-default/empty value,
+                # and a blocked pasted chunk (see below) never gets the later reactive
+                # VALUE_CHANGED notice that would otherwise have corrected it, leaving the
+                # field looking permanently blank despite the underlying param value being
+                # correct.
+                _apply_param_values(primary, item.values)
                 pos = (scene_pos.x() + item.rel_pos.x(), scene_pos.y() + item.rel_pos.y())
                 # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_usd in USD
                 # space (see chunk_usd._create_node_pos usage elsewhere in this file).
@@ -2159,7 +2172,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         scene.add_chunk(c)
                 finally:
                     chunk_usd._create_node_pos = None
-                _apply_param_values(primary, item.values)
                 new_chunks.append(primary)
                 new_path_by_index[index] = chunk_usd.get_chunk_prim_path(primary)
                 if item.children:
@@ -2204,6 +2216,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
                     continue
+                # Apply values before add_chunk -- see the matching comment in
+                # _materialize_at for why (a widget can be built synchronously as a side
+                # effect of add_chunk's own notice dispatch, and reads its initial value
+                # once, at construction).
+                _apply_param_values(primary, item.values)
                 # Children of a group aren't shown in any currently-open graph view (nobody
                 # has necessarily dived into the new group), so there's no view-driven
                 # blocking to apply here -- diving in later triggers the usual
@@ -2214,7 +2231,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         scene.add_chunk(c)
                 finally:
                     chunk_usd._create_node_pos = None
-                _apply_param_values(primary, item.values)
                 path = chunk_usd.get_chunk_prim_path(primary)
                 child_path_by_index[index] = path
                 child_chunk_by_index[index] = primary

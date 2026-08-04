@@ -7,7 +7,7 @@ from pxr import Sdf, Usd
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, chunk_core
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
@@ -195,6 +195,61 @@ def test_copy_skips_hidden_bookkeeping_params(graph) -> None:
     # pasted node the original's cached layer identifier, so its own next execute() would
     # silently adopt and reuse the original's real Sdf.Layer instead of creating its own.
     assert new_cl.get_param("_new_layer_id").value != "anon:deadbeef:asd"
+
+
+def test_pasted_widget_shows_the_copied_value_even_when_blocked(graph) -> None:
+    """Regression: reported live -- a pasted node's Params-panel widget showed a blank
+    field even though the underlying param value had actually copied correctly. Root
+    cause: add_chunk's own notice dispatch can synchronously build that widget (when the
+    target context already has an open tab), which reads its initial displayed text once,
+    at construction -- so applying copied values AFTER add_chunk meant that first read saw
+    the still-default value. A freshly pasted node also starts `blocked` whenever the
+    target context already has an active view (exactly the case here), which suppresses
+    the later reactive VALUE_CHANGED notice that would otherwise have corrected the
+    widget -- so the blank became permanent instead of self-healing a moment later."""
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("create_layer")
+    cl = _mk(mod, scene)
+    gv = docker.tab_widget.get_current_graph_view()
+    cl_path = get_chunk_prim_path(cl)
+    end = time.monotonic() + 2.0
+    while time.monotonic() < end and cl_path not in gv.scene()._nodes:
+        qapp.processEvents()
+
+    cl.get_param("layer_name").value = "hoj"
+    qapp.processEvents()
+
+    # A view driving this context is what makes the freshly pasted node start blocked --
+    # the exact condition under which the bug was reported.
+    gv._create_view_node_for_prim(cl_path)
+    qapp.processEvents()
+    assert gv._context_has_view(scene, gv._graph_context())
+
+    scene.set_selected_chunks([cl])
+    gv._copy_selected_to_clipboard()
+    pasted = gv._paste_clipboard_at(QtCore.QPointF(8000, 8000))
+    assert len(pasted) == 1
+    new_cl = pasted[0]
+    assert new_cl.is_blocked()
+    assert new_cl.get_param("layer_name").value == "hoj"
+
+    new_path = get_chunk_prim_path(new_cl)
+    end = time.monotonic() + 2.0
+    node = None
+    while time.monotonic() < end:
+        node = gv.scene()._nodes.get(new_path)
+        if node is not None and getattr(node, "_chunk_widget", None) is not None:
+            break
+        qapp.processEvents()
+    assert node is not None and node._chunk_widget is not None
+
+    param_widget = next(
+        w for w in node._chunk_widget.findChildren(QtWidgets.QWidget)
+        if isinstance(w, chunk_core.ChunkParamWidgetBase) and getattr(w.param, "name", None) == "layer_name"
+    )
+    line_edit = param_widget.findChild(QtWidgets.QLineEdit)
+    assert line_edit is not None
+    assert line_edit.text() == "hoj"
 
 
 def test_paste_excludes_view_chunks_from_clipboard(graph) -> None:
