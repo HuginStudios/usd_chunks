@@ -20,3 +20,13 @@ issues/
 .planning/
 .vexp/
 .sven/
+
+# Shared team AI-agent config lives in a separate private repo
+# (HuginStudios/usd_chunks-claude-config, synced in via its setup.py) -- this repo is
+# going public, so keep these out even if something copies them in locally.
+CLAUDE.md
+AGENTS.md
+/docs/adr/
+/docs/agents/
+CONTEXT.md
+CONTEXT-MAP.md
