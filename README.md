@@ -225,20 +225,23 @@ pip install -e ".[docs]"
 USD_CHUNK_DIRS=scripts mkdocs serve
 ```
 
-That serves the site locally; `mkdocs build` writes it to `site/` instead.
-`.github/workflows/docs.yml` builds the site on every push and pull request, so a change
-that breaks the docs fails there rather than at publish time. It does not deploy — the
-built site is attached to the run as an artifact, and publishing is done from
-`build_docs.bat --share` below.
+That serves the site locally; `mkdocs build` writes it to `site/` instead. The docs are not
+built in CI — publishing is a deliberate act, and the publish below builds the site anyway,
+so that is where a breakage surfaces.
 
 On Windows, `build_docs.bat` wraps both. With no arguments it serves locally; with
-`--share` it builds and mirrors the site to a destination of your choosing — a UNC share, a
+`--share` it builds and copies the site to a destination of your choosing — a UNC share, a
 mapped drive, or a web root:
 
 ```
 build_docs.bat --share \\server\share\usd_chunks_docs
 build_docs.bat --share E:\www\usd_chunks --directory-urls
 ```
+
+It adds and overwrites, never deletes. Pass `--mirror` to also remove files that are no
+longer part of the site; that is refused unless the destination is empty or was published
+by this script before, and publishing into anything that looks like a source checkout is
+refused outright.
 
 By default it builds flat filenames (`example.html`), which work both over `file://` and
 over http. A browser opening the site from a share will not resolve a directory to its
