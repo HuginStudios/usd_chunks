@@ -164,6 +164,10 @@ def main():
 def config():
     return chunk.DefaulConfig(
         category=chunk.StandardCategory.UTILS,
+        # Every operation gets its own menu entry, so "Sine" is searchable and creatable
+        # directly instead of being reachable only by creating Math Ops and re-picking the
+        # operation. Each still creates this one chunk -- the entry just presets the param.
+        variants=[(op, {"operation": op}) for op in _OPS],
         description=(
             "Applies a math operation to A/B/C, matching Blender's Geometry Nodes Math node.\n"
             "Inputs shown depend on the selected operation's arity (1 to 3).\n"

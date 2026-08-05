@@ -54,6 +54,8 @@ import ast
 import importlib.abc
 import logging
 import subprocess
+import textwrap
+from dataclasses import dataclass
 from timeit import default_timer as timer
 
 # Suppresses the console window Windows otherwise flashes for every pip subprocess
@@ -270,6 +272,7 @@ class _ConfigTransformer(ast.NodeTransformer):
         self._code = code
         self._module = module
         self._globs = globs.copy()
+        self._deferred_config: Optional[Callable] = None
 
     def _get_node_source(self, node):
         return ast.get_source_segment(self._code, node)
@@ -284,11 +287,44 @@ class _ConfigTransformer(ast.NodeTransformer):
             pass
         return node
 
+    def resolve_deferred_config(self, tree: ast.Module) -> None:
+        """Retry a config() that referenced module-level names, with those names available.
+
+        Discovery deliberately executes only usd_chunks imports and config() itself, so a
+        module's top-level code never runs just because the registry looked at it. That
+        also means config() cannot normally see module-level constants -- which a config
+        derived from module data (ChunkConfig.variants built from an op table, say) needs.
+
+        Reached only after the first call raised NameError, so a self-contained config
+        never causes its module's assignments to run at discovery time.
+        """
+        if not self._deferred_config:
+            return
+
+        for node in tree.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                try:
+                    self._exec_node(node)
+                except Exception:  # noqa: BLE001 - a module-level assign we cannot evaluate in isolation
+                    continue
+
+        try:
+            self._module.config = self._deferred_config()
+        except Exception as e:  # noqa: BLE001 - keep a bad config from taking down discovery
+            logger.warning(f"Could not evaluate config() for {self._module.module_name}: {e}")
+
+        self._deferred_config = None
+
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         if node.name == "config":
             self._exec_node(node)
             if func := self._globs.get("config"):
-                self._module.config = func()
+                try:
+                    self._module.config = func()
+                except NameError:
+                    # config() read a module-level name, which the walk has not executed.
+                    # resolve_deferred_config retries once the whole tree is available.
+                    self._deferred_config = func
         if node.name == "main":
             self._module._has_main = True
             if src := self._get_node_source(node):
@@ -311,8 +347,10 @@ class _ConfigTransformer(ast.NodeTransformer):
 
 
 def _pre_load_module(source: str, globs: dict, module: ChunkModule) -> _ConfigTransformer:
+    tree = ast.parse(source)
     transformer = _ConfigTransformer(source, globs, module)
-    transformer.visit(ast.parse(source))
+    transformer.visit(tree)
+    transformer.resolve_deferred_config(tree)
     return transformer
 
 
@@ -427,12 +465,15 @@ class ChunkModule(chunk_serial.Serializeable):
     def __repr__(self) -> str:
         return f"ChunkModule(module_name='{self.module_name}', module_file='{self.module_file.as_posix()}')"
 
-    def get_menu_name(self) -> str:
+    def get_menu_path(self) -> List[str]:
         """
-        Get a path-like string refereing to where this module can be found in a menu
+        Get the menu namespace this module lives under, outermost element first.
+
+        The module's dotted path is prefixed with its category, dropping a leading path
+        element that merely repeats that category.
 
         Returns:
-            str: A path-like string to where this module can be found in a menu.
+            List[str]: The menu namespace, outermost first; the last element is the label.
         """
 
         cat = self.config.category
@@ -446,7 +487,16 @@ class ChunkModule(chunk_serial.Serializeable):
         if cat:
             namespace.insert(0, cat)
 
-        return os.pathsep.join(namespace)
+        return namespace
+
+    def get_menu_name(self) -> str:
+        """
+        Get a path-like string refereing to where this module can be found in a menu
+
+        Returns:
+            str: A path-like string to where this module can be found in a menu.
+        """
+        return os.pathsep.join(self.get_menu_path())
 
     def serialize_kwarg(self, name: str, default: Any) -> Any:
         # Override to pass current values to kwargs
@@ -687,6 +737,86 @@ class ChunkModule(chunk_serial.Serializeable):
             return
 
 
+# Mirrors the ChunkConfig.description default, so an undocumented chunk shows no tooltip
+# rather than showing the placeholder as if it were real documentation.
+_PLACEHOLDER_DESC = "Chunk description..."
+
+
+def clean_description(desc: str) -> str:
+    """Dedented/stripped chunk description for a tooltip; '' for the unset placeholder.
+
+    Descriptions are often triple-quoted with leading indentation; dedent + strip so the
+    tooltip reads cleanly. Returns '' for the default placeholder so undocumented chunks
+    show no tooltip.
+
+    Args:
+        desc (str): The raw ChunkConfig.description
+
+    Returns:
+        str: Tooltip-ready text, or '' when the chunk is undocumented
+    """
+    cleaned = textwrap.dedent(desc or "").strip()
+    return "" if cleaned == _PLACEHOLDER_DESC else cleaned
+
+
+@dataclass(frozen=True)
+class MenuEntry:
+    """One selectable item in a chunk-creation menu, described without reference to any UI.
+
+    A module contributes one base entry, plus one more per ChunkConfig.variants element.
+    A variant creates exactly the same chunk as its module and then presets some params,
+    so it needs no ChunkModule of its own: the preset lands in an ordinary param value,
+    which round-trips through save/load like any other. That is what keeps N menu entries
+    from costing N files -- module identity, discovery and shadowing all stay 1:1 with a
+    file, and only the menu grows.
+
+    Frontends render this list rather than deriving it, so a module that declares variants
+    gains them in every frontend at once.
+
+    Attributes:
+        module (ChunkModule): The module this entry creates from
+        namespace (Tuple[str, ...]): Menu path, outermost first; the last element is the label
+        tooltip (str): Cleaned description, '' when the chunk is undocumented
+        presets (Optional[Dict[str, Any]]): Param values to apply on create; None for a base entry
+    """
+
+    module: "ChunkModule"
+    namespace: Tuple[str, ...]
+    tooltip: str = ""
+    presets: Optional[Dict[str, Any]] = None
+
+    @property
+    def label(self) -> str:
+        """The text this entry shows in a menu."""
+        return self.namespace[-1] if self.namespace else self.module.module_name
+
+    @property
+    def search_terms(self) -> Set[str]:
+        """Lowercased namespace elements, for substring matching in a search field."""
+        return {x.lower() for x in self.namespace}
+
+    def create(self) -> list:
+        """Create this entry's chunk(s), applying any variant presets.
+
+        Presets are applied here rather than by the caller because they must land before
+        the chunk is added to a container: PARAM_ADDED fires synchronously and builds
+        widgets that read their values immediately, so a preset applied after the add
+        would never reach the widgets it was supposed to configure.
+
+        Returns:
+            list: The created chunks, ready for the caller to add
+        """
+        chunks = self.module.create() if self.module.loaded else self.module.load()
+
+        if self.presets:
+            for c in chunks or []:
+                for param_name, value in self.presets.items():
+                    if param := c.get_param(param_name):
+                        param.value = value
+
+        return chunks
+
+
 class ChunkRegistry(metaclass=RegistrySingleton):
     """A singeton class to read and register chunk modules. By default,
     chunk modules are scanned for in the USD_CHUNK_DIRS directories.
@@ -925,6 +1055,42 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         if not sort_result:
             return v
         return sorted(v, key=lambda x: x.module_name.split(".")[-1])
+
+    def get_menu_entries(self, sort_result: bool = True) -> List[MenuEntry]:
+        """
+        Get every entry a chunk-creation menu should offer, described without reference to any UI.
+
+        One entry per registered module, plus one per element of that module's
+        ChunkConfig.variants. Variant entries sit alongside their module rather than
+        beneath it, so a declared variant reads as a chunk in its own right in both the
+        menu tree and the search field -- which is the whole point of declaring one.
+
+        Args:
+            sort_result (bool): Sort modules by trailing name, as get_chunk_modules does
+
+        Returns:
+            List[MenuEntry]: Base and variant entries, in module order
+        """
+        entries: List[MenuEntry] = []
+
+        for mod in self.get_chunk_modules(sort_result=sort_result):
+            namespace = mod.get_menu_path()
+            tooltip = clean_description(mod.config.description)
+
+            entries.append(MenuEntry(module=mod, namespace=tuple(namespace), tooltip=tooltip))
+
+            parent = tuple(namespace[:-1])
+            for label, presets in mod.config.variants:
+                entries.append(
+                    MenuEntry(
+                        module=mod,
+                        namespace=parent + (label,),
+                        tooltip=tooltip,
+                        presets=dict(presets),
+                    )
+                )
+
+        return entries
 
     def import_chunk(self, path: str | Path):
         """

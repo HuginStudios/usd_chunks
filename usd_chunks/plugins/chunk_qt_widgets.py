@@ -12,24 +12,14 @@ from usd_chunks.plugins import chunk_usd
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
 import os
-import textwrap
 
-_PLACEHOLDER_DESC = "Chunk description..."
+# Re-exported under the original private name: chunk_qt imports it from here, and the
+# implementation is core (frontend-agnostic), not Qt.
+_clean_description = chunk_registry.clean_description
 
 # Background tint for a tab's Params-page header panel (prim path field, lofted own-params,
 # filter bar) — distinct from the body's #333333 (CHUNK_STYLESHEET's default QFrame color).
 _PARAMS_HEADER_BG = "#242424"
-
-
-def _clean_description(desc: str) -> str:
-    """Dedented/stripped chunk description for a tooltip; '' for the unset placeholder.
-
-    Descriptions are often triple-quoted with leading indentation; dedent + strip so the
-    tooltip reads cleanly. Returns '' for the default placeholder so undocumented chunks
-    show no tooltip.
-    """
-    cleaned = textwrap.dedent(desc or "").strip()
-    return "" if cleaned == _PLACEHOLDER_DESC else cleaned
 
 
 CHUNK_STYLESHEET = """
@@ -2109,6 +2099,18 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         return False
 
     def select_module(self, pos):
+        """Pop the chunk menu at pos and return what the user picked.
+
+        Renders chunk_registry.get_menu_entries() -- the entry list, its namespace nesting
+        and its search terms are all core, so this only turns them into QMenus and QActions.
+
+        Args:
+            pos (QtCore.QPoint): Global position to pop the menu at
+
+        Returns:
+            Optional[chunk_registry.MenuEntry]: The chosen entry, or None if dismissed or
+            if the user picked "import" (which is handled here).
+        """
         items = dict()
         items["menu"] = self
         self.setToolTipsVisible(True)
@@ -2120,18 +2122,18 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         items["menu"].addAction(filter_action)
         items["menu"].addSeparator()
 
-        for mod in chunk_registry.ChunkRegistry().get_chunk_modules(sort_result=True):
-            namespace = mod.get_menu_name().split(os.pathsep)
-            search_term = set([x.lower() for x in namespace])
-
-            tooltip = _clean_description(mod.config.description)
+        for entry in chunk_registry.ChunkRegistry().get_menu_entries(sort_result=True):
+            namespace = list(entry.namespace)
+            search_term = entry.search_terms
+            tooltip = entry.tooltip
 
             d = items
-            for ns in namespace:
-                if ns is namespace[-1]:
+            last = len(namespace) - 1
+            for i, ns in enumerate(namespace):
+                if i == last:
                     if m := d.get("menu"):
                         action = m.addAction(ns)
-                        action.setData(mod)
+                        action.setData(entry)
                         action.setToolTip(tooltip)
                         self.filterable[action] = search_term
                     break
@@ -2144,7 +2146,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             # Flat search result — full path label, hidden until search is active
             label = " → ".join(namespace)
             flat_action = self.addAction(label)
-            flat_action.setData(mod)
+            flat_action.setData(entry)
             flat_action.setToolTip(tooltip)
             flat_action.setVisible(False)
             self._flat_results.append((flat_action, search_term))
@@ -2173,10 +2175,10 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                 chunk_registry.ChunkRegistry().import_chunk(file)
             return
 
-        if not (mod := exc.data()) or not isinstance(mod, chunk_registry.ChunkModule):
+        if not (entry := exc.data()) or not isinstance(entry, chunk_registry.MenuEntry):
             return
 
-        return mod
+        return entry
 
 
 def file_dial(name_filter: Optional[str] = None, create_new=False, directory=False):
