@@ -777,7 +777,13 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         widget: ChunkParamWidgetBase | None
         # Custom widget is created and managed externally
         if t == ChunkFlags.ParamType.CUSTOM and param.custom_widget and self.supports_widget(param.custom_widget):
-            widget = param.custom_widget
+            # If the widget already has a parent (displayed in another panel),
+            # create a fresh instance so both panels get their own widget.
+            existing = param.custom_widget
+            if hasattr(existing, 'parent') and callable(existing.parent) and existing.parent() is not None:
+                widget = type(existing)(param)
+            else:
+                widget = existing
         else:
             if not self.factory.has_mapping(t):
                 logger.warning("Missing widget mapping for param %s", param.name)

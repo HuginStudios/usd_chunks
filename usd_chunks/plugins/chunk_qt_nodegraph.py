@@ -1831,6 +1831,18 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
+        # Tab-to-create: open the chunk menu at the cursor (like Houdini's Tab menu).
+        if self._active is None and event.key() == QtCore.Qt.Key.Key_Tab:
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    view._open_tab_menu()
+                    event.accept()
+                    return True
+
         # Ctrl+C / Ctrl+V / Ctrl+D / Ctrl+X: same fallback pattern as F/L, but -- unlike
         # F/L -- NOT gated on self._active being None. A proxy going "active" just means
         # its widget was the last thing clicked (e.g. a ChunkGroup node's embedded body,
@@ -2523,6 +2535,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # Keyboard
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if event.key() == QtCore.Qt.Key.Key_Tab:
+            self._open_tab_menu()
+            event.accept()
+            return
         if event.key() == QtCore.Qt.Key.Key_F:
             self._frame_nodes()
             event.accept()
@@ -3437,6 +3453,51 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         ]
         graph_scene.layout_nodes(selected_paths or None)
 
+    def _open_tab_menu(self):
+        """Open the chunk creation menu at the cursor, like Houdini's Tab menu."""
+        cursor_pos = self.mapFromGlobal(QtGui.QCursor.pos())
+        scene_pos = self.mapToScene(cursor_pos)
+        global_pos = QtGui.QCursor.pos()
+        self._create_chunk_at(scene_pos, global_pos)
+
+    def _create_chunk_at(self, scene_pos: QtCore.QPointF, global_pos: QtCore.QPoint):
+        """Show the chunk menu and create the selected chunk at scene_pos.
+
+        Shared by both Tab key and right-click on empty graph area.
+        """
+        mod = FilterableChunkMenu().select_module(global_pos)
+        if not mod:
+            return
+
+        chunks = mod.create() if mod.loaded else mod.load()
+
+        scene = _chunk.get_scene()
+        if not scene:
+            return
+
+        context = self._graph_context()
+        view_exists = self._context_has_view(scene, context)
+        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        chunk_usd._pin_new_chunks = False
+        nested, prev_ctx = self._push_nest_context(scene, context)
+        try:
+            for c in chunks:
+                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+                    c.set_blocked(True)
+                scene.add_chunk(c)
+        finally:
+            if nested:
+                scene._current_context = prev_ctx
+            chunk_usd._create_node_pos = None
+            chunk_usd._pin_new_chunks = None
+
+        menu_view = next((c for c in chunks if chunk_usd.is_view_chunk(c)), None)
+        if menu_view is not None:
+            self._activate_menu_view(menu_view, context, scene.get_stage())
+            return
+
+        QtCore.QTimer.singleShot(60, lambda ctx=context: self._ensure_default_view(ctx))
+
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
         scene_pos = self.mapToScene(event.pos())
         for item in self.scene().items(scene_pos):
@@ -3488,56 +3549,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if res != new_chunk_action:
                 return
 
-        mod = FilterableChunkMenu().select_module(event.globalPos())
-        if not mod:
-            return
-
-        chunks = mod.create() if mod.loaded else mod.load()
-
-        scene = _chunk.get_scene()
-        if not scene:
-            return
-
-        context = self._graph_context()
-        # View-driven: if this context already has a view, a new node starts blocked so it does
-        # NOT execute on creation (its params resolve during add_chunk and would otherwise cascade
-        # into the module, and execute-on-creation would run too). It cooks only once wired into
-        # the active view's tree, where recook unblocks it. Must be set before add_chunk.
-        view_exists = self._context_has_view(scene, context)
-        # Create the node(s) at the right-click point instead of the far-away index default.
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        # Explicitly flag "not pinned" (rather than leaving the flag at its idle None) — the
-        # Params-page widget's own PARAM_ADDED listener can race ahead of ChunkStageSync's and
-        # ask is_chunk_pinned() before _define_prim authors the attribute; an explicit False
-        # here is what lets it resolve correctly instead of falling back to the legacy default.
-        chunk_usd._pin_new_chunks = False
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
-            for c in chunks:
-                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
-                    c.set_blocked(True)
-                scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
-            chunk_usd._pin_new_chunks = None
-
-        # A view created straight from the chunk menu needs a slot + activation to work (the
-        # "Set View" path does this). Set it up so it's a usable, active view (unwired until the
-        # user connects it), and skip the default-view step below.
-        menu_view = next((c for c in chunks if chunk_usd.is_view_chunk(c)), None)
-        if menu_view is not None:
-            self._activate_menu_view(menu_view, context, scene.get_stage())
-            event.accept()
-            return
-
-        # If this context has no view (e.g. it was just cleared, or nodes were made in the
-        # params panel), make a default one wired to the exec tail — so view-driven execution
-        # resumes without needing to re-open the graph. Deferred past the create's own rebuild
-        # so it runs on a settled graph (re-cook mid-create corrupts nodes). Wiring to the tail
-        # (not the new node) means it cooks the whole chain and can't blank a loaded scene.
-        # No-ops when a view already exists.
-        QtCore.QTimer.singleShot(60, lambda ctx=context: self._ensure_default_view(ctx))
+        self._create_chunk_at(scene_pos, event.globalPos())
+        event.accept()
 
 

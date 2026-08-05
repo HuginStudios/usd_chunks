@@ -42,9 +42,9 @@ plugins:
         # See: https://mkdocstrings.github.io/python/usage/
         python:
           inventories:
+            # Only the stdlib: neither pydantic nor msgspec is a dependency of this
+            # project (attrs is), and the msgspec URL 404s, which aborts a strict build.
             - https://docs.python.org/3/objects.inv
-            - https://docs.pydantic.dev/latest/objects.inv
-            - https://jcristharif.com/msgspec//objects.inv
 
           options:
             extensions:

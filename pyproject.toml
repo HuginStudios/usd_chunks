@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "Hugin Studios" }]
+authors = [{ name = "Hugin Studios", email = "info@huginstudios.com" }]
 keywords = ["usd", "openusd", "usdview", "vfx", "pipeline"]
 classifiers = [
     "Development Status :: 3 - Alpha",

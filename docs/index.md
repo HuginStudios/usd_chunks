@@ -7,14 +7,16 @@ A Chunk is simply a python object with some information attached, and these are 
 A simple example for creating a button with a callback
 
 ``` py
+from usd_chunks import chunk
+
 
 def clickedButton(owner, notice, sender):
     print("Button clicked: ", owner.name)
 
 
-def main(api):
+def main():
     # An example of creating a button with a callback
-    button = chunk.Custom("Button")
+    button = chunk.Button("Button")
     button.add_callback(clickedButton)
 
     # Create the chunk and add the button parameter
@@ -25,6 +27,11 @@ def main(api):
     return myChunk
 
 ```
+
+`main()` takes no arguments. The callback above uses the `(owner, notice, sender)` form,
+where `owner` is the object `add_callback` was called on — here, the button. A callback may
+instead declare `(notice, sender)`, matching USD's `Tf.Notice`; it receives whichever of the
+two it asks for.
 
 
 The ChunkRegistry will scan files and nested folders inside the directories defined in the environment variable **USD_CHUNK_DIRS**

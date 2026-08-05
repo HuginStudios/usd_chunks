@@ -623,7 +623,13 @@ def test_export_chunks_preserves_live_exec_order_not_scene_order(tmp_path) -> No
     c_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False).SetConnections(
         [Sdf.Path(f"{_CHUNKS_ROOT}/b.{_EXEC_OUTPUT}")]
     )
-    assert a.get_dependencies() == [] and b.get_dependencies() == [] and c.get_dependencies() == []
+    # The Python DAG now mirrors the connection the moment it is authored — the stage is the
+    # authority for chunk-level exec wiring, and ChunkStageSync reconciles off ObjectsChanged
+    # (see reconcile_exec_dependencies). Before that, these were all still [] here and only
+    # got reconstructed by a save+reload, which is what made the export fallback below matter.
+    assert [d.name for _, d in b.get_dependencies()] == ["a"]
+    assert [d.name for _, d in c.get_dependencies()] == ["b"]
+    assert a.get_dependencies() == []
 
     out = tmp_path / "chunks.usda"
     export_chunks(scene, out)
@@ -2780,3 +2786,89 @@ def test_get_upstream_stage_preserves_real_relative_order_among_included_chunks(
         "get_upstream_stage must preserve the real relative order between two included "
         "chunks that touch the same prim, not silently pick a different winner"
     )
+
+
+# ---------------------------------------------------------------------------
+# The Python DAG mirrors the stage's chunk-level exec wiring
+# ---------------------------------------------------------------------------
+
+def _wire_exec(stage, dst, src) -> None:
+    """Author dst.inputs:chunk -> src.outputs:chunk the way drag-to-connect does: straight
+    onto the USD prim, never via add_dependency()."""
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+    attr = prim.GetAttribute(_EXEC_INPUT) or prim.CreateAttribute(
+        _EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False
+    )
+    attr.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+
+def _exec_wiring_scene():
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    a = _chunk_with_module("a")
+    scene.add_chunk(a)
+    b = _chunk_with_module("b")
+    scene.add_chunk(b)
+    return stage, scene, a, b
+
+
+def test_authoring_exec_connection_creates_the_dag_dependency() -> None:
+    """The node graph authors inputs:chunk directly and never calls add_dependency(), so
+    without reconciliation the Python DAG holds no edge at all for a graph the user visibly
+    wired — and INPUT_CHANGED never fires between those two chunks."""
+    stage, _scene, a, b = _exec_wiring_scene()
+
+    assert b.get_dependencies() == []
+
+    _wire_exec(stage, b, a)
+
+    assert [d.name for _, d in b.get_dependencies()] == ["a"]
+
+
+def test_authoring_exec_connection_dirties_the_dependent() -> None:
+    """An edge change must propagate like any other change: wiring b downstream of a leaves
+    b dirty so the next solve re-runs it."""
+    stage, _scene, a, b = _exec_wiring_scene()
+    b.get_dag_node()._dirty = False
+
+    _wire_exec(stage, b, a)
+
+    assert b.get_dag_node().dirty
+
+
+def test_clearing_exec_connection_removes_the_dag_dependency() -> None:
+    """Detaching the wire must drop the edge too, or the DAG keeps executing against a
+    predecessor the user disconnected."""
+    stage, _scene, a, b = _exec_wiring_scene()
+    _wire_exec(stage, b, a)
+    assert [d.name for _, d in b.get_dependencies()] == ["a"]
+
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+
+    attr = stage.GetAttributeAtPath(Sdf.Path(f"{get_chunk_prim_path(b)}.{_EXEC_INPUT}"))
+    attr.ClearConnections()
+
+    assert b.get_dependencies() == []
+
+
+def test_exec_output_path_of_a_chunkgroup_is_the_group_prim() -> None:
+    """A ChunkGroup is its own prim root, so its exec output lives on the group prim.
+    Resolving it through _resolve_chunk_root instead yields /Root/Group/Group.outputs:chunk —
+    a path that does not exist, which silently broke exec-chain healing around the group."""
+    from usd_chunks.plugins.chunk_usd import exec_output_path
+
+    group = _chunk_with_module("Group", module="chunkgroup")
+    group.set_flag(ChunkFlags.GroupFlags.CONTEXT)
+    group.prim_path = f"{_CHUNKS_ROOT}/Group"
+
+    assert exec_output_path(group) == f"{_CHUNKS_ROOT}/Group.{_EXEC_OUTPUT}"

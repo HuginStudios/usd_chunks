@@ -137,6 +137,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     # _on_chunk_deleted, which must not touch USD during that window.
     _reloading: bool = False
 
+    # True while reconcile_exec_dependencies runs off an ObjectsChanged notice, i.e. while
+    # the DAG is being mirrored FROM the stage. Stops the mirror writing back: adding the
+    # edge fires DEPENDENCY_ADDED, whose handler would author inputs:chunk and re-home edit
+    # targets, both of which edit the stage and notify straight back here.
+    _reconciling_exec: bool = False
+
     def initialize(self, stage: Usd.Stage, scene: "core.SceneSender") -> None:
         self._stage = stage
         self._scene = scene
@@ -344,7 +350,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prim.SetActive(not disabled)
 
     def _on_objects_changed(self, notice: Usd.Notice.ObjectsChanged, sender):
-        if chunk_notice._usd_write_active or not self._scene:
+        if chunk_notice._usd_write_active or self._reconciling_exec or not self._scene:
             return
         scene_stage = self._scene.get_stage()
         if not scene_stage or sender.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
@@ -355,6 +361,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         all_changed = changed | {str(p) for p in notice.GetResyncedPaths()}
         if not all_changed:
             return
+        self._reconcile_changed_exec_inputs(all_changed)
         for chunk in self._scene.get_chunks():
             if changed:
                 for _, param in _iter_chunk_params(chunk):
@@ -388,6 +395,37 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk.set_state(ChunkFlags.State.DISABLED)
             elif is_active and is_disabled:
                 chunk.unset_state(ChunkFlags.State.DISABLED)
+
+    def _reconcile_changed_exec_inputs(self, all_changed: "set[str]") -> None:
+        """Mirror any changed inputs:chunk connection into the Python DAG.
+
+        A connection edit is reported against the *attribute* path
+        (/chunks/b.inputs:chunk), not the prim — verified against Usd.Notice.ObjectsChanged,
+        which puts it in GetChangedInfoOnlyPaths(). The rest of _on_objects_changed matches
+        on prim paths only, which is why this wiring went unnoticed there for so long.
+
+        Routing this through the stage notice rather than the node graph's
+        _author_connection keeps every authoring path in sync — the Qt graph, the CLI, a
+        USD-level edit in usdview, and any future frontend — instead of each one having to
+        remember to call add_dependency itself.
+        """
+        exec_suffix = "." + _EXEC_INPUT
+        touched_prims = {path[: -len(exec_suffix)] for path in all_changed if path.endswith(exec_suffix)}
+        if not touched_prims:
+            return
+
+        chunks_by_prim = {prim_path: chunk_id for chunk_id, prim_path in self._chunk_prim_paths.items()}
+        wanted_ids = {chunks_by_prim[p] for p in touched_prims if p in chunks_by_prim}
+        if not wanted_ids:
+            return
+
+        self._reconciling_exec = True
+        try:
+            for chunk in self._scene.get_chunks():
+                if id(chunk) in wanted_ids:
+                    reconcile_exec_dependencies(chunk)
+        finally:
+            self._reconciling_exec = False
 
     def _teardown_chunks(self) -> None:
         """Drop every chunk in the scene, Python-side only.
@@ -665,6 +703,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     def _on_dependency_added(self, notice, sender):
         if not self.initialized or not self._stage:
             return
+        if self._reconciling_exec:
+            # The edge is being mirrored FROM the stage, so inputs:chunk already says this.
+            # Authoring it again writes a second spec into the bookkeeping layer, and
+            # reconcile_edit_targets later migrates whichever spec it finds first — which is
+            # how a healed exec chain got silently reverted to the pre-heal connection.
+            return
         dependent = sender
         dependency = notice.data
         if not isinstance(dependent, core.ChunkBase) or not isinstance(dependency, core.ChunkBase):
@@ -672,7 +716,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         dep_prim = self._stage.GetPrimAtPath(Sdf.Path(f"{_resolve_chunk_root(dependent)}/{dependent.name}"))
         if not dep_prim.IsValid():
             return
-        src_path = Sdf.Path(f"{_resolve_chunk_root(dependency)}/{dependency.name}.{_EXEC_OUTPUT}")
+        src_path = Sdf.Path(exec_output_path(dependency))
         with self._chunk_prim_edit_context(dependent):
             exec_in = dep_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
             existing = list(exec_in.GetConnections())
@@ -1299,6 +1343,25 @@ def get_chunk_prim_path(chunk: "core.ChunkBase") -> str:
     if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and chunk.get_config() and chunk.get_config().module:
         return chunk.prim_path or f"{_resolve_chunk_root(chunk)}/{chunk.name}"
     return f"{_resolve_chunk_root(chunk)}/{chunk.name}"
+
+
+def exec_output_path(chunk: "core.ChunkBase") -> str:
+    """Return the outputs:chunk attribute path an exec connection to chunk must point at.
+
+    A ChunkGroup is its own prim root, so its exec output lives on the group prim itself
+    (/Tab1/Group.outputs:chunk) — NOT under the root it provides for its children, which is
+    what _resolve_chunk_root returns and would give the nonexistent
+    /Tab1/Group/Group.outputs:chunk.
+
+    Args:
+        chunk (core.ChunkBase): The upstream chunk being connected from
+
+    Returns:
+        str: The absolute outputs:chunk attribute path
+    """
+    if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and getattr(chunk, "prim_path", None):
+        return f"{chunk.prim_path}.{_EXEC_OUTPUT}"
+    return f"{_resolve_chunk_root(chunk)}/{chunk.name}.{_EXEC_OUTPUT}"
 
 
 def is_node_in_context(chunk: "core.ChunkBase", context: "core.ChunkBase | None") -> bool:
@@ -3160,6 +3223,43 @@ def _live_exec_dependencies(chunk: "core.ChunkBase") -> list:
     return deps
 
 
+def reconcile_exec_dependencies(chunk: "core.ChunkBase") -> bool:
+    """Make chunk's Python DAG dependencies match its live inputs:chunk connections.
+
+    The stage is the authority for chunk-level exec wiring: the node-graph UI's
+    drag-to-connect authors inputs:chunk directly and never calls add_dependency(), so
+    without this the Python DAG holds no edge at all for an interactively built graph and
+    INPUT_CHANGED never fires between two chunks the user visibly wired together.
+
+    Adding the edge here also dirties the dependent, so an edge change propagates downstream
+    exactly like a param change does.
+
+    Only chunk-level dependencies are touched. Param-level dependencies (added via the
+    c_param.add_dependency(a_param) API) have no inputs:chunk counterpart and are left alone.
+
+    Args:
+        chunk (core.ChunkBase): The chunk whose inputs:chunk connections changed
+
+    Returns:
+        bool: True if any dependency was added or removed
+    """
+    live = _live_exec_dependencies(chunk)
+    current = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
+
+    live_ids = {id(dep) for dep in live}
+    current_ids = {id(dep) for dep in current}
+
+    changed = False
+    for dep in current:
+        if id(dep) not in live_ids:
+            changed = chunk.remove_dependency(dep) or changed
+    for dep in live:
+        if id(dep) not in current_ids:
+            chunk.add_dependency(dep)
+            changed = True
+    return changed
+
+
 def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:
     chunk_root = _resolve_chunk_root(chunk)
     stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
@@ -3193,14 +3293,7 @@ def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.Ch
         deps = [prev_chunk]
     if deps:
         exec_in = prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-        exec_in.SetConnections([
-            Sdf.Path(
-                f"{dep.prim_path}.{_EXEC_OUTPUT}"
-                if dep.has_flag(ChunkFlags.GroupFlags.CONTEXT) and getattr(dep, "prim_path", None)
-                else f"{_resolve_chunk_root(dep)}/{dep.name}.{_EXEC_OUTPUT}"
-            )
-            for dep in deps
-        ])
+        exec_in.SetConnections([Sdf.Path(exec_output_path(dep)) for dep in deps])
 
     # Build a name → context_param map for lofted params (direct ChunkParamBase children of context)
     context = chunk.get_context()
