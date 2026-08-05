@@ -397,6 +397,25 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             self.setTabToolTip(idx, desc)
         self.setCurrentIndex(idx)
         self.update_stylesheet()
+        # The tab text above is only ever set once, here. A later rename -- e.g. via the
+        # node graph's right-click "Rename..." on this same chunk/chunkgroup, which just
+        # does `grp.name = new` -- has nothing else re-syncing it, leaving the tab stuck on
+        # its creation-time name. Stored on the stack so the connection's lifetime matches
+        # the tab (weakrefs everywhere here, per NoticeConnection -- no manual teardown
+        # needed on tab removal).
+        stack._rename_conn = chunk_notice.NoticeConnection(
+            self._on_context_renamed,
+            chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+            c.get_attribute_sender("name"),
+        )
+
+    def _on_context_renamed(self, notice, sender):
+        ctx = sender.get_owner()
+        if ctx is None:
+            return
+        idx = self.get_chunk_context_index(ctx)
+        if idx is not None:
+            self.setTabText(idx, ctx.name)
 
     def set_view_mode(self, mode: int):
         self._view_mode = mode
