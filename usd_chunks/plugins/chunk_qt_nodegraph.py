@@ -494,6 +494,19 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             ChunkNoticeAlias.STATE_CHANGED,
             chunk.get_attribute_sender("state"),
         )
+        # A lofted param (e.g. "Loft up" on an inner chunk's param, surfaced onto this
+        # ChunkGroup) adds a live param to `chunk` after this node already exists and has
+        # a built proxy -- nothing else triggers a port rebuild for that: _rebuild_typed_ports
+        # otherwise only runs once via create_proxy()'s initial singleShot and on proxy
+        # geometryChanged (collapse/expand), and _rebuild_nodes reuses an existing node
+        # as-is rather than reconstructing it. Without this, the loft shows up in the Params
+        # tab (which does listen for PARAM_ADDED) but never gets a port on the graph node.
+        self._param_conn = NoticeConnection(
+            self._on_param_added, ChunkNoticeAlias.PARAM_ADDED, chunk
+        )
+        self._param_removed_conn = NoticeConnection(
+            self._on_param_added, ChunkNoticeAlias.PARAM_REMOVED, chunk
+        )
 
         self._build_ports(prim)
         self._apply_usd_pos(prim)
@@ -1164,6 +1177,20 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             else ""
         )
 
+    def _on_param_added(self, notice, sender):
+        # Same defensive pattern as _on_state_changed: this is a global per-chunk callback
+        # and can arrive after the node/proxy has already been torn down.
+        try:
+            if self._port_rebuild_timer is not None:
+                self._port_rebuild_timer.start()
+            else:
+                # Proxy not built yet -- create_proxy()'s own initial _rebuild_typed_ports()
+                # call will pick up the new param once it runs (_rebuild_typed_ports no-ops
+                # safely if the proxy still isn't there by then).
+                QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
+        except RuntimeError:
+            return
+
 
 # ---------------------------------------------------------------------------
 # Edge
@@ -1738,6 +1765,16 @@ class _ProxyKeyRouter(QtCore.QObject):
             # Owning view collected: self-heal a filter nothing detached, then stand down.
             self.uninstall()
             return False
+        if not view.isVisible():
+            # Every dived-into ChunkGroup gets its own ChunkGraphView + router, installed on
+            # the QApplication and only ever uninstalled when the view is destroyed (see
+            # destroyed.connect below) -- so navigating away from a tab leaves its router
+            # alive and still installed, just hidden. All ChunkTabContextStack pages share
+            # one QStackedWidget rect, so a hidden view's geometry checks below would still
+            # match the cursor. Qt runs QApplication filters LIFO, so without this guard the
+            # most-recently-dived-into (now hidden) view's router wins the race over the
+            # actually-visible one, silently acting on the wrong graph.
+            return False
         etype = event.type()
         if etype not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
             return False
@@ -1757,6 +1794,17 @@ class _ProxyKeyRouter(QtCore.QObject):
             self._active = None
             self._view_active = False
             return False
+
+        # Native OS focus doesn't reliably land on a proxy's QLineEdit even when the user is
+        # actively typing into it (the same focus-stealing problem the class docstring
+        # describes) -- that's exactly why the manual-forwarding fallback at the bottom of
+        # this method reads self._active.focusWidget() instead of trusting QApplication's
+        # own idea of focus. The _INPUT_TYPES check above only catches the case where native
+        # focus DOES happen to agree; check the proxy's own logical focus target too, so a
+        # digit/Ctrl+C/etc typed into e.g. Create Layer's "Layer Name" field isn't stolen by
+        # the ungated blocks below before it ever reaches that fallback.
+        active_focus = self._active.focusWidget() if self._active is not None else None
+        typing_in_proxy = isinstance(active_focus, self._INPUT_TYPES)
 
         # F-to-frame: intercept only when cursor is over the graph view and no proxy active.
         if self._active is None and event.key() == QtCore.Qt.Key.Key_F:
@@ -1783,10 +1831,20 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
-        # Ctrl+C / Ctrl+V / Ctrl+D / Ctrl+X: same fallback pattern as F/L.
+        # Ctrl+C / Ctrl+V / Ctrl+D / Ctrl+X: same fallback pattern as F/L, but -- unlike
+        # F/L -- NOT gated on self._active being None. A proxy going "active" just means
+        # its widget was the last thing clicked (e.g. a ChunkGroup node's embedded body,
+        # which has far more clickable surface than a plain leaf node); none of ITS child
+        # widgets have a competing meaning for Ctrl+C/V/D/X EXCEPT a text field mid-edit,
+        # which is why this is also gated on `not typing_in_proxy` (see that variable's
+        # comment above -- native focus can't be trusted to already rule that out).
+        # Requiring self._active is None here meant clicking into any node's body before
+        # pressing Ctrl+C routed the key to the "forward to active proxy" fallback below
+        # instead -- a silent no-op -- while a bare click on the node chrome (proxy is
+        # None) worked fine.
         ctrl_down = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
         _CVDX_KEYS = (QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V, QtCore.Qt.Key.Key_D, QtCore.Qt.Key.Key_X)
-        if self._active is None and ctrl_down and event.key() in _CVDX_KEYS:
+        if not typing_in_proxy and ctrl_down and event.key() in _CVDX_KEYS:
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -1801,6 +1859,33 @@ class _ProxyKeyRouter(QtCore.QObject):
                         view._duplicate_selected()
                     else:
                         view._cut_selected_to_clipboard()
+                    event.accept()
+                    return True
+
+        # 1/2/3-to-switch-view-slot: same fallback pattern as Ctrl+C/V/D/X above -- native
+        # keyPressEvent (chunk_qt_nodegraph.py ChunkGraphView.keyPressEvent) has the same
+        # logic, but depends on ChunkGraphView holding real native Qt focus, which usdview's
+        # MainWindow routinely reclaims. F/L/Ctrl+C/V/D/X were already hardened against that
+        # via this router; the view-slot keys were never added to it, so they're the one
+        # shortcut still riding the fragile native-focus path. Also gated on
+        # `not typing_in_proxy` -- these ARE digits, so without that guard this swallowed
+        # every "1"/"2"/"3" typed into e.g. Create Layer's "Layer Name" field.
+        if not typing_in_proxy and event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2, QtCore.Qt.Key.Key_3):
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    slot = event.key() - QtCore.Qt.Key.Key_0
+                    registry = chunk_registry.ChunkRegistry()
+                    stage = registry.scene.get_stage() if registry.initialized else None
+                    # Never toggle to "no view" (slot 0) if nothing exists for this slot in
+                    # this graph's own context -- that would block the whole graph.
+                    if stage and chunk_usd.find_view_chunk_for_slot(
+                        slot, stage, registry.scene, view._graph_context()
+                    ):
+                        view._view_state.set_slot(slot)
                     event.accept()
                     return True
 
@@ -2221,13 +2306,26 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # effect of add_chunk's own notice dispatch, and reads its initial value
                 # once, at construction).
                 _apply_param_values(primary, item.values)
-                # Children of a group aren't shown in any currently-open graph view (nobody
-                # has necessarily dived into the new group), so there's no view-driven
-                # blocking to apply here -- diving in later triggers the usual
-                # _ensure_default_view the same way it would for a hand-built group.
+                # Block before add_chunk, same as _materialize_at's top-level loop -- a
+                # freshly created chunk defaults to unblocked, and ChunkStageSync._on_chunk_loaded
+                # executes it synchronously and immediately as part of add_chunk/add_param's own
+                # CHUNK_LOADED dispatch, well before the wiring loop below (_author_raw_connection)
+                # connects it to its siblings. For a chunk with real creation side effects (e.g.
+                # Create Layer authoring an anon layer under whatever's upstream *right now*),
+                # that premature standalone execute leaves an orphaned layer nothing ever cleans
+                # up. This group's children have no inner view yet (view chunks are excluded from
+                # the copy, see _iter_group_children), so nothing unblocks them here directly --
+                # but the deferred _wire_pasted_edges -> _recook_active_view call that already
+                # runs once this whole paste/duplicate's top-level wiring lands (_materialize_at)
+                # recurses into reachable groups (recook_for_view's is_group_chunk branch) and
+                # unblocks+executes their contents in order, same as it would for a hand-built
+                # group once it's wired into a view. An unwired duplicate stays safely blocked
+                # until the user wires it in manually, matching a hand-built group's behavior.
                 chunk_usd._create_node_pos = (item.rel_pos.x(), -item.rel_pos.y())
                 try:
                     for c in chunks:
+                        if not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+                            c.set_blocked(True)
                         scene.add_chunk(c)
                 finally:
                     chunk_usd._create_node_pos = None
@@ -2892,10 +2990,20 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if not (succ and succ.IsValid()):
                 continue
             if any(str(c) == out_chunk_path for c in succ.GetConnections()):
-                if pred_conns:
-                    succ.SetConnections(pred_conns)
-                else:
-                    succ.ClearConnections()
+                # Write to succ's own home layer, not the stage's ambient edit target (root,
+                # since nothing here calls SetEditTarget) -- an interactively wired
+                # connection almost always lives on the session layer, stronger than root,
+                # so healing on root left the original opinion (pointing at the node being
+                # shaken loose) in charge and the heal silently had no visible effect. Same
+                # fix as chunk_usd.heal_exec_chain_on_delete.
+                home = chunk_utils.get_attr_home_layer(succ) or chunk_utils.get_bookkeeping_layer(
+                    stage, getattr(other, "chunk", None)
+                )
+                with Usd.EditContext(stage, home):
+                    if pred_conns:
+                        succ.SetConnections(pred_conns)
+                    else:
+                        succ.ClearConnections()
                 changed = True
 
         # This node's own input connections.

@@ -1694,10 +1694,21 @@ def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
             if not (succ and succ.IsValid()):
                 continue
             if any(str(c) == out_path for c in succ.GetConnections()):
-                if pred_conns:
-                    succ.SetConnections(pred_conns)
-                else:
-                    succ.ClearConnections()
+                # Write to succ's OWN home layer (or the session layer as a last resort),
+                # not wherever the stage's ambient edit target happens to be (the root
+                # layer, since nothing here ever calls SetEditTarget) -- an interactively
+                # wired connection almost always lives on the session layer, which is
+                # stronger than root. Healing on root left the original, still-composed
+                # session-layer opinion (pointing at the just-deleted node) in charge, so
+                # the "healed" A->B edge was silently shadowed away by composition and
+                # never actually took effect. Same pattern as _author_connection /
+                # _author_raw_connection.
+                home = chunk_utils.get_attr_home_layer(succ) or chunk_utils.get_bookkeeping_layer(stage, None)
+                with Usd.EditContext(stage, home):
+                    if pred_conns:
+                        succ.SetConnections(pred_conns)
+                    else:
+                        succ.ClearConnections()
     finally:
         chunk_notice._usd_write_active = prev_w
 
@@ -2137,6 +2148,7 @@ def recook_for_view(
     scene: "core.SceneSender",
     context: "core.ChunkBase | None",
     view_chunk: "core.ChunkBase | None",
+    _synthetic_tail: bool = False,
 ) -> None:
     """Apply view-driven execution for one context.
 
@@ -2147,6 +2159,11 @@ def recook_for_view(
     Blocking a chunk both hides its result (its layer is muted) and stops it reacting to
     param changes (see ChunkBase.value_changed) — so being outside the active view's tree
     means "does not execute", live.
+
+    _synthetic_tail: True when view_chunk is a stand-in exec tail rather than a real view
+    chunk (see the is_group_chunk branch below) — real view chunks are markers excluded
+    from their own cook_list by get_exec_upstream_chunks, but a synthetic tail is real
+    content that must cook too, so it's appended back in rather than excluded.
     """
     lm = chunk_registry.ChunkLayerManager()
     disabled = ChunkFlags.State.DISABLED
@@ -2172,6 +2189,8 @@ def recook_for_view(
         cook_set: set = set()
     else:
         cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)
+        if _synthetic_tail:
+            cook_list.append(view_chunk)
         cook_set = set(cook_list)
 
     # Block/mute leaf nodes by cook membership (blocking non-cook chunks first means the
@@ -2191,12 +2210,41 @@ def recook_for_view(
     # still reading its own upstream.
     mute_idents: list = []
     seen_idents: set = set()
-    for c in scene.get_chunks():
+    # scene.get_chunks() is a DFS via stack.pop() (LIFO) over insertion order -- roughly
+    # reverse creation order, with no relation to exec/view proximity. That's harmless for
+    # blocking/muting a chunk on its own, but a group recurses into recook_for_view here,
+    # which runs that group's OWN cook_list (including any Create Layer-style chunk that
+    # unconditionally reinserts itself at the front of a SHARED parent layer's subLayerPaths
+    # on every execute -- last to run wins strongest). Reversed order there meant the group
+    # FURTHEST from the view executed last and won, exactly backwards from "closer to view
+    # wins". Visit cook_list's own members in ITS order (roots-first, so the group closest
+    # to the view is recursed into last and so executes last) -- anything outside the cook
+    # set isn't competing for layer strength at all, so its relative order doesn't matter.
+    cook_rank = {id(c): i for i, c in enumerate(cook_list)}
+    for c in sorted(scene.get_chunks(), key=lambda c: cook_rank.get(id(c), -1)):
         if is_view_chunk(c) or not in_context(c):
             continue
         if is_group_chunk(c):
             if c in cook_set:
-                recook_for_view(stage, scene, c, find_group_active_view(c, stage, scene))
+                inner_view = find_group_active_view(c, stage, scene)
+                synthetic = False
+                if inner_view is None:
+                    # No real inner view chunk -- the common case for a group whose
+                    # contents were never explicitly given one (view chunks are
+                    # deliberately excluded from group copy/paste, see
+                    # _iter_group_children). Without this fallback, a reachable group's
+                    # contents never actually cook via view-driven execution at all --
+                    # they only ever ran as an accidental side effect of the user diving
+                    # into the group, which auto-wires a default view as a UI action
+                    # (ChunkGraphView._ensure_default_view). That made execution order
+                    # (and therefore which sibling's self-managed layer, e.g. Create
+                    # Layer's, ends up strongest) depend on dive/rename order instead of
+                    # actual graph position. Cook through the group's own exec tail
+                    # instead, exactly as if a real inner view were pointed at it.
+                    tails = get_exec_tail_chunks(stage, scene, c)
+                    inner_view = tails[0] if tails else None
+                    synthetic = inner_view is not None
+                recook_for_view(stage, scene, c, inner_view, _synthetic_tail=synthetic)
             else:
                 recook_for_view(stage, scene, c, None)
             continue
