@@ -245,6 +245,12 @@ class MaterialGridWidget(chunk_core.ChunkParamWidgetBase, QtWidgets.QWidget):
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
+    def showEvent(self, event):
+        """Auto-populate from cached catalog data when shown in a second panel."""
+        super().showEvent(event)
+        if _all_materials and not self._tiles:
+            self._do_search()
+
     # Public
     def fetch_catalog_async(self, cache_dir: str):
         def _work():
