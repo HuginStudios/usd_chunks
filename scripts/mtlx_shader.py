@@ -1,13 +1,19 @@
-from pxr import Sdf, UsdShade
+from pxr import Sdf, Tf, UsdShade
 
-from usd_chunks import chunk, chunk_utils, shader_defs
+from usd_chunks import chunk, chunk_registry, chunk_utils, shader_defs
 from usd_chunks.chunk_flags import ChunkFlags
 
 SOURCE_TYPE = "mtlx"
 
+# Scope new shader networks are authored under when the path is left to resolve itself.
+_DEFAULT_SCOPE = "/materials"
+
 # Params the chunk always owns. Everything else on the chunk was lofted from the current
 # shader definition and gets torn down when the definition changes.
-_FIXED = ("nodedef", "shader_path", "bind_to")
+_FIXED = ("nodedef", "prim_path", "bind_to")
+
+# Child prim name a terminal's shader takes under its Material.
+_SHADER_LEAF = "shader"
 
 # UsdShade render context for MaterialX terminals: a material's mtlx surface output is
 # outputs:mtlx:surface, not the universal outputs:surface, so a renderer picks the
@@ -21,6 +27,45 @@ def _shader_def(node):
     if not identifier:
         return None
     return shader_defs.get_shader_def(identifier, SOURCE_TYPE) or shader_defs.get_shader_def(identifier)
+
+
+def _stage_for(node):
+    """The stage to resolve paths against.
+
+    node.get_stage() is empty until the chunk is attached to the scene, and a variant's
+    presets land before that -- so fall back to the scene the registry already holds.
+    """
+    if stage := node.get_stage():
+        return stage
+    scene = getattr(chunk_registry.ChunkRegistry(), "scene", None)
+    return scene.get_stage() if scene else None
+
+
+def _node_name(sdef) -> str:
+    """The chunk's display name for a shader definition -- its identifier minus the ND_."""
+    return Tf.MakeValidIdentifier(sdef.identifier.removeprefix("ND_") or sdef.name)
+
+
+def _ensure_prim_path(node, sdef) -> str:
+    """Resolve an unset Path, leaving a user-chosen one alone.
+
+    Only fills a blank, so a path saved into USD comes back populated on load and is not
+    re-derived. Named from the Sdr family ("standard_surface") rather than the identifier,
+    which is the same thing wearing an ND_ prefix and a _surfaceshader suffix.
+    """
+    param = node.get_param("prim_path")
+    if param is None:
+        return ""
+
+    if current := (param.value or "").strip():
+        return current
+
+    if not (stage := _stage_for(node)):
+        return ""
+
+    base = Tf.MakeValidIdentifier(sdef.family or sdef.name or "shader")
+    param.value = chunk_utils.get_unique_path(stage, f"{_DEFAULT_SCOPE}/{base}")
+    return param.value
 
 
 def _clear_lofted(owner):
@@ -61,6 +106,9 @@ def _loft_params(owner, sdef):
                 prop.page,
                 flags=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED,
             )
+            # Collapsed by default: a surface shader carries 40-odd inputs across nine
+            # pages, and every one of them expanded makes a node taller than the graph.
+            group.set_state(ChunkFlags.State.COLLAPSED)
             groups[prop.page] = group
             owner.add_param(group)
         group.add_param(param)
@@ -75,6 +123,11 @@ def _rebuild(owner):
         return
 
     _loft_params(owner, sdef)
+    _ensure_prim_path(owner, sdef)
+
+    # Name the node after the shader it authors, so a graph of these reads as the network
+    # it builds rather than as a column of identical "MaterialX Shader" boxes.
+    owner.name = _node_name(sdef)
 
     # Binding only means anything for a terminal (a surface/displacement/volume); an
     # intermediate node like ND_multiply_float is wired to other shaders, never bound.
@@ -102,9 +155,20 @@ def execute(node):
     if sdef is None:
         return
 
-    shader_path = (node.get_param("shader_path").value or "").strip()
-    if not shader_path or not Sdf.Path.IsValidPathString(shader_path):
+    _ensure_prim_path(node, sdef)
+
+    # Pass the param, not its value: get_unique_path clears this chunk's own procedural
+    # layer first, so re-cooking finds its previous prim gone and keeps the same path
+    # instead of walking the suffix up on every execute.
+    prim_path = chunk_utils.get_unique_path(stage, node.get_param("prim_path"))
+    if not prim_path or not Sdf.Path.IsValidPathString(prim_path):
         return
+
+    # A terminal needs a Material to be bindable, and a Material cannot itself carry the
+    # shader, so the shader becomes its child. Everything else IS the shader -- an
+    # intermediate node is wired to other shaders, never bound, so wrapping it in a
+    # Material would author a prim nothing ever looks at.
+    shader_path = f"{prim_path}/{_SHADER_LEAF}" if sdef.is_terminal else prim_path
 
     shader = UsdShade.Shader.Define(stage, shader_path)
     shader.CreateIdAttr(sdef.identifier)
@@ -138,13 +202,7 @@ def execute(node):
     if not sdef.is_terminal:
         return
 
-    # A terminal needs a Material to be bindable. Author it as the shader's parent so the
-    # network stays self-contained under one prim.
-    mat_path = Sdf.Path(shader_path).GetParentPath()
-    if mat_path.IsAbsoluteRootPath():
-        return
-
-    material = UsdShade.Material.Define(stage, mat_path)
+    material = UsdShade.Material.Define(stage, prim_path)
     out_name = sdef.outputs[0].name if sdef.outputs else "out"
     material.CreateSurfaceOutput(_RENDER_CONTEXT).ConnectToSource(shader.ConnectableAPI(), out_name)
 
@@ -164,10 +222,9 @@ def main():
         "Node Definition",
         flags=ChunkFlags.ParamFlags.LABELED,
     )
-    shader_path = chunk.LineEdit(
-        "shader_path",
-        "Shader Path",
-        default_value="/materials/mtlx/shader",
+    prim_path = chunk.LineEdit(
+        "prim_path",
+        "Path",
         flags=ChunkFlags.ParamFlags.LABELED,
     )
     bind_to = chunk.LineEdit(
@@ -177,7 +234,7 @@ def main():
     )
     bind_to.set_state(ChunkFlags.State.HIDDEN)
 
-    chunk_api.add_params([nodedef, shader_path, bind_to])
+    chunk_api.add_params([nodedef, prim_path, bind_to])
     chunk_api.add_callback(_nodedef_changed, sender=nodedef)
 
     return chunk_api
@@ -204,10 +261,15 @@ def config():
         to match the new definition. Inputs are grouped into collapsible sections
         following the definition's own pages (Base, Specular, Coat, ...).
 
-        Shader Path is where the Shader prim is authored. For a terminal shader (one
-        whose context is surface, displacement or volume) a UsdShade.Material is also
-        authored at the parent path, connected via outputs:mtlx:surface, and Bind To
-        binds it to the prims you name. Intermediate nodes author only the Shader prim
-        and are meant to be wired to other shaders in the node graph.
+        Path is where the network is authored. Left blank it resolves itself to
+        /materials/<shader name>, suffixed to the first free name -- so a second Standard
+        Surface lands on standard_surface1 rather than on top of the first. Setting it
+        explicitly disables that; it is never renumbered once it holds a value.
+
+        For a terminal shader (one whose context is surface, displacement or volume) Path
+        is a UsdShade.Material, the shader is authored as its "shader" child and connected
+        through outputs:mtlx:surface, and Bind To binds the material to the prims you name.
+        Every other shader IS Path -- an intermediate node is wired to other shaders in the
+        node graph, never bound, so it gets no Material wrapper.
         """,
     )
