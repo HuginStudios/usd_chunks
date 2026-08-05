@@ -1065,6 +1065,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         beneath it, so a declared variant reads as a chunk in its own right in both the
         menu tree and the search field -- which is the whole point of declaring one.
 
+        A variant label may contain "/" to nest further, e.g. "standard_surface/Standard
+        Surface". A catalog-driven module can declare hundreds of variants, and those need
+        grouping or the category becomes one unnavigable list; search stays flat either way.
+
         Args:
             sort_result (bool): Sort modules by trailing name, as get_chunk_modules does
 
@@ -1081,10 +1085,13 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
             parent = tuple(namespace[:-1])
             for label, presets in mod.config.variants:
+                sub = tuple(p for p in str(label).split("/") if p)
+                if not sub:
+                    continue
                 entries.append(
                     MenuEntry(
                         module=mod,
-                        namespace=parent + (label,),
+                        namespace=parent + sub,
                         tooltip=tooltip,
                         presets=dict(presets),
                     )
