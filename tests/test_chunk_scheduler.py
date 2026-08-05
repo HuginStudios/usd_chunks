@@ -258,3 +258,55 @@ class TestSortKey:
         b.add_dependency(a)
 
         assert b.get_dag_node().get_sort_key() == 1
+
+
+class TestDependencyRemoval:
+    """remove_dependency is the counterpart to add_dependency: it exists so a single wire
+    can be detached without disconnect() tearing down every edge on the node."""
+
+    def test_removing_a_dependency_drops_it_from_both_sides(self):
+        a, b = Node("a"), Node("b")
+        b.add_dependency(a)
+
+        assert b.remove_dependency(a) is True
+        assert b.get_dependencies() == []
+        assert list(a.get_dag_node().get_outputs()) == []
+
+    def test_removing_a_dependency_dirties_the_dependent(self):
+        # Losing an input changes what the node evaluates to, so it must re-solve.
+        a, b = Node("a"), Node("b")
+        b.add_dependency(a)
+        clean(a, b)
+
+        b.remove_dependency(a)
+
+        assert b.get_dag_node().dirty
+
+    def test_removing_a_dependency_that_was_never_added_is_a_no_op(self):
+        a, b = Node("a"), Node("b")
+
+        assert b.remove_dependency(a) is False
+
+    def test_removal_reorders_the_solve(self):
+        a, b, c = Node("a"), Node("b"), Node("c")
+        b.add_dependency(a)
+        c.add_dependency(b)
+        clean(a, b, c)
+
+        c.remove_dependency(b)
+
+        assert solve_order(a) == ["a", "b"]
+
+    def test_disconnect_clears_the_reverse_links_on_peers(self):
+        # Clearing only the node's own dicts left every peer still pointing at it, so a
+        # disconnected node stayed reachable as somebody else's input or output.
+        a, b, c = Node("a"), Node("b"), Node("c")
+        b.add_dependency(a)
+        c.add_dependency(b)
+
+        b.get_dag_node().disconnect()
+
+        assert list(a.get_dag_node().get_outputs()) == []
+        assert c.get_dependencies() == []
+        assert list(b.get_dag_node().get_inputs()) == []
+        assert list(b.get_dag_node().get_outputs()) == []
