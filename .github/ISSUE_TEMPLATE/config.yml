@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/HuginStudios/usd_chunks/security/advisories/new
+    about: Report privately instead of opening an issue. See SECURITY.md.
+  - name: Question or idea
+    url: https://github.com/HuginStudios/usd_chunks/discussions
+    about: For usage questions and open-ended discussion.

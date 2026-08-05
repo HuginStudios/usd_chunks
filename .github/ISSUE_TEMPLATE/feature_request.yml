@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a capability for the usd_chunks core
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This tracker covers the core: the chunk runtime, notices and the DAG, USD layer
+        handling, host integrations, and the CLI. New chunks belong in your own
+        `USD_CHUNK_DIRS` rather than here — but if writing one exposed a gap in the core,
+        that gap is exactly what to describe below.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: >
+        The underlying goal, not just the proposed API. Knowing what you are building makes
+        it far easier to suggest something that already works, or to design the right thing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: limitation
+    attributes:
+      label: What stops you today
+      description: What you tried, and where the core got in the way.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: Optional. A sketch of the API or behaviour, if you have one.
+
+  - type: checkboxes
+    id: breaking
+    attributes:
+      label: Compatibility
+      options:
+        - label: >
+            This would change the chunk module contract (`main()` / `config()` /
+            `execute()`) or the callback signature, which breaks existing chunks.
