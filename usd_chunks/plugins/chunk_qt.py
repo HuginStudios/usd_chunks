@@ -224,6 +224,51 @@ class ChunkTabContextStack(QtWidgets.QStackedWidget):
             pass
 
 
+class _EmptyPanelTabRouter(QtCore.QObject):
+    """Application-level event filter: bootstraps the first context tab when Tab is
+    pressed while hovering the chunk panel before any tab exists.
+
+    ChunkGraphView installs its own Tab-to-create router (_ProxyKeyRouter in
+    chunk_qt_nodegraph) once it's built, but that requires a context tab to already
+    exist. Before the first tab is created, the panel only holds the "+" placeholder
+    (ChunkArea), which has no graph view and so nothing listening for Tab. This filter
+    covers exactly that gap.
+    """
+
+    def __init__(self, tab_widget: "ChunkTabWidget"):
+        super().__init__(tab_widget)
+        # Weak, deliberately -- see _ProxyKeyRouter for why (installing on the
+        # QApplication would otherwise pin the whole panel through this filter).
+        self._tab_widget = weakref.ref(tab_widget)
+
+    def uninstall(self) -> None:
+        if (app := QtWidgets.QApplication.instance()) is not None:
+            app.removeEventFilter(self)
+
+    def eventFilter(self, _obj, event) -> bool:
+        if (tab_widget := self._tab_widget()) is None:
+            self.uninstall()
+            return False
+        etype = event.type()
+        if etype not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
+            return False
+        if event.key() != QtCore.Qt.Key.Key_Tab:
+            return False
+        if tab_widget.get_current_graph_view() is not None:
+            return False  # a real context tab exists -- its own ChunkGraphView router handles Tab
+        tab_global = QtCore.QRect(tab_widget.mapToGlobal(QtCore.QPoint(0, 0)), tab_widget.size())
+        if not tab_global.contains(QtGui.QCursor.pos()):
+            return False
+        if etype == QtCore.QEvent.Type.ShortcutOverride:
+            event.accept()
+            return True
+        tab_widget.add_new_tab()
+        if (gv := tab_widget.get_current_graph_view()) is not None:
+            gv._open_tab_menu()
+        event.accept()
+        return True
+
+
 class ChunkTabWidget(QtWidgets.QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -244,6 +289,13 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         self.setMinimumWidth(200)
 
         self.add_tab_button()
+
+        self._empty_panel_router = _EmptyPanelTabRouter(self)
+        QtWidgets.QApplication.instance().installEventFilter(self._empty_panel_router)
+        # Pair the install with a removal, same as ChunkGraphView's _ProxyKeyRouter --
+        # otherwise the filter keeps receiving app-wide key events for the rest of the
+        # session after this panel is gone.
+        self.destroyed.connect(lambda *_, _router=self._empty_panel_router: _router.uninstall())
         self.update_stylesheet()
 
     def update_stylesheet(self):
