@@ -1997,10 +1997,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
             return
         global_pos = self.viewport().mapToGlobal(self.mapFromScene(scene_pos))
-        mod = FilterableChunkMenu().select_module(global_pos)
-        if not mod:
+        entry = FilterableChunkMenu().select_module(global_pos)
+        if not entry:
             return
-        chunks = mod.create() if mod.loaded else mod.load()
+        chunks = entry.create()
         scene = _chunk.get_scene()
         if not scene:
             return
@@ -2702,11 +2702,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         Shared by both Tab key and right-click on empty graph area.
         """
-        mod = FilterableChunkMenu().select_module(global_pos)
-        if not mod:
+        entry = FilterableChunkMenu().select_module(global_pos)
+        if not entry:
             return
 
-        chunks = mod.create() if mod.loaded else mod.load()
+        chunks = entry.create()
 
         scene = _chunk.get_scene()
         if not scene:

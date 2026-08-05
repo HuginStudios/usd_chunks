@@ -4090,6 +4090,7 @@ class ChunkConfig(AttributesBase):
     interactive: bool = attrs.field(default=False)
     terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
     outputs: list[tuple[str, str]] = attrs.field(factory=list)  # extra typed output ports: [(name, SdfTypeName), ...]
+    variants: list[tuple[str, dict]] = attrs.field(factory=list)  # extra menu entries: [(label, {param: value}), ...]
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED

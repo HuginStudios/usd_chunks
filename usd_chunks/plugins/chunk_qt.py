@@ -393,14 +393,11 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         return self._tabPosition
 
     def contextMenuEvent(self, event):
-        mod = FilterableChunkMenu().select_module(event.globalPos())
-        if not mod:
+        entry = FilterableChunkMenu().select_module(event.globalPos())
+        if not entry:
             return
 
-        if mod.loaded:
-            chunks = mod.create()
-        else:
-            chunks = mod.load()
+        chunks = entry.create()
 
         # Flag the Params-tab origin so ChunkStageSync inserts the new chunk before the active
         # view (view-follows-tail) and auto-pins it — node-graph creates don't set either flag,
