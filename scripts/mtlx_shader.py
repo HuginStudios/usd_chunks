@@ -2,6 +2,7 @@ from pxr import Sdf, Tf, UsdShade
 
 from usd_chunks import chunk, chunk_registry, chunk_utils, shader_defs
 from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.plugins import chunk_usd
 
 SOURCE_TYPE = "mtlx"
 
@@ -39,6 +40,62 @@ def _stage_for(node):
         return stage
     scene = getattr(chunk_registry.ChunkRegistry(), "scene", None)
     return scene.get_stage() if scene else None
+
+
+def _consumer_chunk(node, stage, scene):
+    """The chunk whose typed input is wired to this one's output, or None.
+
+    A reverse lookup, because USD indexes connections only from the consumer side. The
+    exec chain (inputs:chunk) is deliberately ignored: it says what cooks after what, not
+    what feeds what, and a shader's place in the network follows the data.
+    """
+    my_path = chunk_usd.get_chunk_prim_path(node)
+    if not my_path:
+        return None
+
+    for other in scene.get_chunks():
+        if other is node:
+            continue
+        prim = stage.GetPrimAtPath(chunk_usd.get_chunk_prim_path(other) or "")
+        if not prim or not prim.IsValid():
+            continue
+
+        for attr in prim.GetAttributes():
+            name = attr.GetName()
+            if not name.startswith("inputs:") or name == "inputs:chunk":
+                continue
+            if any(str(c.GetPrimPath()) == str(my_path) for c in attr.GetConnections()):
+                return other
+
+    return None
+
+
+def _network_root(node, stage, scene) -> str:
+    """The Material path of the terminal this shader ultimately feeds, or "".
+
+    Walks consumer to consumer so a shader three nodes upstream of the surface still
+    lands under that surface's Material -- a UsdShade network is conventionally flat
+    under the Material it terminates in, not nested by wire depth.
+    """
+    seen = {id(node)}
+    current = node
+
+    while True:
+        consumer = _consumer_chunk(current, stage, scene)
+        if consumer is None or id(consumer) in seen:
+            return ""
+        seen.add(id(consumer))
+
+        param = consumer.get_param("nodedef")
+        if param is None:
+            return ""
+
+        sdef = shader_defs.get_shader_def((param.value or "").strip(), SOURCE_TYPE)
+        if sdef is not None and sdef.is_terminal:
+            path_param = consumer.get_param("prim_path")
+            return (path_param.value or "").strip() if path_param else ""
+
+        current = consumer
 
 
 def _node_name(sdef) -> str:
@@ -156,18 +213,42 @@ def execute(node):
         return
 
     _ensure_prim_path(node, sdef)
+    path_param = node.get_param("prim_path")
 
-    # Pass the param, not its value: get_unique_path clears this chunk's own procedural
-    # layer first, so re-cooking finds its previous prim gone and keeps the same path
-    # instead of walking the suffix up on every execute.
-    prim_path = chunk_utils.get_unique_path(stage, node.get_param("prim_path"))
+    home = (path_param.value or "").strip()
+    if not home or not Sdf.Path.IsValidPathString(home):
+        return
+
+    # An intermediate belongs inside the network it feeds: a UsdShade Material is
+    # conventionally self-contained, holding every shader that contributes to it. While
+    # unwired it stays at its own path, and moves under the Material once connected.
+    scene = getattr(chunk_registry.ChunkRegistry(), "scene", None)
+    root = "" if sdef.is_terminal else (_network_root(node, stage, scene) if scene else "")
+
+    # Uniquify the path actually being authored. Uniquifying `home` first and then
+    # composing would carry a suffix earned at the old location into a nested slot that
+    # was free -- an image landing on <material>/image1 with no image beside it.
+    #
+    # Passing the param (rather than its value) is what lets a re-cook keep its path:
+    # get_unique_path clears this chunk's own procedural layer first, so it does not
+    # collide with its own prim from last time and walk the suffix up on every execute.
+    if root:
+        prim_path = chunk_utils.get_unique_path(stage, f"{root}/{Sdf.Path(home).name}")
+    else:
+        prim_path = chunk_utils.get_unique_path(stage, path_param)
+
     if not prim_path or not Sdf.Path.IsValidPathString(prim_path):
         return
 
+    # Show where the prim actually went. Guarded by the comparison so it converges: the
+    # write re-cooks, the re-cook resolves the same path, and the second pass writes
+    # nothing. Once it holds a resolved path, unwiring leaves the shader where it is
+    # rather than moving it back out -- the param now says where it lives.
+    if home != prim_path:
+        path_param.value = prim_path
+
     # A terminal needs a Material to be bindable, and a Material cannot itself carry the
-    # shader, so the shader becomes its child. Everything else IS the shader -- an
-    # intermediate node is wired to other shaders, never bound, so wrapping it in a
-    # Material would author a prim nothing ever looks at.
+    # shader, so the shader becomes its child. Everything else IS the shader.
     shader_path = f"{prim_path}/{_SHADER_LEAF}" if sdef.is_terminal else prim_path
 
     shader = UsdShade.Shader.Define(stage, shader_path)
@@ -261,10 +342,11 @@ def config():
         to match the new definition. Inputs are grouped into collapsible sections
         following the definition's own pages (Base, Specular, Coat, ...).
 
-        Path is where the network is authored. Left blank it resolves itself to
-        /materials/<shader name>, suffixed to the first free name -- so a second Standard
-        Surface lands on standard_surface1 rather than on top of the first. Setting it
-        explicitly disables that; it is never renumbered once it holds a value.
+        Path is where the network is authored, and always reports where the prim actually
+        went. Left blank it resolves itself to /materials/<shader name>, suffixed to the
+        first free name -- so a second Standard Surface lands on standard_surface1 rather
+        than on top of the first. Wiring a shader into another moves it under that
+        network's Material, and Path updates to match.
 
         For a terminal shader (one whose context is surface, displacement or volume) Path
         is a UsdShade.Material, the shader is authored as its "shader" child and connected
