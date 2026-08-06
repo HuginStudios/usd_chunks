@@ -193,6 +193,259 @@ def _param_port_type(param) -> str:
     return _PORT_FLOAT
 
 
+# ---------------------------------------------------------------------------
+# Copy / Cut / Paste / Duplicate clipboard
+#
+# In-process only (a plain Python object, not the OS clipboard/QMimeData) -- same-session
+# paste is the only use case this needs to serve. Module-level so it's shared across every
+# ChunkGraphView/tab/chunkgroup in the process, matching how a real clipboard behaves.
+
+class _ClipboardNode:
+    __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges")
+
+    def __init__(
+        self, module_name: str, values: list, rel_pos: QtCore.QPointF,
+        children: "list[_ClipboardNode] | None" = None,
+        child_edges: "list[_ClipboardEdge] | None" = None,
+    ):
+        self.module_name = module_name
+        self.values = values
+        self.rel_pos = rel_pos  # position relative to the copied selection's top-left corner
+        # Only non-empty for a ChunkGroup: its nested sub-chunks and the wiring between them,
+        # so copying/duplicating/cutting a group recursively takes its whole contents along
+        # instead of pasting an empty group. rel_pos for a child is relative to the *group's
+        # own children's* top-left, not the top-level selection's.
+        self.children: list[_ClipboardNode] = children or []
+        self.child_edges: list[_ClipboardEdge] = child_edges or []
+
+
+class _ClipboardEdge:
+    """A wire between two copied nodes, referenced by index into the node clipboard rather
+    than by prim path (paths don't exist yet at copy time for a not-yet-pasted node, and
+    change on every paste anyway). src_attr/dst_attr are ChunkPortItem-suffix form
+    ("outputs:chunk"/"inputs:tx", ...), not raw Sdf connection-target form -- see
+    `_iter_prim_connections`."""
+
+    __slots__ = ("src_index", "src_attr", "dst_index", "dst_attr")
+
+    def __init__(self, src_index: int, src_attr: str, dst_index: int, dst_attr: str):
+        self.src_index = src_index
+        self.src_attr = src_attr
+        self.dst_index = dst_index
+        self.dst_attr = dst_attr
+
+
+_node_clipboard: list[_ClipboardNode] = []
+_edge_clipboard: list[_ClipboardEdge] = []
+
+
+def _iter_prim_connections(prim: Usd.Prim):
+    """Yield (dst_attr_suffix, src_prim_path, src_attr_suffix) for every real inputs:*
+    connection on this prim, in ChunkPortItem.attr_path suffix form for BOTH ends (e.g. dst
+    "inputs:tx", src "outputs:tx") -- independent of the "Show param connections" view toggle
+    (unlike ChunkGraphScene._build_edges, which only builds what's currently drawn), since
+    copy/paste needs every real connection, not just the visible ones. Takes a bare Usd.Prim
+    rather than a ChunkNodeItem so it also works for a ChunkGroup's children, which have no
+    live Qt node at all unless someone has dived into that group."""
+    if not prim.IsValid():
+        return
+    for attr in prim.GetAttributes():
+        attr_name = attr.GetName()
+        if not attr_name.startswith("inputs:"):
+            continue
+        for conn_path in attr.GetConnections():
+            src_prim_path = str(conn_path.GetPrimPath())
+            if attr_name == _EXEC_INPUT:
+                # Exec connections point straight at the source's outputs:chunk already.
+                src_attr_suffix = conn_path.name
+            else:
+                # Typed connections point at the source's OWN inputs:param (see
+                # ChunkGraphView._author_connection) -- normalize back to the
+                # ChunkPortItem-suffix "outputs:param" form used on both ends elsewhere.
+                src_attr_suffix = "outputs:" + conn_path.name[len("inputs:"):]
+            yield attr_name, src_prim_path, src_attr_suffix
+
+
+def _prim_graph_pos(prim: "Usd.Prim | None") -> QtCore.QPointF:
+    """A prim's authored node-graph position (USD Y-up -> Qt Y-down), or the origin if
+    unauthored/invalid."""
+    if not prim or not prim.IsValid():
+        return QtCore.QPointF(0, 0)
+    ui_api = UsdUI.NodeGraphNodeAPI(prim)
+    pos_attr = ui_api.GetPosAttr()
+    if pos_attr and pos_attr.HasAuthoredValue():
+        p = pos_attr.Get()
+        return QtCore.QPointF(p[0], -p[1])
+    return QtCore.QPointF(0, 0)
+
+
+def _iter_group_children(chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage):
+    """Yield the direct children of a ChunkGroup -- both plain leaf chunks (found via
+    get_context(), which walks the real Python ownership chain) and nested sub-groups (which
+    get_context() can NEVER find this way: it returns self for any CONTEXT-flagged chunk --
+    see ChunkGraphScene._rebuild_nodes's own "c is not context" guard for the same quirk --
+    and a sub-group is always added as a top-level scene entry, never actually owned by its
+    structural parent). Mirrors _rebuild_nodes's own combined lookup (get_context() equality
+    plus a get_context_for_prim_path() scan of the group's own USD children) exactly, so a
+    ChunkGroup nested inside another ChunkGroup is still found. View chunks are excluded --
+    not content worth duplicating, matching the top-level selection's own exclusion."""
+    by_path: dict[str, core.ChunkBase] = {
+        chunk_usd.get_chunk_prim_path(c): c
+        for c in scene_sender.get_chunks()
+        if c.get_context() == chunk and c is not chunk and not chunk_usd.is_view_chunk(c)
+    }
+    root_prim = stage.GetPrimAtPath(Sdf.Path(chunk.prim_path)) if chunk.prim_path else None
+    if root_prim is not None and root_prim.IsValid():
+        for prim in root_prim.GetFilteredChildren(_INCLUDE_INACTIVE):
+            path = str(prim.GetPath())
+            if path in by_path:
+                continue
+            ctx_chunk = scene_sender.get_context_for_prim_path(path)
+            if ctx_chunk is not None and not chunk_usd.is_view_chunk(ctx_chunk):
+                by_path[path] = ctx_chunk
+    return list(by_path.values())
+
+
+def _snapshot_chunk_node(
+    chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage, rel_pos: QtCore.QPointF
+) -> "_ClipboardNode | None":
+    """Build a _ClipboardNode for `chunk` at rel_pos, recursing into its own children (and
+    their internal wiring) if it's a ChunkGroup -- shared by the top-level selection snapshot
+    and by each recursive level of group contents. Returns None for a chunk with no module
+    (nothing to recreate it from -- e.g. a bare exec 'dot')."""
+    cfg = chunk.get_config()
+    module_name = cfg.module if cfg else None
+    if not module_name:
+        return None
+    clip_node = _ClipboardNode(module_name, _snapshot_param_values(chunk), rel_pos)
+    if not chunk_usd.is_group_chunk(chunk):
+        return clip_node
+
+    children = _iter_group_children(chunk, scene_sender, stage)
+    child_prims: dict[str, Usd.Prim] = {}
+    child_pos: dict[str, QtCore.QPointF] = {}
+    for child in children:
+        path = chunk_usd.get_chunk_prim_path(child)
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        child_prims[path] = prim
+        child_pos[path] = _prim_graph_pos(prim)
+    if child_pos:
+        min_x = min(p.x() for p in child_pos.values())
+        min_y = min(p.y() for p in child_pos.values())
+    else:
+        min_x = min_y = 0.0
+
+    kept_index: dict[str, int] = {}
+    for child in children:
+        path = chunk_usd.get_chunk_prim_path(child)
+        pos = child_pos[path]
+        child_clip = _snapshot_chunk_node(
+            child, scene_sender, stage, QtCore.QPointF(pos.x() - min_x, pos.y() - min_y)
+        )
+        if child_clip is None:
+            continue
+        kept_index[path] = len(clip_node.children)
+        clip_node.children.append(child_clip)
+
+    for child in children:
+        path = chunk_usd.get_chunk_prim_path(child)
+        dst_index = kept_index.get(path)
+        prim = child_prims.get(path)
+        if dst_index is None or prim is None:
+            continue
+        for dst_attr, src_prim_path, src_attr in _iter_prim_connections(prim):
+            src_index = kept_index.get(src_prim_path)
+            if src_index is None:
+                continue  # source outside this group's copied children -- wire dropped
+            clip_node.child_edges.append(_ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
+
+    return clip_node
+
+
+def _author_raw_connection(
+    stage: Usd.Stage,
+    dst_prim_path: str, dst_attr_suffix: str, dst_chunk: core.ChunkBase,
+    src_prim_path: str, src_attr_suffix: str,
+) -> None:
+    """Author one connection directly at the USD/attribute level, without going through a
+    live ChunkPortItem -- used for wiring a just-pasted ChunkGroup's children, which have no
+    Qt graph representation at all unless someone has actually dived into that group.
+    Mirrors ChunkGraphView._author_connection's semantics (same raw-connection-target vs.
+    visible-port-suffix distinction for typed params, same expression-string write, same
+    bookkeeping-layer resolution) without needing a graph_scene/ChunkPortItem to read it
+    from."""
+    is_exec = dst_attr_suffix == _EXEC_INPUT
+    dst_attr = stage.GetAttributeAtPath(Sdf.Path(f"{dst_prim_path}.{dst_attr_suffix}"))
+    if not (dst_attr and dst_attr.IsValid()):
+        prim = stage.GetPrimAtPath(Sdf.Path(dst_prim_path))
+        if not prim.IsValid():
+            return
+        sdf_type = Sdf.ValueTypeNames.Token if is_exec else Sdf.ValueTypeNames.String
+        dst_attr = prim.CreateAttribute(dst_attr_suffix, sdf_type, custom=False)
+        if not dst_attr.IsValid():
+            return
+    if is_exec:
+        src_conn_path = Sdf.Path(f"{src_prim_path}.{src_attr_suffix}")
+    else:
+        # src_attr_suffix is "outputs:param" (ChunkPortItem-suffix form) -- the raw
+        # connection target is the source's own inputs:param, per _author_connection.
+        src_conn_path = Sdf.Path(f"{src_prim_path}.inputs:{src_attr_suffix[len('outputs:'):]}")
+    home = chunk_utils.get_attr_home_layer(dst_attr)
+    target = home or chunk_utils.get_bookkeeping_layer(stage, dst_chunk)
+    with Usd.EditContext(stage, target):
+        dst_attr.SetConnections([src_conn_path])
+
+    if not is_exec:
+        src_node_name = Sdf.Path(src_prim_path).name
+        src_param_name = src_attr_suffix[len("outputs:"):]
+        dst_param_name = dst_attr_suffix[len("inputs:"):]
+        param = dst_chunk.get_param(dst_param_name)
+        if param is not None:
+            param.value = f"@{src_node_name}.{src_param_name}@"
+
+
+def _iter_copyable_params(chunk: core.ChunkCommon):
+    """`_iter_connectable_params`, minus anything flagged State.HIDDEN.
+
+    A HIDDEN param is a chunk module's own internal bookkeeping, never meant for a user to
+    see or set directly -- e.g. scripts/create_layer.py's _new_layer_id/_layer_name_used/
+    _parent_layer_id, which cache identifiers for the anon Sdf.Layer *that specific chunk
+    instance* created. Copying those verbatim onto a pasted chunk hands it the ORIGINAL
+    instance's cached identifier; since that layer is still alive (Sdf.Layer.Find succeeds
+    process-wide, not scoped to this chunk), the pasted chunk's own next execute() silently
+    adopts and reuses the original's real layer object instead of creating an independent one
+    of its own -- the two nodes end up secretly sharing state. Not scoped to
+    scripts/create_layer.py specifically -- any chunk module using a HIDDEN param the same way
+    has the identical hazard, so the exclusion lives at this shared, module-agnostic level
+    rather than as a create_layer-specific special case.
+
+    Deliberately a separate generator from `_iter_connectable_params` itself (used elsewhere
+    for port placement) rather than changing what that one yields -- copy/paste is the only
+    caller that needs this narrower set."""
+    for param in _iter_connectable_params(chunk):
+        if param.has_state(ChunkFlags.State.HIDDEN):
+            continue
+        yield param
+
+
+def _snapshot_param_values(chunk: core.ChunkCommon) -> list:
+    """Positional snapshot of every copyable param's value, in `_iter_copyable_params`
+    order. Two instances of the same chunk module build their param tree in the same code
+    order, so a plain positional zip (see `_apply_param_values`) is enough to pair them back
+    up -- no param-path bookkeeping needed."""
+    return [p.value for p in _iter_copyable_params(chunk)]
+
+
+def _apply_param_values(chunk: core.ChunkCommon, values: list) -> None:
+    for param, value in zip(_iter_copyable_params(chunk), values):
+        try:
+            param.value = value
+        except Exception:
+            # A param whose value can't be re-applied as-is (e.g. a stale expression string
+            # for a wire that wasn't copied along with it) shouldn't abort the rest of the
+            # paste -- leave it at its default and move on.
+            continue
+
 
 class ChunkNodeItem(QtWidgets.QGraphicsItem):
     """Represents a single Chunk prim as a compact draggable node.
@@ -221,6 +474,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._drag_start = QtCore.QPointF()
         self._shake_samples: list[tuple[float, float]] = []  # (time, scene x) during a drag
         self._shake_fired = False
+        # Multi-select drag: other selected (unlocked) nodes moved alongside this one, and
+        # whether a plain (no-drag) click on an already-multi-selected node should collapse
+        # the selection down to just this node once the press/release completes without moving.
+        self._drag_companions: list["ChunkNodeItem"] = []
+        self._drag_pending_collapse = False
         self._proxy: Optional[QtWidgets.QGraphicsProxyWidget] = None
         self._port_rebuild_timer: Optional[QtCore.QTimer] = None
         self._height = _NODE_HEADER_H
@@ -235,6 +493,19 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._on_state_changed,
             ChunkNoticeAlias.STATE_CHANGED,
             chunk.get_attribute_sender("state"),
+        )
+        # A lofted param (e.g. "Loft up" on an inner chunk's param, surfaced onto this
+        # ChunkGroup) adds a live param to `chunk` after this node already exists and has
+        # a built proxy -- nothing else triggers a port rebuild for that: _rebuild_typed_ports
+        # otherwise only runs once via create_proxy()'s initial singleShot and on proxy
+        # geometryChanged (collapse/expand), and _rebuild_nodes reuses an existing node
+        # as-is rather than reconstructing it. Without this, the loft shows up in the Params
+        # tab (which does listen for PARAM_ADDED) but never gets a port on the graph node.
+        self._param_conn = NoticeConnection(
+            self._on_param_added, ChunkNoticeAlias.PARAM_ADDED, chunk
+        )
+        self._param_removed_conn = NoticeConnection(
+            self._on_param_added, ChunkNoticeAlias.PARAM_REMOVED, chunk
         )
 
         self._build_ports(prim)
@@ -692,8 +963,28 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             scene = self.scene()
-            if scene and hasattr(scene, "_scene_sender") and scene._scene_sender:
-                scene._scene_sender.set_selected_chunks([self.chunk])
+            sender = getattr(scene, "_scene_sender", None) if scene else None
+            modifiers = event.modifiers()
+            toggle = bool(modifiers & (QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier))
+            already_selected = self.chunk.has_state(ChunkFlags.State.SELECTED)
+            self._drag_pending_collapse = False
+            if sender:
+                if toggle:
+                    current = list(sender.get_selected_chunks())
+                    if self.chunk in current:
+                        current.remove(self.chunk)
+                    else:
+                        current.append(self.chunk)
+                    sender.set_selected_chunks(current)
+                elif not already_selected:
+                    # Plain click on a node not already part of the selection replaces it.
+                    sender.set_selected_chunks([self.chunk])
+                else:
+                    # Plain click on a node that's already part of a (possibly multi-node)
+                    # selection: keep the whole selection for now (so it can be drag-moved as
+                    # a group) and only collapse to just this node if the click ends up being
+                    # a plain click with no drag movement — see mouseReleaseEvent.
+                    self._drag_pending_collapse = True
             if event.pos().y() <= _NODE_HEADER_H and not self._locked:
                 self.setFocus()
                 self._drag_active = True
@@ -701,6 +992,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._drag_start = event.pos()
                 self._shake_samples = []
                 self._shake_fired = False
+                self._drag_companions = []
+                if isinstance(scene, ChunkGraphScene):
+                    self._drag_companions = [
+                        node for node in scene._nodes.values()
+                        if node is not self and not node._locked
+                        and node.chunk.has_state(ChunkFlags.State.SELECTED)
+                    ]
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -709,6 +1007,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._drag_active:
             delta = event.pos() - self._drag_start
             self.setPos(self.pos() + delta)
+            for companion in self._drag_companions:
+                try:
+                    companion.setPos(companion.pos() + delta)
+                except RuntimeError:
+                    continue
             if not self._drag_moved and (abs(delta.x()) + abs(delta.y())) > 2:
                 self._drag_moved = True
             self._track_shake()
@@ -754,7 +1057,21 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # a plain click on the header must not splice the node into an overlapping wire.
             if self._drag_moved:
                 self._write_pos_to_usd()
+                for companion in self._drag_companions:
+                    try:
+                        companion._write_pos_to_usd()
+                    except RuntimeError:
+                        continue
                 self._try_insert_on_edge()
+            elif self._drag_pending_collapse:
+                # A plain click (no movement) on a node that was already part of a multi-node
+                # selection — collapse the selection down to just this node now.
+                scene = self.scene()
+                sender = getattr(scene, "_scene_sender", None) if scene else None
+                if sender:
+                    sender.set_selected_chunks([self.chunk])
+            self._drag_companions = []
+            self._drag_pending_collapse = False
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -859,6 +1176,20 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if self._stale
             else ""
         )
+
+    def _on_param_added(self, notice, sender):
+        # Same defensive pattern as _on_state_changed: this is a global per-chunk callback
+        # and can arrive after the node/proxy has already been torn down.
+        try:
+            if self._port_rebuild_timer is not None:
+                self._port_rebuild_timer.start()
+            else:
+                # Proxy not built yet -- create_proxy()'s own initial _rebuild_typed_ports()
+                # call will pick up the new param once it runs (_rebuild_typed_ports no-ops
+                # safely if the proxy still isn't there by then).
+                QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
+        except RuntimeError:
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -1434,6 +1765,16 @@ class _ProxyKeyRouter(QtCore.QObject):
             # Owning view collected: self-heal a filter nothing detached, then stand down.
             self.uninstall()
             return False
+        if not view.isVisible():
+            # Every dived-into ChunkGroup gets its own ChunkGraphView + router, installed on
+            # the QApplication and only ever uninstalled when the view is destroyed (see
+            # destroyed.connect below) -- so navigating away from a tab leaves its router
+            # alive and still installed, just hidden. All ChunkTabContextStack pages share
+            # one QStackedWidget rect, so a hidden view's geometry checks below would still
+            # match the cursor. Qt runs QApplication filters LIFO, so without this guard the
+            # most-recently-dived-into (now hidden) view's router wins the race over the
+            # actually-visible one, silently acting on the wrong graph.
+            return False
         etype = event.type()
         if etype not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
             return False
@@ -1453,6 +1794,17 @@ class _ProxyKeyRouter(QtCore.QObject):
             self._active = None
             self._view_active = False
             return False
+
+        # Native OS focus doesn't reliably land on a proxy's QLineEdit even when the user is
+        # actively typing into it (the same focus-stealing problem the class docstring
+        # describes) -- that's exactly why the manual-forwarding fallback at the bottom of
+        # this method reads self._active.focusWidget() instead of trusting QApplication's
+        # own idea of focus. The _INPUT_TYPES check above only catches the case where native
+        # focus DOES happen to agree; check the proxy's own logical focus target too, so a
+        # digit/Ctrl+C/etc typed into e.g. Create Layer's "Layer Name" field isn't stolen by
+        # the ungated blocks below before it ever reaches that fallback.
+        active_focus = self._active.focusWidget() if self._active is not None else None
+        typing_in_proxy = isinstance(active_focus, self._INPUT_TYPES)
 
         # F-to-frame: intercept only when cursor is over the graph view and no proxy active.
         if self._active is None and event.key() == QtCore.Qt.Key.Key_F:
@@ -1488,6 +1840,64 @@ class _ProxyKeyRouter(QtCore.QObject):
                     return True
                 if etype == QtCore.QEvent.Type.KeyPress:
                     view._open_tab_menu()
+                    event.accept()
+                    return True
+
+        # Ctrl+C / Ctrl+V / Ctrl+D / Ctrl+X: same fallback pattern as F/L, but -- unlike
+        # F/L -- NOT gated on self._active being None. A proxy going "active" just means
+        # its widget was the last thing clicked (e.g. a ChunkGroup node's embedded body,
+        # which has far more clickable surface than a plain leaf node); none of ITS child
+        # widgets have a competing meaning for Ctrl+C/V/D/X EXCEPT a text field mid-edit,
+        # which is why this is also gated on `not typing_in_proxy` (see that variable's
+        # comment above -- native focus can't be trusted to already rule that out).
+        # Requiring self._active is None here meant clicking into any node's body before
+        # pressing Ctrl+C routed the key to the "forward to active proxy" fallback below
+        # instead -- a silent no-op -- while a bare click on the node chrome (proxy is
+        # None) worked fine.
+        ctrl_down = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
+        _CVDX_KEYS = (QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V, QtCore.Qt.Key.Key_D, QtCore.Qt.Key.Key_X)
+        if not typing_in_proxy and ctrl_down and event.key() in _CVDX_KEYS:
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    if event.key() == QtCore.Qt.Key.Key_C:
+                        view._copy_selected_to_clipboard()
+                    elif event.key() == QtCore.Qt.Key.Key_V:
+                        view._paste_at_cursor()
+                    elif event.key() == QtCore.Qt.Key.Key_D:
+                        view._duplicate_selected()
+                    else:
+                        view._cut_selected_to_clipboard()
+                    event.accept()
+                    return True
+
+        # 1/2/3-to-switch-view-slot: same fallback pattern as Ctrl+C/V/D/X above -- native
+        # keyPressEvent (chunk_qt_nodegraph.py ChunkGraphView.keyPressEvent) has the same
+        # logic, but depends on ChunkGraphView holding real native Qt focus, which usdview's
+        # MainWindow routinely reclaims. F/L/Ctrl+C/V/D/X were already hardened against that
+        # via this router; the view-slot keys were never added to it, so they're the one
+        # shortcut still riding the fragile native-focus path. Also gated on
+        # `not typing_in_proxy` -- these ARE digits, so without that guard this swallowed
+        # every "1"/"2"/"3" typed into e.g. Create Layer's "Layer Name" field.
+        if not typing_in_proxy and event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2, QtCore.Qt.Key.Key_3):
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    slot = event.key() - QtCore.Qt.Key.Key_0
+                    registry = chunk_registry.ChunkRegistry()
+                    stage = registry.scene.get_stage() if registry.initialized else None
+                    # Never toggle to "no view" (slot 0) if nothing exists for this slot in
+                    # this graph's own context -- that would block the whole graph.
+                    if stage and chunk_usd.find_view_chunk_for_slot(
+                        slot, stage, registry.scene, view._graph_context()
+                    ):
+                        view._view_state.set_slot(slot)
                     event.accept()
                     return True
 
@@ -1538,6 +1948,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.setSceneRect(-e, -e, e * 2, e * 2)
         self._pan_active = False
         self._pan_start = QtCore.QPoint()
+        self._rubber_band = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Shape.Rectangle, self.viewport())
+        self._rubber_band_active = False
+        self._rubber_band_origin = QtCore.QPoint()
+        self._rubber_band_add = False  # Shift held: add boxed nodes to selection instead of replacing
 
         self._menubar = QtWidgets.QMenuBar(self)
         view_menu = self._menubar.addMenu("View")
@@ -1698,6 +2112,285 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return True, prev
         return False, None
 
+    # ------------------------------------------------------------------
+    # Copy / Paste
+
+    def _instantiate_chunk_of_type(self, module_name: str):
+        """Build a fresh chunk instance of the given module, not yet added to the scene.
+        Returns (primary_chunk, all_chunks) -- a module's create() can spawn auxiliary
+        chunks alongside the main one (mirrors the pattern already used by
+        contextMenuEvent/_create_and_connect_from_menu); primary is the first non-view one."""
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return None, []
+        mod = registry.get_chunk_module(module_name)
+        if mod is None:
+            return None, []
+        chunks = mod.create() if mod.loaded else mod.load()
+        primary = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
+        return primary, list(chunks)
+
+    def _snapshot_selection(self):
+        """Build (clip_nodes, clip_edges, top_left) from the current selection -- the shared
+        core of both Copy (into the module clipboard) and Duplicate (straight to paste,
+        clipboard untouched). View chunks are never included -- they're per-context slot
+        machinery, not content worth duplicating. A wire to a node OUTSIDE the selection is
+        dropped, not recreated against the original outside node -- only wires between two
+        selected nodes survive. Returns ([], [], None) if there's nothing selected to copy."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender or not graph_scene._stage:
+            return [], [], None
+        selected = [
+            node for node in graph_scene._nodes.values()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._is_view
+        ]
+        if not selected:
+            return [], [], None
+        min_x = min(n.pos().x() for n in selected)
+        min_y = min(n.pos().y() for n in selected)
+        kept_index: dict[str, int] = {}
+        clip_nodes: list[_ClipboardNode] = []
+        for node in selected:
+            rel_pos = QtCore.QPointF(node.pos().x() - min_x, node.pos().y() - min_y)
+            clip_node = _snapshot_chunk_node(node.chunk, graph_scene._scene_sender, graph_scene._stage, rel_pos)
+            if clip_node is None:
+                continue
+            kept_index[str(node.prim.GetPath())] = len(clip_nodes)
+            clip_nodes.append(clip_node)
+        if not clip_nodes:
+            return [], [], None
+
+        clip_edges: list[_ClipboardEdge] = []
+        for node in selected:
+            dst_index = kept_index.get(str(node.prim.GetPath()))
+            if dst_index is None:
+                continue
+            for dst_attr, src_prim_path, src_attr in _iter_prim_connections(node.prim):
+                src_index = kept_index.get(src_prim_path)
+                if src_index is None:
+                    continue  # source outside the copied selection -- wire dropped
+                clip_edges.append(_ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
+
+        return clip_nodes, clip_edges, QtCore.QPointF(min_x, min_y)
+
+    def _copy_selected_to_clipboard(self) -> None:
+        """Ctrl+C: snapshot the selected chunks' type + param values + position, and the
+        wires between them, into the module-level clipboard."""
+        clip_nodes, clip_edges, _top_left = self._snapshot_selection()
+        if not clip_nodes:
+            return
+        _node_clipboard.clear()
+        _node_clipboard.extend(clip_nodes)
+        _edge_clipboard.clear()
+        _edge_clipboard.extend(clip_edges)
+
+    def _cut_selected_to_clipboard(self) -> None:
+        """Ctrl+X: copy (as above), then delete the selection via the same path Delete
+        already uses -- no deferred/pending-cut state, since there's no undo system in this
+        codebase to make that meaningful. A locked node (from an external/referenced layer)
+        is still copied, but skipped by the delete step -- it can't be removed from its
+        source layer -- while the rest of a mixed selection is still cut normally."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        self._copy_selected_to_clipboard()
+        if not _node_clipboard:
+            return
+        deletable = [
+            node.chunk for node in graph_scene._nodes.values()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._locked and not node._is_view
+        ]
+        if not deletable:
+            return
+        self.mark_pending_delete_relevance(deletable)
+        for c in deletable:
+            c.request_delete()
+
+    def _paste_at_cursor(self) -> None:
+        global_pos = QtGui.QCursor.pos()
+        scene_pos = self.mapToScene(self.mapFromGlobal(global_pos))
+        self._paste_clipboard_at(scene_pos)
+
+    def _paste_clipboard_at(self, scene_pos: QtCore.QPointF) -> "list[core.ChunkBase]":
+        """Materialize the module-level clipboard as new chunk(s) centered at scene_pos."""
+        if not _node_clipboard:
+            return []
+        return self._materialize_at(_node_clipboard, _edge_clipboard, scene_pos)
+
+    def _materialize_at(
+        self, clip_nodes: "list[_ClipboardNode]", clip_edges: "list[_ClipboardEdge]", scene_pos: QtCore.QPointF
+    ) -> "list[core.ChunkBase]":
+        """Create new chunk(s) from clip_nodes centered at scene_pos, wire clip_edges between
+        them, and select the result -- nested into whatever context/tab this view is
+        currently showing, same mechanism right-click "New Chunk" already uses
+        (_push_nest_context), which is what makes pasting/duplicating into a chunkgroup work
+        for free, including a selection copied from a different context. Shared by both Paste
+        (module clipboard) and Duplicate (clipboard-free, straight from the selection).
+        Returns the list of newly created primary chunks."""
+        if not clip_nodes:
+            return []
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return []
+        scene = _chunk.get_scene()
+        if not scene:
+            return []
+        context = self._graph_context()
+        view_exists = self._context_has_view(scene, context)
+        nested, prev_ctx = self._push_nest_context(scene, context)
+        new_chunks: list[core.ChunkBase] = []
+        new_path_by_index: dict[int, str] = {}
+        try:
+            for index, item in enumerate(clip_nodes):
+                primary, chunks = self._instantiate_chunk_of_type(item.module_name)
+                if primary is None:
+                    continue
+                # Apply the copied values BEFORE add_chunk, not after: add_chunk's own
+                # CHUNK_LOADED/PARAM_ADDED notice dispatch can synchronously build this
+                # chunk's Params-panel widget as a side effect (chunk_qt.py's
+                # create_chunk_widget, when the target context already has an open tab --
+                # confirmed live, not deferred the way the *graph* node's own proxy widget
+                # is). A widget reads its initial displayed text once, synchronously, at
+                # construction (ChunkParamWidgetBase.setup_chunk_widget) -- applying values
+                # after add_chunk meant that first read saw the still-default/empty value,
+                # and a blocked pasted chunk (see below) never gets the later reactive
+                # VALUE_CHANGED notice that would otherwise have corrected it, leaving the
+                # field looking permanently blank despite the underlying param value being
+                # correct.
+                _apply_param_values(primary, item.values)
+                pos = (scene_pos.x() + item.rel_pos.x(), scene_pos.y() + item.rel_pos.y())
+                # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_usd in USD
+                # space (see chunk_usd._create_node_pos usage elsewhere in this file).
+                chunk_usd._create_node_pos = (pos[0], -pos[1])
+                try:
+                    for c in chunks:
+                        if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+                            c.set_blocked(True)
+                        scene.add_chunk(c)
+                finally:
+                    chunk_usd._create_node_pos = None
+                new_chunks.append(primary)
+                new_path_by_index[index] = chunk_usd.get_chunk_prim_path(primary)
+                if item.children:
+                    self._materialize_children(primary, item.children, item.child_edges)
+        finally:
+            if nested:
+                scene._current_context = prev_ctx
+        if new_chunks and graph_scene._scene_sender:
+            graph_scene._scene_sender.set_selected_chunks(new_chunks)
+        if clip_edges:
+            # The new nodes' ports (typed ones especially) don't exist yet -- their proxy
+            # widgets are built in deferred batches (see ChunkGraphScene._create_proxies_batch).
+            # Same deferred-wiring pattern _create_and_connect_from_menu already uses.
+            QtCore.QTimer.singleShot(
+                80, lambda paths=new_path_by_index, edges=list(clip_edges): self._wire_pasted_edges(paths, edges)
+            )
+        return new_chunks
+
+    def _materialize_children(
+        self, parent_chunk: core.ChunkBase,
+        clip_children: "list[_ClipboardNode]", clip_child_edges: "list[_ClipboardEdge]",
+    ) -> None:
+        """Recreate a ChunkGroup's copied children nested inside the newly created
+        parent_chunk (recursing further for a nested sub-group), wiring their internal
+        connections directly at the USD level via _author_raw_connection -- no live Qt ports
+        exist for a group's children unless someone has actually dived into that group, so
+        the ChunkPortItem-based _wire_pasted_edges path used for the top-level paste doesn't
+        apply here."""
+        if not clip_children:
+            return
+        scene = _chunk.get_scene()
+        if not scene:
+            return
+        stage = scene.get_stage()
+        if not stage:
+            return
+        nested, prev_ctx = self._push_nest_context(scene, parent_chunk)
+        child_path_by_index: dict[int, str] = {}
+        child_chunk_by_index: dict[int, core.ChunkBase] = {}
+        try:
+            for index, item in enumerate(clip_children):
+                primary, chunks = self._instantiate_chunk_of_type(item.module_name)
+                if primary is None:
+                    continue
+                # Apply values before add_chunk -- see the matching comment in
+                # _materialize_at for why (a widget can be built synchronously as a side
+                # effect of add_chunk's own notice dispatch, and reads its initial value
+                # once, at construction).
+                _apply_param_values(primary, item.values)
+                # Block before add_chunk, same as _materialize_at's top-level loop -- a
+                # freshly created chunk defaults to unblocked, and ChunkStageSync._on_chunk_loaded
+                # executes it synchronously and immediately as part of add_chunk/add_param's own
+                # CHUNK_LOADED dispatch, well before the wiring loop below (_author_raw_connection)
+                # connects it to its siblings. For a chunk with real creation side effects (e.g.
+                # Create Layer authoring an anon layer under whatever's upstream *right now*),
+                # that premature standalone execute leaves an orphaned layer nothing ever cleans
+                # up. This group's children have no inner view yet (view chunks are excluded from
+                # the copy, see _iter_group_children), so nothing unblocks them here directly --
+                # but the deferred _wire_pasted_edges -> _recook_active_view call that already
+                # runs once this whole paste/duplicate's top-level wiring lands (_materialize_at)
+                # recurses into reachable groups (recook_for_view's is_group_chunk branch) and
+                # unblocks+executes their contents in order, same as it would for a hand-built
+                # group once it's wired into a view. An unwired duplicate stays safely blocked
+                # until the user wires it in manually, matching a hand-built group's behavior.
+                chunk_usd._create_node_pos = (item.rel_pos.x(), -item.rel_pos.y())
+                try:
+                    for c in chunks:
+                        if not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+                            c.set_blocked(True)
+                        scene.add_chunk(c)
+                finally:
+                    chunk_usd._create_node_pos = None
+                path = chunk_usd.get_chunk_prim_path(primary)
+                child_path_by_index[index] = path
+                child_chunk_by_index[index] = primary
+                if item.children:
+                    self._materialize_children(primary, item.children, item.child_edges)
+        finally:
+            if nested:
+                scene._current_context = prev_ctx
+        for edge in clip_child_edges:
+            src_path = child_path_by_index.get(edge.src_index)
+            dst_path = child_path_by_index.get(edge.dst_index)
+            dst_chunk = child_chunk_by_index.get(edge.dst_index)
+            if not src_path or not dst_path or dst_chunk is None:
+                continue
+            _author_raw_connection(stage, dst_path, edge.dst_attr, dst_chunk, src_path, edge.src_attr)
+
+    def _duplicate_selected(self) -> None:
+        """Ctrl+D: copy+paste the current selection in one step, without touching the
+        Ctrl+C/Ctrl+V clipboard (so it never clobbers whatever was last explicitly copied).
+        Lands at a fixed +40/+40 offset from the originals rather than the mouse cursor."""
+        clip_nodes, clip_edges, top_left = self._snapshot_selection()
+        if not clip_nodes or top_left is None:
+            return
+        anchor = QtCore.QPointF(top_left.x() + 40, top_left.y() + 40)
+        self._materialize_at(clip_nodes, clip_edges, anchor)
+
+    def _wire_pasted_edges(self, new_path_by_index: "dict[int, str]", edges: "list[_ClipboardEdge]") -> None:
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        changed_chunks: set = set()
+        for edge in edges:
+            src_path = new_path_by_index.get(edge.src_index)
+            dst_path = new_path_by_index.get(edge.dst_index)
+            if not src_path or not dst_path:
+                continue
+            src_node = graph_scene._nodes.get(src_path)
+            dst_node = graph_scene._nodes.get(dst_path)
+            if src_node is None or dst_node is None:
+                continue
+            src_port = src_node.get_port(f"{src_path}.{edge.src_attr}")
+            dst_port = dst_node.get_port(f"{dst_path}.{edge.dst_attr}")
+            if src_port is None or dst_port is None:
+                continue
+            self._author_connection(src_port, dst_port)
+            changed_chunks.add(dst_node.chunk)
+        if changed_chunks:
+            graph_scene._build_edges()
+            self._recook_active_view(changed_chunks)
+
     def _ensure_default_view(self, context) -> None:
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
@@ -1781,12 +2474,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             and QtWidgets.QApplication.keyboardModifiers() == QtCore.Qt.AltModifier
         ):
             self._start_pan(event.pos())
+        elif event.button() == QtCore.Qt.LeftButton and hit is None:
+            # Empty canvas: start a rubber-band box-select. A plain click with no drag
+            # movement resolves to an empty box on release, which clears the selection —
+            # same end result as the old immediate-clear-on-press behavior.
+            self._rubber_band_add = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+            self._rubber_band_origin = event.pos()
+            self._rubber_band.setGeometry(QtCore.QRect(self._rubber_band_origin, QtCore.QSize()))
+            self._rubber_band.show()
+            self._rubber_band_active = True
         else:
-            if event.button() == QtCore.Qt.LeftButton:
-                if hit is None:
-                    graph_scene = self.scene()
-                    if isinstance(graph_scene, ChunkGraphScene) and graph_scene._scene_sender:
-                        graph_scene._scene_sender.set_selected_chunks([])
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent):
@@ -1798,6 +2495,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._pan_start = event.pos()
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+        elif self._rubber_band_active:
+            rect = QtCore.QRect(self._rubber_band_origin, event.pos()).normalized()
+            self._rubber_band.setGeometry(rect)
         else:
             super().mouseMoveEvent(event)
 
@@ -1807,8 +2507,29 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         if self._pan_active and event.button() in (QtCore.Qt.MiddleButton, QtCore.Qt.LeftButton):
             self._stop_pan()
+        elif self._rubber_band_active and event.button() == QtCore.Qt.LeftButton:
+            self._finish_rubber_band()
         else:
             super().mouseReleaseEvent(event)
+
+    def _finish_rubber_band(self) -> None:
+        self._rubber_band_active = False
+        rect_view = self._rubber_band.geometry()
+        self._rubber_band.hide()
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return
+        scene_rect = self.mapToScene(rect_view).boundingRect()
+        boxed = [
+            node.chunk for node in graph_scene._nodes.values()
+            if node.sceneBoundingRect().intersects(scene_rect)
+        ]
+        if self._rubber_band_add:
+            current = list(graph_scene._scene_sender.get_selected_chunks())
+            merged = current + [c for c in boxed if c not in current]
+            graph_scene._scene_sender.set_selected_chunks(merged)
+        else:
+            graph_scene._scene_sender.set_selected_chunks(boxed)
 
     # ------------------------------------------------------------------
     # Keyboard
@@ -1835,11 +2556,29 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_D:
-            self._toggle_disable_selected()
+            # Ctrl+D duplicates; bare D (no modifier) toggles disable -- same disambiguation
+            # as Ctrl+V/bare-V below.
+            if event.modifiers() & QtCore.Qt.ControlModifier:
+                self._duplicate_selected()
+            else:
+                self._toggle_disable_selected()
+            event.accept()
+            return
+        if event.key() == QtCore.Qt.Key.Key_C and (event.modifiers() & QtCore.Qt.ControlModifier):
+            self._copy_selected_to_clipboard()
+            event.accept()
+            return
+        if event.key() == QtCore.Qt.Key.Key_X and (event.modifiers() & QtCore.Qt.ControlModifier):
+            self._cut_selected_to_clipboard()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_V:
-            self._create_view_node()
+            # Ctrl+V pastes; bare V (no modifier) creates a view node -- same key, disambiguated
+            # by modifier so the two long-standing single-key shortcuts don't collide.
+            if event.modifiers() & QtCore.Qt.ControlModifier:
+                self._paste_at_cursor()
+            else:
+                self._create_view_node()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_L:
@@ -2267,10 +3006,20 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if not (succ and succ.IsValid()):
                 continue
             if any(str(c) == out_chunk_path for c in succ.GetConnections()):
-                if pred_conns:
-                    succ.SetConnections(pred_conns)
-                else:
-                    succ.ClearConnections()
+                # Write to succ's own home layer, not the stage's ambient edit target (root,
+                # since nothing here calls SetEditTarget) -- an interactively wired
+                # connection almost always lives on the session layer, stronger than root,
+                # so healing on root left the original opinion (pointing at the node being
+                # shaken loose) in charge and the heal silently had no visible effect. Same
+                # fix as chunk_usd.heal_exec_chain_on_delete.
+                home = chunk_utils.get_attr_home_layer(succ) or chunk_utils.get_bookkeeping_layer(
+                    stage, getattr(other, "chunk", None)
+                )
+                with Usd.EditContext(stage, home):
+                    if pred_conns:
+                        succ.SetConnections(pred_conns)
+                    else:
+                        succ.ClearConnections()
                 changed = True
 
         # This node's own input connections.
@@ -2296,7 +3045,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._recook_active_view()
 
     def _show_chunk_menu(self, node: "ChunkNodeItem", global_pos: QtCore.QPoint) -> None:
-        self._view_state.show_chunk_menu(node.chunk, str(node.prim.GetPath()), global_pos)
+        # Copy/Cut/Duplicate act on the current selection, not just this one right-clicked
+        # node -- right-clicking a node that's already part of a multi-selection must leave
+        # that selection alone, but right-clicking an unselected node should select just it
+        # first (matching a plain left-click), or those actions would silently act on
+        # whatever else happened to be selected instead.
+        graph_scene = self.scene()
+        sender = getattr(graph_scene, "_scene_sender", None) if graph_scene else None
+        if sender and not node.chunk.has_state(ChunkFlags.State.SELECTED):
+            sender.set_selected_chunks([node.chunk])
+        self._view_state.show_chunk_menu(node.chunk, str(node.prim.GetPath()), global_pos, graph_view=self)
+
+    def _exec_menu(self, menu: QtWidgets.QMenu, pos: QtCore.QPoint):
+        """Thin, overridable seam around QMenu.exec() -- see ViewSlotState._exec_menu's
+        docstring for why (PySide6 won't let tests monkeypatch QMenu.exec itself)."""
+        return menu.exec(pos)
 
     # ------------------------------------------------------------------
     # View nodes
@@ -2767,6 +3530,23 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if isinstance(item, ChunkNodeItem):
                 self._show_chunk_menu(item, event.globalPos())
                 event.accept()
+                return
+
+        # Empty canvas: offer Paste alongside the existing "New Chunk" fuzzy-search popup,
+        # but only when there's actually something to paste -- otherwise this behaves exactly
+        # as before (straight into the fuzzy search, no extra menu step).
+        if _node_clipboard:
+            quick_menu = QtWidgets.QMenu()
+            paste_action = quick_menu.addAction("Paste")
+            new_chunk_action = quick_menu.addAction("New Chunk...")
+            res = self._exec_menu(quick_menu, event.globalPos())
+            if res is None:
+                return
+            if res == paste_action:
+                self._paste_clipboard_at(scene_pos)
+                event.accept()
+                return
+            if res != new_chunk_action:
                 return
 
         self._create_chunk_at(scene_pos, event.globalPos())

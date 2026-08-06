@@ -446,6 +446,25 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             self.setTabToolTip(idx, desc)
         self.setCurrentIndex(idx)
         self.update_stylesheet()
+        # The tab text above is only ever set once, here. A later rename -- e.g. via the
+        # node graph's right-click "Rename..." on this same chunk/chunkgroup, which just
+        # does `grp.name = new` -- has nothing else re-syncing it, leaving the tab stuck on
+        # its creation-time name. Stored on the stack so the connection's lifetime matches
+        # the tab (weakrefs everywhere here, per NoticeConnection -- no manual teardown
+        # needed on tab removal).
+        stack._rename_conn = chunk_notice.NoticeConnection(
+            self._on_context_renamed,
+            chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+            c.get_attribute_sender("name"),
+        )
+
+    def _on_context_renamed(self, notice, sender):
+        ctx = sender.get_owner()
+        if ctx is None:
+            return
+        idx = self.get_chunk_context_index(ctx)
+        if idx is not None:
+            self.setTabText(idx, ctx.name)
 
     def set_view_mode(self, mode: int):
         self._view_mode = mode
@@ -547,9 +566,17 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                 parent_ctx = parent_ctx() if parent_ctx else None
                 if parent_ctx is not None:
                     idx = self.tab_widget.get_chunk_context_index(parent_ctx)
-                    tab_cw = self.tab_widget.get_chunk_context(idx)
-                    if tab_cw is not None:
-                        tab_cw._add_group_widget(loaded_chunk)
+                    # A nested group's parent may itself be a just-created group nobody has
+                    # dived into yet (no tab exists for it) -- e.g. recursively
+                    # pasting/duplicating a group that contains a nested sub-group. No tab
+                    # to attach a widget to in that case; the sub-group's contents still
+                    # exist on the stage and become visible once the parent group is dived
+                    # into for the first time (ChunkTabWidget.dive_into builds its tab fresh
+                    # from the stage at that point).
+                    if idx is not None:
+                        tab_cw = self.tab_widget.get_chunk_context(idx)
+                        if tab_cw is not None:
+                            tab_cw._add_group_widget(loaded_chunk)
                     return
             # Plain tab context: create its tab immediately.
             self.tab_widget.add_chunk_context(loaded_chunk)

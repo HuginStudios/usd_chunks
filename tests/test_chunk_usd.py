@@ -2001,6 +2001,88 @@ def test_recook_recurses_into_group() -> None:
     assert inner_node.is_blocked()  # group hidden → inner tree muted
 
 
+def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode() -> None:
+    """Three sibling ChunkGroups chained by exec -- group1(asd1) -> group2(asd2) ->
+    group3(asd3) -> a real outer View -- each owning an independent Create Layer chunk
+    with insert_mode="Prepend" (which alone would just mean "whoever executes most
+    recently wins position 0", nothing to do with graph position). The group closest to
+    the view (group3/asd3) must still end up strongest once recooked.
+
+    Covers three fixes together, the way the real bug actually manifested:
+    - recook_for_view must recurse into groups in cook_list (view-proximity) order, not
+      scene.get_chunks()'s reversed-insertion-order DFS -- created here in an order
+      DELIBERATELY misaligned with exec-chain position so the old buggy order would
+      produce the wrong result.
+    - A group with no inner View chunk of its own (the normal case -- view chunks are
+      excluded from group copy/paste) must still cook via a synthesized exec tail once
+      it's reachable from an active view, not stay permanently blocked.
+    - Create Layer's _view_ranked_index must override Prepend's raw index=0 once a view
+      is reachable, not just the default Append mode.
+    """
+    import weakref
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, recook_for_view
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    viewmod = reg.get_chunk_module("view")
+    create_mod = reg.get_chunk_module("create_layer")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    groups = []
+    layers = []
+    for tag in ("asd1", "asd2", "asd3"):
+        g = _mk(grpmod)
+        scene._current_context = weakref.ref(g)
+        cl = _mk(create_mod)
+        cl.get_param("layer_name").value = tag
+        cl.get_param("insert_mode").value = "Prepend"
+        cl.execute()
+        scene._current_context = None
+        groups.append(g)
+        layers.append(cl)
+
+    _wire(groups[1], groups[0])  # group1 -> group2
+    _wire(groups[2], groups[1])  # group2 -> group3
+    view = _mk(viewmod)
+    _wire(view, groups[2])       # group3 -> view
+
+    class _Root:
+        prim_path = _CHUNKS_ROOT
+
+    recook_for_view(stage, scene, _Root(), view)
+
+    session = stage.GetSessionLayer()
+    ids = [cl.get_param("_new_layer_id").value for cl in layers]
+    order = [i for i in session.subLayerPaths if i in ids]
+    assert order == [ids[2], ids[1], ids[0]], (
+        "closest-to-view chunkgroup's Create Layer must win strongest, regardless of "
+        "Prepend mode or creation order"
+    )
+
+
 def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     """Regression reported live in usdview: Transform1 -> Scatter -> Transform2 (both
     transforms targeting the same prim), with a real, properly-activated View wired to
@@ -2307,6 +2389,68 @@ def test_delete_middle_node_heals_exec_chain() -> None:
 
     b_in = stage.GetAttributeAtPath(Sdf.Path(f"{get_chunk_prim_path(b)}.{_EXEC_INPUT}"))
     assert [str(c) for c in b_in.GetConnections()] == [a_out]  # B <- A after delete (healed)
+
+
+def test_delete_middle_node_heals_on_the_connections_actual_home_layer() -> None:
+    """heal_exec_chain_on_delete must write the healed connection to wherever the
+    surviving successor's wire actually lives (its home layer), not wherever the stage's
+    ambient edit target happens to be (root, since nothing here ever calls
+    stage.SetEditTarget). If the original wire was authored on a layer STRONGER than
+    root -- the session layer, where interactively drag-connected wires normally land
+    (chunk_utils.get_edit_layer's default) -- writing the heal to root leaves the
+    original opinion (still pointing at the deleted node) in charge: the "healed" edge
+    is silently shadowed away by composition instead of taking effect, so the connection
+    just disappears rather than reconnecting."""
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire_on_session(dst, src):
+        # Session layer -- stronger than root -- matching where an interactively
+        # drag-connected wire actually lands, unlike the plain _wire() helper other
+        # tests in this file use (which authors onto the stage's ambient/root target).
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+            a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    a = _mk(grpmod)   # A: chunkgroup
+    x = _mk(primmod)  # X: middle chunk
+    b = _mk(viewmod)  # B: view
+    _wire_on_session(x, a)  # A -> X
+    _wire_on_session(b, x)  # X -> B
+
+    a_out = f"{get_chunk_prim_path(a)}.{_EXEC_OUTPUT}"
+
+    x.request_delete()  # fires CHUNK_DELETED -> heal runs before the prim is removed
+
+    b_in = stage.GetAttributeAtPath(Sdf.Path(f"{get_chunk_prim_path(b)}.{_EXEC_INPUT}"))
+    # Composed result must reflect the heal. Before the fix, this stayed [x_out] (or
+    # became [] via ClearConnections on the wrong layer) because the session-layer
+    # opinion pointing at X was never actually replaced.
+    assert [str(c) for c in b_in.GetConnections()] == [a_out]
 
 
 def test_rename_group_is_sibling_and_rebases_children() -> None:

@@ -1,6 +1,7 @@
 from pxr import Sdf
 
 from usd_chunks import chunk, chunk_utils
+from usd_chunks.plugins import chunk_usd
 
 
 _INSERT_MODES = ["Append", "Prepend", "Index", "After Layer"]
@@ -16,6 +17,33 @@ def _refresh_after_layer(owner, notice, sender):
     _chunk = owner.get_chunk()
     stage = _chunk.get_stage() if _chunk else None
     if not stage:
+        return
+    if _chunk.is_blocked():
+        # This is listen_globally=True, so it fires for EVERY Create Layer instance on
+        # ANY stage content change -- including another Create Layer's own subLayerPaths
+        # write, or recook_for_view's own layer reorder. The after_menu.value write below
+        # reactively re-triggers THIS chunk's own execute() (chunk_notice.py's DAG solve),
+        # which must not happen for a blocked chunk (not part of the active view's tree —
+        # e.g. not yet wired in, or genuinely hidden). Without this guard, a still-blocked
+        # Create Layer could get dragged into a cascade of extra premature executes
+        # triggered by its SIBLINGS' unrelated edits, each one reinserting it into
+        # subLayerPaths and scrambling "closer to view wins" into "whichever cascade call
+        # happened to land last".
+        return
+    if _chunk.get_param("insert_mode").value != "After Layer":
+        # after_layer is hidden/unused in every other mode (_update_visibility). Refreshing
+        # it anyway writes menu_items -- a plain attrs field whose content is "the current
+        # subLayerPaths list", which differs on essentially every sibling Create Layer's
+        # edit -- and that write unconditionally re-triggers THIS chunk's own execute() as
+        # a side effect (chunk_core.py value_changed -> self.execute()), regardless of
+        # whether anything about THIS chunk actually changed. Live-confirmed: this alone
+        # cascades into hundreds of spurious re-executions across just a few sibling Create
+        # Layer chunks during ordinary graph construction, each one blindly reinserting
+        # this chunk via raw Prepend/Append (no view is reachable yet to rank against
+        # during a build) -- whichever cascade call happens to land last wins the strongest
+        # position, an accident of notice dispatch order having nothing to do with graph
+        # position. That scrambled order then freezes in place, since nothing re-executes a
+        # Create Layer chunk in response to exec topology changing once it's wired to a view.
         return
 
     internal_ids = chunk_utils.chunk_internal_layer_ids()
@@ -49,6 +77,89 @@ def _update_visibility(owner):
 
 def _insert_mode_changed(owner, notice, sender):
     _update_visibility(owner.get_chunk())
+    if owner.get_chunk().get_param("insert_mode").value == "After Layer":
+        # _refresh_after_layer now skips every mode but this one (see its own guard), so
+        # switching INTO "After Layer" needs one explicit refresh here -- otherwise the
+        # menu stays stale (whatever it last showed before this chunk existed/switched
+        # modes) until some unrelated sibling edit happens to trigger the global listener.
+        _refresh_after_layer(owner, notice, sender)
+
+
+def _view_ranked_index(node, stage, paths: "list") -> "int | None":
+    """Where this chunk's layer belongs among `paths`, ranked by exec-chain proximity to
+    the active downstream view.
+
+    Applies REGARDLESS of Insert mode: two Create Layer chunks that ARE comparable
+    (reachable from a common view) landing in the wrong relative order isn't something
+    Prepend/Index/After Layer should be able to override -- "closer to the view wins" is
+    a project-wide invariant (recook_for_view enforces it for its own ChunkLayerManager-
+    tracked layers), not a per-chunk style choice. Insert mode only matters when this
+    returns None -- see execute()'s fallback.
+
+    Ranks this chunk's own CONTAINER (its immediate context -- typically a ChunkGroup, or
+    this chunk itself if it has none) as one atomic unit against sibling Create Layer
+    chunks' containers, using the nearest reachable downstream view's exec-upstream
+    order. Ranking the container rather than the chunk itself is what makes two
+    ChunkGroups (each owning an independent Create Layer) compare correctly as wholes.
+
+    Returns None -- defer entirely to Insert mode -- whenever there's no view to rank
+    against yet (e.g. right after a fresh paste, before anything is wired in) or this
+    chunk isn't inside any container at all.
+    """
+    scene = node.get_scene()
+    if not scene:
+        return None
+    container = node.get_context()
+    ranking_unit = container if container is not None else node
+    outer = ranking_unit.get_context()
+    view_chunk = chunk_usd.find_group_active_view(outer, stage, scene) if outer is not None else None
+    if view_chunk is None:
+        # No enclosing group context to read a chunk:activeView slot from -- e.g. several
+        # sibling ChunkGroups chained directly under a tab, not nested inside another
+        # group (find_group_active_view has nowhere to look: the root tab's own active
+        # view is tracked only in the Qt widget layer, not on any group prim this pure-
+        # topology function can read) -- or the enclosing group just has no recorded
+        # active view yet. Fall back to whatever real View chunk this unit's own exec
+        # output actually reaches downstream, and rank directly against that view's cook
+        # list instead -- same "closer to the view wins" signal, just found a different
+        # way.
+        downstream = chunk_usd.get_exec_downstream_chunks(ranking_unit, stage, scene)
+        view_chunk = next((c for c in downstream if chunk_usd.is_view_chunk(c)), None)
+    if view_chunk is None:
+        return None
+    cook_list = chunk_usd.get_exec_upstream_chunks(view_chunk, stage, scene)
+    if ranking_unit not in cook_list:
+        return None
+    my_rank = cook_list.index(ranking_unit)
+
+    # Map each existing sublayer identifier back to whichever OTHER Create Layer chunk (if
+    # any) produced it, so its own container can be ranked the same way.
+    id_to_chunk = {}
+    for c in scene.get_chunks():
+        cfg = c.get_config()
+        if not cfg or cfg.module != "create_layer":
+            continue
+        lid = c.get_param("_new_layer_id")
+        if lid and lid.value:
+            id_to_chunk[lid.value] = c
+
+    def sibling_rank(path_id: str) -> int:
+        sibling = id_to_chunk.get(path_id)
+        if sibling is None:
+            return -1
+        sib_container = sibling.get_context()
+        sib_unit = sib_container if sib_container is not None else sibling
+        return cook_list.index(sib_unit) if sib_unit in cook_list else -1
+
+    # subLayerPaths[0] is the strongest sublayer; keep entries ordered by descending rank
+    # (closer to the view = higher rank = stronger = lower index) and insert at the first
+    # spot whose existing entry is no stronger than this one. A resolved rank always
+    # returns a real int here (never None) -- "nothing comparable in paths yet" just means
+    # landing at the end, same as a fresh Append would, not "give up and use Insert mode".
+    for i, path_id in enumerate(paths):
+        if sibling_rank(path_id) <= my_rank:
+            return i
+    return len(paths)
 
 
 def execute(node):
@@ -121,18 +232,24 @@ def execute(node):
 
         paths = [p for p in parent_layer.subLayerPaths if p not in (previous_id, layer.identifier)]
 
-        mode = node.get_param("insert_mode").value
-        if mode == "Prepend":
-            # subLayerPaths[0] is the strongest sublayer.
-            index = 0
-        elif mode == "Index":
-            index = int(node.get_param("insert_index").value or 0)
-            index = max(0, min(index, len(paths)))
-        elif mode == "After Layer":
-            after_id = node.get_param("after_layer").value
-            index = paths.index(after_id) + 1 if after_id in paths else len(paths)
-        else:
-            index = len(paths)
+        # "Closer to the view wins" always takes priority over Insert mode when it can be
+        # determined -- Insert mode is a fallback for when there's nothing to rank against
+        # yet (no view reachable, or this chunk isn't in a container), not a way to
+        # override a real, resolvable view relationship. See _view_ranked_index.
+        index = _view_ranked_index(node, stage, paths)
+        if index is None:
+            mode = node.get_param("insert_mode").value
+            if mode == "Prepend":
+                # subLayerPaths[0] is the strongest sublayer.
+                index = 0
+            elif mode == "Index":
+                index = int(node.get_param("insert_index").value or 0)
+                index = max(0, min(index, len(paths)))
+            elif mode == "After Layer":
+                after_id = node.get_param("after_layer").value
+                index = paths.index(after_id) + 1 if after_id in paths else len(paths)
+            else:
+                index = len(paths)
 
         paths.insert(index, layer.identifier)
         # Insert into the composed stack BEFORE updating id_param/name_param/parent_param
@@ -163,7 +280,9 @@ def main():
     insert_mode = chunk.Menu(
         "insert_mode", "Insert",
         menu_items=_INSERT_MODES, default_value="Append",
-        tooltip="Where the new layer is inserted among the session layer's sublayers.",
+        tooltip="Where the new layer is inserted among the session layer's sublayers, "
+        "when there's no view downstream to rank it against yet. Once this chunk is "
+        "wired into a view, \"closer to the view wins\" always takes over instead.",
     )
     insert_mode.add_callback(_insert_mode_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 

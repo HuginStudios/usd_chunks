@@ -1320,17 +1320,30 @@ class ViewSlotState(QtCore.QObject):
             self._slot = slot
             self.slot_changed.emit(slot)
 
+    def _exec_menu(self, menu: QtWidgets.QMenu, pos: QtCore.QPoint):
+        """Thin, overridable seam around QMenu.exec() -- PySide6 doesn't allow monkeypatching
+        QMenu.exec itself (it's a bound virtual slot, not a plain Python attribute), so tests
+        stub this plain instance method instead of driving a real modal popup."""
+        return menu.exec(pos)
+
     def show_chunk_menu(
         self,
         grp: "chunk.ChunkBase",
         prim_path: str,
         global_pos: QtCore.QPoint,
+        graph_view=None,
     ) -> None:
         """Build and exec the shared right-click menu for a chunk.
 
         Handles custom callback actions, Inspect Layer, and Set View / Activate
         View N.  The actual view-node creation is delegated to ChunkGraphView
         via the create_view_for signal.
+
+        graph_view: the owning ChunkGraphView, passed only by the graph node right-click
+        (ChunkGraphView._show_chunk_menu) -- None from the Params-tab widget's own right-click
+        (ChunkWidget.contextMenuEvent), which has no graph selection to act on. Gates
+        Copy/Cut/Duplicate, which operate on the graph's current (possibly multi-node)
+        selection via graph_view, not just this one right-clicked chunk.
         """
         menu = QtWidgets.QMenu()
         cb_actions: dict = {}
@@ -1344,6 +1357,12 @@ class ViewSlotState(QtCore.QObject):
         pin_action = menu.addAction(
             "Unpin from Params" if chunk_usd.is_chunk_pinned(grp) else "Pin to Params"
         )
+        copy_action = cut_action = duplicate_action = None
+        if graph_view is not None:
+            menu.addSeparator()
+            copy_action = menu.addAction("Copy")
+            cut_action = menu.addAction("Cut")
+            duplicate_action = menu.addAction("Duplicate")
         menu.addSeparator()
 
         stage: Optional[Usd.Stage] = grp.get_stage()
@@ -1370,7 +1389,7 @@ class ViewSlotState(QtCore.QObject):
         else:
             view_action = menu.addAction("Set View")
 
-        res = menu.exec(global_pos)
+        res = self._exec_menu(menu, global_pos)
         if not res:
             return
 
@@ -1397,6 +1416,12 @@ class ViewSlotState(QtCore.QObject):
                 self.set_slot(existing_view_slot)
             else:
                 self.create_view_for.emit(prim_path)
+        elif copy_action and res == copy_action:
+            graph_view._copy_selected_to_clipboard()
+        elif cut_action and res == cut_action:
+            graph_view._cut_selected_to_clipboard()
+        elif duplicate_action and res == duplicate_action:
+            graph_view._duplicate_selected()
         elif conn := cb_actions.get(res):
             meth = conn.get_method()
             if meth is not None and meth == getattr(grp, "remove", None):
