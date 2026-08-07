@@ -2,10 +2,35 @@ from pxr import UsdGeom, Gf
 from usd_chunks import chunk, chunk_core, chunk_utils
 
 
+def _rescale_translate_range(node, stage):
+    """Keep the translate sliders' range at a constant ~10m-equivalent span regardless of
+    the stage's declared scale, instead of a flat -1000..1000 in raw stage units. That flat
+    range only felt right by accident for a centimeters-scale stage (metersPerUnit=0.01,
+    USD's own default when unauthored -- 10 / 0.01 = 1000, exactly the old constant); a
+    meters-scale stage (metersPerUnit=1) got the same +-1000 range applied to a scene where
+    objects are typically single-digit units across, so a small drag (or typing "5") could
+    move something many times its own size -- reported live as translate "flying away" and
+    being unusably coarse to fine-tune."""
+    meters_per_unit = UsdGeom.GetStageMetersPerUnit(stage)
+    if not meters_per_unit:
+        return
+    span = 10.0 / meters_per_unit
+    for name in ("tx", "ty", "tz"):
+        param = node.get_param(name)
+        if param is None:
+            continue
+        param.min_value = -span
+        param.max_value = span
+
+
 def execute(node):
     stage = node.get_stage()
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
+
+    # Before the primpath guard below -- the slider range should be correct as soon as the
+    # chunk exists, not only once a target prim is set.
+    _rescale_translate_range(node, stage)
 
     primpath_param = node.get_param("primpath_location")
     # get_param returns None while the chunk's params are being torn down (remove re-runs
