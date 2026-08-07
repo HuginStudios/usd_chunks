@@ -80,9 +80,9 @@ def main():
     chunk_api.add_param(primpath)
 
     for grp_name, grp_label, axes, min_v, max_v, default in [
-        ("translate_grp", "Translate", ("tx", "ty", "tz"), -1000.0, 1000.0, 0.0),
+        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0),
         ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"),  -180.0,  180.0, 0.0),
-        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),   0.0,  10000.0, 1.0),
+        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),   0.0,  100.0, 1.0),
     ]:
         grp = chunk.Group(
             grp_name,
