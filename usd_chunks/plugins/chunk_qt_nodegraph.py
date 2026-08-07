@@ -2981,36 +2981,40 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
             return
         global_pos = self.viewport().mapToGlobal(self.mapFromScene(scene_pos))
-        entry = FilterableChunkMenu().select_module(global_pos)
-        if not entry:
-            return
-        chunks = entry.create()
-        scene = _chunk.get_scene()
-        if not scene:
-            return
-        # Block on creation (view-driven) — see contextMenuEvent. Here the node is about to be
-        # wired to the dragged port, so the deferred connect's recook will unblock + cook it.
-        context = self._graph_context()
-        view_exists = self._context_has_view(scene, context)
-        # Create the node at the wire-drop point instead of the far-away index default.
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
-            for c in chunks:
-                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
-                    c.set_blocked(True)
-                scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
-        new_chunk = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
-        if new_chunk is None:
-            return
-        new_prim = chunk_usd.get_chunk_prim_path(new_chunk)
-        QtCore.QTimer.singleShot(
-            80, lambda: self._connect_ports_by_path(src_attr_path, src_is_input, new_prim)
-        )
+
+        def _on_chosen(entry) -> None:
+            if not entry:
+                return
+            chunks = entry.create()
+            scene = _chunk.get_scene()
+            if not scene:
+                return
+            # Block on creation (view-driven) — see contextMenuEvent. Here the node is about
+            # to be wired to the dragged port, so the deferred connect's recook will unblock
+            # + cook it.
+            context = self._graph_context()
+            view_exists = self._context_has_view(scene, context)
+            # Create the node at the wire-drop point instead of the far-away index default.
+            chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+            nested, prev_ctx = self._push_nest_context(scene, context)
+            try:
+                for c in chunks:
+                    if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+                        c.set_blocked(True)
+                    scene.add_chunk(c)
+            finally:
+                if nested:
+                    scene._current_context = prev_ctx
+                chunk_usd._create_node_pos = None
+            new_chunk = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
+            if new_chunk is None:
+                return
+            new_prim = chunk_usd.get_chunk_prim_path(new_chunk)
+            QtCore.QTimer.singleShot(
+                80, lambda: self._connect_ports_by_path(src_attr_path, src_is_input, new_prim)
+            )
+
+        FilterableChunkMenu(self).select_module(global_pos, _on_chosen)
 
     def _connect_ports_by_path(self, src_attr_path: str, src_is_input: bool, new_prim_path: str) -> None:
         """Wire the (still-present) source port to a compatible port on the newly created node."""
@@ -3299,12 +3303,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         sender = getattr(graph_scene, "_scene_sender", None) if graph_scene else None
         if sender and not node.chunk.has_state(ChunkFlags.State.SELECTED):
             sender.set_selected_chunks([node.chunk])
-        self._view_state.show_chunk_menu(node.chunk, str(node.prim.GetPath()), global_pos, graph_view=self)
+        self._view_state.show_chunk_menu(
+            node.chunk, str(node.prim.GetPath()), global_pos, graph_view=self, parent_widget=self
+        )
 
-    def _exec_menu(self, menu: QtWidgets.QMenu, pos: QtCore.QPoint):
-        """Thin, overridable seam around QMenu.exec() -- see ViewSlotState._exec_menu's
-        docstring for why (PySide6 won't let tests monkeypatch QMenu.exec itself)."""
-        return menu.exec(pos)
+    def _exec_menu(self, menu: QtWidgets.QMenu, pos: QtCore.QPoint) -> None:
+        """Thin, overridable seam around QMenu.popup() -- see ViewSlotState._exec_menu's
+        docstring for why (PySide6 won't let tests monkeypatch QMenu.popup/exec itself, and
+        popup() instead of exec_() avoids a real, reported popup flicker/ghost bug caused by
+        a deferred graph rebuild firing inside a modal nested event loop). Returns nothing --
+        callers connect menu.triggered/aboutToHide before calling this, so a test can
+        simulate a pick with menu.triggered.emit(action) without ever showing a real popup."""
+        menu.popup(pos)
 
     # ------------------------------------------------------------------
     # View nodes
@@ -3710,38 +3720,40 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         Shared by both Tab key and right-click on empty graph area.
         """
-        entry = FilterableChunkMenu().select_module(global_pos)
-        if not entry:
-            return
+        def _on_chosen(entry) -> None:
+            if not entry:
+                return
 
-        chunks = entry.create()
+            chunks = entry.create()
 
-        scene = _chunk.get_scene()
-        if not scene:
-            return
+            scene = _chunk.get_scene()
+            if not scene:
+                return
 
-        context = self._graph_context()
-        view_exists = self._context_has_view(scene, context)
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        chunk_usd._pin_new_chunks = False
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
-            for c in chunks:
-                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
-                    c.set_blocked(True)
-                scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
-            chunk_usd._pin_new_chunks = None
+            context = self._graph_context()
+            view_exists = self._context_has_view(scene, context)
+            chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+            chunk_usd._pin_new_chunks = False
+            nested, prev_ctx = self._push_nest_context(scene, context)
+            try:
+                for c in chunks:
+                    if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+                        c.set_blocked(True)
+                    scene.add_chunk(c)
+            finally:
+                if nested:
+                    scene._current_context = prev_ctx
+                chunk_usd._create_node_pos = None
+                chunk_usd._pin_new_chunks = None
 
-        menu_view = next((c for c in chunks if chunk_usd.is_view_chunk(c)), None)
-        if menu_view is not None:
-            self._activate_menu_view(menu_view, context, scene.get_stage())
-            return
+            menu_view = next((c for c in chunks if chunk_usd.is_view_chunk(c)), None)
+            if menu_view is not None:
+                self._activate_menu_view(menu_view, context, scene.get_stage())
+                return
 
-        QtCore.QTimer.singleShot(60, lambda ctx=context: self._ensure_default_view(ctx))
+            QtCore.QTimer.singleShot(60, lambda ctx=context: self._ensure_default_view(ctx))
+
+        FilterableChunkMenu(self).select_module(global_pos, _on_chosen)
 
     # ------------------------------------------------------------------
     # Drag-and-drop file import
@@ -3793,22 +3805,33 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if kind == "scene":
             self._import_as_sublayer(path, scene_pos)
             return
-        chosen = self._prompt_import_kind(global_pos)
-        if chosen == "chunks":
-            self._import_as_chunks(path, scene_pos)
-        elif chosen == "scene":
-            self._import_as_sublayer(path, scene_pos)
 
-    def _prompt_import_kind(self, global_pos: QtCore.QPoint) -> "str | None":
-        menu = QtWidgets.QMenu()
+        def _on_chosen(choice: "str | None") -> None:
+            if choice == "chunks":
+                self._import_as_chunks(path, scene_pos)
+            elif choice == "scene":
+                self._import_as_sublayer(path, scene_pos)
+
+        self._prompt_import_kind(global_pos, _on_chosen)
+
+    def _prompt_import_kind(self, global_pos: QtCore.QPoint, on_chosen) -> None:
+        """Pop (non-modal) the Import as Chunks / Import as Sublayer choice and call
+        on_chosen with "chunks", "scene", or None if dismissed. popup(), not exec_() -- see
+        FilterableChunkMenu.select_module's docstring for why a modal nested event loop
+        here caused a real, reported popup flicker/ghost bug."""
+        menu = QtWidgets.QMenu(self)
         as_chunks = menu.addAction("Import as Chunks")
         as_sublayer = menu.addAction("Import as Sublayer")
-        res = self._exec_menu(menu, global_pos)
-        if res is as_chunks:
-            return "chunks"
-        if res is as_sublayer:
-            return "scene"
-        return None
+
+        def _on_triggered(res: QtGui.QAction) -> None:
+            if res is as_chunks:
+                on_chosen("chunks")
+            elif res is as_sublayer:
+                on_chosen("scene")
+
+        menu.triggered.connect(_on_triggered)
+        menu.aboutToHide.connect(menu.deleteLater)
+        self._exec_menu(menu, global_pos)
 
     def _import_as_chunks(self, path: str, scene_pos: QtCore.QPointF) -> None:
         """Drop-a-chunkgroup-file: read its chunk prims into clipboard-shaped data and
@@ -3998,18 +4021,28 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # but only when there's actually something to paste -- otherwise this behaves exactly
         # as before (straight into the fuzzy search, no extra menu step).
         if _node_clipboard:
-            quick_menu = QtWidgets.QMenu()
+            global_pos = event.globalPos()
+            quick_menu = QtWidgets.QMenu(self)
             paste_action = quick_menu.addAction("Paste")
             new_chunk_action = quick_menu.addAction("New Chunk...")
-            res = self._exec_menu(quick_menu, event.globalPos())
-            if res is None:
-                return
-            if res == paste_action:
-                self._paste_clipboard_at(scene_pos)
-                event.accept()
-                return
-            if res != new_chunk_action:
-                return
+
+            def _on_quick_chosen(res: QtGui.QAction) -> None:
+                if res == paste_action:
+                    self._paste_clipboard_at(scene_pos)
+                elif res == new_chunk_action:
+                    self._create_chunk_at(scene_pos, global_pos)
+
+            # popup() (non-modal), not exec_() -- see FilterableChunkMenu.select_module's
+            # docstring for why a modal nested event loop here caused a real, reported
+            # popup flicker/ghost bug. Accept the event now, synchronously: by the time a
+            # pick (or dismissal) actually happens the original QContextMenuEvent is long
+            # gone, so accept()/ignore() on it only matters right here, not from the
+            # deferred callback.
+            quick_menu.triggered.connect(_on_quick_chosen)
+            quick_menu.aboutToHide.connect(quick_menu.deleteLater)
+            self._exec_menu(quick_menu, global_pos)
+            event.accept()
+            return
 
         self._create_chunk_at(scene_pos, event.globalPos())
         event.accept()

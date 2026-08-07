@@ -132,15 +132,20 @@ def _exec_ports(node):
 def _pick_action_by_text(text):
     """Stand-in for ChunkGraphView._exec_menu / ViewSlotState._exec_menu -- both are plain,
     overridable Python methods specifically so a test can pick a menu result without driving
-    a real modal QMenu.exec() popup (PySide6 doesn't allow monkeypatching QMenu.exec itself:
-    it's a bound virtual slot, and reassigning it on the class doesn't affect real calls,
-    confirmed by a real .exec() hanging under offscreen even with a QTimer.singleShot(0)
-    scheduled to trigger an action first)."""
+    a real modal QMenu.exec() popup (PySide6 doesn't allow monkeypatching QMenu.exec/popup
+    itself: it's a bound virtual slot, and reassigning it on the class doesn't affect real
+    calls, confirmed by a real .exec() hanging under offscreen even with a
+    QTimer.singleShot(0) scheduled to trigger an action first).
+
+    Both seams now call menu.popup() (non-modal, not blocking exec()) and connect
+    menu.triggered before calling this seam -- so a "pick" is simulated by emitting
+    triggered directly, exactly what a real click on the action does, rather than by
+    returning a value (popup() doesn't return one)."""
     def _exec(menu, _pos):
         for act in menu.actions():
             if act.text() == text:
-                return act
-        return None
+                menu.triggered.emit(act)
+                return
     return _exec
 
 
@@ -651,7 +656,7 @@ def test_canvas_menu_paste_only_offered_when_clipboard_has_content(menu_graph, m
     # to confirm that's the path taken, and make it a no-op (returns None -> nothing created).
     called = []
     monkeypatch.setattr(
-        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos: called.append(True) or None
+        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos, on_chosen: called.append(True)
     )
     far_empty = gv.mapFromScene(QtCore.QPointF(-40000, -40000))
     ev = QtGui.QContextMenuEvent(QtGui.QContextMenuEvent.Reason.Mouse, far_empty, far_empty)
@@ -668,7 +673,7 @@ def test_canvas_menu_new_chunk_option_falls_through_to_fuzzy_search(menu_graph, 
 
     called = []
     monkeypatch.setattr(
-        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos: called.append(True) or None
+        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos, on_chosen: called.append(True)
     )
     monkeypatch.setattr(gv, "_exec_menu", _pick_action_by_text("New Chunk..."))
 

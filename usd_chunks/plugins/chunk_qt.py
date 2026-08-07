@@ -393,23 +393,26 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         return self._tabPosition
 
     def contextMenuEvent(self, event):
-        entry = FilterableChunkMenu().select_module(event.globalPos())
-        if not entry:
-            return
+        def _on_chosen(entry) -> None:
+            if not entry:
+                return
 
-        chunks = entry.create()
+            chunks = entry.create()
 
-        # Flag the Params-tab origin so ChunkStageSync inserts the new chunk before the active
-        # view (view-follows-tail) and auto-pins it — node-graph creates don't set either flag,
-        # there wiring is manual and pin is opt-in via the node's right-click menu.
-        chunk_usd._params_tab_create = True
-        chunk_usd._pin_new_chunks = True
-        try:
-            for c in chunks:
-                self.add_chunk_to_tab(c)
-        finally:
-            chunk_usd._params_tab_create = False
-            chunk_usd._pin_new_chunks = None
+            # Flag the Params-tab origin so ChunkStageSync inserts the new chunk before the
+            # active view (view-follows-tail) and auto-pins it — node-graph creates don't set
+            # either flag, there wiring is manual and pin is opt-in via the node's right-click
+            # menu.
+            chunk_usd._params_tab_create = True
+            chunk_usd._pin_new_chunks = True
+            try:
+                for c in chunks:
+                    self.add_chunk_to_tab(c)
+            finally:
+                chunk_usd._params_tab_create = False
+                chunk_usd._pin_new_chunks = None
+
+        FilterableChunkMenu(self).select_module(event.globalPos(), _on_chosen)
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
         w = self.widget(idx)

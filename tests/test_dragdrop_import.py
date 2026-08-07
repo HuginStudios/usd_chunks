@@ -83,11 +83,13 @@ def _exec_ports(node):
 
 
 def _pick_action_by_text(text):
+    """_exec_menu now calls menu.popup() (non-modal), not a blocking exec() -- simulate a
+    pick by emitting the menu's own triggered signal, same as a real click on the action."""
     def _exec(menu, _pos):
         for act in menu.actions():
             if act.text() == text:
-                return act
-        return None
+                menu.triggered.emit(act)
+                return
     return _exec
 
 
