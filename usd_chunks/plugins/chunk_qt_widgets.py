@@ -1448,13 +1448,24 @@ class ViewSlotState(QtCore.QObject):
                     chunk_notice.MenuActionNotice(grp.get_notice_data()), grp, False
                 )
 
+        def _on_triggered(res: QtGui.QAction) -> None:
+            # Defer past this event: _dispatch can create chunks and trigger a graph
+            # rebuild (recreating proxy widgets -- real native windows), and doing that
+            # synchronously from inside triggered -- itself part of this popup's own
+            # in-flight close sequence -- races the popup's native window teardown.
+            # Reported live as a hard crash (not just the flicker popup() alone already
+            # fixed), consistently reproducible, right around an auto-created view node's
+            # deferred rebuild landing mid-close. QTimer.singleShot(0, ...) lets this
+            # menu fully finish closing and return control to the event loop first.
+            QtCore.QTimer.singleShot(0, lambda res=res: _dispatch(res))
+
         # popup() (non-modal), not exec_() -- see parent_widget's docstring note above for
         # why: a modal exec_() nested event loop lets a pending deferred graph rebuild fire
         # while this menu is showing, racing its show/hide and producing a genuine OS-level
         # popup flicker/ghost (reported live). Dismissing without picking (Escape/click-away)
         # needs no explicit handling -- triggered simply never fires, same as the old
         # `if not res: return` being a no-op.
-        menu.triggered.connect(_dispatch)
+        menu.triggered.connect(_on_triggered)
         menu.aboutToHide.connect(menu.deleteLater)
         self._exec_menu(menu, global_pos)
 
@@ -2235,17 +2246,25 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                 flt = " ".join(f"*{x}" for x in ext)
                 if file := file_dial(flt):
                     chunk_registry.ChunkRegistry().import_chunk(file)
-                on_chosen(None)
+                QtCore.QTimer.singleShot(0, lambda: on_chosen(None))
                 return
             entry = action.data()
-            on_chosen(entry if isinstance(entry, chunk_registry.MenuEntry) else None)
+            chosen = entry if isinstance(entry, chunk_registry.MenuEntry) else None
+            # Defer past this event: on_chosen goes on to create a chunk and can trigger a
+            # graph rebuild (recreating proxy widgets -- real native windows). Doing that
+            # synchronously from inside triggered -- itself part of this popup's own
+            # in-flight close sequence -- races the popup's native window teardown.
+            # Reported live as a hard, consistently-reproducible crash (not just the
+            # flicker popup() alone already fixed). QTimer.singleShot(0, ...) lets this
+            # menu fully finish closing and return control to the event loop first.
+            QtCore.QTimer.singleShot(0, lambda chosen=chosen: on_chosen(chosen))
 
         def _on_about_to_hide() -> None:
             app.removeEventFilter(self)
             # triggered fires (and returns) before aboutToHide on a real pick -- only call
             # on_chosen here for the dismissed-without-picking case (Escape/click-away).
             if not picked["done"]:
-                on_chosen(None)
+                QtCore.QTimer.singleShot(0, lambda: on_chosen(None))
             self.deleteLater()
 
         self.triggered.connect(_on_triggered)

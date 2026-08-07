@@ -3825,9 +3825,19 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         def _on_triggered(res: QtGui.QAction) -> None:
             if res is as_chunks:
-                on_chosen("chunks")
+                choice = "chunks"
             elif res is as_sublayer:
-                on_chosen("scene")
+                choice = "scene"
+            else:
+                return
+            # Defer past this event: on_chosen goes on to import chunks and trigger a
+            # graph rebuild (recreating proxy widgets -- real native windows). Doing that
+            # synchronously from inside triggered -- itself part of this popup's own
+            # in-flight close sequence -- races the popup's native window teardown.
+            # Reported live as a hard, consistently-reproducible crash (not just the
+            # flicker popup() alone already fixed). QTimer.singleShot(0, ...) lets this
+            # menu fully finish closing and return control to the event loop first.
+            QtCore.QTimer.singleShot(0, lambda choice=choice: on_chosen(choice))
 
         menu.triggered.connect(_on_triggered)
         menu.aboutToHide.connect(menu.deleteLater)
@@ -4027,10 +4037,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             new_chunk_action = quick_menu.addAction("New Chunk...")
 
             def _on_quick_chosen(res: QtGui.QAction) -> None:
+                # Defer past this event -- both branches can trigger a graph rebuild
+                # (recreating proxy widgets -- real native windows). Doing that
+                # synchronously from inside triggered -- itself part of this popup's own
+                # in-flight close sequence -- races the popup's native window teardown.
+                # Reported live as a hard, consistently-reproducible crash (not just the
+                # flicker popup() alone already fixed). QTimer.singleShot(0, ...) lets
+                # this menu fully finish closing and return control to the event loop
+                # first.
                 if res == paste_action:
-                    self._paste_clipboard_at(scene_pos)
+                    QtCore.QTimer.singleShot(0, lambda: self._paste_clipboard_at(scene_pos))
                 elif res == new_chunk_action:
-                    self._create_chunk_at(scene_pos, global_pos)
+                    QtCore.QTimer.singleShot(0, lambda: self._create_chunk_at(scene_pos, global_pos))
 
             # popup() (non-modal), not exec_() -- see FilterableChunkMenu.select_module's
             # docstring for why a modal nested event loop here caused a real, reported
