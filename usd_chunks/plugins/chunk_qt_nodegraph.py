@@ -8,6 +8,7 @@ Edges follow inputs:chunk connections between prims.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 import weakref
@@ -445,6 +446,192 @@ def _apply_param_values(chunk: core.ChunkCommon, values: list) -> None:
             # for a wire that wasn't copied along with it) shouldn't abort the rest of the
             # paste -- leave it at its default and move on.
             continue
+
+
+# ---------------------------------------------------------------------------
+# Drag-and-drop file import
+#
+# Dropping a saved-chunkgroup .usda (chunk_qt.save_chunkgroup_dialog's output) reuses the
+# copy/paste clipboard machinery above via _snapshot_layer_chunks below, which builds the same
+# _ClipboardNode/_ClipboardEdge shape Ctrl+C does -- just read from a dropped file's own
+# throwaway Usd.Stage instead of the live scene. Dropping a plain scene file instead spawns a
+# Sublayer chunk node with the path pre-filled (see ChunkGraphView._import_as_sublayer).
+
+def _detect_dropped_usd_kind(path: str) -> "str | None":
+    """Classification of a dropped file for ChunkGraphView.dropEvent: 'chunks' if it has any
+    Chunk-typed prim ANYWHERE in it, 'scene' if it's a USD file with none, None if it isn't a
+    recognized USD file at all. There's no fixed root to shortcut the check against -- a
+    chunk's root is its tab/context's own prim_path (chunk_core.add_context names a new tab
+    "/" + the tab name, not a fixed "/chunks" convention -- /chunks is only chunk_usd.py's
+    fallback for a context with no explicit prim_path), so a saved chunkgroup's chunks can
+    live under any prim path depending on what its source tab was called. Sdf.Layer.FindOrOpen
+    does a lightweight scene-description parse only (no composition, no schema/plugin loading,
+    no geometry processing), and Layer.Traverse below walks specs, not geometry data, so this
+    still stays proportionally cheap -- just not O(1) the way a fixed-root lookup would have
+    been -- no matter how large an unrelated scene file is."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".usd", ".usda", ".usdc", ".usdz"):
+        return None
+    try:
+        layer = Sdf.Layer.FindOrOpen(path)
+    except Exception:
+        return None
+    if layer is None:
+        return None
+    found = False
+
+    def _visit(spec_path: "Sdf.Path") -> None:
+        nonlocal found
+        if found or not spec_path.IsPrimPath():
+            return
+        spec = layer.GetPrimAtPath(spec_path)
+        if spec is not None and spec.typeName == _CHUNK_PRIM_TYPENAME:
+            found = True
+
+    layer.Traverse(Sdf.Path("/"), _visit)
+    return "chunks" if found else "scene"
+
+
+def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: QtCore.QPointF) -> "_ClipboardNode | None":
+    """Build a _ClipboardNode straight from a Usd.Prim on a throwaway, unregistered stage (a
+    dropped file opened via Usd.Stage.Open) -- the drag-and-drop counterpart of
+    _snapshot_chunk_node, which instead reads a *live* chunk already registered in the real
+    scene. Instantiates a throwaway chunk never added to any scene, purely to learn its
+    module's canonical param order (same instantiate-without-adding pattern
+    ChunkGraphView._instantiate_chunk_of_type already uses for paste), then restores its values
+    via the same chunk_usd._load_wire_inputs the real stage-load path uses -- so list groups,
+    dotted param paths and expression strings all resolve exactly the same way, without
+    touching the ChunkRegistry/ChunkLayerManager singletons or the real stage at all.
+
+    Blocked BEFORE _load_wire_inputs restores any values: ChunkBase.get_stage() always
+    returns the real, live global stage regardless of whether THIS instance was ever added
+    to any scene, so a module with real side-effecting reactive code (e.g.
+    scripts/create_layer.py's execute() authoring a genuine anon Sdf.Layer the instant its
+    layer_name value changes) runs for real even on a throwaway, never-added chunk -- live
+    confirmed as an orphaned duplicate layer appearing after a drag-and-drop import."""
+    module_name = prim.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get()
+    if not module_name:
+        return None
+    registry = chunk_registry.ChunkRegistry()
+    if not registry.initialized:
+        return None
+    mod = registry.get_chunk_module(str(module_name))
+    if mod is None:
+        return None
+    chunks = mod.create() if mod.loaded else mod.load()
+    primary = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
+    if primary is None:
+        return None
+    primary.set_blocked(True)
+    chunk_usd._load_wire_inputs(prim, primary)
+    clip_node = _ClipboardNode(str(module_name), _snapshot_param_values(primary), rel_pos)
+    if not chunk_usd.is_group_chunk(primary):
+        return clip_node
+
+    child_prims = [
+        c for c in prim.GetFilteredChildren(_INCLUDE_INACTIVE)
+        if c.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get()
+    ]
+    if not child_prims:
+        return clip_node
+    positions = {str(c.GetPath()): _prim_graph_pos(c) for c in child_prims}
+    min_x = min(p.x() for p in positions.values())
+    min_y = min(p.y() for p in positions.values())
+
+    kept_index: dict[str, int] = {}
+    for child in child_prims:
+        path = str(child.GetPath())
+        pos = positions[path]
+        child_clip = _build_clip_node_from_prim(
+            child, QtCore.QPointF(pos.x() - min_x, pos.y() - min_y)
+        )
+        if child_clip is None:
+            continue
+        kept_index[path] = len(clip_node.children)
+        clip_node.children.append(child_clip)
+
+    for child in child_prims:
+        path = str(child.GetPath())
+        dst_index = kept_index.get(path)
+        if dst_index is None:
+            continue
+        for dst_attr, src_prim_path, src_attr in _iter_prim_connections(child):
+            src_index = kept_index.get(src_prim_path)
+            if src_index is None:
+                continue  # source outside this group's children on the dropped file -- wire dropped
+            clip_node.child_edges.append(_ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
+
+    return clip_node
+
+
+def _snapshot_layer_chunks(layer: "Sdf.Layer") -> "tuple[list[_ClipboardNode], list[_ClipboardEdge]]":
+    """Read every top-level module-backed chunk prim out of a dropped .usd(a/c/z) file into
+    clipboard-shaped data, ready for ChunkGraphView._materialize_at -- the drag-and-drop
+    counterpart of Ctrl+C copying a live selection. Opens the file as its own throwaway
+    Usd.Stage (not attached to ChunkRegistry/ChunkLayerManager) purely to get real Usd.Prim/
+    Usd.Attribute objects to read from; nothing here touches the real stage or scene.
+
+    No fixed root to scope the search to -- a chunk's root is its source tab/context's own
+    prim_path (chunk_core.add_context names a new tab "/" + the tab name), so this walks the
+    WHOLE dropped stage for module-backed chunk prims, then keeps only the ones not nested
+    inside another module-backed chunk already found -- those are picked up instead by
+    _build_clip_node_from_prim's own ChunkGroup-children recursion, so keeping them here too
+    would import them twice."""
+    stage = Usd.Stage.Open(layer)
+    if not stage:
+        return [], []
+    candidates: "dict[str, Usd.Prim]" = {}
+    # _INCLUDE_INACTIVE, not the bare default predicate -- Traverse()'s default excludes
+    # inactive prims, and a disabled chunk is authored as prim.SetActive(False) (see this
+    # file's other _INCLUDE_INACTIVE uses), so a disabled chunk in the dropped file would
+    # otherwise be silently dropped from the import instead of landing greyed-out/disabled
+    # like everywhere else in this app.
+    for prim in stage.Traverse(_INCLUDE_INACTIVE):
+        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+            continue
+        if prim.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get():
+            candidates[str(prim.GetPath())] = prim
+
+    def _is_top_level(prim: "Usd.Prim") -> bool:
+        p = prim.GetParent()
+        while p and not p.IsPseudoRoot():
+            if str(p.GetPath()) in candidates:
+                return False
+            p = p.GetParent()
+        return True
+
+    top_prims = [prim for prim in candidates.values() if _is_top_level(prim)]
+    if not top_prims:
+        return [], []
+    positions = {str(p.GetPath()): _prim_graph_pos(p) for p in top_prims}
+    min_x = min(p.x() for p in positions.values())
+    min_y = min(p.y() for p in positions.values())
+
+    kept_index: dict[str, int] = {}
+    clip_nodes: list[_ClipboardNode] = []
+    for prim in top_prims:
+        path = str(prim.GetPath())
+        pos = positions[path]
+        clip_node = _build_clip_node_from_prim(
+            prim, QtCore.QPointF(pos.x() - min_x, pos.y() - min_y)
+        )
+        if clip_node is None:
+            continue
+        kept_index[path] = len(clip_nodes)
+        clip_nodes.append(clip_node)
+
+    clip_edges: list[_ClipboardEdge] = []
+    for prim in top_prims:
+        dst_index = kept_index.get(str(prim.GetPath()))
+        if dst_index is None:
+            continue
+        for dst_attr, src_prim_path, src_attr in _iter_prim_connections(prim):
+            src_index = kept_index.get(src_prim_path)
+            if src_index is None:
+                continue  # source outside the dropped file's top-level chunks -- wire dropped
+            clip_edges.append(_ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
+
+    return clip_nodes, clip_edges
 
 
 class ChunkNodeItem(QtWidgets.QGraphicsItem):
@@ -1944,6 +2131,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.setFocusPolicy(QtCore.Qt.NoFocus)
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.setAcceptDrops(True)
         e = self._SCENE_EXTENT
         self.setSceneRect(-e, -e, e * 2, e * 2)
         self._pan_active = False
@@ -1977,6 +2165,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._drag_detach_attr: Optional[Usd.Attribute] = None
         self._drag_detach_source_port: Optional[ChunkPortItem] = None
         self._drag_reused_edge: Optional[ChunkEdgeItem] = None
+        # Suppresses build()'s generic _ensure_default_view while a drag-and-drop chunk
+        # import is in flight -- see _import_as_chunks/_ensure_view_for_imported.
+        self._suppress_default_view = False
         self._view_state = ViewSlotState(self)
         self._view_state.slot_changed.connect(self._on_view_slot_changed)
         self._view_state.create_view_for.connect(self._on_create_view_for_path)
@@ -2245,6 +2436,27 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
                     continue
+                # Guard against a premature REAL module execute -- NOT via set_blocked(),
+                # which also suppresses per-param VALUE_CHANGED notices entirely (chunk_notice.py's
+                # value_changed: "if self.is_blocked() ... return"). That collateral damage was
+                # live-confirmed: a restored Create Layer insert_mode="Index" left the Index
+                # spinbox widget missing, because insert_mode's own add_callback handler (which
+                # unhides it) never got to run while blocked -- toggling the menu away and back
+                # was the only way to make it reappear. _executing is a narrower, more accurate
+                # tool for THIS specific hazard: chunk_notice.py's reserved-execute dispatch
+                # checks it (`not getattr(prop, '_executing', False)`) but value_changed's
+                # per-param notice path does not, so holding it through value application AND
+                # add_chunk suppresses ONLY the real module.execute() call -- e.g. Create Layer
+                # authoring a genuine anon Sdf.Layer the instant layer_name changes, which
+                # ChunkBase.get_stage() lets happen even before this chunk is added to any scene
+                # -- while ordinary reactive UI callbacks (visibility toggles, menu refreshes)
+                # fire exactly as they would for live, interactive typing.
+                blockable = [
+                    c for c in chunks
+                    if not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c)
+                ]
+                for c in blockable:
+                    c._executing = True
                 # Apply the copied values BEFORE add_chunk, not after: add_chunk's own
                 # CHUNK_LOADED/PARAM_ADDED notice dispatch can synchronously build this
                 # chunk's Params-panel widget as a side effect (chunk_qt.py's
@@ -2264,9 +2476,23 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 chunk_usd._create_node_pos = (pos[0], -pos[1])
                 try:
                     for c in chunks:
-                        if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
-                            c.set_blocked(True)
                         scene.add_chunk(c)
+                    for c in blockable:
+                        c._executing = False
+                    if view_exists:
+                        # Stays inert (muted/uncooked) until manually wired into the view,
+                        # same as before -- _executing only guarded the value-restoration
+                        # window above, it doesn't keep the chunk out of recook_for_view's
+                        # later cook-membership decisions the way set_blocked() does.
+                        for c in blockable:
+                            c.set_blocked(True)
+                    else:
+                        # No view driving this context -- matches the pre-existing behavior
+                        # of an unblocked freshly created chunk: cook it for real now, the
+                        # one legitimate execute the _executing guard above deferred past
+                        # add_chunk so it runs with correct positioning/parenting in place.
+                        for c in blockable:
+                            c.execute()
                 finally:
                     chunk_usd._create_node_pos = None
                 new_chunks.append(primary)
@@ -2313,32 +2539,45 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
                     continue
+                # Guard the value-restoration + add_chunk window with _executing, NOT
+                # set_blocked() -- see the matching, fuller comment in _materialize_at for
+                # why: set_blocked() also suppresses per-param VALUE_CHANGED notices (a
+                # restored menu value's own add_callback visibility toggle, e.g.), while
+                # _executing only suppresses chunk_notice.py's reserved module.execute()
+                # dispatch. ChunkBase.get_stage() always returns the real live stage
+                # regardless of scene membership, so a module with real side-effecting
+                # reactive code (e.g. Create Layer authoring an anon layer under whatever's
+                # upstream *right now*) can run for real the INSTANT _apply_param_values
+                # sets its value below -- well before add_chunk, so guarding any later than
+                # this doesn't prevent it (live-confirmed: an orphaned layer nothing ever
+                # cleans up). This group's children have no inner view yet (view chunks are
+                # excluded from the copy, see _iter_group_children), so they go straight to
+                # blocked (not executed) once past the guarded window -- the deferred
+                # _wire_pasted_edges -> _recook_active_view call that already runs once this
+                # whole paste/duplicate's top-level wiring lands (_materialize_at) recurses
+                # into reachable groups (recook_for_view's is_group_chunk branch) and
+                # unblocks+executes their contents in order, same as it would for a
+                # hand-built group once it's wired into a view. An unwired duplicate stays
+                # safely blocked until the user wires it in manually, matching a hand-built
+                # group's behavior.
+                blockable = [
+                    c for c in chunks
+                    if not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c)
+                ]
+                for c in blockable:
+                    c._executing = True
                 # Apply values before add_chunk -- see the matching comment in
                 # _materialize_at for why (a widget can be built synchronously as a side
                 # effect of add_chunk's own notice dispatch, and reads its initial value
                 # once, at construction).
                 _apply_param_values(primary, item.values)
-                # Block before add_chunk, same as _materialize_at's top-level loop -- a
-                # freshly created chunk defaults to unblocked, and ChunkStageSync._on_chunk_loaded
-                # executes it synchronously and immediately as part of add_chunk/add_param's own
-                # CHUNK_LOADED dispatch, well before the wiring loop below (_author_raw_connection)
-                # connects it to its siblings. For a chunk with real creation side effects (e.g.
-                # Create Layer authoring an anon layer under whatever's upstream *right now*),
-                # that premature standalone execute leaves an orphaned layer nothing ever cleans
-                # up. This group's children have no inner view yet (view chunks are excluded from
-                # the copy, see _iter_group_children), so nothing unblocks them here directly --
-                # but the deferred _wire_pasted_edges -> _recook_active_view call that already
-                # runs once this whole paste/duplicate's top-level wiring lands (_materialize_at)
-                # recurses into reachable groups (recook_for_view's is_group_chunk branch) and
-                # unblocks+executes their contents in order, same as it would for a hand-built
-                # group once it's wired into a view. An unwired duplicate stays safely blocked
-                # until the user wires it in manually, matching a hand-built group's behavior.
                 chunk_usd._create_node_pos = (item.rel_pos.x(), -item.rel_pos.y())
                 try:
                     for c in chunks:
-                        if not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
-                            c.set_blocked(True)
                         scene.add_chunk(c)
+                    for c in blockable:
+                        c._executing = False
+                        c.set_blocked(True)
                 finally:
                     chunk_usd._create_node_pos = None
                 path = chunk_usd.get_chunk_prim_path(primary)
@@ -2392,6 +2631,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._recook_active_view(changed_chunks)
 
     def _ensure_default_view(self, context) -> None:
+        # A drag-and-drop chunk import is picking its own, scoped-to-just-the-imported-nodes
+        # tail via _ensure_view_for_imported -- let it, rather than racing it here and
+        # possibly latching onto an unrelated pre-existing tail elsewhere in the same context
+        # first (see _ensure_view_for_imported's docstring for the reported symptom).
+        if self._suppress_default_view:
+            return
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
             return
@@ -3497,6 +3742,223 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
 
         QtCore.QTimer.singleShot(60, lambda ctx=context: self._ensure_default_view(ctx))
+
+    # ------------------------------------------------------------------
+    # Drag-and-drop file import
+
+    def _droppable_paths(self, event) -> "list[str]":
+        if not event.mimeData().hasUrls():
+            return []
+        exts = (".usd", ".usda", ".usdc", ".usdz")
+        return [
+            url.toLocalFile() for url in event.mimeData().urls()
+            if url.isLocalFile() and os.path.splitext(url.toLocalFile())[1].lower() in exts
+        ]
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
+        if self._droppable_paths(event):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent):
+        if self._droppable_paths(event):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QtGui.QDropEvent):
+        paths = self._droppable_paths(event)
+        if not paths:
+            super().dropEvent(event)
+            return
+        event.acceptProposedAction()
+        scene_pos = self.mapToScene(event.pos())
+        global_pos = self.viewport().mapToGlobal(event.pos())
+        offset = QtCore.QPointF(0, 0)
+        for path in paths:
+            self._handle_dropped_file(path, scene_pos + offset, global_pos)
+            offset += QtCore.QPointF(40, 40)  # stagger multi-file drops so nodes don't stack exactly
+
+    def _handle_dropped_file(
+        self, path: str, scene_pos: QtCore.QPointF, global_pos: QtCore.QPoint
+    ) -> None:
+        kind = _detect_dropped_usd_kind(path)
+        if kind is None:
+            return
+        # A file with no chunk prims at all is unambiguously a plain scene -- no need to make
+        # the user confirm. A file that DOES have chunk prims still gets the popup: it might be
+        # a pure chunkgroup export, or a scene that happens to carry along some leftover chunk
+        # prims the user actually wants sublayered wholesale, so let them decide.
+        if kind == "scene":
+            self._import_as_sublayer(path, scene_pos)
+            return
+        chosen = self._prompt_import_kind(global_pos)
+        if chosen == "chunks":
+            self._import_as_chunks(path, scene_pos)
+        elif chosen == "scene":
+            self._import_as_sublayer(path, scene_pos)
+
+    def _prompt_import_kind(self, global_pos: QtCore.QPoint) -> "str | None":
+        menu = QtWidgets.QMenu()
+        as_chunks = menu.addAction("Import as Chunks")
+        as_sublayer = menu.addAction("Import as Sublayer")
+        res = self._exec_menu(menu, global_pos)
+        if res is as_chunks:
+            return "chunks"
+        if res is as_sublayer:
+            return "scene"
+        return None
+
+    def _import_as_chunks(self, path: str, scene_pos: QtCore.QPointF) -> None:
+        """Drop-a-chunkgroup-file: read its chunk prims into clipboard-shaped data and
+        materialize them at the drop point, same as pasting a copied selection."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return
+        layer = Sdf.Layer.FindOrOpen(path)
+        if layer is None:
+            return
+        clip_nodes, clip_edges = _snapshot_layer_chunks(layer)
+        if not clip_nodes:
+            return
+        # Hold off build()'s generic auto-view for the duration of this import -- it's on a
+        # shorter (80ms) timer than our own wiring-then-view sequence below and would
+        # otherwise very likely win the race and latch onto the wrong tail first.
+        self._suppress_default_view = True
+        try:
+            pasted = self._materialize_at(clip_nodes, clip_edges, scene_pos)
+        except Exception:
+            self._suppress_default_view = False
+            raise
+        if not pasted:
+            self._suppress_default_view = False
+            return
+        # Wait past _materialize_at's own deferred (80ms) wiring pass so the imported
+        # chain's exec connections actually exist on the stage before tails are computed.
+        QtCore.QTimer.singleShot(150, lambda chunks=pasted: self._ensure_view_for_imported(chunks))
+
+    def _ensure_view_for_imported(self, imported_chunks: "list[core.ChunkBase]") -> None:
+        """Point a fresh default view at the tail of JUST the imported chunks -- not left to
+        build()'s generic _ensure_default_view, which picks tails[0] among EVERY disconnected
+        exec tail in the whole context, in whatever order scene.get_chunks() happens to yield.
+        A dropped-in chunkgroup usually lands as its own chain alongside whatever was already
+        in the tab (e.g. a pre-existing Edit Target chunk with nothing wired after it -- also a
+        valid 'tail'), so without scoping to just the newly imported nodes, the generic
+        auto-view could easily latch onto that unrelated pre-existing node instead of the
+        workflow the user just dropped in (reported live: view landed on Edit Target instead of
+        the dropped file's own terminal RBD Solver node). No-ops if the context already has a
+        view -- matches _ensure_default_view's own rule of never stealing an existing view.
+
+        Always releases the _suppress_default_view hold _import_as_chunks took, whichever
+        path out of here is taken -- otherwise a failure partway through would leave the
+        generic auto-view permanently disabled for this view for the rest of the session."""
+        try:
+            graph_scene = self.scene()
+            if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+                return
+            scene = _chunk.get_scene()
+            if not scene:
+                return
+            stage = scene.get_stage()
+            if not stage:
+                return
+            context = self._graph_context()
+            if self._context_has_view(scene, context):
+                return
+            consumed: set = set()
+            for prim in stage.Traverse():
+                exec_in = prim.GetAttribute(_EXEC_INPUT)
+                if exec_in.IsValid():
+                    for conn in exec_in.GetConnections():
+                        consumed.add(str(conn.GetPrimPath()))
+            tails = [
+                c for c in imported_chunks
+                if not chunk_usd.is_view_chunk(c) and chunk_usd.get_chunk_prim_path(c) not in consumed
+            ]
+            if not tails:
+                return
+
+            def _x(c: "core.ChunkBase") -> float:
+                node = graph_scene._nodes.get(chunk_usd.get_chunk_prim_path(c))
+                return node.pos().x() if node is not None else float("-inf")
+
+            # Among several disconnected tails within the imported set itself (a branching
+            # workflow), prefer the rightmost -- auto-layout arranges topological depth into
+            # columns left-to-right, so "rightmost" is this app's own convention for "most
+            # downstream", the closest cheap proxy for "the last node" without a full re-walk
+            # of the exec graph's depth.
+            target = max(tails, key=_x)
+            self._create_view_node_for_prim(chunk_usd.get_chunk_prim_path(target))
+        finally:
+            self._suppress_default_view = False
+
+    def _import_as_sublayer(self, path: str, scene_pos: QtCore.QPointF) -> None:
+        """Drop-a-scene-file: create a Sublayer chunk node at the drop point with its path
+        pre-filled. Values are set AFTER add_chunk (unlike the paste path) because Sublayer's
+        own callback (scripts/sublayer.py) only does real work -- authoring subLayerPaths onto
+        the chunk's edit layer -- once the chunk has a live prim/edit_context, exactly matching
+        how a hand-created Sublayer chunk picks up a path typed into its UI after creation.
+
+        Deliberately left UNBLOCKED while applying values, unlike _materialize_at/
+        _build_clip_node_from_prim's chunks: blocking suppresses ChunkNoticePropagator.
+        data_changed/send_self entirely (chunk_notice.py checks is_blocked() up the whole
+        owner chain), so a blocked chunk's ATTRIBUTE_CHANGED notice never fires at all --
+        meaning Sublayer's own add_callback handler (which is what actually authors
+        subLayerPaths) would simply never run, and the dropped path would sit in the field
+        with no effect (reported live: "empty sublayer"). That blocking is right for a chunk
+        with real, parent-resolution-dependent side effects (e.g. Create Layer -- see
+        _materialize_at), but Sublayer's callback only ever writes into its OWN
+        already-established edit layer, so there's no equivalent hazard here to guard
+        against.
+
+        BUT unlike a chunk whose content comes from the reserved execute() hook (which
+        genuinely never runs at all while blocked, so a blocked chunk's layer stays empty
+        regardless of mute state), Sublayer's content-bringing mechanism is this direct
+        subLayerPaths write -- once authored it composes and stays composed; a later
+        set_blocked(True) alone doesn't undo it. Hiding it while unwired (matching every
+        other kind of freshly created chunk's "stays inert until wired" behavior) needs an
+        actual mute, which only happens as a side effect of a real recook_for_view pass --
+        so if a view already exists here, explicitly force one after the write (live-
+        confirmed without this: a dropped, deliberately-unconnected Sublayer's content
+        still rendered in the viewport)."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return
+        scene = _chunk.get_scene()
+        if not scene:
+            return
+        primary, chunks = self._instantiate_chunk_of_type("sublayer")
+        if primary is None:
+            return
+        context = self._graph_context()
+        view_exists = self._context_has_view(scene, context)
+        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        chunk_usd._pin_new_chunks = False
+        nested, prev_ctx = self._push_nest_context(scene, context)
+        try:
+            for c in chunks:
+                scene.add_chunk(c)
+        finally:
+            if nested:
+                scene._current_context = prev_ctx
+            chunk_usd._create_node_pos = None
+            chunk_usd._pin_new_chunks = None
+
+        list_group = primary.get_param("imports", _chunk.is_inst(_chunk.ListGroup))
+        if list_group is not None:
+            list_group.size = 1
+            if row := list_group.get_indexed_param("sublayer_path", 0):
+                row.value = path
+
+        if view_exists:
+            # recook_for_view (via _recook_active_view) sets c.set_blocked(c not in cook_set)
+            # AND mutes every non-cook-set chunk's layer itself for every chunk in this
+            # context -- no need to block this one manually first. No changed_chunks: this
+            # node is deliberately NOT reachable from the view, so the changed_chunks fast
+            # path (skip if the edit provably can't affect the view's cook set) would skip
+            # exactly the recook that's needed to mute it.
+            self._recook_active_view()
 
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
         scene_pos = self.mapToScene(event.pos())

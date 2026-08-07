@@ -1,8 +1,14 @@
 from usd_chunks import chunk
 
 
-def execute(owner: chunk.Chunk, notice, sender):
-    """Callback for changing sublayer paths."""
+def _on_attribute_changed(owner: chunk.Chunk, notice, sender):
+    """Callback for changing sublayer paths.
+
+    Deliberately not named `execute` -- that's the framework's reserved top-level reactive
+    hook (chunk_notice.py calls `module.execute(node)`, one positional arg, on every DAG
+    solve for any module that defines it), which would collide with this 3-arg
+    add_callback handler and crash the very first time a Sublayer chunk gets created on a
+    live stage."""
     
     if notice.data.name not in ["size", "value"]:
         return
@@ -48,7 +54,7 @@ def main():
     # Although, we'd like to listen to ATTRIBUTE_CHANGED to catch 'size' changes, and 'value' changes. We dont have a nice way to
     # filter the senders, so doing it inside the callback by checking the name of the notice data
 
-    sublayerChunk.add_callback(execute, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+    sublayerChunk.add_callback(_on_attribute_changed, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
     return sublayerChunk
 
 
