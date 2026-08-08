@@ -25,7 +25,7 @@ from usd_chunks.plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, CHUNK_STYLESHEET, ViewSlotState
+from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
 
 _PORT_RADIUS = 5
 _NODE_WIDTH = 220
@@ -317,7 +317,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # transition from child → top-level.
         chunk_widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
         chunk_widget.setParent(None)
-        chunk_widget.setStyleSheet(CHUNK_STYLESHEET)
+        # Normally a no-op: the widget styled itself during construction, when its subtree
+        # was still empty. Re-applying here walked the whole finished tree instead. Kept as
+        # a fallback for a widget that somehow arrives unstyled.
+        apply_chunk_stylesheet(chunk_widget)
         chunk_widget.setFixedWidth(_NODE_WIDTH)
         self._chunk_widget = chunk_widget  # pin Python ref; PySide6 may GC despite Qt C++ ownership
         self._proxy = QtWidgets.QGraphicsProxyWidget(self)

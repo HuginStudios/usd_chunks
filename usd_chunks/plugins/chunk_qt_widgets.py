@@ -111,6 +111,47 @@ QRangeSlider {
 }
 """
 
+# Marks a widget that carries CHUNK_STYLESHEET, so nothing below it applies it again.
+_SHEET_FLAG = "_chunk_sheet_applied"
+# Marks a class that always styles itself, so a descendant can skip *before* the ancestor
+# has actually got round to it. ChunkWidget applies the sheet at the end of its own
+# __init__, which is after its children have been built and asked this question.
+_SELF_STYLING = "_chunk_styles_self"
+
+
+def apply_chunk_stylesheet(widget: QtWidgets.QWidget) -> bool:
+    """
+    Give widget CHUNK_STYLESHEET, unless something above it already covers it.
+
+    What matters is that exactly *one* widget per tree carries the sheet. Qt merges every
+    ancestor sheet into each descendant's style resolution, so a second copy further down
+    buys nothing and makes resolving the whole subtree dearer: applying it to all ten
+    ChunkWidgets of a nine-page shader instead of the outermost one measured 175ms against
+    117ms for the same tree.
+
+    Args:
+        widget (QtWidgets.QWidget): The widget to style
+
+    Returns:
+        bool: True if the sheet was applied, False if it was already covered
+    """
+    if getattr(widget, _SHEET_FLAG, False):
+        return False
+
+    parent = widget.parentWidget()
+    while parent is not None:
+        if getattr(parent, _SHEET_FLAG, False) or getattr(parent, _SELF_STYLING, False):
+            # Deliberately not flagged on widget itself: it may be reparented out from
+            # under this ancestor later (the node graph builds under a sink, then
+            # detaches), and would need a sheet of its own at that point.
+            return False
+        parent = parent.parentWidget()
+
+    setattr(widget, _SHEET_FLAG, True)
+    widget.setStyleSheet(CHUNK_STYLESHEET)
+    return True
+
+
 class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
     def __init__(self, parent, chunk_highlighter: chunk_core.SyntaxHighlightMapping):
         super().__init__(parent)
@@ -1554,6 +1595,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     SELECTED_COLOR = "#cab46a"
 
+    # Read by apply_chunk_stylesheet: a nested ChunkWidget asks whether it is covered while
+    # its outer one is still mid-__init__ and has not applied the sheet yet. Answering from
+    # the type rather than the flag is what keeps a nine-page shader at one sheet, not ten.
+    _chunk_styles_self = True
+
     def __init__(
         self,
         group: chunk.ChunkBase,
@@ -2000,15 +2046,6 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 return config.category
         return chunk.DefaulConfig().category
 
-    def _has_styled_ancestor(self) -> bool:
-        """True when some ChunkWidget above this one already carries the stylesheet."""
-        parent = self.parentWidget()
-        while parent is not None:
-            if isinstance(parent, ChunkWidget):
-                return True
-            parent = parent.parentWidget()
-        return False
-
     def set_selected(self, val: bool):
         selected = bool(
             val and (not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) or self._is_group_chunk())
@@ -2018,10 +2055,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         # call — 112 of them, 1.7s, easily the most expensive thing in building a chunk.
         # Every nested group is its own ChunkWidget and each used to apply the entire
         # CHUNK_STYLESHEET. Qt stylesheets cascade, so only the outermost needs to, and
-        # the selection border rides a dynamic property resolved by that one sheet.
-        if not self._has_styled_ancestor() and not getattr(self, "_sheet_applied", False):
-            self._sheet_applied = True
-            self.setStyleSheet(CHUNK_STYLESHEET)
+        # the selection border rides a dynamic property resolved by that one sheet. This
+        # runs during construction, when the subtree to re-polish is still empty.
+        apply_chunk_stylesheet(self)
 
         if self.property("chunkSelected") != selected:
             self.setProperty("chunkSelected", selected)
