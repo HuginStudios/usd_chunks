@@ -107,7 +107,13 @@ class ShaderDef:
         name (str): Registry name
         source_type (str): "mtlx", "vray", "OSL", ...
         context (str): Sdr context, e.g. "surface" for a terminal shader
-        family (str): Sdr family, a natural menu grouping
+        family (str): Sdr family -- for MaterialX this is per-node, so it makes a poor
+            menu grouping: 784 shaders spread over 213 of them
+        role (str): Broad classification (MaterialX's nodegroup: math, pbr, adjustment,
+            ...), the grouping worth putting in a menu
+        category (str): What distinguishes this definition from its siblings in the same
+            family -- for MaterialX the operand type ("float", "color3"), so family plus
+            category is Houdini's node-plus-signature split
         help (str): Documentation for the chunk tooltip
         inputs (List[ShaderProp]): Input properties
         outputs (List[ShaderProp]): Output properties
@@ -118,6 +124,8 @@ class ShaderDef:
     source_type: str = ""
     context: str = ""
     family: str = ""
+    role: str = ""
+    category: str = ""
     help: str = ""
     inputs: List[ShaderProp] = field(default_factory=list)
     outputs: List[ShaderProp] = field(default_factory=list)
@@ -171,6 +179,8 @@ def _def_from_sdr(node) -> ShaderDef:
         source_type=node.GetSourceType() or "",
         context=node.GetContext() or "",
         family=node.GetFamily() or "",
+        role=(getattr(node, "GetRole", lambda: "")() or ""),
+        category=node.GetCategory() or "",
         help=node.GetHelp() or "",
         inputs=inputs,
         outputs=outputs,

@@ -292,8 +292,9 @@ class _ConfigTransformer(ast.NodeTransformer):
 
         Discovery deliberately executes only usd_chunks imports and config() itself, so a
         module's top-level code never runs just because the registry looked at it. That
-        also means config() cannot normally see module-level constants -- which a config
-        derived from module data (ChunkConfig.variants built from an op table, say) needs.
+        also means config() cannot normally see module-level constants or helpers -- which
+        a config derived from module data (ChunkConfig.variants built from an op table,
+        say) needs.
 
         Reached only after the first call raised NameError, so a self-contained config
         never causes its module's assignments to run at discovery time.
@@ -301,11 +302,14 @@ class _ConfigTransformer(ast.NodeTransformer):
         if not self._deferred_config:
             return
 
+        # Source order, and defs as well as assignments: a config built from module data
+        # usually reaches a helper too, and a helper defined after the constant it reads
+        # must be executed after it.
         for node in tree.body:
-            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.FunctionDef, ast.ClassDef)):
                 try:
                     self._exec_node(node)
-                except Exception:  # noqa: BLE001 - a module-level assign we cannot evaluate in isolation
+                except Exception:  # noqa: BLE001 - module-level code we cannot evaluate in isolation
                     continue
 
         try:

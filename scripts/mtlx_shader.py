@@ -11,7 +11,16 @@ _DEFAULT_SCOPE = "/materials"
 
 # Params the chunk always owns. Everything else on the chunk was lofted from the current
 # shader definition and gets torn down when the definition changes.
-_FIXED = ("nodedef", "prim_path", "bind_to")
+_FIXED = ("nodedef", "signature", "prim_path", "bind_to")
+
+# family -> {category: identifier}, built once from the registry. Lets the signature menu
+# list a family's sibling definitions without re-walking every shader on each rebuild.
+_VARIANTS: dict = {}
+
+# Which signature a menu entry starts on, best first. MaterialX spells the same operation
+# once per operand type, and picking arbitrarily would land "add" on matrix33 as often as
+# on float.
+_PREFERRED = ("color3", "float", "vector3", "color4", "vector2")
 
 # Child prim name a terminal's shader takes under its Material.
 _SHADER_LEAF = "shader"
@@ -42,6 +51,80 @@ def _stage_for(node):
     return scene.get_stage() if scene else None
 
 
+def _variants_for(family: str) -> dict:
+    """{category: identifier} for every definition sharing a family, e.g. add's operand types."""
+    if not _VARIANTS:
+        for d in shader_defs.iter_shader_defs(SOURCE_TYPE):
+            _VARIANTS.setdefault(d.family, {})[d.category or d.name] = d.identifier
+    return _VARIANTS.get(family, {})
+
+
+def _preferred(sdefs: list):
+    """The definition a family's menu entry should start on."""
+    for want in _PREFERRED:
+        for d in sdefs:
+            if d.category == want:
+                return d
+    return sdefs[0]
+
+
+def _sync_signature(owner, sdef) -> None:
+    """Point the signature menu at this shader's family, selecting its own type.
+
+    menu_items is assigned before value because Menu.convert_attr silently rewrites a
+    value that is not in the list back to the first entry.
+
+    Hidden for a family with nothing to choose between -- most pbr shaders exist in one
+    form only, and a menu with a single entry is just clutter.
+    """
+    param = owner.get_param("signature")
+    if param is None:
+        return
+
+    variants = _variants_for(sdef.family)
+    param.menu_items = sorted(variants)
+
+    if sdef.category in variants:
+        param.value = sdef.category
+
+    if len(variants) > 1:
+        param.unset_state(ChunkFlags.State.HIDDEN)
+    else:
+        param.set_state(ChunkFlags.State.HIDDEN)
+
+
+def _signature_changed(owner, _notice, sender):
+    """Swap to the sibling definition of the chosen type; params rebuild from there."""
+    nodedef = owner.get_param("nodedef")
+    if nodedef is None:
+        return
+
+    sdef = _shader_def(owner)
+    if sdef is None:
+        return
+
+    identifier = _variants_for(sdef.family).get(sender.value)
+    # Guarded so the write from _sync_signature (which re-selects the current type during
+    # a rebuild) does not bounce straight back into another rebuild.
+    if identifier and identifier != nodedef.value:
+        nodedef.value = identifier
+
+
+def _chunk_prim_paths(c) -> set:
+    """Every prim path a chunk may be identified by, as a set of strings.
+
+    A cooking chunk carries _exec_prim_path, which is what the rest of execute() matches
+    on and need not equal what get_chunk_prim_path derives -- inside a chunkgroup or a
+    view evaluation they differ, and comparing only one of them silently finds nothing.
+    """
+    paths = {
+        getattr(c, "_exec_prim_path", None),
+        getattr(c, "prim_path", None),
+        chunk_usd.get_chunk_prim_path(c),
+    }
+    return {str(p) for p in paths if p}
+
+
 def _consumer_chunk(node, stage, scene):
     """The chunk whose typed input is wired to this one's output, or None.
 
@@ -49,23 +132,25 @@ def _consumer_chunk(node, stage, scene):
     exec chain (inputs:chunk) is deliberately ignored: it says what cooks after what, not
     what feeds what, and a shader's place in the network follows the data.
     """
-    my_path = chunk_usd.get_chunk_prim_path(node)
-    if not my_path:
+    my_paths = _chunk_prim_paths(node)
+    if not my_paths:
         return None
 
     for other in scene.get_chunks():
         if other is node:
             continue
-        prim = stage.GetPrimAtPath(chunk_usd.get_chunk_prim_path(other) or "")
-        if not prim or not prim.IsValid():
-            continue
 
-        for attr in prim.GetAttributes():
-            name = attr.GetName()
-            if not name.startswith("inputs:") or name == "inputs:chunk":
+        for path in _chunk_prim_paths(other):
+            prim = stage.GetPrimAtPath(path)
+            if not prim or not prim.IsValid():
                 continue
-            if any(str(c.GetPrimPath()) == str(my_path) for c in attr.GetConnections()):
-                return other
+
+            for attr in prim.GetAttributes():
+                name = attr.GetName()
+                if not name.startswith("inputs:") or name == "inputs:chunk":
+                    continue
+                if any(str(c.GetPrimPath()) in my_paths for c in attr.GetConnections()):
+                    return other
 
     return None
 
@@ -179,6 +264,7 @@ def _rebuild(owner):
     if sdef is None:
         return
 
+    _sync_signature(owner, sdef)
     _loft_params(owner, sdef)
     _ensure_prim_path(owner, sdef)
 
@@ -303,6 +389,12 @@ def main():
         "Node Definition",
         flags=ChunkFlags.ParamFlags.LABELED,
     )
+    signature = chunk.Menu(
+        "signature",
+        "Signature",
+        flags=ChunkFlags.ParamFlags.LABELED,
+    )
+    signature.set_state(ChunkFlags.State.HIDDEN)
     prim_path = chunk.LineEdit(
         "prim_path",
         "Path",
@@ -315,19 +407,30 @@ def main():
     )
     bind_to.set_state(ChunkFlags.State.HIDDEN)
 
-    chunk_api.add_params([nodedef, prim_path, bind_to])
+    chunk_api.add_params([nodedef, signature, prim_path, bind_to])
     chunk_api.add_callback(_nodedef_changed, sender=nodedef)
+    chunk_api.add_callback(_signature_changed, sender=signature)
 
     return chunk_api
 
 
 def config():
-    # One menu entry per MaterialX shader, nested under its Sdr family so ~800 entries
-    # stay navigable in the tree while remaining flat in search. Empty in a runtime with
-    # no MaterialX (pip usd-core), which is the correct answer there rather than an error.
+    # One menu entry per family, grouped by role. MaterialX spells the same operation once
+    # per operand type -- 784 definitions are only 217 distinct operations, with "convert"
+    # alone accounting for 47 -- so the entries are collapsed the way Houdini's MaterialX
+    # VOPs are, one node with a Signature to pick the type. Role is MaterialX's own
+    # nodegroup (math, pbr, adjustment, ...); family would be the wrong axis, being close
+    # to per-node, and grouping by it just moves the unnavigable list one level down.
+    #
+    # Empty in a runtime with no MaterialX (pip usd-core), which is the correct answer
+    # there rather than an error.
+    families: dict = {}
+    for d in shader_defs.iter_shader_defs(SOURCE_TYPE):
+        families.setdefault((d.role or d.context or "other", d.family), []).append(d)
+
     variants = [
-        (f"{d.family or 'other'}/{d.name}", {"nodedef": d.identifier})
-        for d in shader_defs.iter_shader_defs(SOURCE_TYPE)
+        (f"{role}/{family}", {"nodedef": _preferred(defs).identifier})
+        for (role, family), defs in families.items()
     ]
 
     return chunk.DefaulConfig(
