@@ -25,6 +25,15 @@ _PREFERRED = ("color3", "float", "vector3", "color4", "vector2")
 # Child prim name a terminal's shader takes under its Material.
 _SHADER_LEAF = "shader"
 
+# Whether page groups start folded. A surface shader carries 40-odd inputs across nine
+# pages and is unusable expanded, so this stays on. It used to cost ~1.3s of a 4s create
+# (2.65s off against 3.99s on, measured 2026-08-08) -- all of it the re-cook each
+# set_state(COLLAPSED) triggered, ~3,100 extra attribute writes interleaved with the widget
+# build. Now that only DISABLED dirties a chunk it is free: 2.51-2.61s collapsed against
+# 2.60s expanded, at identical Qt call counts *and* identical per-call cost. Kept as a
+# switch because it is the cleanest A/B for anything that makes building groups expensive.
+_COLLAPSE_PAGES = True
+
 # Output attr types that deliberately differ from the shader's declared type, so that an
 # output port and the input port it feeds agree on port type.
 #
@@ -319,7 +328,8 @@ def _loft_params(owner, sdef):
             )
             # Collapsed by default: a surface shader carries 40-odd inputs across nine
             # pages, and every one of them expanded makes a node taller than the graph.
-            group.set_state(ChunkFlags.State.COLLAPSED)
+            if _COLLAPSE_PAGES:
+                group.set_state(ChunkFlags.State.COLLAPSED)
             groups[prop.page] = group
             owner.add_param(group)
         group.add_param(param)

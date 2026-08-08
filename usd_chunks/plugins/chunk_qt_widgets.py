@@ -1249,22 +1249,13 @@ class ContainerWidget(
         direction = (
             QtCore.QAbstractAnimation.Direction.Forward if checked else QtCore.QAbstractAnimation.Direction.Backward
         )
-        # Whether a section is folded open is a UI preference, but a state change runs the
-        # same value_changed path as a param edit and re-cooked the whole chunk — one
-        # expand cost a full execute() plus the several hundred change notices it emits.
-        # Blocked across the toggle so opening a group stops re-authoring the scene.
-        owner = self.group.get_chunk() if hasattr(self.group, "get_chunk") else None
-        was_blocked = getattr(owner, "_blocked", None)
-        if owner is not None:
-            owner.set_blocked(True)
-        try:
-            if checked:
-                self.group.unset_state(ChunkFlags.State.COLLAPSED)
-            else:
-                self.group.set_state(ChunkFlags.State.COLLAPSED)
-        finally:
-            if owner is not None:
-                owner.set_blocked(bool(was_blocked))
+        # Folding a section open is a UI preference and does not dirty the chunk: COLLAPSED
+        # is a presentation bit, so the state change stops at the ownership chain instead of
+        # being propagated as a cook (AttributeSender.is_presentation_change).
+        if checked:
+            self.group.unset_state(ChunkFlags.State.COLLAPSED)
+        else:
+            self.group.set_state(ChunkFlags.State.COLLAPSED)
 
         self.minimize_button.setArrowType(arrow_type)
         # Measure the content once, here, rather than on every animation frame.

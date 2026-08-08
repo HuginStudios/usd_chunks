@@ -1109,6 +1109,23 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         """
         self.get_dag_node().set_owner(owner)
 
+    def is_presentation_change(self) -> bool:
+        """Whether the change this propagator is being dirtied for is presentation only.
+
+        A presentation change is one nothing downstream computes from -- hiding a param,
+        folding a group open, selecting a node. Such a change still has to reach the UI, so
+        it solves and sends its notice as usual, but it must not dirty anything that reads
+        this propagator's data: see chunk_scheduler.propagate_dirty.
+
+        Asked at dirty time, so an implementation describes the change that just happened
+        rather than the object in general. Only AttributeSender answers True (for the state
+        attribute, and only while DISABLED is untouched) -- everything else is a data change.
+
+        Returns:
+            bool: True if this change must not dirty dependants
+        """
+        return False
+
     def data_changed(self, notice: Optional[ChunkNotice] = None) -> Optional[ChunkNotice]:
         """Called by the DagNode when the node is solved. This will be called when all inputs (dependencies) are solved.
         The returned notice will be propagated by the DagNode
