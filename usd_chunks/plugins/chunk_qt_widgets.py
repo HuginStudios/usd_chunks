@@ -1036,8 +1036,9 @@ class ContainerWidget(
         group,
         parent=None,
     ):
-        self.animation_duration = 300
+        self.animation_duration = 25
         self._animation_value = 0
+        self._anim_target_h: Optional[int] = None  # content height, measured per animation
         self._depth = 0
         super().__init__(group, parent=parent)
         # When Qt destroys this widget — e.g. the node graph rebuild calls deleteLater on the
@@ -1095,6 +1096,10 @@ class ContainerWidget(
         self.toggle_anim = QtCore.QPropertyAnimation(self, b"animation_value")
         self.toggle_anim.setStartValue(0)
         self.toggle_anim.setEndValue(self.animation_duration)
+        # Kept: without it the animation runs at QPropertyAnimation's 250ms default and
+        # animation_duration is only the value range the height scales against, so setting
+        # that number has never changed how long a group takes to open.
+        self.toggle_anim.setDuration(self.animation_duration)
 
         self.toggle_anim_curve = QtCore.QEasingCurve(QtCore.QEasingCurve.Type.OutExpo)
         self.toggle_anim.setEasingCurve(self.toggle_anim_curve)
@@ -1141,11 +1146,22 @@ class ContainerWidget(
         self._animation_value = val
         scale = max(self._animation_value / self.animation_duration, 0)
 
-        h = self.content_layout.sizeHint().height()
+        # The height is fixed for the duration of a collapse or expand -- the content is
+        # not changing, only how much of it shows. Recomputing sizeHint() on every one of
+        # ~18 frames re-measures the whole child layout each time, which is what makes
+        # opening a section with many params feel slow. Measured once at animation start
+        # by set_expanded; falls back to measuring for any other driver of this property.
+        h = self._anim_target_h
+        if h is None:
+            h = self.content_layout.sizeHint().height()
+
         self.content.setFixedHeight(int(h * scale))
 
     def animation_finished(self):
         """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
+        # Drop the measurement so a later animation re-measures content that may have
+        # changed size in the meantime (params added, a nested group expanded).
+        self._anim_target_h = None
         if self.is_collapsed():
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
         else:
@@ -1233,12 +1249,26 @@ class ContainerWidget(
         direction = (
             QtCore.QAbstractAnimation.Direction.Forward if checked else QtCore.QAbstractAnimation.Direction.Backward
         )
-        if checked:
-            self.group.unset_state(ChunkFlags.State.COLLAPSED)
-        else:
-            self.group.set_state(ChunkFlags.State.COLLAPSED)
+        # Whether a section is folded open is a UI preference, but a state change runs the
+        # same value_changed path as a param edit and re-cooked the whole chunk — one
+        # expand cost a full execute() plus the several hundred change notices it emits.
+        # Blocked across the toggle so opening a group stops re-authoring the scene.
+        owner = self.group.get_chunk() if hasattr(self.group, "get_chunk") else None
+        was_blocked = getattr(owner, "_blocked", None)
+        if owner is not None:
+            owner.set_blocked(True)
+        try:
+            if checked:
+                self.group.unset_state(ChunkFlags.State.COLLAPSED)
+            else:
+                self.group.set_state(ChunkFlags.State.COLLAPSED)
+        finally:
+            if owner is not None:
+                owner.set_blocked(bool(was_blocked))
 
         self.minimize_button.setArrowType(arrow_type)
+        # Measure the content once, here, rather than on every animation frame.
+        self._anim_target_h = self.content_layout.sizeHint().height()
         self.toggle_anim.setDirection(direction)
         self.toggle_anim.start()
 

@@ -30,6 +30,10 @@ from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, Fi
 _PORT_RADIUS = 5
 _NODE_WIDTH = 220
 _NODE_HEADER_H = 40
+
+# Quiet period before ports are re-placed after the node's geometry changes. Placement
+# re-measures every param widget, so it must not run per animation frame.
+_PORT_REBUILD_MS = 60
 _DOT_R = 10  # dot node circle radius
 
 # Shake-to-disconnect tuning: a fast back-and-forth drag disconnects the node.
@@ -326,7 +330,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         self._port_rebuild_timer = QtCore.QTimer(chunk_widget)
         self._port_rebuild_timer.setSingleShot(True)
-        self._port_rebuild_timer.setInterval(0)
+        # Long enough to outlast a burst of geometry changes. Expanding a group animates
+        # the content height, and every frame emits geometryChanged and restarts this
+        # timer — at interval 0 it fired between frames, so a rebuild that walks the whole
+        # widget tree twice (two findChildren sweeps) ran once per frame. Ports only need
+        # to be right once the geometry settles, so wait for it to stop moving.
+        self._port_rebuild_timer.setInterval(_PORT_REBUILD_MS)
         self._port_rebuild_timer.timeout.connect(self._rebuild_typed_ports)
         # geometryChanged fires for collapse/expand after initial setup.
         # Initial port placement is triggered explicitly below so it doesn't
@@ -1390,7 +1399,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 node = self._nodes.get(prim_path)
                 if node:
                     node._apply_usd_pos(node.prim)
-        self._build_edges()
+        # Deferred: a single cook emits hundreds of these notices — one per attribute it
+        # writes — and rebuilding every edge in the scene on each was 286 rebuilds for one
+        # group expand. The edges only have to be right once the notices stop arriving.
+        self._request_build_edges()
 
 
 # ---------------------------------------------------------------------------
