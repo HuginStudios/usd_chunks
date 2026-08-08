@@ -51,11 +51,24 @@ def _stage_for(node):
     return scene.get_stage() if scene else None
 
 
+def _signature_of(sdef) -> str:
+    """What distinguishes a definition from its siblings, e.g. add's "color3" vs "color3FA".
+
+    Taken from the identifier rather than the Sdr category, because MaterialX gives several
+    definitions in a family the same category: ND_add_color3 and ND_add_color3FA (the
+    color3-plus-float form) are both category color3, so keying on it drops one of them.
+    """
+    tail = sdef.identifier.removeprefix("ND_")
+    if sdef.family and tail.startswith(f"{sdef.family}_"):
+        tail = tail[len(sdef.family) + 1:]
+    return tail or sdef.category or sdef.name
+
+
 def _variants_for(family: str) -> dict:
-    """{category: identifier} for every definition sharing a family, e.g. add's operand types."""
+    """{signature: identifier} for every definition sharing a family, e.g. add's operand types."""
     if not _VARIANTS:
         for d in shader_defs.iter_shader_defs(SOURCE_TYPE):
-            _VARIANTS.setdefault(d.family, {})[d.category or d.name] = d.identifier
+            _VARIANTS.setdefault(d.family, {})[_signature_of(d)] = d.identifier
     return _VARIANTS.get(family, {})
 
 
@@ -63,7 +76,7 @@ def _preferred(sdefs: list):
     """The definition a family's menu entry should start on."""
     for want in _PREFERRED:
         for d in sdefs:
-            if d.category == want:
+            if _signature_of(d) == want:
                 return d
     return sdefs[0]
 
@@ -84,8 +97,9 @@ def _sync_signature(owner, sdef) -> None:
     variants = _variants_for(sdef.family)
     param.menu_items = sorted(variants)
 
-    if sdef.category in variants:
-        param.value = sdef.category
+    signature = _signature_of(sdef)
+    if signature in variants:
+        param.value = signature
 
     if len(variants) > 1:
         param.unset_state(ChunkFlags.State.HIDDEN)
@@ -188,6 +202,32 @@ def _node_name(sdef) -> str:
     return Tf.MakeValidIdentifier(sdef.identifier.removeprefix("ND_") or sdef.name)
 
 
+def _rename(owner, sdef) -> None:
+    """Name the chunk after its shader, suffixed if a sibling already holds that name.
+
+    Without this a second add lands on the same name as the first, the chunk prim rename
+    fails outright ("Failed to rename prim /chunks/add_color3FA -> /chunks/add_float"),
+    and the two chunks end up pointing at one prim path.
+
+    get_valid_child_name strips a trailing number before re-suffixing, which is wrong for
+    these names specifically: add_color3 would be handed back as add_color4, and that is a
+    real and different MaterialX signature rather than a copy. Names ending in a digit get
+    a separator first, so the collision reads as add_color3_1.
+    """
+    desired = _node_name(sdef)
+    if owner.name == desired:
+        return
+
+    scene = getattr(chunk_registry.ChunkRegistry(), "scene", None)
+    reserved = {c.name for c in scene.get_chunks() if c is not owner} if scene else set()
+    if desired not in reserved:
+        owner.name = desired
+        return
+
+    base = f"{desired}_" if desired[-1:].isdigit() else desired
+    owner.name = owner.get_valid_child_name(base, reserved)
+
+
 def _ensure_prim_path(node, sdef) -> str:
     """Resolve an unset Path, leaving a user-chosen one alone.
 
@@ -270,7 +310,7 @@ def _rebuild(owner):
 
     # Name the node after the shader it authors, so a graph of these reads as the network
     # it builds rather than as a column of identical "MaterialX Shader" boxes.
-    owner.name = _node_name(sdef)
+    _rename(owner, sdef)
 
     # Binding only means anything for a terminal (a surface/displacement/volume); an
     # intermediate node like ND_multiply_float is wired to other shaders, never bound.
