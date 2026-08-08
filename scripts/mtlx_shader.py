@@ -1,6 +1,6 @@
-from pxr import Sdf, Tf, UsdShade
+from pxr import Sdf, Tf, Usd, UsdShade
 
-from usd_chunks import chunk, chunk_registry, chunk_utils, shader_defs
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils, shader_defs
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins import chunk_usd
 
@@ -24,6 +24,18 @@ _PREFERRED = ("color3", "float", "vector3", "color4", "vector2")
 
 # Child prim name a terminal's shader takes under its Material.
 _SHADER_LEAF = "shader"
+
+# Output attr types that deliberately differ from the shader's declared type, so that an
+# output port and the input port it feeds agree on port type.
+#
+# The graph derives the two ends differently: an output port is typed from its USD attr
+# (_sdf_to_port_type), an input port from its param class (_param_port_type). color3f needs
+# no entry here -- it is a ColorPicker input and a Color3f output, and both read as a
+# colour port. color4f has no ColorPicker (which is rgb only) so its input is a Vector, and
+# Float4 is what puts that vector port on the same footing as the output.
+_OUTPUT_SDF_TYPES = {
+    "color4f": Sdf.ValueTypeNames.Float4,
+}
 
 # UsdShade render context for MaterialX terminals: a material's mtlx surface output is
 # outputs:mtlx:surface, not the universal outputs:surface, so a renderer picks the
@@ -105,6 +117,23 @@ def _sync_signature(owner, sdef) -> None:
         param.unset_state(ChunkFlags.State.HIDDEN)
     else:
         param.set_state(ChunkFlags.State.HIDDEN)
+
+
+def _chunk_loaded(owner, _notice, _sender):
+    """Author the output ports once the chunk is in the scene.
+
+    _rebuild cannot do it: a variant's presets land before add_chunk (PARAM_ADDED builds
+    widgets that read values immediately), so at that point the chunk has no prim for the
+    attrs to hang off.
+
+    Only outputs need this. Input ports come from the param list -- _place_param_ports
+    builds an inputs:/outputs: pair for every connectable param whether or not an attr
+    exists -- and the attr is authored lazily, when a value stops being default or when
+    _author_connection wires the port. Forcing all of them cost ~114 USD writes per
+    standard surface, each firing change notices the UI reacts to, and bought nothing.
+    """
+    if sdef := _shader_def(owner):
+        _author_outputs(owner, sdef)
 
 
 def _signature_changed(owner, _notice, sender):
@@ -296,30 +325,88 @@ def _loft_params(owner, sdef):
         group.add_param(param)
 
 
-def _rebuild(owner):
-    """Retarget the chunk at whatever nodedef is currently set."""
-    _clear_lofted(owner)
+def _author_outputs(owner, sdef) -> None:
+    """Author an outputs: attr per shader output, with no param behind it.
 
-    sdef = _shader_def(owner)
-    if sdef is None:
+    An output is something to wire from, not something to edit, so it gets no widget.
+    Hiding a param does not achieve that: _iter_connectable_params yields it regardless of
+    visibility, which puts its outputs: attr in _place_prim_output_ports' "covered" set, so
+    that function skips it -- and _place_param_ports, which would have drawn it, finds no
+    visible widget to position against and skips it too. The port disappears entirely.
+
+    A bare attr is in nobody's param iteration, so _place_prim_output_ports draws it as a
+    labelled port on the node's right edge. It also keeps the shader's real type (color3f
+    rather than the float3 a Vector param would round it to).
+    """
+    sync = chunk_usd.ChunkStageSync()
+    if not getattr(sync, "initialized", False) or not getattr(sync, "_stage", None):
         return
 
-    _sync_signature(owner, sdef)
-    _loft_params(owner, sdef)
-    _ensure_prim_path(owner, sdef)
+    prim_path = sync._chunk_prim_paths.get(id(owner))
+    prim = sync._stage.GetPrimAtPath(Sdf.Path(prim_path)) if prim_path else None
+    if not (prim and prim.IsValid()):
+        return
 
-    # Name the node after the shader it authors, so a graph of these reads as the network
-    # it builds rather than as a column of identical "MaterialX Shader" boxes.
-    _rename(owner, sdef)
+    wanted = {}
+    for prop in sdef.outputs:
+        if sdf_type := _OUTPUT_SDF_TYPES.get(prop.sdf_type) or Sdf.ValueTypeNames.Find(prop.sdf_type):
+            wanted[f"outputs:{prop.name}"] = sdf_type
 
-    # Binding only means anything for a terminal (a surface/displacement/volume); an
-    # intermediate node like ND_multiply_float is wired to other shaders, never bound.
-    bind = owner.get_param("bind_to")
-    if bind is not None:
-        if sdef.is_terminal:
-            bind.unset_state(ChunkFlags.State.HIDDEN)
-        else:
-            bind.set_state(ChunkFlags.State.HIDDEN)
+    # Drop what the previous definition left behind -- switching signature can rename an
+    # output or retype it, and a stale attr would keep drawing a port that connects to
+    # nothing. outputs:chunk is the exec chain and is not ours to touch.
+    for attr in prim.GetAttributes():
+        name = attr.GetName()
+        if not name.startswith("outputs:") or name == "outputs:chunk":
+            continue
+        if name not in wanted or attr.GetTypeName() != wanted[name]:
+            sync._delete_stale_attr_specs(prim, name)
+
+    for name, sdf_type in wanted.items():
+        existing = prim.GetAttribute(name)
+        if existing and existing.IsValid() and existing.GetTypeName() == sdf_type:
+            continue
+        with sync._chunk_prim_edit_context(owner):
+            prim.CreateAttribute(name, sdf_type, custom=False)
+
+
+def _rebuild(owner):
+    """Retarget the chunk at whatever nodedef is currently set.
+
+    The whole rebuild runs blocked. Every param written here -- the signature, the path,
+    each of 40-odd lofted values -- otherwise re-cooks the chunk on the spot: creating one
+    Standard Surface executed it 11 times and ran wire_shader_input 378 times, about a
+    quarter of a 6s create. Blocked, the work happens once and the single cook that
+    matters comes from whatever asked for the rebuild.
+    """
+    was_blocked = getattr(owner, "_blocked", False)
+    owner.set_blocked(True)
+    try:
+        _clear_lofted(owner)
+
+        sdef = _shader_def(owner)
+        if sdef is None:
+            return
+
+        _sync_signature(owner, sdef)
+        _loft_params(owner, sdef)
+        _author_outputs(owner, sdef)
+        _ensure_prim_path(owner, sdef)
+
+        # Name the node after the shader it authors, so a graph of these reads as the
+        # network it builds rather than as a column of identical "MaterialX Shader" boxes.
+        _rename(owner, sdef)
+
+        # Binding only means anything for a terminal (a surface/displacement/volume); an
+        # intermediate node like ND_multiply_float is wired to other shaders, never bound.
+        bind = owner.get_param("bind_to")
+        if bind is not None:
+            if sdef.is_terminal:
+                bind.unset_state(ChunkFlags.State.HIDDEN)
+            else:
+                bind.set_state(ChunkFlags.State.HIDDEN)
+    finally:
+        owner.set_blocked(was_blocked)
 
 
 def _nodedef_changed(owner, _notice, _sender):
@@ -400,11 +487,28 @@ def execute(node):
 
         param.connect_usd_attr(inp.GetAttr())
         if prop.connectable:
+            # The bare param name, not its group-namespaced path. Two different attrs
+            # carry these: the graph authors connections on inputs:<param.name> (its ports
+            # are built from param.name alone, ignoring grouping), while chunk_usd stores
+            # values on inputs:<Group>:<param.name>. Asking about the namespaced one finds
+            # no connections, so wire_shader_input clears the shader input instead.
             chunk_utils.wire_shader_input(stage, chunk_prim, prop.name, inp.GetAttr())
 
     for prop in sdef.outputs:
         if sdf_type := Sdf.ValueTypeNames.Find(prop.sdf_type):
             shader.CreateOutput(prop.name, sdf_type)
+
+    # Point each chunk-prim output port at the real shader output. This is the second hop
+    # of the chain wire_shader_input walks: a downstream chunk's inputs: connection names
+    # this chunk's prim, and it then reads *this* attr's connections to find the shader to
+    # wire to. Without it a wire between two nodes resolves to nothing. Same authoring
+    # (session layer, chunk-prim bookkeeping) as scripts/uv_texture.py.
+    if chunk_prim and chunk_prim.IsValid():
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            for prop in sdef.outputs:
+                attr = chunk_prim.GetAttribute(f"outputs:{prop.name}")
+                if attr and attr.IsValid():
+                    attr.SetConnections([Sdf.Path(f"{shader_path}.outputs:{prop.name}")])
 
     if not sdef.is_terminal:
         return
@@ -450,6 +554,10 @@ def main():
     chunk_api.add_params([nodedef, signature, prim_path, bind_to])
     chunk_api.add_callback(_nodedef_changed, sender=nodedef)
     chunk_api.add_callback(_signature_changed, sender=signature)
+    chunk_api.add_callback(
+        _chunk_loaded,
+        notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED,
+    )
 
     return chunk_api
 

@@ -30,9 +30,17 @@ from usd_chunks.chunk_flags import ChunkFlags
 logger = logging.getLogger(__name__)
 
 # Sdf type name -> how to build the param, overriding chunk.usd_type_map where a shader
-# input wants something better than the generic USD-attribute choice:
-#   int    - usd_type_map picks Spinbox; chunks always use Slider (is_int) instead.
-#   color* - usd_type_map picks a Vector of sliders; a shader colour wants a swatch.
+# input wants something better than the generic USD-attribute choice.
+#
+# color3f gets a swatch rather than usd_type_map's three sliders. This relies on chunk_usd
+# resolving a ColorPicker to Color3f: its value is a tuple, and _SDF_TYPE_MAP is keyed by
+# Python type, so without that a colour param gets no chunk-prim attr and its value cannot
+# round-trip. color4f is left as a Vector -- a ColorPicker is rgb only.
+# Filter for a shader's asset inputs. An asset on a shader is a texture in practice, and
+# without a filter the browser lists every file in the directory. Same set as
+# scripts/uv_texture.py, so both texture browsers behave alike.
+_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".exr", ".tx", ".tif", ".tiff", ".hdr")
+
 _TYPE_OVERRIDES: dict = {
     "int": (chunk.Slider, {"is_int": True}),
     "color3f": (chunk.ColorPicker, {}),
@@ -299,11 +307,20 @@ def param_for_prop(prop: ShaderProp):
         kwargs["default_value"] = default
 
     try:
-        return cls(prop.name, prop.label, **kwargs)
+        param = cls(prop.name, prop.label, **kwargs)
     except Exception as e:  # noqa: BLE001 - a default this param type cannot hold
         logger.debug(f"Could not build param for {prop.name} ({prop.sdf_type}): {e}")
         kwargs.pop("default_value", None)
         try:
-            return cls(prop.name, prop.label, **kwargs)
+            param = cls(prop.name, prop.label, **kwargs)
         except Exception:  # noqa: BLE001 - type is mapped but unconstructable here
             return None
+
+    # A shader reads its textures, so the browser must offer an Open dialog. Without
+    # FILE_EXISTING the widget computes create_new=True and file_dial puts up
+    # getSaveFileName -- a Save prompt for a file the shader needs to already exist.
+    if isinstance(param, chunk.FileBrowser):
+        param.set_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
+        param.extensions = list(_IMAGE_EXTENSIONS)
+
+    return param

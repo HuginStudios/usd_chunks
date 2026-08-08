@@ -89,6 +89,10 @@ def main():
     texture_file = chunk.FileBrowser(
         "file",
         extensions=[".png", ".jpg", ".jpeg", ".exr", ".tx", ".tif", ".tiff", ".hdr"],
+        # The texture has to exist already. Without FILE_EXISTING the widget computes
+        # create_new=True and file_dial puts up getSaveFileName -- a Save prompt for a
+        # file the shader is only ever going to read.
+        flags=chunk.ChunkFlags.ParamFlags.FILE_EXISTING,
     )
 
     wrap_s = chunk.Menu("wrap_s", "Wrap S", menu_items=_WRAP_MODES, default_value="useMetadata")
