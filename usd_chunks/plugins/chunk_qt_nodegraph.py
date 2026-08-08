@@ -362,7 +362,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         else:
             self._place_param_ports(self._proxy.widget())
         if scene:
-            scene._build_edges()
+            # Deferred: this fires once per node whose ports change, and a chunk being
+            # built retypes its ports repeatedly. Edges only have to be right once the
+            # burst settles.
+            scene._request_build_edges()
         # New/removed/recolored port items don't always get their region marked
         # dirty automatically — without this the old pixels can linger on screen
         # until something unrelated (e.g. deselecting the node) forces a repaint.
@@ -955,6 +958,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._show_param_edges: bool = True
         self._built_context: object = _UNBUILT  # sentinel — tracks what context is currently rendered
         self._dirty: bool = True  # set by invalidate(); cleared by a (re)build
+        self._edge_timer: Optional[QtCore.QTimer] = None
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
@@ -1189,7 +1193,26 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         if rest:
             QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, gen))
 
+    def _request_build_edges(self):
+        """Coalesce edge rebuilds onto one deferred pass.
+
+        _build_edges tears down and re-walks every node's attributes, and each node's port
+        rebuild used to trigger its own. Creating one 64-param shader ran it 1031 times for
+        ~1s of a 6s create. A burst of port changes only needs the one rebuild that follows
+        it, so collapse them onto a zero-timer.
+        """
+        if self._edge_timer is None:
+            self._edge_timer = QtCore.QTimer()
+            self._edge_timer.setSingleShot(True)
+            self._edge_timer.setInterval(0)
+            self._edge_timer.timeout.connect(self._build_edges)
+        self._edge_timer.start()
+
     def _build_edges(self):
+        # A pending coalesced rebuild is redundant once we are rebuilding now.
+        if self._edge_timer is not None:
+            self._edge_timer.stop()
+
         for edge in self._edges:
             self.removeItem(edge)
         self._edges.clear()

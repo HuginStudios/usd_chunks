@@ -446,6 +446,19 @@ class ColorPicker(ChunkParamBase[tuple]):
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
+    def convert_attr(self, attr: "Attribute", val: Any) -> Any:
+        # A colour read back from USD arrives as Gf.Vec3f, which the tuple validator
+        # rejects — so a ColorPicker bound to a chunk-prim Color3f attr would fail on the
+        # value it had just written. Anything three-long and iterable is a colour here.
+        if attr.name in ("default_value", "value") and val is not None:
+            if not isinstance(val, (tuple, list, str)):
+                try:
+                    return tuple(val)
+                except TypeError:
+                    pass
+
+        return super().convert_attr(attr, val)
+
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.COLOR_PICKER

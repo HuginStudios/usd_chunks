@@ -833,6 +833,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
         type_source = getattr(param, 'default_value', None) if is_expr else raw
         sdf_type = _SDF_TYPE_MAP.get(type(type_source))
+        # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
+        # type — there is no tuple entry, so without this a colour param resolves to no
+        # type at all and never gets a chunk-prim attr, leaving its value unable to
+        # round-trip through USD.
+        if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
+            sdf_type = Sdf.ValueTypeNames.Color3f
         if sdf_type is None:
             return
         default = getattr(param, 'default_value', None)
@@ -923,6 +929,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 continue
             if ChunkFlags.ParamType.FLOAT in param.evaluate_type():
                 sdf_type = _SDF_TYPE_MAP[float]
+            # See _sync_param_input: a ColorPicker's tuple has no _SDF_TYPE_MAP entry.
+            if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
+                sdf_type = Sdf.ValueTypeNames.Color3f
             prefix = "outputs:" if param.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
             attr_name = f"{prefix}{path.replace('.', ':')}"
 
