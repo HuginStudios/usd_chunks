@@ -1415,9 +1415,17 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             # Only inspect pl for emptiness right after we've just removed its child above — never as
             # a blanket sweep over every tracked graph layer, since a graph layer can legitimately be
             # momentarily empty while it's still being constructed (its own first leaf not yet added).
-            for pl, sl in self.iter_chunk_layers():
-                if sl.identifier == layer.identifier and pl.identifier != parent.identifier:
-                    pl.subLayerPaths.remove(sl.identifier)
+            #
+            # Looks only at the graph layers' own direct sublayers, not the whole composed
+            # hierarchy iter_chunk_layers() walks. A chunk leaf layer is only ever inserted as a
+            # direct sublayer of a graph layer (add_layer), so those are the only pairs that could
+            # ever match here — the deeper levels of that walk are a chunk layer's own imports
+            # (a Sublayer chunk's files), which are never this layer. The full walk resolves every
+            # sublayer path through Sdf.Find on every call, and this runs on every single
+            # get_edit_context: it was ~30% of the cost of opening a saved graph.
+            for pl in list(self.graph_layers.values()):
+                if pl.identifier != parent.identifier and layer.identifier in pl.subLayerPaths:
+                    pl.subLayerPaths.remove(layer.identifier)
                     if len(pl.subLayerPaths) == 0:
                         for gkey, g_layer in list(self.graph_layers.items()):
                             if g_layer.identifier != pl.identifier:
