@@ -665,7 +665,10 @@ class DagNode:
         key = self.next_key(self._connections.inputs)
         self._connections.inputs[key] = node
         self.set_graph_id(node)
-        chunk_scheduler.topology_changed()
+        # Only self's depth (and its dependants'/owner's) can have moved -- node keeps
+        # whatever depth it had, since gaining a dependant says nothing about its own
+        # distance from the roots.
+        chunk_scheduler.topology_changed(self)
 
         if connect_reverse:
             node.add_dependant(self)
@@ -682,7 +685,7 @@ class DagNode:
             node (DagNode): The dependant node
         """
         self._connections.outputs[self.next_key(self._connections.outputs)] = node
-        chunk_scheduler.topology_changed()
+        chunk_scheduler.topology_changed(self, node)
         self.dirty = True
 
     def remove_dependency(self, node: "DagNode", disconnect_reverse=True) -> bool:
@@ -709,7 +712,7 @@ class DagNode:
 
         for key in keys:
             del self._connections.inputs[key]
-        chunk_scheduler.topology_changed()
+        chunk_scheduler.topology_changed(self, node)
 
         if disconnect_reverse:
             node.remove_dependant(self)
@@ -733,7 +736,9 @@ class DagNode:
 
         for key in keys:
             del self._connections.outputs[key]
-        chunk_scheduler.topology_changed()
+        # node is passed as well as self: the edge is being torn down from this side, so
+        # node is already out of self's downstream closure by the time this runs.
+        chunk_scheduler.topology_changed(self, node)
         return True
 
     def set_owner(self, owner: Optional["ChunkNoticePropagator"]):
@@ -757,7 +762,13 @@ class DagNode:
         else:
             self._connections.owner = weakref.ref(owner)
 
-        chunk_scheduler.topology_changed()
+        # An owner takes the depth of the deepest thing it owns, so both the owner being
+        # left and the one being joined have to be re-measured; self reaches the new one
+        # through its own downstream closure.
+        if previous is not None:
+            chunk_scheduler.topology_changed(self, previous)
+        else:
+            chunk_scheduler.topology_changed(self)
 
         if node := self.get_owner_node():
             if node._owned is None:

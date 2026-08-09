@@ -64,14 +64,34 @@ _depth_cache: "weakref.WeakKeyDictionary[DagNode, int]" = weakref.WeakKeyDiction
 atexit.register(_depth_cache.clear)
 
 
-def topology_changed():
+def topology_changed(*nodes: "DagNode"):
     """
     Invalidate everything derived from the graph shape.
 
     Called by DagNode whenever an input, output or owner connection changes.
+
+    Given the nodes whose edges moved, only the depths that can actually have changed are
+    dropped: a node's depth is a function of its dependencies and the things it owns, so
+    the nodes affected by an edge change are exactly the ones downstream of it -- the same
+    closure a dirty propagation walks. Everything else keeps the depth it already had.
+
+    Passing nothing means "shape changed somewhere", and throws the lot away. That is what
+    the old unconditional behaviour did on every single edge, which made building or
+    loading a graph quadratic: every add_dependency wiped the cache, so the next depth
+    query re-walked the whole chain from scratch.
+
+    Args:
+        nodes (DagNode): The nodes whose connections changed, if known
     """
     global _topology_epoch
-    _topology_epoch += 1
+
+    if not nodes:
+        _topology_epoch += 1
+        return
+
+    for node in nodes:
+        for stale in downstream_closure(node):
+            _depth_cache.pop(stale, None)
 
 
 def downstream(node: "DagNode") -> List["DagNode"]:
