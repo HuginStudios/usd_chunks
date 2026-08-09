@@ -2433,7 +2433,11 @@ class ChunkCommon(AttributesBase):
         Returns:
             bool: If the flag is enabled or not
         """
-        return bool(self.flags & flag)
+        # Compared as plain ints: IntFlag.__and__ constructs (and caches, and looks up) a
+        # whole new flag member just to be thrown away by bool(). This is called millions of
+        # times when walking a large graph -- get_chunks() alone asks twice per chunk -- and
+        # the enum machinery was measurably the second-largest cost of building one.
+        return bool(int(self.flags) & int(flag))
 
     def set_state(self, state: ChunkFlags.State):
         """
