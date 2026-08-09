@@ -17,6 +17,7 @@ from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_notice
+from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
@@ -255,6 +256,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 spec.ClearDefaultValue()
 
     def _on_contents_changed(self, notice, sender):
+        # Before the _usd_write_active bail-out: a suppressed write is still a write, and
+        # sublayer edits (which is most of what runs under that flag) decide whether an Edit
+        # Target marker's layer is composed at all. Muting also arrives only here — USD
+        # reports a mute with no changed paths at all, so no finer signal exists.
+        invalidate_edit_layer_memo()
         if chunk_notice._usd_write_active or not self._scene:
             return
         stage = notice.GetStage()
@@ -350,6 +356,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prim.SetActive(not disabled)
 
     def _on_objects_changed(self, notice: Usd.Notice.ObjectsChanged, sender):
+        # As in _on_contents_changed: this runs before the guards, since a prim appearing or
+        # an inputs:chunk connection changing is exactly what the memo is keyed against, and
+        # those arrive here regardless of which flag is set.
+        invalidate_edit_layer_memo()
         if chunk_notice._usd_write_active or self._reconciling_exec or not self._scene:
             return
         scene_stage = self._scene.get_stage()
@@ -722,10 +732,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             existing = list(exec_in.GetConnections())
             if src_path not in existing:
                 exec_in.SetConnections(existing + [src_path])
+        # The exec chain the memo walks just gained an edge, under a suppressed-notice
+        # edit context.
+        invalidate_edit_layer_memo()
         # Wiring a chunk into the exec chain can change the Edit Target that now applies at
         # its position (e.g. it's now downstream of an Edit Target chunk) — re-home it and
-        # everything downstream to honor the target at that place.
-        reconcile_edit_targets(self._stage, self._scene)
+        # everything downstream to honor the target at that place. Nothing above the new edge
+        # can have moved, so the pass starts at the chunk that gained the input.
+        reconcile_edit_targets(self._stage, self._scene, roots=[dependent])
 
     def _sync_vector_input(self, chunk: "core.ChunkBase", vector: "core.ChunkVectorBase") -> None:
         """Create/restore a chunk-prim attr for a vector and wire it.
@@ -1263,6 +1277,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     )
                     for dep in deps
                 ])
+                invalidate_edit_layer_memo()
 
             for path, param in _iter_chunk_params(chunk):
                 raw = param.raw_value
@@ -1772,6 +1787,9 @@ def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
                     succ.ClearConnections()
     finally:
         chunk_notice._usd_write_active = prev_w
+    # Healing rewrites inputs:chunk across the graph with notices suppressed — every
+    # memoised answer below the deleted node is now measured against an edge that is gone.
+    invalidate_edit_layer_memo()
 
 
 def is_edit_target_chunk(chunk: "core.ChunkBase") -> bool:
@@ -1827,6 +1845,20 @@ def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
         frontier = next_frontier
 
 
+_edit_layer_memo: "dict[str, Sdf.Layer]" = {}
+
+
+def invalidate_edit_layer_memo() -> None:
+    """Drop the memoised nearest_upstream_edit_layer answers.
+
+    Must be called by anything that can change what that function returns: the exec chain
+    it walks (an inputs:chunk connection appearing, moving or being healed away), the Edit
+    Target markers it looks for, or the stage's layer stack (a marker only counts while the
+    layer it names is actually composed).
+    """
+    _edit_layer_memo.clear()
+
+
 def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.Layer | None":
     """Return the layer a chunk at prim's position should author into: the layer published
     by the nearest Edit Target chunk reachable by walking the exec chain (inputs:chunk)
@@ -1836,19 +1868,35 @@ def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.La
     ChunkStageSync._user_edit_layer state. prim's own marker is deliberately skipped (an
     Edit Target chunk defines the target for everything *downstream* of it, not for its own
     bookkeeping — that follows whatever is upstream of it, or the session layer).
+
+    Memoised per prim path, because being a pure function of topology also makes it a walk
+    of the entire exec chain above prim, and it is asked once per get_edit_context — several
+    times per chunk. On a long chain that is quadratic and was the single largest cost of
+    opening a saved graph. The memo is dropped wholesale by invalidate_edit_layer_memo()
+    rather than aged per entry: one chunk's answer depends on every chunk above it, so there
+    is no cheaper unit to invalidate than "all of it".
     """
     if not stage:
         return None
     session = stage.GetSessionLayer()
     if not (prim and prim.IsValid()):
         return session
+
+    key = str(prim.GetPath())
+    if (memoised := _edit_layer_memo.get(key)) is not None:
+        return memoised
+
+    result = session
     for _path, p in _iter_exec_upstream(stage, prim.GetPath()):
         if not (p and p.IsValid()):
             continue
         layer = _prim_edit_target_layer(stage, p)
         if layer is not None:
-            return layer
-    return session
+            result = layer
+            break
+
+    _edit_layer_memo[key] = result
+    return result
 
 
 def _promote_prim_spec(dst_spec: "Sdf.PrimSpec", holders: "list[Sdf.Layer]", sdf_path: "Sdf.Path") -> None:
@@ -1969,7 +2017,31 @@ def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "S
 _reconciling = False
 
 
-def reconcile_edit_targets(stage: "Usd.Stage", scene: "core.SceneSender") -> None:
+def _chunks_downstream_of(roots: "list[core.ChunkBase]") -> "set[int]":
+    """ids of every chunk that solves at or after one of roots.
+
+    Read off the in-memory DAG rather than by traversing the stage for inputs:chunk
+    connections: the exec chain is mirrored into that graph as it is built, so the answer is
+    already there, and getting it costs the size of the answer instead of the size of the
+    scene. Held as ids because ChunkBase's __hash__ is by chunk hash, and this only ever
+    needs identity.
+
+    A superset of the exec-only downstream — the DAG also carries param wiring and ownership
+    — which is what makes it safe to select on: reconciling a chunk whose target has not
+    moved does nothing, so over-including costs a no-op while under-including would leave a
+    chunk homed against a target that no longer applies to it.
+    """
+    found: "set[int]" = set()
+    for root in roots:
+        for node in chunk_scheduler.downstream_closure(root.get_dag_node()):
+            if isinstance(node.propagator, core.ChunkBase):
+                found.add(id(node.propagator))
+    return found
+
+
+def reconcile_edit_targets(
+    stage: "Usd.Stage", scene: "core.SceneSender", roots: "list[core.ChunkBase] | None" = None
+) -> None:
     """Make every chunk's bookkeeping consistent with the Edit Target resolved for its
     exec-chain position.
 
@@ -1986,13 +2058,24 @@ def reconcile_edit_targets(stage: "Usd.Stage", scene: "core.SceneSender") -> Non
     Idempotent, so safe after any structural change (attach/detach/delete of an exec wire,
     or an Edit Target changing its layer). CONTEXT chunks (Tab containers, groups) are
     structural scaffolding pinned to the session layer, not content, so they are left alone.
+
+    roots narrows the pass to those chunks and everything downstream of them. A change at one
+    place in the graph can only move the target of chunks at or below it, so a caller that
+    knows where the change happened (wiring an edge, an Edit Target picking a new layer) can
+    say so and skip the rest. Left as None the whole scene is visited, which is what a load or
+    a delete — where the change is not localised to one chunk — still wants. This matters
+    because the pass is O(chunks) and every wire fires one: on a graph of any size, visiting
+    the whole scene per edge is what made building it quadratic.
     """
     global _reconciling
     if _reconciling or not (stage and scene):
         return
     _reconciling = True
     try:
+        affected = _chunks_downstream_of(roots) if roots is not None else None
         for chunk in scene.get_chunks():
+            if affected is not None and id(chunk) not in affected:
+                continue
             if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                 continue
             prim_path = get_chunk_prim_path(chunk)
@@ -2150,6 +2233,9 @@ def publish_edit_target(chunk: "core.ChunkBase", stage: "Usd.Stage", layer: "Sdf
             prim.CreateAttribute(_EDIT_TARGET_MARKER, Sdf.ValueTypeNames.String, custom=True).Set(ident)
     finally:
         chunk_notice._usd_write_active = prev
+    # The marker this whole memo is a search for just moved, and the write above ran with
+    # notices suppressed, so nothing else will drop it.
+    invalidate_edit_layer_memo()
     # Only re-home downstream when the target actually changed. The Edit Target chunk
     # re-executes on every stage content change (its refresh callback), so reconciling
     # unconditionally here would run — and thrash — on every unrelated edit.
@@ -2238,6 +2324,12 @@ def recook_for_view(
             stage.MuteLayer(layer.identifier)
         else:
             stage.UnmuteLayer(layer.identifier)
+        # Muting drops the layer out of GetLayerStack, so an Edit Target marker naming it
+        # stops resolving. _on_contents_changed also catches this today, but only because it
+        # invalidates on everything: USD reports a mute with no changed paths at all, so if
+        # that handler is ever narrowed to the changes it can actually identify, this is the
+        # only place the mute is still visible from.
+        invalidate_edit_layer_memo()
 
     if view_chunk is None:
         cook_list: "list[core.ChunkBase]" = []
@@ -3255,6 +3347,7 @@ def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.Ch
     if deps:
         exec_in = prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
         exec_in.SetConnections([Sdf.Path(exec_output_path(dep)) for dep in deps])
+        invalidate_edit_layer_memo()
 
     # Build a name → context_param map for lofted params (direct ChunkParamBase children of context)
     context = chunk.get_context()
