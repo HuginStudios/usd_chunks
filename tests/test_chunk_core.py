@@ -114,6 +114,33 @@ def test_list_group_creates_proxy_params():
     assert p1.name == "item_value"
 
 
+def test_list_group_resize_does_not_reassign_the_shared_graph_id():
+    """Regression (issue #81): growing a ListGroup after it's already sharing a graph_id
+    with siblings used to silently reassign that whole graph's id. ProxyParam.__init__'s
+    add_dependency(param) call merges graph_id like any other dependency -- and since the
+    proxy is brand new, the merge ran backwards, making the *established* root (the tab
+    and everything in it) subordinate to the fresh proxy's root instead of the other way
+    around. Anything created afterward then computed a different graph_key and landed in
+    a brand-new graph_XXXX layer instead of the tab's existing one."""
+    tab = chunk.Group("tab")
+    sibling = chunk.Slider("sibling")
+    list_group = chunk.ListGroup("items")
+    list_group.add_param(chunk.Slider("item_value"))
+
+    tab.add_param(sibling)
+    tab.add_param(list_group)
+
+    before = tab.get_dag_node().get_graph_id()
+    assert sibling.get_dag_node().get_graph_id() == before
+    assert list_group.get_dag_node().get_graph_id() == before
+
+    list_group.size = 2  # creates ProxyParams for item_value, as the UI's "+" row does
+
+    assert tab.get_dag_node().get_graph_id() == before
+    assert sibling.get_dag_node().get_graph_id() == before
+    assert list_group.get_dag_node().get_graph_id() == before
+
+
 def test_vector_get_set_item_and_tuple_value():
     vec = chunk.Vector("vec", param=chunk.Slider("axis"), length=3, suffixes="XYZ")
 

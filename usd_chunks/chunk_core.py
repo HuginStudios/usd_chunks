@@ -1551,6 +1551,12 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             self._value = None
             self.__value_sender = None
 
+        # A ProxyParam mirrors its template's non-value attribute changes via this
+        # dependency, but must not be pulled into the template's graph_id: set_graph_id
+        # merges the *established* side into whichever DagGraphID it's called with, and a
+        # freshly-constructed proxy's root would otherwise become the new root for the
+        # whole tab it was just added to, orphaning that tab's graph_XXXX layer.
+        self.get_dag_node()._part_of_graph = False
         self.add_dependency(param)
 
         self._children = NameSyncedContainer()
