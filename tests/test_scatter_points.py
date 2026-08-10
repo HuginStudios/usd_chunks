@@ -189,3 +189,54 @@ def test_scatter_direct_param_edit_ignores_downstream_transform(qapp) -> None:
         f"Scatter's own param edit must still only reflect its real upstream (the raw mesh, "
         f"local X in [0,1]) -- transform is downstream and must never leak in. Got x={x}"
     )
+
+
+def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -> None:
+    """Regression (issue #82): proto_prim is resolved off get_upstream_stage()'s scratch
+    composition (see execute()'s own docstring for why), which can still show a prim whose
+    real source (a sublayer, a reference chunk) has since been disconnected from the live
+    stage by the time the internal reference is actually authored against it -- a real gap
+    between "upstream read" and "write", the same one a shake-to-disconnect recook hits live.
+    The unresolved reference used to leave ref_prim typeless and crash Set() on its
+    xformOpOrder attr; it should fall back to the same default cube used when no prototype is
+    set at all."""
+    from usd_chunks.plugins import chunk_usd as _chunk_usd
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    lm = chunk_registry.ChunkLayerManager()
+    lm.initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    scatter_mod = reg.get_chunk_module("scatter_points")
+    scatter = _mk(scatter_mod, scene)
+
+    surface = UsdGeom.Mesh.Define(stage, "/surface")
+    surface.GetPointsAttr().Set([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
+    surface.GetFaceVertexCountsAttr().Set([3])
+    surface.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+    scatter.get_param("surface_prim").value = "/surface"
+    scatter.get_param("proto_prim").value = "/vanished_proto"
+    scatter.get_param("max_count").value = 1
+
+    # get_upstream_stage() is what proto_prim actually gets read through -- point it at a
+    # separate stage where the prototype still resolves, while the real stage (what the
+    # internal reference is authored against) never had it at all.
+    scratch = Usd.Stage.CreateInMemory()
+    UsdGeom.Cube.Define(scratch, "/vanished_proto")
+    monkeypatch.setattr(_chunk_usd, "get_upstream_stage", lambda *a, **k: scratch)
+
+    scatter_mod.module.execute(scatter)  # must not raise
+
+    proto = stage.GetPrimAtPath("/ScatterInstancer/Prototypes/proto_0")
+    assert proto.IsValid()
+    assert proto.GetTypeName() == "Cube", "should fall back to the default cube, not a dangling reference"
+    assert not proto.HasAuthoredReferences(), "no reference should be left dangling"

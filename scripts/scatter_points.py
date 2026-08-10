@@ -499,12 +499,22 @@ def execute(node):
         proto_scope = f"{inst_path}/Prototypes"
         stage.DefinePrim(proto_scope, "Scope")
         proto_path = f"{proto_scope}/proto_0"
+        proto_referenced = False
         if proto_prim and proto_prim.IsValid():
             ref_prim = stage.DefinePrim(proto_path)
             ref_prim.GetReferences().AddInternalReference(proto_prim.GetPath())
             ref_prim.SetInstanceable(False)
-            UsdGeom.Xformable(ref_prim).GetXformOpOrderAttr().Set([])
-        else:
+            # proto_prim can still be valid here yet its own source (a sublayer,
+            # a reference chunk) may have vanished between when it was looked up
+            # and now -- the internal reference then resolves to nothing and
+            # ref_prim has no composed type, so fall back like a missing
+            # prototype instead of authoring xformOpOrder on a typeless prim.
+            if ref_prim.GetTypeName():
+                UsdGeom.Xformable(ref_prim).GetXformOpOrderAttr().Set([])
+                proto_referenced = True
+            else:
+                ref_prim.GetReferences().ClearReferences()
+        if not proto_referenced:
             UsdGeom.Cube.Define(stage, proto_path).GetSizeAttr().Set(1.0)
 
         instancer.GetPrototypesRel().SetTargets([Sdf.Path(proto_path)])
