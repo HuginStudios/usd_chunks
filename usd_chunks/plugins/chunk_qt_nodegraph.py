@@ -3824,28 +3824,32 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         kind = _detect_dropped_usd_kind(path)
         if kind is None:
             return
-        # A file with no chunk prims at all is unambiguously a plain scene -- no need to make
-        # the user confirm. A file that DOES have chunk prims still gets the popup: it might be
-        # a pure chunkgroup export, or a scene that happens to carry along some leftover chunk
-        # prims the user actually wants sublayered wholesale, so let them decide.
-        if kind == "scene":
-            self._import_as_sublayer(path, scene_pos)
-            return
-        chosen = self._prompt_import_kind(global_pos)
+        # "Import as Chunks" only makes sense for a file that actually carries chunk prims
+        # (a chunkgroup export) -- offering it for a plain scene would be a dead choice.
+        # Sublayer and Reference apply either way, so the popup always shows at least those
+        # two: a plain scene file no longer silently defaults to Sublayer the way it used to
+        # before Reference was an option here, since that default would make the new choice
+        # unreachable for the single most common drop (a plain USD asset with no chunk prims).
+        chosen = self._prompt_import_kind(global_pos, offer_chunks=(kind != "scene"))
         if chosen == "chunks":
             self._import_as_chunks(path, scene_pos)
         elif chosen == "scene":
             self._import_as_sublayer(path, scene_pos)
+        elif chosen == "reference":
+            self._import_as_reference(path, scene_pos)
 
-    def _prompt_import_kind(self, global_pos: QtCore.QPoint) -> "str | None":
+    def _prompt_import_kind(self, global_pos: QtCore.QPoint, offer_chunks: bool) -> "str | None":
         menu = QtWidgets.QMenu()
-        as_chunks = menu.addAction("Import as Chunks")
+        as_chunks = menu.addAction("Import as Chunks") if offer_chunks else None
         as_sublayer = menu.addAction("Import as Sublayer")
+        as_reference = menu.addAction("Import as Reference")
         res = self._exec_menu(menu, global_pos)
-        if res is as_chunks:
+        if as_chunks is not None and res is as_chunks:
             return "chunks"
         if res is as_sublayer:
             return "scene"
+        if res is as_reference:
+            return "reference"
         return None
 
     def _import_as_chunks(self, path: str, scene_pos: QtCore.QPointF) -> None:
@@ -3996,6 +4000,51 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # node is deliberately NOT reachable from the view, so the changed_chunks fast
             # path (skip if the edit provably can't affect the view's cook set) would skip
             # exactly the recook that's needed to mute it.
+            self._recook_active_view()
+
+    def _import_as_reference(self, path: str, scene_pos: QtCore.QPointF) -> None:
+        """Drop-a-file-as-Reference: create a Reference chunk node at the drop point with
+        its file_path pre-filled. Unlike Sublayer, Reference's content-authoring work
+        (AddReference) lives on the reserved execute(node) hook -- the normal reactive path
+        every param-driven chunk (transform, scatter_points, ...) already uses -- rather
+        than on an explicit add_callback, so setting file_path alone is enough to trigger
+        it; no separate hand-off is needed the way Sublayer's own subLayerPaths write is.
+        file_path's own file_changed callback derives primpath_location (the insertion
+        point) from the asset's file name at the same time, so nothing else needs filling
+        in for the common case.
+
+        Still needs the same view-recook nudge Sublayer's import does: every chunk's edit
+        layer is sublayered into the stage regardless of exec-wiring, and it's the active
+        view's recook pass (recook_for_view) that mutes a chunk not reachable from it --
+        without forcing that pass here, a dropped-in-but-unconnected Reference's content
+        would render in the viewport anyway, same bug as the equivalent Sublayer case."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return
+        scene = _chunk.get_scene()
+        if not scene:
+            return
+        primary, chunks = self._instantiate_chunk_of_type("reference")
+        if primary is None:
+            return
+        context = self._graph_context()
+        view_exists = self._context_has_view(scene, context)
+        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
+        chunk_usd._pin_new_chunks = False
+        nested, prev_ctx = self._push_nest_context(scene, context)
+        try:
+            for c in chunks:
+                scene.add_chunk(c)
+        finally:
+            if nested:
+                scene._current_context = prev_ctx
+            chunk_usd._create_node_pos = None
+            chunk_usd._pin_new_chunks = None
+
+        if file_param := primary.get_param("file_path"):
+            file_param.value = path
+
+        if view_exists:
             self._recook_active_view()
 
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
