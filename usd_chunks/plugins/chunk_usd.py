@@ -152,6 +152,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._loaded_stage = None
         self._loaded_prim_paths: set[str] = set()
         self._chunk_prim_paths: dict[int, str] = {}  # id(chunk) → current prim path
+        # What USD has said changed since the last scan for new chunk prims, used to scope
+        # that scan — see _on_objects_changed and _scan_for_new_chunks. Resyncs are kept
+        # apart from info-only changes because they justify different amounts of looking.
+        self._pending_resyncs: "set[Sdf.Path]" = set()
+        self._pending_info_changes: "set[Sdf.Path]" = set()
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
         )
@@ -271,7 +276,38 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not scene_stage or stage.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
             return
         self._stage = stage
-        load_chunks(stage, self._scene, self._loaded_prim_paths)
+        self._scan_for_new_chunks(stage)
+
+    def _scan_for_new_chunks(self, stage: Usd.Stage) -> None:
+        """Turn any chunk prim that has appeared since the last scan into a chunk.
+
+        Scoped to the subtrees ObjectsChanged reported resynced, rather than the whole
+        stage. A prim cannot appear outside a resynced subtree, so this looks everywhere it
+        needs to and nowhere else — which matters twice over: the scan runs on every stage
+        change, so walking the whole stage made building a graph quadratic in the number of
+        chunks, and in a real scene it also walked every piece of geometry on the stage to
+        find out that nothing had happened.
+
+        A resync is a structural change, so a prim that was not there before can be
+        anywhere beneath one — those get walked. An info-only change cannot create a prim,
+        but it can still make an existing one loadable, which is not a hypothetical: a
+        chunk prim becomes loadable when its info:chunkType gets a value, and setting a
+        value is an info-only change. So those contribute the one prim they name, and
+        deliberately not its subtree — otherwise a metadata change on a big prim would drag
+        its whole subtree through here.
+
+        Having heard nothing at all is the one case with no basis to narrow, and walks the
+        stage. State is cleared only here, where the scan actually happens: the callers bail
+        out ahead of this on a suppressed write, and whatever they saw still has to be
+        looked at on the next real one.
+        """
+        resyncs, info_changes = self._pending_resyncs, self._pending_info_changes
+        self._pending_resyncs = set()
+        self._pending_info_changes = set()
+        prims = None
+        if resyncs or info_changes:
+            prims = _iter_scoped_prims(stage, resyncs, info_changes)
+        load_chunks(stage, self._scene, self._loaded_prim_paths, prims=prims)
 
     def _on_chunk_deleted(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
@@ -361,6 +397,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # an inputs:chunk connection changing is exactly what the memo is keyed against, and
         # those arrive here regardless of which flag is set.
         invalidate_edit_layer_memo()
+        # Same reasoning, and the only place the resynced paths are visible at all: the scan
+        # for new chunk prims runs off StageContentsChanged, which carries no paths. USD
+        # sends this notice first for a given change (locked in by
+        # test_objects_changed_precedes_stage_contents_changed), so what is recorded here is
+        # what that scan then scopes itself by. A write suppressed by the guards below still
+        # has to be recorded — suppression stops us reacting now, not the prims existing.
+        self._pending_resyncs.update(notice.GetResyncedPaths())
+        self._pending_info_changes.update(notice.GetChangedInfoOnlyPaths())
         if chunk_notice._usd_write_active or self._reconciling_exec or not self._scene:
             return
         scene_stage = self._scene.get_stage()
@@ -2783,7 +2827,59 @@ def _find_prim_layer(prim: Usd.Prim) -> "Sdf.Layer | None":
     return None
 
 
-def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: set[str] | None = None) -> None:
+def _iter_scoped_prims(
+    stage: Usd.Stage, resynced: "set[Sdf.Path]", info_changed: "set[Sdf.Path]"
+):
+    """The prims a change round could have made loadable, once each.
+
+    Each resynced path contributes its whole subtree, since a structural change can bring
+    in prims anywhere below it — a chunk arriving in a sublayer resyncs the *parent* of the
+    new prim, not the prim. Each info-changed path contributes only the prim it names.
+
+    Paths may be property paths, and may name a prim that has since gone (a resync reports
+    a deletion the same way it reports an arrival); both resolve to the owning prim or to
+    nothing. Overlapping subtrees are normal, so prims are de-duplicated.
+    """
+    seen: "set[str]" = set()
+
+    def _emit(prim):
+        key = str(prim.GetPath())
+        if key in seen:
+            return False
+        seen.add(key)
+        return True
+
+    for path in resynced:
+        if path == Sdf.Path.absoluteRootPath:
+            for prim in stage.Traverse():
+                if _emit(prim):
+                    yield prim
+            continue
+        prim = stage.GetPrimAtPath(path.GetPrimPath())
+        if not (prim and prim.IsValid()):
+            continue
+        for descendant in Usd.PrimRange(prim):
+            if _emit(descendant):
+                yield descendant
+
+    for path in info_changed:
+        prim = stage.GetPrimAtPath(path.GetPrimPath())
+        if prim and prim.IsValid() and _emit(prim):
+            yield prim
+
+
+def load_chunks(
+    stage: Usd.Stage,
+    scene: "core.SceneSender",
+    loaded_prim_paths: set[str] | None = None,
+    prims: "Generator | None" = None,
+) -> None:
+    """Turn Chunk prims into chunks.
+
+    prims narrows which prims are considered — see ChunkStageSync._scan_for_new_chunks,
+    which derives it from what USD reported changed. None considers the whole stage, which
+    is what a file being opened wants.
+    """
     if not stage:
         return
 
@@ -2793,7 +2889,7 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
     # module-backed chunk. Nested ChunkGroups use a separate parent-context mechanism
     # (_parent_context) not covered by this reload path yet.
     context_prims = []
-    for prim in stage.Traverse():
+    for prim in (stage.Traverse() if prims is None else prims):
         if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
             continue
         if loaded_prim_paths is not None and str(prim.GetPath()) in loaded_prim_paths:
