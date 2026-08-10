@@ -1,12 +1,9 @@
 from usd_chunks import chunk
 
 
-def execute(owner: chunk.Chunk, notice, sender):
-    """Callback for changing sublayer paths."""
-    
-    if notice.data.name not in ["size", "value"]:
-        return
-
+def _apply_sublayers(owner: chunk.Chunk) -> None:
+    """Collect every non-empty path in `imports` and assign them wholesale to the chunk's
+    own edit layer's subLayerPaths, replacing whatever was there before in one step."""
     list_group = owner.get_param("imports", chunk.is_inst(chunk.ListGroup))
     paths = []
 
@@ -29,6 +26,29 @@ def execute(owner: chunk.Chunk, notice, sender):
             print(f"Updated stage with sublayer. {paths}")
 
 
+def execute(node: chunk.Chunk) -> None:
+    """Reserved top-level reactive hook (chunk_notice.py calls `module.execute(node)`, one
+    positional arg, on every DAG solve for any module that defines it) -- load_chunks (the
+    real "reload a saved scene/chunkgroup" path) explicitly calls this once per chunk after
+    bulk-restoring its param values, specifically to make a freshly-loaded chunk take real
+    effect again. Needed here because export_chunks only copies prim ATTRIBUTES (imports'
+    own values), never a layer's own subLayerPaths -- without this, a reloaded Sublayer
+    chunk would show the correct path in its field but never actually bring the layer back
+    in, until the field was touched again live."""
+    _apply_sublayers(node)
+
+
+def _on_attribute_changed(owner: chunk.Chunk, notice, sender):
+    """Live-editing callback for changing sublayer paths -- add_callback's 3-arg form, NOT
+    the reserved execute(node) hook above (which does the same real work, for the reload
+    case). Keeping this a separate, differently-named function is deliberate: naming a
+    callback `execute` collides with the reserved hook's 1-arg calling convention and
+    crashed the very first time a Sublayer chunk got created on a live stage."""
+    if notice.data.name not in ["size", "value"]:
+        return
+    _apply_sublayers(owner)
+
+
 def main():
     sublayerChunk = chunk.Chunk("Sublayer")
 
@@ -48,7 +68,7 @@ def main():
     # Although, we'd like to listen to ATTRIBUTE_CHANGED to catch 'size' changes, and 'value' changes. We dont have a nice way to
     # filter the senders, so doing it inside the callback by checking the name of the notice data
 
-    sublayerChunk.add_callback(execute, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+    sublayerChunk.add_callback(_on_attribute_changed, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
     return sublayerChunk
 
 
@@ -68,13 +88,14 @@ def config():
             Provides an explicit trigger in the UI; the underlying rebuild is driven
             by the ATTRIBUTE_CHANGED callback, not the button directly.
 
-        On every change the callback collects all non-empty path values from the
-        list, then assigns them wholesale to edit_layer.subLayerPaths, replacing
-        the previous list in one step.
-
-        The callback is registered at chunk level on ATTRIBUTE_CHANGED and guards
-        with `notice.data.name not in ["size", "value"]` so it only fires for real
-        path edits and list-size changes. Per-param callbacks are deliberately
-        avoided here: removing a list item renames internal params and would fire
-        the callback twice, producing a spurious intermediate state.
+        On every change, the shared _apply_sublayers helper collects all non-empty path
+        values from the list, then assigns them wholesale to edit_layer.subLayerPaths,
+        replacing the previous list in one step. Reached two ways: live, via the
+        ATTRIBUTE_CHANGED callback below (guarded with `notice.data.name not in ["size",
+        "value"]` so it only fires for real path edits and list-size changes -- per-param
+        callbacks are deliberately avoided here, since removing a list item renames internal
+        params and would fire the callback twice, producing a spurious intermediate state);
+        and on reload, via the reserved execute(node) hook that load_chunks calls once per
+        chunk after restoring its saved values (needed because export_chunks only copies the
+        imports param's own values, never the layer's own subLayerPaths).
         """)
