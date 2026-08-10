@@ -1222,6 +1222,17 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                 # ("Layer ... is not in the local LayerStack"), and a disabled chunk must not
                 # execute anyway.
                 muted = bool(stage and ctx and stage.IsLayerMuted(ctx.identifier))
+                # Separately: a chunk's own edit layer may not be inserted into the stage's
+                # local layer stack YET at all -- not muted (present-but-disabled), just not
+                # there yet. Hit live during load_chunks's bulk restore: a ListGroup proxy
+                # row's value setter (chunk_core.py's ProxyParam.__setattr__, "value" case)
+                # calls straight through to this same dispatch, bypassing the
+                # chunk_notice._loading_stage guard that suppresses every OTHER reactive path
+                # during that restore -- reaching here before get_or_create_layer has run for
+                # this specific chunk, same "not in the local LayerStack" raise as the muted
+                # case. load_chunks's own later, correctly-ordered explicit .execute() call
+                # (after every chunk's layer is properly registered) still runs normally.
+                not_yet_in_stack = bool(stage and ctx and not stage.HasLocalLayer(ctx))
                 # A blocked chunk (view-driven: not in the active view's tree — e.g. connected to
                 # an inactive view) must never run its module, whatever triggered the solve. recook
                 # unblocks the active view's tree before executing it, so cooking is unaffected.
@@ -1236,7 +1247,7 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
                 if (callable(getattr(module, 'execute', None)) and stage is not None
                         and not getattr(prop, '_executing', False)
                         and not getattr(prop, '_deleting', False)
-                        and not muted and not prop.is_blocked()):
+                        and not muted and not not_yet_in_stack and not prop.is_blocked()):
                     global _usd_write_active, _executing_chunk
                     prev_executing_chunk = _executing_chunk
                     prop._executing = True
@@ -1761,6 +1772,22 @@ class NoticeConnection(chunk_serial.Serializeable):
                     # ("not in the local LayerStack"). A dormant chunk must not author anyway —
                     # skip; it re-syncs when it unmutes and recooks. Same guard as the execute path.
                     if stage.IsLayerMuted(ctx.identifier):
+                        return
+                    if not stage.HasLocalLayer(ctx):
+                        # Not muted -- just not inserted into the local layer stack YET (hit
+                        # live during load_chunks's bulk restore: a ListGroup proxy row's
+                        # value setter bypasses the chunk_notice._loading_stage guard that
+                        # suppresses every OTHER reactive path during that restore, so this
+                        # can fire before get_or_create_layer has run for this chunk). Unlike
+                        # the muted case, skipping the call entirely would be wrong here:
+                        # nothing re-triggers this specific ATTRIBUTE_CHANGED notice later the
+                        # way load_chunks's own explicit final execute() loop does for the
+                        # reserved hook, so this would-be edit would just be lost. Call it
+                        # without the EditContext wrapper instead -- a callback that (like
+                        # scripts/sublayer.py's) authors straight into its own
+                        # get_edit_context() layer object, not through the stage's ambient
+                        # edit target, works fine either way.
+                        meth(*args)
                         return
                     with Usd.EditContext(stage, ctx):
                         meth(*args)
