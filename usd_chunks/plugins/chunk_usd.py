@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import logging
+import weakref
 from pathlib import Path
 from typing import Generator, Tuple
 
@@ -1857,6 +1858,7 @@ def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
 
 
 _edit_layer_memo: "dict[str, Sdf.Layer]" = {}
+_edit_layer_memo_stage: "weakref.ref | None" = None
 
 
 def invalidate_edit_layer_memo() -> None:
@@ -1892,6 +1894,17 @@ def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.La
     session = stage.GetSessionLayer()
     if not (prim and prim.IsValid()):
         return session
+
+    # Answers are keyed by prim path, and prim paths repeat across stages — /chunks/Dot in a
+    # file just opened is the same string as /chunks/Dot in the stage it replaced, while the
+    # layer it resolves to belongs to the old stage and is in no layer stack at all now.
+    # Authoring against that layer loses the write; migrating a chunk into it strips the
+    # chunk's prim from the stage it is actually on. The memo serves one stage at a time, so
+    # a different stage starts a new one.
+    global _edit_layer_memo_stage
+    if _edit_layer_memo_stage is None or _edit_layer_memo_stage() is not stage:
+        _edit_layer_memo.clear()
+        _edit_layer_memo_stage = weakref.ref(stage)
 
     key = str(prim.GetPath())
     if (memoised := _edit_layer_memo.get(key)) is not None:
