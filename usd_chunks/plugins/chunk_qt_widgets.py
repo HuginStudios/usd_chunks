@@ -120,6 +120,61 @@ class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
 
 
 
+class _FineDragSlider(QtWidgets.QSlider):
+    """A QSlider whose drag speed drops to a fraction of normal while Ctrl is held, for
+    fine-tuning a value that spans a wide range in a narrow widget (e.g. a translate
+    slider covering meters of range when the desired precision is centimeters). Qt's
+    default drag jumps the value straight to whatever range-to-pixel position is under
+    the cursor -- fine at full speed, but too coarse to hit a precise value in a wide
+    range squeezed into a narrow widget. Only Ctrl+drag is affected; a plain drag keeps
+    Qt's normal behavior untouched (including click-to-jump on press)."""
+
+    _FINE_SENSITIVITY = 0.1
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._fine_dragging = False
+        self._drag_last_x = 0.0
+        # Float accumulator, not re-derived from cursor position each move: at reduced
+        # sensitivity, many consecutive sub-one-unit deltas would otherwise be lost to
+        # setValue()'s integer rounding instead of eventually adding up.
+        self._drag_value = 0.0
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if (
+            event.button() == QtCore.Qt.MouseButton.LeftButton
+            and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+        ):
+            self._fine_dragging = True
+            self._drag_last_x = event.position().x()
+            self._drag_value = float(self.value())
+            event.accept()
+            return
+        self._fine_dragging = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if not self._fine_dragging:
+            super().mouseMoveEvent(event)
+            return
+        x = event.position().x()
+        dx = x - self._drag_last_x
+        self._drag_last_x = x
+        span = self.maximum() - self.minimum()
+        groove_width = max(self.width(), 1)
+        self._drag_value += dx * (span / groove_width) * self._FINE_SENSITIVITY
+        self._drag_value = min(self.maximum(), max(self.minimum(), self._drag_value))
+        self.setValue(round(self._drag_value))
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._fine_dragging:
+            self._fine_dragging = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class SpinSlider(QtWidgets.QWidget):
     def __init__(self, parent=None, is_float=False):
         super().__init__(parent)
@@ -137,7 +192,7 @@ class SpinSlider(QtWidgets.QWidget):
         self.spin_box.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.spin_box.setMaximumWidth(48)
 
-        self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.slider = _FineDragSlider(QtCore.Qt.Orientation.Horizontal)
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.addWidget(self.slider)
