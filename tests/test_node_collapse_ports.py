@@ -22,6 +22,7 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget
 from usd_chunks.plugins import chunk_qt_nodegraph as nodegraph
 
 
@@ -153,3 +154,81 @@ def test_collapsing_a_node_with_two_connected_inputs_does_not_stack_their_ports(
     # collapse them onto the same point too.
     positions = {p.pos().y() for p in (tx_in, ty_in, node_b._exec_in_port)}
     assert len(positions) == 3
+
+
+def _container_for(node, group):
+    """The real ContainerWidget backing an inner Group param, found the way the actual
+    minimize button lives -- not the chunk-level state API, which (per live testing) does
+    not reliably drive the same collapse path a real click does."""
+    for w in node._proxy.widget().findChildren(ContainerWidget):
+        if w.group is group:
+            return w
+    return None
+
+
+def test_collapsing_an_inner_group_hides_its_unconnected_params_ports(graph) -> None:
+    """The design half of the report: a param whose group just collapsed has nothing to
+    point a port at and no wire that needs one, so it should not draw one at all --
+    matching how a fully collapsed node already treats its own unwired params."""
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("scatter_points")
+    chunk = _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    node = gv.scene()._nodes[get_chunk_prim_path(chunk)]
+    _pump(qapp, 0.3)
+
+    var_group = chunk.get_param("Variation")
+    assert var_group is not None, "scatter_points must still have a Variation group with 2+ params"
+    container = _container_for(node, var_group)
+    assert container is not None
+
+    container.minimize_button.setChecked(False)  # the real click path: toggled -> set_expanded
+    _pump(qapp, 0.3)
+
+    node_path = str(node.prim.GetPath())
+    assert node.get_port(f"{node_path}.inputs:scale_min") is None
+    assert node.get_port(f"{node_path}.inputs:scale_max") is None
+
+
+def test_collapsing_an_inner_group_updates_immediately_and_spaces_wired_ports(graph) -> None:
+    """The timing half of the report: the rebuild must not depend on some unrelated later
+    event (e.g. deselecting the node, which _set_collapsed's own branch happens to also
+    kick a rebuild for) -- collapsing the group itself must be enough on its own. And two
+    params sharing that group's collapsed anchor must not land on each other's port."""
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("scatter_points")
+    a = _mk(reg.get_chunk_module("transform"), scene)
+    chunk = _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    node_a = gv.scene()._nodes[get_chunk_prim_path(a)]
+    node = gv.scene()._nodes[get_chunk_prim_path(chunk)]
+    _pump(qapp, 0.3)
+
+    node_path = str(node.prim.GetPath())
+    a_path = str(node_a.prim.GetPath())
+    a_out = node_a.get_port(f"{a_path}.outputs:tx")
+    scale_min_in = node.get_port(f"{node_path}.inputs:scale_min")
+    scale_max_in = node.get_port(f"{node_path}.inputs:scale_max")
+    assert a_out is not None and scale_min_in is not None and scale_max_in is not None
+    gv._author_connection(a_out, scale_min_in)
+    a_out2 = node_a.get_port(f"{a_path}.outputs:ty")
+    assert a_out2 is not None
+    gv._author_connection(a_out2, scale_max_in)
+    gv.scene()._build_edges()
+
+    var_group = chunk.get_param("Variation")
+    assert var_group is not None
+    container = _container_for(node, var_group)
+    assert container is not None
+
+    height_before = node._height
+    container.minimize_button.setChecked(False)
+    _pump(qapp, 0.3)  # no deselect anywhere in this test
+
+    scale_min_in = node.get_port(f"{node_path}.inputs:scale_min")
+    scale_max_in = node.get_port(f"{node_path}.inputs:scale_max")
+    assert scale_min_in is not None and scale_max_in is not None, "connected params must keep a port"
+    assert scale_min_in.pos().y() != scale_max_in.pos().y(), "must not stack on the shared group anchor"
+    assert node._height < height_before, "the node must shrink once the group collapses"
