@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Generator, Tuple
 
-from pxr import Gf, Sdf, Usd, UsdUI, UsdUtils, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
@@ -2904,7 +2904,9 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
         _add_prim_mods(prim_mods)
 
 
-def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
+def export_chunks(
+    scene: "core.SceneSender", path: "str | Path", extra_sublayers: "list[str] | None" = None
+) -> None:
     """Export the current chunk graph as one clean, portable USD layer.
 
     Copies each chunk's already-composed, already-correctly-wired prim spec straight
@@ -2922,6 +2924,12 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     bookkeeping can now be split across several layers (chunk_utils.get_bookkeeping_layer,
     since it follows Edit Target) — giving each prim/attr its correct final composed
     state to copy from, regardless of which layer(s) it's actually scattered across.
+
+    Args:
+        extra_sublayers: Identifiers to append to the exported layer's own subLayerPaths
+            (weakest, composing beneath every chunk prim this writes) — save_scene's own
+            hook for bundling a content snapshot into the same file, without this narrow,
+            single-purpose function needing to know anything about that.
     """
     stage = scene.get_stage()
     if not stage:
@@ -2943,7 +2951,83 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
             Sdf.CreatePrimInLayer(dst, parent)
         Sdf.CopySpec(flat, prim_path, dst, prim_path)
 
+    if extra_sublayers:
+        dst.subLayerPaths = list(extra_sublayers)
+
     dst.Export(str(path))
+
+
+def _export_scene_content(stage: "Usd.Stage", path: "str | Path") -> None:
+    """Flatten the stage's actual composed content -- everything except the chunk
+    bookkeeping prims themselves -- into one portable, standalone USD file.
+
+    export_chunks's mirror image: same FlattenLayerStack-then-CopySpec shape, opposite
+    prim filter. A chunk prim's own hierarchy is entirely bookkeeping (params, wiring,
+    node position) with nothing a content snapshot needs, so it's skipped outright rather
+    than copied and immediately overridden by the stronger chunkgroup layer it's meant to
+    sit beneath — the two are complementary halves of one flattened stage, not overlapping
+    ones. What's left is whatever the chunks actually produced: geometry, materials, an
+    RBD bake's keyframes, anything a chunk's execute() authored onto some other prim
+    entirely -- exactly the content export_chunks itself never captures, and the reason
+    reopening a ChunkGroup alone regenerates results by re-running chunks rather than
+    reproducing a genuinely non-reproducible one (a bake is not simply re-triggered by a
+    plain execute() re-run).
+
+    Stage-level up-axis/units are copied explicitly -- Sdf.CopySpec only copies prim
+    specs, and a standalone snapshot with the wrong ones is exactly the kind of silent
+    scale bug already fixed once this session for the Transform chunk.
+    """
+    flat = UsdUtils.FlattenLayerStack(stage)
+    tmp_stage = Usd.Stage.Open(flat)
+    content_paths = sorted(
+        (p.GetPath() for p in tmp_stage.TraverseAll() if p.GetTypeName() != _CHUNK_PRIM_TYPENAME),
+        key=lambda p: p.pathElementCount,
+    )
+
+    dst = Sdf.Layer.CreateAnonymous()
+    for prim_path in content_paths:
+        if dst.GetPrimAtPath(prim_path):
+            continue
+        parent = prim_path.GetParentPath()
+        if not parent.isEmpty and parent != Sdf.Path.absoluteRootPath and not dst.GetPrimAtPath(parent):
+            Sdf.CreatePrimInLayer(dst, parent)
+        Sdf.CopySpec(flat, prim_path, dst, prim_path)
+
+    dst_stage = Usd.Stage.Open(dst)
+    UsdGeom.SetStageUpAxis(dst_stage, UsdGeom.GetStageUpAxis(tmp_stage))
+    UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(tmp_stage))
+
+    dst.Export(str(path))
+
+
+def save_scene(scene: "core.SceneSender", chunkgroup_path: "str | Path", content_path: "str | Path | None" = None) -> None:
+    """The "nice save flow": one action that writes both halves of the working scene as a
+    bundled pair -- the editable chunk graph (export_chunks) and a flattened snapshot of
+    what it actually currently produces (_export_scene_content), with the ChunkGroup file
+    sublayering the content file so opening it alone brings both back.
+
+    content_path defaults to a sibling of chunkgroup_path (same stem, "_content" suffix)
+    when not given explicitly.
+
+    Args:
+        chunkgroup_path: Where the chunk graph is written -- the file to reopen.
+        content_path: Where the flattened content snapshot is written. Defaults next to
+            chunkgroup_path when omitted.
+    """
+    stage = scene.get_stage()
+    if not stage:
+        return
+
+    chunkgroup_path = Path(chunkgroup_path)
+    if content_path is None:
+        content_path = chunkgroup_path.with_name(f"{chunkgroup_path.stem}_content{chunkgroup_path.suffix}")
+    content_path = Path(content_path)
+
+    _export_scene_content(stage, content_path)
+    # A relative identifier, not content_path's absolute form -- an absolute sublayer
+    # path breaks the moment the pair is copied/shared anywhere else, exactly the
+    # portability export_chunks itself already guarantees for the chunkgroup file alone.
+    export_chunks(scene, chunkgroup_path, extra_sublayers=[content_path.name])
 
 
 def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | None") -> None:

@@ -61,6 +61,21 @@ def save_chunkgroup_dialog(scene=None) -> None:
     chunk_usd.export_chunks(scene, file)
 
 
+def save_scene_dialog(scene=None) -> None:
+    """The "nice save flow" (Dan's request): one Save Scene entry that writes both the
+    editable chunk graph and a flattened snapshot of what it currently produces,
+    bundled as a pair -- see chunk_usd.save_scene. One dialog, one picked path; the
+    content file's name is derived from it, not asked for separately."""
+    scene = scene or chunk_registry.ChunkRegistry().scene
+
+    flt = "*.usda *.usd *.usdc *.usdz"
+    if not (file := file_dial(flt, create_new=True)):
+        return
+    if not os.path.splitext(file)[1]:
+        file += ".usda"
+    chunk_usd.save_scene(scene, file)
+
+
 class EditableTabBar(QtWidgets.QTabBar):
     request_delete = QtCore.Signal(int)
     request_toggle_disable = QtCore.Signal(int)

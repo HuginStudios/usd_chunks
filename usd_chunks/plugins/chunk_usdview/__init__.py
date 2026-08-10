@@ -201,6 +201,11 @@ class ChunksPluginContainer(PluginContainer):
 
         reg.save_layers(path)
 
+    def saveScene(self, usdviewApi):
+        """The "nice save flow" -- ChunkGroup + a flattened content snapshot, bundled as
+        one pair. See chunk_qt.save_scene_dialog."""
+        chunk_qt.save_scene_dialog()
+
     def saveChunkGroup(self, usdviewApi):
         """Export the current chunk graph as one clean, portable USD layer.
         See chunk_qt.save_chunkgroup_dialog."""
@@ -250,6 +255,10 @@ class ChunksPluginContainer(PluginContainer):
             "ChunksPlugin.saveLayers", "Save Layers", self.saveLayers
         )
 
+        self._saveSceneCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.saveScene", "Save Scene", self.saveScene
+        )
+
         self._saveChunkGroupCommand = plugRegistry.registerCommandPlugin(
             "ChunksPlugin.saveChunkGroup", "Save ChunkGroup", self.saveChunkGroup
         )
@@ -275,6 +284,7 @@ class ChunksPluginContainer(PluginContainer):
         menu.addSeparator()
         menu.addItem(self._saveLayersCommand)
         menu.addSeparator()
+        menu.addItem(self._saveSceneCommand)
         menu.addItem(self._saveChunkGroupCommand)
         menu.addSeparator()
         menu.addItem(self._layerStackCommand)
