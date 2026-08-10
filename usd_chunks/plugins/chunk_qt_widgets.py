@@ -1320,11 +1320,16 @@ class ViewSlotState(QtCore.QObject):
             self._slot = slot
             self.slot_changed.emit(slot)
 
-    def _exec_menu(self, menu: QtWidgets.QMenu, pos: QtCore.QPoint):
-        """Thin, overridable seam around QMenu.exec() -- PySide6 doesn't allow monkeypatching
-        QMenu.exec itself (it's a bound virtual slot, not a plain Python attribute), so tests
-        stub this plain instance method instead of driving a real modal popup."""
-        return menu.exec(pos)
+    def _exec_menu(self, menu: QtWidgets.QMenu, pos: QtCore.QPoint) -> None:
+        """Thin, overridable seam around QMenu.popup() -- PySide6 doesn't allow
+        monkeypatching QMenu.popup/exec themselves (bound virtual slots, not plain Python
+        attributes), so tests stub this plain instance method instead of driving a real
+        popup. popup() (non-modal), not exec_(): see show_chunk_menu's docstring for why a
+        modal nested event loop here caused a real, reported popup flicker/ghost bug.
+        Returns nothing -- callers connect menu.triggered/aboutToHide before calling this,
+        so a test can simulate a pick with menu.triggered.emit(action) without ever
+        showing a real popup."""
+        menu.popup(pos)
 
     def show_chunk_menu(
         self,
@@ -1332,8 +1337,9 @@ class ViewSlotState(QtCore.QObject):
         prim_path: str,
         global_pos: QtCore.QPoint,
         graph_view=None,
+        parent_widget: Optional[QtWidgets.QWidget] = None,
     ) -> None:
-        """Build and exec the shared right-click menu for a chunk.
+        """Build and pop (non-modal) the shared right-click menu for a chunk.
 
         Handles custom callback actions, Inspect Layer, and Set View / Activate
         View N.  The actual view-node creation is delegated to ChunkGraphView
@@ -1344,8 +1350,15 @@ class ViewSlotState(QtCore.QObject):
         (ChunkWidget.contextMenuEvent), which has no graph selection to act on. Gates
         Copy/Cut/Duplicate, which operate on the graph's current (possibly multi-node)
         selection via graph_view, not just this one right-clicked chunk.
+
+        parent_widget: a real Qt parent for the menu (any long-lived widget the caller has
+        on hand -- graph_view itself works). popup() (non-modal, not exec()) returns almost
+        immediately, so nothing in Python keeps the menu referenced for the rest of its
+        on-screen lifetime; without a parent it can be garbage collected out from under the
+        still-visible native popup (same hazard already fixed for the ComboBox and the
+        "New Chunk" menu -- see FilterableChunkMenu.select_module's docstring).
         """
-        menu = QtWidgets.QMenu()
+        menu = QtWidgets.QMenu(parent_widget)
         cb_actions: dict = {}
         for conn in grp.find_callbacks(notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE):
             meth = conn.get_method()
@@ -1389,52 +1402,72 @@ class ViewSlotState(QtCore.QObject):
         else:
             view_action = menu.addAction("Set View")
 
-        res = self._exec_menu(menu, global_pos)
-        if not res:
-            return
+        def _dispatch(res: QtGui.QAction) -> None:
+            if res == inspect_action:
+                layer = grp.get_edit_context()
+                if layer:
+                    source_code_dial(layer.ExportToString(), chunk_core.UsdSyntaxHighlightMapping())
+            elif res == rename_action:
+                old = grp.name
+                new, ok = QtWidgets.QInputDialog.getText(
+                    QtWidgets.QApplication.activeWindow(), "Rename chunk", "New name:", text=old
+                )
+                new = new.strip() if new else ""
+                # Setting .name drives the framework rename (prim rename + expression
+                # patching); convert_attr sanitises it to a valid identifier, so no path
+                # validation needed here.
+                if ok and new and new != old:
+                    grp.name = new
+            elif res == pin_action:
+                new_pinned = not chunk_usd.is_chunk_pinned(grp)
+                chunk_usd.set_chunk_pinned(grp, new_pinned)
+                self.pin_changed.emit(grp, new_pinned)
+            elif view_action and res == view_action:
+                if existing_view_slot is not None:
+                    self.set_slot(existing_view_slot)
+                else:
+                    self.create_view_for.emit(prim_path)
+            elif copy_action and res == copy_action:
+                graph_view._copy_selected_to_clipboard()
+            elif cut_action and res == cut_action:
+                graph_view._cut_selected_to_clipboard()
+            elif duplicate_action and res == duplicate_action:
+                graph_view._duplicate_selected()
+            elif conn := cb_actions.get(res):
+                meth = conn.get_method()
+                if meth is not None and meth == getattr(grp, "remove", None):
+                    # ChunkBase.remove (every chunk registers it as a default
+                    # MENU_ACTION_NOTICE callback) calls request_delete() directly,
+                    # bypassing ChunkGraphView._delete_selected() entirely (that's the
+                    # Delete-key path). Capture relevance the same way, right before it
+                    # runs -- see mark_pending_delete_relevance's docstring for why it
+                    # can't be judged after.
+                    from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
+                    ChunkGraphView.mark_pending_delete_relevance([grp])
+                conn.handle_callback(
+                    chunk_notice.MenuActionNotice(grp.get_notice_data()), grp, False
+                )
 
-        if res == inspect_action:
-            layer = grp.get_edit_context()
-            if layer:
-                source_code_dial(layer.ExportToString(), chunk_core.UsdSyntaxHighlightMapping())
-        elif res == rename_action:
-            old = grp.name
-            new, ok = QtWidgets.QInputDialog.getText(
-                QtWidgets.QApplication.activeWindow(), "Rename chunk", "New name:", text=old
-            )
-            new = new.strip() if new else ""
-            # Setting .name drives the framework rename (prim rename + expression patching);
-            # convert_attr sanitises it to a valid identifier, so no path validation needed here.
-            if ok and new and new != old:
-                grp.name = new
-        elif res == pin_action:
-            new_pinned = not chunk_usd.is_chunk_pinned(grp)
-            chunk_usd.set_chunk_pinned(grp, new_pinned)
-            self.pin_changed.emit(grp, new_pinned)
-        elif view_action and res == view_action:
-            if existing_view_slot is not None:
-                self.set_slot(existing_view_slot)
-            else:
-                self.create_view_for.emit(prim_path)
-        elif copy_action and res == copy_action:
-            graph_view._copy_selected_to_clipboard()
-        elif cut_action and res == cut_action:
-            graph_view._cut_selected_to_clipboard()
-        elif duplicate_action and res == duplicate_action:
-            graph_view._duplicate_selected()
-        elif conn := cb_actions.get(res):
-            meth = conn.get_method()
-            if meth is not None and meth == getattr(grp, "remove", None):
-                # ChunkBase.remove (every chunk registers it as a default MENU_ACTION_NOTICE
-                # callback) calls request_delete() directly, bypassing
-                # ChunkGraphView._delete_selected() entirely (that's the Delete-key path).
-                # Capture relevance the same way, right before it runs -- see
-                # mark_pending_delete_relevance's docstring for why it can't be judged after.
-                from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
-                ChunkGraphView.mark_pending_delete_relevance([grp])
-            conn.handle_callback(
-                chunk_notice.MenuActionNotice(grp.get_notice_data()), grp, False
-            )
+        def _on_triggered(res: QtGui.QAction) -> None:
+            # Defer past this event: _dispatch can create chunks and trigger a graph
+            # rebuild (recreating proxy widgets -- real native windows), and doing that
+            # synchronously from inside triggered -- itself part of this popup's own
+            # in-flight close sequence -- races the popup's native window teardown.
+            # Reported live as a hard crash (not just the flicker popup() alone already
+            # fixed), consistently reproducible, right around an auto-created view node's
+            # deferred rebuild landing mid-close. QTimer.singleShot(0, ...) lets this
+            # menu fully finish closing and return control to the event loop first.
+            QtCore.QTimer.singleShot(0, lambda res=res: _dispatch(res))
+
+        # popup() (non-modal), not exec_() -- see parent_widget's docstring note above for
+        # why: a modal exec_() nested event loop lets a pending deferred graph rebuild fire
+        # while this menu is showing, racing its show/hide and producing a genuine OS-level
+        # popup flicker/ghost (reported live). Dismissing without picking (Escape/click-away)
+        # needs no explicit handling -- triggered simply never fires, same as the old
+        # `if not res: return` being a no-op.
+        menu.triggered.connect(_on_triggered)
+        menu.aboutToHide.connect(menu.deleteLater)
+        self._exec_menu(menu, global_pos)
 
 
 class ParamsFilterBar(QtWidgets.QWidget):
@@ -1937,7 +1970,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             prim_path = f"{ctx.prim_path}/chunks/{self.group.name}"
         else:
             prim_path = f"/chunks/{self.group.name}"
-        vs.show_chunk_menu(self.group, prim_path, event.globalPos())
+        vs.show_chunk_menu(self.group, prim_path, event.globalPos(), parent_widget=self)
 
     def get_category(self) -> str:
         """Get the category of this Chunk
@@ -2019,8 +2052,15 @@ def source_code_dial(src: str, highlighter: chunk_core.SyntaxHighlightMapping):
 
 
 class FilterableChunkMenu(QtWidgets.QMenu):
-    def __init__(self):
-        super().__init__("Chunks")
+    def __init__(self, parent=None):
+        # A real Qt parent, not None: select_module uses popup() (non-modal), so the call
+        # returns almost immediately and nothing in Python keeps this menu referenced for
+        # the rest of its on-screen lifetime -- without a parent, PySide6's own object
+        # tracking has nothing tying its lifetime to anything else, and it can be garbage
+        # collected out from under the still-visible native popup. Qt's C++ parent-child
+        # ownership keeps it alive until deleteLater() runs on aboutToHide, same pattern
+        # already used by ChunkComboBoxWidget._show_as_menu for the identical hazard.
+        super().__init__("Chunks", parent)
         self.filter_widget = QtWidgets.QLineEdit(placeholderText="Search...")
         self.filter_widget.textChanged.connect(self._filter_actions)
         self.filter_widget.installEventFilter(self)
@@ -2123,18 +2163,27 @@ class FilterableChunkMenu(QtWidgets.QMenu):
 
         return False
 
-    def select_module(self, pos):
-        """Pop the chunk menu at pos and return what the user picked.
+    def select_module(self, pos, on_chosen):
+        """Pop the chunk menu at pos (non-modal) and call on_chosen once the user picks
+        something or dismisses the menu.
 
         Renders chunk_registry.get_menu_entries() -- the entry list, its namespace nesting
         and its search terms are all core, so this only turns them into QMenus and QActions.
 
         Args:
             pos (QtCore.QPoint): Global position to pop the menu at
+            on_chosen (Callable[[Optional[chunk_registry.MenuEntry]], None]): called with
+                the chosen entry, or None if dismissed or if "import" was picked (handled
+                here internally).
 
-        Returns:
-            Optional[chunk_registry.MenuEntry]: The chosen entry, or None if dismissed or
-            if the user picked "import" (which is handled here).
+        Uses popup(), not exec_(): exec_() runs a nested event loop, and a pending deferred
+        graph rebuild (recreating a node's proxy widget -- a real native window under the
+        hood, see ChunkGraphScene._rebuild_nodes) firing while that loop is spinning races
+        the menu's own show/hide and produces a genuine OS-level popup flicker/ghost
+        artifact (reported live, more than once). With popup() the app's own event loop
+        keeps running normally while the menu is up, so a rebuild firing during that window
+        behaves exactly as it would with no menu open at all. Same fix as the one already
+        applied to ChunkComboBoxWidget for the identical class of hazard.
         """
         items = dict()
         items["menu"] = self
@@ -2183,27 +2232,44 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         self.addAction(import_action)
 
         self.filter_widget.setFocus()
-        QtWidgets.QApplication.instance().installEventFilter(self)
-        exc = self.exec_(pos)
-        QtWidgets.QApplication.instance().removeEventFilter(self)
+        app = QtWidgets.QApplication.instance()
+        app.installEventFilter(self)
+        picked = {"done": False}
 
-        if not exc:
-            return
+        def _on_triggered(action: QtGui.QAction) -> None:
+            picked["done"] = True
+            if action.data() == "import":
+                ext = (
+                    chunk_serial.FileExtensions.PY_MODULE,
+                    chunk_serial.FileExtensions.CHUNK_MODULE,
+                )
+                flt = " ".join(f"*{x}" for x in ext)
+                if file := file_dial(flt):
+                    chunk_registry.ChunkRegistry().import_chunk(file)
+                QtCore.QTimer.singleShot(0, lambda: on_chosen(None))
+                return
+            entry = action.data()
+            chosen = entry if isinstance(entry, chunk_registry.MenuEntry) else None
+            # Defer past this event: on_chosen goes on to create a chunk and can trigger a
+            # graph rebuild (recreating proxy widgets -- real native windows). Doing that
+            # synchronously from inside triggered -- itself part of this popup's own
+            # in-flight close sequence -- races the popup's native window teardown.
+            # Reported live as a hard, consistently-reproducible crash (not just the
+            # flicker popup() alone already fixed). QTimer.singleShot(0, ...) lets this
+            # menu fully finish closing and return control to the event loop first.
+            QtCore.QTimer.singleShot(0, lambda chosen=chosen: on_chosen(chosen))
 
-        if exc.data() == "import":
-            ext = (
-                chunk_serial.FileExtensions.PY_MODULE,
-                chunk_serial.FileExtensions.CHUNK_MODULE,
-            )
-            flt = " ".join(f"*{x}" for x in ext)
-            if file := file_dial(flt):
-                chunk_registry.ChunkRegistry().import_chunk(file)
-            return
+        def _on_about_to_hide() -> None:
+            app.removeEventFilter(self)
+            # triggered fires (and returns) before aboutToHide on a real pick -- only call
+            # on_chosen here for the dismissed-without-picking case (Escape/click-away).
+            if not picked["done"]:
+                QtCore.QTimer.singleShot(0, lambda: on_chosen(None))
+            self.deleteLater()
 
-        if not (entry := exc.data()) or not isinstance(entry, chunk_registry.MenuEntry):
-            return
-
-        return entry
+        self.triggered.connect(_on_triggered)
+        self.aboutToHide.connect(_on_about_to_hide)
+        self.popup(pos)
 
 
 def file_dial(name_filter: Optional[str] = None, create_new=False, directory=False):

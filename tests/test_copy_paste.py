@@ -132,15 +132,20 @@ def _exec_ports(node):
 def _pick_action_by_text(text):
     """Stand-in for ChunkGraphView._exec_menu / ViewSlotState._exec_menu -- both are plain,
     overridable Python methods specifically so a test can pick a menu result without driving
-    a real modal QMenu.exec() popup (PySide6 doesn't allow monkeypatching QMenu.exec itself:
-    it's a bound virtual slot, and reassigning it on the class doesn't affect real calls,
-    confirmed by a real .exec() hanging under offscreen even with a QTimer.singleShot(0)
-    scheduled to trigger an action first)."""
+    a real modal QMenu.exec() popup (PySide6 doesn't allow monkeypatching QMenu.exec/popup
+    itself: it's a bound virtual slot, and reassigning it on the class doesn't affect real
+    calls, confirmed by a real .exec() hanging under offscreen even with a
+    QTimer.singleShot(0) scheduled to trigger an action first).
+
+    Both seams now call menu.popup() (non-modal, not blocking exec()) and connect
+    menu.triggered before calling this seam -- so a "pick" is simulated by emitting
+    triggered directly, exactly what a real click on the action does, rather than by
+    returning a value (popup() doesn't return one)."""
     def _exec(menu, _pos):
         for act in menu.actions():
             if act.text() == text:
-                return act
-        return None
+                menu.triggered.emit(act)
+                return
     return _exec
 
 
@@ -595,45 +600,69 @@ def test_ctrl_x_triggers_cut(graph, monkeypatch) -> None:
     assert cut_calls == [True]
 
 
-def test_node_menu_copy_acts_on_the_whole_existing_selection(menu_graph, monkeypatch) -> None:
-    scene, gv, chunks, nodes = _make_nodes(menu_graph, n=2)
-    scene.clear_chunk_selection()
-    a, b = nodes
-    scene.set_selected_chunks([a.chunk, b.chunk])
+def test_node_menu_copy_acts_on_the_whole_existing_selection(qapp, monkeypatch) -> None:
+    # Isolated stage: the menu's own dispatch is now deferred one event-loop tick (see
+    # show_chunk_menu's docstring), which needs a real pump to observe -- long enough that a
+    # shared module-scoped stage's other tests' own leftover deferred callbacks were
+    # observed to interfere (nondeterministic selection-set mismatches). Same reasoning as
+    # _isolated_graph's own docstring, just now also applying to these simpler flat-node
+    # tests, not only the recursive-group one it was originally written for.
+    reg, scene, docker = _isolated_graph(qapp)
+    mod = reg.get_chunk_module("transform")
+    a_chunk = _mk(mod, scene)
+    b_chunk = _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    assert _wait_for_node(qapp, gv, get_chunk_prim_path(a_chunk)) is not None
+    assert _wait_for_node(qapp, gv, get_chunk_prim_path(b_chunk)) is not None
+
+    scene.set_selected_chunks([a_chunk, b_chunk])
 
     monkeypatch.setattr(gv._view_state, "_exec_menu", _pick_action_by_text("Copy"))
-    gv._show_chunk_menu(a, QtCore.QPoint(0, 0))
+    gv._show_chunk_menu(gv.scene()._nodes[get_chunk_prim_path(a_chunk)], QtCore.QPoint(0, 0))
+    _pump(qapp, 0.3)  # the menu's own dispatch is now deferred one event-loop tick
 
     assert len(nodegraph._node_clipboard) == 2
     # Right-clicking a node that was already part of the selection must not collapse it.
-    assert set(scene.get_selected_chunks()) == {a.chunk, b.chunk}
+    assert set(scene.get_selected_chunks()) == {a_chunk, b_chunk}
 
 
-def test_node_menu_on_an_unselected_node_selects_it_first(menu_graph, monkeypatch) -> None:
-    scene, gv, chunks, nodes = _make_nodes(menu_graph, n=2)
-    scene.clear_chunk_selection()
-    a, b = nodes
-    scene.set_selected_chunks([a.chunk])  # b is NOT selected
+def test_node_menu_on_an_unselected_node_selects_it_first(qapp, monkeypatch) -> None:
+    reg, scene, docker = _isolated_graph(qapp)
+    mod = reg.get_chunk_module("transform")
+    a_chunk = _mk(mod, scene)
+    b_chunk = _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    assert _wait_for_node(qapp, gv, get_chunk_prim_path(a_chunk)) is not None
+    assert _wait_for_node(qapp, gv, get_chunk_prim_path(b_chunk)) is not None
+
+    scene.set_selected_chunks([a_chunk])  # b is NOT selected
 
     monkeypatch.setattr(gv._view_state, "_exec_menu", _pick_action_by_text("Duplicate"))
-    gv._show_chunk_menu(b, QtCore.QPoint(0, 0))
+    gv._show_chunk_menu(gv.scene()._nodes[get_chunk_prim_path(b_chunk)], QtCore.QPoint(0, 0))
+    _pump(qapp, 0.3)  # the menu's own dispatch is now deferred one event-loop tick
 
     # Duplicate must have acted on b (now selected by the right-click), not on a.
     dup_selection = list(scene.get_selected_chunks())
     assert len(dup_selection) == 1
-    assert dup_selection[0] is not a.chunk and dup_selection[0] is not b.chunk
+    assert dup_selection[0] is not a_chunk and dup_selection[0] is not b_chunk
 
 
-def test_node_menu_cut_removes_the_selection(menu_graph, monkeypatch) -> None:
-    qapp, reg, scene, docker = menu_graph
-    _scene, gv, chunks, nodes = _make_nodes(menu_graph, n=1)
-    scene.clear_chunk_selection()
-    (a,) = nodes
-    a_path = get_chunk_prim_path(a.chunk)
-    scene.set_selected_chunks([a.chunk])
+def test_node_menu_cut_removes_the_selection(qapp, monkeypatch) -> None:
+    reg, scene, docker = _isolated_graph(qapp)
+    mod = reg.get_chunk_module("transform")
+    a_chunk = _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    a_path = get_chunk_prim_path(a_chunk)
+    assert _wait_for_node(qapp, gv, a_path) is not None
+
+    scene.set_selected_chunks([a_chunk])
 
     monkeypatch.setattr(gv._view_state, "_exec_menu", _pick_action_by_text("Cut"))
-    gv._show_chunk_menu(a, QtCore.QPoint(0, 0))
+    gv._show_chunk_menu(gv.scene()._nodes[a_path], QtCore.QPoint(0, 0))
+    _pump(qapp, 0.3)  # the menu's own dispatch is now deferred one event-loop tick
 
     assert len(nodegraph._node_clipboard) == 1
     end = time.monotonic() + 2.0
@@ -651,7 +680,7 @@ def test_canvas_menu_paste_only_offered_when_clipboard_has_content(menu_graph, m
     # to confirm that's the path taken, and make it a no-op (returns None -> nothing created).
     called = []
     monkeypatch.setattr(
-        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos: called.append(True) or None
+        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos, on_chosen: called.append(True)
     )
     far_empty = gv.mapFromScene(QtCore.QPointF(-40000, -40000))
     ev = QtGui.QContextMenuEvent(QtGui.QContextMenuEvent.Reason.Mouse, far_empty, far_empty)
@@ -660,6 +689,7 @@ def test_canvas_menu_paste_only_offered_when_clipboard_has_content(menu_graph, m
 
 
 def test_canvas_menu_new_chunk_option_falls_through_to_fuzzy_search(menu_graph, monkeypatch) -> None:
+    qapp, reg, scene, docker = menu_graph
     scene, gv, chunks, nodes = _make_nodes(menu_graph, n=1)
     scene.clear_chunk_selection()
     (a,) = nodes
@@ -668,13 +698,14 @@ def test_canvas_menu_new_chunk_option_falls_through_to_fuzzy_search(menu_graph, 
 
     called = []
     monkeypatch.setattr(
-        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos: called.append(True) or None
+        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos, on_chosen: called.append(True)
     )
     monkeypatch.setattr(gv, "_exec_menu", _pick_action_by_text("New Chunk..."))
 
     far_empty = gv.mapFromScene(QtCore.QPointF(-20000, -20000))
     ev = QtGui.QContextMenuEvent(QtGui.QContextMenuEvent.Reason.Mouse, far_empty, far_empty)
     gv.contextMenuEvent(ev)
+    _pump(qapp, 0.3)  # deferred one event-loop tick
 
     assert called == [True]
 
@@ -896,15 +927,25 @@ def test_canvas_menu_paste_pastes_at_the_clicked_point(qapp) -> None:
     assert len(nodegraph._node_clipboard) == 1
 
     far_empty = gv.mapFromScene(QtCore.QPointF(-30000, -30000))
+    # Captured before contextMenuEvent, not after: the quick menu's own dispatch is now
+    # deferred one event-loop tick, and the pump below can let something else (e.g. an
+    # auto-view/recook) shift the view's scroll/transform state in between -- mapToScene
+    # here must reflect the same view state contextMenuEvent itself saw synchronously.
+    scene_pos = gv.mapToScene(far_empty)
+    before_paths = set(gv.scene()._nodes.keys())
     gv._exec_menu = _pick_action_by_text("Paste")
     ev = QtGui.QContextMenuEvent(QtGui.QContextMenuEvent.Reason.Mouse, far_empty, far_empty)
     gv.contextMenuEvent(ev)
+    _pump(qapp, 0.3)  # deferred one event-loop tick
 
-    selected = scene.get_selected_chunks()
-    assert len(selected) == 1
-    new_chunk = selected[0]
-    assert new_chunk is not a_chunk
-    new_node = gv.scene()._nodes[get_chunk_prim_path(new_chunk)]
-    scene_pos = gv.mapToScene(far_empty)
+    # Identify the pasted node by set difference, not by "currently selected" -- the lone
+    # pasted node has no downstream, so it can trigger _ensure_default_view's own deferred
+    # auto-view creation, which (a separate, pre-existing race, unrelated to this test's own
+    # point) can steal the selection paste itself just set. Robust either way.
+    new_paths = set(gv.scene()._nodes.keys()) - before_paths
+    transform_paths = [p for p in new_paths if not nodegraph.chunk_usd.is_view_chunk(gv.scene()._nodes[p].chunk)]
+    assert len(transform_paths) == 1
+    new_node = gv.scene()._nodes[transform_paths[0]]
+    assert new_node.chunk is not a_chunk
     assert abs(new_node.pos().x() - scene_pos.x()) < 1e-6
     assert abs(new_node.pos().y() - scene_pos.y()) < 1e-6
