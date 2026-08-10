@@ -873,18 +873,63 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._height = needed
                 self.prepareGeometryChange()
 
+    def _connected_param_names(self) -> "set[str]":
+        """Names of connectable params with a real wire touching them, either end.
+
+        Collapsed nodes have no visible per-param widgets to hang ports off, so this is
+        what decides which ports still get shown (see _place_param_ports_collapsed) --
+        an unwired param has nothing to point at and no reason to take up room.
+
+        A param's inputs:X attr carries the connection when THIS node is the one being
+        fed (checked directly); when this node instead feeds something downstream, the
+        connection lives on the OTHER prim's inputs:Y attr pointing back at our
+        outputs:X, so that side needs a reverse lookup. Scoped to scene._nodes (the
+        currently-built context) rather than a whole-stage traverse -- the same universe
+        _build_edges draws wires for, and cheap since it only runs on collapse/rebuild,
+        not per frame.
+        """
+        names = {
+            attr_name[len("inputs:"):]
+            for attr_name, _, _ in _iter_prim_connections(self.prim)
+        }
+        scene = self.scene()
+        if isinstance(scene, ChunkGraphScene):
+            my_path = str(self.prim.GetPath())
+            for node in scene._nodes.values():
+                for _, src_prim_path, src_attr_suffix in _iter_prim_connections(node.prim):
+                    if src_prim_path == my_path and src_attr_suffix.startswith("outputs:"):
+                        names.add(src_attr_suffix[len("outputs:"):])
+        return names
+
     def _place_param_ports_collapsed(self):
+        # Everything else on a collapsed node's edge (the exec in/out ports) already sits
+        # at header centre, so a wired param's ports start one step below it rather than
+        # on top of it -- overlapping there is the same "wrong port" bug as overlapping
+        # each other, just with the exec port instead of a sibling data port.
+        _STEP = _PORT_RADIUS * 2 + 8
+        self._height = _NODE_HEADER_H
+        self.prepareGeometryChange()
+        connected = self._connected_param_names()
+        y = _NODE_HEADER_H // 2
         for param in _iter_connectable_params(self.chunk):
+            if param.name not in connected:
+                continue
+            y += _STEP
             ptype = _param_port_type(param)
             in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self)
-            in_port.setPos(0, _NODE_HEADER_H // 2)
+            in_port.setPos(0, y)
             self._ports.append(in_port)
             self._typed_ports.append(in_port)
             out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self)
-            out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+            out_port.setPos(_NODE_WIDTH, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
-        self._place_prim_output_ports(_NODE_HEADER_H // 2, extend_height=False)
+        if y > _NODE_HEADER_H // 2:
+            needed = y + _PORT_RADIUS + 4
+            if needed > self._height:
+                self._height = needed
+                self.prepareGeometryChange()
+        self._place_prim_output_ports(self._height, extend_height=True)
 
     def _place_param_ports(self, chunk_widget: QtWidgets.QWidget):
 
@@ -1336,21 +1381,24 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def _set_collapsed(self, collapsed: bool):
         self.prepareGeometryChange()
-        self._height = _NODE_HEADER_H if collapsed else self._full_height
         if self._proxy is not None:
             self._proxy.setVisible(not collapsed)
         if collapsed:
-            # Move typed ports to header centre so edges still connect to the node.
-            for port in self._typed_ports:
-                x = 0 if ".inputs:" in port.attr_path else _NODE_WIDTH
-                port.setPos(x, _NODE_HEADER_H // 2)
-        elif self._port_rebuild_timer is not None:
-            # Recompute port positions from widget geometry now that proxy is visible.
-            self._port_rebuild_timer.start()
+            # Rebuild rather than reposition: the old code moved every existing typed
+            # port straight onto the header centre point, which is also where the exec
+            # ports already live -- every data port for every param, connected or not,
+            # ended up stacked on that one pixel along with them. Whichever port item
+            # was topmost then ate all hover/click, so a wire could look like it landed
+            # on the wrong port entirely, and the node never grew to fit anything either.
+            # A full rebuild both drops unwired ports (nothing to show) and spaces the
+            # wired ones out (see _place_param_ports_collapsed), same as an expand does.
+            self._rebuild_typed_ports()
+        else:
+            self._height = self._full_height
+            if self._port_rebuild_timer is not None:
+                # Recompute port positions from widget geometry now that proxy is visible.
+                self._port_rebuild_timer.start()
         self.update()
-        scene = self.scene()
-        if scene:
-            scene.update_edges_for(self)
 
     def _on_state_changed(self, notice, sender):
         # This is a global STATE_CHANGED callback and can arrive after the node's chunk was
