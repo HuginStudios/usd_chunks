@@ -130,3 +130,42 @@ def test_save_scene_reopen_composes_both_the_graph_and_the_content(tmp_path) -> 
     loaded = [c for c in scene2.get_chunks() if c.get_config() and c.get_config().module == "prim"]
     assert len(loaded) == 1
     assert loaded[0].get_param("prim_type").value == "Scope"
+
+
+def test_export_scene_content_skips_children_that_only_exist_via_a_reference(tmp_path) -> None:
+    """Regression: reported live -- referencing in a kitchen scene asset (e.g. via the
+    Reference chunk) crashed the export with "Cannot copy unknown spec at
+    </bowl_apple/food_apple_01>".
+
+    UsdUtils.FlattenLayerStack only flattens SUBLAYER composition; a reference arc on a
+    prim is preserved as-is, unresolved, in its output. A referenced asset's own children
+    (food_apple_01, brought in by /bowl_apple's reference) therefore have no spec of
+    their own in the flattened layer at all -- only the STAGE, which actually resolves
+    the reference, reports them as real prims. TraverseAll() walks the stage, so it
+    yields them; Sdf.CopySpec needs a direct spec in the layer it's copying FROM and
+    raises outright when there isn't one.
+
+    They don't need copying: /bowl_apple itself (which does have a direct spec, carrying
+    the reference) is what's copied, and its own reference arc brings the same children
+    back on its own once reopened -- exactly like it does live right now."""
+    src = tmp_path / "kitchen_scene.usda"
+    src_stage = Usd.Stage.CreateNew(str(src))
+    UsdGeom.Xform.Define(src_stage, "/bowl_apple")
+    child = UsdGeom.Mesh.Define(src_stage, "/bowl_apple/food_apple_01")
+    child.GetPointsAttr().Set([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
+    src_stage.GetRootLayer().Save()
+
+    stage = Usd.Stage.CreateInMemory()
+    prim = stage.DefinePrim("/bowl_apple", "Xform")
+    prim.GetReferences().AddReference(str(src), "/bowl_apple")
+
+    out = tmp_path / "content.usda"
+    _export_scene_content(stage, out)  # must not raise
+
+    content_stage = Usd.Stage.Open(str(out))
+    reloaded = content_stage.GetPrimAtPath("/bowl_apple")
+    assert reloaded.IsValid()
+    assert reloaded.HasAuthoredReferences()
+    # The reference itself is what brings this back -- resolves through /bowl_apple's
+    # copied-across reference arc, not from anything copied directly at this path.
+    assert content_stage.GetPrimAtPath("/bowl_apple/food_apple_01").IsValid()

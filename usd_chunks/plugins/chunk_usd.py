@@ -2979,8 +2979,24 @@ def _export_scene_content(stage: "Usd.Stage", path: "str | Path") -> None:
     """
     flat = UsdUtils.FlattenLayerStack(stage)
     tmp_stage = Usd.Stage.Open(flat)
+    # TraverseAll() walks composed prims -- which includes ones that exist only through
+    # a reference/payload arc (a referenced kitchen-scene asset's own children, an
+    # instance proxy's, ...), not just ones directly authored in the stage's own
+    # sublayers. FlattenLayerStack only flattens SUBLAYER composition; a reference arc on
+    # a prim is preserved as-is in the output, unresolved -- so a prim introduced only by
+    # composing that reference has no spec of its own in `flat` at all, even though the
+    # stage (which DOES resolve the reference) reports it as a real prim. Sdf.CopySpec
+    # needs a direct spec to copy from and raises outright otherwise ("Cannot copy
+    # unknown spec").
+    #
+    # These don't need copying anyway: the ancestor prim that actually carries the
+    # reference (which does have a direct spec, and IS copied) brings the same content
+    # back on its own once reopened, the same way it does live right now.
     content_paths = sorted(
-        (p.GetPath() for p in tmp_stage.TraverseAll() if p.GetTypeName() != _CHUNK_PRIM_TYPENAME),
+        (
+            p.GetPath() for p in tmp_stage.TraverseAll()
+            if p.GetTypeName() != _CHUNK_PRIM_TYPENAME and not p.IsInstanceProxy() and flat.GetPrimAtPath(p.GetPath())
+        ),
         key=lambda p: p.pathElementCount,
     )
 
