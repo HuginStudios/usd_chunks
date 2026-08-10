@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import gc
 
+from pxr import Sdf, Usd
+
 from usd_chunks import chunk, chunk_notice, chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
@@ -115,5 +117,40 @@ def test_ownerless_connection_still_dispatches() -> None:
     connection = chunk_notice.NoticeConnection(cb, ChunkNoticeAlias.VALUE_CHANGED)
     notice_type = chunk_notice.get_notice(ChunkNoticeAlias.VALUE_CHANGED)
     connection.handle_callback(notice_type(None), "sender-sentinel")
+
+    assert got == ["sender-sentinel"]
+
+
+def test_owner_layer_not_yet_in_stack_dispatches_without_crashing() -> None:
+    """Regression (issue #83): a listen_globally=True callback (edit_target.py's
+    _refresh_edit_target is the real one that hit this) can fire while its owner's
+    get_edit_context() layer is momentarily out of the stage's local layer stack for a
+    reason other than being muted -- recook reordering a graph layer's subLayerPaths,
+    say. Usd.EditContext(stage, ctx) raises Tf.ErrorException ("not in the local
+    LayerStack") in that gap. Unlike the muted case (a dormant chunk that must not
+    author, so handle_callback skips it outright), there's no later retry for this one,
+    so it must still run -- just without the EditContext wrapper around it."""
+    stage = Usd.Stage.CreateInMemory()
+    # Never inserted into stage's layer stack and never muted -- the "not there yet,
+    # not muted either" case handle_callback has to tell apart from being muted.
+    orphan_layer = Sdf.Layer.CreateAnonymous("orphaned")
+
+    class _StageOwner:
+        def get_stage(self):
+            return stage
+
+        def get_edit_context(self):
+            return orphan_layer
+
+    got: list = []
+
+    def cb(notice, sender):
+        got.append(sender)
+
+    owner = _StageOwner()
+    connection = chunk_notice.NoticeConnection(cb, ChunkNoticeAlias.VALUE_CHANGED, owner=owner)
+    notice_type = chunk_notice.get_notice(ChunkNoticeAlias.VALUE_CHANGED)
+
+    connection.handle_callback(notice_type(None), "sender-sentinel")  # must not raise
 
     assert got == ["sender-sentinel"]
