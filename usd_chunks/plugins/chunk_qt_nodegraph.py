@@ -1023,11 +1023,31 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 offset = collapsed_anchor_counts.get(id(anchor), 0)
                 collapsed_anchor_counts[id(anchor)] = offset + 1
                 local += QtCore.QPoint(0, offset * _STEP)
-            elif isinstance(param, core.ChunkVectorBase):
-                hdr = widget.minimize_button
-                local = hdr.mapTo(chunk_widget, QtCore.QPoint(0, hdr.height() // 2))
+            elif widget.isVisible():
+                if isinstance(param, core.ChunkVectorBase):
+                    hdr = widget.minimize_button
+                    local = hdr.mapTo(chunk_widget, QtCore.QPoint(0, hdr.height() // 2))
+                else:
+                    local = widget.mapTo(chunk_widget, QtCore.QPoint(0, widget.height() // 2))
             else:
-                local = widget.mapTo(chunk_widget, QtCore.QPoint(0, widget.height() // 2))
+                # Hidden for a reason that has nothing to do with a collapsed group (e.g.
+                # a param's own HIDDEN state, like Create Layer's Index field only showing
+                # for Insert == "Index") -- Qt stops laying it out once hidden, so its own
+                # position is stale/meaningless rather than just off-screen, and using it
+                # anyway is what put a port floating below the node entirely, disconnected
+                # from anything drawn. Anchor at the nearest visible ContainerWidget
+                # ancestor instead, same as the collapsed-group case above but for a
+                # param hidden on its own rather than by its group.
+                effective: QtWidgets.QWidget | None = None
+                parent = widget.parent()
+                while parent is not None and parent is not chunk_widget:
+                    if isinstance(parent, ContainerWidget) and parent.isVisible():
+                        effective = parent
+                        break
+                    parent = parent.parent()
+                if effective is None:
+                    continue
+                local = effective.mapTo(chunk_widget, QtCore.QPoint(0, effective.height() // 2))
 
             y = _NODE_HEADER_H + local.y()
 
