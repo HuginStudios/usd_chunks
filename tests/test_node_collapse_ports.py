@@ -232,3 +232,74 @@ def test_collapsing_an_inner_group_updates_immediately_and_spaces_wired_ports(gr
     assert scale_min_in is not None and scale_max_in is not None, "connected params must keep a port"
     assert scale_min_in.pos().y() != scale_max_in.pos().y(), "must not stack on the shared group anchor"
     assert node._height < height_before, "the node must shrink once the group collapses"
+
+
+def test_a_plain_hidden_param_gets_no_floating_port(graph) -> None:
+    """Regression: reported live -- a fresh Create Layer node showed two extra ports well
+    below the node's own body, disconnected from anything drawn.
+
+    _place_param_ports's rewrite for the collapsed-group case (see the other tests in
+    this file) accidentally dropped the widget.isVisible() check for every OTHER param --
+    Create Layer's Index field (insert_index) is HIDDEN by default (only shown once
+    Insert == "Index"), is not inside any group at all, so _nearest_collapsed_group finds
+    nothing for it, and it fell straight into the "just use the widget's own position"
+    branch. Qt stops laying out a hidden widget, so that position is stale/meaningless
+    rather than just off-screen -- which is exactly what put a port floating below the
+    node. A param hidden for a reason that isn't a collapsed group must fall back to the
+    nearest visible ContainerWidget ancestor (skipping entirely if there isn't one, as a
+    top-level hidden param like this has none), same as it did before that rewrite."""
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("create_layer")
+    chunk = _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    node = gv.scene()._nodes[get_chunk_prim_path(chunk)]
+    _pump(qapp, 0.3)
+
+    insert_mode = chunk.get_param("insert_mode")
+    assert insert_mode is not None and insert_mode.value == "Append", "Index starts hidden by default"
+
+    node_path = str(node.prim.GetPath())
+    assert node.get_port(f"{node_path}.inputs:insert_index") is None
+    assert node.get_port(f"{node_path}.outputs:insert_index") is None
+
+    # Nothing left over from the hidden field should sit outside the node's own body.
+    for port in node._typed_ports:
+        y = port.pos().y()
+        assert 0 <= y <= node._height, f"{port.attr_path} floats outside the node at y={y}"
+
+
+def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> None:
+    """Regression: reported live -- switching Create Layer's Insert from Append to Index
+    (showing the Index field) and back to Append (hiding it again) left the Index port
+    on screen until something unrelated (deselecting the node) forced a fresh layout
+    pass. Showing it worked fine; only re-hiding didn't update promptly.
+
+    Nothing previously told ChunkNodeItem that a plain param's own HIDDEN state had
+    changed -- PARAM_ADDED/PARAM_REMOVED cover new/removed params, and a group's own
+    toggle_anim.finished covers a *group* collapsing, but a param hidden directly via
+    set_state(HIDDEN) (no group, no animation involved) had nothing wired to it at all,
+    leaving it dependent on geometryChanged happening to fire from the resulting Qt
+    layout change -- which, like the group-collapse case, does not reliably happen for a
+    widget disappearing specifically."""
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("create_layer")
+    chunk = _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    node = gv.scene()._nodes[get_chunk_prim_path(chunk)]
+    _pump(qapp, 0.3)
+
+    node_path = str(node.prim.GetPath())
+    insert_mode = chunk.get_param("insert_mode")
+    assert insert_mode is not None
+
+    insert_mode.value = "Index"
+    _pump(qapp, 0.3)
+    assert node.get_port(f"{node_path}.inputs:insert_index") is not None, "Index must appear once shown"
+
+    insert_mode.value = "Append"
+    _pump(qapp, 0.3)  # no deselect anywhere in this test
+
+    assert node.get_port(f"{node_path}.inputs:insert_index") is None, "Index must disappear once re-hidden"
+    assert node.get_port(f"{node_path}.outputs:insert_index") is None

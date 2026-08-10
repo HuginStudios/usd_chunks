@@ -698,6 +698,16 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._param_removed_conn = NoticeConnection(
             self._on_param_added, ChunkNoticeAlias.PARAM_REMOVED, chunk
         )
+        # A param's own HIDDEN state toggling (e.g. Create Layer's Index field, shown only
+        # for Insert == "Index") needs the same rebuild PARAM_ADDED gets -- reported live:
+        # switching Insert away from "Index" left the Index port sitting there until
+        # something unrelated (deselecting the node) forced a fresh layout pass. Unlike a
+        # group's own collapse animation (toggle_anim.finished, connected in create_proxy),
+        # there's no Qt signal to hang this off at all -- a hide is a direct
+        # set_state(HIDDEN), no animation involved -- so geometryChanged has nothing to
+        # fire from until something else happens to trigger a relayout regardless. Listened
+        # for at the chunk-notice level instead, mirroring _param_conn above.
+        self._param_state_conns = self._build_param_state_conns()
 
         self._build_ports(prim)
         self._apply_usd_pos(prim)
@@ -1023,11 +1033,31 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 offset = collapsed_anchor_counts.get(id(anchor), 0)
                 collapsed_anchor_counts[id(anchor)] = offset + 1
                 local += QtCore.QPoint(0, offset * _STEP)
-            elif isinstance(param, core.ChunkVectorBase):
-                hdr = widget.minimize_button
-                local = hdr.mapTo(chunk_widget, QtCore.QPoint(0, hdr.height() // 2))
+            elif widget.isVisible():
+                if isinstance(param, core.ChunkVectorBase):
+                    hdr = widget.minimize_button
+                    local = hdr.mapTo(chunk_widget, QtCore.QPoint(0, hdr.height() // 2))
+                else:
+                    local = widget.mapTo(chunk_widget, QtCore.QPoint(0, widget.height() // 2))
             else:
-                local = widget.mapTo(chunk_widget, QtCore.QPoint(0, widget.height() // 2))
+                # Hidden for a reason that has nothing to do with a collapsed group (e.g.
+                # a param's own HIDDEN state, like Create Layer's Index field only showing
+                # for Insert == "Index") -- Qt stops laying it out once hidden, so its own
+                # position is stale/meaningless rather than just off-screen, and using it
+                # anyway is what put a port floating below the node entirely, disconnected
+                # from anything drawn. Anchor at the nearest visible ContainerWidget
+                # ancestor instead, same as the collapsed-group case above but for a
+                # param hidden on its own rather than by its group.
+                effective: QtWidgets.QWidget | None = None
+                parent = widget.parent()
+                while parent is not None and parent is not chunk_widget:
+                    if isinstance(parent, ContainerWidget) and parent.isVisible():
+                        effective = parent
+                        break
+                    parent = parent.parent()
+                if effective is None:
+                    continue
+                local = effective.mapTo(chunk_widget, QtCore.QPoint(0, effective.height() // 2))
 
             y = _NODE_HEADER_H + local.y()
 
@@ -1477,17 +1507,48 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             else ""
         )
 
+    def _build_param_state_conns(self) -> "list[NoticeConnection]":
+        """One STATE_CHANGED listener per connectable param, so a param's own HIDDEN
+        toggling triggers a port rebuild the same way PARAM_ADDED/PARAM_REMOVED already
+        do. Rebuilt (not just added to) on every param add/remove -- see _on_param_added --
+        since a param.get_attribute_sender("state") for a since-removed param is dead
+        weight, and a newly added one needs its own connection to begin with.
+        """
+        return [
+            NoticeConnection(
+                self._on_param_state_changed, ChunkNoticeAlias.STATE_CHANGED, param.get_attribute_sender("state")
+            )
+            for param in _iter_connectable_params(self.chunk)
+        ]
+
+    def _kick_port_rebuild(self):
+        if self._port_rebuild_timer is not None:
+            self._port_rebuild_timer.start()
+        else:
+            # Proxy not built yet -- create_proxy()'s own initial _rebuild_typed_ports()
+            # call will pick up the change once it runs (_rebuild_typed_ports no-ops
+            # safely if the proxy still isn't there by then).
+            QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
+
     def _on_param_added(self, notice, sender):
         # Same defensive pattern as _on_state_changed: this is a global per-chunk callback
         # and can arrive after the node/proxy has already been torn down.
         try:
-            if self._port_rebuild_timer is not None:
-                self._port_rebuild_timer.start()
-            else:
-                # Proxy not built yet -- create_proxy()'s own initial _rebuild_typed_ports()
-                # call will pick up the new param once it runs (_rebuild_typed_ports no-ops
-                # safely if the proxy still isn't there by then).
-                QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
+            # The param set changed, so the per-param state listeners need refreshing too
+            # -- a removed param's connection is dead weight, and a newly added one needs
+            # its own connection to have its later HIDDEN toggles noticed at all.
+            self._param_state_conns = self._build_param_state_conns()
+            self._kick_port_rebuild()
+        except RuntimeError:
+            return
+
+    def _on_param_state_changed(self, notice, sender):
+        # Just the rebuild -- the param SET didn't change here, only one of their STATE
+        # bits, so there's nothing for _build_param_state_conns to do (and rebuilding the
+        # very list this connection lives in from inside its own dispatch would be an
+        # unnecessary, self-referential churn for every single HIDDEN toggle).
+        try:
+            self._kick_port_rebuild()
         except RuntimeError:
             return
 
