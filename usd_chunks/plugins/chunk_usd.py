@@ -1828,10 +1828,17 @@ def _prim_edit_target_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.Layer 
 
 def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
     """Breadth-first walk of the exec chain (inputs:chunk connections) upstream from
-    start, yielding each reachable (path, prim) exactly once, start itself excluded.
-    prim may be invalid (dangling connection) — such nodes are yielded but not walked
-    through. Shared by every "look upstream" consumer so the traversal semantics
+    start, yielding each reachable (path, prim, unbranched) exactly once, start itself
+    excluded. prim may be invalid (dangling connection) — such nodes are yielded but not
+    walked through. Shared by every "look upstream" consumer so the traversal semantics
     (dedup, ordering, dangling handling) live in one place.
+
+    unbranched says everything visited up to and including this node forms a single chain
+    start -> ... -> node, with no level holding more than one node. That is the condition
+    under which "what does the walk from here find" is the same question as "what does the
+    walk from start find", which is what lets nearest_upstream_edit_layer share one answer
+    along the run instead of re-deriving it per node. It goes False for good at the first
+    fork and never comes back.
 
     Deliberately exec-only (inputs:chunk), NOT the exec+data walk get_exec_upstream_chunks
     does: Edit Target resolution follows the execution chain that actually defines
@@ -1839,12 +1846,13 @@ def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
     points shouldn't drag its Edit Target upstream. The two are separate on purpose."""
     seen = {start}
     frontier = [start]
+    unbranched = True
     while frontier:
         next_frontier: list = []
         for path in frontier:
             p = stage.GetPrimAtPath(path)
             if path != start:
-                yield path, p
+                yield path, p, unbranched
             if not (p and p.IsValid()):
                 continue
             exec_in = p.GetAttribute(_EXEC_INPUT)
@@ -1854,11 +1862,13 @@ def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
                     if conn_prim not in seen:
                         seen.add(conn_prim)
                         next_frontier.append(conn_prim)
+        unbranched = unbranched and len(next_frontier) == 1
         frontier = next_frontier
 
 
 _edit_layer_memo: "dict[str, Sdf.Layer]" = {}
 _edit_layer_memo_stage: "weakref.ref | None" = None
+_edit_layer_memo_frozen = False
 
 
 def invalidate_edit_layer_memo() -> None:
@@ -1868,8 +1878,37 @@ def invalidate_edit_layer_memo() -> None:
     it walks (an inputs:chunk connection appearing, moving or being healed away), the Edit
     Target markers it looks for, or the stage's layer stack (a marker only counts while the
     layer it names is actually composed).
+
+    Two kinds of write are exempt, both because they provably cannot move an answer: a
+    frozen block (see freeze_edit_layer_memo) and ChunkLayerManager rearranging its own
+    internal layers (see chunk_notice._internal_layer_write_active).
     """
+    if _edit_layer_memo_frozen or chunk_notice._internal_layer_write_active:
+        return
     _edit_layer_memo.clear()
+
+
+@contextlib.contextmanager
+def freeze_edit_layer_memo():
+    """Hold the memo across a block whose writes provably cannot move any answer.
+
+    Only for authoring that rearranges *where* an already-composed opinion is stored —
+    _migrate_chunk_bookkeeping's per-property strong -> weak consolidation, which by
+    construction leaves both inputs:chunk and chunk:editTargetLayer composing exactly what
+    they composed before. Those writes still resync prims, so without this every migration
+    in a pass throws away the answers the pass just computed, and each of the next chunk's
+    answers is re-walked from scratch up the whole chain above it.
+
+    Never wrap a block that can author a new chunk prim, an exec connection or a layer
+    stack change: those are the three things the memo is a cache of.
+    """
+    global _edit_layer_memo_frozen
+    prev = _edit_layer_memo_frozen
+    _edit_layer_memo_frozen = True
+    try:
+        yield
+    finally:
+        _edit_layer_memo_frozen = prev
 
 
 def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.Layer | None":
@@ -1911,15 +1950,29 @@ def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.La
         return memoised
 
     result = session
-    for _path, p in _iter_exec_upstream(stage, prim.GetPath()):
+    # Every node on an unbranched run above prim has this same answer, so the walk both
+    # stops at the first one already memoised and leaves the answer on the rest. Without
+    # that the memo only ever holds the node that was asked about, and a chain restored or
+    # reconciled node by node re-walks the whole thing above each one in turn.
+    shared: "list[str]" = []
+    for path, p, unbranched in _iter_exec_upstream(stage, prim.GetPath()):
         if not (p and p.IsValid()):
             continue
         layer = _prim_edit_target_layer(stage, p)
         if layer is not None:
             result = layer
             break
+        if not unbranched:
+            continue
+        upstream_key = str(path)
+        if (upstream := _edit_layer_memo.get(upstream_key)) is not None:
+            result = upstream
+            break
+        shared.append(upstream_key)
 
     _edit_layer_memo[key] = result
+    for shared_key in shared:
+        _edit_layer_memo[shared_key] = result
     return result
 
 
@@ -2184,7 +2237,8 @@ def restore_edit_target_selections(
     def _upstream_et_count(chunk) -> int:
         start = Sdf.Path(get_chunk_prim_path(chunk))
         return sum(
-            1 for path, _p in _iter_exec_upstream(stage, start) if str(path) in et_paths
+            1 for path, _p, _unbranched in _iter_exec_upstream(stage, start)
+            if str(path) in et_paths
         )
 
     # Resolve each stored selection BEFORE applying any of them. Applying one target's value

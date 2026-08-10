@@ -1364,7 +1364,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # — seen live in CI as a genuine, if intermittent, "Duplicate item ... not allowed for
         # field 'subLayers'" Sdf error on the exact same graph layer being inserted twice.
         prev_w = chunk_notice._usd_write_active
+        prev_internal = chunk_notice._internal_layer_write_active
         chunk_notice._usd_write_active = True
+        # Everything sublayered below is a graph layer or a chunk's own procedural layer, so
+        # none of it can change which Edit Target a chunk resolves to — see the flag's own
+        # comment. Set alongside _usd_write_active because the Edit Target memo is dropped
+        # ahead of that flag's bail-out, deliberately: an ordinary suppressed sublayer edit
+        # still moves a real layer in or out of the stack, and this one does not.
+        chunk_notice._internal_layer_write_active = True
         try:
             if not (parent := self.graph_layers.get(graph_key)):
                 parent = Sdf.Layer.CreateAnonymous(f"graph_{graph_id}")
@@ -1437,6 +1444,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                             break
         finally:
             chunk_notice._usd_write_active = prev_w
+            chunk_notice._internal_layer_write_active = prev_internal
 
         return layer
 
