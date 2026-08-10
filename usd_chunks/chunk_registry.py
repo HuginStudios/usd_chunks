@@ -1139,6 +1139,37 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 self.scene.add_chunks(chunks)
 
 
+# Layer metadata key marking a layer as the chunk graph's own — see
+# mark_chunk_internal_layer.
+_CHUNK_INTERNAL_LAYER_KEY = "chunkInternal"
+
+
+def mark_chunk_internal_layer(layer: Sdf.Layer) -> None:
+    """Record on the layer itself that the chunk graph owns it.
+
+    "Internal" means a per-chunk procedural layer or a graph layer grouping them: content
+    the chunk system Clear()s and regenerates, never something a user picks as an Edit
+    Target or exports, and never somewhere a chunk's bookkeeping may be hand-moved.
+
+    Stored as layer metadata rather than derived by walking the layer manager's tracked
+    layers, because the derived form has to be recomputed against live subLayerPaths every
+    time it is asked — which is per chunk on the paths that ask, and the layer stack grows
+    with the graph. Caching that derivation has been tried and is unsafe: nothing notifies
+    when a layer is created, so the cache goes stale with no signal. A mark on the layer
+    cannot go stale, and it travels with the layer wherever it gets sublayered.
+
+    These layers are always anonymous, so this is never written to a file.
+    """
+    data = dict(layer.customLayerData)
+    data[_CHUNK_INTERNAL_LAYER_KEY] = True
+    layer.customLayerData = data
+
+
+def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
+    """Whether the chunk graph owns this layer — see mark_chunk_internal_layer."""
+    return bool(layer and layer.customLayerData.get(_CHUNK_INTERNAL_LAYER_KEY))
+
+
 def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
     """parent's subLayerPaths with identifier dropped, order preserved, duplicates collapsed.
 
@@ -1375,6 +1406,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         try:
             if not (parent := self.graph_layers.get(graph_key)):
                 parent = Sdf.Layer.CreateAnonymous(f"graph_{graph_id}")
+                mark_chunk_internal_layer(parent)
                 self.graph_layers[graph_key] = parent
                 self._graph_layer_target[graph_key] = target
                 # Insert at the top so this graph's layers win over other sublayers already on
@@ -1483,6 +1515,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         layer_id = c.get_layer_identifier()
         layer = Sdf.Layer.CreateAnonymous(layer_id)
+        mark_chunk_internal_layer(layer)
 
         self.chunk_layers[h] = layer
         target_layer.subLayerPaths.insert(index, layer.identifier)

@@ -2073,11 +2073,15 @@ def _migratable_layers(stage: "Usd.Stage") -> "list[Sdf.Layer]":
     size of the layer stack, and the layer stack grows with the graph: every chunk carries
     a procedural layer. Recomputed per chunk, it makes a whole-scene pass quadratic on
     exactly the graphs that pass exists to keep correct.
+
+    Each layer is asked directly whether the chunk system owns it, rather than matched
+    against a set collected by walking every tracked layer's sublayers. Collecting that set
+    is itself proportional to the graph, and this runs once per pass, of which there is one
+    per wire — so the walk was most of the cost of building a graph's worth of them.
     """
-    internal = chunk_utils.chunk_internal_layer_ids()
     return [
         layer for layer in stage.GetLayerStack(includeSessionLayers=True)
-        if layer.identifier not in internal
+        if not chunk_registry.is_chunk_internal_layer(layer)
     ]
 
 
