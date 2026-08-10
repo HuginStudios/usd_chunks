@@ -409,15 +409,28 @@ def test_import_as_sublayer_writes_sublayer_paths_even_with_an_active_view(graph
     assert gv.scene()._stage.IsLayerMuted(edit_layer.identifier)
 
 
-def test_handle_dropped_file_skips_prompt_for_plain_scene(graph, tmp_path, monkeypatch) -> None:
+def test_handle_dropped_file_prompts_for_plain_scene_without_a_chunks_option(graph, tmp_path, monkeypatch) -> None:
+    """A plain scene (no chunk prims) used to skip the popup entirely and silently import as
+    Sublayer -- reasonable when Sublayer was the only real choice, but it would make
+    "Import as Reference" unreachable for the single most common drop (a plain USD asset)
+    now that it's an option. The popup shows either way; only "Import as Chunks" (which
+    needs actual chunk prims to mean anything) stays conditional on the file having some."""
     qapp, reg, scene, docker = graph
     _, gv, _, _ = _make_nodes(graph)  # forces a tab (and its graph view) to exist
 
-    def _fail_prompt(*_a, **_k):
-        raise AssertionError("should not prompt for an unambiguous plain scene")
-    monkeypatch.setattr(gv, "_prompt_import_kind", _fail_prompt)
+    seen_menus: list = []
 
-    scene_path = tmp_path / "no_prompt_scene.usda"
+    def _record_and_pick(text):
+        def _exec(menu, _pos):
+            seen_menus.append([act.text() for act in menu.actions()])
+            for act in menu.actions():
+                if act.text() == text:
+                    return act
+            return None
+        return _exec
+    monkeypatch.setattr(gv, "_exec_menu", _record_and_pick("Import as Sublayer"))
+
+    scene_path = tmp_path / "prompted_plain_scene.usda"
     plain_stage = Usd.Stage.CreateNew(str(scene_path))
     plain_stage.DefinePrim("/geo", "Xform")
     plain_stage.GetRootLayer().Save()
@@ -425,11 +438,80 @@ def test_handle_dropped_file_skips_prompt_for_plain_scene(graph, tmp_path, monke
     gv._handle_dropped_file(str(scene_path), QtCore.QPointF(11000, 11000), QtCore.QPoint(0, 0))
     _pump(qapp, 0.3)
 
+    assert seen_menus, "a plain scene must still prompt now that there's a real choice to make"
+    assert "Import as Chunks" not in seen_menus[0], "no chunk prims means this option would be a dead end"
+    assert "Import as Reference" in seen_menus[0]
+
     sublayer_chunks = [c for c in scene.get_chunks() if c.get_config() and c.get_config().module == "sublayer"]
     assert any(
         c.get_param("imports").get_indexed_param("sublayer_path", 0).value == str(scene_path)
         for c in sublayer_chunks
     )
+
+
+def test_import_as_reference_creates_prefilled_node(graph, tmp_path) -> None:
+    qapp, reg, scene, docker = graph
+    _, gv, _, _ = _make_nodes(graph)  # forces a tab (and its graph view) to exist
+
+    scene_path = tmp_path / "friend_asset.usda"
+    friend_stage = Usd.Stage.CreateNew(str(scene_path))
+    friend_stage.DefinePrim("/geo", "Xform")
+    friend_stage.GetRootLayer().Save()
+
+    gv._import_as_reference(str(scene_path), QtCore.QPointF(20000, 20000))
+    _pump(qapp, 0.3)
+
+    ref_chunks = [c for c in scene.get_chunks() if c.get_config() and c.get_config().module == "reference"]
+    assert len(ref_chunks) == 1
+    ref = ref_chunks[0]
+    assert ref.get_param("file_path").value == str(scene_path)
+
+    # file_changed (reference.py's own param callback) derives this from the asset's name.
+    prim_path = ref.get_param("primpath_location").value
+    assert prim_path
+
+    prim = gv.scene()._stage.GetPrimAtPath(prim_path)
+    assert prim.IsValid()
+    assert prim.HasAuthoredReferences()
+
+
+def test_import_as_reference_authors_even_with_an_active_view(graph, tmp_path) -> None:
+    """Mirrors test_import_as_sublayer_writes_sublayer_paths_even_with_an_active_view:
+    Reference's real work runs on the reserved execute() hook, which a blocked chunk skips
+    entirely -- so if _import_as_reference blocked the chunk before setting file_path (the
+    way _materialize_at does for Create Layer), the reference would just never get
+    authored at all. It must stay unblocked while setting the value, then only get
+    blocked+muted afterward, as a side effect of the view recook that hides it for being
+    unconnected."""
+    qapp, reg, scene, docker = graph
+    _, gv, _, nodes = _make_nodes(graph)  # forces a tab (and its graph view) to exist
+    (existing,) = nodes
+    gv._create_view_node_for_prim(get_chunk_prim_path(existing.chunk))
+    _pump(qapp, 0.3)
+    assert gv._context_has_view(scene, gv._graph_context())
+
+    scene_path = tmp_path / "friend_asset2.usda"
+    friend_stage = Usd.Stage.CreateNew(str(scene_path))
+    friend_stage.DefinePrim("/geo", "Xform")
+    friend_stage.GetRootLayer().Save()
+
+    gv._import_as_reference(str(scene_path), QtCore.QPointF(21000, 21000))
+    _pump(qapp, 0.3)
+
+    ref_chunks = [c for c in scene.get_chunks() if c.get_config() and c.get_config().module == "reference"]
+    assert len(ref_chunks) == 1
+    ref = ref_chunks[0]
+    prim_path = ref.get_param("primpath_location").value
+    assert prim_path
+
+    edit_layer = ref.get_edit_context()
+    assert edit_layer is not None
+    assert edit_layer.GetPrimAtPath(prim_path) is not None, "execute() must have run before the mute"
+
+    # Regression-shaped guard: a dropped, deliberately-unconnected Reference must not render
+    # in the viewport either, same as the equivalent Sublayer case.
+    assert ref.is_blocked()
+    assert gv.scene()._stage.IsLayerMuted(edit_layer.identifier)
 
 
 def test_import_view_targets_imported_tail_not_unrelated_existing_node(graph) -> None:
