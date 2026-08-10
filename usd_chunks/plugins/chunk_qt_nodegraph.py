@@ -802,6 +802,18 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # Initial port placement is triggered explicitly below so it doesn't
         # depend on geometryChanged firing at the right time relative to the connection.
         self._proxy.geometryChanged.connect(self._port_rebuild_timer.start)
+        # Belt and suspenders for a NESTED group's own collapse/expand: geometryChanged
+        # is supposed to cover this too (a group's content resizing should resize the
+        # whole chunk_widget in turn), but was observed live to not reliably do so for a
+        # collapse specifically (expand was fine) -- animation_finished's SetNoConstraint
+        # vs SetMinAndMaxSize switch on content_layout looks like the likely culprit,
+        # leaving the node showing stale, overlapping ports until something unrelated
+        # (e.g. deselecting, which _set_collapsed's own branch happens to also kick a
+        # rebuild for) forced a fresh layout pass. Connecting directly to each group's own
+        # animation-finished signal sidesteps depending on that propagation working.
+        for nested in chunk_widget.findChildren(ContainerWidget):
+            if nested.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
+                nested.toggle_anim.finished.connect(self._port_rebuild_timer.start)
         QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
 
     def _rebuild_typed_ports(self):
@@ -873,18 +885,83 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._height = needed
                 self.prepareGeometryChange()
 
+    def _connected_param_names(self) -> "set[str]":
+        """Names of connectable params with a real wire touching them, either end.
+
+        Collapsed nodes have no visible per-param widgets to hang ports off, so this is
+        what decides which ports still get shown (see _place_param_ports_collapsed) --
+        an unwired param has nothing to point at and no reason to take up room.
+
+        A param's inputs:X attr carries the connection when THIS node is the one being
+        fed (checked directly); when this node instead feeds something downstream, the
+        connection lives on the OTHER prim's inputs:Y attr pointing back at our
+        outputs:X, so that side needs a reverse lookup. Scoped to scene._nodes (the
+        currently-built context) rather than a whole-stage traverse -- the same universe
+        _build_edges draws wires for, and cheap since it only runs on collapse/rebuild,
+        not per frame.
+        """
+        names = {
+            attr_name[len("inputs:"):]
+            for attr_name, _, _ in _iter_prim_connections(self.prim)
+        }
+        scene = self.scene()
+        if isinstance(scene, ChunkGraphScene):
+            my_path = str(self.prim.GetPath())
+            for node in scene._nodes.values():
+                for _, src_prim_path, src_attr_suffix in _iter_prim_connections(node.prim):
+                    if src_prim_path == my_path and src_attr_suffix.startswith("outputs:"):
+                        names.add(src_attr_suffix[len("outputs:"):])
+        return names
+
+    def _nearest_collapsed_group(self, param) -> "core.ChunkCommon | None":
+        """The outermost Group between param and self.chunk that's currently collapsed, or
+        None if none of them are.
+
+        Outermost rather than nearest: a port anchored at a collapsed group two levels
+        deep would itself be invisible/meaningless if the group ABOVE it is also
+        collapsed, so the walk keeps going and the last (closest-to-chunk) collapsed
+        ancestor found wins.
+        """
+        owner = param.get_owner()
+        found = None
+        while owner is not None and owner is not self.chunk:
+            # The chain alternates ChunkCommon groups with their own NameSyncedContainer
+            # (which owns the group's children but isn't itself a group and has no state
+            # of its own) -- only the former can be collapsed.
+            if isinstance(owner, core.ChunkCommon) and owner.has_state(ChunkFlags.State.COLLAPSED):
+                found = owner
+            owner = owner.get_owner()
+        return found
+
     def _place_param_ports_collapsed(self):
+        # Everything else on a collapsed node's edge (the exec in/out ports) already sits
+        # at header centre, so a wired param's ports start one step below it rather than
+        # on top of it -- overlapping there is the same "wrong port" bug as overlapping
+        # each other, just with the exec port instead of a sibling data port.
+        _STEP = _PORT_RADIUS * 2 + 8
+        self._height = _NODE_HEADER_H
+        self.prepareGeometryChange()
+        connected = self._connected_param_names()
+        y = _NODE_HEADER_H // 2
         for param in _iter_connectable_params(self.chunk):
+            if param.name not in connected:
+                continue
+            y += _STEP
             ptype = _param_port_type(param)
             in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self)
-            in_port.setPos(0, _NODE_HEADER_H // 2)
+            in_port.setPos(0, y)
             self._ports.append(in_port)
             self._typed_ports.append(in_port)
             out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self)
-            out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+            out_port.setPos(_NODE_WIDTH, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
-        self._place_prim_output_ports(_NODE_HEADER_H // 2, extend_height=False)
+        if y > _NODE_HEADER_H // 2:
+            needed = y + _PORT_RADIUS + 4
+            if needed > self._height:
+                self._height = needed
+                self.prepareGeometryChange()
+        self._place_prim_output_ports(self._height, extend_height=True)
 
     def _place_param_ports(self, chunk_widget: QtWidgets.QWidget):
 
@@ -898,11 +975,32 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             for w in chunk_widget.findChildren(QtWidgets.QWidget)
             if isinstance(w, core.ChunkParamWidgetBase)
         }
-        vector_widgets = {
+        containers_by_group = {
             w.group: w
             for w in chunk_widget.findChildren(ContainerWidget)
-            if isinstance(getattr(w, 'group', None), core.ChunkVectorBase)
         }
+        vector_widgets = {
+            group: w for group, w in containers_by_group.items()
+            if isinstance(group, core.ChunkVectorBase)
+        }
+
+        # A param inside a collapsed group has no meaningful widget position to point a
+        # port at, so it falls back to that group's own header below -- and unlike the
+        # normal case, several params can share one such anchor. An unconnected one gets
+        # no port at all there (nothing to point at, and it declutters exactly the way
+        # collapsing the whole node already does for its own unwired ports); a connected
+        # one still needs one, staggered below the anchor so two sharing it don't land on
+        # the same pixel -- previously they did, and whichever ended up topmost silently
+        # ate every drag aimed at the other one's port.
+        #
+        # Checked against the chunk-level state model (has_state(COLLAPSED) walked up
+        # param's own owner chain), not widget.isVisible(): a collapsed ContainerWidget
+        # shrinks its content via a fixed height of 0, not .hide(), so its descendants
+        # stay isVisible() == True in Qt's own terms the whole time -- that can't be used
+        # as a stand-in for "the group is visually collapsed".
+        _STEP = _PORT_RADIUS * 2 + 8
+        connected = self._connected_param_names()
+        collapsed_anchor_counts: dict = {}
 
         for param in _iter_connectable_params(self.chunk):
             if isinstance(param, core.ChunkVectorBase):
@@ -914,25 +1012,22 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
             ptype = _param_port_type(param)
 
-            if widget.isVisible():
-                if isinstance(param, core.ChunkVectorBase):
-                    hdr = widget.minimize_button
-                    local = hdr.mapTo(chunk_widget, QtCore.QPoint(0, hdr.height() // 2))
-                else:
-                    local = widget.mapTo(chunk_widget, QtCore.QPoint(0, widget.height() // 2))
-            else:
-                # Param lives inside a collapsed group — walk up to find the nearest
-                # visible ContainerWidget and place the port there instead.
-                effective: QtWidgets.QWidget | None = None
-                parent = widget.parent()
-                while parent is not None and parent is not chunk_widget:
-                    if isinstance(parent, ContainerWidget) and parent.isVisible():
-                        effective = parent
-                        break
-                    parent = parent.parent()
-                if effective is None:
+            collapsed_group = self._nearest_collapsed_group(param)
+            if collapsed_group is not None:
+                if param.name not in connected:
                     continue
-                local = effective.mapTo(chunk_widget, QtCore.QPoint(0, effective.height() // 2))
+                anchor = containers_by_group.get(collapsed_group)
+                if anchor is None:
+                    continue
+                local = anchor.mapTo(chunk_widget, QtCore.QPoint(0, anchor.height() // 2))
+                offset = collapsed_anchor_counts.get(id(anchor), 0)
+                collapsed_anchor_counts[id(anchor)] = offset + 1
+                local += QtCore.QPoint(0, offset * _STEP)
+            elif isinstance(param, core.ChunkVectorBase):
+                hdr = widget.minimize_button
+                local = hdr.mapTo(chunk_widget, QtCore.QPoint(0, hdr.height() // 2))
+            else:
+                local = widget.mapTo(chunk_widget, QtCore.QPoint(0, widget.height() // 2))
 
             y = _NODE_HEADER_H + local.y()
 
@@ -1336,21 +1431,24 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def _set_collapsed(self, collapsed: bool):
         self.prepareGeometryChange()
-        self._height = _NODE_HEADER_H if collapsed else self._full_height
         if self._proxy is not None:
             self._proxy.setVisible(not collapsed)
         if collapsed:
-            # Move typed ports to header centre so edges still connect to the node.
-            for port in self._typed_ports:
-                x = 0 if ".inputs:" in port.attr_path else _NODE_WIDTH
-                port.setPos(x, _NODE_HEADER_H // 2)
-        elif self._port_rebuild_timer is not None:
-            # Recompute port positions from widget geometry now that proxy is visible.
-            self._port_rebuild_timer.start()
+            # Rebuild rather than reposition: the old code moved every existing typed
+            # port straight onto the header centre point, which is also where the exec
+            # ports already live -- every data port for every param, connected or not,
+            # ended up stacked on that one pixel along with them. Whichever port item
+            # was topmost then ate all hover/click, so a wire could look like it landed
+            # on the wrong port entirely, and the node never grew to fit anything either.
+            # A full rebuild both drops unwired ports (nothing to show) and spaces the
+            # wired ones out (see _place_param_ports_collapsed), same as an expand does.
+            self._rebuild_typed_ports()
+        else:
+            self._height = self._full_height
+            if self._port_rebuild_timer is not None:
+                # Recompute port positions from widget geometry now that proxy is visible.
+                self._port_rebuild_timer.start()
         self.update()
-        scene = self.scene()
-        if scene:
-            scene.update_edges_for(self)
 
     def _on_state_changed(self, notice, sender):
         # This is a global STATE_CHANGED callback and can arrive after the node's chunk was
