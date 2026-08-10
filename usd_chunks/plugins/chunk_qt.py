@@ -16,7 +16,7 @@ from usd_chunks.plugins.chunk_qt_widgets import (
     source_code_dial,
     FilterableChunkMenu,
     file_dial,
-    CHUNK_STYLESHEET,
+    apply_chunk_stylesheet,
     ViewSlotState,
     _clean_description,
 )
@@ -25,6 +25,7 @@ from usd_chunks.plugins.chunk_qt_widgets import (
 # import against, so the widget API stays reachable as chunk_qt.<Name> even though it
 # now lives in chunk_qt_widgets.
 from usd_chunks.plugins.chunk_qt_widgets import (
+    CHUNK_STYLESHEET,  # noqa: F401
     SyntaxHighlighter,  # noqa: F401
     ChunkSliderWidget,  # noqa: F401
     ChunkFloatSpinboxWidget,  # noqa: F401
@@ -667,7 +668,9 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
         registry = chunk_registry.ChunkRegistry()
-        self.setStyleSheet(CHUNK_STYLESHEET)
+        # Applied before any chunk widget exists below it, so every one of them inherits it
+        # by cascade instead of re-applying the whole sheet to its own finished tree.
+        apply_chunk_stylesheet(self)
 
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 

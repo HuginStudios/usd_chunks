@@ -101,7 +101,56 @@ QSlider::sub-page:horizontal {
 QRangeSlider {
     qproperty-barColor: #202020;
 }
+.ChunkWidget {
+    border: 0px solid transparent;
+    border-radius: 0px;
+}
+.ChunkWidget[chunkSelected="true"] {
+    border: 1px solid #cab46a;
+    border-radius: 1px;
+}
 """
+
+# Marks a widget that carries CHUNK_STYLESHEET, so nothing below it applies it again.
+_SHEET_FLAG = "_chunk_sheet_applied"
+# Marks a class that always styles itself, so a descendant can skip *before* the ancestor
+# has actually got round to it. ChunkWidget applies the sheet at the end of its own
+# __init__, which is after its children have been built and asked this question.
+_SELF_STYLING = "_chunk_styles_self"
+
+
+def apply_chunk_stylesheet(widget: QtWidgets.QWidget) -> bool:
+    """
+    Give widget CHUNK_STYLESHEET, unless something above it already covers it.
+
+    What matters is that exactly *one* widget per tree carries the sheet. Qt merges every
+    ancestor sheet into each descendant's style resolution, so a second copy further down
+    buys nothing and makes resolving the whole subtree dearer: applying it to all ten
+    ChunkWidgets of a nine-page shader instead of the outermost one measured 175ms against
+    117ms for the same tree.
+
+    Args:
+        widget (QtWidgets.QWidget): The widget to style
+
+    Returns:
+        bool: True if the sheet was applied, False if it was already covered
+    """
+    if getattr(widget, _SHEET_FLAG, False):
+        return False
+
+    parent = widget.parentWidget()
+    while parent is not None:
+        if getattr(parent, _SHEET_FLAG, False) or getattr(parent, _SELF_STYLING, False):
+            # Deliberately not flagged on widget itself: it may be reparented out from
+            # under this ancestor later (the node graph builds under a sink, then
+            # detaches), and would need a sheet of its own at that point.
+            return False
+        parent = parent.parentWidget()
+
+    setattr(widget, _SHEET_FLAG, True)
+    widget.setStyleSheet(CHUNK_STYLESHEET)
+    return True
+
 
 class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
     def __init__(self, parent, chunk_highlighter: chunk_core.SyntaxHighlightMapping):
@@ -401,6 +450,12 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         self.button.setHidden(not self.param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION))
 
         self.setup_chunk_widget()
+        # This widget has no parent yet, so it is a top-level window: the set_hidden(False)
+        # inside update_from_state() below would be a show(), flashing a real OS window for
+        # every param a chunk builds. Suppressed here rather than in create_widget, which
+        # only gets the object back after __init__ has already shown it. Cleared by
+        # ContainerWidget.add_widget once the widget is parented.
+        self.setAttribute(QtCore.Qt.WA_DontShowOnScreen, True)
         # setup_chunk_widget() doesn't call update_from_state() and the reactive
         # ATTRIBUTE_CHANGED/state path isn't reliable for state set before this widget
         # existed (e.g. a ListGroup template's DISABLED state, already set when each
@@ -768,9 +823,27 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
         is_output = self.param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
         self.set_enabled(not is_output and not self.param.has_state(ChunkFlags.State.DISABLED))
 
+    def _dialog_parent(self):
+        """A real top-level window to hang the colour dialog off.
+
+        On the Params panel window() is the usdview window and everything is normal. On
+        the graph this widget is embedded in a QGraphicsProxyWidget — reparented to None
+        and flagged WA_DontShowOnScreen — so window() returns the swatch itself, and a
+        dialog parented to a widget that is never shown on screen comes up blank and
+        mis-sized. Fall back to whatever window is actually active.
+        """
+        win = self.window()
+        if (
+            win is not None
+            and win is not self
+            and not win.testAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen)
+        ):
+            return win
+        return QtWidgets.QApplication.activeWindow()
+
     def _open_dialog(self):
         color = QtWidgets.QColorDialog.getColor(
-            self._qcolor(), self, "Pick Color",
+            self._qcolor(), self._dialog_parent(), "Pick Color",
             QtWidgets.QColorDialog.ColorDialogOption.DontUseNativeDialog,
         )
         if color.isValid():
@@ -813,6 +886,14 @@ class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
             return None
 
         widget: ChunkParamWidgetBase = widget_class(param)
+
+        # A widget with no parent is a top-level window, so anything that makes it visible
+        # before it reaches a layout shows a real window on screen — which is what a chunk
+        # built at runtime does, one flash per param. Suppressed here and cleared in
+        # ContainerWidget.add_widget once the LabeledWidget has parented it, the same
+        # guard the node graph and delete_self already use.
+        if isinstance(widget, QtWidgets.QWidget):
+            widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen, True)
 
         if param.tooltip and isinstance(widget, QtWidgets.QWidget):
             widget.setToolTip(param.tooltip)
@@ -1051,8 +1132,9 @@ class ContainerWidget(
         group,
         parent=None,
     ):
-        self.animation_duration = 300
+        self.animation_duration = 25
         self._animation_value = 0
+        self._anim_target_h: Optional[int] = None  # content height, measured per animation
         self._depth = 0
         super().__init__(group, parent=parent)
         # When Qt destroys this widget — e.g. the node graph rebuild calls deleteLater on the
@@ -1110,6 +1192,10 @@ class ContainerWidget(
         self.toggle_anim = QtCore.QPropertyAnimation(self, b"animation_value")
         self.toggle_anim.setStartValue(0)
         self.toggle_anim.setEndValue(self.animation_duration)
+        # Kept: without it the animation runs at QPropertyAnimation's 250ms default and
+        # animation_duration is only the value range the height scales against, so setting
+        # that number has never changed how long a group takes to open.
+        self.toggle_anim.setDuration(self.animation_duration)
 
         self.toggle_anim_curve = QtCore.QEasingCurve(QtCore.QEasingCurve.Type.OutExpo)
         self.toggle_anim.setEasingCurve(self.toggle_anim_curve)
@@ -1131,6 +1217,11 @@ class ContainerWidget(
     def _update_group_depth(self):
         depth = len(self.group.get_identifier().split("."))
         bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
+        # Two setStyleSheet calls per container, each re-polishing its whole subtree —
+        # collectively the single most expensive thing in building a chunk. The colour only
+        # depends on nesting depth, so re-applying the same one repaints for nothing.
+        if bg == getattr(self, "_group_bg", None):
+            return
         self._group_bg = bg
 
         self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
@@ -1151,11 +1242,22 @@ class ContainerWidget(
         self._animation_value = val
         scale = max(self._animation_value / self.animation_duration, 0)
 
-        h = self.content_layout.sizeHint().height()
+        # The height is fixed for the duration of a collapse or expand -- the content is
+        # not changing, only how much of it shows. Recomputing sizeHint() on every one of
+        # ~18 frames re-measures the whole child layout each time, which is what makes
+        # opening a section with many params feel slow. Measured once at animation start
+        # by set_expanded; falls back to measuring for any other driver of this property.
+        h = self._anim_target_h
+        if h is None:
+            h = self.content_layout.sizeHint().height()
+
         self.content.setFixedHeight(int(h * scale))
 
     def animation_finished(self):
         """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
+        # Drop the measurement so a later animation re-measures content that may have
+        # changed size in the meantime (params added, a nested group expanded).
+        self._anim_target_h = None
         if self.is_collapsed():
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
         else:
@@ -1243,25 +1345,36 @@ class ContainerWidget(
         direction = (
             QtCore.QAbstractAnimation.Direction.Forward if checked else QtCore.QAbstractAnimation.Direction.Backward
         )
+        # Folding a section open is a UI preference and does not dirty the chunk: COLLAPSED
+        # is a presentation bit, so the state change stops at the ownership chain instead of
+        # being propagated as a cook (AttributeSender.is_presentation_change).
         if checked:
             self.group.unset_state(ChunkFlags.State.COLLAPSED)
         else:
             self.group.set_state(ChunkFlags.State.COLLAPSED)
 
         self.minimize_button.setArrowType(arrow_type)
+        # Measure the content once, here, rather than on every animation frame.
+        self._anim_target_h = self.content_layout.sizeHint().height()
         self.toggle_anim.setDirection(direction)
         self.toggle_anim.start()
 
         if hasattr(self, "_group_bg"):
             bg = self._group_bg
             if checked:
-                self.minimize_button.setStyleSheet(
+                sheet = (
                     f"QToolButton {{ background-color: {bg}; "
                     f"border-top-left-radius: 4px; border-top-right-radius: 4px; "
                     f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }}"
                 )
             else:
-                self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
+                sheet = f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
+
+            # Groups that start collapsed reach this during construction, and re-applying
+            # the sheet the button already has re-parses and re-polishes for nothing.
+            if sheet != getattr(self, "_button_sheet", None):
+                self._button_sheet = sheet
+                self.minimize_button.setStyleSheet(sheet)
 
     def delete_self(self):
         try:
@@ -1309,6 +1422,9 @@ class ContainerWidget(
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
         labeled = LabeledWidget(widget, self)
+        # Now parented, so showing it can no longer produce a top-level window — lift the
+        # suppression create_widget put on it.
+        widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen, False)
         widget.installEventFilter(self)
         labeled.label.installEventFilter(self)
 
@@ -1558,6 +1674,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     """
 
     SELECTED_COLOR = "#cab46a"
+
+    # Read by apply_chunk_stylesheet: a nested ChunkWidget asks whether it is covered while
+    # its outer one is still mid-__init__ and has not applied the sheet yet. Answering from
+    # the type rather than the flag is what keeps a nine-page shader at one sheet, not ten.
+    _chunk_styles_self = True
 
     def __init__(
         self,
@@ -2006,21 +2127,25 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         return chunk.DefaulConfig().category
 
     def set_selected(self, val: bool):
-        if val and (not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) or self._is_group_chunk()):
-            col = self.SELECTED_COLOR
-            pxs = 1
-        else:
-            col = "transparent"
-            pxs = 0
-
-        self.setStyleSheet(
-            CHUNK_STYLESHEET +
-            f""".ChunkWidget {{
-                border: {pxs}px solid {col};
-                border-radius: {pxs}px;
-                }}
-            """
+        selected = bool(
+            val and (not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) or self._is_group_chunk())
         )
+
+        # setStyleSheet re-polishes the whole subtree beneath the widget and cost ~10ms a
+        # call — 112 of them, 1.7s, easily the most expensive thing in building a chunk.
+        # Every nested group is its own ChunkWidget and each used to apply the entire
+        # CHUNK_STYLESHEET. Qt stylesheets cascade, so only the outermost needs to, and
+        # the selection border rides a dynamic property resolved by that one sheet. This
+        # runs during construction, when the subtree to re-polish is still empty.
+        apply_chunk_stylesheet(self)
+
+        if self.property("chunkSelected") != selected:
+            self.setProperty("chunkSelected", selected)
+            # A property the stylesheet selects on only takes effect after a re-polish,
+            # and this one is scoped to this widget rather than its whole subtree.
+            self.style().unpolish(self)
+            self.style().polish(self)
+
         return super().set_selected(val)
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:

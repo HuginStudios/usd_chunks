@@ -20,6 +20,11 @@ lets `ChunkNoticePropagator.execute()` tell a pure state change (selection, coll
 disable) apart from a data change and skip re-cooking the module. A scheduler that only
 tracked "dirty" would re-cook chunks on selection.
 
+A change nothing computes from -- hiding a param, folding a group open, selecting a node
+-- takes `propagate_presentation` instead, which dirties only the ownership chain the UI
+hangs off. DISABLED is the one state bit that is not presentation, since it decides
+whether the chunk cooks at all.
+
 Ownership is treated as just another downstream edge: an owner solves after everything
 it owns, exactly like a dependant solves after its dependency.
 """
@@ -59,14 +64,34 @@ _depth_cache: "weakref.WeakKeyDictionary[DagNode, int]" = weakref.WeakKeyDiction
 atexit.register(_depth_cache.clear)
 
 
-def topology_changed():
+def topology_changed(*nodes: "DagNode"):
     """
     Invalidate everything derived from the graph shape.
 
     Called by DagNode whenever an input, output or owner connection changes.
+
+    Given the nodes whose edges moved, only the depths that can actually have changed are
+    dropped: a node's depth is a function of its dependencies and the things it owns, so
+    the nodes affected by an edge change are exactly the ones downstream of it -- the same
+    closure a dirty propagation walks. Everything else keeps the depth it already had.
+
+    Passing nothing means "shape changed somewhere", and throws the lot away. That is what
+    the old unconditional behaviour did on every single edge, which made building or
+    loading a graph quadratic: every add_dependency wiped the cache, so the next depth
+    query re-walked the whole chain from scratch.
+
+    Args:
+        nodes (DagNode): The nodes whose connections changed, if known
     """
     global _topology_epoch
-    _topology_epoch += 1
+
+    if not nodes:
+        _topology_epoch += 1
+        return
+
+    for node in nodes:
+        for stale in downstream_closure(node):
+            _depth_cache.pop(stale, None)
 
 
 def downstream(node: "DagNode") -> List["DagNode"]:
@@ -199,6 +224,48 @@ def topo_order(nodes: Dict["DagNode", None]) -> List["DagNode"]:
     return order
 
 
+def propagate_presentation(seed: "DagNode"):
+    """
+    Mark only the ownership chain above seed dirty, for a change nothing computes from.
+
+    A presentation change (hiding a param, folding a group open, selecting a node) still
+    has to reach the UI, and the UI hangs off the owners: a group's data_changed spreads
+    DISABLED to nested chunks, the SceneSender's keeps the selection set. So the owners
+    solve, and each records the *seed's* reason -- not the alias of the node it inherited
+    it through. Stamping GROUP_CHANGED / PARAM_CHANGED on the way up is what used to make a
+    collapsed group read as a data change by the time it reached the chunk, and
+    ChunkNoticePropagator.execute() re-cooked the module on it.
+
+    Dependants are left clean, so nothing travels along the exec chain: selecting one node
+    used to dirty every chunk downstream of it and re-cook the lot.
+
+    Args:
+        seed (DagNode): The node that changed
+    """
+    reasons: Dict[Tuple["chunk_notice.ChunkNoticeAlias", "DagNode"], None] = dict(seed._changes)
+    if (prop := seed.propagator) is not None and (alias := prop.get_notice_alias()):
+        reasons[(alias, seed)] = None
+
+    node = seed
+    seen = {id(seed)}
+
+    while True:
+        conns = node._connections
+        if (owner_ref := conns.owner) is None or (owner := owner_ref()) is None:
+            return
+
+        owner_node = owner.get_dag_node()
+        # Ownership is asserted acyclic, but a solve is not the place to find out otherwise.
+        if id(owner_node) in seen:
+            return
+        seen.add(id(owner_node))
+
+        owner_node._dirty = True
+        owner_node._index += 1
+        owner_node._changes.update(reasons)
+        node = owner_node
+
+
 def propagate_dirty(seed: "DagNode"):
     """
     Mark seed and everything downstream of it dirty, recording why.
@@ -211,6 +278,8 @@ def propagate_dirty(seed: "DagNode"):
     The walk runs in topological order, which is what makes the owner inheritance
     correct: a node has collected every reason that applies to it before it hands them
     upward.
+
+    A change nothing computes from goes to propagate_presentation instead.
 
     Args:
         seed (DagNode): The node that changed
@@ -225,6 +294,10 @@ def propagate_dirty(seed: "DagNode"):
     # param write.
     conns = seed._connections
     if not conns.outputs and conns.owner is None:
+        return
+
+    if (prop := seed.propagator) is not None and prop.is_presentation_change():
+        propagate_presentation(seed)
         return
 
     input_changed = chunk_notice.ChunkNoticeAlias.INPUT_CHANGED

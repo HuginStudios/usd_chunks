@@ -1044,6 +1044,26 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return self.alias
 
+    def is_presentation_change(self) -> bool:
+        """
+        A change to the state attribute is presentation only unless it moved DISABLED.
+
+        DISABLED decides whether the chunk cooks at all, so it is a real input to everything
+        downstream. HIDDEN, COLLAPSED, SELECTED and STALE are hints to the UI and nothing
+        else -- hiding in particular is a *consequence* of a chunk reconfiguring (math_ops
+        hides b/c because the operation changed), so treating it as a cause re-cooks the
+        chunk for something its own cook just did.
+
+        Returns:
+            bool: True if only presentation bits moved
+        """
+        if self.alias is not chunk_notice.ChunkNoticeAlias.STATE_CHANGED:
+            return False
+
+        old = ChunkFlags.State(self.old_value or ChunkFlags.State.NONE)
+        new = ChunkFlags.State(self.value or ChunkFlags.State.NONE)
+        return ChunkFlags.State.DISABLED not in (old ^ new)
+
     def get_usd_prop(self) -> Usd.Property | None:
         """
         Retrieve the UsdProperty that this attribute represents
@@ -2413,7 +2433,11 @@ class ChunkCommon(AttributesBase):
         Returns:
             bool: If the flag is enabled or not
         """
-        return bool(self.flags & flag)
+        # Compared as plain ints: IntFlag.__and__ constructs (and caches, and looks up) a
+        # whole new flag member just to be thrown away by bool(). This is called millions of
+        # times when walking a large graph -- get_chunks() alone asks twice per chunk -- and
+        # the enum machinery was measurably the second-largest cost of building one.
+        return bool(int(self.flags) & int(flag))
 
     def set_state(self, state: ChunkFlags.State):
         """

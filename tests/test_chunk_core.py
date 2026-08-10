@@ -478,6 +478,108 @@ def test_state_change_does_not_reexecute_module():
     assert len(calls) >= 1  # a data change does execute the module
 
 
+def _module_call_counter(chunk_obj):
+    """Attach a counting stub module to chunk_obj and return the call list."""
+    calls = []
+
+    class _Mod:
+        def execute(self, prop):
+            calls.append(1)
+
+    chunk_obj._module = _Mod()
+    return calls
+
+
+def _stage_scene():
+    stage = Usd.Stage.CreateInMemory()
+
+    class _Scene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _Scene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    return scene
+
+
+def test_collapsing_a_group_does_not_reexecute_module():
+    """Folding a group open/closed is a UI preference, not an input to what the chunk
+    computes. The state change reaches the chunk through the group, which used to stamp its
+    own GROUP_CHANGED on the way up and make the solve look like a data change."""
+    scene = _stage_scene()
+
+    c = chunk.Chunk("collapse_me")
+    g = chunk.Group("g", flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
+    g.add_param(chunk.Slider("s", default_value=0.0))
+    c.add_param(g)
+    scene.add_chunk(c)
+    calls = _module_call_counter(c)
+
+    g.set_state(chunk.ChunkFlags.State.COLLAPSED)
+    g.unset_state(chunk.ChunkFlags.State.COLLAPSED)
+
+    assert calls == []
+
+
+def test_hiding_a_param_does_not_reexecute_module():
+    """Hiding is a consequence of a chunk reconfiguring, never an input to it: the change
+    that hid the param is what should dirty the chunk, not the hiding itself."""
+    scene = _stage_scene()
+
+    c = chunk.Chunk("hide_me")
+    slider = chunk.Slider("s", default_value=0.0)
+    c.add_param(slider)
+    scene.add_chunk(c)
+    calls = _module_call_counter(c)
+
+    slider.set_state(chunk.ChunkFlags.State.HIDDEN)
+    slider.unset_state(chunk.ChunkFlags.State.HIDDEN)
+
+    assert calls == []
+
+
+def test_selecting_a_chunk_does_not_recook_downstream():
+    """A presentation state change must not travel along the exec chain either — selecting
+    one node used to dirty every chunk downstream of it and re-cook the lot."""
+    scene = _stage_scene()
+
+    upstream = chunk.Chunk("upstream")
+    downstream = chunk.Chunk("downstream")
+    scene.add_chunks([upstream, downstream])
+    downstream.add_dependency(upstream)
+
+    calls = _module_call_counter(downstream)
+    # Cook once so the node is clean, as it is in a live graph. A node that is already
+    # dirty gets swept into whatever solve passes it next, which would mask the point.
+    downstream.execute()
+    calls.clear()
+
+    upstream.set_state(chunk.ChunkFlags.State.SELECTED)
+    upstream.unset_state(chunk.ChunkFlags.State.SELECTED)
+
+    assert calls == []
+    assert not downstream.get_dag_node().dirty
+
+
+def test_disabling_a_chunk_recooks_downstream():
+    """DISABLED is the one state bit that is not presentation: it decides whether the chunk
+    cooks at all, so everything reading its output has to run again."""
+    scene = _stage_scene()
+
+    upstream = chunk.Chunk("disable_up")
+    downstream = chunk.Chunk("disable_down")
+    scene.add_chunks([upstream, downstream])
+    downstream.add_dependency(upstream)
+
+    calls = _module_call_counter(downstream)
+    downstream.execute()
+    calls.clear()
+
+    upstream.set_state(chunk.ChunkFlags.State.DISABLED)
+
+    assert len(calls) >= 1
+
+
 def test_module_does_not_execute_without_a_stage():
     """Every chunk module works through get_stage(), so a stage-less solve must not run one.
 

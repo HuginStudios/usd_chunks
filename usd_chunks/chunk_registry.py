@@ -292,8 +292,9 @@ class _ConfigTransformer(ast.NodeTransformer):
 
         Discovery deliberately executes only usd_chunks imports and config() itself, so a
         module's top-level code never runs just because the registry looked at it. That
-        also means config() cannot normally see module-level constants -- which a config
-        derived from module data (ChunkConfig.variants built from an op table, say) needs.
+        also means config() cannot normally see module-level constants or helpers -- which
+        a config derived from module data (ChunkConfig.variants built from an op table,
+        say) needs.
 
         Reached only after the first call raised NameError, so a self-contained config
         never causes its module's assignments to run at discovery time.
@@ -301,11 +302,14 @@ class _ConfigTransformer(ast.NodeTransformer):
         if not self._deferred_config:
             return
 
+        # Source order, and defs as well as assignments: a config built from module data
+        # usually reaches a helper too, and a helper defined after the constant it reads
+        # must be executed after it.
         for node in tree.body:
-            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.FunctionDef, ast.ClassDef)):
                 try:
                     self._exec_node(node)
-                except Exception:  # noqa: BLE001 - a module-level assign we cannot evaluate in isolation
+                except Exception:  # noqa: BLE001 - module-level code we cannot evaluate in isolation
                     continue
 
         try:
@@ -1065,6 +1069,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         beneath it, so a declared variant reads as a chunk in its own right in both the
         menu tree and the search field -- which is the whole point of declaring one.
 
+        A variant label may contain "/" to nest further, e.g. "standard_surface/Standard
+        Surface". A catalog-driven module can declare hundreds of variants, and those need
+        grouping or the category becomes one unnavigable list; search stays flat either way.
+
         Args:
             sort_result (bool): Sort modules by trailing name, as get_chunk_modules does
 
@@ -1081,10 +1089,13 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
             parent = tuple(namespace[:-1])
             for label, presets in mod.config.variants:
+                sub = tuple(p for p in str(label).split("/") if p)
+                if not sub:
+                    continue
                 entries.append(
                     MenuEntry(
                         module=mod,
-                        namespace=parent + (label,),
+                        namespace=parent + sub,
                         tooltip=tooltip,
                         presets=dict(presets),
                     )
@@ -1404,9 +1415,17 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             # Only inspect pl for emptiness right after we've just removed its child above — never as
             # a blanket sweep over every tracked graph layer, since a graph layer can legitimately be
             # momentarily empty while it's still being constructed (its own first leaf not yet added).
-            for pl, sl in self.iter_chunk_layers():
-                if sl.identifier == layer.identifier and pl.identifier != parent.identifier:
-                    pl.subLayerPaths.remove(sl.identifier)
+            #
+            # Looks only at the graph layers' own direct sublayers, not the whole composed
+            # hierarchy iter_chunk_layers() walks. A chunk leaf layer is only ever inserted as a
+            # direct sublayer of a graph layer (add_layer), so those are the only pairs that could
+            # ever match here — the deeper levels of that walk are a chunk layer's own imports
+            # (a Sublayer chunk's files), which are never this layer. The full walk resolves every
+            # sublayer path through Sdf.Find on every call, and this runs on every single
+            # get_edit_context: it was ~30% of the cost of opening a saved graph.
+            for pl in list(self.graph_layers.values()):
+                if pl.identifier != parent.identifier and layer.identifier in pl.subLayerPaths:
+                    pl.subLayerPaths.remove(layer.identifier)
                     if len(pl.subLayerPaths) == 0:
                         for gkey, g_layer in list(self.graph_layers.items()):
                             if g_layer.identifier != pl.identifier:

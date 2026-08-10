@@ -26,11 +26,15 @@ from usd_chunks.plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, CHUNK_STYLESHEET, ViewSlotState
+from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
 
 _PORT_RADIUS = 5
 _NODE_WIDTH = 220
 _NODE_HEADER_H = 40
+
+# Quiet period before ports are re-placed after the node's geometry changes. Placement
+# re-measures every param widget, so it must not run per animation frame.
+_PORT_REBUILD_MS = 60
 _DOT_R = 10  # dot node circle radius
 
 # Shake-to-disconnect tuning: a fast back-and-forth drag disconnects the node.
@@ -771,7 +775,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # transition from child → top-level.
         chunk_widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
         chunk_widget.setParent(None)
-        chunk_widget.setStyleSheet(CHUNK_STYLESHEET)
+        # Normally a no-op: the widget styled itself during construction, when its subtree
+        # was still empty. Re-applying here walked the whole finished tree instead. Kept as
+        # a fallback for a widget that somehow arrives unstyled.
+        apply_chunk_stylesheet(chunk_widget)
         chunk_widget.setFixedWidth(_NODE_WIDTH)
         self._chunk_widget = chunk_widget  # pin Python ref; PySide6 may GC despite Qt C++ ownership
         self._proxy = QtWidgets.QGraphicsProxyWidget(self)
@@ -784,7 +791,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         self._port_rebuild_timer = QtCore.QTimer(chunk_widget)
         self._port_rebuild_timer.setSingleShot(True)
-        self._port_rebuild_timer.setInterval(0)
+        # Long enough to outlast a burst of geometry changes. Expanding a group animates
+        # the content height, and every frame emits geometryChanged and restarts this
+        # timer — at interval 0 it fired between frames, so a rebuild that walks the whole
+        # widget tree twice (two findChildren sweeps) ran once per frame. Ports only need
+        # to be right once the geometry settles, so wait for it to stop moving.
+        self._port_rebuild_timer.setInterval(_PORT_REBUILD_MS)
         self._port_rebuild_timer.timeout.connect(self._rebuild_typed_ports)
         # geometryChanged fires for collapse/expand after initial setup.
         # Initial port placement is triggered explicitly below so it doesn't
@@ -820,7 +832,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         else:
             self._place_param_ports(self._proxy.widget())
         if scene:
-            scene._build_edges()
+            # Deferred: this fires once per node whose ports change, and a chunk being
+            # built retypes its ports repeatedly. Edges only have to be right once the
+            # burst settles.
+            scene._request_build_edges()
         # New/removed/recolored port items don't always get their region marked
         # dirty automatically — without this the old pixels can linger on screen
         # until something unrelated (e.g. deselecting the node) forces a repaint.
@@ -1473,6 +1488,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._show_param_edges: bool = True
         self._built_context: object = _UNBUILT  # sentinel — tracks what context is currently rendered
         self._dirty: bool = True  # set by invalidate(); cleared by a (re)build
+        self._edge_timer: Optional[QtCore.QTimer] = None
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
@@ -1707,7 +1723,26 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         if rest:
             QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, gen))
 
+    def _request_build_edges(self):
+        """Coalesce edge rebuilds onto one deferred pass.
+
+        _build_edges tears down and re-walks every node's attributes, and each node's port
+        rebuild used to trigger its own. Creating one 64-param shader ran it 1031 times for
+        ~1s of a 6s create. A burst of port changes only needs the one rebuild that follows
+        it, so collapse them onto a zero-timer.
+        """
+        if self._edge_timer is None:
+            self._edge_timer = QtCore.QTimer()
+            self._edge_timer.setSingleShot(True)
+            self._edge_timer.setInterval(0)
+            self._edge_timer.timeout.connect(self._build_edges)
+        self._edge_timer.start()
+
     def _build_edges(self):
+        # A pending coalesced rebuild is redundant once we are rebuilding now.
+        if self._edge_timer is not None:
+            self._edge_timer.stop()
+
         for edge in self._edges:
             self.removeItem(edge)
         self._edges.clear()
@@ -1885,7 +1920,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 node = self._nodes.get(prim_path)
                 if node:
                     node._apply_usd_pos(node.prim)
-        self._build_edges()
+        # Deferred: a single cook emits hundreds of these notices — one per attribute it
+        # writes — and rebuilding every edge in the scene on each was 286 rebuilds for one
+        # group expand. The edges only have to be right once the notices stop arriving.
+        self._request_build_edges()
 
 
 # ---------------------------------------------------------------------------

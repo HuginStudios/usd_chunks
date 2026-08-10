@@ -29,6 +29,13 @@ class Node(ChunkNoticePropagator):
         return f"Node({self.name})"
 
 
+class PresentationNode(Node):
+    """A node whose change nothing computes from, like a hidden/collapsed/selected bit."""
+
+    def is_presentation_change(self):
+        return True
+
+
 def solve_order(propagator):
     """Run a solve from propagator and return the names of the nodes it yielded."""
     propagator.get_dag_node().dirty = True
@@ -36,9 +43,12 @@ def solve_order(propagator):
 
 
 def clean(*propagators):
-    """Mark every node clean, as if a solve had just finished."""
+    """Mark every node clean and drop its change reasons, as if a solve had just finished."""
     for p in propagators:
-        p.get_dag_node()._dirty = False
+        node = p.get_dag_node()
+        node._dirty = False
+        node._changes.clear()
+        node._index = 0
 
 
 class TestTopologicalOrder:
@@ -186,6 +196,22 @@ class TestChangeReasons:
 
         assert aliases == [ChunkNoticeAlias.STATE_CHANGED]
 
+    def test_owner_records_the_seeds_alias_not_the_middlemans(self):
+        # A state change reaches a chunk through the param or group holding it, and that
+        # middleman used to stamp its own PARAM_CHANGED/GROUP_CHANGED on the way up --
+        # which made a collapsed group read as a data change and re-cooked the module.
+        chunk = Node("chunk", ChunkNoticeAlias.CHUNK_CHANGED)
+        group = Node("group", ChunkNoticeAlias.GROUP_CHANGED)
+        state = PresentationNode("state", ChunkNoticeAlias.STATE_CHANGED)
+        group.set_owner(chunk)
+        state.set_owner(group)
+        clean(chunk, group, state)
+
+        state.get_dag_node().dirty = True
+        aliases = [alias for alias, _ in chunk.get_dag_node().iter_changes()]
+
+        assert aliases == [ChunkNoticeAlias.STATE_CHANGED]
+
     def test_reasons_survive_the_whole_pass(self):
         # A ProxyParam reads iter_changes() off the param it references while handling
         # its own solve, so reasons must not be cleared node-by-node.
@@ -208,6 +234,47 @@ class TestChangeReasons:
         list(solve_order(a))
 
         assert list(b.get_dag_node().iter_changes()) == []
+
+
+class TestPresentationChanges:
+    def test_dependants_are_left_clean(self):
+        # Selecting a node used to dirty every chunk downstream of it along the exec chain.
+        owner = Node("owner")
+        state = PresentationNode("state", ChunkNoticeAlias.STATE_CHANGED)
+        state.set_owner(owner)
+        dependant = Node("dependant")
+        dependant.add_dependency(owner)
+        clean(owner, state, dependant)
+
+        state.get_dag_node().dirty = True
+
+        assert owner.get_dag_node().dirty
+        assert not dependant.get_dag_node().dirty
+
+    def test_the_whole_ownership_chain_is_dirtied(self):
+        # The UI hangs off the owners: a group's data_changed spreads DISABLED to nested
+        # chunks, the SceneSender's keeps the selection set. They have to solve.
+        scene, chunk, param = Node("scene"), Node("chunk"), Node("param")
+        state = PresentationNode("state", ChunkNoticeAlias.STATE_CHANGED)
+        chunk.set_owner(scene)
+        param.set_owner(chunk)
+        state.set_owner(param)
+        clean(scene, chunk, param, state)
+
+        state.get_dag_node().dirty = True
+
+        assert all(n.get_dag_node().dirty for n in (param, chunk, scene))
+
+    def test_a_data_change_still_dirties_dependants(self):
+        owner, dependant = Node("owner"), Node("dependant")
+        value = Node("value", ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+        value.set_owner(owner)
+        dependant.add_dependency(owner)
+        clean(owner, value, dependant)
+
+        value.get_dag_node().dirty = True
+
+        assert dependant.get_dag_node().dirty
 
 
 class TestSortKey:
