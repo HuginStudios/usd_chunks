@@ -728,6 +728,15 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not dep_prim.IsValid():
             return
         src_path = Sdf.Path(exec_output_path(dependency))
+        # Nothing below this is worth doing for an edge USD already has — and on load that
+        # is every edge, since load_chunks mirrors add_dependency FROM the authored
+        # inputs:chunk. Checking before opening the edit context matters as much as the
+        # skipped write: resolving that context walks the exec chain upstream, as does the
+        # reconcile, so a graph restored edge by edge paid two full walks per chunk to
+        # re-derive an answer that could not have changed.
+        existing_attr = dep_prim.GetAttribute(_EXEC_INPUT)
+        if existing_attr and existing_attr.IsValid() and src_path in existing_attr.GetConnections():
+            return
         with self._chunk_prim_edit_context(dependent):
             exec_in = dep_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
             existing = list(exec_in.GetConnections())
@@ -2012,7 +2021,28 @@ def _apply_connection_list_op(spec: "Sdf.PropertySpec", op: "Sdf.PathListOp") ->
     proxy.orderedItems = list(op.orderedItems)
 
 
-def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "Sdf.Layer") -> bool:
+def _migratable_layers(stage: "Usd.Stage") -> "list[Sdf.Layer]":
+    """The stage's layer stack, strong -> weak, minus the chunk graph's own internal
+    procedural layers — the layers a chunk's bookkeeping may legitimately be moved between.
+
+    Its own function because it is loop-invariant across a reconcile pass but costs the
+    size of the layer stack, and the layer stack grows with the graph: every chunk carries
+    a procedural layer. Recomputed per chunk, it makes a whole-scene pass quadratic on
+    exactly the graphs that pass exists to keep correct.
+    """
+    internal = chunk_utils.chunk_internal_layer_ids()
+    return [
+        layer for layer in stage.GetLayerStack(includeSessionLayers=True)
+        if layer.identifier not in internal
+    ]
+
+
+def _migrate_chunk_bookkeeping(
+    stage: "Usd.Stage",
+    prim_path: str,
+    dst_layer: "Sdf.Layer",
+    migratable: "list[Sdf.Layer] | None" = None,
+) -> bool:
     """Consolidate a chunk prim's bookkeeping spec into dst_layer, removing it from any other
     migratable layer it currently sits in. Returns True if anything moved.
 
@@ -2043,11 +2073,12 @@ def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "S
     from any Usd.PrimIsDefined traversal — the node graph stops drawing a node for it.
     """
     sdf_path = Sdf.Path(prim_path)
-    internal = chunk_utils.chunk_internal_layer_ids()
-    holders = [
-        layer for layer in stage.GetLayerStack(includeSessionLayers=True)
-        if layer.identifier not in internal and layer.GetPrimAtPath(sdf_path)
-    ]
+    # migratable is the same list for every chunk in a pass; a caller doing a pass hands it
+    # in once instead of paying for it per chunk. It must be re-read after anything that can
+    # open or sublayer a layer — see _migratable_layers.
+    if migratable is None:
+        migratable = _migratable_layers(stage)
+    holders = [layer for layer in migratable if layer.GetPrimAtPath(sdf_path)]
     sources = [layer for layer in holders if layer != dst_layer]
     if not sources:
         return False
@@ -2117,7 +2148,10 @@ def _chunks_downstream_of(roots: "list[core.ChunkBase]") -> "set[int]":
 
 
 def reconcile_edit_targets(
-    stage: "Usd.Stage", scene: "core.SceneSender", roots: "list[core.ChunkBase] | None" = None
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    roots: "list[core.ChunkBase] | None" = None,
+    cook: bool = True,
 ) -> None:
     """Make every chunk's bookkeeping consistent with the Edit Target resolved for its
     exec-chain position.
@@ -2143,6 +2177,10 @@ def reconcile_edit_targets(
     a delete — where the change is not localised to one chunk — still wants. This matters
     because the pass is O(chunks) and every wire fires one: on a graph of any size, visiting
     the whole scene per edge is what made building it quadratic.
+
+    cook=False migrates without re-running anything, for the one caller that is about to cook
+    the whole graph anyway: loading. There the re-run is not just redundant but quadratic —
+    each migration would cascade a solve over everything downstream of it, once per chunk.
     """
     global _reconciling
     if _reconciling or not (stage and scene):
@@ -2150,6 +2188,7 @@ def reconcile_edit_targets(
     _reconciling = True
     try:
         affected = _chunks_downstream_of(roots) if roots is not None else None
+        migratable = _migratable_layers(stage)
         for chunk in scene.get_chunks():
             if affected is not None and id(chunk) not in affected:
                 continue
@@ -2162,11 +2201,21 @@ def reconcile_edit_targets(
             dst = nearest_upstream_edit_layer(stage, prim)
             if dst is None:
                 continue
-            if _migrate_chunk_bookkeeping(stage, prim_path, dst):
-                # The chunk moved layers — re-run it so its driven content re-nests under
-                # the new target (bookkeeping is hand-moved above; driven content follows
-                # via ChunkLayerManager on execute).
+            # Migration only moves opinions between layers, never changes what they
+            # compose to, so the pass keeps the answers it has computed instead of
+            # dropping them at the first move and re-walking the whole chain above the
+            # chunk after it. The re-run below is outside the freeze — that one can
+            # author anything.
+            with freeze_edit_layer_memo():
+                moved = _migrate_chunk_bookkeeping(stage, prim_path, dst, migratable)
+            if moved and cook:
+                # The chunk moved layers — re-run it so its driven content re-nests
+                # under the new target (bookkeeping is hand-moved above; driven
+                # content follows via ChunkLayerManager on execute).
                 chunk.execute()
+                # A cook can create and sublayer this chunk's procedural layer, so the
+                # migratable set is stale from here on.
+                migratable = _migratable_layers(stage)
     finally:
         _reconciling = False
 
@@ -2933,6 +2982,14 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
                     sl = list(g_layer.subLayerPaths)
                     sl.sort(key=lambda ident: layer_to_sk.get(ident, 0), reverse=True)
                     g_layer.subLayerPaths = sl  # type: ignore
+
+            # Home every chunk's bookkeeping now, while the exec chain is final (it came
+            # from the file and the dependency restore above only mirrored it) and before
+            # anything cooks. Left to the reconcile after load_chunks, this same work is
+            # quadratic: each chunk that moves is re-run, and by then a re-run cascades a
+            # solve over the entire graph below it. Done here, cook=False, the cook loop
+            # immediately below is the one and only pass over the graph.
+            reconcile_edit_targets(stage, scene, cook=False)
 
             for prim, added in deferred:
                 if id(added) not in chunks_with_dependencies:
