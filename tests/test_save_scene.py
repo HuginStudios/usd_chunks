@@ -1,16 +1,17 @@
-"""Tests for chunk_usd.save_scene -- the "nice save flow" (Dan's request): one action
-that writes the editable chunk graph (export_chunks) and a flattened snapshot of what it
-currently produces (_export_scene_content) as a bundled pair, the chunkgroup file
-sublayering the content file so opening it alone brings both back.
+"""Tests for chunk_usd.save_scene -- the "nice save flow": close today, reopen tomorrow
+exactly as it was. One UsdUtils.FlattenLayerStack export of the whole composed stage,
+chunk prims and content together -- no hand-rolled selective copying, which is what an
+earlier version of this did and which kept turning up new composition-arc edge cases
+(instance proxies, then a referenced asset's own children having no direct spec in a
+hand-copied layer) one at a time.
 """
 
 from __future__ import annotations
 
-from pxr import Sdf, Usd, UsdGeom
+from pxr import Usd, UsdGeom
 
 from usd_chunks.plugins.chunk_usd import (
     _CHUNK_PRIM_TYPENAME,
-    _export_scene_content,
     initialize as _chunk_usd_init,
     load_chunks,
     save_scene,
@@ -59,62 +60,38 @@ def _build_stage_with_content_and_a_chunk() -> "tuple[Usd.Stage, SceneSender]":
     return stage, scene
 
 
-def test_export_scene_content_excludes_chunk_prims(tmp_path) -> None:
+def test_save_scene_writes_one_file_with_both_chunks_and_content(tmp_path) -> None:
     stage, scene = _build_stage_with_content_and_a_chunk()
 
-    out = tmp_path / "content.usda"
-    _export_scene_content(stage, out)
+    out = tmp_path / "my_scene.usda"
+    save_scene(scene, out)
     assert out.exists()
 
-    content_stage = Usd.Stage.Open(str(out))
-    assert content_stage.GetPrimAtPath("/apple").IsValid()
-    assert not any(
-        p.GetTypeName() == _CHUNK_PRIM_TYPENAME for p in content_stage.TraverseAll()
-    ), "a chunk bookkeeping prim has no business in the content snapshot"
+    reopened = Usd.Stage.Open(str(out))
+    assert reopened.GetPrimAtPath("/apple").IsValid()
+    assert any(p.GetTypeName() == _CHUNK_PRIM_TYPENAME for p in reopened.TraverseAll())
 
 
-def test_export_scene_content_copies_stage_units_and_up_axis(tmp_path) -> None:
+def test_save_scene_preserves_stage_units_and_up_axis(tmp_path) -> None:
     stage, scene = _build_stage_with_content_and_a_chunk()
 
-    out = tmp_path / "content.usda"
-    _export_scene_content(stage, out)
+    out = tmp_path / "my_scene.usda"
+    save_scene(scene, out)
 
-    content_stage = Usd.Stage.Open(str(out))
-    assert UsdGeom.GetStageMetersPerUnit(content_stage) == 0.01
-    assert UsdGeom.GetStageUpAxis(content_stage) == UsdGeom.Tokens.z
+    reopened = Usd.Stage.Open(str(out))
+    assert UsdGeom.GetStageMetersPerUnit(reopened) == 0.01
+    assert UsdGeom.GetStageUpAxis(reopened) == UsdGeom.Tokens.z
 
 
-def test_save_scene_writes_a_bundled_pair(tmp_path) -> None:
+def test_save_scene_reopen_reloads_as_a_real_chunk_scene(tmp_path) -> None:
     stage, scene = _build_stage_with_content_and_a_chunk()
 
-    chunkgroup_out = tmp_path / "my_scene.usda"
-    save_scene(scene, chunkgroup_out)
+    out = tmp_path / "my_scene.usda"
+    save_scene(scene, out)
 
-    content_out = tmp_path / "my_scene_content.usda"
-    assert chunkgroup_out.exists()
-    assert content_out.exists()
+    reopened = Usd.Stage.Open(str(out))
 
-    cg_layer = Sdf.Layer.FindOrOpen(str(chunkgroup_out))
-    assert list(cg_layer.subLayerPaths) == ["my_scene_content.usda"], (
-        "must be a relative identifier, not content_out's absolute path -- an absolute "
-        "sublayer path breaks the moment the pair is moved or shared"
-    )
-
-
-def test_save_scene_reopen_composes_both_the_graph_and_the_content(tmp_path) -> None:
-    stage, scene = _build_stage_with_content_and_a_chunk()
-
-    chunkgroup_out = tmp_path / "my_scene.usda"
-    save_scene(scene, chunkgroup_out)
-
-    reopened = Usd.Stage.Open(str(chunkgroup_out))
-    assert reopened.GetPrimAtPath("/apple").IsValid(), "content snapshot must compose in via the sublayer"
-    assert any(
-        p.GetTypeName() == _CHUNK_PRIM_TYPENAME for p in reopened.TraverseAll()
-    ), "the chunk graph itself must still be there too"
-
-    # And the whole thing still reloads as a real chunk scene, not just raw USD. Minimal
-    # setup here (not _make_scene's chunk_usd.initialize, which would auto-load the
+    # Minimal setup (not _make_scene's chunk_usd.initialize, which would auto-load the
     # already-composed chunk prim on its own) plus one explicit load_chunks call --
     # mirrors test_export_load_roundtrip's dst side in test_chunk_usd.py, avoiding a
     # double-load of the one real chunk on the reopened stage.
@@ -132,22 +109,12 @@ def test_save_scene_reopen_composes_both_the_graph_and_the_content(tmp_path) -> 
     assert loaded[0].get_param("prim_type").value == "Scope"
 
 
-def test_export_scene_content_skips_children_that_only_exist_via_a_reference(tmp_path) -> None:
-    """Regression: reported live -- referencing in a kitchen scene asset (e.g. via the
-    Reference chunk) crashed the export with "Cannot copy unknown spec at
-    </bowl_apple/food_apple_01>".
-
-    UsdUtils.FlattenLayerStack only flattens SUBLAYER composition; a reference arc on a
-    prim is preserved as-is, unresolved, in its output. A referenced asset's own children
-    (food_apple_01, brought in by /bowl_apple's reference) therefore have no spec of
-    their own in the flattened layer at all -- only the STAGE, which actually resolves
-    the reference, reports them as real prims. TraverseAll() walks the stage, so it
-    yields them; Sdf.CopySpec needs a direct spec in the layer it's copying FROM and
-    raises outright when there isn't one.
-
-    They don't need copying: /bowl_apple itself (which does have a direct spec, carrying
-    the reference) is what's copied, and its own reference arc brings the same children
-    back on its own once reopened -- exactly like it does live right now."""
+def test_save_scene_handles_referenced_content(tmp_path) -> None:
+    """Regression: reported live -- referencing in an external asset (e.g. via the
+    Reference chunk) and running Save Scene crashed with "Cannot copy unknown spec at
+    </bowl_apple/food_apple_01>" under the earlier hand-rolled-copy implementation.
+    UsdUtils.FlattenLayerStack resolves the whole composition (references included)
+    correctly as a single native operation, so this needs no special-casing at all."""
     src = tmp_path / "kitchen_scene.usda"
     src_stage = Usd.Stage.CreateNew(str(src))
     UsdGeom.Xform.Define(src_stage, "/bowl_apple")
@@ -158,14 +125,10 @@ def test_export_scene_content_skips_children_that_only_exist_via_a_reference(tmp
     stage = Usd.Stage.CreateInMemory()
     prim = stage.DefinePrim("/bowl_apple", "Xform")
     prim.GetReferences().AddReference(str(src), "/bowl_apple")
+    scene = _make_scene(stage)
 
-    out = tmp_path / "content.usda"
-    _export_scene_content(stage, out)  # must not raise
+    out = tmp_path / "my_scene.usda"
+    save_scene(scene, out)  # must not raise
 
-    content_stage = Usd.Stage.Open(str(out))
-    reloaded = content_stage.GetPrimAtPath("/bowl_apple")
-    assert reloaded.IsValid()
-    assert reloaded.HasAuthoredReferences()
-    # The reference itself is what brings this back -- resolves through /bowl_apple's
-    # copied-across reference arc, not from anything copied directly at this path.
-    assert content_stage.GetPrimAtPath("/bowl_apple/food_apple_01").IsValid()
+    reopened = Usd.Stage.Open(str(out))
+    assert reopened.GetPrimAtPath("/bowl_apple/food_apple_01").IsValid()

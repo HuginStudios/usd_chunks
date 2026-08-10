@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Generator, Tuple
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
+from pxr import Gf, Sdf, Usd, UsdUI, UsdUtils, Vt
 
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
@@ -2904,9 +2904,7 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
         _add_prim_mods(prim_mods)
 
 
-def export_chunks(
-    scene: "core.SceneSender", path: "str | Path", extra_sublayers: "list[str] | None" = None
-) -> None:
+def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     """Export the current chunk graph as one clean, portable USD layer.
 
     Copies each chunk's already-composed, already-correctly-wired prim spec straight
@@ -2924,12 +2922,6 @@ def export_chunks(
     bookkeeping can now be split across several layers (chunk_utils.get_bookkeeping_layer,
     since it follows Edit Target) — giving each prim/attr its correct final composed
     state to copy from, regardless of which layer(s) it's actually scattered across.
-
-    Args:
-        extra_sublayers: Identifiers to append to the exported layer's own subLayerPaths
-            (weakest, composing beneath every chunk prim this writes) — save_scene's own
-            hook for bundling a content snapshot into the same file, without this narrow,
-            single-purpose function needing to know anything about that.
     """
     stage = scene.get_stage()
     if not stage:
@@ -2951,99 +2943,37 @@ def export_chunks(
             Sdf.CreatePrimInLayer(dst, parent)
         Sdf.CopySpec(flat, prim_path, dst, prim_path)
 
-    if extra_sublayers:
-        dst.subLayerPaths = list(extra_sublayers)
-
     dst.Export(str(path))
 
 
-def _export_scene_content(stage: "Usd.Stage", path: "str | Path") -> None:
-    """Flatten the stage's actual composed content -- everything except the chunk
-    bookkeeping prims themselves -- into one portable, standalone USD file.
+def save_scene(scene: "core.SceneSender", path: "str | Path") -> None:
+    """The "nice save flow": close today, reopen tomorrow exactly as it was.
 
-    export_chunks's mirror image: same FlattenLayerStack-then-CopySpec shape, opposite
-    prim filter. A chunk prim's own hierarchy is entirely bookkeeping (params, wiring,
-    node position) with nothing a content snapshot needs, so it's skipped outright rather
-    than copied and immediately overridden by the stronger chunkgroup layer it's meant to
-    sit beneath — the two are complementary halves of one flattened stage, not overlapping
-    ones. What's left is whatever the chunks actually produced: geometry, materials, an
-    RBD bake's keyframes, anything a chunk's execute() authored onto some other prim
-    entirely -- exactly the content export_chunks itself never captures, and the reason
-    reopening a ChunkGroup alone regenerates results by re-running chunks rather than
-    reproducing a genuinely non-reproducible one (a bake is not simply re-triggered by a
-    plain execute() re-run).
+    A first version of this bundled a separate ChunkGroup export (export_chunks) with a
+    hand-copied "everything else" content snapshot as a sublayered pair -- selectively
+    re-walking and re-copying individual prim specs out of the flattened composition by
+    hand, which kept turning up new composition-arc edge cases (instance proxies, then a
+    referenced asset's own children having no direct spec in the flattened layer at all)
+    each one only surfacing after the last was fixed.
 
-    Stage-level up-axis/units are copied explicitly -- Sdf.CopySpec only copies prim
-    specs, and a standalone snapshot with the wrong ones is exactly the kind of silent
-    scale bug already fixed once this session for the Transform chunk.
-    """
-    flat = UsdUtils.FlattenLayerStack(stage)
-    tmp_stage = Usd.Stage.Open(flat)
-    # TraverseAll() walks composed prims -- which includes ones that exist only through
-    # a reference/payload arc (a referenced kitchen-scene asset's own children, an
-    # instance proxy's, ...), not just ones directly authored in the stage's own
-    # sublayers. FlattenLayerStack only flattens SUBLAYER composition; a reference arc on
-    # a prim is preserved as-is in the output, unresolved -- so a prim introduced only by
-    # composing that reference has no spec of its own in `flat` at all, even though the
-    # stage (which DOES resolve the reference) reports it as a real prim. Sdf.CopySpec
-    # needs a direct spec to copy from and raises outright otherwise ("Cannot copy
-    # unknown spec").
-    #
-    # These don't need copying anyway: the ancestor prim that actually carries the
-    # reference (which does have a direct spec, and IS copied) brings the same content
-    # back on its own once reopened, the same way it does live right now.
-    content_paths = sorted(
-        (
-            p.GetPath() for p in tmp_stage.TraverseAll()
-            if p.GetTypeName() != _CHUNK_PRIM_TYPENAME and not p.IsInstanceProxy() and flat.GetPrimAtPath(p.GetPath())
-        ),
-        key=lambda p: p.pathElementCount,
-    )
+    This is the whole point of UsdUtils.FlattenLayerStack: it already resolves every
+    composition arc (references, payloads, instancing) into one correct result, natively,
+    as a single operation -- there was never a good reason to take that already-correct
+    result apart into two by hand. One flattened file, chunk prims and content both,
+    exactly as currently composed. Reopening it works the same way any chunk-bearing USD
+    file already does: load_chunks reconstructs chunk objects purely from whatever chunk
+    prims exist on the stage it's handed, with no awareness of (or care about) how that
+    stage's file came to be.
 
-    dst = Sdf.Layer.CreateAnonymous()
-    for prim_path in content_paths:
-        if dst.GetPrimAtPath(prim_path):
-            continue
-        parent = prim_path.GetParentPath()
-        if not parent.isEmpty and parent != Sdf.Path.absoluteRootPath and not dst.GetPrimAtPath(parent):
-            Sdf.CreatePrimInLayer(dst, parent)
-        Sdf.CopySpec(flat, prim_path, dst, prim_path)
-
-    dst_stage = Usd.Stage.Open(dst)
-    UsdGeom.SetStageUpAxis(dst_stage, UsdGeom.GetStageUpAxis(tmp_stage))
-    UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(tmp_stage))
-
-    dst.Export(str(path))
-
-
-def save_scene(scene: "core.SceneSender", chunkgroup_path: "str | Path", content_path: "str | Path | None" = None) -> None:
-    """The "nice save flow": one action that writes both halves of the working scene as a
-    bundled pair -- the editable chunk graph (export_chunks) and a flattened snapshot of
-    what it actually currently produces (_export_scene_content), with the ChunkGroup file
-    sublayering the content file so opening it alone brings both back.
-
-    content_path defaults to a sibling of chunkgroup_path (same stem, "_content" suffix)
-    when not given explicitly.
-
-    Args:
-        chunkgroup_path: Where the chunk graph is written -- the file to reopen.
-        content_path: Where the flattened content snapshot is written. Defaults next to
-            chunkgroup_path when omitted.
+    Trades away the ability to treat the saved file as a reusable "recipe" pointed at a
+    different scene's content later -- export_chunks (Save ChunkGroup) still covers that
+    narrower case unchanged.
     """
     stage = scene.get_stage()
     if not stage:
         return
 
-    chunkgroup_path = Path(chunkgroup_path)
-    if content_path is None:
-        content_path = chunkgroup_path.with_name(f"{chunkgroup_path.stem}_content{chunkgroup_path.suffix}")
-    content_path = Path(content_path)
-
-    _export_scene_content(stage, content_path)
-    # A relative identifier, not content_path's absolute form -- an absolute sublayer
-    # path breaks the moment the pair is copied/shared anywhere else, exactly the
-    # portability export_chunks itself already guarantees for the chunkgroup file alone.
-    export_chunks(scene, chunkgroup_path, extra_sublayers=[content_path.name])
+    UsdUtils.FlattenLayerStack(stage).Export(str(path))
 
 
 def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | None") -> None:
