@@ -1,4 +1,5 @@
 from importlib.metadata import PackageNotFoundError, version
+import os
 import sys
 import logging
 from pathlib import Path
@@ -12,7 +13,18 @@ __author__ = "Hugin Studios"
 __email__ = "info@huginstudios.com"
 
 _logger = logging.getLogger("usd_chunks")
-_logger.setLevel(logging.INFO)
+# USD_CHUNK_LOG_LEVEL=DEBUG (before launching usdview) surfaces DEBUG-level messages
+# that are filtered out at the default INFO level -- e.g. to see what a reload is
+# actually doing param-by-param. An unrecognized value is left at INFO rather than
+# raising, since a typo here shouldn't stop usdview from starting.
+_LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+_logger.setLevel(_LOG_LEVELS.get(os.environ.get("USD_CHUNK_LOG_LEVEL", "").upper(), logging.INFO))
 
 # create console handler and set level to debug
 ch = logging.StreamHandler()
