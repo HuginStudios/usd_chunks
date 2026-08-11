@@ -169,3 +169,30 @@ def test_export_scene_content_skips_children_that_only_exist_via_a_reference(tmp
     # The reference itself is what brings this back -- resolves through /bowl_apple's
     # copied-across reference arc, not from anything copied directly at this path.
     assert content_stage.GetPrimAtPath("/bowl_apple/food_apple_01").IsValid()
+
+
+def test_export_scene_content_includes_muted_layers(tmp_path) -> None:
+    """Regression: reported live -- an RBD Solver's baked simulation went missing from a
+    saved scene. A chunk not reachable from the active view's cook set has its own layer
+    muted (recook_for_view); a muted layer's content isn't composed at all, so
+    FlattenLayerStack drops it outright rather than just hiding it. The snapshot must
+    capture what every chunk actually produced, not only whatever the active view
+    happens to currently show."""
+    stage = Usd.Stage.CreateInMemory()
+    prim = stage.DefinePrim("/baked_thing", "Xform")
+    layer = Sdf.Layer.CreateAnonymous("baked_data")
+    stage.GetRootLayer().subLayerPaths.append(layer.identifier)
+    with Usd.EditContext(stage, layer):
+        prim.CreateAttribute("myBakedValue", Sdf.ValueTypeNames.Float, custom=True).Set(42.0)
+
+    stage.MuteLayer(layer.identifier)
+    assert prim.GetAttribute("myBakedValue").Get() is None, "sanity: muting must actually hide it live"
+
+    out = tmp_path / "content.usda"
+    _export_scene_content(stage, out)
+
+    content_stage = Usd.Stage.Open(str(out))
+    assert content_stage.GetPrimAtPath("/baked_thing").GetAttribute("myBakedValue").Get() == 42.0
+
+    # The live stage's own mute state must be restored, not left permanently unmuted.
+    assert stage.IsLayerMuted(layer.identifier)

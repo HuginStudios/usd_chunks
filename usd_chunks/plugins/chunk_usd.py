@@ -2977,7 +2977,20 @@ def _export_scene_content(stage: "Usd.Stage", path: "str | Path") -> None:
     specs, and a standalone snapshot with the wrong ones is exactly the kind of silent
     scale bug already fixed once this session for the Transform chunk.
     """
-    flat = UsdUtils.FlattenLayerStack(stage)
+    # A chunk not reachable from the active view's cook set has its own layer muted (see
+    # recook_for_view) -- and a muted layer's content is not composed at all, so
+    # FlattenLayerStack drops it entirely, not just hides it. Live-confirmed: an RBD
+    # Solver's baked simulation went missing from a saved scene because its layer was
+    # muted at save time. Temporarily unmute everything so the snapshot captures what
+    # every chunk actually produced, not just whatever the active view currently shows.
+    muted = list(stage.GetMutedLayers())
+    if muted:
+        stage.MuteAndUnmuteLayers([], muted)
+    try:
+        flat = UsdUtils.FlattenLayerStack(stage)
+    finally:
+        if muted:
+            stage.MuteAndUnmuteLayers(muted, [])
     tmp_stage = Usd.Stage.Open(flat)
     # TraverseAll() walks composed prims -- which includes ones that exist only through
     # a reference/payload arc (a referenced kitchen-scene asset's own children, an
