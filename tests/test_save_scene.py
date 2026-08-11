@@ -196,3 +196,23 @@ def test_export_scene_content_includes_muted_layers(tmp_path) -> None:
 
     # The live stage's own mute state must be restored, not left permanently unmuted.
     assert stage.IsLayerMuted(layer.identifier)
+
+
+def test_save_scene_chunkgroup_file_itself_keeps_the_stage_up_axis(tmp_path) -> None:
+    """Regression: reported live -- a scene authored Z-up came back Y-up after Save Scene
+    and reopening. up-axis (and units) does not compose across sublayers the way ordinary
+    metadata does: it resolves only from a stage's own root/session layer, falling back
+    to USD's global default (Y) rather than falling through into a sublayer that does
+    carry it. _export_scene_content already stamped the CONTENT file's own copy (see
+    test_export_scene_content_copies_stage_units_and_up_axis above) -- which is exactly
+    why that test alone didn't catch this: the CHUNKGROUP file is the one actually
+    reopened, sitting above the content file as a sublayer, and its own lack of an
+    opinion doesn't fall through to the content file's underneath it."""
+    stage, scene = _build_stage_with_content_and_a_chunk()
+
+    out = tmp_path / "my_scene.usda"
+    save_scene(scene, out)
+
+    reopened = Usd.Stage.Open(str(out))
+    assert UsdGeom.GetStageMetersPerUnit(reopened) == 0.01
+    assert UsdGeom.GetStageUpAxis(reopened) == UsdGeom.Tokens.z

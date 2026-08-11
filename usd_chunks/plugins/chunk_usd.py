@@ -3058,6 +3058,20 @@ def save_scene(scene: "core.SceneSender", chunkgroup_path: "str | Path", content
     # portability export_chunks itself already guarantees for the chunkgroup file alone.
     export_chunks(scene, chunkgroup_path, extra_sublayers=[content_path.name])
 
+    # Live-confirmed: up-axis (and by the same rule, units) does NOT compose across
+    # sublayers the way ordinary metadata does -- it resolves only from a stage's own
+    # root/session layer, falling back to USD's global default (Y) otherwise, never
+    # falling through into a sublayer that does carry it. _export_scene_content already
+    # stamps the content file's own copy, but that's invisible here: the chunkgroup file
+    # is the one actually opened, and reopening it showed Y even though the content file
+    # underneath it correctly said Z. Stamp it directly onto the file that matters.
+    cg_layer = Sdf.Layer.FindOrOpen(str(chunkgroup_path))
+    if cg_layer is not None:
+        cg_stage = Usd.Stage.Open(cg_layer)
+        UsdGeom.SetStageUpAxis(cg_stage, UsdGeom.GetStageUpAxis(stage))
+        UsdGeom.SetStageMetersPerUnit(cg_stage, UsdGeom.GetStageMetersPerUnit(stage))
+        cg_layer.Save()
+
 
 def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | None") -> None:
     """Move all chunk prims in context to a new root using Sdf.CopySpec, then remove the old specs."""
