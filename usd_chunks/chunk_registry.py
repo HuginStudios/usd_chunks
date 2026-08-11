@@ -1139,35 +1139,26 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 self.scene.add_chunks(chunks)
 
 
-# Layer metadata key marking a layer as the chunk graph's own — see
-# mark_chunk_internal_layer.
-_CHUNK_INTERNAL_LAYER_KEY = "chunkInternal"
-
-
-def mark_chunk_internal_layer(layer: Sdf.Layer) -> None:
-    """Record on the layer itself that the chunk graph owns it.
+def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
+    """Whether the chunk graph owns this layer.
 
     "Internal" means a per-chunk procedural layer or a graph layer grouping them: content
     the chunk system Clear()s and regenerates, never something a user picks as an Edit
     Target or exports, and never somewhere a chunk's bookkeeping may be hand-moved.
 
-    Stored as layer metadata rather than derived by walking the layer manager's tracked
-    layers, because the derived form has to be recomputed against live subLayerPaths every
-    time it is asked — which is per chunk on the paths that ask, and the layer stack grows
-    with the graph. Caching that derivation has been tried and is unsafe: nothing notifies
-    when a layer is created, so the cache goes stale with no signal. A mark on the layer
-    cannot go stale, and it travels with the layer wherever it gets sublayered.
+    Answered from the identifiers ChunkLayerManager records as it creates them, so it costs
+    a set lookup. The alternative — deriving it by walking every tracked layer's sublayers —
+    has to be redone against live subLayerPaths every time it is asked, which is once per
+    reconcile pass and one pass per wire, and the layer stack grows with the graph.
 
-    These layers are always anonymous, so this is never written to a file.
+    Deliberately NOT stored on the layer itself, which is the obvious place and is wrong:
+    Sdf.Layer.Clear() drops customLayerData along with everything else, and Clear() on its
+    own layer is exactly what a procedural chunk does every time it cooks. A mark there
+    survives until the chunk first runs and then silently disappears.
     """
-    data = dict(layer.customLayerData)
-    data[_CHUNK_INTERNAL_LAYER_KEY] = True
-    layer.customLayerData = data
-
-
-def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
-    """Whether the chunk graph owns this layer — see mark_chunk_internal_layer."""
-    return bool(layer and layer.customLayerData.get(_CHUNK_INTERNAL_LAYER_KEY))
+    if not layer:
+        return False
+    return layer.identifier in ChunkLayerManager().internal_layer_ids
 
 
 def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
@@ -1237,6 +1228,12 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # notice fired by the teardown itself can't resurrect one — see _chunk_deleted.
         self._retired_chunks: set = set()
         self._chunk_refs = weakref.WeakSet()
+        # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
+        # can answer in one lookup. Maintained beside the two dicts rather than derived from
+        # them on demand, and dropped with them, because an anonymous identifier embeds an
+        # address and addresses get recycled: a leftover entry would eventually claim an
+        # unrelated layer.
+        self.internal_layer_ids: set = set()
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
         self.stage: Usd.Stage = stage
@@ -1256,6 +1253,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._graph_layer_target = {}
         self._chunk_target = {}
         self._retired_chunks = set()
+        self.internal_layer_ids = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
         return "_".join(layer.GetDisplayName().split("_")[:-1]) + ".usda"
@@ -1406,7 +1404,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         try:
             if not (parent := self.graph_layers.get(graph_key)):
                 parent = Sdf.Layer.CreateAnonymous(f"graph_{graph_id}")
-                mark_chunk_internal_layer(parent)
+                self.internal_layer_ids.add(parent.identifier)
                 self.graph_layers[graph_key] = parent
                 self._graph_layer_target[graph_key] = target
                 # Insert at the top so this graph's layers win over other sublayers already on
@@ -1473,6 +1471,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                             if gtarget and pl.identifier in gtarget.subLayerPaths:
                                 gtarget.subLayerPaths.remove(pl.identifier)
                             self.graph_layers.pop(gkey, None)
+                            self.internal_layer_ids.discard(pl.identifier)
                             break
         finally:
             chunk_notice._usd_write_active = prev_w
@@ -1515,7 +1514,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         layer_id = c.get_layer_identifier()
         layer = Sdf.Layer.CreateAnonymous(layer_id)
-        mark_chunk_internal_layer(layer)
+        self.internal_layer_ids.add(layer.identifier)
 
         self.chunk_layers[h] = layer
         target_layer.subLayerPaths.insert(index, layer.identifier)
@@ -1539,6 +1538,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.graph_layers.clear()
         self.chunk_layers.clear()
         self._chunk_target.clear()
+        self.internal_layer_ids.clear()
 
     def clear_layer(self, layer_id: str | core.ChunkBase):
         """
@@ -1567,6 +1567,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.graph_layers.clear()
         self.chunk_layers.clear()
         self._chunk_target.clear()
+        self.internal_layer_ids.clear()
 
         for c in ChunkRegistry().scene.get_chunks():
             self.get_or_create_layer(c)
@@ -1653,6 +1654,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         finally:
             chunk_notice._usd_write_active = prev_w
         self.chunk_layers.pop(chunk_hash, None)
+        # Dropped with the mapping: the identifier embeds an address, and addresses are
+        # recycled, so a leftover entry would eventually claim an unrelated layer.
+        self.internal_layer_ids.discard(layer.identifier)
 
     def _flags_changed(self, notice, sender):
         c = sender
