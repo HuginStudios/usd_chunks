@@ -37,6 +37,12 @@ _NODE_HEADER_H = 40
 _PORT_REBUILD_MS = 60
 _DOT_R = 10  # dot node circle radius
 
+# Merge node slot ports: vertical gap between stacked exec inputs, and the y of the first
+# one. The first slot sits at the header centre so it lines up with the output port, which
+# keeps a one-input merge looking like every other node.
+_MERGE_PORT_SPACING = 20
+_MERGE_PORT_TOP = _NODE_HEADER_H // 2
+
 # Shake-to-disconnect tuning: a fast back-and-forth drag disconnects the node.
 _SHAKE_WINDOW = 0.4  # seconds of drag samples to look at
 _SHAKE_MIN_STEP = 5.0  # scene px; smaller moves are jitter, ignored
@@ -260,7 +266,7 @@ def _iter_prim_connections(prim: Usd.Prim):
             continue
         for conn_path in attr.GetConnections():
             src_prim_path = str(conn_path.GetPrimPath())
-            if attr_name == _EXEC_INPUT:
+            if chunk_usd.is_exec_input_name(attr_name):
                 # Exec connections point straight at the source's outputs:chunk already.
                 src_attr_suffix = conn_path.name
             else:
@@ -379,7 +385,7 @@ def _author_raw_connection(
     visible-port-suffix distinction for typed params, same expression-string write, same
     bookkeeping-layer resolution) without needing a graph_scene/ChunkPortItem to read it
     from."""
-    is_exec = dst_attr_suffix == _EXEC_INPUT
+    is_exec = chunk_usd.is_exec_input_name(dst_attr_suffix)
     dst_attr = stage.GetAttributeAtPath(Sdf.Path(f"{dst_prim_path}.{dst_attr_suffix}"))
     if not (dst_attr and dst_attr.IsValid()):
         prim = stage.GetPrimAtPath(Sdf.Path(dst_prim_path))
@@ -660,6 +666,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         _chunk_type = prim.GetAttribute("info:chunkType").Get()
         self._is_view = _chunk_type == "view"
         self._is_dot = _chunk_type == "dot"
+        self._is_merge = _chunk_type == "merge"
         self._drag_active = False
         self._drag_moved = False  # True once a drag actually moves — plain clicks stay False
         self._drag_start = QtCore.QPointF()
@@ -748,6 +755,34 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._full_height = _DOT_R * 2
             return
 
+        if self._is_merge:
+            # One port per connected branch, plus one empty trailing slot to attach the next
+            # branch to. The trailer is deliberately UI-only, with no backing attribute:
+            # _author_connection creates the attribute on demand from the port's own
+            # attr_path, so an unconnected inputs:chunkN never has to be authored — and then
+            # serialized into every saved file forever — just to give a wire somewhere to
+            # land. Ports read top-to-bottom as strongest-to-weakest.
+            slots = len(chunk_usd.exec_input_connections(prim)) + 1
+            for i in range(slots):
+                port = ChunkPortItem(
+                    f"{prim.GetPath()}.{chunk_usd.exec_input_name(i)}", _PORT_EXEC, parent=self
+                )
+                port.setPos(0, _MERGE_PORT_TOP + i * _MERGE_PORT_SPACING)
+                self._ports.append(port)
+            # Everything that asks a node for "its" exec input (splice-on-drop, wire-drop
+            # targeting) should get the primary one, which is slot 0 — the strongest.
+            self._exec_in_port = self._ports[0]
+            self._height = max(
+                _NODE_HEADER_H, _MERGE_PORT_TOP * 2 + (slots - 1) * _MERGE_PORT_SPACING
+            )
+            self._full_height = self._height
+            self._exec_out_port = ChunkPortItem(
+                f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
+            )
+            self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+            self._ports.append(self._exec_out_port)
+            return
+
         # Exec ports only — lightweight, no widget creation.
         # Proxy (ChunkWidget) is created later via create_proxy() to allow batched deferred loading.
         self._exec_in_port = ChunkPortItem(
@@ -765,9 +800,41 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         else:
             self._exec_out_port = None
 
+    def sync_merge_ports(self) -> bool:
+        """Re-place a merge's exec input slots when the number of connected branches changed.
+
+        A merge shows one port per branch plus one empty trailer, so wiring the trailer has to
+        grow a fresh one and clearing a slot has to drop one. Ports are built once at node
+        construction, and a connection change does not rebuild the node — only the edges — so
+        without this the trailer would only appear after some unrelated full scene rebuild.
+
+        Returns:
+            bool: True if the ports were rebuilt (the caller's edge items are now stale)
+        """
+        if not self._is_merge or not self.prim.IsValid():
+            return False
+        want = len(chunk_usd.exec_input_connections(self.prim)) + 1
+        have = sum(1 for p in self._ports if p.is_input)
+        if want == have:
+            return False
+        scene = self.scene()
+        for port in self._ports:
+            port.setParentItem(None)
+            if scene:
+                scene.removeItem(port)
+        self._ports.clear()
+        self.prepareGeometryChange()
+        self._build_ports(self.prim)
+        self.update()
+        return True
+
     def create_proxy(self):
         """Create the embedded ChunkWidget proxy. Called in deferred batches after scene build."""
-        if self._is_dot:
+        # A merge has no params, so there is no body worth embedding — and skipping the proxy
+        # also keeps _rebuild_typed_ports a no-op for it (it bails on a None proxy), which
+        # matters because that method rebuilds _ports from the two exec port slots alone and
+        # would otherwise drop every numbered slot port.
+        if self._is_dot or self._is_merge:
             return
         # Runs deferred; the node may have been removed by a rebuild before this fires.
         # Building a proxy/ports on a detached node leaves a ghost (its C++ item lingers in
@@ -1312,7 +1379,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                     # a group) and only collapse to just this node if the click ends up being
                     # a plain click with no drag movement — see mouseReleaseEvent.
                     self._drag_pending_collapse = True
-            if event.pos().y() <= _NODE_HEADER_H and not self._locked:
+            # A merge has no embedded widget, so its whole body is dead space — dragging is
+            # the only thing it could mean. Restricting it to the header would leave a tall
+            # merge grabbable only by its top 40px. (Ports are child items and are hit first
+            # by the view's own handler, so they still start a wire drag.)
+            drag_zone = self._height if self._is_merge else _NODE_HEADER_H
+            if event.pos().y() <= drag_zone and not self._locked:
                 self.setFocus()
                 self._drag_active = True
                 self._drag_moved = False
@@ -1906,6 +1978,13 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             self.removeItem(edge)
         self._edges.clear()
 
+        # Before resolving ports: a merge grows/loses a slot as branches are wired and
+        # cleared, and the port the next loop looks up has to exist. Safe to do here (rather
+        # than at the connection site) precisely because edges have just been dropped —
+        # rebuilding a node's ports destroys the port items any surviving edge would hold.
+        for node in self._nodes.values():
+            node.sync_merge_ports()
+
         for node in self._nodes.values():
             # A stage change fired by deleting a chunk lands here before that node's
             # removal (which _on_chunk_deleted defers via singleShot), so its prim can
@@ -1916,7 +1995,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 attr_name = attr.GetName()
                 if not attr_name.startswith("inputs:"):
                     continue
-                is_exec = attr_name == "inputs:chunk"
+                # Every exec slot, not just inputs:chunk — a merge's branches past the first
+                # live on inputs:chunk<N>, and treating those as typed param edges would hide
+                # them behind the "Show param connections" toggle and then fail to find a
+                # port for them at all.
+                is_exec = chunk_usd.is_exec_input_name(attr_name)
                 if not is_exec and not self._show_param_edges:
                     continue
                 dst_attr_path = f"{node.prim.GetPath()}.{attr_name}"
@@ -3365,21 +3448,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if port.port_type == _PORT_EXEC:
             prim_path = Sdf.Path(port.attr_path).GetPrimPath()
             out_attr_path = str(prim_path) + ".outputs:chunk"
-            # Find any successor whose inputs:chunk points to this node's outputs:chunk.
+            # Find any successor whose exec input points to this node's outputs:chunk. Every
+            # slot, not just inputs:chunk: a merge fed through slot 2 is a successor too, and
+            # missing it would leave that slot wired to a node the user just detached.
             for node in graph_scene._nodes.values():
-                succ_attr = graph_scene._stage.GetAttributeAtPath(
-                    Sdf.Path(str(node.prim.GetPath()) + ".inputs:chunk")
-                )
-                if succ_attr and succ_attr.IsValid():
-                    if any(str(c) == out_attr_path for c in succ_attr.GetConnections()):
-                        # Rewire successor to this node's predecessor.
-                        pred_conns = attr.GetConnections()
-                        if pred_conns:
-                            succ_attr.SetConnections(list(pred_conns))
-                        else:
-                            succ_attr.ClearConnections()
-                        changed_nodes.add(node)
-                        break
+                for succ_attr in chunk_usd.iter_exec_inputs(node.prim):
+                    if not any(str(c) == out_attr_path for c in succ_attr.GetConnections()):
+                        continue
+                    # Rewire successor to this node's predecessor.
+                    pred_conns = attr.GetConnections()
+                    if pred_conns:
+                        succ_attr.SetConnections(list(pred_conns))
+                    else:
+                        succ_attr.ClearConnections()
+                    changed_nodes.add(node)
+                    break
         chunk_usd.ChunkStageSync().clear_attr_connections(attr)
         # For typed ports, re-execute the owning chunk so shader-level connections
         # (e.g. UsdUVTexture.inputs:st) are cleared to match the disconnected chunk state.
@@ -3437,17 +3520,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         node_prim = str(node.prim.GetPath())
         changed = False
 
-        # Heal the exec chain: rewire each successor's inputs:chunk to this node's predecessor(s).
+        # Heal the exec chain: rewire each successor's exec input to this node's
+        # predecessor(s). The predecessor is read from slot 0 only — a successor has one slot
+        # to inherit into, so it can be handed exactly one branch, and slot 0 is the primary
+        # one (same choice as chunk_usd.heal_exec_chain_on_delete).
         exec_in = stage.GetAttributeAtPath(Sdf.Path(node_prim + ".inputs:chunk"))
         pred_conns = list(exec_in.GetConnections()) if (exec_in and exec_in.IsValid()) else []
         out_chunk_path = node_prim + ".outputs:chunk"
         for other in graph_scene._nodes.values():
             if other is node:
                 continue
-            succ = stage.GetAttributeAtPath(Sdf.Path(str(other.prim.GetPath()) + ".inputs:chunk"))
-            if not (succ and succ.IsValid()):
-                continue
-            if any(str(c) == out_chunk_path for c in succ.GetConnections()):
+            # Successors are matched across every slot, though: a merge fed through slot 2
+            # would otherwise keep pointing at the node being shaken loose.
+            for succ in chunk_usd.iter_exec_inputs(other.prim):
+                if not any(str(c) == out_chunk_path for c in succ.GetConnections()):
+                    continue
                 # Write to succ's own home layer, not the stage's ambient edit target (root,
                 # since nothing here calls SetEditTarget) -- an interactively wired
                 # connection almost always lives on the session layer, stronger than root,
