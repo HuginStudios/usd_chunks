@@ -3,7 +3,7 @@ from __future__ import annotations
 from pxr import Usd
 
 from usd_chunks import chunk as _chunk
-from usd_chunks import chunk_registry, chunk_core
+from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.plugins.chunk_usd import export_chunks, initialize as _chunk_usd_init
 
