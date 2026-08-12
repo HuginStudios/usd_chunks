@@ -56,6 +56,15 @@ logger = logging.getLogger(__name__)
 _usd_write_active: bool = False
 _loading_stage = None  # Set during load_chunks so callbacks can access the stage during file open
 
+# Set while ChunkLayerManager is rearranging its OWN layers — the per-chunk procedural layers
+# and the graph layers that group them. Layer stack changes normally invalidate Edit Target
+# resolution (a marker only counts while the layer it names is composed), but these layers can
+# never be what a marker names: the Edit Target picker excludes them by construction, and they
+# are anonymous, so a saved identifier could not match one across sessions. Every chunk creates
+# one as it first cooks, so treating them as ordinary layer stack changes throws the resolution
+# away once per chunk and makes cooking a graph quadratic.
+_internal_layer_write_active: bool = False
+
 # The chunk whose module.execute() is currently running, or None. Execution-scoped (set and
 # cleared around each execute() call below), NOT persistent config — it only answers "who is
 # authoring right now" so chunk_utils.get_edit_layer can resolve that chunk's Edit Target from

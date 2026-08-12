@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import logging
+import weakref
 from pathlib import Path
 from typing import Generator, Tuple
 
@@ -151,6 +152,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._loaded_stage = None
         self._loaded_prim_paths: set[str] = set()
         self._chunk_prim_paths: dict[int, str] = {}  # id(chunk) → current prim path
+        # What USD has said changed since the last scan for new chunk prims, used to scope
+        # that scan — see _on_objects_changed and _scan_for_new_chunks. Resyncs are kept
+        # apart from info-only changes because they justify different amounts of looking.
+        self._pending_resyncs: "set[Sdf.Path]" = set()
+        self._pending_info_changes: "set[Sdf.Path]" = set()
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
         )
@@ -270,7 +276,38 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not scene_stage or stage.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
             return
         self._stage = stage
-        load_chunks(stage, self._scene, self._loaded_prim_paths)
+        self._scan_for_new_chunks(stage)
+
+    def _scan_for_new_chunks(self, stage: Usd.Stage) -> None:
+        """Turn any chunk prim that has appeared since the last scan into a chunk.
+
+        Scoped to the subtrees ObjectsChanged reported resynced, rather than the whole
+        stage. A prim cannot appear outside a resynced subtree, so this looks everywhere it
+        needs to and nowhere else — which matters twice over: the scan runs on every stage
+        change, so walking the whole stage made building a graph quadratic in the number of
+        chunks, and in a real scene it also walked every piece of geometry on the stage to
+        find out that nothing had happened.
+
+        A resync is a structural change, so a prim that was not there before can be
+        anywhere beneath one — those get walked. An info-only change cannot create a prim,
+        but it can still make an existing one loadable, which is not a hypothetical: a
+        chunk prim becomes loadable when its info:chunkType gets a value, and setting a
+        value is an info-only change. So those contribute the one prim they name, and
+        deliberately not its subtree — otherwise a metadata change on a big prim would drag
+        its whole subtree through here.
+
+        Having heard nothing at all is the one case with no basis to narrow, and walks the
+        stage. State is cleared only here, where the scan actually happens: the callers bail
+        out ahead of this on a suppressed write, and whatever they saw still has to be
+        looked at on the next real one.
+        """
+        resyncs, info_changes = self._pending_resyncs, self._pending_info_changes
+        self._pending_resyncs = set()
+        self._pending_info_changes = set()
+        prims = None
+        if resyncs or info_changes:
+            prims = _iter_scoped_prims(stage, resyncs, info_changes)
+        load_chunks(stage, self._scene, self._loaded_prim_paths, prims=prims)
 
     def _on_chunk_deleted(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
@@ -360,6 +397,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # an inputs:chunk connection changing is exactly what the memo is keyed against, and
         # those arrive here regardless of which flag is set.
         invalidate_edit_layer_memo()
+        # Same reasoning, and the only place the resynced paths are visible at all: the scan
+        # for new chunk prims runs off StageContentsChanged, which carries no paths. USD
+        # sends this notice first for a given change (locked in by
+        # test_objects_changed_precedes_stage_contents_changed), so what is recorded here is
+        # what that scan then scopes itself by. A write suppressed by the guards below still
+        # has to be recorded — suppression stops us reacting now, not the prims existing.
+        self._pending_resyncs.update(notice.GetResyncedPaths())
+        self._pending_info_changes.update(notice.GetChangedInfoOnlyPaths())
         if chunk_notice._usd_write_active or self._reconciling_exec or not self._scene:
             return
         scene_stage = self._scene.get_stage()
@@ -727,6 +772,15 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not dep_prim.IsValid():
             return
         src_path = Sdf.Path(exec_output_path(dependency))
+        # Nothing below this is worth doing for an edge USD already has — and on load that
+        # is every edge, since load_chunks mirrors add_dependency FROM the authored
+        # inputs:chunk. Checking before opening the edit context matters as much as the
+        # skipped write: resolving that context walks the exec chain upstream, as does the
+        # reconcile, so a graph restored edge by edge paid two full walks per chunk to
+        # re-derive an answer that could not have changed.
+        existing_attr = dep_prim.GetAttribute(_EXEC_INPUT)
+        if existing_attr and existing_attr.IsValid() and src_path in existing_attr.GetConnections():
+            return
         with self._chunk_prim_edit_context(dependent):
             exec_in = dep_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
             existing = list(exec_in.GetConnections())
@@ -1827,10 +1881,17 @@ def _prim_edit_target_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.Layer 
 
 def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
     """Breadth-first walk of the exec chain (inputs:chunk connections) upstream from
-    start, yielding each reachable (path, prim) exactly once, start itself excluded.
-    prim may be invalid (dangling connection) — such nodes are yielded but not walked
-    through. Shared by every "look upstream" consumer so the traversal semantics
+    start, yielding each reachable (path, prim, unbranched) exactly once, start itself
+    excluded. prim may be invalid (dangling connection) — such nodes are yielded but not
+    walked through. Shared by every "look upstream" consumer so the traversal semantics
     (dedup, ordering, dangling handling) live in one place.
+
+    unbranched says everything visited up to and including this node forms a single chain
+    start -> ... -> node, with no level holding more than one node. That is the condition
+    under which "what does the walk from here find" is the same question as "what does the
+    walk from start find", which is what lets nearest_upstream_edit_layer share one answer
+    along the run instead of re-deriving it per node. It goes False for good at the first
+    fork and never comes back.
 
     Deliberately exec-only (inputs:chunk), NOT the exec+data walk get_exec_upstream_chunks
     does: Edit Target resolution follows the execution chain that actually defines
@@ -1838,12 +1899,13 @@ def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
     points shouldn't drag its Edit Target upstream. The two are separate on purpose."""
     seen = {start}
     frontier = [start]
+    unbranched = True
     while frontier:
         next_frontier: list = []
         for path in frontier:
             p = stage.GetPrimAtPath(path)
             if path != start:
-                yield path, p
+                yield path, p, unbranched
             if not (p and p.IsValid()):
                 continue
             exec_in = p.GetAttribute(_EXEC_INPUT)
@@ -1853,10 +1915,13 @@ def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
                     if conn_prim not in seen:
                         seen.add(conn_prim)
                         next_frontier.append(conn_prim)
+        unbranched = unbranched and len(next_frontier) == 1
         frontier = next_frontier
 
 
 _edit_layer_memo: "dict[str, Sdf.Layer]" = {}
+_edit_layer_memo_stage: "weakref.ref | None" = None
+_edit_layer_memo_frozen = False
 
 
 def invalidate_edit_layer_memo() -> None:
@@ -1866,8 +1931,37 @@ def invalidate_edit_layer_memo() -> None:
     it walks (an inputs:chunk connection appearing, moving or being healed away), the Edit
     Target markers it looks for, or the stage's layer stack (a marker only counts while the
     layer it names is actually composed).
+
+    Two kinds of write are exempt, both because they provably cannot move an answer: a
+    frozen block (see freeze_edit_layer_memo) and ChunkLayerManager rearranging its own
+    internal layers (see chunk_notice._internal_layer_write_active).
     """
+    if _edit_layer_memo_frozen or chunk_notice._internal_layer_write_active:
+        return
     _edit_layer_memo.clear()
+
+
+@contextlib.contextmanager
+def freeze_edit_layer_memo():
+    """Hold the memo across a block whose writes provably cannot move any answer.
+
+    Only for authoring that rearranges *where* an already-composed opinion is stored —
+    _migrate_chunk_bookkeeping's per-property strong -> weak consolidation, which by
+    construction leaves both inputs:chunk and chunk:editTargetLayer composing exactly what
+    they composed before. Those writes still resync prims, so without this every migration
+    in a pass throws away the answers the pass just computed, and each of the next chunk's
+    answers is re-walked from scratch up the whole chain above it.
+
+    Never wrap a block that can author a new chunk prim, an exec connection or a layer
+    stack change: those are the three things the memo is a cache of.
+    """
+    global _edit_layer_memo_frozen
+    prev = _edit_layer_memo_frozen
+    _edit_layer_memo_frozen = True
+    try:
+        yield
+    finally:
+        _edit_layer_memo_frozen = prev
 
 
 def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.Layer | None":
@@ -1893,20 +1987,45 @@ def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.La
     if not (prim and prim.IsValid()):
         return session
 
+    # Answers are keyed by prim path, and prim paths repeat across stages — /chunks/Dot in a
+    # file just opened is the same string as /chunks/Dot in the stage it replaced, while the
+    # layer it resolves to belongs to the old stage and is in no layer stack at all now.
+    # Authoring against that layer loses the write; migrating a chunk into it strips the
+    # chunk's prim from the stage it is actually on. The memo serves one stage at a time, so
+    # a different stage starts a new one.
+    global _edit_layer_memo_stage
+    if _edit_layer_memo_stage is None or _edit_layer_memo_stage() is not stage:
+        _edit_layer_memo.clear()
+        _edit_layer_memo_stage = weakref.ref(stage)
+
     key = str(prim.GetPath())
     if (memoised := _edit_layer_memo.get(key)) is not None:
         return memoised
 
     result = session
-    for _path, p in _iter_exec_upstream(stage, prim.GetPath()):
+    # Every node on an unbranched run above prim has this same answer, so the walk both
+    # stops at the first one already memoised and leaves the answer on the rest. Without
+    # that the memo only ever holds the node that was asked about, and a chain restored or
+    # reconciled node by node re-walks the whole thing above each one in turn.
+    shared: "list[str]" = []
+    for path, p, unbranched in _iter_exec_upstream(stage, prim.GetPath()):
         if not (p and p.IsValid()):
             continue
         layer = _prim_edit_target_layer(stage, p)
         if layer is not None:
             result = layer
             break
+        if not unbranched:
+            continue
+        upstream_key = str(path)
+        if (upstream := _edit_layer_memo.get(upstream_key)) is not None:
+            result = upstream
+            break
+        shared.append(upstream_key)
 
     _edit_layer_memo[key] = result
+    for shared_key in shared:
+        _edit_layer_memo[shared_key] = result
     return result
 
 
@@ -1946,7 +2065,32 @@ def _apply_connection_list_op(spec: "Sdf.PropertySpec", op: "Sdf.PathListOp") ->
     proxy.orderedItems = list(op.orderedItems)
 
 
-def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "Sdf.Layer") -> bool:
+def _migratable_layers(stage: "Usd.Stage") -> "list[Sdf.Layer]":
+    """The stage's layer stack, strong -> weak, minus the chunk graph's own internal
+    procedural layers — the layers a chunk's bookkeeping may legitimately be moved between.
+
+    Its own function because it is loop-invariant across a reconcile pass but costs the
+    size of the layer stack, and the layer stack grows with the graph: every chunk carries
+    a procedural layer. Recomputed per chunk, it makes a whole-scene pass quadratic on
+    exactly the graphs that pass exists to keep correct.
+
+    Each layer is asked directly whether the chunk system owns it, rather than matched
+    against a set collected by walking every tracked layer's sublayers. Collecting that set
+    is itself proportional to the graph, and this runs once per pass, of which there is one
+    per wire — so the walk was most of the cost of building a graph's worth of them.
+    """
+    return [
+        layer for layer in stage.GetLayerStack(includeSessionLayers=True)
+        if not chunk_registry.is_chunk_internal_layer(layer)
+    ]
+
+
+def _migrate_chunk_bookkeeping(
+    stage: "Usd.Stage",
+    prim_path: str,
+    dst_layer: "Sdf.Layer",
+    migratable: "list[Sdf.Layer] | None" = None,
+) -> bool:
     """Consolidate a chunk prim's bookkeeping spec into dst_layer, removing it from any other
     migratable layer it currently sits in. Returns True if anything moved.
 
@@ -1977,11 +2121,12 @@ def _migrate_chunk_bookkeeping(stage: "Usd.Stage", prim_path: str, dst_layer: "S
     from any Usd.PrimIsDefined traversal — the node graph stops drawing a node for it.
     """
     sdf_path = Sdf.Path(prim_path)
-    internal = chunk_utils.chunk_internal_layer_ids()
-    holders = [
-        layer for layer in stage.GetLayerStack(includeSessionLayers=True)
-        if layer.identifier not in internal and layer.GetPrimAtPath(sdf_path)
-    ]
+    # migratable is the same list for every chunk in a pass; a caller doing a pass hands it
+    # in once instead of paying for it per chunk. It must be re-read after anything that can
+    # open or sublayer a layer — see _migratable_layers.
+    if migratable is None:
+        migratable = _migratable_layers(stage)
+    holders = [layer for layer in migratable if layer.GetPrimAtPath(sdf_path)]
     sources = [layer for layer in holders if layer != dst_layer]
     if not sources:
         return False
@@ -2051,7 +2196,10 @@ def _chunks_downstream_of(roots: "list[core.ChunkBase]") -> "set[int]":
 
 
 def reconcile_edit_targets(
-    stage: "Usd.Stage", scene: "core.SceneSender", roots: "list[core.ChunkBase] | None" = None
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    roots: "list[core.ChunkBase] | None" = None,
+    cook: bool = True,
 ) -> None:
     """Make every chunk's bookkeeping consistent with the Edit Target resolved for its
     exec-chain position.
@@ -2077,6 +2225,10 @@ def reconcile_edit_targets(
     a delete — where the change is not localised to one chunk — still wants. This matters
     because the pass is O(chunks) and every wire fires one: on a graph of any size, visiting
     the whole scene per edge is what made building it quadratic.
+
+    cook=False migrates without re-running anything, for the one caller that is about to cook
+    the whole graph anyway: loading. There the re-run is not just redundant but quadratic —
+    each migration would cascade a solve over everything downstream of it, once per chunk.
     """
     global _reconciling
     if _reconciling or not (stage and scene):
@@ -2084,6 +2236,7 @@ def reconcile_edit_targets(
     _reconciling = True
     try:
         affected = _chunks_downstream_of(roots) if roots is not None else None
+        migratable = _migratable_layers(stage)
         for chunk in scene.get_chunks():
             if affected is not None and id(chunk) not in affected:
                 continue
@@ -2096,11 +2249,21 @@ def reconcile_edit_targets(
             dst = nearest_upstream_edit_layer(stage, prim)
             if dst is None:
                 continue
-            if _migrate_chunk_bookkeeping(stage, prim_path, dst):
-                # The chunk moved layers — re-run it so its driven content re-nests under
-                # the new target (bookkeeping is hand-moved above; driven content follows
-                # via ChunkLayerManager on execute).
+            # Migration only moves opinions between layers, never changes what they
+            # compose to, so the pass keeps the answers it has computed instead of
+            # dropping them at the first move and re-walking the whole chain above the
+            # chunk after it. The re-run below is outside the freeze — that one can
+            # author anything.
+            with freeze_edit_layer_memo():
+                moved = _migrate_chunk_bookkeeping(stage, prim_path, dst, migratable)
+            if moved and cook:
+                # The chunk moved layers — re-run it so its driven content re-nests
+                # under the new target (bookkeeping is hand-moved above; driven
+                # content follows via ChunkLayerManager on execute).
                 chunk.execute()
+                # A cook can create and sublayer this chunk's procedural layer, so the
+                # migratable set is stale from here on.
+                migratable = _migratable_layers(stage)
     finally:
         _reconciling = False
 
@@ -2171,7 +2334,8 @@ def restore_edit_target_selections(
     def _upstream_et_count(chunk) -> int:
         start = Sdf.Path(get_chunk_prim_path(chunk))
         return sum(
-            1 for path, _p in _iter_exec_upstream(stage, start) if str(path) in et_paths
+            1 for path, _p, _unbranched in _iter_exec_upstream(stage, start)
+            if str(path) in et_paths
         )
 
     # Resolve each stored selection BEFORE applying any of them. Applying one target's value
@@ -2667,7 +2831,59 @@ def _find_prim_layer(prim: Usd.Prim) -> "Sdf.Layer | None":
     return None
 
 
-def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: set[str] | None = None) -> None:
+def _iter_scoped_prims(
+    stage: Usd.Stage, resynced: "set[Sdf.Path]", info_changed: "set[Sdf.Path]"
+):
+    """The prims a change round could have made loadable, once each.
+
+    Each resynced path contributes its whole subtree, since a structural change can bring
+    in prims anywhere below it — a chunk arriving in a sublayer resyncs the *parent* of the
+    new prim, not the prim. Each info-changed path contributes only the prim it names.
+
+    Paths may be property paths, and may name a prim that has since gone (a resync reports
+    a deletion the same way it reports an arrival); both resolve to the owning prim or to
+    nothing. Overlapping subtrees are normal, so prims are de-duplicated.
+    """
+    seen: "set[str]" = set()
+
+    def _emit(prim):
+        key = str(prim.GetPath())
+        if key in seen:
+            return False
+        seen.add(key)
+        return True
+
+    for path in resynced:
+        if path == Sdf.Path.absoluteRootPath:
+            for prim in stage.Traverse():
+                if _emit(prim):
+                    yield prim
+            continue
+        prim = stage.GetPrimAtPath(path.GetPrimPath())
+        if not (prim and prim.IsValid()):
+            continue
+        for descendant in Usd.PrimRange(prim):
+            if _emit(descendant):
+                yield descendant
+
+    for path in info_changed:
+        prim = stage.GetPrimAtPath(path.GetPrimPath())
+        if prim and prim.IsValid() and _emit(prim):
+            yield prim
+
+
+def load_chunks(
+    stage: Usd.Stage,
+    scene: "core.SceneSender",
+    loaded_prim_paths: set[str] | None = None,
+    prims: "Generator | None" = None,
+) -> None:
+    """Turn Chunk prims into chunks.
+
+    prims narrows which prims are considered — see ChunkStageSync._scan_for_new_chunks,
+    which derives it from what USD reported changed. None considers the whole stage, which
+    is what a file being opened wants.
+    """
     if not stage:
         return
 
@@ -2677,7 +2893,7 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
     # module-backed chunk. Nested ChunkGroups use a separate parent-context mechanism
     # (_parent_context) not covered by this reload path yet.
     context_prims = []
-    for prim in stage.Traverse():
+    for prim in (stage.Traverse() if prims is None else prims):
         if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
             continue
         if loaded_prim_paths is not None and str(prim.GetPath()) in loaded_prim_paths:
@@ -2866,6 +3082,14 @@ def load_chunks(stage: Usd.Stage, scene: "core.SceneSender", loaded_prim_paths: 
                     sl = list(g_layer.subLayerPaths)
                     sl.sort(key=lambda ident: layer_to_sk.get(ident, 0), reverse=True)
                     g_layer.subLayerPaths = sl  # type: ignore
+
+            # Home every chunk's bookkeeping now, while the exec chain is final (it came
+            # from the file and the dependency restore above only mirrored it) and before
+            # anything cooks. Left to the reconcile after load_chunks, this same work is
+            # quadratic: each chunk that moves is re-run, and by then a re-run cascades a
+            # solve over the entire graph below it. Done here, cook=False, the cook loop
+            # immediately below is the one and only pass over the graph.
+            reconcile_edit_targets(stage, scene, cook=False)
 
             for prim, added in deferred:
                 if id(added) not in chunks_with_dependencies:
