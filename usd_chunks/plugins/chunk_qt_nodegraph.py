@@ -14,6 +14,7 @@ import time
 import weakref
 from typing import Iterable, Optional
 
+import shiboken6
 from pxr import Gf, Sdf, Usd, UsdUI
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -48,6 +49,13 @@ _SHAKE_WINDOW = 0.4  # seconds of drag samples to look at
 _SHAKE_MIN_STEP = 5.0  # scene px; smaller moves are jitter, ignored
 _SHAKE_MIN_TRAVEL = 140.0  # total scene px travelled in the window
 _SHAKE_REVERSALS = 4  # horizontal direction changes needed to fire
+
+# A header double-click can be delivered to a node twice for one real user gesture (seen
+# live: two full STATE_CHANGED solves from a single double-click, toggling COLLAPSED on
+# then immediately off again -- net no-op, so the node looks permanently stuck). Debounced
+# rather than fixed at the Qt event-delivery layer since that redelivery's exact cause
+# wasn't reproducible outside a live session; this bounds the damage regardless of cause.
+_COLLAPSE_TOGGLE_DEBOUNCE = 0.2  # seconds
 
 
 _COL_NODE_BG = QtGui.QColor("#3a3a3a")
@@ -672,6 +680,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._drag_start = QtCore.QPointF()
         self._shake_samples: list[tuple[float, float]] = []  # (time, scene x) during a drag
         self._shake_fired = False
+        self._last_collapse_toggle_time = 0.0  # see _COLLAPSE_TOGGLE_DEBOUNCE
         # Multi-select drag: other selected (unlocked) nodes moved alongside this one, and
         # whether a plain (no-drag) click on an already-multi-selected node should collapse
         # the selection down to just this node once the press/release completes without moving.
@@ -1332,12 +1341,19 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                             break
                 event.accept()
                 return
+            # Debounced: a single real double-click has been observed (live log) delivering
+            # this handler twice in a row, toggling COLLAPSED on then straight back off --
+            # net no-op, so the node looks permanently stuck. See _COLLAPSE_TOGGLE_DEBOUNCE.
+            now = time.monotonic()
+            debounced = now - self._last_collapse_toggle_time < _COLLAPSE_TOGGLE_DEBOUNCE
             if self._is_group:
                 # A collapsed group hides its whole embedded widget — including the minimize
                 # arrow — so the header double-click is the only way to expand it in the graph.
                 # Collapsed -> expand; expanded -> dive in.
                 if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
-                    self.chunk.unset_state(ChunkFlags.State.COLLAPSED)
+                    if not debounced:
+                        self._last_collapse_toggle_time = now
+                        self.chunk.unset_state(ChunkFlags.State.COLLAPSED)
                     event.accept()
                     return
                 scene = self.scene()
@@ -1345,7 +1361,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                     scene.dive_into.emit(self.chunk)
                 event.accept()
                 return
-            if not self._locked:
+            if not self._locked and not debounced:
+                self._last_collapse_toggle_time = now
                 if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
                     self.chunk.unset_state(ChunkFlags.State.COLLAPSED)
                 else:
@@ -1914,6 +1931,17 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 try:
                     existing.prim = prim
                     existing.set_locked(locked)
+                    # A node can be left without one: _create_proxies_batch defers a node's
+                    # create_proxy() call across event-loop ticks, and abandons whatever is
+                    # still queued (no reschedule) the moment a newer rebuild supersedes it
+                    # (_build_gen mismatch, right below). If that node already exists here on
+                    # the newer rebuild, this branch is normally a no-op that never revisits
+                    # its proxy -- silently orphaning it forever with no exception logged,
+                    # stuck at header height since create_proxy() never ran. One file load can
+                    # fire several rebuilds (each wiring/reactive pass gets its own), so this
+                    # is not just a theoretical race. Queue it again rather than leave it dark.
+                    if existing._proxy is None and not existing._is_dot and not existing._is_merge:
+                        new_nodes.append(existing)
                 except RuntimeError:
                     existing = None  # its C++ item was already destroyed somehow — rebuild it
             else:
@@ -2448,6 +2476,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Suppresses build()'s generic _ensure_default_view while a drag-and-drop chunk
         # import is in flight -- see _import_as_chunks/_ensure_view_for_imported.
         self._suppress_default_view = False
+        # Debounce state for build()'s post-build recook -- see _schedule_restore_active_view.
+        self._restore_view_token = 0
+        self._restore_view_changed_chunks: "Optional[set]" = set()
         self._view_state = ViewSlotState(self)
         self._view_state.slot_changed.connect(self._on_view_slot_changed)
         self._view_state.create_view_for.connect(self._on_create_view_for_path)
@@ -2562,7 +2593,46 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # viewport is one global stage, so a view activated in another context (e.g. an inner
         # group view) otherwise stays cooked and the wrong result shows. Deferred past the
         # auto-view step. (On create we deliberately don't re-cook, to avoid churn.)
-        QtCore.QTimer.singleShot(100, lambda cc=changed_chunks: self._restore_active_view(cc))
+        self._schedule_restore_active_view(changed_chunks)
+
+    def _schedule_restore_active_view(self, changed_chunks: Optional[Iterable[core.ChunkBase]]) -> None:
+        """Debounce build()'s post-build recook across a burst of build() calls landing in
+        the same event-loop tick.
+
+        A bulk file load calls build() once per chunk, synchronously, in the same call
+        stack (see load_chunks' _add_prim_mods -- each restored chunk fires its own
+        CHUNK_LOADED, which ChunkWidgetDocker._loaded_module_callback turns straight into a
+        build() call while the Graph tab is active). Each call used to arm its own
+        independent 100ms timer, and recook_for_view re-executes its whole cook set every
+        time it runs, not just what changed (see _recook_active_view's docstring) -- so an
+        N-chunk load re-ran the entire upstream chain N times, live-reported as repeated
+        "Updated stage with sublayer" / "Scattered N instances" spam on every reload.
+
+        Only this recook is debounced, not build() itself: scene.build() above (the actual
+        node/proxy-widget creation) stays fully synchronous, since several callers -- both
+        here and in tests -- read scene()._nodes[...] immediately after creating or pasting
+        a chunk and would otherwise KeyError on a node that hasn't been built yet.
+
+        changed_chunks accumulates (union) across every build() call in the same burst;
+        None (a caller that needs an unconditional recook, e.g. a real view/tab switch)
+        dominates and is preserved even if later calls in the same burst pass a scoped set,
+        since it's the strict superset of "recook if any of these chunks changed."
+        """
+        if self._restore_view_changed_chunks is not None:
+            if changed_chunks is None:
+                self._restore_view_changed_chunks = None
+            else:
+                self._restore_view_changed_chunks |= set(changed_chunks)
+        self._restore_view_token += 1
+        token = self._restore_view_token
+        QtCore.QTimer.singleShot(100, lambda t=token: self._run_scheduled_restore_active_view(t))
+
+    def _run_scheduled_restore_active_view(self, token: int) -> None:
+        if token != self._restore_view_token:
+            return  # superseded by a later build() call in the same burst
+        changed = self._restore_view_changed_chunks
+        self._restore_view_changed_chunks = set()
+        self._restore_active_view(changed)
 
     def _context_has_view(self, scene, context) -> bool:
         """True when this context (or the graph as a whole, if context is None) has a view chunk."""
@@ -3824,6 +3894,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         Omit changed_chunks (the default) to always recook, as before — used for genuinely
         graph-wide triggers like a view switch.
         """
+        # This is always reachable through a deferred QTimer.singleShot (build()'s own
+        # debounced post-build recook -- see _schedule_restore_active_view -- and
+        # ChunkGraphScene._on_chunk_deleted's debounce both end up here later, not
+        # synchronously) — by the time it fires this view can have been torn down already
+        # (e.g. a test's fixture finished, or the tab/context it belonged to was closed),
+        # which crashes as "Internal C++ object already deleted" the moment anything below
+        # touches self. A no-op recook on a dead view is correct: there's nothing left to
+        # drive.
+        if not shiboken6.isValid(self):
+            return
         # Only the CURRENTLY SELECTED tab should drive the (global) stage. Gate on the owning
         # tab stack's visibility, NOT self.isVisible(): the graph is page 1 of a QStackedWidget,
         # so in Params mode this widget is hidden even though its tab is current — self.isVisible()

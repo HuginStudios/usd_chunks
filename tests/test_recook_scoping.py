@@ -5,6 +5,7 @@ import time
 from pxr import Usd, UsdGeom
 
 from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.plugins import chunk_usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 
@@ -235,3 +236,60 @@ def test_relevant_chunk_delete_still_recooks(qapp) -> None:
         )
     finally:
         real_scatter_module.execute = orig_execute
+
+
+def test_bulk_chunk_creation_burst_recooks_once(qapp) -> None:
+    """Regression: a bulk file load fires CHUNK_LOADED once per chunk, synchronously and in
+    one call stack (see chunk_usd.load_chunks' _add_prim_mods). ChunkWidgetDocker rebuilt the
+    graph tab on every single CHUNK_LOADED, and each rebuild's post-build step (build()'s own
+    100ms-later recook) re-ran chunk_usd.recook_for_view -- which re-executes its whole cook
+    set every time it runs, not just what changed -- so an N-chunk load re-ran the entire
+    upstream chain N times. Live-reported as repeated "Updated stage with sublayer" /
+    "Scattered N instances" spam on every reload of a saved scene.
+    ChunkGraphView._schedule_restore_active_view now debounces that post-build recook (via a
+    generation token, same idea as ChunkGraphScene._on_chunk_deleted's existing debounce for a
+    CHUNK_DELETED burst) so every build() call that lands in the same synchronous burst
+    collapses into a single recook instead of one per call -- scene.build() itself (the actual
+    node/widget creation) stays synchronous and undebounced, since several callers rely on a
+    just-created node existing in scene()._nodes immediately.
+
+    Counts chunk_usd.recook_for_view calls specifically, not a downstream chunk's own
+    execute() -- wiring a new chunk into an already-cooking chain also triggers a real,
+    separate DAG-level reactive execute() (chunk_notice's own dependency-changed dispatch,
+    nothing to do with view-driven recook), which would conflate the two mechanisms and make
+    this assert too strict.
+    """
+    docker, scene, reg, stage, gv, scatter, view, _pump = _setup(qapp)
+    transform_mod = reg.get_chunk_module("transform")
+
+    call_count = {"n": 0}
+    orig_recook = chunk_usd.recook_for_view
+
+    def traced_recook(*a, **kw):
+        call_count["n"] += 1
+        return orig_recook(*a, **kw)
+
+    chunk_usd.recook_for_view = traced_recook
+    try:
+        # Create several Transform chunks, then wire them into the view's cook set -- both
+        # loops entirely synchronous, no qapp.processEvents() in between, matching how
+        # load_chunks fires CHUNK_LOADED for every chunk (and wires dependencies) all within
+        # one call stack before anything ever gets a chance to actually recook.
+        n_transforms = 4
+        transforms = [_mk(transform_mod, scene) for _ in range(n_transforms)]
+        prev = scatter
+        for t in transforms:
+            _wire(t, prev)
+            prev = t
+        _wire(view, prev)
+
+        qapp.processEvents()
+        _pump(0.5)
+
+        assert call_count["n"] == 1, (
+            f"a burst of {n_transforms} chunk creations that are all relevant to the active "
+            f"view must collapse into a single recook, not one per chunk "
+            f"(got {call_count['n']})"
+        )
+    finally:
+        chunk_usd.recook_for_view = orig_recook
