@@ -72,6 +72,21 @@ class TestEditTargetMigration:
         self.create_mod = importlib.import_module("scripts.create_layer")
         self.edit_mod = importlib.import_module("scripts.edit_target")
         self.prim_mod = importlib.import_module("scripts.prim")
+        self._scenes = []
+
+    def teardown_method(self):
+        """Delete each scene's chunks instead of just dropping the reference to the scene.
+
+        create_layer and edit_target both register their refresh handlers with
+        listen_globally=True, and a chunk left alive keeps answering those notices — on
+        whatever stage is current, since ChunkBase.get_stage() resolves the live one rather
+        than the stage the chunk was built on. Left to leak, one test's chunks go on
+        authoring layers into the next test's stage.
+        """
+        for scene in self._scenes:
+            for ctx in list(scene.chunks.get_my_params()):
+                ctx.request_delete()
+        self._scenes = []
 
     def _setup(self):
         scene = _DummyScene()
@@ -79,10 +94,17 @@ class TestEditTargetMigration:
         stage = Usd.Stage.CreateInMemory()
         scene._stage = stage
         init_chunk_usd(stage, scene)
+        self._scenes.append(scene)
         return scene, stage
 
-    def _create_layer(self, scene, name):
-        c = _make(scene, self.create_mod, f"cl_{name}")
+    def _create_layer(self, scene, name, module_name=None):
+        # module_name is what gets written to the prim as info:chunkType. The reload test
+        # passes the real "create_layer" so the registry can rebuild a working chunk from it
+        # and the layer this authors exists again on the other side of a reload; the rest
+        # pass nothing and get a per-layer stand-in, which no module backs — they only care
+        # about where edits land, and a name the registry can't resolve keeps their chunks
+        # from re-running module code as unrelated notices cascade past.
+        c = _make(scene, self.create_mod, module_name or f"cl_{name}")
         c.get_param("layer_name").value = name
         c.execute()
         return c, Sdf.Layer.Find(c.get_param("_new_layer_id").value)
@@ -154,11 +176,11 @@ class TestEditTargetMigration:
         # CreateLayer(A) -> EditTarget(->A) -> CreateLayer(B) -> EditTarget(->B) -> Prim.
         # Real module names (create_layer/edit_target/prim) so the registry can rebuild the
         # chunks from info:chunkType on reload.
-        self._create_layer(scene, "A")
+        self._create_layer(scene, "A", "create_layer")
         et_a = _make(scene, self.edit_mod, "edit_target")
         et_a.get_param("edit_target").value = "A"
         et_a.execute()
-        self._create_layer(scene, "B")
+        self._create_layer(scene, "B", "create_layer")
         et_b = _make(scene, self.edit_mod, "edit_target")
         et_b.get_param("edit_target").value = "B"
         et_b.execute()
@@ -175,6 +197,7 @@ class TestEditTargetMigration:
         # reload path resets it too).
         chunk_registry.ChunkLayerManager().reset()
         scene2 = _DummyScene()
+        self._scenes.append(scene2)  # torn down with the rest, see teardown_method
         chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
         stage2 = Usd.Stage.Open(str(graph_path))
         scene2._stage = stage2
