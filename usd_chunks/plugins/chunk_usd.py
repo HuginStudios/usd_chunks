@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import logging
+import re
 import weakref
 from pathlib import Path
 from typing import Generator, Tuple
@@ -32,6 +33,52 @@ _EXEC_OUTPUT = "outputs:chunk"
 _EXEC_INPUT = "inputs:chunk"
 _CHUNK_PRIM_TYPENAME = "Chunk"
 _CHUNKS_ROOT = "/chunks"
+
+# Merge chunks fan several exec branches into one node, so they need more than the single
+# inputs:chunk every other chunk has. Extra slots are numbered from 1 -- slot 0 deliberately
+# keeps the plain _EXEC_INPUT name so that any consumer which only ever looks up
+# inputs:chunk (most of them: Edit Target resolution, exec healing, auto-chain on create)
+# transparently sees the merge's PRIMARY input, which is the answer those consumers want
+# anyway. Only code that genuinely needs every branch (edge drawing, tail detection,
+# disconnect) has to iterate.
+_EXEC_INPUT_NUMBERED = re.compile(r"^inputs:chunk([1-9]\d*)$")
+
+
+def is_exec_input_name(name: str) -> bool:
+    """Whether an attribute name is an exec input -- inputs:chunk, or a merge's
+    inputs:chunk<N> for N >= 1."""
+    return name == _EXEC_INPUT or bool(_EXEC_INPUT_NUMBERED.match(name))
+
+
+def exec_input_index(name: str) -> int:
+    """The slot number an exec input attribute name refers to (inputs:chunk -> 0)."""
+    match = _EXEC_INPUT_NUMBERED.match(name)
+    return int(match.group(1)) if match else 0
+
+
+def exec_input_name(index: int) -> str:
+    """The attribute name for exec slot `index`. Slot 0 is the plain inputs:chunk."""
+    return _EXEC_INPUT if index == 0 else f"{_EXEC_INPUT}{index}"
+
+
+def iter_exec_inputs(prim: "Usd.Prim") -> "list[Usd.Attribute]":
+    """A prim's exec input attributes, ordered by slot number -- strongest branch first.
+
+    Sorted by the PARSED index, never by attribute name: prim.GetAttributes() is
+    alphabetical, which puts inputs:chunk10 before inputs:chunk2. Slot order decides which
+    branch's opinion wins, so a string sort would silently mis-rank a merge with ten or
+    more inputs.
+    """
+    if not (prim and prim.IsValid()):
+        return []
+    attrs = [a for a in prim.GetAttributes() if is_exec_input_name(a.GetName())]
+    attrs.sort(key=lambda a: exec_input_index(a.GetName()))
+    return attrs
+
+
+def exec_input_connections(prim: "Usd.Prim") -> "list[Sdf.Path]":
+    """Every exec connection target on prim, strongest branch first."""
+    return [conn for attr in iter_exec_inputs(prim) for conn in attr.GetConnections()]
 
 # An Edit Target chunk publishes the identifier of the layer it currently points at onto
 # its own prim under this attribute. The presence of the attr marks an exec-chain boundary
@@ -462,10 +509,22 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         Routing this through the stage notice rather than the node graph's
         _author_connection keeps every authoring path in sync — the Qt graph, the CLI, a
         USD-level edit in usdview, and any future frontend — instead of each one having to
-        remember to call add_dependency itself.
+        remember to call add_dependency itself. Merge slot compaction rides here for exactly
+        the same reason: every way a slot can be cleared (a port disconnect, a shake, an
+        upstream chunk being deleted, a hand edit in usdview) surfaces as this one notice, so
+        the invariant is enforced once instead of at each call site that can break it.
         """
-        exec_suffix = "." + _EXEC_INPUT
-        touched_prims = {path[: -len(exec_suffix)] for path in all_changed if path.endswith(exec_suffix)}
+        touched_prims = set()
+        for path in all_changed:
+            # A property path is "<prim>.<attr>"; prim paths contain no dot at all. Matching
+            # the attribute name (rather than the old endswith(".inputs:chunk")) is what lets
+            # a merge's numbered slots through — inputs:chunk1 does NOT end with
+            # ".inputs:chunk", so before this every branch past the first authored USD, drew
+            # an edge and cooked in the right order while its Python DAG edge was never
+            # created: no INPUT_CHANGED, so editing that branch never recooked the merge.
+            prim_path, sep, attr_name = path.partition(".")
+            if sep and is_exec_input_name(attr_name):
+                touched_prims.add(prim_path)
         if not touched_prims:
             return
 
@@ -476,6 +535,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
         self._reconciling_exec = True
         try:
+            # Compact BEFORE reconciling: compaction renames connections between slots, and
+            # the DAG must be reconciled against the settled result, not the torn state.
+            for prim_path in touched_prims:
+                normalize_merge_slots(self._stage, self._stage.GetPrimAtPath(Sdf.Path(prim_path)))
             for chunk in self._scene.get_chunks():
                 if id(chunk) in wanted_ids:
                     reconcile_exec_dependencies(chunk)
@@ -778,14 +841,28 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # skipped write: resolving that context walks the exec chain upstream, as does the
         # reconcile, so a graph restored edge by edge paid two full walks per chunk to
         # re-derive an answer that could not have changed.
-        existing_attr = dep_prim.GetAttribute(_EXEC_INPUT)
-        if existing_attr and existing_attr.IsValid() and src_path in existing_attr.GetConnections():
+        # Every slot, not just inputs:chunk — otherwise a branch already wired into a merge's
+        # slot 2 looks absent here and gets authored a second time.
+        existing_conns = exec_input_connections(dep_prim)
+        if src_path in existing_conns:
             return
-        with self._chunk_prim_edit_context(dependent):
-            exec_in = dep_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-            existing = list(exec_in.GetConnections())
-            if src_path not in existing:
-                exec_in.SetConnections(existing + [src_path])
+        if is_merge_prim(dep_prim):
+            # A merge holds exactly one connection per slot. Stacking a second target onto
+            # slot 0 (what the branch below does) would collapse two branches into a single
+            # port and destroy the ordering the slots exist to express, so author into the
+            # first free slot instead — appending the new branch as the weakest. Density is
+            # guaranteed by normalize_merge_slots, so the free slot is just the count.
+            with self._chunk_prim_edit_context(dependent):
+                exec_in = dep_prim.CreateAttribute(
+                    exec_input_name(len(existing_conns)), Sdf.ValueTypeNames.Token, custom=False
+                )
+                exec_in.SetConnections([src_path])
+        else:
+            with self._chunk_prim_edit_context(dependent):
+                exec_in = dep_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+                existing = list(exec_in.GetConnections())
+                if src_path not in existing:
+                    exec_in.SetConnections(existing + [src_path])
         # The exec chain the memo walks just gained an edge, under a suppressed-notice
         # edit context.
         invalidate_edit_layer_memo()
@@ -1203,10 +1280,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
             if not prim.IsValid():
                 continue
-            exec_in = prim.GetAttribute(_EXEC_INPUT)
-            if exec_in.IsValid():
-                for conn in exec_in.GetConnections():
-                    referenced.add(str(conn.GetPrimPath()))
+            # Every slot — anything feeding a merge is referenced, whichever slot it lands in.
+            for conn in exec_input_connections(prim):
+                referenced.add(str(conn.GetPrimPath()))
 
         # Last unreferenced chunk in list order is the tail
         tail = None
@@ -1465,6 +1541,22 @@ def is_group_chunk(chunk: "core.ChunkBase") -> bool:
     """Return True if chunk is a chunkgroup (a CONTEXT chunk with a module — a subnet node)."""
     cfg = chunk.get_config()
     return bool(chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module)
+
+
+def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
+    """Return True if chunk is a Merge chunk (scripts/merge.py) — the only chunk type that
+    takes more than one exec input."""
+    cfg = chunk.get_config()
+    return bool(cfg and cfg.module == "merge")
+
+
+def is_merge_prim(prim: "Usd.Prim") -> bool:
+    """is_merge_chunk for a bare prim — used where only the stage is at hand (slot
+    compaction, cook ordering) and there may be no live chunk object to ask."""
+    if not (prim and prim.IsValid()):
+        return False
+    attr = prim.GetAttribute(_CHUNK_TYPE_ATTR)
+    return bool(attr and attr.IsValid() and attr.Get() == "merge")
 
 
 def is_chunk_pinned(chunk: "core.ChunkBase") -> bool:
@@ -1763,10 +1855,9 @@ def get_exec_downstream_chunks(
             path = str(prim.GetPath())
             if path in downstream or path == start_path:
                 continue
-            exec_in = prim.GetAttribute(_EXEC_INPUT)
-            if not exec_in.IsValid():
-                continue
-            if any(str(conn.GetPrimPath()) in frontier for conn in exec_in.GetConnections()):
+            # Every slot — a merge fed through slot 2 is downstream of that branch just as
+            # much as one fed through slot 0.
+            if any(str(conn.GetPrimPath()) in frontier for conn in exec_input_connections(prim)):
                 next_frontier.add(path)
                 if c := prim_to_chunk.get(path):
                     downstream.add(c)
@@ -1822,19 +1913,26 @@ def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
     del_prim = stage.GetPrimAtPath(deleted)
     if not (del_prim and del_prim.IsValid()):
         return
+    # The deleted node's PREDECESSOR is read from slot 0 only, on purpose: a successor has a
+    # single input to inherit into, so it can be handed exactly one branch, and slot 0 is the
+    # primary/strongest one. Deleting a merge therefore grafts its top branch onto whatever
+    # came after it, rather than fanning all of them into a chunk that cannot express fan-in.
     exec_in = del_prim.GetAttribute(_EXEC_INPUT)
     pred_conns = list(exec_in.GetConnections()) if (exec_in and exec_in.IsValid()) else []
     out_path = f"{deleted_path}.{_EXEC_OUTPUT}"
+    touched_merges = []
     prev_w = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
         for prim in stage.Traverse():
             if prim.GetPath() == deleted:
                 continue
-            succ = prim.GetAttribute(_EXEC_INPUT)
-            if not (succ and succ.IsValid()):
-                continue
-            if any(str(c) == out_path for c in succ.GetConnections()):
+            # SUCCESSORS, by contrast, must be found across every slot. A merge fed through
+            # slot 2 is just as much a successor as one fed through slot 0, and skipping it
+            # would leave that slot connected to a prim that is about to stop existing.
+            for succ in iter_exec_inputs(prim):
+                if not any(str(c) == out_path for c in succ.GetConnections()):
+                    continue
                 # Write to succ's OWN home layer (or the session layer as a last resort),
                 # not wherever the stage's ambient edit target happens to be (the root
                 # layer, since nothing here ever calls SetEditTarget) -- an interactively
@@ -1850,11 +1948,98 @@ def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
                         succ.SetConnections(pred_conns)
                     else:
                         succ.ClearConnections()
+                if is_merge_prim(prim):
+                    touched_merges.append(prim)
     finally:
         chunk_notice._usd_write_active = prev_w
+    # Suppressing notices above means opting out of the choke point that normally keeps the
+    # merge slot invariant (_reconcile_changed_exec_inputs), so restore it here instead: a
+    # slot cleared because its branch was deleted has to compact like any other.
+    for prim in touched_merges:
+        normalize_merge_slots(stage, prim)
     # Healing rewrites inputs:chunk across the graph with notices suppressed — every
     # memoised answer below the deleted node is now measured against an edge that is gone.
     invalidate_edit_layer_memo()
+
+
+def _remove_attr_spec(stage: "Usd.Stage", prim: "Usd.Prim", name: str) -> None:
+    """Remove an attribute wherever it is actually authored.
+
+    Usd.Prim.RemoveProperty only unauthors from the stage's *current* edit target, which for
+    chunk bookkeeping is routinely not where the spec lives — an interactively wired
+    connection sits on the session layer, a loaded one in the file. Removing from the wrong
+    layer leaves the real opinion composed and in charge, the same failure mode
+    heal_exec_chain_on_delete documents. So sweep the layer stack and drop every spec.
+    """
+    prim_path = prim.GetPath()
+    for layer in stage.GetLayerStack(includeSessionLayers=True):
+        prim_spec = layer.GetPrimAtPath(prim_path)
+        if prim_spec and name in prim_spec.properties:
+            del prim_spec.properties[name]
+
+
+def normalize_merge_slots(stage: "Usd.Stage", prim: "Usd.Prim") -> bool:
+    """Enforce a Merge chunk's slot invariant: connected exec inputs occupy slots 0..N-1 with
+    no gaps.
+
+    Clearing a middle slot compacts the rest up, so slot order (which is what decides whose
+    opinion wins) always matches the port order the user sees on the node, rather than
+    drifting into a question about invisible attribute names.
+
+    Judged on the CONNECTED slots alone — an exec attribute that exists but connects nothing
+    is deliberately left in place. It has to be: this runs synchronously from the stage notice
+    that CreateAttribute itself fires, so an authoring path which creates the attribute and
+    then connects it (_author_connection does exactly that, and so does the numbered-slot
+    branch of _on_dependency_added) would otherwise have the attribute deleted underneath it
+    between the two statements, and would go on to call SetConnections on an invalid handle.
+    The cost is that clearing the LAST slot can leave a connectionless inputs:chunkN behind;
+    it is inert — it carries no connection, `_build_ports` counts connections rather than
+    attributes, and the next compaction sweeps it — so it is preferable to breaking the
+    authoring paths.
+
+    No-ops for anything that isn't a merge, and for a merge already in shape, so it is safe
+    to call on every exec-input change.
+
+    Returns:
+        bool: True if any slot was rewritten
+    """
+    if not is_merge_prim(prim):
+        return False
+    current = [(attr, list(attr.GetConnections())) for attr in iter_exec_inputs(prim)]
+    live = [(attr, conns) for attr, conns in current if conns]
+    desired_names = [exec_input_name(i) for i in range(len(live))]
+    if [attr.GetName() for attr, _ in live] == desired_names:
+        return False
+
+    # Resolve each surviving branch's home layer BEFORE unauthoring anything, so a moved
+    # connection is re-authored in the layer it was already living in rather than being
+    # silently relocated (which could put it somewhere weaker than a spec left elsewhere).
+    moves = [
+        (
+            desired_names[i],
+            conns,
+            chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, None),
+        )
+        for i, (attr, conns) in enumerate(live)
+    ]
+
+    prev_w = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        # Clear every slot first, then re-author. Renaming in place would have to worry about
+        # a move landing on a slot that is still occupied by the branch below it.
+        for attr, _ in current:
+            _remove_attr_spec(stage, prim, attr.GetName())
+        for name, conns, home in moves:
+            with Usd.EditContext(stage, home):
+                attr = prim.CreateAttribute(name, Sdf.ValueTypeNames.Token, custom=False)
+                attr.SetConnections(conns)
+    finally:
+        chunk_notice._usd_write_active = prev_w
+    # Slots moved with notices suppressed, so nothing else will drop the memoised
+    # nearest-upstream-Edit-Target answers measured against the old wiring.
+    invalidate_edit_layer_memo()
+    return True
 
 
 def is_edit_target_chunk(chunk: "core.ChunkBase") -> bool:
@@ -2447,7 +2632,27 @@ def get_exec_upstream_chunks(
                 src = str(conn.GetPrimPath())
                 if src in prim_to_chunk:
                     srcs.append(src)
-        return srcs
+        if not is_merge_prim(prim):
+            return srcs
+        # A merge's slot order is what decides which branch wins, and visit order is what
+        # produces that ranking: visit() appends a node only after its sources, so whichever
+        # branch is visited FIRST lands earliest in cook_list — and recook_for_view ranks
+        # later-in-cook_list as STRONGER. Visiting the slots in descending order therefore
+        # leaves slot 0 visited last, ranked highest, and strongest, which is the documented
+        # "first input wins". iter_exec_inputs is strongest-first, hence the reverse.
+        #
+        # Branches are disjoint, so each stays contiguous in cook_list whatever its length.
+        # Where two slots share an upstream node, visit()'s `seen` keeps it at its FIRST
+        # visit — i.e. with the weakest of the branches that reach it. Well-defined, and the
+        # only stable choice: a shared node cannot sit at two strengths at once.
+        exec_srcs = [
+            src
+            for attr in reversed(iter_exec_inputs(prim))
+            for conn in attr.GetConnections()
+            if (src := str(conn.GetPrimPath())) in prim_to_chunk
+        ]
+        exec_set = set(exec_srcs)
+        return [s for s in srcs if s not in exec_set] + exec_srcs
 
     order: "list[core.ChunkBase]" = []
     seen: set = set()
@@ -2674,10 +2879,10 @@ def get_exec_tail_chunks(
     ]
     consumed: set = set()
     for prim in stage.Traverse():
-        exec_in = prim.GetAttribute(_EXEC_INPUT)
-        if exec_in.IsValid():
-            for conn in exec_in.GetConnections():
-                consumed.add(str(conn.GetPrimPath()))
+        # Every slot — a chunk feeding a merge's slot 2 is just as consumed as one feeding
+        # slot 0, and calling it a tail would wire a view to the middle of a live branch.
+        for conn in exec_input_connections(prim):
+            consumed.add(str(conn.GetPrimPath()))
     return [c for c in candidates if get_chunk_prim_path(c) not in consumed]
 
 
@@ -2701,10 +2906,9 @@ def get_exec_head_chunks(
         prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
         if not prim.IsValid():
             continue
-        exec_in = prim.GetAttribute(_EXEC_INPUT)
-        if not exec_in.IsValid():
-            continue
-        for conn in exec_in.GetConnections():
+        # Every slot — a merge fed only through slot 2 still has a real input, and calling
+        # it a root would make it the start of a chain it is actually the end of.
+        for conn in exec_input_connections(prim):
             if str(conn.GetPrimPath()) in candidate_paths:
                 has_non_view_input.add(get_chunk_prim_path(c))
     return [c for c in candidates if get_chunk_prim_path(c) not in has_non_view_input]
@@ -3029,11 +3233,13 @@ def load_chunks(
             chunk_by_path = {str(p.GetPath()): c for p, c in deferred}
             chunks_with_dependencies: set[int] = set()
             for prim, chunk in deferred:
-                exec_attr = prim.GetAttribute(_EXEC_INPUT)
-                if not (exec_attr and exec_attr.IsValid()):
+                # Every slot, in slot order — a reloaded merge must regain ALL its branches,
+                # and regain them strongest-first so the restored DAG matches the saved file.
+                exec_conns = exec_input_connections(prim)
+                if not exec_conns:
                     continue
                 existing_deps = {id(d) for _, d in chunk.get_dependencies()}
-                for conn_path in exec_attr.GetConnections():
+                for conn_path in exec_conns:
                     dep = chunk_by_path.get(str(conn_path.GetPrimPath()))
                     if dep is not None and id(dep) not in existing_deps:
                         chunk.add_dependency(dep)
@@ -3532,8 +3738,10 @@ def _live_exec_dependencies(chunk: "core.ChunkBase") -> list:
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
     if not prim.IsValid():
         return []
-    exec_attr = prim.GetAttribute(_EXEC_INPUT)
-    if not (exec_attr and exec_attr.IsValid()):
+    # Every slot: a merge's branches past the first are real DAG dependencies, and missing
+    # them here would leave reconcile_exec_dependencies removing edges it cannot see.
+    exec_conns = exec_input_connections(prim)
+    if not exec_conns:
         return []
     # Resolve by prim path, not chunk name — names are scene-wide and can be
     # uniquified/renamed, so a name lookup can bind to the wrong chunk (same
@@ -3542,7 +3750,7 @@ def _live_exec_dependencies(chunk: "core.ChunkBase") -> list:
         get_chunk_prim_path(c): c for c in chunk_registry.ChunkRegistry().scene.get_chunks()
     }
     deps = []
-    for conn_path in exec_attr.GetConnections():
+    for conn_path in exec_conns:
         if dep := chunk_by_path.get(str(conn_path.GetPrimPath())):
             deps.append(dep)
     return deps
