@@ -3123,215 +3123,249 @@ def load_chunks(
         for prim, _ in to_load:
             loaded_prim_paths.add(str(prim.GetPath()))
 
-    # Recreate each existing named top-level context under its own saved name/path —
-    # before grouping below, so its children are recognized as already having a home
-    # instead of falling through as "no source layer" orphans wrapped in a brand-new
-    # tab named after whatever file happens to be open right now.
-    group_chunk_by_path: dict[str, "core.ChunkBase"] = {}
-    context_paths: set[str] = set()
-    for prim in context_prims:
-        prim_path = str(prim.GetPath())
-        if loaded_prim_paths is not None:
-            loaded_prim_paths.add(prim_path)
-        ctx = scene.add_context(prim.GetName(), prim_path)
-        if ctx is not None:
-            group_chunk_by_path[prim_path] = ctx
-            context_paths.add(prim_path)
+    # Suppress premature reactive cascades for the whole load, not just each
+    # _add_prim_mods call below: recreating a context (scene.add_context, right below)
+    # already triggers CHUNK_LOADED -> get_edit_context() -> get_or_create_layer(),
+    # whose subLayerPaths.insert() fires a global STAGE_CONTENTS_CHANGED that an Edit
+    # Target chunk's globally-listening refresh handler reacts to -- reactively
+    # re-executing everything downstream of it before a single chunk has even been
+    # restored yet. _add_prim_mods's own old_loading_stage/finally below still runs,
+    # now just re-affirming this same value and restoring back to it -- harmless.
+    old_loading_stage = chunk_notice._loading_stage
+    chunk_notice._loading_stage = stage
+    try:
+        # Recreate each existing named top-level context under its own saved name/path —
+        # before grouping below, so its children are recognized as already having a home
+        # instead of falling through as "no source layer" orphans wrapped in a brand-new
+        # tab named after whatever file happens to be open right now.
+        group_chunk_by_path: dict[str, "core.ChunkBase"] = {}
+        context_paths: set[str] = set()
+        for prim in context_prims:
+            prim_path = str(prim.GetPath())
+            if loaded_prim_paths is not None:
+                loaded_prim_paths.add(prim_path)
+            ctx = scene.add_context(prim.GetName(), prim_path)
+            if ctx is not None:
+                group_chunk_by_path[prim_path] = ctx
+                context_paths.add(prim_path)
 
-    def _has_recreated_context_ancestor(prim) -> bool:
-        p = prim.GetParent()
-        while p and not p.IsPseudoRoot():
-            if str(p.GetPath()) in context_paths:
-                return True
-            p = p.GetParent()
-        return False
+        def _has_recreated_context_ancestor(prim) -> bool:
+            p = prim.GetParent()
+            while p and not p.IsPseudoRoot():
+                if str(p.GetPath()) in context_paths:
+                    return True
+                p = p.GetParent()
+            return False
 
-    # Group prims by their source layer so each sublayer file gets its own context —
-    # except ones already homed under a context just recreated above.
-    _EXISTING_CONTEXT = object()
-    groups = {}
-    for prim, mod in to_load:
-        src = None
-        if context_paths and _has_recreated_context_ancestor(prim):
-            key = _EXISTING_CONTEXT
-        else:
-            src = _find_prim_layer(prim)
-            key = src.identifier if src else None
-        if key not in groups:
-            groups[key] = (src, [])
-        groups[key][1].append((prim, mod))
+        # Group prims by their source layer so each sublayer file gets its own context —
+        # except ones already homed under a context just recreated above.
+        _EXISTING_CONTEXT = object()
+        groups = {}
+        for prim, mod in to_load:
+            src = None
+            if context_paths and _has_recreated_context_ancestor(prim):
+                key = _EXISTING_CONTEXT
+            else:
+                src = _find_prim_layer(prim)
+                key = src.identifier if src else None
+            if key not in groups:
+                groups[key] = (src, [])
+            groups[key][1].append((prim, mod))
 
-    def _add_prim_mods(prim_mods):
-        old_loading_stage = chunk_notice._loading_stage
-        chunk_notice._loading_stage = stage
-        try:
-            deferred = []  # (prim, chunk)
-            top_level_chunk_ids: set[int] = set()
-            for prim, mod in prim_mods:
-                # Walk up the prim's parent chain to find the nearest loaded ChunkGroup.
-                ancestor_group = None
-                p = prim.GetParent()
-                while p and not p.IsPseudoRoot():
-                    g = group_chunk_by_path.get(str(p.GetPath()))
-                    if g is not None:
-                        ancestor_group = g
-                        break
-                    p = p.GetParent()
+        def _add_prim_mods(prim_mods):
+            old_loading_stage = chunk_notice._loading_stage
+            chunk_notice._loading_stage = stage
+            try:
+                deferred = []  # (prim, chunk)
+                top_level_chunk_ids: set[int] = set()
+                for prim, mod in prim_mods:
+                    # Walk up the prim's parent chain to find the nearest loaded ChunkGroup.
+                    ancestor_group = None
+                    p = prim.GetParent()
+                    while p and not p.IsPseudoRoot():
+                        g = group_chunk_by_path.get(str(p.GetPath()))
+                        if g is not None:
+                            ancestor_group = g
+                            break
+                        p = p.GetParent()
 
-                chunks = mod.create() if mod.loaded else mod.load()
-                for c in chunks:
-                    # Restore the saved chunk name from its prim (prims are authored at
-                    # <root>/<chunk.name>, so this is a lossless round-trip). Freshly
-                    # created chunks otherwise get default names uniquified in
-                    # traversal order, which need not match the prims — two chunks of
-                    # the same type could swap identities, scrambling the name-keyed
-                    # wiring below into a cyclic DAG from a perfectly linear file.
-                    c.name = prim.GetName()
-                    if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-                        c.prim_path = str(prim.GetPath())
-                        object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
-                        scene.add_chunk(c)
-                        if c.get_config() and c.get_config().module:
-                            group_chunk_by_path[str(prim.GetPath())] = c
-                    elif ancestor_group is not None:
-                        # Sub-chunk of a ChunkGroup: restore saved values before
-                        # add_param so PARAM_ADDED widgets see the correct values.
-                        _load_wire_inputs(prim, c)
-                        ancestor_group.add_param(c, notify=False)
-                        object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
-                        deferred.append((prim, c))
-                    else:
-                        # Restore saved param values before scene.add_chunk so the
-                        # PARAM_ADDED widget sees the correct values on creation.
-                        _load_wire_inputs(prim, c)
-                        if added := scene.add_chunk(c, notify=False):
-                            object.__setattr__(added, '_exec_prim_path', str(prim.GetPath()))
-                            deferred.append((prim, added))
-                            top_level_chunk_ids.add(id(added))
+                    chunks = mod.create() if mod.loaded else mod.load()
+                    for c in chunks:
+                        # Restore the saved chunk name from its prim (prims are authored at
+                        # <root>/<chunk.name>, so this is a lossless round-trip). Freshly
+                        # created chunks otherwise get default names uniquified in
+                        # traversal order, which need not match the prims — two chunks of
+                        # the same type could swap identities, scrambling the name-keyed
+                        # wiring below into a cyclic DAG from a perfectly linear file.
+                        c.name = prim.GetName()
+                        if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                            c.prim_path = str(prim.GetPath())
+                            object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
+                            scene.add_chunk(c)
+                            if c.get_config() and c.get_config().module:
+                                group_chunk_by_path[str(prim.GetPath())] = c
+                        elif ancestor_group is not None:
+                            # Sub-chunk of a ChunkGroup: restore saved values before
+                            # add_param so PARAM_ADDED widgets see the correct values.
+                            _load_wire_inputs(prim, c)
+                            ancestor_group.add_param(c, notify=False)
+                            object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
+                            deferred.append((prim, c))
+                        else:
+                            # Restore saved param values before scene.add_chunk so the
+                            # PARAM_ADDED widget sees the correct values on creation.
+                            _load_wire_inputs(prim, c)
+                            if added := scene.add_chunk(c, notify=False):
+                                object.__setattr__(added, '_exec_prim_path', str(prim.GetPath()))
+                                deferred.append((prim, added))
+                                top_level_chunk_ids.add(id(added))
 
-            # _load_wire_inputs above (via _connect_param_attr) resolves @node.param@
-            # expressions to set up the live-update listener (_expression_connections),
-            # but the referenced chunk may not have been registered yet at that point
-            # in this same loop — resolution silently fails and no listener gets
-            # attached, so later edits to the referenced chunk never notify this
-            # param/widget even though a fresh .value read is correct. Now that every
-            # chunk in this batch is registered, retry once for anything still empty.
-            for _, c in deferred:
-                for _, param in _iter_chunk_params(c):
-                    raw = getattr(param, 'raw_value', None)
-                    if (
-                        isinstance(raw, str)
-                        and chunk_utils.has_expression(raw)
-                        and not getattr(param, '_expression_connections', None)
-                    ):
-                        param.value = raw
+                # _load_wire_inputs above (via _connect_param_attr) resolves @node.param@
+                # expressions to set up the live-update listener (_expression_connections),
+                # but the referenced chunk may not have been registered yet at that point
+                # in this same loop — resolution silently fails and no listener gets
+                # attached, so later edits to the referenced chunk never notify this
+                # param/widget even though a fresh .value read is correct. Now that every
+                # chunk in this batch is registered, retry once for anything still empty.
+                for _, c in deferred:
+                    for _, param in _iter_chunk_params(c):
+                        raw = getattr(param, 'raw_value', None)
+                        if (
+                            isinstance(raw, str)
+                            and chunk_utils.has_expression(raw)
+                            and not getattr(param, '_expression_connections', None)
+                        ):
+                            param.value = raw
 
-            # Restore DAG dependencies from inputs:chunk connections so execution
-            # order is driven by the explicit graph, not just prim appearance order.
-            # Resolve connection targets by prim path — names are scene-wide and can
-            # be uniquified/renamed, so a name lookup can bind to the wrong chunk.
-            chunk_by_path = {str(p.GetPath()): c for p, c in deferred}
-            chunks_with_dependencies: set[int] = set()
-            for prim, chunk in deferred:
-                # Every slot, in slot order — a reloaded merge must regain ALL its branches,
-                # and regain them strongest-first so the restored DAG matches the saved file.
-                exec_conns = exec_input_connections(prim)
-                if not exec_conns:
-                    continue
-                existing_deps = {id(d) for _, d in chunk.get_dependencies()}
-                for conn_path in exec_conns:
-                    dep = chunk_by_path.get(str(conn_path.GetPrimPath()))
-                    if dep is not None and id(dep) not in existing_deps:
-                        chunk.add_dependency(dep)
-                        chunks_with_dependencies.add(id(chunk))
+                # Restore DAG dependencies from inputs:chunk connections so execution
+                # order is driven by the explicit graph, not just prim appearance order.
+                # Resolve connection targets by prim path — names are scene-wide and can
+                # be uniquified/renamed, so a name lookup can bind to the wrong chunk.
+                chunk_by_path = {str(p.GetPath()): c for p, c in deferred}
+                chunks_with_dependencies: set[int] = set()
+                for prim, chunk in deferred:
+                    # Every slot, in slot order — a reloaded merge must regain ALL its branches,
+                    # and regain them strongest-first so the restored DAG matches the saved file.
+                    exec_conns = exec_input_connections(prim)
+                    if not exec_conns:
+                        continue
+                    existing_deps = {id(d) for _, d in chunk.get_dependencies()}
+                    for conn_path in exec_conns:
+                        dep = chunk_by_path.get(str(conn_path.GetPrimPath()))
+                        if dep is not None and id(dep) not in existing_deps:
+                            chunk.add_dependency(dep)
+                            chunks_with_dependencies.add(id(chunk))
 
-            _restore_lofted_params(stage, deferred)
+                _restore_lofted_params(stage, deferred)
 
-            # Wire the context (ChunkGroup) as DagNode owner of its terminal sub-chunks.
-            # Terminal nodes have no outputs so DagNode.should_solve() returns False by
-            # default, skipping them in the cascade. Setting the owner makes them solve.
-            chunks_that_are_deps: set[int] = set()
-            for _, c in deferred:
-                for _, dep in c.get_dependencies():
-                    chunks_that_are_deps.add(id(dep))
-            for _, c in deferred:
-                if id(c) not in chunks_that_are_deps:
-                    context = c.get_context()
-                    if context and isinstance(context, core.ChunkBase):
-                        c.get_dag_node().set_owner(context)
+                # Wire the context (ChunkGroup) as DagNode owner of its terminal sub-chunks.
+                # Terminal nodes have no outputs so DagNode.should_solve() returns False by
+                # default, skipping them in the cascade. Setting the owner makes them solve.
+                chunks_that_are_deps: set[int] = set()
+                for _, c in deferred:
+                    for _, dep in c.get_dependencies():
+                        chunks_that_are_deps.add(id(dep))
+                for _, c in deferred:
+                    if id(c) not in chunks_that_are_deps:
+                        context = c.get_context()
+                        if context and isinstance(context, core.ChunkBase):
+                            c.get_dag_node().set_owner(context)
 
-            # Trigger the DAG solve for root nodes (no upstream dependencies).
-            # The solve cascades to dependents in topological order via add_dependency.
-            # Top-level chunks always execute. Sub-chunks inside ChunkGroups only
-            # execute when ChunkLayerManager owns this specific stage — a stale
-            # singleton from a different test/session must not add layers to the
-            # wrong stage stack or call execute prematurely.
-            lm = ChunkLayerManager()
-            can_execute_sub_chunks = lm.initialized and lm.stage is stage
+                # Trigger the DAG solve for root nodes (no upstream dependencies).
+                # The solve cascades to dependents in topological order via add_dependency.
+                # Top-level chunks always execute. Sub-chunks inside ChunkGroups only
+                # execute when ChunkLayerManager owns this specific stage — a stale
+                # singleton from a different test/session must not add layers to the
+                # wrong stage stack or call execute prematurely.
+                lm = ChunkLayerManager()
+                can_execute_sub_chunks = lm.initialized and lm.stage is stage
 
-            # Re-sort graph sublayers so downstream chunks (higher sort_key after
-            # wiring) end up with stronger layers than their upstream dependencies.
-            # Layers are created early (during _load_wire_inputs) when sort_keys
-            # are all 0, so the initial insertion order needs correction here.
-            if lm.initialized:
-                layer_to_sk: dict[str, int] = {
-                    lay.identifier: c.get_dag_node().get_sort_key()
-                    for _, c in deferred
-                    if (lay := lm.get_layer(c))
-                }
-                # Snapshot before iterating: reassigning subLayerPaths below can
-                # reactively cascade into chunk execute()s (e.g. an Edit Target chunk
-                # reacting to the resulting STAGE_CONTENTS_CHANGED), which can call
-                # get_or_create_layer() and add/remove graph_layers entries — mutating
-                # the dict this loop is reading, mid-iteration.
-                for g_layer in list(lm.graph_layers.values()):
-                    sl = list(g_layer.subLayerPaths)
-                    sl.sort(key=lambda ident: layer_to_sk.get(ident, 0), reverse=True)
-                    g_layer.subLayerPaths = sl  # type: ignore
+                # Ensure every chunk eligible to execute below already has its own layer
+                # registered before the re-sort pass. Most chunks' layers get created as a
+                # side effect of restoring their values in _load_wire_inputs (via
+                # _connect_param_attr) -- but a chunk whose only restored value is a
+                # list-group row (ProxyParam's own __setattr__, e.g. Sublayer's
+                # imports:sublayer_path) never goes through that path, so without this its
+                # layer wouldn't exist until the execute loop below -- by which point the
+                # re-sort pass has already run and can never include it. The layer then
+                # never gets spliced into the stage even though get_or_create_layer() is
+                # called there too (live-reported as a saved scene's Sublayer coming back
+                # empty on reload; only reliably worked before because a stray premature
+                # notify from that same ProxyParam path happened to create/splice it in
+                # ahead of time as a side effect -- see ProxyParam.__setattr__'s "value"
+                # case). get_or_create_layer() is idempotent, so this is a no-op for every
+                # chunk that already got one the normal way.
+                if lm.initialized:
+                    for _, c in deferred:
+                        if id(c) in top_level_chunk_ids or can_execute_sub_chunks:
+                            lm.get_or_create_layer(c)
 
-            # Home every chunk's bookkeeping now, while the exec chain is final (it came
-            # from the file and the dependency restore above only mirrored it) and before
-            # anything cooks. Left to the reconcile after load_chunks, this same work is
-            # quadratic: each chunk that moves is re-run, and by then a re-run cascades a
-            # solve over the entire graph below it. Done here, cook=False, the cook loop
-            # immediately below is the one and only pass over the graph.
-            reconcile_edit_targets(stage, scene, cook=False)
+                # Re-sort graph sublayers so downstream chunks (higher sort_key after
+                # wiring) end up with stronger layers than their upstream dependencies.
+                # Layers are created early (during _load_wire_inputs, and now unconditionally
+                # just above) when sort_keys are all 0, so the initial insertion order needs
+                # correction here.
+                if lm.initialized:
+                    layer_to_sk: dict[str, int] = {
+                        lay.identifier: c.get_dag_node().get_sort_key()
+                        for _, c in deferred
+                        if (lay := lm.get_layer(c))
+                    }
+                    # Snapshot before iterating: reassigning subLayerPaths below can
+                    # reactively cascade into chunk execute()s (e.g. an Edit Target chunk
+                    # reacting to the resulting STAGE_CONTENTS_CHANGED), which can call
+                    # get_or_create_layer() and add/remove graph_layers entries — mutating
+                    # the dict this loop is reading, mid-iteration.
+                    for g_layer in list(lm.graph_layers.values()):
+                        sl = list(g_layer.subLayerPaths)
+                        sl.sort(key=lambda ident: layer_to_sk.get(ident, 0), reverse=True)
+                        g_layer.subLayerPaths = sl  # type: ignore
 
-            for prim, added in deferred:
-                if id(added) not in chunks_with_dependencies:
-                    is_top_level = id(added) in top_level_chunk_ids
-                    if is_top_level or can_execute_sub_chunks:
-                        if lm.initialized:
-                            lm.get_or_create_layer(added)
-                        added.execute()
+                # Home every chunk's bookkeeping now, while the exec chain is final (it came
+                # from the file and the dependency restore above only mirrored it) and before
+                # anything cooks. Left to the reconcile after load_chunks, this same work is
+                # quadratic: each chunk that moves is re-run, and by then a re-run cascades a
+                # solve over the entire graph below it. Done here, cook=False, the cook loop
+                # immediately below is the one and only pass over the graph.
+                reconcile_edit_targets(stage, scene, cook=False)
 
-            # Fire CHUNK_LOADED for all loaded chunks (UI notification) and restore
-            # params that were created dynamically inside execute (e.g. show_attribute).
-            for prim, added in deferred:
-                chunk_notice.send_notice(
-                    chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
-                )
-                _restore_dynamic_params(prim, added)
-        finally:
-            chunk_notice._loading_stage = old_loading_stage
+                for prim, added in deferred:
+                    if id(added) not in chunks_with_dependencies:
+                        is_top_level = id(added) in top_level_chunk_ids
+                        if is_top_level or can_execute_sub_chunks:
+                            if lm.initialized:
+                                lm.get_or_create_layer(added)
+                            added.execute()
 
-    # Chunks already homed under a context recreated above — no new tab needed, and
-    # the context chunk already exists, so just process them directly.
-    if _EXISTING_CONTEXT in groups:
-        _add_prim_mods(groups.pop(_EXISTING_CONTEXT)[1])
+                # Fire CHUNK_LOADED for all loaded chunks (UI notification) and restore
+                # params that were created dynamically inside execute (e.g. show_attribute).
+                for prim, added in deferred:
+                    chunk_notice.send_notice(
+                        chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
+                    )
+                    _restore_dynamic_params(prim, added)
+            finally:
+                chunk_notice._loading_stage = old_loading_stage
 
-    # Root-layer chunks first — create a context tab named after the file.
-    if None in groups:
-        layer = stage.GetRootLayer()
-        tab_name = Path(layer.GetDisplayName() or layer.identifier).stem or "Chunks"
-        scene.add_context(tab_name)
-        _add_prim_mods(groups.pop(None)[1])
+        # Chunks already homed under a context recreated above — no new tab needed, and
+        # the context chunk already exists, so just process them directly.
+        if _EXISTING_CONTEXT in groups:
+            _add_prim_mods(groups.pop(_EXISTING_CONTEXT)[1])
 
-    # Sublayer groups — each gets its own context tab for visual organisation
-    for src_layer, prim_mods in groups.values():
-        tab_name = Path(src_layer.GetDisplayName() or src_layer.identifier).stem or "Chunks"
-        scene.add_context(tab_name)
-        _add_prim_mods(prim_mods)
+        # Root-layer chunks first — create a context tab named after the file.
+        if None in groups:
+            layer = stage.GetRootLayer()
+            tab_name = Path(layer.GetDisplayName() or layer.identifier).stem or "Chunks"
+            scene.add_context(tab_name)
+            _add_prim_mods(groups.pop(None)[1])
+
+        # Sublayer groups — each gets its own context tab for visual organisation
+        for src_layer, prim_mods in groups.values():
+            tab_name = Path(src_layer.GetDisplayName() or src_layer.identifier).stem or "Chunks"
+            scene.add_context(tab_name)
+            _add_prim_mods(prim_mods)
+    finally:
+        chunk_notice._loading_stage = old_loading_stage
 
 
 def export_chunks(

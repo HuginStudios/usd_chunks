@@ -63,6 +63,15 @@ def _run(owner, notice, sender):
     st_inp.ConnectToSource(xform_shader.ConnectableAPI(), "result")
 
 
+def execute(node: chunk.Chunk) -> None:
+    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
+    bulk-restoring its param values, so a reloaded Set UV Transform actually re-inserts the
+    UsdTransform2d node instead of leaving the texture's UV wiring untouched (its real work
+    lives in _run, an add_callback handler, which load's value-restore deliberately does
+    not trigger)."""
+    _run(node, None, None)
+
+
 def main():
     chunk_api = chunk.Chunk("Set UV Transform")
 

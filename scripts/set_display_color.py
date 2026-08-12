@@ -39,6 +39,15 @@ def _run(owner, notice, sender):
             gprim.GetDisplayColorAttr().Set(color)
 
 
+def execute(node: chunk.Chunk) -> None:
+    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
+    bulk-restoring its param values, so a reloaded Set Display Color actually re-authors
+    displayColor instead of leaving the target prim uncoloured (its real work lives in
+    _run, an add_callback handler, which load's value-restore deliberately does not
+    trigger)."""
+    _run(node, None, None)
+
+
 def main():
     chunk_api = chunk.Chunk("Set Display Color")
 

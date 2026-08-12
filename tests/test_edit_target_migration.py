@@ -14,6 +14,7 @@ linear chain, since the topology — not execution order — is what now decides
 """
 from __future__ import annotations
 
+import gc
 import importlib
 
 from pxr import Sdf, Usd
@@ -72,6 +73,27 @@ class TestEditTargetMigration:
         self.create_mod = importlib.import_module("scripts.create_layer")
         self.edit_mod = importlib.import_module("scripts.edit_target")
         self.prim_mod = importlib.import_module("scripts.prim")
+        self._scenes: "list[_DummyScene]" = []
+
+    def teardown_method(self):
+        # Create Layer / Edit Target both register a GLOBAL, listen_globally=True
+        # STAGE_CONTENTS_CHANGED listener per instance (_refresh_after_layer /
+        # _refresh_edit_target) that stays alive as long as the chunk object does. Now
+        # that _create_layer uses the real "create_layer" module (needed for reload to
+        # find it at all -- see test_selection_and_homing_survive_reload), a later test's
+        # stage edits reach an earlier test's still-alive chunks too unless they're
+        # explicitly torn down here -- Python's own GC doesn't run deterministically
+        # enough (these chunks sit in reference cycles) to rely on scope exit alone.
+        for scene in self._scenes:
+            for c in list(scene.chunks.get_my_params()):
+                c.request_delete()
+        self._scenes = []
+        # request_delete() alone doesn't guarantee these chunks (and their global
+        # listeners) are actually gone before the next test starts -- they sit in
+        # reference cycles (chunk <-> owner/scene) that only CPython's cycle collector
+        # can break, and that doesn't run deterministically on plain refcounting alone.
+        # Force it so leftover listeners can't intermittently fire during a later test.
+        gc.collect()
 
     def _setup(self):
         scene = _DummyScene()
@@ -79,10 +101,11 @@ class TestEditTargetMigration:
         stage = Usd.Stage.CreateInMemory()
         scene._stage = stage
         init_chunk_usd(stage, scene)
+        self._scenes.append(scene)
         return scene, stage
 
     def _create_layer(self, scene, name):
-        c = _make(scene, self.create_mod, f"cl_{name}")
+        c = _make(scene, self.create_mod, "create_layer")
         c.get_param("layer_name").value = name
         c.execute()
         return c, Sdf.Layer.Find(c.get_param("_new_layer_id").value)
@@ -175,6 +198,7 @@ class TestEditTargetMigration:
         # reload path resets it too).
         chunk_registry.ChunkLayerManager().reset()
         scene2 = _DummyScene()
+        self._scenes.append(scene2)
         chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
         stage2 = Usd.Stage.Open(str(graph_path))
         scene2._stage = stage2
@@ -187,6 +211,31 @@ class TestEditTargetMigration:
             for c in chunks2 if chunk_usd.is_edit_target_chunk(c)
         }
         assert et_values == {"A", "B"}  # both selections survived, not reset to Session Layer
+
+        # Regression companion to the selection check above: Create Layer's OWN params
+        # (layer_name in particular) must also survive, and there must be exactly one
+        # layer per Create Layer chunk -- not a second, orphaned one falling back to the
+        # chunk's default name because layer_name came back empty (live-reported: the
+        # Layer Stack panel showing a duplicate "CreateLayer" entry alongside the correctly
+        # named "A"/"B" layers after a reload).
+        create_layer_chunks = [
+            c for c in chunks2 if (c.get_config() and c.get_config().module) == "create_layer"
+        ]
+        assert {c.get_param("layer_name").value for c in create_layer_chunks} == {"A", "B"}
+        for name in ("A", "B"):
+            # GetLayerStack() can legitimately list the same Sdf.Layer more than once when
+            # it's reachable via more than one composition arc -- unique by identifier
+            # rather than raw list length, or a layer genuinely shared between two valid
+            # arcs would misreport as a duplicate.
+            matches = {
+                lyr.identifier for lyr in stage2.GetLayerStack(includeSessionLayers=True)
+                if lyr.GetDisplayName() == name
+            }
+            assert len(matches) == 1, f"expected exactly one layer named {name!r}, found {matches}"
+        assert not any(
+            lyr.GetDisplayName() == "CreateLayer"
+            for lyr in stage2.GetLayerStack(includeSessionLayers=True)
+        ), "no orphaned layer should fall back to the chunk's default name"
 
         # The Prim chunk (downstream of the ->B Edit Target) must re-home under layer B, not
         # the session layer.
