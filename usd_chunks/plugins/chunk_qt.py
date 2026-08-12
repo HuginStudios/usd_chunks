@@ -62,10 +62,9 @@ def save_chunkgroup_dialog(scene=None) -> None:
 
 
 def save_scene_dialog(scene=None) -> None:
-    """The "nice save flow" (Dan's request): one Save Scene entry that writes both the
-    editable chunk graph and a flattened snapshot of what it currently produces,
-    bundled as a pair -- see chunk_usd.save_scene. One dialog, one picked path; the
-    content file's name is derived from it, not asked for separately."""
+    """The "nice save flow" (Dan's request): export_chunks plus the stage metadata
+    (up-axis, units) it doesn't carry on its own -- see chunk_usd.save_scene. Unlike
+    Save ChunkGroup, the result reopens with the same up-axis/units as the live scene."""
     scene = scene or chunk_registry.ChunkRegistry().scene
 
     flt = "*.usda *.usd *.usdc *.usdz"

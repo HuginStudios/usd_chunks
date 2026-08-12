@@ -3368,9 +3368,7 @@ def load_chunks(
         chunk_notice._loading_stage = old_loading_stage
 
 
-def export_chunks(
-    scene: "core.SceneSender", path: "str | Path", extra_sublayers: "list[str] | None" = None
-) -> None:
+def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     """Export the current chunk graph as one clean, portable USD layer.
 
     Copies each chunk's already-composed, already-correctly-wired prim spec straight
@@ -3389,11 +3387,10 @@ def export_chunks(
     since it follows Edit Target) — giving each prim/attr its correct final composed
     state to copy from, regardless of which layer(s) it's actually scattered across.
 
-    Args:
-        extra_sublayers: Identifiers to append to the exported layer's own subLayerPaths
-            (weakest, composing beneath every chunk prim this writes) — save_scene's own
-            hook for bundling a content snapshot into the same file, without this narrow,
-            single-purpose function needing to know anything about that.
+    Only chunk prims themselves are copied — reopening regenerates everything a chunk
+    drives by re-running load_chunks' cook pass, not by replaying a content snapshot.
+    Content that isn't reproduced by re-execution (an RBD Solver's bake) or that never
+    went through a chunk at all does not round-trip through this — see save_scene.
     """
     stage = scene.get_stage()
     if not stage:
@@ -3415,120 +3412,39 @@ def export_chunks(
             Sdf.CreatePrimInLayer(dst, parent)
         Sdf.CopySpec(flat, prim_path, dst, prim_path)
 
-    if extra_sublayers:
-        dst.subLayerPaths = list(extra_sublayers)
-
     dst.Export(str(path))
 
 
-def _export_scene_content(stage: "Usd.Stage", path: "str | Path") -> None:
-    """Flatten the stage's actual composed content -- everything except the chunk
-    bookkeeping prims themselves -- into one portable, standalone USD file.
+def save_scene(scene: "core.SceneSender", chunkgroup_path: "str | Path") -> None:
+    """The "nice save flow": export_chunks, plus the stage metadata it doesn't carry.
 
-    export_chunks's mirror image: same FlattenLayerStack-then-CopySpec shape, opposite
-    prim filter. A chunk prim's own hierarchy is entirely bookkeeping (params, wiring,
-    node position) with nothing a content snapshot needs, so it's skipped outright rather
-    than copied and immediately overridden by the stronger chunkgroup layer it's meant to
-    sit beneath — the two are complementary halves of one flattened stage, not overlapping
-    ones. What's left is whatever the chunks actually produced: geometry, materials, an
-    RBD bake's keyframes, anything a chunk's execute() authored onto some other prim
-    entirely -- exactly the content export_chunks itself never captures, and the reason
-    reopening a ChunkGroup alone regenerates results by re-running chunks rather than
-    reproducing a genuinely non-reproducible one (a bake is not simply re-triggered by a
-    plain execute() re-run).
-
-    Stage-level up-axis/units are copied explicitly -- Sdf.CopySpec only copies prim
-    specs, and a standalone snapshot with the wrong ones is exactly the kind of silent
-    scale bug already fixed once this session for the Transform chunk.
-    """
-    # A chunk not reachable from the active view's cook set has its own layer muted (see
-    # recook_for_view) -- and a muted layer's content is not composed at all, so
-    # FlattenLayerStack drops it entirely, not just hides it. Live-confirmed: an RBD
-    # Solver's baked simulation went missing from a saved scene because its layer was
-    # muted at save time. Temporarily unmute everything so the snapshot captures what
-    # every chunk actually produced, not just whatever the active view currently shows.
-    muted = list(stage.GetMutedLayers())
-    if muted:
-        stage.MuteAndUnmuteLayers([], muted)
-    try:
-        flat = UsdUtils.FlattenLayerStack(stage)
-    finally:
-        if muted:
-            stage.MuteAndUnmuteLayers(muted, [])
-    tmp_stage = Usd.Stage.Open(flat)
-    # TraverseAll() walks composed prims -- which includes ones that exist only through
-    # a reference/payload arc (a referenced kitchen-scene asset's own children, an
-    # instance proxy's, ...), not just ones directly authored in the stage's own
-    # sublayers. FlattenLayerStack only flattens SUBLAYER composition; a reference arc on
-    # a prim is preserved as-is in the output, unresolved -- so a prim introduced only by
-    # composing that reference has no spec of its own in `flat` at all, even though the
-    # stage (which DOES resolve the reference) reports it as a real prim. Sdf.CopySpec
-    # needs a direct spec to copy from and raises outright otherwise ("Cannot copy
-    # unknown spec").
-    #
-    # These don't need copying anyway: the ancestor prim that actually carries the
-    # reference (which does have a direct spec, and IS copied) brings the same content
-    # back on its own once reopened, the same way it does live right now.
-    content_paths = sorted(
-        (
-            p.GetPath() for p in tmp_stage.TraverseAll()
-            if p.GetTypeName() != _CHUNK_PRIM_TYPENAME and not p.IsInstanceProxy() and flat.GetPrimAtPath(p.GetPath())
-        ),
-        key=lambda p: p.pathElementCount,
-    )
-
-    dst = Sdf.Layer.CreateAnonymous()
-    for prim_path in content_paths:
-        if dst.GetPrimAtPath(prim_path):
-            continue
-        parent = prim_path.GetParentPath()
-        if not parent.isEmpty and parent != Sdf.Path.absoluteRootPath and not dst.GetPrimAtPath(parent):
-            Sdf.CreatePrimInLayer(dst, parent)
-        Sdf.CopySpec(flat, prim_path, dst, prim_path)
-
-    dst_stage = Usd.Stage.Open(dst)
-    UsdGeom.SetStageUpAxis(dst_stage, UsdGeom.GetStageUpAxis(tmp_stage))
-    UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(tmp_stage))
-
-    dst.Export(str(path))
-
-
-def save_scene(scene: "core.SceneSender", chunkgroup_path: "str | Path", content_path: "str | Path | None" = None) -> None:
-    """The "nice save flow": one action that writes both halves of the working scene as a
-    bundled pair -- the editable chunk graph (export_chunks) and a flattened snapshot of
-    what it actually currently produces (_export_scene_content), with the ChunkGroup file
-    sublayering the content file so opening it alone brings both back.
-
-    content_path defaults to a sibling of chunkgroup_path (same stem, "_content" suffix)
-    when not given explicitly.
+    Previously wrote a bundled pair -- the chunk graph plus a flattened snapshot of
+    everything else the stage composed, so genuinely non-reproducible content (an RBD
+    bake) or content that never went through a chunk at all would still come back.
+    Dropped once every chunk that authors real content got a reserved execute() hook
+    (see the reload-reliability fixes this shipped alongside): reopening a chunk-only
+    export now correctly regenerates everything a chunk is responsible for by re-running
+    it, the same as any other reload, so the second file was carrying nothing that
+    isn't already reproduced this way -- except a bake, which is expected to need an
+    explicit re-run after reload, same as Houdini's File Cache model, and content that
+    was never a chunk's in the first place, which this flow was never meant to cover.
 
     Args:
         chunkgroup_path: Where the chunk graph is written -- the file to reopen.
-        content_path: Where the flattened content snapshot is written. Defaults next to
-            chunkgroup_path when omitted.
     """
     stage = scene.get_stage()
     if not stage:
         return
 
     chunkgroup_path = Path(chunkgroup_path)
-    if content_path is None:
-        content_path = chunkgroup_path.with_name(f"{chunkgroup_path.stem}_content{chunkgroup_path.suffix}")
-    content_path = Path(content_path)
-
-    _export_scene_content(stage, content_path)
-    # A relative identifier, not content_path's absolute form -- an absolute sublayer
-    # path breaks the moment the pair is copied/shared anywhere else, exactly the
-    # portability export_chunks itself already guarantees for the chunkgroup file alone.
-    export_chunks(scene, chunkgroup_path, extra_sublayers=[content_path.name])
+    export_chunks(scene, chunkgroup_path)
 
     # Live-confirmed: up-axis (and by the same rule, units) does NOT compose across
     # sublayers the way ordinary metadata does -- it resolves only from a stage's own
-    # root/session layer, falling back to USD's global default (Y) otherwise, never
-    # falling through into a sublayer that does carry it. _export_scene_content already
-    # stamps the content file's own copy, but that's invisible here: the chunkgroup file
-    # is the one actually opened, and reopening it showed Y even though the content file
-    # underneath it correctly said Z. Stamp it directly onto the file that matters.
+    # root/session layer, falling back to USD's global default (Y) otherwise. Sdf.CopySpec
+    # (export_chunks' own copy mechanism) only copies prim specs, so the exported file's
+    # own root layer has no opinion at all without this -- reopening it showed Y even
+    # though the live scene was Z. Stamp it directly onto the file that matters.
     cg_layer = Sdf.Layer.FindOrOpen(str(chunkgroup_path))
     if cg_layer is not None:
         cg_stage = Usd.Stage.Open(cg_layer)

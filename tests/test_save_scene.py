@@ -1,22 +1,26 @@
-"""Tests for chunk_usd.save_scene -- the "nice save flow" (Dan's request): one action
-that writes the editable chunk graph (export_chunks) and a flattened snapshot of what it
-currently produces (_export_scene_content) as a bundled pair, the chunkgroup file
-sublayering the content file so opening it alone brings both back.
+"""Tests for chunk_usd.save_scene -- the "nice save flow" (Dan's request): export_chunks
+plus the stage metadata (up-axis, units) it doesn't carry on its own.
+
+Previously wrote a bundled pair (the chunk graph plus a flattened snapshot of everything
+else the stage composed). Dropped once every chunk that authors real content got a
+reserved execute() hook: reopening a chunk-only export now correctly regenerates
+everything a chunk is responsible for by re-running it. What does NOT round-trip anymore,
+by design: an RBD Solver's bake (expected to need an explicit re-run, matching Houdini's
+File Cache model) and any content that never went through a chunk in the first place.
 """
 
 from __future__ import annotations
 
-from pxr import Sdf, Usd, UsdGeom
+from pxr import Usd, UsdGeom
 
 from usd_chunks.plugins.chunk_usd import (
     _CHUNK_PRIM_TYPENAME,
-    _export_scene_content,
     initialize as _chunk_usd_init,
     load_chunks,
     save_scene,
 )
-from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks import chunk_registry
+from usd_chunks.chunk_core import SceneSender
 
 
 class _DummyScene(SceneSender):
@@ -39,83 +43,47 @@ def _make_scene(stage: Usd.Stage) -> SceneSender:
     return scene
 
 
-def _build_stage_with_content_and_a_chunk() -> "tuple[Usd.Stage, SceneSender]":
-    """A mesh (real scene content, unrelated to any chunk) plus one chunk prim."""
+def _build_stage_with_a_chunk() -> "tuple[Usd.Stage, SceneSender]":
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.SetStageMetersPerUnit(stage, 0.01)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
 
-    mesh = UsdGeom.Mesh.Define(stage, "/apple")
-    mesh.GetPointsAttr().Set([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
-
     scene = _make_scene(stage)
-    c = chunk.Chunk("testChunk")
-    c._config = ChunkConfig(module="prim")
-    prim_type = chunk.Menu("prim_type", menu_items=["Xform", "Scope", "Class"])
+    mod = chunk_registry.ChunkRegistry().get_chunk_module("prim")
+    chunks = mod.create() if mod.loaded else mod.load()
+    c = chunks[0]
+    prim_type = c.get_param("prim_type")
     prim_type.value = "Scope"
-    c.add_param(prim_type)
     scene.add_chunk(c)
 
     return stage, scene
 
 
-def test_export_scene_content_excludes_chunk_prims(tmp_path) -> None:
-    stage, scene = _build_stage_with_content_and_a_chunk()
+def test_save_scene_writes_a_single_file(tmp_path) -> None:
+    stage, scene = _build_stage_with_a_chunk()
 
-    out = tmp_path / "content.usda"
-    _export_scene_content(stage, out)
+    out = tmp_path / "my_scene.usda"
+    save_scene(scene, out)
+
     assert out.exists()
-
-    content_stage = Usd.Stage.Open(str(out))
-    assert content_stage.GetPrimAtPath("/apple").IsValid()
-    assert not any(
-        p.GetTypeName() == _CHUNK_PRIM_TYPENAME for p in content_stage.TraverseAll()
-    ), "a chunk bookkeeping prim has no business in the content snapshot"
-
-
-def test_export_scene_content_copies_stage_units_and_up_axis(tmp_path) -> None:
-    stage, scene = _build_stage_with_content_and_a_chunk()
-
-    out = tmp_path / "content.usda"
-    _export_scene_content(stage, out)
-
-    content_stage = Usd.Stage.Open(str(out))
-    assert UsdGeom.GetStageMetersPerUnit(content_stage) == 0.01
-    assert UsdGeom.GetStageUpAxis(content_stage) == UsdGeom.Tokens.z
-
-
-def test_save_scene_writes_a_bundled_pair(tmp_path) -> None:
-    stage, scene = _build_stage_with_content_and_a_chunk()
-
-    chunkgroup_out = tmp_path / "my_scene.usda"
-    save_scene(scene, chunkgroup_out)
-
-    content_out = tmp_path / "my_scene_content.usda"
-    assert chunkgroup_out.exists()
-    assert content_out.exists()
-
-    cg_layer = Sdf.Layer.FindOrOpen(str(chunkgroup_out))
-    assert list(cg_layer.subLayerPaths) == ["my_scene_content.usda"], (
-        "must be a relative identifier, not content_out's absolute path -- an absolute "
-        "sublayer path breaks the moment the pair is moved or shared"
+    assert not (tmp_path / "my_scene_content.usda").exists(), (
+        "single-file save_scene must not write a companion content file"
     )
 
 
-def test_save_scene_reopen_composes_both_the_graph_and_the_content(tmp_path) -> None:
-    stage, scene = _build_stage_with_content_and_a_chunk()
+def test_save_scene_reopen_reloads_as_a_real_chunk_scene(tmp_path) -> None:
+    stage, scene = _build_stage_with_a_chunk()
 
-    chunkgroup_out = tmp_path / "my_scene.usda"
-    save_scene(scene, chunkgroup_out)
+    out = tmp_path / "my_scene.usda"
+    save_scene(scene, out)
 
-    reopened = Usd.Stage.Open(str(chunkgroup_out))
-    assert reopened.GetPrimAtPath("/apple").IsValid(), "content snapshot must compose in via the sublayer"
+    reopened = Usd.Stage.Open(str(out))
     assert any(
         p.GetTypeName() == _CHUNK_PRIM_TYPENAME for p in reopened.TraverseAll()
-    ), "the chunk graph itself must still be there too"
+    ), "the chunk graph itself must be there"
 
-    # And the whole thing still reloads as a real chunk scene, not just raw USD. Minimal
-    # setup here (not _make_scene's chunk_usd.initialize, which would auto-load the
-    # already-composed chunk prim on its own) plus one explicit load_chunks call --
+    # Minimal setup here (not _make_scene's chunk_usd.initialize, which would auto-load
+    # the already-composed chunk prim on its own) plus one explicit load_chunks call --
     # mirrors test_export_load_roundtrip's dst side in test_chunk_usd.py, avoiding a
     # double-load of the one real chunk on the reopened stage.
     chunk_registry.ChunkLayerManager().reset()
@@ -132,83 +100,14 @@ def test_save_scene_reopen_composes_both_the_graph_and_the_content(tmp_path) -> 
     assert loaded[0].get_param("prim_type").value == "Scope"
 
 
-def test_export_scene_content_skips_children_that_only_exist_via_a_reference(tmp_path) -> None:
-    """Regression: reported live -- referencing in a kitchen scene asset (e.g. via the
-    Reference chunk) crashed the export with "Cannot copy unknown spec at
-    </bowl_apple/food_apple_01>".
-
-    UsdUtils.FlattenLayerStack only flattens SUBLAYER composition; a reference arc on a
-    prim is preserved as-is, unresolved, in its output. A referenced asset's own children
-    (food_apple_01, brought in by /bowl_apple's reference) therefore have no spec of
-    their own in the flattened layer at all -- only the STAGE, which actually resolves
-    the reference, reports them as real prims. TraverseAll() walks the stage, so it
-    yields them; Sdf.CopySpec needs a direct spec in the layer it's copying FROM and
-    raises outright when there isn't one.
-
-    They don't need copying: /bowl_apple itself (which does have a direct spec, carrying
-    the reference) is what's copied, and its own reference arc brings the same children
-    back on its own once reopened -- exactly like it does live right now."""
-    src = tmp_path / "kitchen_scene.usda"
-    src_stage = Usd.Stage.CreateNew(str(src))
-    UsdGeom.Xform.Define(src_stage, "/bowl_apple")
-    child = UsdGeom.Mesh.Define(src_stage, "/bowl_apple/food_apple_01")
-    child.GetPointsAttr().Set([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
-    src_stage.GetRootLayer().Save()
-
-    stage = Usd.Stage.CreateInMemory()
-    prim = stage.DefinePrim("/bowl_apple", "Xform")
-    prim.GetReferences().AddReference(str(src), "/bowl_apple")
-
-    out = tmp_path / "content.usda"
-    _export_scene_content(stage, out)  # must not raise
-
-    content_stage = Usd.Stage.Open(str(out))
-    reloaded = content_stage.GetPrimAtPath("/bowl_apple")
-    assert reloaded.IsValid()
-    assert reloaded.HasAuthoredReferences()
-    # The reference itself is what brings this back -- resolves through /bowl_apple's
-    # copied-across reference arc, not from anything copied directly at this path.
-    assert content_stage.GetPrimAtPath("/bowl_apple/food_apple_01").IsValid()
-
-
-def test_export_scene_content_includes_muted_layers(tmp_path) -> None:
-    """Regression: reported live -- an RBD Solver's baked simulation went missing from a
-    saved scene. A chunk not reachable from the active view's cook set has its own layer
-    muted (recook_for_view); a muted layer's content isn't composed at all, so
-    FlattenLayerStack drops it outright rather than just hiding it. The snapshot must
-    capture what every chunk actually produced, not only whatever the active view
-    happens to currently show."""
-    stage = Usd.Stage.CreateInMemory()
-    prim = stage.DefinePrim("/baked_thing", "Xform")
-    layer = Sdf.Layer.CreateAnonymous("baked_data")
-    stage.GetRootLayer().subLayerPaths.append(layer.identifier)
-    with Usd.EditContext(stage, layer):
-        prim.CreateAttribute("myBakedValue", Sdf.ValueTypeNames.Float, custom=True).Set(42.0)
-
-    stage.MuteLayer(layer.identifier)
-    assert prim.GetAttribute("myBakedValue").Get() is None, "sanity: muting must actually hide it live"
-
-    out = tmp_path / "content.usda"
-    _export_scene_content(stage, out)
-
-    content_stage = Usd.Stage.Open(str(out))
-    assert content_stage.GetPrimAtPath("/baked_thing").GetAttribute("myBakedValue").Get() == 42.0
-
-    # The live stage's own mute state must be restored, not left permanently unmuted.
-    assert stage.IsLayerMuted(layer.identifier)
-
-
 def test_save_scene_chunkgroup_file_itself_keeps_the_stage_up_axis(tmp_path) -> None:
     """Regression: reported live -- a scene authored Z-up came back Y-up after Save Scene
     and reopening. up-axis (and units) does not compose across sublayers the way ordinary
-    metadata does: it resolves only from a stage's own root/session layer, falling back
-    to USD's global default (Y) rather than falling through into a sublayer that does
-    carry it. _export_scene_content already stamped the CONTENT file's own copy (see
-    test_export_scene_content_copies_stage_units_and_up_axis above) -- which is exactly
-    why that test alone didn't catch this: the CHUNKGROUP file is the one actually
-    reopened, sitting above the content file as a sublayer, and its own lack of an
-    opinion doesn't fall through to the content file's underneath it."""
-    stage, scene = _build_stage_with_content_and_a_chunk()
+    metadata does: it resolves only from a stage's own root/session layer, falling back to
+    USD's global default (Y) rather than falling through into anything underneath. export_
+    chunks' own Sdf.CopySpec-based copy only ever copies prim specs, so the exported file's
+    root layer has no stage-level opinion at all without save_scene stamping it separately."""
+    stage, scene = _build_stage_with_a_chunk()
 
     out = tmp_path / "my_scene.usda"
     save_scene(scene, out)

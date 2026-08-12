@@ -202,8 +202,8 @@ class ChunksPluginContainer(PluginContainer):
         reg.save_layers(path)
 
     def saveScene(self, usdviewApi):
-        """The "nice save flow" -- ChunkGroup + a flattened content snapshot, bundled as
-        one pair. See chunk_qt.save_scene_dialog."""
+        """The "nice save flow" -- the chunk graph plus correct up-axis/units.
+        See chunk_qt.save_scene_dialog."""
         chunk_qt.save_scene_dialog()
 
     def saveChunkGroup(self, usdviewApi):
