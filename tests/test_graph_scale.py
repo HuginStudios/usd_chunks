@@ -214,14 +214,31 @@ def test_scheduler_solves_1000_connected_nodes():
     assert total < 5.0, f"1000-node scheduler chain took {total:.3f}s: {_format(phases)}"
 
 
+def _best_of(fn: Callable[[], object], runs: int = 3) -> float:
+    """Seconds for the fastest of runs calls to fn.
+
+    Noise on a busy machine only ever adds time, never subtracts it, so the fastest
+    sample is the one closest to what the code actually costs — a single timing measures
+    the box as much as the code.
+    """
+    return min(_time(fn)[0] for _ in range(runs))
+
+
 def test_scheduler_solve_is_linear_in_node_count():
     """Doubling the node count must not more than roughly double the solve.
 
     Ratio rather than absolute time, so the assertion means the same thing on any
     machine. A quadratic regression shows up here as ~4x.
+
+    Each side is the best of three runs rather than a single timing: measured on an idle
+    machine the honest ratio is ~2.1 (constant factors, not shape) with single timings
+    reaching 2.7, which left the 3x threshold almost no room. Inside the full suite that
+    tipped over often enough to fail roughly one run in three while passing every time in
+    isolation. Best-of-three brings the spread back under 2.4 and leaves 3x where it was,
+    between honest growth and the ~4x a quadratic regression would show.
     """
-    small, _ = _time(lambda: sum(1 for _ in _solve_fresh_chain(500)))
-    large, _ = _time(lambda: sum(1 for _ in _solve_fresh_chain(1000)))
+    small = _best_of(lambda: sum(1 for _ in _solve_fresh_chain(500)))
+    large = _best_of(lambda: sum(1 for _ in _solve_fresh_chain(1000)))
 
     assert large < small * 3.0, f"solve grew {large / small:.1f}x when node count doubled"
 
