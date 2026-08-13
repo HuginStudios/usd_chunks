@@ -2223,17 +2223,41 @@ class _ProxyKeyRouter(QtCore.QObject):
         self._busy = False
         self._active: Optional[QtWidgets.QWidget] = None  # proxy widget last clicked
         self._view_active: bool = False  # True while graph view was most recently clicked
+        self._installed = False
+
+    def install(self) -> None:
+        """Attach to the QApplication, if not already attached.
+
+        Called on construction and again on every showEvent -- a dived-into ChunkGroup's
+        view is hidden, never destroyed, when navigating away (see uninstall's docstring),
+        so this is what makes the filter's install actually track visibility instead of
+        accumulating for the rest of the session. The guard makes both directions
+        idempotent: installEventFilter doesn't dedupe on its own, and calling it twice for
+        the same object makes Qt run eventFilter twice per event.
+        """
+        if self._installed:
+            return
+        if (app := QtWidgets.QApplication.instance()) is not None:
+            app.installEventFilter(self)
+            self._installed = True
 
     def uninstall(self) -> None:
-        """Detach from the QApplication.
+        """Detach from the QApplication, if attached.
 
         An application-level filter outlives the view that owns it: Qt keeps dispatching
         to eventFilter after the view is gone, and once the Python wrapper is torn down
         that raises on the first attribute access. The owning view connects this to its
-        destroyed signal so the filter's lifetime matches its own.
+        destroyed signal so the filter's lifetime matches its own -- and, since a hidden
+        view is never destroyed, also to its hideEvent, so a view sitting in a
+        navigated-away-from tab stops costing every other view's event dispatch a filter
+        call for as long as it stays hidden (which, for most views most of the time, is
+        most of a session).
         """
+        if not self._installed:
+            return
         if (app := QtWidgets.QApplication.instance()) is not None:
             app.removeEventFilter(self)
+        self._installed = False
 
     def set_active(self, widget: Optional[QtWidgets.QWidget]) -> None:
         self._active = widget
@@ -2261,14 +2285,14 @@ class _ProxyKeyRouter(QtCore.QObject):
             self.uninstall()
             return False
         if not view.isVisible():
-            # Every dived-into ChunkGroup gets its own ChunkGraphView + router, installed on
-            # the QApplication and only ever uninstalled when the view is destroyed (see
-            # destroyed.connect below) -- so navigating away from a tab leaves its router
-            # alive and still installed, just hidden. All ChunkTabContextStack pages share
-            # one QStackedWidget rect, so a hidden view's geometry checks below would still
-            # match the cursor. Qt runs QApplication filters LIFO, so without this guard the
-            # most-recently-dived-into (now hidden) view's router wins the race over the
-            # actually-visible one, silently acting on the wrong graph.
+            # ChunkGraphView.hideEvent/showEvent keep this filter's own installation in
+            # sync with visibility (see install/uninstall's docstrings), so this should
+            # already be unreachable in the normal case -- kept as a cheap defense-in-depth
+            # guard for the gap between a visibility change and its event actually firing
+            # (e.g. isVisible() can flip before the hideEvent that would uninstall this is
+            # delivered). All ChunkTabContextStack pages share one QStackedWidget rect, so
+            # a hidden view's geometry checks below would still match the cursor if this
+            # guard were ever actually hit.
             return False
         etype = event.type()
         if etype not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
@@ -2460,7 +2484,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.setViewportMargins(0, mh, 0, 0)
 
         self._proxy_key_router = _ProxyKeyRouter(self)
-        QtWidgets.QApplication.instance().installEventFilter(self._proxy_key_router)
+        self._proxy_key_router.install()
         # Pair the install with a removal, or every view ever built leaves a filter
         # receiving key events for the rest of the session. Bind the router directly
         # rather than reaching through self: the view is mid-destruction when destroyed
@@ -2492,6 +2516,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def resizeEvent(self, event: QtGui.QResizeEvent):
         super().resizeEvent(event)
         self._menubar.setFixedWidth(self.width())
+
+    def hideEvent(self, event: QtGui.QHideEvent):
+        super().hideEvent(event)
+        # Fires when a dived-into ChunkGroup's page stops being the current one in its
+        # ChunkTabContextStack (QStackedWidget.setCurrentIndex hides the outgoing page,
+        # it doesn't destroy it) -- see _ProxyKeyRouter.uninstall's docstring.
+        self._proxy_key_router.uninstall()
+
+    def showEvent(self, event: QtGui.QShowEvent):
+        super().showEvent(event)
+        self._proxy_key_router.install()
 
     @staticmethod
     def _grid_points_in_rect(rect: QtCore.QRectF, spacing: int) -> list:

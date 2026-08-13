@@ -1408,6 +1408,20 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     for dep in deps
                 ])
                 invalidate_edit_layer_memo()
+                if not prim.IsValid():
+                    # Wiring this new prim's exec-chain connection just changed exec
+                    # topology, and a dependency's own script can react to that reactively
+                    # (e.g. create_layer.py's execute() re-ranks its layer against the
+                    # active view on any exec-chain change) -- reentrant, before this
+                    # function returns. If that reentrant run reassigns subLayerPaths (it
+                    # does, to reposition itself), the resulting stage recomposition can
+                    # invalidate THIS prim's own Usd.Prim handle if it composes through
+                    # the same layer subtree, even though the underlying prim spec itself
+                    # is untouched. Re-fetch by path rather than continuing to hold (and
+                    # eventually deref) a dead handle -- live-reproduced building a 3rd
+                    # chained Create Layer/Edit Target pair, which crashed here instead of
+                    # in the caller a few lines away.
+                    prim = self._stage.GetPrimAtPath(Sdf.Path(target_path))
 
             for path, param in _iter_chunk_params(chunk):
                 raw = param.raw_value

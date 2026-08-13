@@ -65,6 +65,13 @@ def _refresh_edit_target(owner, notice, sender):
     stage = _chunk.get_stage() if _chunk else None
     if not stage:
         return
+    if _chunk.is_blocked():
+        # Same reasoning as create_layer.py's _refresh_after_layer: this is
+        # listen_globally=True, so it fires for EVERY Edit Target instance on ANY
+        # stage content change. A blocked chunk (not reachable from any view yet, or
+        # genuinely hidden) can't usefully act on a fresh menu -- skip the work below
+        # rather than pay for it on every sibling's edit.
+        return
 
     internal_ids = chunk_utils.chunk_internal_layer_ids()
     session_id = stage.GetSessionLayer().identifier

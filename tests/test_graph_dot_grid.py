@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
+from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView, _ProxyKeyRouter
 
 
 def test_grid_points_snap_to_spacing_lines_for_a_positive_rect() -> None:
@@ -69,3 +69,32 @@ def test_draw_background_renders_dots_without_crashing(qapp) -> None:
         if img.pixel(x, y) != bg
     )
     assert non_bg_pixels > 0
+
+
+def test_hiding_a_view_uninstalls_its_key_router_and_showing_it_reinstalls(qapp) -> None:
+    """_ProxyKeyRouter is an application-level event filter, so every view that keeps one
+    installed costs every OTHER event dispatched anywhere in the app a filter call. A
+    dived-into ChunkGroup's page is hidden (QStackedWidget.setCurrentIndex), never
+    destroyed, when navigating away from it -- previously that left its router installed
+    (and paying that cost) for the rest of the session. hideEvent/showEvent must keep the
+    install in sync with visibility instead of leaving it installed from construction
+    until the view itself is destroyed."""
+    app = QtWidgets.QApplication.instance()
+    gv = ChunkGraphView()
+    router = gv._proxy_key_router
+    assert isinstance(router, _ProxyKeyRouter)
+
+    gv.show()
+    app.processEvents()
+    assert router._installed, "constructing and showing a view must install its router"
+
+    gv.hide()
+    app.processEvents()
+    assert not router._installed, "hiding a view must uninstall its router"
+
+    gv.show()
+    app.processEvents()
+    assert router._installed, "showing it again must reinstall the router"
+
+    gv.hide()
+    app.processEvents()
