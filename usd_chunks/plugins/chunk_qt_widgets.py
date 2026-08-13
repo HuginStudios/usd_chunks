@@ -11,7 +11,6 @@ from usd_chunks.plugins import chunk_usd
 
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
-import os
 
 # Re-exported under the original private name: chunk_qt imports it from here, and the
 # implementation is core (frontend-agnostic), not Qt.

@@ -32,10 +32,10 @@ def _refresh_layer_rows(owner, notice, sender):
     """Rebuild the per-layer export list from the real layers currently in the stage.
 
     Live: rebuilt whenever the stage's contents change (a Create Layer chunk adding a
-    new sublayer, etc.) rather than preserving previous checkbox state by matching names
-    across a resize — simpler, and avoids the match-by-name bugs that would need to get
-    right. Registered globally so this updates automatically, no manual refresh step
-    needed.
+    new sublayer, etc.), carrying each surviving layer's own checkbox state across the
+    resize by name — a rebuild fires for any layer-set change at all, so dropping that
+    state would mean one new layer wiping every choice already made about the others.
+    Registered globally so this updates automatically, no manual refresh step needed.
 
     Must no-op when the layer set hasn't actually changed: this list's own row params
     live on the Export USD chunk prim like any other param, so toggling a checkbox here
@@ -57,30 +57,62 @@ def _refresh_layer_rows(owner, notice, sender):
     bake_t = rows.get_param("bake")
     export_t = rows.get_param("export_enabled")
 
-    current_names = [rows.get_indexed_param(name_t, i).value for i in range(rows.size)]
     new_names = [name for name, _layer in layers]
-    if current_names == new_names:
+    # Compared against the names this handler itself last wrote, not against a fresh read
+    # back out of the row proxies. This fires on every authoring op — including the writes
+    # a rebuild is itself in the middle of making — and a read taken mid-cascade can come
+    # back with a row still holding its previous name, a phantom difference that rebuilds
+    # the list and silently resets every checkbox the user had set (which row won came
+    # down to notice ordering, so it only bit sometimes). rows.size is still read live, so
+    # a list resized behind this handler's back (restored from USD on load) still rebuilds.
+    if getattr(_chunk, "_export_layer_names", None) == new_names and rows.size == len(new_names):
         return
+    # Every write below authors an attribute change that re-fires this same listener, and
+    # a half-written list looks like a changed one — so a rebuild would kick off nested
+    # rebuilds of itself. Guard the reentrant call rather than blocking the notices, same
+    # discipline as edit_target.py's execute().
+    if getattr(_chunk, "_export_refreshing", False):
+        return
+    _chunk._export_refreshing = True
+    try:
+        # Carried across the resize, keyed by layer name: a rebuild is triggered by ANY
+        # change to the stage's layer set, so without this a new layer appearing anywhere
+        # silently reset every checkbox the user had already set on the layers that are
+        # still there. A layer that has gone (or one that has just appeared) simply isn't
+        # in this map and falls back to the defaults below.
+        kept = {
+            rows.get_indexed_param(name_t, i).value: (
+                rows.get_indexed_param(export_t, i).value,
+                rows.get_indexed_param(bake_t, i).value,
+            )
+            for i in range(rows.size)
+        }
 
-    # Only indices >= old_size get a genuinely new ChunkGroupBase (and therefore a
-    # fresh export_enabled proxy) from ChunkListGroupBase.value_changed's row-creation
-    # loop — rows below that persist across the resize. Wiring the per-row callback
-    # only for those new indices avoids piling up duplicate NoticeConnections on rows
-    # that survive multiple refreshes.
-    old_size = rows.size
-    rows.size = len(layers)
-    bake_all = _chunk.get_param("bake_all")
-    bake_default = bool(bake_all.value) if bake_all is not None else False
-    for i, (name, _layer) in enumerate(layers):
-        rows.get_indexed_param(name_t, i).value = name
-        rows.get_indexed_param(bake_t, i).value = bake_default
-        export_row = rows.get_indexed_param(export_t, i)
-        export_row.value = True
-        if i >= old_size:
-            # add_callback must be called on this specific row's proxy, not the
-            # export_t template — a proxy's own value change never replays through
-            # callbacks registered on the template (see _export_enabled_changed).
-            export_row.add_callback(_export_enabled_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+        # Only indices >= old_size get a genuinely new ChunkGroupBase (and therefore a
+        # fresh export_enabled proxy) from ChunkListGroupBase.value_changed's row-creation
+        # loop — rows below that persist across the resize. Wiring the per-row callback
+        # only for those new indices avoids piling up duplicate NoticeConnections on rows
+        # that survive multiple refreshes.
+        old_size = rows.size
+        rows.size = len(layers)
+        bake_all = _chunk.get_param("bake_all")
+        bake_default = bool(bake_all.value) if bake_all is not None else False
+        for i, (name, _layer) in enumerate(layers):
+            prev_export, prev_bake = kept.get(name, (True, bake_default))
+            rows.get_indexed_param(name_t, i).value = name
+            rows.get_indexed_param(bake_t, i).value = prev_bake
+            export_row = rows.get_indexed_param(export_t, i)
+            export_row.value = prev_export
+            if i >= old_size:
+                # add_callback must be called on this specific row's proxy, not the
+                # export_t template — a proxy's own value change never replays through
+                # callbacks registered on the template (see _export_enabled_changed).
+                export_row.add_callback(
+                    _export_enabled_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED
+                )
+        _chunk._export_layer_names = new_names
+    finally:
+        _chunk._export_refreshing = False
 
 
 def _unchecked_layer_names(_chunk, checkbox_name: str) -> set:
@@ -385,13 +417,23 @@ def _bake_all_changed(owner, notice, sender):
 
 
 def _export_enabled_changed(owner, notice, sender):
-    """Gray out that row's Bake chunk outputs checkbox when its own Export checkbox is
-    unchecked. Must be add_callback'd directly on each row's own export_enabled proxy
-    (done in _refresh_layer_rows, once per new row) rather than on the export_enabled
-    template — a proxy's own value change fires with sender=that exact proxy, and a
-    callback registered on the template (sender=template) never matches it; only
-    template-level changes (name, label, flags, ...) replay down to every row.
-    sender.get_owner() is that same row, letting this reach only its sibling fields.
+    """Clear that row's Bake chunk outputs checkbox when its own Export checkbox is
+    unchecked — the layer isn't written at all, so there is nothing left to bake — and
+    restore it from the Bake all switch (the same seed _refresh_layer_rows gives a new
+    row) when Export comes back on.
+
+    Must be add_callback'd directly on each row's own export_enabled proxy (done in
+    _refresh_layer_rows, once per new row) rather than on the export_enabled template —
+    a proxy's own value change fires with sender=that exact proxy, and a callback
+    registered on the template (sender=template) never matches it; only template-level
+    changes (name, label, flags, ...) replay down to every row. sender.get_owner() is
+    that same row, letting this reach only its sibling fields.
+
+    Writes the sibling's .value, NOT its DISABLED state: state is a group-level flag
+    that a ProxyParam forwards to the shared template (only .value is per-row — same
+    reason layer_name is disabled once on the template in main()), so graying out "this
+    row's" Bake box actually grayed out every row's, and which way the column ended up
+    came down to whichever row's callback happened to fire last.
     """
     row = sender.get_owner()
     if row is None:
@@ -400,9 +442,11 @@ def _export_enabled_changed(owner, notice, sender):
     if bake is None:
         return
     if sender.value:
-        bake.unset_state(chunk.ChunkFlags.State.DISABLED)
+        _chunk = owner.get_chunk()
+        bake_all = _chunk.get_param("bake_all") if _chunk else None
+        bake.value = bool(bake_all.value) if bake_all is not None else False
     else:
-        bake.set_state(chunk.ChunkFlags.State.DISABLED)
+        bake.value = False
 
 
 def main():
@@ -503,7 +547,7 @@ def main():
         tooltip="Every real layer currently in the stage (one row per Edit Target — the "
         "output of Export All Layers), refreshed automatically as the stage changes.\n\n"
         "Export (checked by default): whether this layer is exported at all. Unchecked "
-        "skips it entirely and grays out Bake chunk outputs below.\n\n"
+        "skips it entirely and clears Bake chunk outputs below.\n\n"
         "Bake chunk outputs (unchecked by default — use Bake all above to flip every "
         "row): checked brings each chunk's real content in "
         "from its own private layer and strips the chunk-graph bookkeeping prims — the "
@@ -537,8 +581,8 @@ def main():
         tooltip="Checked (default): this layer is written as its own file. Unchecked: "
         "skip it entirely — any other exported layer that sublayers it has that "
         "reference dropped, not inlined, so its content isn't written anywhere. Bake "
-        "chunk outputs below is grayed out while this is unchecked, since it has "
-        "nothing to apply to.",
+        "chunk outputs below is cleared while this is unchecked, since it has "
+        "nothing to apply to, and comes back from Bake all when this is re-checked.",
     )
     # Not wired here: a callback registered on this template never fires for a row's
     # own value change (see _export_enabled_changed's docstring). Each row's own proxy

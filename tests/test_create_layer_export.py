@@ -298,9 +298,12 @@ class TestCreateLayerNestingAndExport:
                 fx_bake = rows.get_indexed_param(bake_t, i)
                 rows.get_indexed_param(export_t, i).value = False
 
-        # Unchecking Export grays out (disables) that same row's Bake checkbox.
+        # Unchecking Export clears that same row's Bake checkbox — its .value, which is the
+        # only thing a ProxyParam keeps per row. Asserting a per-row DISABLED state instead
+        # could never hold: state is a group flag the proxy forwards to the shared template,
+        # so it is the whole column's, and the winner was whichever row's callback fired last.
         assert fx_bake is not None
-        assert fx_bake.has_state(chunk.ChunkFlags.State.DISABLED)
+        assert fx_bake.value is False
 
         export_chunk.get_param("output_dir").value = str(tmp_path)
         export_param = export_chunk.get_param("export_all")
