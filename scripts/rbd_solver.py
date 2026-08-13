@@ -51,6 +51,7 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
 
     xc = UsdGeom.XformCache()
     pts_world = []
+    tris = []
     for p in Usd.PrimRange(cprim):
         mesh = UsdGeom.Mesh(p)
         if not mesh:
@@ -59,9 +60,21 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
         if not points:
             continue
         wxf = xc.GetLocalToWorldTransform(p)
+        base = len(pts_world)
         for pt in points:
             w = wxf.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
             pts_world.append((w[0], w[1], w[2]))
+        # Faces too, not just their corners -- see the rasterisation pass below.
+        counts = mesh.GetFaceVertexCountsAttr().Get()
+        indices = mesh.GetFaceVertexIndicesAttr().Get()
+        if counts and indices:
+            k = 0
+            for c in counts:
+                if c >= 3 and k + c <= len(indices):
+                    i0 = base + indices[k]
+                    for t in range(1, c - 1):
+                        tris.append((i0, base + indices[k + t], base + indices[k + t + 1]))
+                k += c
 
     if len(pts_world) < 16:
         return None
@@ -92,6 +105,47 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     up = V[:, up_idx]
     # Top surface = highest sampled point per cell.
     _np.maximum.at(H, (row, col), up)
+
+    # Then the faces themselves, not just their corners. Binning vertices alone leaves a
+    # cell empty wherever no vertex happens to land in it, and the nearest-cell fill below
+    # then borrows whatever height was nearest -- for a big flat low-poly slab (a tabletop:
+    # all its vertices around the perimeter/details, none across the middle) the nearest
+    # sampled height is the slab's own UNDERSIDE, so the collider grew a several-unit-deep
+    # phantom trench straight through the middle of the table. Live-reported as an apple
+    # landing correctly and then sinking half-way into a dining table as it rolled: it was
+    # rolling into that trench. Rasterising each triangle across the cells it actually
+    # covers gives the real surface height there instead.
+    #
+    # Only triangles spanning more than one cell need this -- a triangle smaller than a
+    # cell is already represented by its own corners above, so a dense mesh (where that is
+    # nearly every triangle) skips the loop almost entirely and stays fast.
+    if tris:
+        TRI = _np.asarray(tris, dtype=_np.int64)
+        tc = (V[TRI][:, :, a0] - min0) / (max0 - min0) * (N - 1)
+        tr = (max1 - V[TRI][:, :, a1]) / (max1 - min1) * (N - 1)
+        tu = V[TRI][:, :, up_idx]
+        c_lo = _np.clip(_np.floor(tc.min(axis=1)).astype(int), 0, N - 1)
+        c_hi = _np.clip(_np.ceil(tc.max(axis=1)).astype(int), 0, N - 1)
+        r_lo = _np.clip(_np.floor(tr.min(axis=1)).astype(int), 0, N - 1)
+        r_hi = _np.clip(_np.ceil(tr.max(axis=1)).astype(int), 0, N - 1)
+        multi_cell = _np.nonzero((c_hi - c_lo + 1) * (r_hi - r_lo + 1) > 1)[0]
+        for t in multi_cell:
+            x1, y1, x2, y2, x3, y3 = tc[t, 0], tr[t, 0], tc[t, 1], tr[t, 1], tc[t, 2], tr[t, 2]
+            den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
+            if abs(den) < 1e-12:  # degenerate seen from above (a vertical wall) -- no top surface
+                continue
+            cc, rr = _np.meshgrid(
+                _np.arange(c_lo[t], c_hi[t] + 1), _np.arange(r_lo[t], r_hi[t] + 1)
+            )
+            l1 = ((y2 - y3) * (cc - x3) + (x3 - x2) * (rr - y3)) / den
+            l2 = ((y3 - y1) * (cc - x3) + (x1 - x3) * (rr - y3)) / den
+            l3 = 1.0 - l1 - l2
+            inside = (l1 >= -1e-9) & (l2 >= -1e-9) & (l3 >= -1e-9)
+            if not inside.any():
+                continue
+            z = l1 * tu[t, 0] + l2 * tu[t, 1] + l3 * tu[t, 2]
+            block = H[r_lo[t]:r_hi[t] + 1, c_lo[t]:c_hi[t] + 1]
+            _np.maximum(block, _np.where(inside, z, -_np.inf), out=block)
 
     filled = _np.isfinite(H)
     if not filled.any():
@@ -132,7 +186,19 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     else:  # Z-up: identity (X-up falls back to box before reaching here)
         quat = [1.0, 0.0, 0.0, 0.0]
 
-    size = [(max0 - min0) / 2.0, (max1 - min1) / 2.0, elev, 1.0]
+    # size[3] is how far MuJoCo extends solid material BELOW the sampled surface -- what
+    # actually stops a body rather than letting it through. It was a hard-coded 1.0, which
+    # is not a length that means anything on its own: this is whatever unit the stage is
+    # authored in, so 1.0 is a centimetre on a cm-scale kitchen set. It only ever held up
+    # because a collider's grid minimum usually sits well below the surface a body rests
+    # on (a table's edge trim samples ~8 units under its own top), leaving a thick slab by
+    # accident. A bowl has no such margin -- the lowest point of the grid IS the interior
+    # floor the body lands on -- so once the grid became accurate (see the rasterisation
+    # pass above) the solid under that floor was 1.0 thick and an apple dropped into the
+    # bowl punched straight through it to the catch plane below. Scale it with the
+    # collider instead, so it is genuinely solid at any scene scale.
+    base = max(elev, 0.1 * max(max0 - min0, max1 - min1))
+    size = [(max0 - min0) / 2.0, (max1 - min1) / 2.0, elev, base]
     return {"nrow": N, "ncol": N, "size": size, "heights": heights, "pos": pos, "quat": quat}
 
 
