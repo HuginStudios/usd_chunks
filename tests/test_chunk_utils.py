@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
+
 from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_utils as CU
+from usd_chunks import chunk_registry, chunk_utils as CU
+from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
+import usd_chunks.plugins.chunk_usd as chunk_usd
 
 
 def _stage(*paths):
@@ -135,3 +140,70 @@ def test_iter_prim_targets_yields_resolved_paths():
     stage = _stage("/World/a", "/World/b")
     param = _StubParam(["/World/a", "/World/b"])
     assert list(CU.iter_prim_targets(stage, param)) == ["/World/a", "/World/b"]
+
+
+# --- chunk_internal_layer_ids -----------------------------------------------
+
+
+class _DummyChunkScene(SceneSender):
+    def __init__(self):
+        super().__init__()
+        self._stage = None
+
+    def get_stage(self):
+        return self._stage
+
+    def get_selected_prims(self):
+        return []
+
+
+def test_chunk_internal_layer_ids_matches_layer_managers_own_set():
+    """chunk_internal_layer_ids() must read ChunkLayerManager's own incrementally-
+    maintained internal_layer_ids set, not rebuild it by walking every tracked layer's
+    live subLayerPaths.
+
+    That walk used to run inside _refresh_edit_target/_refresh_after_layer/export_usd's
+    row refresh -- each registered listen_globally=True, so it re-ran once per live
+    Create Layer/Edit Target/Export USD chunk on every single stage edit. A chunk delete
+    fires several such edits, so tearing down N chunks paid for this walk O(N) times per
+    edit -- superlinear in the number of chunks still alive, not just the ones being
+    deleted (confirmed live: an autouse test fixture that cleaned up every chunk after
+    each test made the suite ~500x slower to run than just leaking them). Reading the
+    already-maintained set turns each call back into a cheap lookup, same as
+    chunk_registry.is_chunk_internal_layer.
+
+    Standalone (not appended to tests/test_edit_target_migration.py's own
+    TestEditTargetMigration class): that file's shared scene/teardown state is already
+    documented as order-sensitive via leaked global listeners, and inserting a test
+    there was observed to make an unrelated, later test in the same file flaky.
+    """
+    create_mod = importlib.import_module("scripts.create_layer")
+    edit_mod = importlib.import_module("scripts.edit_target")
+
+    scene = _DummyChunkScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    stage = Usd.Stage.CreateInMemory()
+    scene._stage = stage
+    init_chunk_usd(stage, scene)
+
+    try:
+        cl = create_mod.main()
+        cl._config = ChunkConfig(module="create_layer")
+        cl._module = create_mod
+        scene.add_chunk(cl)
+        cl.get_param("layer_name").value = "layerA"
+        cl.execute()
+
+        et = edit_mod.main()
+        et._config = ChunkConfig(module="edit_target")
+        et._module = edit_mod
+        scene.add_chunk(et)
+        et.get_param("edit_target").value = "layerA"
+        et.execute()
+
+        lm = chunk_registry.ChunkLayerManager()
+        assert lm.internal_layer_ids, "setup must be faithful: some layer must be tracked"
+        assert CU.chunk_internal_layer_ids() == set(lm.internal_layer_ids)
+    finally:
+        for c in list(scene.chunks.get_my_params()):
+            c.request_delete()

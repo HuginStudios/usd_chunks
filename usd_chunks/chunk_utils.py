@@ -93,11 +93,19 @@ def chunk_internal_layer_ids() -> set:
     These are implementation details managed and Clear()ed by the chunk execution
     system; utility chunks that let a user pick a layer (e.g. edit-target or export
     pickers) should exclude them.
+
+    Reads ChunkLayerManager's own incrementally-maintained internal_layer_ids set
+    (same source of truth as chunk_registry.is_chunk_internal_layer) instead of
+    deriving it by walking every tracked layer's live subLayerPaths — a callback
+    that fires per stage edit, once per live Create Layer/Edit Target/Export USD
+    chunk (see those modules' listen_globally refresh handlers), doing a full
+    tree-walk here on top of that fan-out made chunk deletion cost scale with the
+    total number of live chunks, not just the ones being deleted.
     """
     lm = chunk_registry.ChunkLayerManager()
     if not lm.initialized:
         return set()
-    return {sublayer.identifier for _, sublayer in lm.iter_chunk_layers()}
+    return set(lm.internal_layer_ids)
 
 
 def find_collection(stage: Usd.Stage, name: str):
