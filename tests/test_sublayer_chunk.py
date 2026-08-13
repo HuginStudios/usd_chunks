@@ -84,3 +84,73 @@ def test_reload_reauthors_sublayer_paths(tmp_path) -> None:
     edit_layer = reloaded.get_edit_context()
     assert edit_layer is not None
     assert list(edit_layer.subLayerPaths) == ["C:/dummy/scene.usda"]
+
+
+def test_reload_reauthors_sublayer_paths_without_repeated_execution(tmp_path) -> None:
+    """Regression: reported live -- reloading a saved scene printed "Updated stage with
+    sublayer" (this chunk's own execute() hook) many times per load instead of once or twice,
+    and the same repeated-re-execution pattern showed up for every chunk downstream of a
+    Sublayer in the exec chain. Root cause: restoring a list-group row's saved value (e.g.
+    this chunk's own imports:sublayer_path) goes through ProxyParam.__setattr__'s "value" case
+    (chunk_core.py), a different code path than ChunkBase.value_changed -- the only place
+    chunk_notice._loading_stage was checked -- so it fired a real, immediate execute() during
+    the bulk restore, once per restored list-group attribute, well before load_chunks' own
+    single, correctly-ordered "trigger the DAG solve for root nodes" pass ever got a chance to
+    run for real. Fixing that gap alone regressed the test above (this chunk's layer never got
+    spliced into the stage at all): the repeated premature firing had been accidentally
+    load-bearing, since it was the only thing that happened to register the layer early enough
+    for _add_prim_mods' sublayer re-sort pass to include it. Both gaps are now closed together
+    -- the notify is suppressed during the bulk restore, and _add_prim_mods pre-registers every
+    eligible chunk's layer before the re-sort pass runs, not just chunks whose restore happens
+    to trigger it as a side effect.
+
+    Asserts <=2, not ==1: a SEPARATE, legitimate mechanism (reconcile_edit_targets, called once
+    right after load_chunks in ChunkStageSync.initialize) can add one more -- export_chunks
+    flattens bookkeeping straight into the exported file's root layer, so on first reload,
+    before anything has consolidated it into the reopened stage's own session layer,
+    _migrate_chunk_bookkeeping finds it split across both and moves it, re-executing as a
+    documented side effect of a real, one-time migration. That's bounded and legitimate; the
+    bug this test guards against is UNBOUNDED, repeated re-execution of the same chunk."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    _make_sublayer(scene, "C:/dummy/scene.usda")
+
+    path = str(tmp_path / "sublayer_chunkgroup.usda")
+    export_chunks(scene, path)
+
+    stage2 = Usd.Stage.Open(path)
+
+    class _StageScene2(_DummyScene):
+        def get_stage(self):
+            return stage2
+
+    scene2 = _StageScene2()
+    chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage2)
+
+    from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init2
+
+    real_sublayer_module = chunk_registry.ChunkRegistry().get_chunk_module("sublayer").module
+    call_count = {"n": 0}
+    orig_execute = real_sublayer_module.execute
+
+    def traced_execute(node):
+        call_count["n"] += 1
+        return orig_execute(node)
+
+    real_sublayer_module.execute = traced_execute
+    try:
+        _chunk_usd_init2(stage2, scene2)  # runs load_chunks internally
+    finally:
+        real_sublayer_module.execute = orig_execute
+
+    assert call_count["n"] <= 2, (
+        f"reloading a saved Sublayer chunk must not repeatedly re-execute its reserved hook -- "
+        f"expected at most 2 (the load itself, plus reconcile_edit_targets' one-time bookkeeping "
+        f"migration), got {call_count['n']}"
+    )
+
+    reloaded = [c for c in scene2.get_chunks() if c.get_config() and c.get_config().module == "sublayer"][0]
+    edit_layer = reloaded.get_edit_context()
+    assert edit_layer is not None
+    assert list(edit_layer.subLayerPaths) == ["C:/dummy/scene.usda"]

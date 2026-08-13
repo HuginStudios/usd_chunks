@@ -430,6 +430,31 @@ def grid_changed(owner: chunk.Group, notice, sender):
             add_texture(grid.GetPrim())
 
 
+def execute(node: chunk.Chunk) -> None:
+    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
+    bulk-restoring its param values, so a reloaded Add Mesh actually rebuilds its shape
+    instead of leaving the target prim empty (the real work lives in cube_changed/
+    tube_changed/grid_changed, all add_callback handlers, which load's value-restore
+    deliberately does not trigger).
+
+    menu_changed's hidden/disabled bookkeeping is reapplied first: live, picking a mesh
+    type only un-hides its group, it doesn't itself trigger a build (that needs a param
+    inside the group, or prim_path, to also change) -- so mesh_type's restored value alone
+    needs both steps repeated here to end up matching what was actually visible/built
+    before saving."""
+    menu = node.get_param("mesh_type", chunk.is_param_t(str))
+    if menu is None:
+        return
+    menu_changed(node, None, menu)
+    build_fn = {"cube": cube_changed, "tube": tube_changed, "grid": grid_changed}.get(menu.value)
+    if build_fn is None:
+        return
+    group = next((g for g in node.get_my_params(chunk.is_group) if g.name == menu.value), None)
+    if group is None:
+        return
+    build_fn(group, None, None)
+
+
 def main():
     path = chunk.LineEdit("prim_path", "Prim Path", default_value="/mesh")
     menu = chunk.Menu(

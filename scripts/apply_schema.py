@@ -1,4 +1,4 @@
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk
 
 from pxr import Usd, Tf
 
@@ -6,7 +6,11 @@ from pxr import Usd, Tf
 def apply(owner: chunk.Chunk, notice, sender):
     menu = owner.get_param("schemas", chunk.is_param_t(str))
 
-    prims = chunk_registry.ChunkRegistry().scene.get_selected_prims()
+    # The "prim" param (not live viewport selection) so this is replayable on reload --
+    # nothing is selected in the viewport at load time, but the param's own stored path
+    # restores normally like any other value.
+    prim_param = owner.get_param("prim", chunk.is_inst(chunk.LineEdit))
+    prims = prim_param.get_prims() if prim_param else []
     if not prims:
         return
 
@@ -17,6 +21,14 @@ def apply(owner: chunk.Chunk, notice, sender):
 
     for prim in prims:
         prim.ApplyAPI(schema)
+
+
+def execute(node: chunk.Chunk) -> None:
+    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
+    bulk-restoring its param values, so a reloaded Apply Schema actually reapplies the
+    saved schema instead of leaving the target prim untouched (apply is a Button callback,
+    which load's value-restore deliberately does not trigger)."""
+    apply(node, None, None)
 
 
 def update(owner: chunk.Chunk, notice, sender: chunk.LineEdit):

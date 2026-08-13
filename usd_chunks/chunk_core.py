@@ -1736,7 +1736,20 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             # of through the original param ownership channel.
             self.__value_sender.old_value = self._value
             self._value = value
-            self.__value_sender.execute()
+            # A list-group row (e.g. Sublayer's imports:sublayer_path) is a ProxyParam, so
+            # _load_wire_inputs' bulk restore reaches this setattr directly -- not through
+            # ChunkBase.value_changed, the only place chunk_notice._loading_stage is normally
+            # checked (see its own guard). Without this, restoring a row's saved value fired a
+            # real, immediate ATTRIBUTE_CHANGED here regardless of the bulk load in progress,
+            # live-reported as the whole downstream chain re-executing repeatedly on every
+            # reload of a saved scene (a list-group row was the one param path load_chunks'
+            # suppression never actually covered). load_chunks' own later, correctly-ordered
+            # "trigger the DAG solve for root nodes" pass still runs once everything is
+            # restored -- and now reliably reaches this chunk's real content (see the layer
+            # pre-registration added just above the re-sort pass in _add_prim_mods), so this
+            # doesn't lose the eventual real execute(), only the early, repeated ones.
+            if not chunk_notice._loading_stage:
+                self.__value_sender.execute()
             return
 
         try:

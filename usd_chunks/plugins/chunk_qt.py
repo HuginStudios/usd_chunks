@@ -61,6 +61,20 @@ def save_chunkgroup_dialog(scene=None) -> None:
     chunk_usd.export_chunks(scene, file)
 
 
+def save_scene_dialog(scene=None) -> None:
+    """The "nice save flow" (Dan's request): export_chunks plus the stage metadata
+    (up-axis, units) it doesn't carry on its own -- see chunk_usd.save_scene. Unlike
+    Save ChunkGroup, the result reopens with the same up-axis/units as the live scene."""
+    scene = scene or chunk_registry.ChunkRegistry().scene
+
+    flt = "*.usda *.usd *.usdc *.usdz"
+    if not (file := file_dial(flt, create_new=True)):
+        return
+    if not os.path.splitext(file)[1]:
+        file += ".usda"
+    chunk_usd.save_scene(scene, file)
+
+
 class EditableTabBar(QtWidgets.QTabBar):
     request_delete = QtCore.Signal(int)
     request_toggle_disable = QtCore.Signal(int)
