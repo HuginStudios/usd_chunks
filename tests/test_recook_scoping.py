@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import time
 
-from pxr import Usd, UsdGeom
+from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks.plugins import chunk_usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
@@ -293,3 +293,55 @@ def test_bulk_chunk_creation_burst_recooks_once(qapp) -> None:
         )
     finally:
         chunk_usd.recook_for_view = orig_recook
+
+
+def test_a_value_set_while_blocked_is_not_lost_once_unblocked(qapp) -> None:
+    """Regression: reported live -- a freshly created chunk, not yet wired to anything,
+    is blocked (nothing reachable from any view yet -- see recook_for_view's own
+    docstring: blocking "stops it reacting to param changes"). That block also silently
+    suppressed the ATTRIBUTE_CHANGED notice _sync_param_input needs to author a param's
+    value into a USD attr for the very first time -- so a value typed into a chunk
+    before wiring it in never got an attr at all, and nothing later ever retried, since
+    _sync_param_input only ever runs reactively off that same notice. Wiring the chunk
+    in afterward only triggers reconcile_edit_targets' migration, which has nothing to
+    migrate: the attr was never created in the first place. Confirmed live losing an
+    entire Reference chunk's params (file path, imported prim path, insert location)
+    this way, every time the value was set before the wire rather than after.
+    """
+    docker, scene, reg, stage, gv, scatter, view, _pump = _setup(qapp)
+    reference_mod = reg.get_chunk_module("reference")
+
+    stray = _mk(reference_mod, scene)
+    qapp.processEvents()
+    # A creation alone deliberately does not force a recook (see the test above this one) --
+    # blocked stays at its unset default until SOME recook runs, same as it would once any
+    # other, unrelated change in the live session (e.g. wiring up Create Layer/Edit Target)
+    # triggers one and iterates every chunk, this stray one included.
+    chunk_usd.recook_for_view(stage, scene, gv._graph_context(), view)
+    qapp.processEvents()
+    assert stray.is_blocked(), "setup must be faithful: a fresh, unwired chunk ends up blocked"
+
+    stray.get_param("import_primpath").value = "/food_apple_01_4k"
+    qapp.processEvents()
+    _pump(0.2)
+
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(stray)))
+    assert not prim.GetAttribute("inputs:import_primpath").IsValid(), (
+        "sanity: while still blocked, the value must not have an attr yet -- otherwise "
+        "this test isn't exercising the gap it's named for"
+    )
+
+    _wire(scatter, stray)
+    qapp.processEvents()
+    _pump(0.2)
+    # _wire (add_dependency alone) doesn't itself trigger a fresh recook in this harness --
+    # the real UI drag-to-connect path does, through its own reactive cascade. Force the
+    # recook explicitly rather than relying on that cascade being faithfully reproduced here.
+    chunk_usd.recook_for_view(stage, scene, gv._graph_context(), view)
+    qapp.processEvents()
+    _pump(0.3)
+
+    assert not stray.is_blocked(), "wiring into the view's upstream tree must unblock it"
+    attr = prim.GetAttribute("inputs:import_primpath")
+    assert attr.IsValid(), "the value set while blocked must not be lost once unblocked"
+    assert attr.Get() == "/food_apple_01_4k"

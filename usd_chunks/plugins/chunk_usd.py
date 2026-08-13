@@ -2781,7 +2781,26 @@ def recook_for_view(
             else:
                 recook_for_view(stage, scene, c, None)
             continue
+        was_blocked = c.is_blocked()
         c.set_blocked(c not in cook_set)
+        if was_blocked and not c.is_blocked():
+            # A blocked chunk's param value-changed notices are suppressed (see this
+            # function's own docstring: blocking "stops it reacting to param changes"),
+            # which was meant to stop it from re-executing while hidden -- but the same
+            # suppression also silently drops _sync_param_input, the one-time step that
+            # first authors a param's value into a USD attr at all. A freshly created,
+            # not-yet-wired chunk is blocked (nothing reachable from any view yet), so a
+            # value typed into it before wiring never got an attr; nothing later ever
+            # retried, since _sync_param_input only runs reactively off that same
+            # suppressed notice. Catch up here, the one place a chunk's blocked state
+            # actually flips off — _sync_param_input is already idempotent (skips a
+            # param already wired, or still at its default), so this is a no-op for
+            # every param that didn't hit the gap.
+            sync = ChunkStageSync()
+            for _, param in _iter_chunk_params(c):
+                sync._sync_param_input(c, param)
+            for _, vector in _iter_chunk_vectors(c):
+                sync._sync_vector_input(c, vector)
         layer = lm.get_layer(c)
         if layer is not None and layer.identifier not in seen_idents:
             seen_idents.add(layer.identifier)
