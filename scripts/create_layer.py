@@ -30,7 +30,13 @@ def _refresh_after_layer(owner, notice, sender):
         # subLayerPaths and scrambling "closer to view wins" into "whichever cascade call
         # happened to land last".
         return
-    if _chunk.get_param("insert_mode").value != "After Layer":
+    insert_mode_param = _chunk.get_param("insert_mode")
+    if insert_mode_param is None:
+        # Same half-dismantled-chunk case as the after_menu guard below: deleting this
+        # chunk tears its params down before this global handler (still firing for the
+        # stage edits teardown itself makes) gets a chance to run for it again.
+        return
+    if insert_mode_param.value != "After Layer":
         # after_layer is hidden/unused in every other mode (_update_visibility). Refreshing
         # it anyway writes menu_items -- a plain attrs field whose content is "the current
         # subLayerPaths list", which differs on essentially every sibling Create Layer's

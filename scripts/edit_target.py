@@ -1,6 +1,6 @@
 from pxr import Sdf
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_notice, chunk_utils
 from usd_chunks.plugins import chunk_usd
 
 # Selecting this instead of a specific layer identifier follows whatever layer the
@@ -111,6 +111,19 @@ def _refresh_edit_target(owner, notice, sender):
         # and reset to the default once it's genuinely unresolvable — resetting
         # unconditionally here would permanently overwrite the stored selection with
         # "Session Layer" before that chunk ever gets a chance to run.
+        #
+        # During a bulk load specifically, this global handler fires on every stage
+        # edit from every chunk being restored, so "unresolved so far" is a normal,
+        # transient state there (the layer shows up moments later, from a chunk still
+        # ahead in the same load) rather than proof the selection is genuinely gone.
+        # Resetting on that transient reading is what live-reported as one of several
+        # chained Edit Target chunks silently reverting to "Session Layer" on
+        # reload while its siblings survived (whichever ones happened to be checked
+        # after their own upstream layer already existed) — so skip the reset
+        # entirely while loading and let a later refresh pass, triggered by that same
+        # layer's own creation, resolve it correctly instead.
+        if chunk_notice._loading_stage:
+            return
         if target_menu.value == _FOLLOW_UPSTREAM or not _resolve_layer(stage, target_menu.value):
             target_menu.value = target_items[0]
 

@@ -124,6 +124,15 @@ def _run(owner, notice, sender):
     }
 
 
+def execute(node: chunk.Chunk) -> None:
+    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
+    bulk-restoring its param values, so a reloaded Offset Transform actually reapplies its
+    offset instead of just showing the right numbers with no effect on the stage (its real
+    work lives in _run, an add_callback handler, which load's value-restore deliberately
+    does not trigger)."""
+    _run(node, None, None)
+
+
 def main():
     chunk_api = chunk.Chunk("Offset Transform")
 

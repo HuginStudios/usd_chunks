@@ -4,10 +4,10 @@ from pxr import Sdf, UsdShade
 from PySide6 import QtWidgets
 
 
-def apply(owner: chunk.Chunk, notice, sender):
-    # if notice.data is not sender.get_param("apply"):
-    #     return
-
+def _apply_material(owner: chunk.Chunk, prims) -> None:
+    """Core work: build the UV checker material and bind it to `prims`. Shared by the
+    interactive Button callback (apply, below -- validates and pops a dialog first) and
+    the reserved execute(node) hook (which must never show a modal dialog mid-load)."""
     # Access the parameter inside the group
     x_scale_param = owner.get_param("uvscale", chunk.is_inst(chunk.Vector))[0]
     y_scale_param = owner.get_param("uvscale", chunk.is_inst(chunk.Vector))[1]
@@ -18,19 +18,8 @@ def apply(owner: chunk.Chunk, notice, sender):
     filebrowser = owner.get_param("browse", chunk.is_param_t(str))
     checker_file = filebrowser.value
 
-    # api = sender.get_usdview_api()
-    scene = chunk_registry.ChunkRegistry().scene
-    stage = scene.get_stage()
-    selected_prims = scene.get_selected_prims()
-
-    if not selected_prims or selected_prims == stage.GetPseudoRoot():
-        msg = "Prim not selected."
-        if selected_prims:
-            msg = "Cannot apply material on the top PseudoRoot!"
-        error_dlg = QtWidgets.QMessageBox()
-        error_dlg.setWindowTitle("Error")
-        error_dlg.setText(msg)
-        error_dlg.exec_()
+    stage = owner.get_stage()
+    if not stage:
         return
 
     base_material_grp = "/materials"
@@ -77,9 +66,44 @@ def apply(owner: chunk.Chunk, notice, sender):
     transform2d_in_uv.ConnectToSource(reader_out)
     reader.CreateInput("varname", Sdf.ValueTypeNames.String).Set("st")
 
-    for prim in selected_prims:
+    for prim in prims:
         api = UsdShade.MaterialBindingAPI.Apply(prim)
         api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
+
+
+def apply(owner: chunk.Chunk, notice, sender):
+    # The "prim" param (not live viewport selection) so this is replayable on reload --
+    # nothing is selected in the viewport at load time, but the param's own stored path
+    # restores normally like any other value.
+    prim_param = owner.get_param("prim", chunk.is_inst(chunk.LineEdit))
+    prims = prim_param.get_prims() if prim_param else []
+    stage = owner.get_stage()
+
+    if not prims or (stage and prims == stage.GetPseudoRoot()):
+        msg = "Prim not selected."
+        if prims:
+            msg = "Cannot apply material on the top PseudoRoot!"
+        error_dlg = QtWidgets.QMessageBox()
+        error_dlg.setWindowTitle("Error")
+        error_dlg.setText(msg)
+        error_dlg.exec_()
+        return
+
+    _apply_material(owner, prims)
+
+
+def execute(node: chunk.Chunk) -> None:
+    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
+    bulk-restoring its param values, so a reloaded UV Checker actually reapplies the
+    material instead of leaving the target prim unbound (apply is a Button callback,
+    which load's value-restore deliberately does not trigger). Calls the shared core
+    directly rather than apply() itself -- apply()'s own validation pops a modal
+    QMessageBox on an empty selection, which must never happen mid-load."""
+    prim_param = node.get_param("prim", chunk.is_inst(chunk.LineEdit))
+    prims = prim_param.get_prims() if prim_param else []
+    if not prims:
+        return
+    _apply_material(node, prims)
 
 
 def clear(owner: chunk.Chunk, notice, sender):
@@ -112,6 +136,13 @@ def scale(owner: chunk.Vector, notice, sender):
 def main():
     chunk_api = chunk.Chunk("UV Checker")
 
+    prim_param = chunk.LineEdit(
+        "prim",
+        "Prim",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        tooltip="The prim to visualize UVs on — pick it in the viewport or type a path.",
+    )
+
     spinbox = chunk.Spinbox(default_value=1)
     vec = chunk.Vector("uvscale", "UV Scale", param=spinbox, length=2, suffixes="UV")
 
@@ -123,7 +154,7 @@ def main():
     visUVsButton = chunk.Button("apply", "Visualize")
     clearUVsButton = chunk.Button("clear", "Clear Vis")
 
-    chunk_api.add_params([vec, filebrowser, visUVsButton, clearUVsButton])
+    chunk_api.add_params([prim_param, vec, filebrowser, visUVsButton, clearUVsButton])
 
     # Setting the sender explicitly. The callback will then get params as such:
     # 1 - chunk_api (the chunk)
