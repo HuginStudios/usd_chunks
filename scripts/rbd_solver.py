@@ -1636,12 +1636,16 @@ def main() -> chunk.Chunk:
             "mass",
             "Mass",
             default_value=1.0,
-            tooltip="Mass of the dynamic body. Note gravity is mass-independent -- a heavy "
-            "body and a light one fall identically -- so Mass only shows up where a force "
-            "other than gravity is acting: how hard Wind and Turbulence can push it, how "
-            "quickly Damping bleeds off its motion, and how it trades momentum in a "
-            "collision. On a plain drop it will look like it does nothing, and that is "
-            "correct.",
+            tooltip="Mass of the dynamic body — a relative weight, in no particular unit "
+            "(not kg or g). Nothing pins it to one: gravity is applied as an acceleration, "
+            "so Mass never becomes a weight you could calibrate against. It only ever acts "
+            "as the divisor in acceleration = force / Mass, against the numbers you type "
+            "into Wind and Turbulence. Read it as a ratio: 1 is the reference, 10 is ten "
+            "times harder to push around.\n\n"
+            "So Mass shows up wherever a force other than gravity acts — Wind, Turbulence, "
+            "how fast Damping bleeds off motion, and how momentum is traded in a collision. "
+            "On a plain drop it looks like it does nothing, and that is correct: a heavy "
+            "body and a light one fall identically.",
         )
     )
     # Friction and Bounce are physically 0..1, so they get sliders -- you can feel the range
