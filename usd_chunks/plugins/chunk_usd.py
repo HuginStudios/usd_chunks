@@ -1908,8 +1908,25 @@ def get_upstream_stage(stage: "Usd.Stage", scene: "core.SceneSender", chunk: "co
     layer_ids: list = []
     for g_layer in lm.graph_layers.values():
         for ident in g_layer.subLayerPaths:
-            if ident not in excluded_ids and ident not in layer_ids:
-                layer_ids.append(ident)
+            if ident in excluded_ids or ident in layer_ids:
+                continue
+            if stage.IsLayerMuted(ident):
+                # A muted layer is one the real stage is currently showing nothing of: its
+                # chunk is dormant -- blocked (outside the active view's cook set, e.g. just
+                # disconnected) or explicitly disabled. Rebuilding the composition from raw
+                # subLayerPaths resurrected it here, so a dormant chunk's stale content kept
+                # driving everyone else's reads while being invisible everywhere else.
+                #
+                # That got WORSE the moment a chunk was disconnected, which is backwards:
+                # while it was still wired downstream the exclusion above already covered it,
+                # and cutting it loose is what let it back in. Live-reported: shaking a Prune
+                # node off a Sublayer -> Transform -> Scatter -> Prune -> View chain brought
+                # the apple back on the real stage, but Scatter still read it through Prune's
+                # orphaned "active = false" -- so Scatter found no surface geometry at all and
+                # fell back to scattering around the origin, looking like the Transform
+                # feeding it had silently stopped being applied.
+                continue
+            layer_ids.append(ident)
     scratch_root = Sdf.Layer.CreateAnonymous()
     scratch_root.subLayerPaths = layer_ids + [stage.GetRootLayer().identifier]
     return Usd.Stage.Open(scratch_root)
