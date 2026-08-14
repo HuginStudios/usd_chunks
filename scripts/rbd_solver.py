@@ -59,9 +59,12 @@ def _turbulence_accel(pos, t: float, amp: float, scale: float, speed: float, pha
 def _apply_wind(model, data, body_ids, wind, amp: float, scale: float, speed: float, phases, t: float) -> None:
     """Push wind + turbulence onto each dynamic body for the coming step.
 
-    Scaled by each body's own mass, so both read as ACCELERATIONS: a heavier body is
-    pushed harder and ends up moving the same, which is what wind should feel like.
-    Tuning Mass would otherwise silently retune every force in the scene.
+    Applied as a FORCE, deliberately not divided out by mass. A heavier body therefore
+    accelerates less and shrugs the wind off, which is both the real behaviour of a
+    constant force and the intuition to reach for ("make it lighter so the wind catches
+    it"). It is also the only knob that gives Mass a visible job at all: gravity is
+    mass-independent by nature, so on a plain drop Mass changes nothing no matter what
+    it is set to.
 
     xfrc_applied persists across steps, so this rewrites it every substep rather than
     accumulating; with no wind and no turbulence it is never written and stays zero.
@@ -69,11 +72,10 @@ def _apply_wind(model, data, body_ids, wind, amp: float, scale: float, speed: fl
     if amp <= 0.0 and not any(wind):
         return
     for bid in body_ids:
-        ax, ay, az = _turbulence_accel(data.xpos[bid], t, amp, scale, speed, phases)
-        m = float(model.body_mass[bid])
-        data.xfrc_applied[bid][0] = (wind[0] + ax) * m
-        data.xfrc_applied[bid][1] = (wind[1] + ay) * m
-        data.xfrc_applied[bid][2] = (wind[2] + az) * m
+        fx, fy, fz = _turbulence_accel(data.xpos[bid], t, amp, scale, speed, phases)
+        data.xfrc_applied[bid][0] = wind[0] + fx
+        data.xfrc_applied[bid][1] = wind[1] + fy
+        data.xfrc_applied[bid][2] = wind[2] + fz
 
 
 def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_cell: float = 0.0) -> dict | None:
@@ -1629,7 +1631,19 @@ def main() -> chunk.Chunk:
             "Higher = finer surface but heavier.",
         )
     )
-    physics_grp.add_param(chunk.Spinbox("mass", "Mass", default_value=1.0, tooltip="Mass of the dynamic body."))
+    physics_grp.add_param(
+        chunk.Spinbox(
+            "mass",
+            "Mass",
+            default_value=1.0,
+            tooltip="Mass of the dynamic body. Note gravity is mass-independent -- a heavy "
+            "body and a light one fall identically -- so Mass only shows up where a force "
+            "other than gravity is acting: how hard Wind and Turbulence can push it, how "
+            "quickly Damping bleeds off its motion, and how it trades momentum in a "
+            "collision. On a plain drop it will look like it does nothing, and that is "
+            "correct.",
+        )
+    )
     # Friction and Bounce are physically 0..1, so they get sliders -- you can feel the range
     # instead of guessing which numbers are sensible.
     physics_grp.add_param(
@@ -1730,9 +1744,9 @@ def main() -> chunk.Chunk:
             length=3,
             suffixes="XYZ",
             default_value=(0.0, 0.0, 0.0),
-            tooltip="Constant push on every body, in scene units/s². Applied as an "
-            "acceleration (scaled by each body's mass), so changing Mass does not change "
-            "how far the wind blows it.",
+            tooltip="Constant directional push on every body. Applied as a force, so a "
+            "heavier body shrugs it off and a lighter one gets carried -- turn Mass down to "
+            "let the wind take something.",
         )
     )
     forces_grp.add_param(
@@ -1740,9 +1754,10 @@ def main() -> chunk.Chunk:
             "turbulence",
             "Turbulence",
             default_value=0.0,
-            tooltip="Strength of the swirling noise added on top of Wind, in scene units/s². "
-            "0 = perfectly steady wind. Try roughly a tenth of gravity to start "
-            "(≈100 on a centimetre scene).",
+            tooltip="Strength of the swirling noise added on top of Wind. 0 = perfectly "
+            "steady wind. Like Wind this is a force, so it fights the body's Mass; try "
+            "roughly a tenth of gravity x mass to start (≈100 on a centimetre scene at "
+            "mass 1).",
         )
     )
     forces_grp.add_param(

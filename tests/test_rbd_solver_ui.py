@@ -149,14 +149,22 @@ def test_wind_pushes_the_body_along_its_own_axis():
     assert blown[0] > still[0] + 10.0, f"wind did not carry the body: {still} -> {blown}"
 
 
-def test_wind_is_mass_independent():
-    """Wind is applied as an ACCELERATION (scaled by each body's mass), so tuning Mass
-    must not silently retune every force in the scene."""
+def test_a_heavier_body_resists_the_wind():
+    """Wind is a FORCE, deliberately not divided out by mass: a heavier body accelerates
+    less and shrugs it off. That is how a constant force really behaves, it matches the
+    intuition ("make it lighter so the wind catches it"), and it is the only thing that
+    gives Mass a visible job -- see test_gravity_alone_is_mass_independent for why."""
     light = _drop(wind=(300.0, 0.0, 0.0), mass=1.0)
     heavy = _drop(wind=(300.0, 0.0, 0.0), mass=25.0)
-    assert light[0] == pytest.approx(heavy[0], abs=0.5), (
-        f"a 25x heavier body blew a different distance: {light[0]} vs {heavy[0]}"
+    assert light[0] > heavy[0] + 1.0, (
+        f"a 25x heavier body should have been carried far less: light={light[0]} heavy={heavy[0]}"
     )
+
+
+def test_gravity_alone_is_mass_independent():
+    """Guard rail, not a wish: a heavy body and a light one fall identically, so Mass
+    looking inert on a plain drop is correct physics and must not be "fixed"."""
+    assert _drop(mass=1.0) == _drop(mass=25.0)
 
 
 def test_turbulence_disturbs_an_otherwise_identical_drop():
