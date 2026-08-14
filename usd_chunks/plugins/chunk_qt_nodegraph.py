@@ -2297,6 +2297,19 @@ class _ProxyKeyRouter(QtCore.QObject):
         etype = event.type()
         if etype not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
             return False
+        if QtWidgets.QApplication.activePopupWidget() is not None:
+            # A popup (a QMenu) owns the keyboard while it is up, and every shortcut below
+            # is a GRAPH shortcut -- none of them mean anything until it closes. This filter
+            # is installed on the QApplication, so without this it kept firing straight
+            # through an open menu, and the menu's own filter does not stop it: that one
+            # only forwards printable characters to the search box, and Tab is not printable.
+            #
+            # Live-reported as pressing Tab repeatedly stacking up a chunk menu per press --
+            # the Tab branch below re-entered _open_tab_menu while its own blocking exec_()
+            # was still running. The same gap silently ate "f" and "l" typed into that
+            # menu's search box, firing frame-selection / auto-layout on the graph behind it
+            # instead of reaching the box.
+            return False
 
         fw = QtWidgets.QApplication.focusWidget()
         if isinstance(fw, self._INPUT_TYPES):
