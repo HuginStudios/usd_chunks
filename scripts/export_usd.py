@@ -7,6 +7,7 @@ Requires: pxr (OpenUSD), usd_chunks.
 from __future__ import annotations
 
 import os
+import shutil
 
 from pxr import Sdf, Usd, UsdUtils
 
@@ -221,6 +222,92 @@ def _baked_chunk_prim_paths(_chunk, stage) -> list:
     return paths
 
 
+_DEPS_DIRNAME = "deps"
+_USD_EXTENSIONS = (".usd", ".usda", ".usdc", ".usdz")
+
+
+def _anchor(base_dir: str, asset_path: str) -> str:
+    """Resolve an authored asset path against the directory of the layer that authored it."""
+    if os.path.isabs(asset_path):
+        return os.path.normpath(asset_path)
+    return os.path.normpath(os.path.join(base_dir, asset_path))
+
+
+def _localize_dependencies(flat, source_dir: str, output_path: str) -> dict:
+    """Copy every external file the flattened layer still references into a deps/ folder
+    beside the output, and rewrite the authored paths to point at those copies.
+
+    FlattenLayerStack composes the layer *stack* — sublayers — but a reference or payload is
+    a composition arc that survives flattening untouched. The exported file therefore still
+    points at whatever it referenced, by a path anchored to the network rather than to the
+    output, so it resolves to nothing the moment the output lives in a different directory.
+    Gathering the dependencies next to the output and rewriting the paths is what makes an
+    exported asset something you can hand to someone else.
+
+    Recursive, because a copied layer's own references would otherwise dangle one level down:
+    every USD dependency is localized in turn, and the copies land flat in a single deps/
+    folder, so a layer inside it refers to its siblings as ./name while the output above
+    refers to them as ./deps/name. Non-USD dependencies (textures) are copied but not
+    descended into. A path that resolves to no file on disk is left exactly as authored —
+    rewriting it would only move the breakage somewhere harder to spot.
+
+    Args:
+        flat (Sdf.Layer): The flattened layer about to be exported, modified in place
+        source_dir (str): Directory the network's own relative paths are anchored to
+        output_path (str): Where the flattened layer is about to be written
+
+    Returns:
+        dict: Absolute source path -> the file name it was given inside deps/
+    """
+    deps_dir = os.path.join(os.path.dirname(os.path.abspath(output_path)), _DEPS_DIRNAME)
+    assigned: dict = {}
+    used_names: set = set()
+
+    def _ensure_copy(src: str) -> str:
+        """Copy src into deps/ (once), localizing it too if it is itself a USD layer."""
+        key = os.path.normcase(src)
+        if key in assigned:
+            return assigned[key]
+
+        name = os.path.basename(src)
+        stem, ext = os.path.splitext(name)
+        n = 2
+        while name.lower() in used_names:
+            name = f"{stem}_{n}{ext}"
+            n += 1
+        used_names.add(name.lower())
+        # Recorded before the copy below, so a reference cycle terminates here instead of
+        # descending forever.
+        assigned[key] = name
+
+        os.makedirs(deps_dir, exist_ok=True)
+        dest = os.path.join(deps_dir, name)
+        shutil.copyfile(src, dest)
+
+        if ext.lower() in _USD_EXTENSIONS:
+            copied = Sdf.Layer.FindOrOpen(dest)
+            if copied:
+                # Anchored to where the original lived, since that is what its own relative
+                # paths were written against — the copy has moved, its paths have not yet.
+                UsdUtils.ModifyAssetPaths(copied, _modifier(os.path.dirname(src), "./"))
+                copied.Save()
+        return name
+
+    def _modifier(base_dir: str, prefix: str):
+        def _relocate(asset_path: str) -> str:
+            if not asset_path:
+                return asset_path
+            src = _anchor(base_dir, asset_path)
+            if not os.path.isfile(src):
+                return asset_path
+            return f"{prefix}{_ensure_copy(src)}"
+
+        return _relocate
+
+    UsdUtils.ModifyAssetPaths(flat, _modifier(source_dir, f"./{_DEPS_DIRNAME}/"))
+    return assigned
+
+
 def _export_flattened(_chunk, stage) -> None:
     """Export the whole stage merged into a single file (the "Flatten into one file"
     path), per Mode:
@@ -263,8 +350,15 @@ def _export_flattened(_chunk, stage) -> None:
         _strip_chunk_prims(flat, only_paths=_baked_chunk_prim_paths(_chunk, stage))
     else:
         _strip_chunk_prims(flat)
+
+    root_layer = stage.GetRootLayer()
+    source_dir = os.path.dirname(os.path.abspath(root_layer.realPath or root_layer.identifier))
+    gathered = _localize_dependencies(flat, source_dir, output_path)
+
     flat.Export(output_path)
     print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
+    if gathered:
+        print(f"[ExportUSD] Gathered {len(gathered)} dependenc(y/ies) into {_DEPS_DIRNAME}/")
 
 
 def commit(node):
