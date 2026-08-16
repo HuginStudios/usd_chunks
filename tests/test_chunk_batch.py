@@ -16,6 +16,8 @@ from usd_chunks.plugins.chunk_batch import (
     apply_overrides,
     apply_run,
     build_plan,
+    check_commit_targets,
+    committing_chunks,
     find_pattern_sites,
     format_plan,
     select_driver,
@@ -285,6 +287,60 @@ def test_malformed_overrides_are_refused(network, bad):
 
 def test_no_overrides_is_a_no_op(network):
     assert apply_overrides(network, []) == []
+
+
+# ---------------------------------------------------------------------------
+# commit targets
+#
+# Only .name and ._module are read, so plain stand-ins are enough and keep these
+# tests away from a live registry.
+# ---------------------------------------------------------------------------
+
+
+class _Module:
+    def __init__(self, commits):
+        if commits:
+            self.commit = lambda node: None
+
+
+class _Chunk:
+    def __init__(self, name, commits=False):
+        self.name = name
+        self._module = _Module(commits)
+
+
+def test_committing_chunks_picks_only_those_with_the_hook():
+    chunks = [_Chunk("Reference"), _Chunk("Export", commits=True)]
+    assert [c.name for c in committing_chunks(chunks)] == ["Export"]
+
+
+def test_committing_chunks_tolerates_a_chunk_with_no_module():
+    stray = _Chunk("Odd")
+    stray._module = None
+    assert committing_chunks([stray]) == []
+
+
+def test_commit_targets_accepts_an_exporter_that_owns_a_sink(network, asset_tree):
+    plan = build_plan(network, asset_tree)
+    chunks = [_Chunk("Reference"), _Chunk("Export", commits=True)]
+    assert [c.name for c in check_commit_targets(chunks, plan)] == ["Export"]
+
+
+def test_commit_targets_rejects_an_exporter_with_a_fixed_path(network, asset_tree):
+    """The quiet-wrong-answer case: every run cooks and writes, and the folder ends up
+    holding one file — the last asset — with nothing reporting a problem."""
+    network.GetPrimAtPath("/chunks/Export").GetAttribute("inputs:output_file").Set("out/all.usda")
+    plan = build_plan(network, asset_tree, output_pattern="ignored/*.usda")
+
+    with pytest.raises(BatchError) as exc:
+        check_commit_targets([_Chunk("Export", commits=True)], plan)
+    assert "Export" in str(exc.value) and "overwrite the same file" in str(exc.value)
+
+
+def test_commit_targets_rejects_a_network_that_writes_nothing(network, asset_tree):
+    plan = build_plan(network, asset_tree)
+    with pytest.raises(BatchError, match="nothing in this network writes to disk"):
+        check_commit_targets([_Chunk("Reference")], plan)
 
 
 def test_override_then_plan_makes_the_override_the_driver(network, asset_tree):

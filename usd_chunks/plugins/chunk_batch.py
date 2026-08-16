@@ -28,6 +28,7 @@ from pxr import Sdf, Usd, Vt
 from usd_chunks import chunk_glob, chunk_utils
 from usd_chunks.plugins.chunk_usd import (
     _CHUNK_PRIM_TYPENAME,
+    _CHUNK_TYPE_ATTR,
     _INPUTS_PREFIX,
     is_exec_input_name,
 )
@@ -283,6 +284,64 @@ def build_plan(
                 raise BatchError(f"output pattern: {exc}") from exc
         plan.runs.append(BatchRun(source, captures, tuple(sink_values), output))
     return plan
+
+
+def committing_chunks(chunks) -> List:
+    """Every loaded chunk whose module defines a ``commit`` hook.
+
+    These are the chunks that write to disk once the solve settles — the ones a batch is
+    ultimately run for, and the only ones whose output path has to differ run to run.
+
+    Read off the loaded chunk objects rather than resolved from the stage, because a chunk
+    module is loaded lazily: at plan time the registry holds a wrapper that has not imported
+    the module yet, so the hook is not visible on it. This is the same place
+    chunk_scheduler.commit_all looks, so the two can never disagree about who commits.
+
+    Args:
+        chunks (Iterable[ChunkBase]): The loaded chunks to inspect
+
+    Returns:
+        List: The chunks whose module defines commit
+    """
+    return [c for c in chunks if callable(getattr(getattr(c, "_module", None), "commit", None))]
+
+
+def check_commit_targets(chunks, plan: BatchPlan) -> List:
+    """Verify every chunk that writes on each run writes somewhere *different* each run.
+
+    A committing chunk holding a fixed output path is the one way this feature quietly does
+    the wrong thing: all N runs cook correctly, every one of them writes, and the folder is
+    left holding a single file — the last asset — with nothing anywhere reporting a problem.
+    Checked on the first run, before a single file has been written.
+
+    Args:
+        chunks (Iterable[ChunkBase]): The loaded chunks of the first run
+        plan (BatchPlan): The plan whose sinks say which params vary per run
+
+    Returns:
+        List: The committing chunks, all of which are correctly targeted
+
+    Raises:
+        BatchError: Nothing writes at all, or a committing chunk has no per-run output
+    """
+    committing = committing_chunks(chunks)
+    if not committing:
+        raise BatchError(
+            "nothing in this network writes to disk — add an output pattern with -o, or a "
+            "chunk that exports (its output path needs a wildcard so each run writes its own "
+            "file)"
+        )
+
+    sink_chunks = {site.chunk_name for site in plan.sinks}
+    stuck = sorted(c.name for c in committing if c.name not in sink_chunks)
+    if stuck:
+        listed = ", ".join(stuck)
+        raise BatchError(
+            f"{listed} writes on every run but its output path never changes — all "
+            f"{len(plan.runs)} runs would overwrite the same file. Put a wildcard in it "
+            f"(e.g. 'out/*.usda') so each run writes its own, or redirect with -o"
+        )
+    return committing
 
 
 def apply_run(stage: Usd.Stage, plan: BatchPlan, run: BatchRun) -> None:

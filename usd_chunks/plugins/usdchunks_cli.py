@@ -317,6 +317,7 @@ def cmd_batch(args):
     _pin_chunk_dirs_to_cwd()
     registry = chunk_registry.ChunkRegistry()
     registry.initialize(HeadlessScene(plan_stage), "cli")
+
     total = len(plan.runs)
     # The values authored per run are relative to the anchor, so that neither the network nor
     # its outputs carry a machine-specific absolute path. A relative asset path in a chunk's
@@ -350,6 +351,25 @@ def cmd_batch(args):
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 stage.Export(str(out_path))
                 print(f"        -> {out_path}")
+            else:
+                # The network writes its own output: this run's sink values are already on
+                # the params, so committing now writes them where this run's captures say.
+                # Checked on the first run only — the network is the same every time, and a
+                # committing chunk with a fixed path would silently leave one file behind.
+                if i == 1:
+                    try:
+                        committing = chunk_batch.check_commit_targets(scene.get_chunks(), plan)
+                    except chunk_batch.BatchError as exc:
+                        print(f"{RED}batch: {exc}{RESET}")
+                        sys.exit(1)
+                    commit_names = {c.name for c in committing}
+                # USD will not create the folder on the way out, and the whole point of a
+                # sink pattern is that it names one that need not exist yet.
+                for site, value in run.sink_values:
+                    if site.chunk_name in commit_names:
+                        (anchor / value).parent.mkdir(parents=True, exist_ok=True)
+                for committed in chunk_scheduler.commit_all(scene.get_chunks()):
+                    print(f"        -> committed {committed.name}")
 
             scene.clear()
             del stage
