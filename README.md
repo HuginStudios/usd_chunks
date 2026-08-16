@@ -170,6 +170,14 @@ their prims, forming a DAG. When something changes, the affected chunks are re-r
 topological order by calling the module's `execute(node)` function — the counterpart to
 `main()`, and where a chunk does its real work against the stage.
 
+**Committing.** A chunk whose real work is writing a file defines `commit(node)` instead of,
+or alongside, `execute(node)`. Where `execute` is a cook — cheap, idempotent, re-run
+constantly while the DAG is being solved — `commit` runs once, in topological order, after
+the solve has settled, and gets no edit context: it reads the composed stage and writes to
+disk. Disabled chunks never commit, and a module without the hook is simply skipped.
+`usdchunks run` drives it, so a network containing an Export USD chunk writes its configured
+output headlessly, exactly as pressing Export does in the UI.
+
 **Layers.** Authoring is split so chunk bookkeeping never pollutes your scene. The chunk prims
 and their connections live in the session layer. The prims and values a chunk actually
 produces go to its own layer, which is cleared and regenerated each time it runs — that is

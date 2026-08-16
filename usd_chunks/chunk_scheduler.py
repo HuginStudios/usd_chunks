@@ -27,11 +27,17 @@ whether the chunk cooks at all.
 
 Ownership is treated as just another downstream edge: an owner solves after everything
 it owns, exactly like a dependant solves after its dependency.
+
+After the solve has settled there is a second, much simpler phase: `commit_all`, which
+runs each chunk module's reserved `commit(node)` hook once, in dependency order. Where
+`execute` is the *cook* -- cheap, idempotent, re-run constantly while the DAG is being
+solved -- `commit` is where a chunk writes to disk, which must happen once and only
+once the numbers it is writing have stopped moving.
 """
 
 import atexit
 import weakref
-from typing import TYPE_CHECKING, Dict, Generator, List, Tuple
+from typing import TYPE_CHECKING, Dict, Generator, Iterable, List, Tuple
 
 # Imported as a module rather than by name: chunk_notice imports this module, so at the
 # time this line runs chunk_notice may still be halfway through its own import and have
@@ -40,6 +46,7 @@ from typing import TYPE_CHECKING, Dict, Generator, List, Tuple
 from usd_chunks import chunk_notice
 
 if TYPE_CHECKING:
+    from usd_chunks.chunk_core import ChunkBase
     from usd_chunks.chunk_notice import DagNode
 
 
@@ -459,3 +466,69 @@ def _depth(root: "DagNode") -> int:
                 stack.append((dep, False))
 
     return _depth_cache.get(root, 0)
+
+
+def commit_order(chunks: Iterable["ChunkBase"]) -> List["ChunkBase"]:
+    """
+    Order chunks so that every chunk comes after everything it depends on.
+
+    Sorted by get_depth rather than run through topo_order, because a chunk can depend on
+    another without there being any edge between the two *chunks*: drag-to-connect on a
+    port wires param to param and never calls Chunk.add_dependency, so a subgraph induced
+    over chunk nodes alone would miss that edge entirely. Depth sees it, since ownership
+    costs nothing and therefore pulls a chunk at least as deep as its deepest param -- the
+    same reason it is already the key the layer manager sorts chunk sublayers by.
+
+    Depth is a valid topological order: an edge from u to v makes v strictly deeper than
+    u, so sorting by it can never place a dependant first. Independent chunks tie, and the
+    sort being stable leaves those in the order they were handed over.
+
+    Args:
+        chunks (Iterable[ChunkBase]): The chunks to order
+
+    Returns:
+        List[ChunkBase]: The chunks, every chunk preceded by everything it depends on
+    """
+    return sorted(chunks, key=lambda c: get_depth(c.get_dag_node()))
+
+
+def commit_all(chunks: Iterable["ChunkBase"]) -> List["ChunkBase"]:
+    """
+    Run the reserved `commit(node)` hook of every chunk module that defines one.
+
+    Called once, by whoever drove the solve (the CLI's `run`), after that solve has
+    settled -- not from inside the notice propagation loop the way `execute` is
+    dispatched. A chunk whose real work is writing a file wants to do that once, against
+    a stage that has stopped changing; `execute` is the wrong hook for it because it is
+    re-run on every param touch that reaches the chunk.
+
+    Unlike `execute`, no edit context is opened around the call: `commit` reads the
+    composed stage and writes files, rather than authoring into the chunk's own layer.
+
+    A module with no `commit` is simply skipped -- the hook is opt-in, and the vast
+    majority of chunks have nothing to write.
+
+    Skipping goes through is_blocked() rather than a DISABLED check, which is the same
+    gate the execute dispatch uses: ChunkBase.is_blocked() is true for a DISABLED chunk
+    as well as for one blocked by sitting outside the active view.
+
+    Args:
+        chunks (Iterable[ChunkBase]): The chunks to commit, in any order
+
+    Returns:
+        List[ChunkBase]: The chunks whose commit hook actually ran, in the order it ran
+    """
+    committed: List["ChunkBase"] = []
+
+    for c in commit_order(chunks):
+        if c.is_blocked():
+            continue
+
+        hook = getattr(getattr(c, "_module", None), "commit", None)
+        if not callable(hook):
+            continue
+
+        hook(c)
+        committed.append(c)
+
+    return committed

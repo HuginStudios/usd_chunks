@@ -12,7 +12,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from pxr import Usd, UsdUtils
-from usd_chunks import chunk, chunk_registry, chunk_core
+from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
 from usd_chunks.plugins.chunk_usd import load_chunks, ChunkLayerManager
 
 
@@ -245,6 +245,11 @@ def cmd_run(args):
     if args.params:
         _parse_param_overrides(scene.get_chunks(), args.params)
         _re_execute_roots(scene.get_chunks())
+
+    # The solve has settled, so anything the network declared as an output on disk (an
+    # Export USD chunk, ...) gets written now — before --export/--printout report on the
+    # composed stage.
+    chunk_scheduler.commit_all(scene.get_chunks())
 
     if args.export:
         stage.Export(args.export)

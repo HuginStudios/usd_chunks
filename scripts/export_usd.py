@@ -267,11 +267,19 @@ def _export_flattened(_chunk, stage) -> None:
     print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
 
 
-def export_all(owner, notice, sender):
+def commit(node):
     """Export every real layer in the composed stack to its own file, named after
     the layer's own display name (e.g. an anon layer created with tag "MyEdits"
     exports as "MyEdits.usda") — or, if Flatten into one file is checked, merge
     everything into a single file instead (see _export_flattened).
+
+    This is the chunk's reserved commit() hook — the write-to-disk counterpart to
+    execute(), run once by chunk_scheduler.commit_all after the DAG solve has settled
+    (`usdchunks run` drives it). This chunk has no execute() at all: exporting is not a
+    cook, it is the one thing this chunk exists to do, and doing it on every param touch
+    would rewrite the output directory continuously. The Export button calls straight
+    into here rather than keeping its own copy, so the GUI and headless paths cannot
+    drift apart.
 
     Anon layer identifiers (anon:0x...:tag) only resolve within this session — Export()
     copies subLayerPaths verbatim, so without rewriting them the output files would
@@ -294,7 +302,7 @@ def export_all(owner, notice, sender):
     re-runs execute() to regenerate the content, rather than the file already holding
     a baked-out copy.
     """
-    _chunk = owner.get_chunk()
+    _chunk = node
     stage = _chunk.get_stage() if _chunk else None
     if not stage:
         return
@@ -377,6 +385,13 @@ def export_all(owner, notice, sender):
 
         export_layer.Export(out_path)
         print(f"[ExportUSD] Layer '{name}' exported to {out_path}")
+
+
+def export_all(owner, notice, sender):
+    """Export button callback — delegates to commit(), the same entry point
+    `usdchunks run` uses, so pressing Export produces exactly the file the headless
+    path would write."""
+    commit(owner.get_chunk())
 
 
 def _update_export_visibility(owner):
@@ -645,6 +660,10 @@ def config():
             "skips that layer entirely. Bake chunk outputs checked brings each\n"
             "bookkeeping — the baked result. Unchecked (Procedural) exports the bookkeeping\n"
             "only, leaving each chunk's real content where it already is (not copied in) —\n"
-            "a re-editable recipe; reloading it re-runs execute() to regenerate the content."
+            "a re-editable recipe; reloading it re-runs execute() to regenerate the content.\n"
+            "\n"
+            "Pressing Export is not the only way to run this: the same export happens\n"
+            "headlessly via this chunk's commit() hook, so `usdchunks run` on a network\n"
+            "containing an Export USD chunk writes exactly the same files."
         ),
     )

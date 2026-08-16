@@ -20,9 +20,18 @@ This file starts with the first release; development before that is in the commi
   a job that installs the built wheel into a clean virtualenv.
 - Documentation covering params, groups, and how the runtime works, plus
   `build_docs.bat --share` for publishing the built site to a fileshare or web root.
+- A reserved `commit(node)` chunk hook, for chunks whose real work is writing to disk
+  rather than authoring into the stage. It runs once per chunk that defines it, in
+  topological order, after the DAG solve has settled — where `execute(node)` is the cook
+  and is re-run throughout a solve. Disabled chunks never commit, and a module without
+  the hook is unaffected. Export USD now implements it, and its Export button calls the
+  same function, so the interactive and headless paths cannot drift.
 
 ### Changed
 
+- `usdchunks run` now writes the outputs a network declares on disk: a network containing
+  an Export USD chunk exports its configured files, which it previously did only when the
+  Export button was pressed in the UI. Running a network that declares an export exports.
 - The host integrations moved from a top-level `plugins` package to `usd_chunks.plugins`.
   Anything importing `plugins.chunk_usd` must now import `usd_chunks.plugins.chunk_usd`.
   A top-level package named `plugins` collided with any other distribution shipping one.
