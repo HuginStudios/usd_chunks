@@ -1,0 +1,240 @@
+"""Batch planning — turn one chunk network plus a glob into N independent runs.
+
+The model is Houdini PDG/TOPs, not Solaris For-Each: each matched file becomes its own work
+item that cooks the whole network on its own, one after the other, rather than everything
+being composed into a single stage.
+
+A run is planned from the patterns already stored on the network's Chunk prims. Every
+``inputs:`` attribute holding a glob (scalar ``string`` or ``string[]`` alike) is a pattern
+site. Exactly one of those must resolve to at least one existing file: that one is the
+*driver* and it decides how many runs happen, because an input pattern describes files that
+exist while an output pattern describes files that don't yet. Every other pattern is a *sink*,
+filled from the driver's captures (see ``chunk_glob``).
+
+Patterns are anchored to the network .usda's own directory — standard USD asset-path
+semantics — so neither the network nor the files it writes carry the shell's current
+directory around with them.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+from pxr import Sdf, Usd, Vt
+
+from usd_chunks import chunk_glob, chunk_utils
+from usd_chunks.plugins.chunk_usd import (
+    _CHUNK_PRIM_TYPENAME,
+    _INPUTS_PREFIX,
+    is_exec_input_name,
+)
+
+# A chunkgroup's documentation is prose, not a path — a `*` in it is a bullet point, and
+# treating it as a sink would fail the whole batch on a wildcard-count mismatch.
+_NOT_PATTERNS = {f"{_INPUTS_PREFIX}doc"}
+
+
+class BatchError(Exception):
+    """A batch that cannot be planned — no driver, an ambiguous one, or one matching nothing."""
+
+
+@dataclass(frozen=True)
+class PatternSite:
+    """One glob found on a chunk prim: which attribute holds it, and where inside it."""
+
+    prim_path: str
+    attr_name: str
+    pattern: str
+    index: int | None = None
+
+    @property
+    def chunk_name(self) -> str:
+        return Sdf.Path(self.prim_path).name
+
+    @property
+    def param_name(self) -> str:
+        return self.attr_name[len(_INPUTS_PREFIX):]
+
+    @property
+    def label(self) -> str:
+        """The ``CHUNK.param`` form the user types after ``--driver``."""
+        name = f"{self.chunk_name}.{self.param_name}"
+        return f"{name}[{self.index}]" if self.index is not None else name
+
+
+@dataclass(frozen=True)
+class BatchRun:
+    """One work item: the driver file it cooks, and every concrete value that follows from it."""
+
+    source: str
+    captures: Tuple[str, ...]
+    sink_values: Tuple[Tuple[PatternSite, str], ...] = ()
+    output: str | None = None
+
+
+@dataclass
+class BatchPlan:
+    anchor: Path
+    driver: PatternSite
+    sinks: List[PatternSite] = field(default_factory=list)
+    runs: List[BatchRun] = field(default_factory=list)
+    output_pattern: str | None = None
+
+
+def _is_pattern_value(value: str) -> bool:
+    """A glob, and not an expression — an expression's value is computed from another
+    chunk's param, so overwriting it with a batch path would break the wiring it stands for.
+    """
+    return chunk_glob.is_pattern(value) and not chunk_utils.has_expression(value)
+
+
+def find_pattern_sites(stage: Usd.Stage) -> List[PatternSite]:
+    """Every glob held by an ``inputs:`` attribute on a Chunk prim, in traversal order.
+
+    Scalar and array params are both in scope: a list param is stored as
+    ``string[] inputs:imports:sublayer_path``, and one of its entries is as much a batch
+    input as a plain ``string inputs:file_path`` is.
+    """
+    sites: List[PatternSite] = []
+    for prim in stage.Traverse():
+        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+            continue
+        prim_path = str(prim.GetPath())
+        for attr in sorted(prim.GetAttributes(), key=lambda a: a.GetName()):
+            name = attr.GetName()
+            if not name.startswith(_INPUTS_PREFIX) or is_exec_input_name(name) or name in _NOT_PATTERNS:
+                continue
+            value = attr.Get()
+            if isinstance(value, str):
+                if _is_pattern_value(value):
+                    sites.append(PatternSite(prim_path, name, value))
+            elif isinstance(value, (Vt.StringArray, Vt.TokenArray)):
+                for i, entry in enumerate(value):
+                    if _is_pattern_value(entry):
+                        sites.append(PatternSite(prim_path, name, entry, index=i))
+    return sites
+
+
+def _find_site(sites: List[PatternSite], label: str) -> PatternSite:
+    matches = [s for s in sites if s.label == label]
+    if not matches:
+        known = ", ".join(s.label for s in sites) or "none"
+        raise BatchError(f"--driver {label!r} is not a pattern in this network (patterns: {known})")
+    return matches[0]
+
+
+def select_driver(
+    sites: List[PatternSite], anchor: Path, driver: str | None = None
+) -> Tuple[PatternSite, List[Tuple[str, Tuple[str, ...]]]]:
+    """Pick the one pattern that drives the batch, and return it with its expansion.
+
+    Without ``--driver`` this is decided by the filesystem: whichever pattern actually
+    resolves to files is the input. Two of them resolving is genuinely ambiguous and is a
+    hard error rather than a guess.
+    """
+    if not sites:
+        raise BatchError("no glob patterns found on any Chunk prim — nothing to batch over")
+
+    root = str(anchor)
+    if driver:
+        site = _find_site(sites, driver)
+        matches = chunk_glob.expand(site.pattern, root)
+        if not matches:
+            raise BatchError(f"driver {site.label} ({site.pattern!r}) matched no files under {anchor}")
+        return site, matches
+
+    resolved = [(site, chunk_glob.expand(site.pattern, root)) for site in sites]
+    candidates = [(site, matches) for site, matches in resolved if matches]
+
+    if not candidates:
+        listed = ", ".join(f"{s.label} ({s.pattern!r})" for s in sites)
+        raise BatchError(
+            f"no pattern matched any existing file under {anchor} — one input pattern must "
+            f"resolve to at least one file to drive the batch (tried: {listed})"
+        )
+    if len(candidates) > 1:
+        listed = ", ".join(f"{s.label} ({s.pattern!r}, {len(m)} file(s))" for s, m in candidates)
+        raise BatchError(
+            f"ambiguous driver: {len(candidates)} patterns match existing files — {listed}. "
+            f"Pick one with --driver CHUNK.param"
+        )
+    return candidates[0]
+
+
+def build_plan(
+    stage: Usd.Stage,
+    anchor: Path,
+    output_pattern: str | None = None,
+    driver: str | None = None,
+) -> BatchPlan:
+    """Resolve the network's patterns into a concrete list of runs."""
+    anchor = Path(anchor)
+    sites = find_pattern_sites(stage)
+    driver_site, matches = select_driver(sites, anchor, driver)
+    sinks = [s for s in sites if s != driver_site]
+
+    plan = BatchPlan(anchor=anchor, driver=driver_site, sinks=sinks, output_pattern=output_pattern)
+    for source, captures in matches:
+        sink_values = []
+        for sink in sinks:
+            try:
+                sink_values.append((sink, chunk_glob.substitute(sink.pattern, captures)))
+            except chunk_glob.GlobError as exc:
+                raise BatchError(f"sink {sink.label}: {exc}") from exc
+        output = None
+        if output_pattern:
+            try:
+                output = chunk_glob.substitute(output_pattern, captures)
+            except chunk_glob.GlobError as exc:
+                raise BatchError(f"output pattern: {exc}") from exc
+        plan.runs.append(BatchRun(source, captures, tuple(sink_values), output))
+    return plan
+
+
+def apply_run(stage: Usd.Stage, plan: BatchPlan, run: BatchRun) -> None:
+    """Author this run's concrete paths over their ``inputs:`` attributes in the session layer.
+
+    Session is the strongest opinion in the stack, so ``load_chunks`` reads these back as the
+    params' restored values with no param-name resolution and no difference in handling
+    between a scalar and one entry of an array. Must run before the chunks are loaded.
+    """
+    values: Dict[Tuple[str, str], Dict[int | None, str]] = {}
+    for site, value in ((plan.driver, run.source),) + run.sink_values:
+        values.setdefault((site.prim_path, site.attr_name), {})[site.index] = value
+
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        for (prim_path, attr_name), by_index in values.items():
+            prim = stage.GetPrimAtPath(prim_path)
+            attr = prim.GetAttribute(attr_name) if prim else None
+            if not attr:
+                continue
+            if None in by_index:
+                attr.Set(by_index[None])
+                continue
+            entries = list(attr.Get() or [])
+            for index, value in by_index.items():
+                if index < len(entries):
+                    entries[index] = value
+            attr.Set(Vt.StringArray(entries))
+
+
+def format_plan(plan: BatchPlan, usda: str) -> str:
+    """The header printed before any run starts — the anchor is in it deliberately, since
+    patterns resolving relative to the .usda rather than to the shell's cwd surprises people
+    exactly once."""
+    lines = [
+        f"Batch: {usda}",
+        f"Anchor: {plan.anchor}",
+        f"Driver: {plan.driver.label} = {plan.driver.pattern!r}",
+    ]
+    for sink in plan.sinks:
+        lines.append(f"Sink:   {sink.label} = {sink.pattern!r}")
+    if plan.output_pattern:
+        lines.append(f"Output: {plan.output_pattern!r}")
+    lines.append(f"Runs:   {len(plan.runs)}")
+    for i, run in enumerate(plan.runs, 1):
+        target = f" -> {run.output}" if run.output else ""
+        lines.append(f"  [{i}/{len(plan.runs)}] {run.source}{target}")
+    return "\n".join(lines)

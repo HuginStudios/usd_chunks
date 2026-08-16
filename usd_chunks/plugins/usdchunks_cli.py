@@ -3,16 +3,19 @@ usdchunks CLI — headless execution of chunk networks serialized as .usda files
 
 Usage:
     usdchunks run my_setup.usda [ChunkName.param=value ...]
+    usdchunks batch my_setup.usda -o 'out/*.usda'
     usdchunks info my_setup.usda
 """
 
+import os
 import sys
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from importlib.resources import files
 from pathlib import Path
 
-from pxr import Usd, UsdUtils
+from pxr import Sdf, Usd, UsdUtils
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
+from usd_chunks.plugins import chunk_batch
 from usd_chunks.plugins.chunk_usd import load_chunks, ChunkLayerManager
 
 
@@ -274,6 +277,87 @@ def cmd_run(args):
         print(flat.ExportToString())
 
 
+def _pin_chunk_dirs_to_cwd():
+    """Rewrite relative USD_CHUNK_DIRS entries as absolute ones.
+
+    A batch runs from the network's own directory (see cmd_batch), while chunk module files
+    are opened lazily — long after that move. A relative entry means "relative to where the
+    user typed the command", so it has to be pinned down before the directory changes under it.
+    """
+    raw = os.environ.get("USD_CHUNK_DIRS")
+    if not raw:
+        return
+    os.environ["USD_CHUNK_DIRS"] = os.pathsep.join(
+        str(Path(entry).resolve()) for entry in raw.split(os.pathsep) if entry
+    )
+
+
+def cmd_batch(args):
+    usda = Path(args.usda)
+    anchor = usda.resolve().parent
+    root_layer = Sdf.Layer.FindOrOpen(str(usda))
+    if not root_layer:
+        print(f"Failed to open: {args.usda}")
+        sys.exit(1)
+
+    plan_stage = Usd.Stage.Open(root_layer, Sdf.Layer.CreateAnonymous("batch-plan.usda"))
+    try:
+        plan = chunk_batch.build_plan(plan_stage, anchor, output_pattern=args.export, driver=args.driver)
+    except chunk_batch.BatchError as exc:
+        print(f"{RED}batch: {exc}{RESET}")
+        sys.exit(1)
+
+    print(chunk_batch.format_plan(plan, args.usda))
+    print()
+
+    # Discover chunk modules once, and before the chdir below.
+    _pin_chunk_dirs_to_cwd()
+    registry = chunk_registry.ChunkRegistry()
+    registry.initialize(HeadlessScene(plan_stage), "cli")
+    total = len(plan.runs)
+    # The values authored per run are relative to the anchor, so that neither the network nor
+    # its outputs carry a machine-specific absolute path. A relative asset path in a chunk's
+    # (anonymous) edit layer resolves against the process directory, so the runs happen with
+    # the anchor as the working directory — that, not the shell's cwd, is what a pattern in
+    # this network means.
+    prev_cwd = Path.cwd()
+    os.chdir(anchor)
+    try:
+        for i, run in enumerate(plan.runs, 1):
+            print(f"[{i}/{total}] {run.source}")
+            # Each run cooks the network from scratch (PDG-style), so it gets its own session
+            # layer holding only its own overrides — nothing carries over from the last file.
+            stage = Usd.Stage.Open(root_layer, Sdf.Layer.CreateAnonymous(f"batch-run-{i}.usda"))
+            chunk_batch.apply_run(stage, plan, run)
+
+            scene = HeadlessScene(stage)
+            registry.scene = scene
+            ChunkLayerManager().reset()
+            ChunkLayerManager().initialize(stage)
+            load_chunks(stage, scene)
+            # Every run enters with a param whose value differs from the file's, so the
+            # network is cooked here the same way `run` cooks it after an override.
+            _re_execute_roots(scene.get_chunks())
+
+            if run.output:
+                out_path = anchor / run.output
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                stage.Export(str(out_path))
+                print(f"        -> {out_path}")
+
+            scene.clear()
+            del stage
+            # The network file itself is shared between runs; revert anything a cook dirtied
+            # in it so run N+1 starts from the file as authored, not from run N's leftovers.
+            if root_layer.dirty:
+                root_layer.Reload()
+    finally:
+        os.chdir(prev_cwd)
+
+    print()
+    print(f"{GREEN}Batch complete: {total} run{'s' if total != 1 else ''}.{RESET}")
+
+
 def cmd_plugin_path(args):
     """Print the directory to put on PXR_PLUGINPATH_NAME for a given host.
 
@@ -298,6 +382,7 @@ def main():
             "  usdchunks run setup.usda -o result.usda\n"
             "  usdchunks run setup.usda -p\n"
             "  usdchunks run setup.usda MyChunk.primpath_location=/geo\n"
+            "  usdchunks batch setup.usda -o 'out/*.usda'\n"
             "  usdchunks info setup.usda\n"
             "  usdchunks validate setup.usda -v\n"
             "  usdchunks plugin-path\n"
@@ -327,6 +412,35 @@ def main():
     run_parser.add_argument("params", nargs="*", help="Param overrides: ChunkName.param=value")
     run_parser.add_argument("--export", "-o", metavar="FILE", help="Flatten and export the resulting stage to FILE")
     run_parser.add_argument("--printout", "-p", action="store_true", help="Print the flattened stage to stdout")
+
+    batch_parser = sub.add_parser(
+        "batch",
+        help="Run a chunk network once per file matched by a glob",
+        description=(
+            "Convert a folder of assets by cooking the whole network once per matched file,\n"
+            "one after the other. The network's own params supply the patterns: every\n"
+            "inputs: attribute holding a glob is a pattern, and the single one that resolves\n"
+            "to existing files drives the batch. All other patterns (and -o) are filled from\n"
+            "its captures, left to right, so subfolder structure survives the conversion.\n"
+            "Patterns resolve relative to the .usda's own directory, not the current one."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  usdchunks batch convert.usda -o 'out/*.usda'\n"
+            "  usdchunks batch convert.usda -o 'out/**/*.usda'      # in: assets/**/*.fbx\n"
+            "  usdchunks batch convert.usda --driver Reference.file_path -o 'out/*.usda'\n"
+        ),
+        formatter_class=RawDescriptionHelpFormatter,
+    )
+    batch_parser.add_argument("usda", help="Path to the .usda chunk network file")
+    batch_parser.add_argument(
+        "--export", "-o", metavar="PATTERN",
+        help="Output path pattern; its wildcards are filled from the driver's captures",
+    )
+    batch_parser.add_argument(
+        "--driver", metavar="CHUNK.param",
+        help="Force which pattern drives the batch instead of auto-detecting it",
+    )
 
     info_parser = sub.add_parser(
         "info",
@@ -398,6 +512,8 @@ def main():
 
     if args.command == "run":
         cmd_run(args)
+    elif args.command == "batch":
+        cmd_batch(args)
     elif args.command == "info":
         cmd_info(args)
     elif args.command == "validate":
