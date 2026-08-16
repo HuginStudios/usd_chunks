@@ -272,6 +272,55 @@ def test_array_override_out_of_range(stage):
         apply_overrides(stage, ["Sublayer.imports:sublayer_path[3]=lib/*.usda"])
 
 
+@pytest.mark.parametrize(
+    "text, expected",
+    [("1", True), ("true", True), ("YES", True), ("on", True),
+     ("0", False), ("false", False), ("no", False), ("Off", False)],
+)
+def test_bool_override_is_coerced_not_passed_as_a_string(stage, text, expected):
+    """Everything arrives from argv as a string; a Checkbox param is a bool in USD, and
+    handing it "1" raises a raw type-mismatch exception instead of doing the obvious."""
+    export = _chunk_prim(stage, "/chunks/Export", "export_usd")
+    export.CreateAttribute("inputs:flatten", Sdf.ValueTypeNames.Bool).Set(False)
+
+    apply_overrides(stage, [f"Export.flatten={text}"])
+    assert stage.GetAttributeAtPath("/chunks/Export.inputs:flatten").Get() is expected
+
+
+def test_unreadable_bool_override_is_refused_clearly(stage):
+    export = _chunk_prim(stage, "/chunks/Export", "export_usd")
+    export.CreateAttribute("inputs:flatten", Sdf.ValueTypeNames.Bool).Set(False)
+    with pytest.raises(BatchError, match="true/false"):
+        apply_overrides(stage, ["Export.flatten=perhaps"])
+
+
+def test_numeric_overrides_are_coerced(stage):
+    prim = _chunk_prim(stage, "/chunks/Thing", "thing")
+    prim.CreateAttribute("inputs:count", Sdf.ValueTypeNames.Int).Set(1)
+    prim.CreateAttribute("inputs:scale", Sdf.ValueTypeNames.Float).Set(1.0)
+
+    apply_overrides(stage, ["Thing.count=7", "Thing.scale=2.5"])
+    assert stage.GetAttributeAtPath("/chunks/Thing.inputs:count").Get() == 7
+    assert stage.GetAttributeAtPath("/chunks/Thing.inputs:scale").Get() == pytest.approx(2.5)
+
+
+def test_non_numeric_override_of_a_number_is_refused(stage):
+    prim = _chunk_prim(stage, "/chunks/Thing", "thing")
+    prim.CreateAttribute("inputs:count", Sdf.ValueTypeNames.Int).Set(1)
+    with pytest.raises(BatchError, match="expects int"):
+        apply_overrides(stage, ["Thing.count=lots"])
+
+
+def test_token_array_entry_keeps_its_array_type(stage):
+    """A token[] param rebuilt as a StringArray is a type mismatch, not a conversion."""
+    prim = _chunk_prim(stage, "/chunks/Sublayer", "sublayer")
+    attr = prim.CreateAttribute("inputs:imports:kinds", Sdf.ValueTypeNames.TokenArray)
+    attr.Set(Vt.TokenArray(["a", "b"]))
+
+    apply_overrides(stage, ["Sublayer.imports:kinds[0]=z"])
+    assert list(stage.GetAttributeAtPath("/chunks/Sublayer.inputs:imports:kinds").Get()) == ["z", "b"]
+
+
 def test_override_of_an_unauthored_param_is_refused(network):
     """Type is only knowable from what the network already authored — creating the attribute
     here would guess String for something that might be a float."""

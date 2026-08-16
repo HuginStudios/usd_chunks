@@ -124,6 +124,52 @@ _OVERRIDE_RE = re.compile(
 )
 
 
+_TRUE_WORDS = {"1", "true", "yes", "on"}
+_FALSE_WORDS = {"0", "false", "no", "off"}
+_INT_TYPES = {"int", "int64", "uint", "uint64", "uchar"}
+_FLOAT_TYPES = {"float", "double", "half"}
+
+
+def _coerce(text: str, attr: Usd.Attribute, label: str):
+    """Convert a command-line string to the type the attribute already holds.
+
+    Everything arrives from argv as a string, while a param is only overridable because it
+    is already authored — which is exactly what makes its type knowable here. Without this
+    an override of a Checkbox reaches USD as "1" and raises a raw type-mismatch exception
+    with a traceback, rather than doing what the user plainly meant.
+
+    Args:
+        text (str): The value as typed on the command line
+        attr (Usd.Attribute): The attribute being overridden
+        label (str): The override's CHUNK.param form, for error messages
+
+    Returns:
+        The value converted to the attribute's own type
+
+    Raises:
+        BatchError: The text does not read as a value of that type
+    """
+    type_name = str(attr.GetTypeName())
+    if type_name == "bool":
+        lowered = text.strip().lower()
+        if lowered in _TRUE_WORDS:
+            return True
+        if lowered in _FALSE_WORDS:
+            return False
+        raise BatchError(
+            f"override {label!r} expects a true/false value, got {text!r} "
+            f"(try 1/0, true/false, yes/no, on/off)"
+        )
+    try:
+        if type_name in _INT_TYPES:
+            return int(text)
+        if type_name in _FLOAT_TYPES:
+            return float(text)
+    except ValueError:
+        raise BatchError(f"override {label!r} expects {type_name}, got {text!r}") from None
+    return text
+
+
 def _iter_input_attrs(stage: Usd.Stage):
     """Yield (prim, attr_name, param_name) for every ``inputs:`` attribute on a Chunk prim."""
     for prim in stage.Traverse():
@@ -201,9 +247,11 @@ def apply_overrides(stage: Usd.Stage, overrides: List[str]) -> List[str]:
                             f"({len(entries)} entr(y/ies))"
                         )
                     entries[index] = value
-                    attr.Set(Vt.StringArray(entries))
+                    # Rebuilt as whatever array type it already was — a token[] param set
+                    # from a StringArray is a type mismatch, not a conversion.
+                    attr.Set(type(current)(entries))
                 else:
-                    attr.Set(value)
+                    attr.Set(_coerce(value, attr, label))
                 slot = f"[{index}]" if index is not None else ""
                 applied.append(f"{prim.GetName()}.{want_param}{slot} = {value!r}")
 

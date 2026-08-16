@@ -351,9 +351,11 @@ def _export_flattened(_chunk, stage) -> None:
     else:
         _strip_chunk_prims(flat)
 
-    root_layer = stage.GetRootLayer()
-    source_dir = os.path.dirname(os.path.abspath(root_layer.realPath or root_layer.identifier))
-    gathered = _localize_dependencies(flat, source_dir, output_path)
+    gathered = {}
+    if _chunk.get_param("include_dependencies", chunk.is_param_t(bool)).value:
+        root_layer = stage.GetRootLayer()
+        source_dir = os.path.dirname(os.path.abspath(root_layer.realPath or root_layer.identifier))
+        gathered = _localize_dependencies(flat, source_dir, output_path)
 
     flat.Export(output_path)
     print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
@@ -503,6 +505,7 @@ def _update_export_visibility(owner):
 
     _set_hidden("output_file", not flatten)
     _set_hidden("export_mode", not flatten)
+    _set_hidden("include_dependencies", not flatten)
     _set_hidden("output_dir", flatten)
     _set_hidden("layer_format", flatten)
     _set_hidden("keep_session_layer", flatten)
@@ -599,6 +602,24 @@ def main():
             "Based on Settings: Baked, but leaving in the bookkeeping of chunks whose "
             "target layer is marked Procedural in Layers to Export below (it's already "
             "there, wherever their Edit Target put it).",
+        )
+    )
+
+    chunk_api.add_param(
+        chunk.Checkbox(
+            "include_dependencies",
+            "Include dependencies",
+            default_value=False,
+            tooltip="Off (default): the exported file keeps referencing whatever it "
+            "referenced, by a path anchored to this network — so it resolves only while it "
+            "sits beside the originals.\n\n"
+            "On: every external file it still references is copied into a deps/ folder next "
+            "to the output and the paths are rewritten to point there, making the output "
+            "directory portable — hand it to someone else and it resolves. Copies, never "
+            "moves; the sources are left untouched. Recursive, so a dependency's own "
+            "dependencies come too.\n\n"
+            "Turn this on when converting an asset library, where each output has to stand "
+            "on its own. Shown when Flatten into one file is checked.",
         )
     )
 
