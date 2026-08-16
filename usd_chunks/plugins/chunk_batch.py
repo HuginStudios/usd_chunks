@@ -25,7 +25,7 @@ from typing import Dict, List, Tuple
 
 from pxr import Sdf, Usd, Vt
 
-from usd_chunks import chunk_glob, chunk_utils
+from usd_chunks import chunk, chunk_core as core, chunk_glob, chunk_utils
 from usd_chunks.plugins.chunk_usd import (
     _CHUNK_PRIM_TYPENAME,
     _CHUNK_TYPE_ATTR,
@@ -182,27 +182,174 @@ def _iter_input_attrs(stage: Usd.Stage):
             yield prim, name, name[len(_INPUTS_PREFIX):]
 
 
-def apply_overrides(stage: Usd.Stage, overrides: List[str]) -> List[str]:
-    """Author ``CHUNK.param=value`` command-line overrides into the session layer.
+def split_overrides(overrides: List[str]) -> Tuple[List[str], List[str]]:
+    """Separate overrides that supply a glob from the rest.
 
-    The same override form ``run`` takes, applied here *before* planning rather than after
-    loading, because an override may well be the glob that drives the whole batch — a
-    network is worth reusing across asset folders without editing it. Authoring at the USD
-    level (rather than onto loaded params, as ``run`` does) is what makes that possible, and
-    it costs nothing: ``load_chunks`` reads these back as the params' restored values.
+    The two kinds are applied at different times and for different reasons. A glob has to be
+    on the stage *before* planning, because it may be the pattern that drives the whole
+    batch. Everything else is applied to the loaded params afterwards, where the param
+    exists whether or not USD ever authored it and its real type is known.
+
+    Args:
+        overrides (List[str]): Raw ``CHUNK.param=value`` strings
+
+    Returns:
+        Tuple[List[str], List[str]]: (pattern overrides, plain overrides)
+    """
+    patterns, plain = [], []
+    for override in overrides:
+        _, _, value = override.partition("=")
+        (patterns if chunk_glob.is_pattern(value) else plain).append(override)
+    return patterns, plain
+
+
+def _chunk_prims(stage: Usd.Stage):
+    """Yield every module-backed Chunk prim on the stage."""
+    for prim in stage.Traverse():
+        if prim.GetTypeName() == _CHUNK_PRIM_TYPENAME and prim.GetAttribute(_CHUNK_TYPE_ATTR).Get():
+            yield prim
+
+
+def _create_missing_input(stage: Usd.Stage, want_chunk, want_param: str, label: str):
+    """Create a string ``inputs:`` attr for a param the network never authored.
+
+    Only reached for glob values, so String is the right type rather than a guess. Requires
+    a chunk name: a bare ``param=value`` says which param but not which chunk to invent it
+    on, and picking one would be arbitrary.
+
+    Raises:
+        BatchError: No chunk name given, or no chunk on the stage by that name
+    """
+    if want_chunk is None:
+        known = ", ".join(sorted(p.GetName() for p in _chunk_prims(stage))) or "none"
+        raise BatchError(
+            f"override {label!r} matches no param that the network has authored, and without "
+            f"a chunk name there is nothing to create it on — qualify it, e.g. "
+            f"CHUNK.{want_param}=... (chunks: {known})"
+        )
+
+    for prim in _chunk_prims(stage):
+        if prim.GetName() == want_chunk:
+            attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{want_param}", Sdf.ValueTypeNames.String)
+            return [(prim, attr.GetName())]
+
+    known = ", ".join(sorted(p.GetName() for p in _chunk_prims(stage))) or "none"
+    raise BatchError(f"override {label!r} names no chunk {want_chunk!r} (chunks: {known})")
+
+
+def apply_loaded_overrides(chunks, overrides: List[str]) -> List[str]:
+    """Apply non-glob overrides to loaded params, after the chunks exist.
+
+    Done here rather than on the stage because a param only gets a USD attribute once its
+    value leaves the default, so half the params in a network are simply not there to
+    override — while the loaded chunk has every one of them, carrying its real type.
+
+    Values arrive from argv as strings and are converted from the param's own current value,
+    so a Checkbox override reads 1/0, true/false, yes/no, on/off. Notably not via bool(text),
+    which would make "0" true.
+
+    Args:
+        chunks (Iterable[ChunkBase]): The loaded chunks of this run
+        overrides (List[str]): Non-glob overrides, from split_overrides
+
+    Returns:
+        List[str]: One human-readable line per applied override
+
+    Raises:
+        BatchError: A malformed override, or one naming no param on any chunk
+    """
+    applied: List[str] = []
+    if not overrides:
+        return applied
+
+    every = list(_iter_chunks(chunks))
+    for override in overrides:
+        label, sep, value = override.partition("=")
+        if not sep:
+            raise BatchError(f"malformed override {override!r} — expected CHUNK.param=value")
+
+        m = _OVERRIDE_RE.match(label.strip())
+        if not m:
+            raise BatchError(f"malformed override target {label!r} — expected CHUNK.param=value")
+        want_chunk, want_param = m.group("chunk"), m.group("param")
+
+        hit = False
+        for c in every:
+            if want_chunk is not None and c.name != want_chunk:
+                continue
+            param = c.get_param(want_param, chunk.is_param)
+            if param is None:
+                continue
+            param.value = _coerce_to(value, param, label)
+            applied.append(f"{c.name}.{want_param} = {value!r}")
+            hit = True
+
+        if not hit:
+            known = ", ".join(sorted(c.name for c in every)) or "none"
+            raise BatchError(f"override {label!r} names no param on any chunk (chunks: {known})")
+
+    return applied
+
+
+def _iter_chunks(chunks):
+    """Yield every chunk, descending into ChunkGroups so a nested param is addressable."""
+    for c in chunks:
+        yield c
+        yield from _iter_chunks(
+            [p for p in c.get_my_params() if isinstance(p, core.ChunkBase)]
+        )
+
+
+def _coerce_to(text: str, param, label: str):
+    """Convert a command-line string to the type a loaded param already holds."""
+    current = param.value if param.value is not None else getattr(param, "default_value", None)
+    if isinstance(current, bool):
+        lowered = text.strip().lower()
+        if lowered in _TRUE_WORDS:
+            return True
+        if lowered in _FALSE_WORDS:
+            return False
+        raise BatchError(
+            f"override {label!r} expects a true/false value, got {text!r} "
+            f"(try 1/0, true/false, yes/no, on/off)"
+        )
+    try:
+        if isinstance(current, int):
+            return int(text)
+        if isinstance(current, float):
+            return float(text)
+    except ValueError:
+        raise BatchError(
+            f"override {label!r} expects {type(current).__name__}, got {text!r}"
+        ) from None
+    return text
+
+
+def apply_overrides(stage: Usd.Stage, overrides: List[str]) -> List[str]:
+    """Author glob-valued ``CHUNK.param=value`` overrides into the session layer.
+
+    Applied before planning, because an override may well be the glob that drives the whole
+    batch — a network is worth reusing across asset folders without editing it, and the
+    planner reads patterns off the stage.
+
+    The attribute is created when the network never authored one. A param sitting at its
+    default has no ``inputs:`` attr at all (they are created on first non-default change),
+    so requiring one would refuse exactly the case this exists for: a Reference chunk whose
+    file path was never filled in, pointed at a folder from the command line. Only glob
+    values reach here, and a glob is a path pattern, so String is not a guess.
 
     A bare ``param=value`` applies to every chunk holding a param of that name, matching how
     ``run`` resolves the same form.
 
     Args:
         stage (Usd.Stage): The stage to author onto
-        overrides (List[str]): ``CHUNK.param=value``, ``param=value`` or ``CHUNK.param[i]=value``
+        overrides (List[str]): Glob-valued overrides, from split_overrides
 
     Returns:
         List[str]: One human-readable line per applied override, for the plan header
 
     Raises:
-        BatchError: A malformed override, or one naming no attribute on any Chunk prim
+        BatchError: A malformed override, or one naming no chunk at all
     """
     applied: List[str] = []
     if not overrides:
@@ -226,10 +373,10 @@ def apply_overrides(stage: Usd.Stage, overrides: List[str]) -> List[str]:
                 if param_name == want_param and (want_chunk is None or prim.GetName() == want_chunk)
             ]
             if not hits:
-                raise BatchError(
-                    f"override {label!r} names no param on any Chunk prim — it must already be "
-                    f"authored in the network, so its type is known"
-                )
+                # Nothing authored this param yet. Create it on the named chunk, since a
+                # param left at its default never reaches USD at all and refusing here would
+                # rule out pointing an untouched Reference chunk at a folder.
+                hits = _create_missing_input(stage, want_chunk, want_param, label)
 
             for prim, attr_name in hits:
                 attr = prim.GetAttribute(attr_name)

@@ -300,9 +300,14 @@ def cmd_batch(args):
         print(f"Failed to open: {args.usda}")
         sys.exit(1)
 
+    # Glob overrides have to be on the stage before planning (one may be the driver);
+    # everything else waits until the chunks exist, where a param is present whether or not
+    # USD ever authored it and its real type is known.
+    pattern_params, plain_params = chunk_batch.split_overrides(args.params)
+
     plan_stage = Usd.Stage.Open(root_layer, Sdf.Layer.CreateAnonymous("batch-plan.usda"))
     try:
-        overrides = chunk_batch.apply_overrides(plan_stage, args.params)
+        overrides = chunk_batch.apply_overrides(plan_stage, pattern_params)
         plan = chunk_batch.build_plan(plan_stage, anchor, output_pattern=args.export, driver=args.driver)
     except chunk_batch.BatchError as exc:
         print(f"{RED}batch: {exc}{RESET}")
@@ -334,7 +339,7 @@ def cmd_batch(args):
             stage = Usd.Stage.Open(root_layer, Sdf.Layer.CreateAnonymous(f"batch-run-{i}.usda"))
             # Overrides first, then this run's own values: the driver's concrete path has to
             # land on top of whatever pattern the override put there.
-            chunk_batch.apply_overrides(stage, args.params)
+            chunk_batch.apply_overrides(stage, pattern_params)
             chunk_batch.apply_run(stage, plan, run)
 
             scene = HeadlessScene(stage)
@@ -342,6 +347,13 @@ def cmd_batch(args):
             ChunkLayerManager().reset()
             ChunkLayerManager().initialize(stage)
             load_chunks(stage, scene)
+            # Now that the params exist, apply the overrides that had no attribute to
+            # author onto — before the cook below, so the network cooks with them.
+            try:
+                chunk_batch.apply_loaded_overrides(scene.get_chunks(), plain_params)
+            except chunk_batch.BatchError as exc:
+                print(f"{RED}batch: {exc}{RESET}")
+                sys.exit(1)
             # Every run enters with a param whose value differs from the file's, so the
             # network is cooked here the same way `run` cooks it after an override.
             _re_execute_roots(scene.get_chunks())

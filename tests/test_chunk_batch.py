@@ -13,8 +13,10 @@ from pxr import Sdf, Usd, Vt
 
 from usd_chunks.plugins.chunk_batch import (
     BatchError,
+    apply_loaded_overrides,
     apply_overrides,
     apply_run,
+    split_overrides,
     build_plan,
     check_commit_targets,
     committing_chunks,
@@ -321,11 +323,93 @@ def test_token_array_entry_keeps_its_array_type(stage):
     assert list(stage.GetAttributeAtPath("/chunks/Sublayer.inputs:imports:kinds").Get()) == ["z", "b"]
 
 
-def test_override_of_an_unauthored_param_is_refused(network):
-    """Type is only knowable from what the network already authored — creating the attribute
-    here would guess String for something that might be a float."""
-    with pytest.raises(BatchError, match="names no param"):
-        apply_overrides(network, ["Reference.not_a_param=whatever"])
+def test_glob_override_creates_a_param_the_network_never_authored(stage, asset_tree):
+    """A param sitting at its default has no inputs: attr at all — they are created on first
+    non-default change. Refusing here would rule out the case this feature exists for:
+    pointing an untouched Reference chunk at a folder from the command line."""
+    _chunk_prim(stage, "/chunks/Reference", "reference")
+    assert find_pattern_sites(stage) == []
+
+    apply_overrides(stage, ["Reference.file_path=./assets/*.usda"])
+
+    driver, matches = select_driver(find_pattern_sites(stage), asset_tree)
+    assert driver.label == "Reference.file_path"
+    assert len(matches) == 2
+
+
+def test_creating_a_param_needs_a_chunk_name(stage):
+    """A bare param=value says which param but not which chunk to invent it on."""
+    _chunk_prim(stage, "/chunks/Reference", "reference")
+    with pytest.raises(BatchError, match="qualify it"):
+        apply_overrides(stage, ["file_path=./assets/*.usda"])
+
+
+def test_creating_a_param_on_an_unknown_chunk_lists_the_real_ones(stage):
+    _chunk_prim(stage, "/chunks/Reference", "reference")
+    with pytest.raises(BatchError) as exc:
+        apply_overrides(stage, ["Nope.file_path=./assets/*.usda"])
+    assert "Reference" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# split_overrides / apply_loaded_overrides
+# ---------------------------------------------------------------------------
+
+
+def test_split_separates_globs_from_the_rest():
+    patterns, plain = split_overrides(
+        ["Reference.file_path=a/*.usd", "Export.include_dependencies=1", "P.x=lit"]
+    )
+    assert patterns == ["Reference.file_path=a/*.usd"]
+    assert plain == ["Export.include_dependencies=1", "P.x=lit"]
+
+
+class _Param:
+    def __init__(self, name, value):
+        self.name = name
+        self.value = value
+        self.default_value = value
+
+
+class _LoadedChunk:
+    def __init__(self, name, params):
+        self.name = name
+        self._params = {p.name: p for p in params}
+
+    def get_param(self, name, _predicate=None):
+        return self._params.get(name)
+
+    def get_my_params(self):
+        return tuple(self._params.values())
+
+
+def test_loaded_override_sets_a_bool_without_bool_of_the_string():
+    """bool("0") is True, so converting through the param's own type is the whole point."""
+    c = _LoadedChunk("Export", [_Param("include_dependencies", False)])
+    apply_loaded_overrides([c], ["Export.include_dependencies=1"])
+    assert c.get_param("include_dependencies").value is True
+
+    apply_loaded_overrides([c], ["Export.include_dependencies=0"])
+    assert c.get_param("include_dependencies").value is False
+
+
+def test_loaded_override_reaches_a_param_usd_never_authored():
+    c = _LoadedChunk("Export", [_Param("include_dependencies", False)])
+    assert apply_loaded_overrides([c], ["include_dependencies=true"])
+    assert c.get_param("include_dependencies").value is True
+
+
+def test_loaded_override_naming_nothing_lists_the_chunks():
+    c = _LoadedChunk("Export", [_Param("flatten", True)])
+    with pytest.raises(BatchError) as exc:
+        apply_loaded_overrides([c], ["Export.nope=1"])
+    assert "Export" in str(exc.value)
+
+
+def test_loaded_override_refuses_an_unreadable_bool():
+    c = _LoadedChunk("Export", [_Param("flatten", True)])
+    with pytest.raises(BatchError, match="true/false"):
+        apply_loaded_overrides([c], ["Export.flatten=maybe"])
 
 
 @pytest.mark.parametrize("bad", ["no_equals_sign", "=novalue"])
