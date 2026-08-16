@@ -18,6 +18,7 @@ directory around with them.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -115,6 +116,97 @@ def find_pattern_sites(stage: Usd.Stage) -> List[PatternSite]:
                     if _is_pattern_value(entry):
                         sites.append(PatternSite(prim_path, name, entry, index=i))
     return sites
+
+
+_OVERRIDE_RE = re.compile(
+    r"\A(?:(?P<chunk>[^.=\[\]]+)\.)?(?P<param>[^=\[\]]+)(?:\[(?P<index>\d+)\])?\Z"
+)
+
+
+def _iter_input_attrs(stage: Usd.Stage):
+    """Yield (prim, attr_name, param_name) for every ``inputs:`` attribute on a Chunk prim."""
+    for prim in stage.Traverse():
+        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+            continue
+        for attr in sorted(prim.GetAttributes(), key=lambda a: a.GetName()):
+            name = attr.GetName()
+            if not name.startswith(_INPUTS_PREFIX) or is_exec_input_name(name):
+                continue
+            yield prim, name, name[len(_INPUTS_PREFIX):]
+
+
+def apply_overrides(stage: Usd.Stage, overrides: List[str]) -> List[str]:
+    """Author ``CHUNK.param=value`` command-line overrides into the session layer.
+
+    The same override form ``run`` takes, applied here *before* planning rather than after
+    loading, because an override may well be the glob that drives the whole batch — a
+    network is worth reusing across asset folders without editing it. Authoring at the USD
+    level (rather than onto loaded params, as ``run`` does) is what makes that possible, and
+    it costs nothing: ``load_chunks`` reads these back as the params' restored values.
+
+    A bare ``param=value`` applies to every chunk holding a param of that name, matching how
+    ``run`` resolves the same form.
+
+    Args:
+        stage (Usd.Stage): The stage to author onto
+        overrides (List[str]): ``CHUNK.param=value``, ``param=value`` or ``CHUNK.param[i]=value``
+
+    Returns:
+        List[str]: One human-readable line per applied override, for the plan header
+
+    Raises:
+        BatchError: A malformed override, or one naming no attribute on any Chunk prim
+    """
+    applied: List[str] = []
+    if not overrides:
+        return applied
+
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        for override in overrides:
+            label, _, value = override.partition("=")
+            if not _:
+                raise BatchError(f"malformed override {override!r} — expected CHUNK.param=value")
+
+            m = _OVERRIDE_RE.match(label.strip())
+            if not m:
+                raise BatchError(f"malformed override target {label!r} — expected CHUNK.param=value")
+            want_chunk, want_param = m.group("chunk"), m.group("param")
+            index = int(m.group("index")) if m.group("index") else None
+
+            hits = [
+                (prim, attr_name)
+                for prim, attr_name, param_name in _iter_input_attrs(stage)
+                if param_name == want_param and (want_chunk is None or prim.GetName() == want_chunk)
+            ]
+            if not hits:
+                raise BatchError(
+                    f"override {label!r} names no param on any Chunk prim — it must already be "
+                    f"authored in the network, so its type is known"
+                )
+
+            for prim, attr_name in hits:
+                attr = prim.GetAttribute(attr_name)
+                current = attr.Get()
+                if isinstance(current, (Vt.StringArray, Vt.TokenArray)):
+                    if index is None:
+                        raise BatchError(
+                            f"override {label!r} targets a list param — say which entry, "
+                            f"e.g. {label}[0]={value}"
+                        )
+                    entries = list(current)
+                    if index >= len(entries):
+                        raise BatchError(
+                            f"override {label!r} index {index} is out of range "
+                            f"({len(entries)} entr(y/ies))"
+                        )
+                    entries[index] = value
+                    attr.Set(Vt.StringArray(entries))
+                else:
+                    attr.Set(value)
+                slot = f"[{index}]" if index is not None else ""
+                applied.append(f"{prim.GetName()}.{want_param}{slot} = {value!r}")
+
+    return applied
 
 
 def _find_site(sites: List[PatternSite], label: str) -> PatternSite:

@@ -196,7 +196,13 @@ def strip_dot_slash(pattern: str) -> Tuple[str, str]:
 
 
 def expand(pattern: str, root: str) -> List[Tuple[str, Captures]]:
-    """Existing files under root matching the pattern, as (relative path, captures).
+    """Existing files matching the pattern, as (path, captures).
+
+    A relative pattern is resolved under ``root`` and reported relative to it; an absolute one
+    ignores ``root`` entirely and is reported absolute. Either way the path comes back in the
+    same shape the pattern was written in, since that path is what gets authored back onto the
+    chunk prim — rewriting a relative network into absolute paths, or vice versa, would change
+    what the network means.
 
     Sorted by path so a batch plan is stable run to run. Only files are returned — a pattern
     is how a batch names the things it reads, and it reads files.
@@ -204,9 +210,21 @@ def expand(pattern: str, root: str) -> List[Tuple[str, Captures]]:
     prefix, body = strip_dot_slash(pattern)
     regex = re.compile(to_regex(body))
     results = []
-    for rel in iter_files(root, literal_prefix_dir(body)):
-        m = regex.match(rel)
-        if m:
-            results.append((prefix + rel, tuple(g if g is not None else "" for g in m.groups())))
+
+    if os.path.isabs(body):
+        # The pattern carries its own root, so the walk starts at its literal head and matches
+        # against whole absolute paths. `root` is not consulted at all.
+        base = literal_prefix_dir(body)
+        for rel in iter_files(base):
+            full = f"{base}/{rel}"
+            m = regex.match(full)
+            if m:
+                results.append((full, tuple(g if g is not None else "" for g in m.groups())))
+    else:
+        for rel in iter_files(root, literal_prefix_dir(body)):
+            m = regex.match(rel)
+            if m:
+                results.append((prefix + rel, tuple(g if g is not None else "" for g in m.groups())))
+
     results.sort(key=lambda item: item[0])
     return results

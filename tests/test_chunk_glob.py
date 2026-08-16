@@ -263,3 +263,46 @@ def test_expand_dot_slash_keeps_prefix_on_results(asset_tree) -> None:
 
 def test_expand_dot_slash_on_a_pattern_that_matches_nothing(asset_tree) -> None:
     assert expand("./missing/*.fbx", str(asset_tree)) == []
+
+
+# ---------------------------------------------------------------------------
+# absolute patterns
+#
+# An override on the command line is the natural place to write one
+# (`usdchunks batch net.usda Reference.file_path='/myassets/*.usd'`), and it
+# has to work without regard to where the network file happens to live.
+# ---------------------------------------------------------------------------
+
+
+def test_expand_absolute_pattern_ignores_root(asset_tree) -> None:
+    """An absolute pattern carries its own root, so the anchor is not consulted."""
+    pattern = f"{str(asset_tree).replace(chr(92), '/')}/assets/*.fbx"
+    from_anchor = expand(pattern, str(asset_tree))
+    from_elsewhere = expand(pattern, str(asset_tree / "other"))
+    assert from_anchor == from_elsewhere
+    assert [captures for _, captures in from_anchor] == [("tree",)]
+
+
+def test_expand_absolute_pattern_returns_absolute_paths(asset_tree) -> None:
+    """Shape is preserved: an absolute pattern yields absolute paths, since that is what
+    gets authored back onto the chunk prim."""
+    root = str(asset_tree).replace(chr(92), "/")
+    got = expand(f"{root}/assets/*.fbx", str(asset_tree))
+    assert got == [(f"{root}/assets/tree.fbx", ("tree",))]
+
+
+def test_expand_absolute_globstar(asset_tree) -> None:
+    root = str(asset_tree).replace(chr(92), "/")
+    got = expand(f"{root}/assets/**/*.fbx", str(asset_tree))
+    assert [captures for _, captures in got] == [
+        ("char", "hero"),
+        ("prop", "crate"),
+        ("prop/deep", "bolt"),
+        ("", "tree"),
+    ]
+    assert all(path.startswith(root) for path, _ in got)
+
+
+def test_expand_absolute_pattern_matching_nothing(asset_tree) -> None:
+    root = str(asset_tree).replace(chr(92), "/")
+    assert expand(f"{root}/missing/*.fbx", str(asset_tree)) == []

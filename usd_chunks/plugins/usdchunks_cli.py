@@ -302,11 +302,14 @@ def cmd_batch(args):
 
     plan_stage = Usd.Stage.Open(root_layer, Sdf.Layer.CreateAnonymous("batch-plan.usda"))
     try:
+        overrides = chunk_batch.apply_overrides(plan_stage, args.params)
         plan = chunk_batch.build_plan(plan_stage, anchor, output_pattern=args.export, driver=args.driver)
     except chunk_batch.BatchError as exc:
         print(f"{RED}batch: {exc}{RESET}")
         sys.exit(1)
 
+    for line in overrides:
+        print(f"Set:    {line}")
     print(chunk_batch.format_plan(plan, args.usda))
     print()
 
@@ -328,6 +331,9 @@ def cmd_batch(args):
             # Each run cooks the network from scratch (PDG-style), so it gets its own session
             # layer holding only its own overrides — nothing carries over from the last file.
             stage = Usd.Stage.Open(root_layer, Sdf.Layer.CreateAnonymous(f"batch-run-{i}.usda"))
+            # Overrides first, then this run's own values: the driver's concrete path has to
+            # land on top of whatever pattern the override put there.
+            chunk_batch.apply_overrides(stage, args.params)
             chunk_batch.apply_run(stage, plan, run)
 
             scene = HeadlessScene(stage)
@@ -422,17 +428,28 @@ def main():
             "inputs: attribute holding a glob is a pattern, and the single one that resolves\n"
             "to existing files drives the batch. All other patterns (and -o) are filled from\n"
             "its captures, left to right, so subfolder structure survives the conversion.\n"
-            "Patterns resolve relative to the .usda's own directory, not the current one."
+            "Patterns resolve relative to the .usda's own directory, not the current one.\n"
+            "\n"
+            "Param overrides take the same CHUNK.param=value form as `run`, and are applied\n"
+            "before planning — so an override can supply the glob itself, and one network can\n"
+            "be pointed at a different asset folder without editing it. Quote patterns, or the\n"
+            "shell expands them before usdchunks ever sees them."
         ),
         epilog=(
             "Examples:\n"
             "  usdchunks batch convert.usda -o 'out/*.usda'\n"
             "  usdchunks batch convert.usda -o 'out/**/*.usda'      # in: assets/**/*.fbx\n"
             "  usdchunks batch convert.usda --driver Reference.file_path -o 'out/*.usda'\n"
+            "  usdchunks batch convert.usda Reference.file_path='/myassets/*.usd' \\\n"
+            "                               -o '/myassets/new/*.usda'\n"
         ),
         formatter_class=RawDescriptionHelpFormatter,
     )
     batch_parser.add_argument("usda", help="Path to the .usda chunk network file")
+    batch_parser.add_argument(
+        "params", nargs="*", default=[],
+        help="Param overrides: CHUNK.param=value (applied before planning)",
+    )
     batch_parser.add_argument(
         "--export", "-o", metavar="PATTERN",
         help="Output path pattern; its wildcards are filled from the driver's captures",
