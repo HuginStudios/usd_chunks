@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import weakref
 import zipfile
 
 import pytest
@@ -13,6 +14,8 @@ from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSende
 from usd_chunks.plugins.chunk_usd import (
     _author_prim,
     _CHUNKS_ROOT,
+    _EXEC_INPUT,
+    _EXEC_OUTPUT,
     ChunkStageSync,
     get_chunk_prim_path,
     initialize as init_chunk_usd,
@@ -302,6 +305,109 @@ class TestAMDMaterialXLibraryChildCreation:
         assert [str(p) for p in bind_exec_in.GetConnections()] == [
             f"{get_chunk_prim_path(ref_chunk)}.outputs:chunk"
         ], "Reference must be wired into BindMaterial's exec chain, not left disconnected"
+
+    def test_applied_material_outranks_unrelated_outer_siblings(self, monkeypatch, tmp_path):
+        """End-to-end: Sublayer -> Transform -> AMD -> View (the exact live-reported
+        wiring), picking a material through the push-button flow only -- no manual
+        recook, no dive-in/out. Live-reported: BindMaterial's layer ranked WEAKER than
+        the unrelated Transform/Sublayer siblings, so the original material binding (on
+        the stronger layer) won the composition arc every time the scene recooked --
+        the applied texture visibly reverting to its original.
+
+        connect_exec (used by _download_and_apply to wire Reference -> BindMaterial)
+        must trigger its own recook -- authoring the connection alone doesn't reapply
+        view-driven execution's ranking, unlike ChunkGraphView._author_connection's
+        drag-to-connect path, which always recooks afterward.
+        """
+        stage = Usd.Stage.CreateInMemory()
+
+        class _StageScene(_DummyScene):
+            def get_stage(self):
+                return stage
+
+        scene = _StageScene()
+        chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        init_chunk_usd(stage, scene)
+
+        prim_mod = chunk_registry.ChunkRegistry().get_chunk_module("prim")
+        view_mod = chunk_registry.ChunkRegistry().get_chunk_module("view")
+
+        def _mk(mod):
+            cs = mod.create() if mod.loaded else mod.load()
+            for c in cs:
+                scene.add_chunk(c)
+            return cs[0]
+
+        def _wire(dst, src):
+            p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+            a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+            a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+        sublayer = _mk(prim_mod)
+        transform = _mk(prim_mod)
+        _wire(transform, sublayer)
+
+        c = self.mod.main()
+        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c.get_param("target_primpath").value = "/geo/mesh"
+        c.get_param("mat_scope").value = "/materials"
+        c.get_param("cache_dir").value = str(tmp_path)
+        scene.add_chunk(c)
+        _wire(c, transform)
+        view = _mk(view_mod)
+        _wire(view, c)
+
+        self.mod._results_by_title["Gold"] = {
+            "title": "Gold", "packages": ["pkg1"], "mtlx_material_name": "Gold",
+        }
+        monkeypatch.setattr(
+            self.mod, "_pick_package",
+            lambda package_ids, resolution: {"file_url": "http://fake/pkg.zip", "label": "2k"},
+        )
+        monkeypatch.setattr(
+            self.mod.requests, "get",
+            lambda url, timeout=120: _FakeZipResponse(self._fake_zip_bytes()),
+        )
+        c.get_param("picked_title").value = "Gold"
+        self.mod.execute(c)
+
+        ref_chunk = c.get_param("Reference", chunk.is_inst(chunk.Chunk))
+        bind_chunk = c.get_param("BindMaterial", chunk.is_inst(chunk.Chunk))
+        assert ref_chunk is not None and bind_chunk is not None
+
+        # Mirror _ensure_default_view (Qt-side, not exercised here): a subnet's first
+        # dive-in auto-creates its own inner view wired to whatever tail it finds.
+        weak_ctx = weakref.ref(c)
+        scene._current_context = weak_ctx
+        inner_view = _mk(view_mod)
+        scene._current_context = None
+        _wire(inner_view, bind_chunk)
+
+        # Re-apply (the user re-picking, or picking for the first time with the inner
+        # view already in place) is what re-triggers connect_exec's own recook.
+        c.get_param("picked_title").value = ""
+        c.get_param("picked_title").value = "Gold"
+        self.mod.execute(c)
+
+        lm = chunk_registry.ChunkLayerManager()
+        idents = {
+            "sublayer": lm.get_layer(sublayer).identifier,
+            "transform": lm.get_layer(transform).identifier,
+            "grp": lm.get_layer(c).identifier,
+            "reference": lm.get_layer(ref_chunk).identifier,
+            "bind_material": lm.get_layer(bind_chunk).identifier,
+        }
+        g_layer = next(
+            (gl for gl in lm.graph_layers.values() if set(idents.values()) <= set(gl.subLayerPaths)),
+            None,
+        )
+        assert g_layer is not None, "test setup must be faithful -- everything must share one graph layer"
+        order = list(g_layer.subLayerPaths)
+        idx = {name: order.index(ident) for name, ident in idents.items()}
+        assert idx["bind_material"] < idx["reference"] < idx["grp"] < idx["transform"] < idx["sublayer"], (
+            f"BindMaterial's binding must outrank the unrelated Transform/Sublayer siblings "
+            f"(index 0 = strongest), got {idx}"
+        )
 
     def test_child_chunk_prims_authored_in_session_layer(self, monkeypatch, tmp_path):
         """Child chunk prims (Reference, BindMaterial) created inside execute()
