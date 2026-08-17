@@ -2431,17 +2431,15 @@ def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: s
     exec-only path of ChunkGraphView._author_connection; does not handle typed param
     connections or merge chunks' numbered inputs:chunkN slots, neither of which this needs.
 
-    Also mirrors _author_connection's own explicit recook afterward -- authoring the
-    connection alone does not re-apply view-driven execution's "closer to view wins"
-    layer ranking to it, so without this a headless-created wire stayed correctly
-    connected but never actually took its rightful position in the composed result until
-    something else happened to trigger a recook (live-reported: AMD MaterialX Library's
-    Reference/BindMaterial children stayed ranked below unrelated siblings even after
-    being wired together, because nothing had recooked since). Prefers a full recook
-    through the nearest downstream view (covers both the destination's own context and
-    everything above it, recursively); falls back to just the destination's own context
-    if no view is reachable yet, so a chunk's own internal ordering is still correct even
-    before it's wired all the way out to a view.
+    Deliberately does NOT also trigger a recook the way _author_connection does for a
+    live drag-to-connect: figuring out which view (if any) is safe to recook through from
+    inside a headless caller, without touching mute/block state anywhere it doesn't have
+    full information about, turned out to be its own source of bugs (muting unrelated
+    scene content, or the chunk just wired itself, depending on what existed nearby at the
+    time). Simpler and safer to just author the connection correctly here and let the
+    caller's own next real recook (a view switch, another wire, diving into the context)
+    pick it up -- which it will, now that the connection and the layer-ranking logic
+    downstream of it are both correct.
 
     Returns the authored inputs:chunk attribute, or None if either prim couldn't be
     resolved.
@@ -2461,24 +2459,6 @@ def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: s
     with Usd.EditContext(stage, target):
         dst_attr.SetConnections([src_conn_path])
     reconcile_edit_targets(stage, scene)
-    if dst_chunk is not None:
-        # recook_for_view directly, NOT recook_focus -- recook_focus additionally mutes
-        # + blocks everything OUTSIDE the given context first, which is "user just
-        # switched focus to this group" semantics (the whole viewport should show only
-        # what's inside it). This is a quiet background refresh after wiring one
-        # connection, not a focus change -- it must never touch anything outside the
-        # scope it actually has information about.
-        downstream_view = find_downstream_view(dst_chunk, stage, scene)
-        if downstream_view is not None:
-            # Scope to wherever the found view actually lives -- root-level (context
-            # None) means escalation reached all the way out, so a full recook is
-            # correct. Still nested in a context (escalation found nothing further)
-            # means only THAT context's own subnet is known-good.
-            recook_for_view(stage, scene, downstream_view.get_context(), downstream_view)
-        else:
-            ctx = dst_chunk.get_context()
-            if ctx is not None:
-                recook_for_view(stage, scene, ctx, find_group_active_view(ctx, stage, scene))
     return dst_attr
 
 
@@ -3036,62 +3016,6 @@ def recook_focus(
             if layer is not None:
                 stage.MuteLayer(layer.identifier)
     recook_for_view(stage, scene, context, view_chunk)
-
-
-def find_downstream_view(
-    chunk: "core.ChunkBase", stage: "Usd.Stage", scene: "core.SceneSender"
-) -> "core.ChunkBase | None":
-    """Walk forward from chunk via outputs:chunk to the outermost reachable view chunk, if any.
-
-    A headless caller that authors a fresh exec connection (connect_exec) has no Qt
-    _view_state to consult for "what view is currently active" -- but a view directly or
-    transitively downstream of the chunk it just wired IS the one the connection actually
-    feeds, and recooking through it is what applies view-driven execution's "closer to
-    view wins" ranking to the new wiring, exactly as ChunkGraphView._author_connection's
-    own explicit recook does for a live drag-to-connect.
-
-    The first view found forward from chunk may itself be nested inside a group (e.g. a
-    chunkgroup's own inner view) -- a view chunk is a dead end for the exec walk (nothing
-    is wired downstream of a view's own output), but the GROUP it belongs to can still be
-    wired further out, same as any other node. So escalate: once a view is found, if it
-    belongs to a context, keep walking forward from that context (the group-as-a-node)
-    instead of stopping, until reaching a view with no further context (root-level) or
-    running out of forward connections. Returns None if nothing downstream is (yet)
-    reachable from any view at all.
-    """
-    prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
-
-    def _forward_view(start: "core.ChunkBase") -> "core.ChunkBase | None":
-        seen = {get_chunk_prim_path(start)}
-        frontier = list(seen)
-        while frontier:
-            out_path = f"{frontier.pop()}.{_EXEC_OUTPUT}"
-            for prim in stage.Traverse():
-                if not any(str(conn) == out_path for conn in exec_input_connections(prim)):
-                    continue
-                consumer_path = str(prim.GetPath())
-                if consumer_path in seen:
-                    continue
-                seen.add(consumer_path)
-                consumer = prim_to_chunk.get(consumer_path)
-                if consumer is None:
-                    continue
-                if is_view_chunk(consumer):
-                    return consumer
-                frontier.append(consumer_path)
-        return None
-
-    current = chunk
-    best: "core.ChunkBase | None" = None
-    while True:
-        found = _forward_view(current)
-        if found is None:
-            return best
-        best = found
-        ctx = found.get_context()
-        if ctx is None:
-            return best
-        current = ctx
 
 
 def get_exec_tail_chunks(
