@@ -11,7 +11,7 @@ import logging
 import re
 import weakref
 from pathlib import Path
-from typing import Generator, Tuple
+from typing import Generator, Iterable, Tuple
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
@@ -2907,13 +2907,37 @@ def recook_for_view(
         layer = lm.get_layer(c)
         if layer is not None:
             ident_rank[layer.identifier] = rank[id(c)]
-    for g_layer in lm.graph_layers.values():
-        ordered = sorted(
-            g_layer.subLayerPaths,
-            key=lambda ident: ident_rank.get(ident, -1),
-            reverse=True,
-        )
-        if list(g_layer.subLayerPaths) != ordered:
+    _reorder_graph_layers_by_rank(lm.graph_layers.values(), ident_rank)
+
+
+def _reorder_graph_layers_by_rank(graph_layers: "Iterable[Sdf.Layer]", ident_rank: dict) -> None:
+    """Reposition each graph layer's sublayers so higher-ranked idents (per ident_rank)
+    come first (subLayerPaths[0] = strongest).
+
+    A chunkgroup's own children share their parent's physical graph layer -- "chunkgroups
+    are subnets, not spatial containers" -- so the SAME graph layer gets this treatment
+    once per context, recursively: a group's own inner recook runs first and ranks its
+    children by proximity to ITS view, then this same step runs again for the OUTER
+    context, whose ident_rank knows nothing about those children at all. A global sort
+    keyed on ident_rank.get(ident, -1) shoves every ident a given call doesn't recognize
+    to the single weakest position, silently destroying a more specific call's ordering
+    underneath it (live-reported: a chunkgroup's own content ranked weaker than its
+    unrelated siblings in the same tab).
+
+    Only reposition idents this call actually has a rank for, among the slots they
+    collectively occupy -- everything else (including a nested group's own children)
+    stays exactly where a more specific call already put it.
+    """
+    for g_layer in graph_layers:
+        current = list(g_layer.subLayerPaths)
+        slots = [i for i, ident in enumerate(current) if ident in ident_rank]
+        if not slots:
+            continue
+        ranked = sorted((current[i] for i in slots), key=lambda ident: ident_rank[ident], reverse=True)
+        ordered = list(current)
+        for slot, ident in zip(slots, ranked):
+            ordered[slot] = ident
+        if ordered != current:
             g_layer.subLayerPaths = ordered  # type: ignore
 
 

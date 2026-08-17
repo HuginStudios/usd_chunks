@@ -16,6 +16,7 @@ from usd_chunks.plugins.chunk_usd import (
     _INPUTS_PREFIX,
     _author_prim,
     _load_wire_inputs,
+    _reorder_graph_layers_by_rank,
     ChunkStageSync,
     export_chunks,
     initialize as _chunk_usd_init,
@@ -2041,6 +2042,39 @@ def test_recook_recurses_into_group() -> None:
 
     recook_for_view(stage, scene, _Root(), None)
     assert inner_node.is_blocked()  # group hidden → inner tree muted
+
+
+def test_reorder_graph_layers_leaves_unranked_idents_where_they_were() -> None:
+    """Live-reported: a chunkgroup's own content (Reference/BindMaterial, closest to its
+    inner view) ranked WEAKER than unrelated sibling chunks in the same tab (Transform,
+    Sublayer), even though those siblings have nothing to do with the group's exec chain.
+
+    A chunkgroup's own children share their parent's physical graph layer, so this SAME
+    layer's subLayerPaths gets reordered once per context, recursively: the group's own
+    inner recook runs first and correctly ranks its children by proximity to ITS view, but
+    the OUTER context's own recook then runs the SAME reorder over the SAME layer with an
+    ident_rank that knows nothing about those children -- a global sort defaulting unknown
+    idents to the single weakest rank silently stomped the inner call's ordering.
+
+    _reorder_graph_layers_by_rank must only move idents it has a rank for, leaving every
+    other ident (a nested group's own children, an entirely unrelated chunk) exactly where
+    a more specific call already put it.
+    """
+    layer = Sdf.Layer.CreateAnonymous("graph_test")
+    layer.subLayerPaths = ["unrelated_a", "known_weak", "known_strong", "unrelated_b"]
+
+    # This call only knows about two of the four idents -- as the outer context's own
+    # recook would, when the other two belong to a nested group's inner cook_list instead.
+    _reorder_graph_layers_by_rank([layer], {"known_weak": 0, "known_strong": 1})
+
+    result = list(layer.subLayerPaths)
+    assert result.index("known_strong") < result.index("known_weak"), (
+        "higher-ranked ident must end up strongest (earlier) among the ranked idents"
+    )
+    assert result[0] == "unrelated_a" and result[3] == "unrelated_b", (
+        "idents this call has no rank for must stay in their original slots, not get "
+        "shoved to the bottom by a default rank"
+    )
 
 
 def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode() -> None:
