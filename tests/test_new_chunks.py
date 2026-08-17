@@ -331,12 +331,17 @@ class TestAMDMaterialXLibraryChildCreation:
         c.get_param("picked_title").value = "Gold"
         self.mod.execute(c)
 
-        # The child chunk prims must exist in the user's persistent edit layer
-        # (the root layer for a default in-memory stage), not in AMD's anonymous
-        # execute layer which is Clear()ed on every execute() run.
-        root_layer = stage.GetRootLayer()
-        ref_spec = root_layer.GetPrimAtPath(Sdf.Path("/chunks/AMDMaterialXLibrary/Reference"))
-        bind_spec = root_layer.GetPrimAtPath(Sdf.Path("/chunks/AMDMaterialXLibrary/BindMaterial"))
+        # The child chunk prims must exist in the user's persistent edit layer -- the
+        # session layer by default (get_bookkeeping_layer's fallback for a CONTEXT chunk,
+        # which AMD is) -- not in AMD's anonymous execute layer, which is Clear()ed on
+        # every execute() run. Previously checked stage.GetRootLayer() here, which a bare
+        # Usd.Stage.CreateInMemory() never authors bookkeeping into at all; that
+        # mismatch silently failed this test regardless of whether the real bug (below)
+        # was present, so it never actually caught it.
+        session_layer = stage.GetSessionLayer()
+        amd_layer = c.get_edit_context()
+        ref_spec = session_layer.GetPrimAtPath(Sdf.Path("/chunks/AMDMaterialXLibrary/Reference"))
+        bind_spec = session_layer.GetPrimAtPath(Sdf.Path("/chunks/AMDMaterialXLibrary/BindMaterial"))
 
         assert ref_spec is not None, (
             "Reference chunk prim must be authored in the user edit layer — "
@@ -346,3 +351,104 @@ class TestAMDMaterialXLibraryChildCreation:
             "BindMaterial chunk prim must be authored in the user edit layer — "
             "it was likely written to AMD's anonymous execute layer instead"
         )
+        assert amd_layer.GetPrimAtPath(Sdf.Path("/chunks/AMDMaterialXLibrary/Reference")) is None, (
+            "Reference chunk prim must NOT also exist in AMD's own anonymous execute "
+            "layer -- that layer is Clear()ed on every execute() run"
+        )
+
+    def test_own_params_survive_save_and_reload(self, monkeypatch, tmp_path):
+        """Live-reported: "the AMD MaterialX chunk doesn't get saved settings at all
+        when we save the scene."
+
+        The child chunk prims (previous test) were never the problem -- they already
+        round-tripped correctly. AMD's OWN direct params (Picked Material, Material
+        Path, Prim Path, Material Scope) did not: load_chunks' CONTEXT-chunk branch
+        added the freshly-reconstructed chunk to the scene without first calling
+        _load_wire_inputs (the other two branches in the same function both do), so
+        every one of AMD's own params silently reverted to its default on reload --
+        even though the saved file correctly held their real values the whole time.
+        AMD uses GroupFlags.CONTEXT purely for its collapsible/embedded-widget node
+        styling, not because it is a structural Tab/ChunkGroup with nothing of its own
+        to restore, which is what made this gap invisible for every OTHER CONTEXT
+        chunk in the project.
+        """
+        from usd_chunks.plugins.chunk_usd import load_chunks, save_scene
+
+        stage = Usd.Stage.CreateInMemory()
+
+        class _StageScene(_DummyScene):
+            def get_stage(self):
+                return stage
+
+        scene = _StageScene()
+        chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        init_chunk_usd(stage, scene)
+
+        c = self.mod.main()
+        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c.get_param("target_primpath").value = "/geo/mesh"
+        c.get_param("mat_scope").value = "/materials"
+        c.get_param("cache_dir").value = str(tmp_path)
+        scene.add_chunk(c)
+
+        gold = {"title": "Gold", "packages": ["pkg1"], "mtlx_material_name": "Gold"}
+        self.mod._results_by_title["Gold"] = gold
+        monkeypatch.setattr(
+            self.mod,
+            "_pick_package",
+            lambda package_ids, resolution: {"file_url": "http://fake/pkg.zip", "label": "2k"},
+        )
+        monkeypatch.setattr(
+            self.mod.requests,
+            "get",
+            lambda url, timeout=120: _FakeZipResponse(self._fake_zip_bytes()),
+        )
+        c.get_param("picked_title").value = "Gold"
+        self.mod.execute(c)
+
+        out = tmp_path / "scene.usda"
+        save_scene(scene, out)
+
+        stage2 = Usd.Stage.Open(str(out))
+
+        class _StageScene2(_DummyScene):
+            def get_stage(self):
+                return stage2
+
+        scene2 = _StageScene2()
+        chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
+        # Restoring picked_title correctly now (the fix under test) makes AMD's
+        # reserved execute() hook -- and the CHUNK_LOADED-driven catalog fetch --
+        # fire for real on reload, same as a genuine reopen. Both would otherwise
+        # re-run the whole download-and-apply flow (already covered by
+        # test_download_and_apply_creates_reference_and_bind_children) on a real
+        # background thread; this test only cares whether the saved VALUES came back,
+        # so stand both down rather than mock the network two levels deep.
+        #
+        # self.mod is NOT the module load_chunks' reconstruction actually runs: the
+        # registry resolves chunk modules by the short config name ("examples.Foo"),
+        # while this test file imported the same source under a different
+        # sys.modules key ("scripts.examples.Foo") via _load(). Those are two
+        # distinct module objects with independent globals, so patches on self.mod
+        # are invisible to code executing as the registry's copy -- reach through
+        # the registry to patch the module identity that will actually run.
+        registry_mod = chunk_registry.ChunkRegistry().get_chunk_module("examples.AMDMaterialXLibrary").module
+        monkeypatch.setattr(registry_mod, "_on_chunk_loaded", lambda owner, notice, sender: None)
+        monkeypatch.setattr(registry_mod, "execute", lambda node: None)
+        init_chunk_usd(stage2, scene2)
+        load_chunks(stage2, scene2)
+
+        reloaded = next(
+            (
+                ch
+                for ch in scene2.get_chunks()
+                if (cfg := ch.get_config()) and cfg.module == "examples.AMDMaterialXLibrary"
+            ),
+            None,
+        )
+        assert reloaded is not None, "AMD chunk was not reconstructed on reload at all"
+
+        assert reloaded.get_param("target_primpath").value == "/geo/mesh"
+        assert reloaded.get_param("mat_scope").value == "/materials"
+        assert reloaded.get_param("picked_title").value == "Gold"
+        assert reloaded.get_param("resolved_material_path").value == "/materials/Gold"

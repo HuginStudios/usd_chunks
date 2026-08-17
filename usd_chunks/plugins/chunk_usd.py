@@ -3249,6 +3249,19 @@ def load_chunks(
                         # wiring below into a cyclic DAG from a perfectly linear file.
                         c.name = prim.GetName()
                         if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                            # Restore saved param values before scene.add_chunk, same as the
+                            # other two branches below -- a CONTEXT chunk is usually pure
+                            # structural scaffolding (a Tab/ChunkGroup) with nothing of its
+                            # own worth restoring, but one that ALSO has a real backing module
+                            # (e.g. AMD MaterialX Library, which uses CONTEXT purely for its
+                            # collapsible/embedded-widget node styling) can carry a full set of
+                            # its own inputs: attrs, and those were silently dropped here --
+                            # every param reverted to its default on reload, live-reported as
+                            # "settings don't get saved" even though the file correctly held
+                            # them (confirmed: inputs:picked_title etc. were present in the
+                            # saved layer the whole time; only the read-back on load was
+                            # missing).
+                            _load_wire_inputs(prim, c)
                             c.prim_path = str(prim.GetPath())
                             object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                             scene.add_chunk(c)
