@@ -154,12 +154,186 @@ class TestRenderSettings:
         assert not UsdRender.Settings.GetStageRenderSettings(stage)
 
 
+class _FakeRecorder:
+    """Stands in for UsdAppUtils.FrameRecorder, which the usd-core wheels do not ship."""
+
+    def __init__(self, succeed=True):
+        self.succeed = succeed
+        self.calls = []
+        self.plugin = None
+        self.width = None
+        self.complexity = None
+        self.deleted = False
+
+    def SetRendererPlugin(self, plugin):
+        self.plugin = plugin
+
+    def SetImageWidth(self, width):
+        self.width = width
+
+    def SetComplexity(self, complexity):
+        self.complexity = complexity
+
+    def SetColorCorrectionMode(self, mode):
+        self.mode = mode
+
+    def Record(self, stage, camera, time_code, path):
+        self.calls.append((time_code.GetValue(), path))
+        return self.succeed
+
+    def DeleteGLResources(self):
+        self.deleted = True
+
+
+class TestFrameSpec:
+    """usdrecord-style frame specs, parsed here rather than shelled out for."""
+
+    def test_empty_spec_means_a_single_default_render(self):
+        mod = importlib.import_module("scripts.render")
+        assert mod.parse_frames("") == []
+        assert mod.parse_frames("   ") == []
+
+    def test_single_frame_and_list(self):
+        mod = importlib.import_module("scripts.render")
+        assert mod.parse_frames("7") == [7.0]
+        assert mod.parse_frames("1,3,5") == [1.0, 3.0, 5.0]
+
+    def test_range_is_inclusive(self):
+        mod = importlib.import_module("scripts.render")
+        assert mod.parse_frames("1:4") == [1.0, 2.0, 3.0, 4.0]
+
+    def test_strided_range(self):
+        mod = importlib.import_module("scripts.render")
+        assert mod.parse_frames("1:9x4") == [1.0, 5.0, 9.0]
+
+    def test_backwards_range_is_rejected(self):
+        import pytest
+        mod = importlib.import_module("scripts.render")
+        with pytest.raises(ValueError):
+            mod.parse_frames("10:2")
+
+    def test_non_positive_stride_is_rejected(self):
+        import pytest
+        mod = importlib.import_module("scripts.render")
+        with pytest.raises(ValueError):
+            mod.parse_frames("1:10x0")
+
+
+class TestOutputPathFormatting:
+    def test_hashes_pad_to_their_own_width(self):
+        mod = importlib.import_module("scripts.render")
+        assert mod.format_output_path("beauty.####.exr", 12) == "beauty.0012.exr"
+        assert mod.format_output_path("beauty.##.exr", 7) == "beauty.07.exr"
+
+    def test_frame_field_is_substituted(self):
+        mod = importlib.import_module("scripts.render")
+        assert mod.format_output_path("beauty.{frame}.exr", 12) == "beauty.12.exr"
+
+    def test_path_untouched_without_a_frame(self):
+        mod = importlib.import_module("scripts.render")
+        assert mod.format_output_path("beauty.####.exr", None) == "beauty.####.exr"
+
+
+class TestHydraMode:
+    """The default path: render the composed stage in process, no staging, no PATH."""
+
+    def _hydra_rop(self, monkeypatch, recorder=None):
+        scene, stage = _setup_stage()
+        _render_network(scene)
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Hydra"
+
+        from pxr import UsdGeom
+        UsdGeom.Camera.Define(stage, "/cameras/shotcam")
+
+        fake = recorder or _FakeRecorder()
+        monkeypatch.setattr(mod, "_hydra_available", lambda: True)
+        monkeypatch.setattr(mod, "_make_recorder", lambda _n: fake)
+        return mod, rop, fake, stage
+
+    def test_records_one_frame_by_default(self, monkeypatch, tmp_path):
+        mod, rop, fake, _stage = self._hydra_rop(monkeypatch)
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+
+        mod.commit(rop)
+
+        assert len(fake.calls) == 1
+        assert fake.calls[0][1] == str(tmp_path / "beauty.png")
+
+    def test_records_every_frame_in_the_spec(self, monkeypatch, tmp_path):
+        mod, rop, fake, _stage = self._hydra_rop(monkeypatch)
+        rop.get_param("output_image").value = str(tmp_path / "beauty.####.png")
+        rop.get_param("frames").value = "1:3"
+
+        mod.commit(rop)
+
+        assert [c[0] for c in fake.calls] == [1.0, 2.0, 3.0]
+        assert [c[1].endswith(n) for c, n in zip(fake.calls, ("0001.png", "0002.png", "0003.png"))]
+
+    def test_never_shells_out(self, monkeypatch, tmp_path):
+        """The whole point of the default mode — no subprocess, no PATH lookup."""
+        mod, rop, _fake, _stage = self._hydra_rop(monkeypatch)
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+
+        called = []
+        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: called.append(a))
+        mod.commit(rop)
+
+        assert not called
+
+    def test_gl_resources_released_even_when_recording_fails(self, monkeypatch, tmp_path):
+        mod, rop, fake, _stage = self._hydra_rop(monkeypatch, _FakeRecorder(succeed=False))
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+
+        mod.commit(rop)
+
+        assert fake.deleted
+        assert not rop.get_param("output").value
+
+    def test_missing_camera_is_reported(self, monkeypatch, tmp_path):
+        scene, _stage = _setup_stage()
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Hydra"
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+
+        fake = _FakeRecorder()
+        monkeypatch.setattr(mod, "_hydra_available", lambda: True)
+        monkeypatch.setattr(mod, "_make_recorder", lambda _n: fake)
+
+        mod.commit(rop)
+        assert not fake.calls, "should bail before recording when there is no camera"
+
+    def test_falls_back_to_command_without_usdapputils(self, monkeypatch, tmp_path):
+        """A build that cannot render in process should still render, not refuse."""
+        scene, _stage = _setup_stage()
+        _render_network(scene)
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Hydra"
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+
+        monkeypatch.setattr(mod, "_hydra_available", lambda: False)
+        monkeypatch.setattr(mod, "_resolve_command", lambda _c: ["usdrecord"])
+        calls = []
+        monkeypatch.setattr(
+            mod.subprocess, "run",
+            lambda argv, **k: (calls.append(argv), types.SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+        )
+
+        mod.commit(rop)
+        assert calls, "should have fallen back to the command path"
+
+
 class TestRenderRop:
     """The ROP authors nothing and renders in commit()."""
 
     def _rop(self, scene):
         mod = importlib.import_module("scripts.render")
-        return mod, _make(scene, mod, "render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Command"
+        return mod, rop
 
     def test_execute_authors_nothing(self):
         scene, stage = _setup_stage()
@@ -204,7 +378,9 @@ class TestRenderRop:
         rop.get_param("image_width").value = 512
         rop.get_param("extra_args").value = "--complexity high"
 
-        monkeypatch.setattr(mod.shutil, "which", lambda _cmd: "/usr/bin/usdrecord")
+        # Command resolution has its own tests; pin it here so this one is only
+        # about how the flags are assembled.
+        monkeypatch.setattr(mod, "_resolve_command", lambda _cmd: ["usdrecord"])
         captured = {}
 
         def _fake_run(argv, **kwargs):
@@ -271,6 +447,82 @@ class TestRenderRop:
         assert not rop.get_param("output").value
 
 
+class TestRenderCommandResolution:
+    """USD ships usdrecord as an extension-less Python script. shutil.which finds it,
+    but Windows cannot CreateProcess a file it has no association for — which failed
+    with WinError 2 while the tool was plainly installed."""
+
+    def test_extension_less_script_runs_through_the_interpreter(self, monkeypatch):
+        import sys
+        mod = importlib.import_module("scripts.render")
+        monkeypatch.setattr(mod.os, "name", "nt")
+        monkeypatch.setattr(mod.shutil, "which", lambda _c: r"C:\USD\bin\usdrecord")
+
+        assert mod._resolve_command("usdrecord") == [sys.executable, r"C:\USD\bin\usdrecord"]
+
+    def test_exe_runs_directly(self, monkeypatch):
+        mod = importlib.import_module("scripts.render")
+        monkeypatch.setattr(mod.os, "name", "nt")
+        monkeypatch.setattr(mod.shutil, "which", lambda _c: r"C:\USD\bin\usdrecord.exe")
+
+        assert mod._resolve_command("usdrecord") == [r"C:\USD\bin\usdrecord.exe"]
+
+    def test_py_script_runs_through_the_interpreter_on_any_platform(self, monkeypatch):
+        import sys
+        mod = importlib.import_module("scripts.render")
+        monkeypatch.setattr(mod.os, "name", "posix")
+        monkeypatch.setattr(mod.shutil, "which", lambda _c: "/usr/bin/usdrecord.py")
+
+        assert mod._resolve_command("usdrecord") == [sys.executable, "/usr/bin/usdrecord.py"]
+
+    def test_missing_command_resolves_to_none(self, monkeypatch):
+        mod = importlib.import_module("scripts.render")
+        monkeypatch.setattr(mod.shutil, "which", lambda _c: None)
+
+        assert mod._resolve_command("nope") is None
+
+    def test_spawn_failure_is_logged_not_raised(self, monkeypatch):
+        """The Render button dispatches through the notice system, where an exception
+        kills the callback instead of telling the user anything useful."""
+        scene, _stage = _setup_stage()
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Command"
+
+        monkeypatch.setattr(mod, "_resolve_command", lambda _c: ["usdrecord"])
+
+        def _boom(*_a, **_k):
+            raise OSError(2, "The system cannot find the file specified")
+
+        monkeypatch.setattr(mod.subprocess, "run", _boom)
+        mod.commit(rop)
+
+        assert not rop.get_param("output").value
+
+
+class TestRendererMenu:
+    def test_menu_is_populated_and_never_empty(self):
+        mod = importlib.import_module("scripts.render")
+        assert mod._available_renderers(), "renderer menu must never be empty"
+
+    def test_falls_back_when_nothing_can_be_enumerated(self, monkeypatch):
+        """usd-core wheels ship neither UsdAppUtils nor UsdImagingGL."""
+        mod = importlib.import_module("scripts.render")
+        monkeypatch.setitem(__import__("sys").modules, "pxr.UsdAppUtils", None)
+
+        renderers = mod._available_renderers()
+        assert "GL" in renderers
+
+    def test_renderer_param_is_a_menu_of_available_delegates(self):
+        scene, _stage = _setup_stage()
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+
+        renderer = rop.get_param("renderer")
+        assert list(renderer.menu_items) == mod._available_renderers()
+        assert renderer.value in renderer.menu_items
+
+
 class TestCliRunRenders:
     """`usdchunks run` on a network containing a Render chunk triggers the render,
     because the CLI calls commit_all() once the solve has settled."""
@@ -280,6 +532,7 @@ class TestCliRunRenders:
         _render_network(scene)
         mod = importlib.import_module("scripts.render")
         rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Command"
         rop.get_param("output_image").value = str(tmp_path / "run.png")
 
         net = tmp_path / "net.usda"
@@ -316,6 +569,7 @@ class TestCliRunRenders:
         _render_network(scene)
         mod = importlib.import_module("scripts.render")
         rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Command"
         rop.get_param("output_image").value = str(tmp_path / "default.png")
 
         net = tmp_path / "net.usda"
