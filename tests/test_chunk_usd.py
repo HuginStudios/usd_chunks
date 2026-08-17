@@ -5,7 +5,7 @@ import types as _types
 from pathlib import Path
 
 import pytest
-from pxr import Gf, Sdf, Usd, UsdGeom
+from pxr import Gf, Sdf, Tf, Usd, UsdGeom
 
 from usd_chunks.plugins.chunk_usd import (
     _CHUNK_PRIM_TYPENAME,
@@ -1024,6 +1024,48 @@ def test_external_prim_deactivate_disables_chunk() -> None:
     prim.SetActive(True)
 
     assert not c.has_state(chunk.ChunkFlags.State.DISABLED)
+
+
+def test_on_objects_changed_survives_a_none_sender() -> None:
+    """Live-reported: connecting a wire crashed with AttributeError:
+    'NoneType' object has no attribute 'GetRootLayer' inside _on_objects_changed --
+    Tf.Notice.RegisterGlobally's sender argument was observed arriving as None for a
+    real Usd.Notice.ObjectsChanged in the app, even though sender.GetRootLayer() assumed
+    it was always a valid stage. _on_objects_changed must resolve the stage from
+    notice.GetStage() instead, exactly like _on_contents_changed already does for this
+    same class of problem, so a None sender is harmless.
+    """
+    stage = Usd.Stage.CreateInMemory()
+
+    class _SyncScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _SyncScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+    sync = ChunkStageSync()
+
+    c = _chunk_with_module("none_sender")
+    scene.add_chunk(c)
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/none_sender")
+
+    # A Usd.Notice wrapper is only valid for the duration of the dispatch that delivers
+    # it -- storing one and calling methods on it later segfaults. So the None-sender
+    # replay has to happen synchronously from inside a second, temporary listener on the
+    # same real dispatch, not from a notice captured and reused afterward.
+    called = []
+
+    def _replay_with_none_sender(notice, _real_sender):
+        called.append(1)
+        sync._on_objects_changed(notice, None)  # must not raise
+
+    listener = Tf.Notice.RegisterGlobally(Usd.Notice.ObjectsChanged, _replay_with_none_sender)
+    try:
+        prim.SetActive(False)
+    finally:
+        listener.Revoke()
+    assert called, "test setup must be faithful -- a real notice must have fired"
 
 
 # ---------------------------------------------------------------------------

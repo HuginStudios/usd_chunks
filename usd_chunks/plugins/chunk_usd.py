@@ -454,10 +454,18 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._pending_info_changes.update(notice.GetChangedInfoOnlyPaths())
         if chunk_notice._usd_write_active or self._reconciling_exec or not self._scene:
             return
-        scene_stage = self._scene.get_stage()
-        if not scene_stage or sender.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
+        # Resolve the stage from the notice itself, like _on_contents_changed does, rather
+        # than trusting the raw `sender` argument -- RegisterGlobally's sender has been
+        # observed to arrive as None here (unlike in isolation), crashing on
+        # sender.GetRootLayer() below. notice.GetStage() is the same battle-tested fallback
+        # _on_contents_changed already uses for exactly this reason.
+        stage = notice.GetStage()
+        if not stage:
             return
-        self._stage = sender
+        scene_stage = self._scene.get_stage()
+        if not scene_stage or stage.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
+            return
+        self._stage = stage
         changed = {str(p) for p in notice.GetChangedInfoOnlyPaths()}
         # Include resynced paths for editors (e.g. usdview) that author active via the layer
         all_changed = changed | {str(p) for p in notice.GetResyncedPaths()}
@@ -470,7 +478,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     data_path = getattr(param, "_param_attr_path", None)
                     if not data_path or data_path not in changed:
                         continue
-                    attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
+                    attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
                         val = attr.Get(0)
                         raw = getattr(param, 'raw_value', None)
@@ -480,7 +488,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     data_path = getattr(vector, "_param_attr_path", None)
                     if not data_path or data_path not in changed:
                         continue
-                    attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
+                    attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
                         val = attr.Get(0)
                         if val is not None:
@@ -488,7 +496,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
             if not chunk_prim_path or chunk_prim_path not in all_changed:
                 continue
-            prim = sender.GetPrimAtPath(Sdf.Path(chunk_prim_path))
+            prim = stage.GetPrimAtPath(Sdf.Path(chunk_prim_path))
             if not prim.IsValid():
                 continue
             is_active = prim.IsActive()
@@ -2409,6 +2417,42 @@ def _chunks_downstream_of(roots: "list[core.ChunkBase]") -> "set[int]":
             if isinstance(node.propagator, core.ChunkBase):
                 found.add(id(node.propagator))
     return found
+
+
+def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: str, dst_prim_path: str) -> "Usd.Attribute | None":
+    """Author a plain outputs:chunk -> inputs:chunk exec connection between two chunk
+    prims, without going through the Qt node graph.
+
+    For a caller that creates chunks directly (a chunk module wiring its own children,
+    a test, a CLI) rather than via ChunkGraphView's drag-to-connect: view-driven execution
+    (recook_for_view) mutes any chunk not reachable from its context's active view, so a
+    programmatically created chunk that's never wired into the exec chain gets hidden the
+    first time its context recooks, even though it authored real content. Mirrors the
+    exec-only path of ChunkGraphView._author_connection; does not handle typed param
+    connections or merge chunks' numbered inputs:chunkN slots, neither of which this needs.
+
+    Returns the authored inputs:chunk attribute, or None if either prim couldn't be
+    resolved.
+    """
+    dst_prim = stage.GetPrimAtPath(Sdf.Path(dst_prim_path))
+    if not dst_prim.IsValid():
+        return None
+    dst_attr = dst_prim.GetAttribute(_EXEC_INPUT)
+    if not (dst_attr and dst_attr.IsValid()):
+        dst_attr = dst_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        if not dst_attr.IsValid():
+            return None
+    src_conn_path = Sdf.Path(f"{src_prim_path}.{_EXEC_OUTPUT}")
+    home = chunk_utils.get_attr_home_layer(dst_attr)
+    if home:
+        target = home
+    else:
+        dst_chunk = next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == dst_prim_path), None)
+        target = chunk_utils.get_bookkeeping_layer(stage, dst_chunk)
+    with Usd.EditContext(stage, target):
+        dst_attr.SetConnections([src_conn_path])
+    reconcile_edit_targets(stage, scene)
+    return dst_attr
 
 
 def reconcile_edit_targets(
