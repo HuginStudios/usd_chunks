@@ -2462,13 +2462,23 @@ def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: s
         dst_attr.SetConnections([src_conn_path])
     reconcile_edit_targets(stage, scene)
     if dst_chunk is not None:
+        # recook_for_view directly, NOT recook_focus -- recook_focus additionally mutes
+        # + blocks everything OUTSIDE the given context first, which is "user just
+        # switched focus to this group" semantics (the whole viewport should show only
+        # what's inside it). This is a quiet background refresh after wiring one
+        # connection, not a focus change -- it must never touch anything outside the
+        # scope it actually has information about.
         downstream_view = find_downstream_view(dst_chunk, stage, scene)
         if downstream_view is not None:
-            recook_focus(stage, scene, None, downstream_view)
+            # Scope to wherever the found view actually lives -- root-level (context
+            # None) means escalation reached all the way out, so a full recook is
+            # correct. Still nested in a context (escalation found nothing further)
+            # means only THAT context's own subnet is known-good.
+            recook_for_view(stage, scene, downstream_view.get_context(), downstream_view)
         else:
             ctx = dst_chunk.get_context()
             if ctx is not None:
-                recook_focus(stage, scene, ctx, find_group_active_view(ctx, stage, scene))
+                recook_for_view(stage, scene, ctx, find_group_active_view(ctx, stage, scene))
     return dst_attr
 
 

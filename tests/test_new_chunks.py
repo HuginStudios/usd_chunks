@@ -409,6 +409,88 @@ class TestAMDMaterialXLibraryChildCreation:
             f"(index 0 = strongest), got {idx}"
         )
 
+    def test_recook_after_wiring_does_not_mute_unrelated_chunks(self, monkeypatch, tmp_path):
+        """Live-reported regression from the fix above: right after it landed, an entirely
+        unrelated sibling chunk (nothing to do with AMD) went muted/blocked the moment a
+        material was applied.
+
+        connect_exec's own recook (triggered by wiring Reference -> BindMaterial) was
+        calling recook_focus instead of recook_for_view. recook_focus additionally mutes
+        + blocks everything OUTSIDE the given context first -- correct for "the user just
+        switched focus to this group" (the whole viewport should show only what's inside
+        it), wrong for a quiet background refresh after wiring one connection, which must
+        never touch anything outside the scope it actually has information about.
+        """
+        stage = Usd.Stage.CreateInMemory()
+
+        class _StageScene(_DummyScene):
+            def get_stage(self):
+                return stage
+
+        scene = _StageScene()
+        chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        init_chunk_usd(stage, scene)
+
+        prim_mod = chunk_registry.ChunkRegistry().get_chunk_module("prim")
+        view_mod = chunk_registry.ChunkRegistry().get_chunk_module("view")
+
+        def _mk(mod):
+            cs = mod.create() if mod.loaded else mod.load()
+            for c in cs:
+                scene.add_chunk(c)
+            return cs[0]
+
+        def _wire(dst, src):
+            p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+            a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+            a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+        # Unrelated sibling with no connection to AMD at all.
+        sibling = _mk(prim_mod)
+
+        c = self.mod.main()
+        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c.get_param("target_primpath").value = "/geo/mesh"
+        c.get_param("mat_scope").value = "/materials"
+        c.get_param("cache_dir").value = str(tmp_path)
+        scene.add_chunk(c)
+        # AMD is deliberately left unwired to any outer view here.
+
+        self.mod._results_by_title["Gold"] = {
+            "title": "Gold", "packages": ["pkg1"], "mtlx_material_name": "Gold",
+        }
+        monkeypatch.setattr(
+            self.mod, "_pick_package",
+            lambda package_ids, resolution: {"file_url": "http://fake/pkg.zip", "label": "2k"},
+        )
+        monkeypatch.setattr(
+            self.mod.requests, "get",
+            lambda url, timeout=120: _FakeZipResponse(self._fake_zip_bytes()),
+        )
+        c.get_param("picked_title").value = "Gold"
+        self.mod.execute(c)
+
+        ref_chunk = c.get_param("Reference", chunk.is_inst(chunk.Chunk))
+        bind_chunk = c.get_param("BindMaterial", chunk.is_inst(chunk.Chunk))
+
+        # AMD's own inner view already exists (e.g. from an earlier dive-in), still with
+        # no outer wiring.
+        weak_ctx = weakref.ref(c)
+        scene._current_context = weak_ctx
+        inner_view = _mk(view_mod)
+        scene._current_context = None
+        _wire(inner_view, bind_chunk)
+
+        c.get_param("picked_title").value = ""
+        c.get_param("picked_title").value = "Gold"
+        self.mod.execute(c)
+
+        assert not sibling.is_blocked(), "an unrelated chunk must not be blocked by AMD's own wiring recook"
+        lm = chunk_registry.ChunkLayerManager()
+        assert not stage.IsLayerMuted(lm.get_layer(sibling).identifier), (
+            "an unrelated chunk's layer must not be muted by AMD's own wiring recook"
+        )
+
     def test_child_chunk_prims_authored_in_session_layer(self, monkeypatch, tmp_path):
         """Child chunk prims (Reference, BindMaterial) created inside execute()
         must be authored on the user's edit layer (session layer by default),
