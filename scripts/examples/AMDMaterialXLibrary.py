@@ -7,7 +7,7 @@ import threading
 import requests
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core
-from usd_chunks.plugins.chunk_usd import ChunkStageSync
+from usd_chunks.plugins.chunk_usd import ChunkStageSync, connect_exec, get_chunk_prim_path
 from PySide6 import QtWidgets, QtCore, QtGui
 
 API_ROOT = "https://api.matlib.gpuopen.com/api"
@@ -446,6 +446,27 @@ def _download_and_apply(node, title: str) -> str:
     if bind_chunk:
         bind_chunk.get_param("material_path").value = mat_path
         bind_chunk.get_param("primpath_location").value = node.get_param("target_primpath").value
+
+    # Wire Reference -> BindMaterial into the exec chain. Both are created here as bare,
+    # disconnected chunk prims; view-driven execution (chunk_usd.recook_for_view) mutes
+    # anything in this subnet not reachable from its inner view's upstream tree, so an
+    # unwired child's authored content silently disappears the first time the subnet
+    # recooks. The graph UI's own default-view logic (ChunkGraphView._ensure_default_view)
+    # already auto-wires a view to whichever disconnected chunk it finds as the subnet's
+    # tail -- which, with two disconnected children, was landing on BindMaterial only,
+    # leaving Reference unreachable and looking (and behaving) like it was never connected.
+    # Chaining them here means only BindMaterial is ever a tail, so that same auto-view
+    # logic picks it up correctly with Reference upstream of it, without this module
+    # needing to know anything about views itself.
+    if ref_chunk and bind_chunk:
+        stage = node.get_stage()
+        if stage:
+            connect_exec(
+                stage,
+                chunk_registry.ChunkRegistry().scene,
+                get_chunk_prim_path(ref_chunk),
+                get_chunk_prim_path(bind_chunk),
+            )
 
     node.get_param("resolved_material_path").value = mat_path
     return f"Ready — {mat_path}"

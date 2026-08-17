@@ -10,7 +10,13 @@ from pxr import Usd, UsdShade, Sdf
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
-from usd_chunks.plugins.chunk_usd import _author_prim, _CHUNKS_ROOT, ChunkStageSync, initialize as init_chunk_usd
+from usd_chunks.plugins.chunk_usd import (
+    _author_prim,
+    _CHUNKS_ROOT,
+    ChunkStageSync,
+    get_chunk_prim_path,
+    initialize as init_chunk_usd,
+)
 
 
 class _DummyScene(SceneSender):
@@ -282,6 +288,20 @@ class TestAMDMaterialXLibraryChildCreation:
         assert bind_chunk.get_param("material_path").value == "/materials/Gold"
         assert bind_chunk.get_param("primpath_location").value == "/geo/mesh"
         assert c.get_param("resolved_material_path").value == "/materials/Gold"
+
+        # Live-reported: Reference "looked disconnected" in the node graph. Both children
+        # start as bare, unwired chunk prims -- view-driven execution mutes anything in a
+        # subnet not reachable from its inner view's upstream tree, and the graph's own
+        # default-view logic only ever auto-wires ONE arbitrary disconnected tail, which
+        # was landing on BindMaterial and leaving Reference unreachable (and its authored
+        # content liable to vanish on the next recook). _download_and_apply must chain
+        # Reference -> BindMaterial itself so only BindMaterial is ever a loose tail.
+        bind_prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(bind_chunk)))
+        bind_exec_in = bind_prim.GetAttribute("inputs:chunk")
+        assert bind_exec_in.IsValid(), "BindMaterial must have an inputs:chunk exec port"
+        assert [str(p) for p in bind_exec_in.GetConnections()] == [
+            f"{get_chunk_prim_path(ref_chunk)}.outputs:chunk"
+        ], "Reference must be wired into BindMaterial's exec chain, not left disconnected"
 
     def test_child_chunk_prims_authored_in_session_layer(self, monkeypatch, tmp_path):
         """Child chunk prims (Reference, BindMaterial) created inside execute()
