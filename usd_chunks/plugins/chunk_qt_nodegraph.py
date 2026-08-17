@@ -2433,6 +2433,23 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
+        # Delete-selected: same fallback pattern as Ctrl+C/V/D/X above. Selecting a node
+        # is itself a click on its embedded proxy body, which is exactly the case native
+        # view focus (ChunkGraphView.keyPressEvent's own Key_Delete handler) can't be
+        # trusted to have -- live-reported as Delete intermittently doing nothing on a
+        # node that was clearly selected. Gated on `not typing_in_proxy` so Delete still
+        # edits text inside a focused field instead of deleting the node underneath it.
+        if not typing_in_proxy and event.key() == QtCore.Qt.Key.Key_Delete:
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    view._delete_selected()
+                    event.accept()
+                    return True
+
         if self._active is None:
             return False
         if etype == QtCore.QEvent.Type.ShortcutOverride:
