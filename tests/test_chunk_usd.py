@@ -2077,6 +2077,119 @@ def test_reorder_graph_layers_leaves_unranked_idents_where_they_were() -> None:
     )
 
 
+def test_ranked_group_children_inherit_the_groups_own_rank() -> None:
+    """End-to-end companion to test_reorder_graph_layers_leaves_unranked_idents_where_they_were:
+    the unit test proves a group's children no longer get actively demoted; this proves they
+    also get correctly PROMOTED to rank alongside the group once it's wired into a real view.
+
+    Real reported wiring: Sublayer -> Transform -> AMD MaterialX Library (a chunkgroup) ->
+    View. AMD ranking above Transform/Sublayer once wired in was already correct (a ranked
+    group is an ordinary cook_list entry). What stayed broken: AMD's own inner children
+    (Reference -> BindMaterial -> AMD's own inner view) are ranked by a completely separate,
+    incomparable numbering scheme -- the group's own inner recook's cook_list -- so from the
+    outer recook's perspective they were simply invisible and stayed wherever they were first
+    inserted, nowhere near the group that actually produced them.
+
+    recook_for_view must give every descendant of a ranked group the group's own rank, so the
+    whole cluster (group + its children) moves together to sit above the group's outer
+    siblings, while the children's own correct relative order (from the group's inner recook)
+    survives via the stable sort.
+    """
+    import weakref
+    from usd_chunks.plugins.chunk_usd import recook_for_view, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # Sublayer -> Transform, unrelated-to-the-group outer siblings.
+    sublayer = _mk(primmod)
+    transform = _mk(primmod)
+    _wire(transform, sublayer)
+
+    # The group, with its own chained children + inner view.
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    reference = _mk(primmod)
+    bind_material = _mk(primmod)
+    _wire(bind_material, reference)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, bind_material)
+    scene._current_context = None
+
+    # Real reported wiring: Sublayer -> Transform -> AMD(group) -> View.
+    _wire(grp, transform)
+    outer_view = _mk(viewmod)
+    _wire(outer_view, grp)
+
+    class _Root:
+        prim_path = _CHUNKS_ROOT
+
+    # One recook to settle everyone into a single shared graph-aggregator layer (each
+    # chunk has its own individual layer; those get sublayered under one graph layer per
+    # (graph_id, target)).
+    recook_for_view(stage, scene, _Root(), outer_view)
+
+    lm = chunk_registry.ChunkLayerManager()
+    idents = {
+        "reference": lm.get_layer(reference).identifier,
+        "bind_material": lm.get_layer(bind_material).identifier,
+        "grp": lm.get_layer(grp).identifier,
+        "transform": lm.get_layer(transform).identifier,
+        "sublayer": lm.get_layer(sublayer).identifier,
+    }
+    g_layer = next(
+        (gl for gl in lm.graph_layers.values() if set(idents.values()) <= set(gl.subLayerPaths)),
+        None,
+    )
+    assert g_layer is not None, (
+        "test setup must be faithful -- everything must share one physical graph layer"
+    )
+
+    # Scramble to the worst case -- the group's children dead last -- mirroring how the
+    # real bug actually manifested (insertion order alone doesn't reliably favor the
+    # correct outcome; a second recook, e.g. from diving out of the group's tab and back,
+    # is what has to re-establish it). Without the fix under test this scramble would
+    # simply persist, since bind_material/reference are what get shoved to the bottom and
+    # there's no wrong direction to test past that.
+    scrambled = [i for i in g_layer.subLayerPaths if i not in (idents["reference"], idents["bind_material"])]
+    scrambled += [idents["reference"], idents["bind_material"]]
+    g_layer.subLayerPaths = scrambled  # type: ignore
+
+    recook_for_view(stage, scene, _Root(), outer_view)
+
+    order = list(g_layer.subLayerPaths)
+    idx = {name: order.index(ident) for name, ident in idents.items()}
+    assert idx["bind_material"] < idx["reference"] < idx["grp"] < idx["transform"] < idx["sublayer"], (
+        f"expected bind_material < reference < grp < transform < sublayer (index 0 = strongest), got {idx}"
+    )
+
+
 def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode() -> None:
     """Three sibling ChunkGroups chained by exec -- group1(asd1) -> group2(asd2) ->
     group3(asd3) -> a real outer View -- each owning an independent Create Layer chunk

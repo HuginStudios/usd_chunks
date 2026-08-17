@@ -2902,11 +2902,41 @@ def recook_for_view(
     # who-wins for chunks that author to the same target. (Safe re: prim expiry — this
     # reorders the result layers under the graph root, not the chunk prims in the edit layer.)
     rank = {id(c): i for i, c in enumerate(cook_list)}  # higher = more downstream = stronger
+    # Tuple ranks: (cook_list position, 0-for-the-chunk-itself-or-1-for-a-descendant).
+    # The second element only matters for ties on the first -- see the descendant loop
+    # below for why those ties exist and must break in the descendant's favor.
     ident_rank: dict = {}
     for c in cook_list:
         layer = lm.get_layer(c)
         if layer is not None:
-            ident_rank[layer.identifier] = rank[id(c)]
+            ident_rank[layer.identifier] = (rank[id(c)], 0)
+    # A ranked group's own children are ranked by a completely separate, incomparable
+    # numbering scheme -- their own inner recook's cook_list -- so from THIS call's
+    # perspective they're simply invisible descendants, not competitors for a tier of
+    # their own. Left alone they just sit wherever they were first inserted instead of
+    # ranking anywhere near the group that actually produced them (live-reported: AMD
+    # MaterialX Library correctly outranked its unrelated Transform/Sublayer siblings
+    # once wired into the view, but its own Reference/BindMaterial children stayed
+    # stuck at the bottom). Give every descendant of a ranked group the group's own
+    # rank tier, strictly above the group's own layer within that tier (a group's
+    # actual produced content should win over its own generic bookkeeping, and a plain
+    # equal rank would leave that ambiguous -- tie-broken arbitrarily by whatever the
+    # two happened to be in before this sort, not something to depend on). The stable
+    # sort in _reorder_graph_layers_by_rank then keeps whatever relative order the
+    # group's own inner recook already established among the descendants themselves
+    # (their own ranks tie 1-vs-1, so stay untouched relative to each other), while
+    # moving the whole cluster to sit where the group belongs among its outer siblings.
+    for c in cook_list:
+        if not is_group_chunk(c):
+            continue
+        prefix = get_chunk_prim_path(c) + "/"
+        for other in scene.get_chunks():
+            if id(other) in rank:
+                continue
+            if get_chunk_prim_path(other).startswith(prefix):
+                layer = lm.get_layer(other)
+                if layer is not None:
+                    ident_rank.setdefault(layer.identifier, (rank[id(c)], 1))
     _reorder_graph_layers_by_rank(lm.graph_layers.values(), ident_rank)
 
 
