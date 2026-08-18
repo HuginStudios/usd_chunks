@@ -11,7 +11,7 @@ import logging
 import re
 import weakref
 from pathlib import Path
-from typing import Generator, Tuple
+from typing import Generator, Iterable, Tuple
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
@@ -454,10 +454,18 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._pending_info_changes.update(notice.GetChangedInfoOnlyPaths())
         if chunk_notice._usd_write_active or self._reconciling_exec or not self._scene:
             return
-        scene_stage = self._scene.get_stage()
-        if not scene_stage or sender.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
+        # Resolve the stage from the notice itself, like _on_contents_changed does, rather
+        # than trusting the raw `sender` argument -- RegisterGlobally's sender has been
+        # observed to arrive as None here (unlike in isolation), crashing on
+        # sender.GetRootLayer() below. notice.GetStage() is the same battle-tested fallback
+        # _on_contents_changed already uses for exactly this reason.
+        stage = notice.GetStage()
+        if not stage:
             return
-        self._stage = sender
+        scene_stage = self._scene.get_stage()
+        if not scene_stage or stage.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
+            return
+        self._stage = stage
         changed = {str(p) for p in notice.GetChangedInfoOnlyPaths()}
         # Include resynced paths for editors (e.g. usdview) that author active via the layer
         all_changed = changed | {str(p) for p in notice.GetResyncedPaths()}
@@ -470,7 +478,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     data_path = getattr(param, "_param_attr_path", None)
                     if not data_path or data_path not in changed:
                         continue
-                    attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
+                    attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
                         val = attr.Get(0)
                         raw = getattr(param, 'raw_value', None)
@@ -480,7 +488,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     data_path = getattr(vector, "_param_attr_path", None)
                     if not data_path or data_path not in changed:
                         continue
-                    attr = sender.GetAttributeAtPath(Sdf.Path(data_path))
+                    attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
                         val = attr.Get(0)
                         if val is not None:
@@ -488,7 +496,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
             if not chunk_prim_path or chunk_prim_path not in all_changed:
                 continue
-            prim = sender.GetPrimAtPath(Sdf.Path(chunk_prim_path))
+            prim = stage.GetPrimAtPath(Sdf.Path(chunk_prim_path))
             if not prim.IsValid():
                 continue
             is_active = prim.IsActive()
@@ -2411,6 +2419,49 @@ def _chunks_downstream_of(roots: "list[core.ChunkBase]") -> "set[int]":
     return found
 
 
+def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: str, dst_prim_path: str) -> "Usd.Attribute | None":
+    """Author a plain outputs:chunk -> inputs:chunk exec connection between two chunk
+    prims, without going through the Qt node graph.
+
+    For a caller that creates chunks directly (a chunk module wiring its own children,
+    a test, a CLI) rather than via ChunkGraphView's drag-to-connect: view-driven execution
+    (recook_for_view) mutes any chunk not reachable from its context's active view, so a
+    programmatically created chunk that's never wired into the exec chain gets hidden the
+    first time its context recooks, even though it authored real content. Mirrors the
+    exec-only path of ChunkGraphView._author_connection; does not handle typed param
+    connections or merge chunks' numbered inputs:chunkN slots, neither of which this needs.
+
+    Deliberately does NOT also trigger a recook the way _author_connection does for a
+    live drag-to-connect: figuring out which view (if any) is safe to recook through from
+    inside a headless caller, without touching mute/block state anywhere it doesn't have
+    full information about, turned out to be its own source of bugs (muting unrelated
+    scene content, or the chunk just wired itself, depending on what existed nearby at the
+    time). Simpler and safer to just author the connection correctly here and let the
+    caller's own next real recook (a view switch, another wire, diving into the context)
+    pick it up -- which it will, now that the connection and the layer-ranking logic
+    downstream of it are both correct.
+
+    Returns the authored inputs:chunk attribute, or None if either prim couldn't be
+    resolved.
+    """
+    dst_prim = stage.GetPrimAtPath(Sdf.Path(dst_prim_path))
+    if not dst_prim.IsValid():
+        return None
+    dst_attr = dst_prim.GetAttribute(_EXEC_INPUT)
+    if not (dst_attr and dst_attr.IsValid()):
+        dst_attr = dst_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        if not dst_attr.IsValid():
+            return None
+    dst_chunk = next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == dst_prim_path), None)
+    src_conn_path = Sdf.Path(f"{src_prim_path}.{_EXEC_OUTPUT}")
+    home = chunk_utils.get_attr_home_layer(dst_attr)
+    target = home or chunk_utils.get_bookkeeping_layer(stage, dst_chunk)
+    with Usd.EditContext(stage, target):
+        dst_attr.SetConnections([src_conn_path])
+    reconcile_edit_targets(stage, scene)
+    return dst_attr
+
+
 def reconcile_edit_targets(
     stage: "Usd.Stage",
     scene: "core.SceneSender",
@@ -2858,18 +2909,72 @@ def recook_for_view(
     # who-wins for chunks that author to the same target. (Safe re: prim expiry — this
     # reorders the result layers under the graph root, not the chunk prims in the edit layer.)
     rank = {id(c): i for i, c in enumerate(cook_list)}  # higher = more downstream = stronger
+    # Tuple ranks: (cook_list position, 0-for-the-chunk-itself-or-1-for-a-descendant).
+    # The second element only matters for ties on the first -- see the descendant loop
+    # below for why those ties exist and must break in the descendant's favor.
     ident_rank: dict = {}
     for c in cook_list:
         layer = lm.get_layer(c)
         if layer is not None:
-            ident_rank[layer.identifier] = rank[id(c)]
-    for g_layer in lm.graph_layers.values():
-        ordered = sorted(
-            g_layer.subLayerPaths,
-            key=lambda ident: ident_rank.get(ident, -1),
-            reverse=True,
-        )
-        if list(g_layer.subLayerPaths) != ordered:
+            ident_rank[layer.identifier] = (rank[id(c)], 0)
+    # A ranked group's own children are ranked by a completely separate, incomparable
+    # numbering scheme -- their own inner recook's cook_list -- so from THIS call's
+    # perspective they're simply invisible descendants, not competitors for a tier of
+    # their own. Left alone they just sit wherever they were first inserted instead of
+    # ranking anywhere near the group that actually produced them (live-reported: AMD
+    # MaterialX Library correctly outranked its unrelated Transform/Sublayer siblings
+    # once wired into the view, but its own Reference/BindMaterial children stayed
+    # stuck at the bottom). Give every descendant of a ranked group the group's own
+    # rank tier, strictly above the group's own layer within that tier (a group's
+    # actual produced content should win over its own generic bookkeeping, and a plain
+    # equal rank would leave that ambiguous -- tie-broken arbitrarily by whatever the
+    # two happened to be in before this sort, not something to depend on). The stable
+    # sort in _reorder_graph_layers_by_rank then keeps whatever relative order the
+    # group's own inner recook already established among the descendants themselves
+    # (their own ranks tie 1-vs-1, so stay untouched relative to each other), while
+    # moving the whole cluster to sit where the group belongs among its outer siblings.
+    for c in cook_list:
+        if not is_group_chunk(c):
+            continue
+        prefix = get_chunk_prim_path(c) + "/"
+        for other in scene.get_chunks():
+            if id(other) in rank:
+                continue
+            if get_chunk_prim_path(other).startswith(prefix):
+                layer = lm.get_layer(other)
+                if layer is not None:
+                    ident_rank.setdefault(layer.identifier, (rank[id(c)], 1))
+    _reorder_graph_layers_by_rank(lm.graph_layers.values(), ident_rank)
+
+
+def _reorder_graph_layers_by_rank(graph_layers: "Iterable[Sdf.Layer]", ident_rank: dict) -> None:
+    """Reposition each graph layer's sublayers so higher-ranked idents (per ident_rank)
+    come first (subLayerPaths[0] = strongest).
+
+    A chunkgroup's own children share their parent's physical graph layer -- "chunkgroups
+    are subnets, not spatial containers" -- so the SAME graph layer gets this treatment
+    once per context, recursively: a group's own inner recook runs first and ranks its
+    children by proximity to ITS view, then this same step runs again for the OUTER
+    context, whose ident_rank knows nothing about those children at all. A global sort
+    keyed on ident_rank.get(ident, -1) shoves every ident a given call doesn't recognize
+    to the single weakest position, silently destroying a more specific call's ordering
+    underneath it (live-reported: a chunkgroup's own content ranked weaker than its
+    unrelated siblings in the same tab).
+
+    Only reposition idents this call actually has a rank for, among the slots they
+    collectively occupy -- everything else (including a nested group's own children)
+    stays exactly where a more specific call already put it.
+    """
+    for g_layer in graph_layers:
+        current = list(g_layer.subLayerPaths)
+        slots = [i for i, ident in enumerate(current) if ident in ident_rank]
+        if not slots:
+            continue
+        ranked = sorted((current[i] for i in slots), key=lambda ident: ident_rank[ident], reverse=True)
+        ordered = list(current)
+        for slot, ident in zip(slots, ranked):
+            ordered[slot] = ident
+        if ordered != current:
             g_layer.subLayerPaths = ordered  # type: ignore
 
 
@@ -2893,12 +2998,31 @@ def recook_focus(
         lm = chunk_registry.ChunkLayerManager()
         group_path = get_chunk_prim_path(context)
         inside_prefix = group_path + "/"
+        # A focused group's own UPSTREAM must stay composed. The group's inner chunks
+        # author on top of that content -- BindMaterial inside AMD MaterialX Library
+        # binds a material onto a mesh that a Sublayer several nodes upstream is what
+        # brings onto the stage at all. Muting it (as this loop otherwise does for
+        # everything outside the group) means those inner chunks execute against a stage
+        # where their target prims simply don't exist, so they author nothing -- and
+        # since a chunk's execute() Clear()s its own layer first, whatever it authored
+        # last time is destroyed in the process. Live-reported: diving into the AMD node
+        # dropped the applied material, and diving back out never brought it back
+        # (nothing re-executes BindMaterial once its params haven't changed).
+        #
+        # Muting the group's upstream was never the point of this pass anyway -- it
+        # exists to stop the parent tab's active view and UNRELATED sibling branches
+        # bleeding through, and the group's own upstream is neither.
+        upstream_keep = {
+            get_chunk_prim_path(u) for u in get_exec_upstream_chunks(context, stage, scene)
+        }
         for c in scene.get_chunks():
             if is_view_chunk(c):
                 continue
             cp = get_chunk_prim_path(c)
             # Keep the focused group itself and its descendants — recook_for_view handles those.
             if cp == group_path or cp.startswith(inside_prefix):
+                continue
+            if cp in upstream_keep:
                 continue
             # NEVER block a context/container (a tab or group). is_blocked() climbs the owner
             # chain, so blocking the focused group's ANCESTOR would propagate down and block the
@@ -3249,6 +3373,19 @@ def load_chunks(
                         # wiring below into a cyclic DAG from a perfectly linear file.
                         c.name = prim.GetName()
                         if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                            # Restore saved param values before scene.add_chunk, same as the
+                            # other two branches below -- a CONTEXT chunk is usually pure
+                            # structural scaffolding (a Tab/ChunkGroup) with nothing of its
+                            # own worth restoring, but one that ALSO has a real backing module
+                            # (e.g. AMD MaterialX Library, which uses CONTEXT purely for its
+                            # collapsible/embedded-widget node styling) can carry a full set of
+                            # its own inputs: attrs, and those were silently dropped here --
+                            # every param reverted to its default on reload, live-reported as
+                            # "settings don't get saved" even though the file correctly held
+                            # them (confirmed: inputs:picked_title etc. were present in the
+                            # saved layer the whole time; only the read-back on load was
+                            # missing).
+                            _load_wire_inputs(prim, c)
                             c.prim_path = str(prim.GetPath())
                             object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                             scene.add_chunk(c)
@@ -3379,7 +3516,23 @@ def load_chunks(
                 # immediately below is the one and only pass over the graph.
                 reconcile_edit_targets(stage, scene, cook=False)
 
-                for prim, added in deferred:
+                # Cook exec roots OUTERMOST-FIRST. Only roots are run here; everything with
+                # a dependency cooks by cascade from one. But a chunkgroup's inner chunks
+                # are roots of their OWN subgraph, and nothing connects them to the group's
+                # upstream -- only the GROUP itself is wired into the outer chain -- so the
+                # DAG imposes no order between them and the outer chunks whose content they
+                # act on. In `deferred` order a group's inner root could therefore cook
+                # first, against a stage that did not yet hold what it needs. Live-reported:
+                # reopening a saved scene ran an AMD MaterialX Library's inner BindMaterial
+                # before the Sublayer feeding the group had brought the mesh onto the stage,
+                # so it found no target, authored nothing, and never ran again -- the file
+                # opened with the original material still bound. Prim-path depth is exactly
+                # the nesting the ordering has to respect (/chunks/Tab1/Sublayer before
+                # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial), and sorted() is stable, so
+                # chunks at the same depth keep their existing relative order.
+                for prim, added in sorted(
+                    deferred, key=lambda item: get_chunk_prim_path(item[1]).count("/")
+                ):
                     if id(added) not in chunks_with_dependencies:
                         is_top_level = id(added) in top_level_chunk_ids
                         if is_top_level or can_execute_sub_chunks:
