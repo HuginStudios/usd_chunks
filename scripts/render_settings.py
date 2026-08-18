@@ -203,10 +203,24 @@ def _chunk_loaded(owner, notice, sender):
 
     _populate_groups_holding(_chunk, {leaf for _path, leaf, _value in entries})
 
-    for param_path, _leaf, value in entries:
-        param = _chunk.get_param(param_path)
+    # By leaf name, not by the stored path. A group's name is uniquified when the chunk
+    # already has one by that name -- V-Ray has both a top-level Settings and an
+    # ipr/Settings, so one of them is stored as "Settings1" -- while get_param resolves
+    # paths by the original name, so the stored path can never be looked up. Leaf names
+    # carry their renderer's namespace (vray_..., ri_...) and are unique on the chunk,
+    # which is what makes them safe to resolve on their own.
+    restored = False
+    for _param_path, leaf, value in entries:
+        param = _chunk.get_param(leaf)
         if param is not None and value is not None and param.value != value:
             param.value = value
+            restored = True
+
+    # Cook again now the values are back. The chunk has already executed by this point,
+    # and it authors a renderer setting by reading the param that holds it -- params
+    # that did not exist yet, so that pass wrote nothing for them.
+    if restored:
+        _chunk.execute()
 
 
 def _set_stage_settings_path(stage, prim_path):
