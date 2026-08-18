@@ -130,6 +130,7 @@ class TestBindMaterial:
 
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        chunk_registry.ChunkLayerManager().initialize(stage)
         ChunkStageSync().initialize(stage, scene)
 
         c = self.mod.main()
@@ -472,3 +473,101 @@ class TestAMDMaterialXLibraryChildCreation:
         assert reloaded.get_param("mat_scope").value == "/materials"
         assert reloaded.get_param("picked_title").value == "Gold"
         assert reloaded.get_param("resolved_material_path").value == "/materials/Gold"
+
+
+class TestBindMaterialResilience:
+    """A binding must survive a moment where the stage cannot resolve it.
+
+    bind_material.execute used to Clear() its layer first and only then check whether the
+    material and target prims existed -- so any run while the stage was mid-recook (view-
+    driven execution mutes/unmutes layers one at a time) permanently destroyed a good
+    binding, and nothing re-ran the chunk once the stage settled. Live-reported as the
+    applied material reverting to the original one after navigating the node graph.
+    """
+
+    def setup_method(self):
+        self.mod = _load("scripts.bind_material")
+
+    @staticmethod
+    def _node(stage, chunk_obj):
+        class _FakeNode:
+            def get_stage(self):
+                return stage
+
+            def get_param(self, name, pred=None):
+                return chunk_obj.get_param(name, pred)
+
+        return _FakeNode()
+
+    def _setup(self):
+        """Content lives in the session layer so execute's own layer.Clear() (which targets
+        the root layer here) leaves it intact -- same arrangement as test_execute_binds_material."""
+        stage = Usd.Stage.CreateInMemory()
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            UsdShade.Material.Define(stage, "/mat")
+            stage.DefinePrim("/geo/mesh", "Mesh")
+
+        class _StageScene(_DummyScene):
+            def get_stage(self):
+                return stage
+
+        scene = _StageScene()
+        chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        chunk_registry.ChunkLayerManager().initialize(stage)
+        ChunkStageSync().initialize(stage, scene)
+
+        c = self.mod.main()
+        c._config = ChunkConfig(module="bind_material")
+        c.get_param("material_path").value = "/mat"
+        c.get_param("primpath_location").value = "/geo/mesh"
+        scene.add_chunk(c)
+        return stage, c, self._node(stage, c)
+
+    @staticmethod
+    def _bound(stage):
+        prim = stage.GetPrimAtPath("/geo/mesh")
+        if not (prim and prim.IsValid()):
+            return None
+        return str(UsdShade.MaterialBindingAPI(prim).GetDirectBinding().GetMaterialPath())
+
+    def test_binding_survives_a_temporarily_missing_target(self):
+        stage, c, node = self._setup()
+        self.mod.execute(node)
+        assert self._bound(stage) == "/mat", "test setup must be faithful -- it must bind first"
+
+        # The mesh momentarily drops off the stage, exactly as it does while the layer
+        # that brings it in is muted for part of a recook.
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            stage.RemovePrim("/geo/mesh")
+        self.mod.execute(node)
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            stage.DefinePrim("/geo/mesh", "Mesh")
+
+        assert self._bound(stage) == "/mat", (
+            "binding must not be wiped by a run that happened while the target was absent"
+        )
+
+    def test_binding_survives_a_temporarily_missing_material(self):
+        stage, c, node = self._setup()
+        self.mod.execute(node)
+        assert self._bound(stage) == "/mat"
+
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            stage.RemovePrim("/mat")
+        self.mod.execute(node)
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            UsdShade.Material.Define(stage, "/mat")
+
+        assert self._bound(stage) == "/mat", (
+            "binding must not be wiped by a run that happened while the material was absent"
+        )
+
+    def test_clearing_the_param_still_unbinds(self):
+        """Companion check: an explicitly emptied field is a real instruction to unbind."""
+        stage, c, node = self._setup()
+        self.mod.execute(node)
+        assert self._bound(stage) == "/mat"
+
+        c.get_param("material_path").value = ""
+        self.mod.execute(node)
+        assert not self._bound(stage), "emptying the field must still clear the binding"
