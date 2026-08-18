@@ -11,6 +11,7 @@ import logging
 from pxr import Gf, Sdf, Usd, UsdRender
 
 from usd_chunks import chunk, chunk_notice, chunk_utils, render_defs
+from usd_chunks.plugins import chunk_usd
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,81 @@ def _clear_delegate_params(owner):
             owner.remove_param_or_group(param)
 
 
+#: Where a group parks the settings it has not built params for yet.
+_PENDING = "_pending_settings"
+
+#: Namespace every chunk param's saved value lives under on the chunk prim.
+_INPUTS_PREFIX = "inputs:"
+
+
+def _authored_settings(owner):
+    """Saved values for lofted settings, as (param path, leaf name, value).
+
+    A param nested in groups is stored under its whole path -- a setting inside
+    BakeView is ``inputs:BakeView:vray_BakeView_enabled``, not
+    ``inputs:vray_BakeView_enabled`` -- so the leaf name is what identifies which
+    setting it is, while the dotted path is what get_param needs to find it once the
+    groups exist.
+
+    Read straight off the chunk prim rather than from params, because the params in
+    question may not exist yet -- that is the whole point of building them lazily. Used
+    both to decide which groups must be built up front and to re-apply their values
+    afterwards, since load restores inputs: attributes in whatever order the prim lists
+    them and may well reach a setting before the delegate that creates it.
+    """
+    stage = owner.get_stage()
+    if not stage:
+        return {}
+
+    # Several paths may identify a cooking or loading chunk and they do not always
+    # agree -- _exec_prim_path is what execute() matches on, while get_chunk_prim_path
+    # derives one, and inside a chunkgroup or mid-load they differ. Checking only one
+    # silently finds nothing, which here means quietly dropping every saved value.
+    candidates = {
+        getattr(owner, "_exec_prim_path", None),
+        getattr(owner, "prim_path", None),
+        chunk_usd.get_chunk_prim_path(owner),
+    }
+
+    seen = set()
+    entries = []
+    for path in (str(p) for p in candidates if p):
+        prim = stage.GetPrimAtPath(path)
+        if not prim or not prim.IsValid():
+            continue
+        for attr in prim.GetAttributes():
+            name = attr.GetName()
+            if not name.startswith(_INPUTS_PREFIX) or not attr.HasAuthoredValue():
+                continue
+            param_path = name[len(_INPUTS_PREFIX):]
+            if param_path in seen:
+                continue
+            seen.add(param_path)
+            entries.append((param_path.replace(":", "."), param_path.rpartition(":")[2], attr.Get()))
+    return entries
+
+
+def _populate(group):
+    """Build the params a group was holding, if it still has any."""
+    pending = getattr(group, _PENDING, None)
+    if not pending:
+        return
+    setattr(group, _PENDING, None)
+
+    for prop in pending:
+        param = render_defs.param_for_setting(prop)
+        if param is None:
+            continue
+        if prop.help:
+            param.description = prop.help
+        group.add_param(param)
+
+
+def _group_expanded(owner, notice, sender):
+    if not owner.has_state(chunk.ChunkFlags.State.COLLAPSED):
+        _populate(owner)
+
+
 def _new_group(name):
     group = chunk.Group(
         name, name,
@@ -59,43 +135,80 @@ def _new_group(name):
     return group
 
 
-def _loft_group(owner, name, contents):
+def _loft_group(owner, name, contents, authored):
     """Add one group of settings to owner, recursing into nested groups.
 
-    Returns True when the group had anything in it -- an all-unmapped group is dropped
-    rather than presented as an empty section.
+    A leaf group keeps its settings pending rather than building params for them: every
+    group starts collapsed, and building all 258 of V-Ray's up front took twenty seconds
+    before a single one was visible. The params appear when the group is first expanded,
+    which is the moment they are wanted and the only moment their cost is noticed.
+
+    A group whose settings already have saved values is built immediately, since those
+    values have to land somewhere whether or not anyone opens it.
+
+    Returns True when the group holds anything.
     """
     group = _new_group(name)
-    added = False
 
     if isinstance(contents, dict):
+        added = False
         for sub_name, sub_contents in contents.items():
-            added |= _loft_group(group, sub_name, sub_contents)
-    else:
-        for prop in contents:
-            param = render_defs.param_for_setting(prop)
-            if param is None:
-                continue
-            if prop.help:
-                param.description = prop.help
-            group.add_param(param)
-            added = True
+            added |= _loft_group(group, sub_name, sub_contents, authored)
+        if added:
+            owner.add_param(group)
+        return added
 
-    if added:
-        owner.add_param(group)
-    return added
+    if not contents:
+        return False
+
+    setattr(group, _PENDING, list(contents))
+    if any(prop.name in authored for prop in contents):
+        # Built before attaching, so one group arrives complete rather than a param at a
+        # time -- the same reason the lazy path is worth having at all.
+        _populate(group)
+
+    group.add_callback(
+        _group_expanded,
+        notice_alias=chunk.ChunkNoticeAlias.STATE_CHANGED,
+        send_on_create=False,
+    )
+    owner.add_param(group)
+    return True
 
 
 def _loft_delegate_params(owner, definition):
-    """Create params for a renderer's settings, in nested collapsed groups.
+    """Create the groups for a renderer's settings, filling in what is already needed.
 
-    V-Ray declares 258, so grouping is not cosmetic. render_defs.group_props follows the
-    structure already in the names -- SettingsOptions splits into geom, light, mtl and
-    the rest, the way the renderer's own UI divides them -- and returns a tree, so this
-    just walks it.
+    render_defs.group_props follows the structure already in the names -- Settings splits
+    into Camera, ImageSampler, Options, and Options again into geom, light, mtl -- and
+    returns a tree, so this walks it. Params themselves are deferred to first expand.
     """
+    authored = _authored_settings(owner)
+    authored_leaves = {leaf for _path, leaf, _value in authored}
+
     for group_name, contents in render_defs.group_props(definition.props).items():
-        _loft_group(owner, group_name, contents)
+        _loft_group(owner, group_name, contents, authored_leaves)
+
+    # Re-apply saved values now the params exist. Load restores inputs: attributes in
+    # prim order, so a setting may well have been restored before the delegate that
+    # creates it, and that write would have found no param to land on.
+    for param_path, _leaf, value in authored:
+        param = owner.get_param(param_path)
+        if param is not None and value is not None and param.value != value:
+            param.value = value
+
+
+def _chunk_loaded(owner, notice, sender):
+    """Loft the delegate's settings for a chunk restored from a file.
+
+    Needed as well as the param callback: load suppresses reactive notices while it
+    restores values, so setting delegate from the saved inputs:delegate never reaches
+    _delegate_changed, and the settings would come back as a bare standard chunk.
+    """
+    _chunk = owner.get_chunk() if hasattr(owner, "get_chunk") else owner
+    if _chunk is None or _chunk.get_param("delegate") is None:
+        return
+    _delegate_changed(_chunk, notice, sender)
 
 
 def _delegate_changed(owner, notice, sender):
@@ -247,6 +360,10 @@ def main():
     )
     delegate.add_callback(_delegate_changed, send_on_create=False)
     chunk_api.add_param(delegate)
+    chunk_api.add_callback(
+        _chunk_loaded,
+        notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED,
+    )
 
     return chunk_api
 

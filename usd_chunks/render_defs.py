@@ -83,6 +83,15 @@ _GENERAL_GROUP = "General"
 #: Houdini resolves, leaving a path that would be written literally.
 _HOST_VARIABLE = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_]\w*|<[^>]+>")
 
+#: Leading CamelCase word of a group name, when something follows it in the same case:
+#: "SettingsCameraDof" -> "Settings". Renderers name plugin families this way, so a
+#: shared leading word is a level of hierarchy spelled without a separator.
+_CAMEL_PREFIX = re.compile(r"^([A-Z][a-z0-9]+)(?=[A-Z])")
+
+#: How many sibling groups must share a leading word before it becomes a level of its
+#: own. V-Ray has twenty-one Settings* groups, which is a section; two would be a pair.
+_MIN_PREFIX_GROUPS = 3
+
 
 @dataclass(frozen=True)
 class RenderSettingProp:
@@ -370,6 +379,43 @@ def _count(node) -> int:
     return sum(len(v) if isinstance(v, list) else _count(v) for v in node.values())
 
 
+def _factor_camel_prefixes(grouped):
+    """Fold groups sharing a leading CamelCase word under that word.
+
+    V-Ray names its settings after the plugin they configure, so twenty-one of the
+    thirty-three top-level groups begin with "Settings" -- SettingsCamera,
+    SettingsCameraDof, SettingsImageSampler. That prefix is a level of hierarchy the
+    names just do not put a separator in front of, and reading it as one gives
+    Settings > Camera rather than a column of near-identical siblings.
+    """
+    counts: Dict[str, int] = defaultdict(int)
+    for name in grouped:
+        if name == _GENERAL_GROUP:
+            continue
+        if match := _CAMEL_PREFIX.match(name):
+            counts[match.group(1)] += 1
+
+    factorable = {prefix for prefix, count in counts.items() if count >= _MIN_PREFIX_GROUPS}
+    if not factorable:
+        return grouped
+
+    folded: "OrderedDict[str, Any]" = OrderedDict()
+    for name, contents in grouped.items():
+        match = _CAMEL_PREFIX.match(name) if name != _GENERAL_GROUP else None
+        prefix = match.group(1) if match else None
+
+        # A group already named exactly the prefix keeps it: folding siblings into it
+        # would mix two different things under one heading.
+        if prefix in factorable and not isinstance(folded.get(prefix), list):
+            folded.setdefault(prefix, OrderedDict())[name[len(prefix):]] = contents
+        else:
+            folded[name] = contents
+
+    if _GENERAL_GROUP in folded:
+        folded.move_to_end(_GENERAL_GROUP)
+    return folded
+
+
 def _tree(items, depth: int):
     grouped: "OrderedDict[str, Any]" = OrderedDict()
 
@@ -390,7 +436,7 @@ def _tree(items, depth: int):
     # General last: it is the leftovers, not the headline.
     if _GENERAL_GROUP in grouped:
         grouped.move_to_end(_GENERAL_GROUP)
-    return grouped
+    return _factor_camel_prefixes(grouped)
 
 
 def group_props(props) -> "OrderedDict[str, Any]":

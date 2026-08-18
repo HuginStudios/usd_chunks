@@ -232,6 +232,25 @@ class TestRenderSettings:
         assert not UsdRender.Settings.GetStageRenderSettings(stage)
 
 
+def _populate_containing(owner, param_name):
+    """Expand whichever lazy group holds param_name, so its param exists."""
+    from usd_chunks.chunk_flags import ChunkFlags
+
+    def walk(node):
+        for child in node.get_my_params():
+            if not hasattr(child, "get_my_params"):
+                continue
+            pending = getattr(child, "_pending_settings", None)
+            if pending and any(p.name == param_name for p in pending):
+                child.unset_state(ChunkFlags.State.COLLAPSED)
+                return True
+            if walk(child):
+                return True
+        return False
+
+    return walk(owner)
+
+
 def _schema_delegates():
     from usd_chunks import render_defs
     return [d for d in render_defs.iter_render_settings_defs() if d.source == "schema"]
@@ -287,6 +306,62 @@ class TestDelegateSettings:
         assert len(settings.get_my_params()) < lofted
 
     @requires_renderer
+    def test_groups_start_empty_and_fill_on_expand(self):
+        """Building all 258 up front took twenty seconds before one was visible, so a
+        collapsed group holds its settings until someone opens it."""
+        from usd_chunks.chunk_flags import ChunkFlags
+
+        scene, _stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+        settings.get_param("delegate").value = _schema_delegates()[0].label
+
+        group = next(
+            g for g in settings.get_my_params()
+            if hasattr(g, "get_my_params") and getattr(g, "_pending_settings", None)
+        )
+        assert len(group.get_my_params()) == 0
+
+        group.unset_state(ChunkFlags.State.COLLAPSED)
+        assert len(group.get_my_params()) > 0
+
+    @requires_renderer
+    def test_a_saved_setting_survives_a_round_trip(self):
+        """The values live on the chunk prim, but the params that hold them are built
+        lazily -- and load restores inputs: attributes in prim order, so a setting can
+        be restored before the delegate that creates its param. The value has to land
+        anyway."""
+        scene, _stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+        definition = _schema_delegates()[0]
+        settings.get_param("delegate").value = definition.label
+
+        target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
+        _populate_containing(settings, target.name)
+        settings.get_param(target.name).value = True
+        settings.execute()
+
+        net = __import__("tempfile").mkdtemp() + "/net.usda"
+        export_chunks(scene, net)
+        chunk_registry.ChunkLayerManager().reset()
+
+        stage2 = Usd.Stage.Open(net)
+        scene2 = _DummyScene()
+        chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
+        scene2._stage = stage2
+        init_chunk_usd(stage2, scene2)
+        from usd_chunks.plugins.chunk_usd import load_chunks
+        load_chunks(stage2, scene2)
+
+        reloaded = next(
+            c for c in scene2.get_chunks()
+            if c.get_param("delegate") is not None
+        )
+        assert reloaded.get_param("delegate").value == definition.label
+        restored = reloaded.get_param(target.name)
+        assert restored is not None, "the param holding a saved value must exist after load"
+        assert restored.value is True
+
+    @requires_renderer
     def test_api_schema_is_applied_to_the_settings_prim(self):
         scene, stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
@@ -321,6 +396,7 @@ class TestDelegateSettings:
         settings.get_param("delegate").value = definition.label
 
         target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
+        _populate_containing(settings, target.name)
         settings.get_param(target.name).value = True
         settings.execute()
 
