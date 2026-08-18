@@ -623,6 +623,54 @@ def _param_for_entry(chunk: "core.ChunkBase", entry: str):
     return param
 
 
+GIZMO_CHANGED_HOOK = "gizmo_changed"
+
+
+def _dispatch_solve_hook(chunk: "core.ChunkBase", name: str, values: dict) -> bool:
+    """Give the chunk's module a chance to solve this drag itself. True if it did.
+
+    Some handles are not 1:1 with any param, so there is nothing to declare. A lookat point's
+    world position is ``camPos + aimDir * focusDistance``, so dragging it has to decompose
+    back into *rotate* params -- no declarative binding can express that.
+
+    A chunk opts in with a module-level function::
+
+        def gizmo_changed(node, gizmo, values):
+            if gizmo == "aim":
+                ...            # decompose into rx/ry/rz + focusDistance
+                return True     # and say so
+
+    **Returning true means "I own this gizmo"** and the declarative drivers are skipped.
+    Anything falsy -- including the very common "this is not my gizmo, fall through" -- runs
+    the normal path. Signalling explicitly beats inferring from side effects, which would
+    mean guessing whether a hook that wrote nothing declined or simply had nothing to do.
+
+    The DCC contract is identical either way: the host emits slot values and never learns
+    what a chunk means by them. That property is the only reason this hook is acceptable --
+    anything making hosts aware of per-chunk solving would be a design failure.
+
+    Note ``gizmo_changed`` is a reserved module-level name, in the same family as
+    ``execute(node)``. A chunk module must not use it for anything else.
+    """
+    # chunk._module is the registry's copy. Chunk modules exist twice in sys.modules under
+    # different keys, and the other copy is not the one the running chunk was built from --
+    # looking the hook up by import would find a function whose closure belongs to a
+    # different object graph.
+    module = getattr(chunk, "_module", None)
+    hook = getattr(module, GIZMO_CHANGED_HOOK, None)
+    if not callable(hook):
+        return False
+
+    try:
+        return bool(hook(chunk, name, values))
+    except Exception:
+        # Treated as handled, deliberately. Falling through to the declarative path after a
+        # half-finished custom solve would combine two different intents into one frame,
+        # which is worse than dropping a tick -- the next tick of the drag retries anyway.
+        logger.exception("gizmo_changed hook failed for gizmo %r on chunk %r", name, chunk.name)
+        return True
+
+
 def _values_for(entries: tuple, value: Any) -> list:
     if len(entries) == 1:
         return [value]
@@ -658,6 +706,10 @@ def apply_bindings(chunk: "core.ChunkBase", name: str, values: dict) -> None:
     gizmo = find_gizmo(chunk, name)
     if gizmo is None:
         raise ValueError(f"Chunk {chunk.name!r} declares no gizmo named {name!r}")
+
+    if _dispatch_solve_hook(chunk, name, values):
+        chunk.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_CHANGED, name)
+        return
 
     # Validate every slot before writing any of them, so a bad slot cannot leave the chunk
     # half-updated -- during a drag that would show as the object tearing apart mid-gesture.
