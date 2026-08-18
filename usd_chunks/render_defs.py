@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import OrderedDict, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -185,7 +185,7 @@ def _prop_from_definition(prim_def, attr_name: str, namespace: str) -> Optional[
     return RenderSettingProp(
         name=attr_name.replace(":", "_"),
         attr_name=attr_name,
-        label=remainder.replace(":", " ").replace("_", " "),
+        label=_prettify(remainder),
         sdf_type=str(spec.typeName),
         default=_sanitize_default(prim_def.GetAttributeFallbackValue(attr_name)),
         help=prim_def.GetPropertyDocumentation(attr_name) or "",
@@ -325,6 +325,11 @@ def available_delegates() -> List[str]:
     return [d.label for d in iter_render_settings_defs()]
 
 
+def _prettify(name: str) -> str:
+    """A settings name as a label: separators become spaces."""
+    return name.replace(":", " ").replace("_", " ").strip()
+
+
 def _split_segment(remainder: str):
     """Leading name segment and what is left, or (None, remainder) when indivisible.
 
@@ -431,7 +436,11 @@ def _tree(items, depth: int):
                 grouped[name] = sub
                 continue
 
-        grouped[name] = [prop for prop, _rest in members]
+        # Relabel to what the grouping did not already say. A setting sitting in a
+        # MotionBlur group is "bias", not "SettingsMotionBlur bias" -- the path is the
+        # groups it is nested in, and repeating it in every label just makes the labels
+        # too wide to read.
+        grouped[name] = [replace(prop, label=_prettify(rest)) for prop, rest in members]
 
     # General last: it is the leftovers, not the headline.
     if _GENERAL_GROUP in grouped:

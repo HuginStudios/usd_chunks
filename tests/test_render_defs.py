@@ -39,8 +39,29 @@ class TestGrouping:
                                          "vray:geom:x", "vray:geom:y")]
         groups = render_defs.group_props(props)
 
-        assert list(groups["cloud"]) == props[:2]
+        assert [p.attr_name for p in groups["cloud"]] == ["vray:cloud:upload", "vray:cloud:job"]
         assert [p.attr_name for p in groups["geom"]] == ["vray:geom:x", "vray:geom:y"]
+
+    def test_labels_drop_what_the_group_already_says(self):
+        """A setting in a MotionBlur group is "bias", not "SettingsMotionBlur bias" --
+        the path is the groups it sits in, and repeating it makes every label too wide."""
+        props = [self._prop(f"vray:SettingsMotionBlur_{n}") for n in ("bias", "geom_samples")]
+        groups = render_defs.group_props(props)
+
+        assert [p.label for p in groups["SettingsMotionBlur"]] == ["bias", "geom samples"]
+
+    def test_relabelling_leaves_names_and_attrs_alone(self):
+        """Only the label is shortened: the param name must stay unique across groups and
+        the attribute name is what gets authored."""
+        props = [self._prop(f"vray:SettingsMotionBlur_{n}") for n in ("bias", "on")]
+        groups = render_defs.group_props(props)
+
+        assert [p.name for p in groups["SettingsMotionBlur"]] == [
+            "vray_SettingsMotionBlur_bias", "vray_SettingsMotionBlur_on",
+        ]
+        assert [p.attr_name for p in groups["SettingsMotionBlur"]] == [
+            "vray:SettingsMotionBlur_bias", "vray:SettingsMotionBlur_on",
+        ]
 
     def test_shared_underscore_prefix_earns_a_group(self):
         props = [self._prop(f"vray:BakeView_{n}") for n in ("fov", "mode", "dilation")]
