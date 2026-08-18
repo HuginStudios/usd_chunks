@@ -154,9 +154,18 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
                 # also make sure the PYTHONPATH is updated in order for the subprocess to find the packages
                 os.environ["PYTHONPATH"] = os.environ.get("PYTHONPATH", "") + os.pathsep + str(self.package_dir)
 
+            already_initialized = self.initialized
             self.initialized = True
             self._load_cache()
-            atexit.register(self._write_cache)
+
+            # Once per process, not once per initialize(). This runs again on every stage
+            # reload and on every ChunkRegistry().initialize(), so an unguarded register()
+            # accumulates a handler per call -- each one rewriting the same cache file at
+            # exit, and each one logging after the interpreter has closed its streams, which
+            # surfaces as a wall of "ValueError: I/O operation on closed file" once the
+            # process ends. Harmless but alarming, and it hides real shutdown errors.
+            if not already_initialized:
+                atexit.register(self._write_cache)
 
     def _env_cache_file(self):
         checksum = chunk_serial.compute_checksum(sys.executable)
