@@ -4,6 +4,8 @@ import json
 import zipfile
 import io
 import threading
+import weakref
+
 import requests
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core
@@ -17,6 +19,7 @@ _all_materials: list[dict] = []
 _results_by_title: dict[str, dict] = {}
 _selected_title: str = ""
 _thumbnail_cache: dict[str, bytes] = {}  # render_id → jpeg bytes
+_downloading: set[str] = set()  # titles with an in-flight background download
 
 THUMB_SIZE = 90
 
@@ -399,56 +402,71 @@ def _cached_mtlx(cache_dir: str, title: str, resolution: str) -> str | None:
     return None
 
 
+def _fetch_package(title: str, resolution: str, cache_dir: str) -> "tuple[str | None, dict | None, str | None]":
+    """Make sure this material's package is on disk. Returns (mtlx_path, mat, error).
+
+    Network and filesystem only -- deliberately touches no USD and no Qt, so it is safe to
+    run off the main thread (see apply_material, which does exactly that so the Download &
+    Assign button cannot freeze usdview for the length of a download).
+    """
+    mat = _results_by_title.get(title) or next(
+        (m for m in _fetch_all_materials(cache_dir) if m.get("title") == title), None
+    )
+    if not mat:
+        return None, None, f"Material '{title}' not found in catalog"
+
+    # Reuse an already-extracted package before touching the network. _download_and_apply is
+    # a reactive hook: it re-runs on every scene load and on every recook (diving into the
+    # node and back out is two), and it used to do a package-metadata lookup plus a full zip
+    # download every single time, re-extracting a package already sitting in the cache dir.
+    # That was ~3.5s of pure SSL/socket time on a measured 4.2s scene load, and the same cost
+    # again on each dive. The extracted directory is named after the resolution (the package
+    # label starts with it, see _pick_package), so a cache hit here still honours a
+    # resolution change -- that just misses and falls through to the download.
+    mtlx_path = _cached_mtlx(cache_dir, title, resolution)
+    if mtlx_path:
+        return mtlx_path, mat, None
+
+    try:
+        pkg = _pick_package(mat.get("packages", []), resolution)
+    except Exception as exc:
+        return None, None, f"Package lookup failed: {exc}"
+
+    if not pkg:
+        return None, None, "No package found"
+    file_url = pkg.get("file_url")
+    if not file_url:
+        return None, None, "Package has no download URL"
+
+    mat_dir = os.path.join(cache_dir, _safe_prim_name(f"{title}_{pkg.get('label', resolution)}"))
+    os.makedirs(mat_dir, exist_ok=True)
+
+    try:
+        resp = requests.get(file_url, timeout=120)
+        resp.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            z.extractall(mat_dir)
+            names = z.namelist()
+    except Exception as exc:
+        return None, None, f"Download failed: {exc}"
+
+    mtlx_path = next(
+        (os.path.join(mat_dir, n).replace("\\", "/") for n in names if n.endswith(".mtlx")),
+        None,
+    )
+    if not mtlx_path:
+        return None, None, "No .mtlx file in package"
+    return mtlx_path, mat, None
+
+
 def _download_and_apply(node, title: str) -> str:
     resolution = node.get_param("resolution", chunk.is_inst(chunk.Menu)).value
     mat_scope = (node.get_param("mat_scope", chunk.is_param_t(str)).value or "/materials").rstrip("/")
     cache_dir = node.get_param("cache_dir", chunk.is_param_t(str)).value or os.path.expanduser("~/.gpuopen_cache")
 
-    mat = _results_by_title.get(title) or next(
-        (m for m in _fetch_all_materials(cache_dir) if m.get("title") == title), None
-    )
-    if not mat:
-        return f"Material '{title}' not found in catalog"
-
-    # Reuse an already-extracted package before touching the network. This function is a
-    # reactive hook: it re-runs on every scene load and on every recook (diving into the
-    # node and back out is two), and it used to do a package-metadata lookup plus a full
-    # zip download every single time, re-extracting a package already sitting in the cache
-    # dir. That was ~3.5s of pure SSL/socket time on a measured 4.2s scene load, and the
-    # same cost again on each dive. The extracted directory is named after the resolution
-    # (the package label starts with it, see _pick_package), so a cache hit here still
-    # honours a resolution change -- that just misses and falls through to the download.
-    mtlx_path = _cached_mtlx(cache_dir, title, resolution)
-    if not mtlx_path:
-        try:
-            pkg = _pick_package(mat.get("packages", []), resolution)
-        except Exception as exc:
-            return f"Package lookup failed: {exc}"
-
-        if not pkg:
-            return "No package found"
-        file_url = pkg.get("file_url")
-        if not file_url:
-            return "Package has no download URL"
-
-        mat_dir = os.path.join(cache_dir, _safe_prim_name(f"{title}_{pkg.get('label', resolution)}"))
-        os.makedirs(mat_dir, exist_ok=True)
-
-        try:
-            resp = requests.get(file_url, timeout=120)
-            resp.raise_for_status()
-            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                z.extractall(mat_dir)
-                names = z.namelist()
-        except Exception as exc:
-            return f"Download failed: {exc}"
-
-        mtlx_path = next(
-            (os.path.join(mat_dir, n).replace("\\", "/") for n in names if n.endswith(".mtlx")),
-            None,
-        )
-    if not mtlx_path:
-        return "No .mtlx file in package"
+    mtlx_path, mat, error = _fetch_package(title, resolution, cache_dir)
+    if error:
+        return error
 
     mat_name = _safe_prim_name(title)
     mat_path = f"{mat_scope}/{mat_name}"
@@ -521,15 +539,73 @@ def execute(node):
         status_param.value = result
 
 
+def _set_status(owner, text: str) -> None:
+    status_param = owner.get_param("status", chunk.is_inst(chunk.Label))
+    if status_param:
+        status_param.value = text
+
+
 def apply_material(owner, _notice, _sender):
+    """Download & Assign, without freezing the host.
+
+    Only the DOWNLOAD runs on a worker thread; every USD and Qt touch stays on the main
+    thread. A download is seconds of network on a cold cache, and doing it inline blocked
+    usdview's event loop for the whole time -- no viewport, no interaction, looking hung.
+
+    The split is possible because the two halves are cleanly separable: _fetch_package is
+    pure network/filesystem, and the assign is pure USD. So the worker only gets the
+    package onto disk, then hands back to the main thread (QTimer.singleShot(0, ...), the
+    project's standard hop -- see CLAUDE.md) to set picked_title and run the normal
+    reactive path. That path calls _fetch_package again, but by then it is a cache hit, so
+    it costs nothing and there is exactly one code path that ever authors USD.
+    """
     title = _selected_title
     if not title:
-        status_param = owner.get_param("status", chunk.is_inst(chunk.Label))
-        if status_param:
-            status_param.value = "Select a material first"
+        _set_status(owner, "Select a material first")
         return
-    owner.get_param("picked_title").value = title
-    execute(owner)
+
+    if title in _downloading:
+        _set_status(owner, f"Already downloading {title}…")
+        return
+
+    # Read every param HERE, on the main thread -- the worker must not touch the chunk.
+    resolution = owner.get_param("resolution", chunk.is_inst(chunk.Menu)).value
+    cache_dir = owner.get_param("cache_dir", chunk.is_param_t(str)).value or os.path.expanduser(
+        "~/.gpuopen_cache"
+    )
+    _set_status(owner, f"Downloading {title}…")
+    _downloading.add(title)
+    # Weak, so a node deleted mid-download does not get resurrected by the callback.
+    owner_ref = weakref.ref(owner)
+
+    def _work():
+        try:
+            _, _, error = _fetch_package(title, resolution, cache_dir)
+        except Exception as exc:  # never let a worker die silently with the title latched
+            error = f"Download failed: {exc}"
+
+        def _finish():
+            _downloading.discard(title)
+            node = owner_ref()
+            if node is None:
+                return
+            if error:
+                _set_status(node, error)
+                return
+            # Cache is warm now, so this is the fast path.
+            node.get_param("picked_title").value = title
+            execute(node)
+
+        # Hand back to the main thread. The context object is REQUIRED here: a bare
+        # QTimer.singleShot(0, fn) creates the timer in the calling thread, and a worker
+        # thread has no event loop to ever fire it -- the callback would simply be dropped
+        # and the assign would silently never happen. Passing a QObject that lives on the
+        # main thread (the application) queues the call onto that thread's loop instead.
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            QtCore.QTimer.singleShot(0, app, _finish)
+
+    threading.Thread(target=_work, daemon=True).start()
 
 
 # Chunk definition

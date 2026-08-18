@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import time
 import zipfile
 
 import pytest
@@ -641,4 +642,95 @@ class TestAMDMaterialXCaching:
         assert len(picks) == 1, (
             "a cache hit must also skip the package-metadata lookup -- that is a network call too"
         )
+        assert c.get_param("resolved_material_path").value == "/materials/Gold"
+
+
+class TestAMDMaterialXAsyncApply:
+    """Download & Assign must not block the host for the length of a download.
+
+    A cold-cache download is seconds of network. Doing it inline froze usdview's event
+    loop for the whole time -- no viewport, no interaction. apply_material now runs only
+    the download on a worker thread and hops back via QTimer.singleShot(0, ...) for every
+    USD/Qt touch (the project's standard main-thread hop).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+        """main() builds Qt widgets."""
+
+    def setup_method(self):
+        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
+        _load("scripts.reference")
+        _load("scripts.bind_material")
+
+    def test_apply_downloads_off_thread_and_assigns_on_the_main_thread(self, monkeypatch, tmp_path, qapp):
+        import threading
+
+        stage = Usd.Stage.CreateInMemory()
+
+        class _StageScene(_DummyScene):
+            def get_stage(self):
+                return stage
+
+        scene = _StageScene()
+        chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        init_chunk_usd(stage, scene)
+
+        c = self.mod.main()
+        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c.get_param("target_primpath").value = "/geo/mesh"
+        c.get_param("mat_scope").value = "/materials"
+        c.get_param("cache_dir").value = str(tmp_path)
+        scene.add_chunk(c)
+
+        self.mod._results_by_title["Gold"] = {
+            "title": "Gold", "packages": ["pkg1"], "mtlx_material_name": "Gold",
+        }
+        monkeypatch.setattr(
+            self.mod, "_pick_package",
+            lambda package_ids, resolution: {"file_url": "http://fake/pkg.zip", "label": "2k"},
+        )
+
+        main_thread = threading.current_thread().ident
+        download_threads: list = []
+        release = threading.Event()
+
+        def _slow_get(url, timeout=120):
+            download_threads.append(threading.current_thread().ident)
+            release.wait(5)  # hold the "download" open so a blocking impl would stall here
+            return _FakeZipResponse(TestAMDMaterialXLibraryChildCreation._fake_zip_bytes())
+
+        monkeypatch.setattr(self.mod.requests, "get", _slow_get)
+        monkeypatch.setattr(self.mod, "_selected_title", "Gold")
+
+        applied_on: list = []
+        real_execute = self.mod.execute
+
+        def _tracking_execute(node):
+            applied_on.append(threading.current_thread().ident)
+            return real_execute(node)
+
+        monkeypatch.setattr(self.mod, "execute", _tracking_execute)
+
+        self.mod.apply_material(c, None, None)
+
+        # The call returned while the download is still held open -- that is the whole point.
+        assert not release.is_set()
+        assert c.get_param("picked_title").value != "Gold", (
+            "the assign must not have happened yet -- the download is still in flight"
+        )
+
+        release.set()
+        deadline = time.time() + 10
+        while time.time() < deadline and not applied_on:
+            qapp.processEvents()
+            time.sleep(0.01)
+
+        assert download_threads and main_thread not in download_threads, (
+            "the download must run on a worker thread, not the main thread"
+        )
+        assert applied_on == [main_thread], (
+            "the USD assign must hop back to the main thread"
+        )
+        assert c.get_param("picked_title").value == "Gold"
         assert c.get_param("resolved_material_path").value == "/materials/Gold"
