@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 
-from pxr import Sdf, Usd, UsdGeom, UsdUtils
+from pxr import Sdf, Usd, UsdGeom, UsdRender, UsdUtils
 
 from usd_chunks import chunk
 
@@ -166,13 +166,24 @@ def _camera_at(stage, path):
     return camera or None
 
 
+def _resolve_settings_path(node, stage):
+    """The RenderSettings prim to render, as an explicit path or the stage's own.
+
+    Falling back to the stage metadatum matters because that is what a Render Settings
+    chunk publishes by default, so a network that wired nothing still renders the
+    settings it authored rather than silently ignoring them.
+    """
+    path = (node.get_param("settings_path").value or "").strip()
+    if path:
+        return path
+
+    stage_settings = UsdRender.Settings.GetStageRenderSettings(stage)
+    return str(stage_settings.GetPath()) if stage_settings else ""
+
+
 def _settings_camera(stage, settings_path):
     """The camera a RenderSettings prim points at, if it names one."""
     if not settings_path:
-        return None
-    try:
-        from pxr import UsdRender
-    except ImportError:
         return None
 
     prim = stage.GetPrimAtPath(Sdf.Path(settings_path))
@@ -183,12 +194,12 @@ def _settings_camera(stage, settings_path):
     return _camera_at(stage, targets[0]) if targets else None
 
 
-def _resolve_camera(node, stage):
+def _resolve_camera(node, stage, settings_path=""):
     """The camera to render from: the chunk's own override, else the one the render
     settings name, else the first camera on the stage."""
     if camera := _camera_at(stage, node.get_param("camera").value):
         return camera
-    if camera := _settings_camera(stage, node.get_param("settings_path").value):
+    if camera := _settings_camera(stage, settings_path):
         return camera
     for prim in stage.Traverse():
         if prim.IsA(UsdGeom.Camera):
@@ -196,7 +207,7 @@ def _resolve_camera(node, stage):
     return None
 
 
-def _make_recorder(node):
+def _make_recorder(node, settings_path=""):
     """A configured FrameRecorder, or None when this build cannot render."""
     try:
         from pxr import UsdAppUtils
@@ -223,6 +234,14 @@ def _make_recorder(node):
     mode = node.get_param("color_correction").value
     if mode and hasattr(recorder, "SetColorCorrectionMode"):
         recorder.SetColorCorrectionMode(mode)
+
+    # Hand the delegate the settings prim rather than only reading a camera off it.
+    # A delegate implementing HdRenderSettings then walks its RenderProducts and
+    # RenderVars and writes those files itself -- which is what makes the AOVs a
+    # network authors actually come out, instead of a single beauty frame. Guarded by
+    # hasattr because older USD builds have no such hook.
+    if settings_path and hasattr(recorder, "SetActiveRenderSettingsPrimPath"):
+        recorder.SetActiveRenderSettingsPrimPath(Sdf.Path(settings_path))
 
     return recorder
 
@@ -371,12 +390,14 @@ def _render_hydra(node, output_image):
         logger.error("Render: %s", exc)
         return
 
-    camera = _resolve_camera(node, stage)
+    settings_path = _resolve_settings_path(node, stage)
+
+    camera = _resolve_camera(node, stage, settings_path)
     if camera is None:
         logger.error("Render: no camera to render from — set Camera, or point Render Settings at one.")
         return
 
-    recorder = _make_recorder(node)
+    recorder = _make_recorder(node, settings_path)
     if recorder is None:
         return
 
@@ -481,8 +502,16 @@ def config():
 
         Parameters:
           - Render Settings: path of the RenderSettings prim to render. Wire a
-            Render Settings chunk's Reference output in here. Used to find a
-            camera when Camera is empty.
+            Render Settings chunk's Reference output in here. Left empty, the
+            stage's own renderSettingsPrimPath is used, which a Render Settings
+            chunk publishes by default.
+
+            In Hydra mode this is handed to the delegate, not just read for a
+            camera. A delegate implementing HdRenderSettings then walks the
+            RenderProducts and RenderVars it names and writes those files itself,
+            which is what makes a network's AOVs come out rather than a single
+            beauty frame. What a delegate does with it varies: Storm largely
+            ignores products, while hdPrman and hdVRay act on them.
           - Mode: Hydra renders in process through UsdAppUtils.FrameRecorder and is
             the default. Command shells out instead, for renderers with their own
             entry point (husk, a V-Ray standalone) and for keeping a delegate that

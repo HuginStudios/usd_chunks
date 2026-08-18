@@ -425,6 +425,7 @@ class _FakeRecorder:
         self.width = None
         self.complexity = None
         self.deleted = False
+        self.settings_path = None
 
     def SetRendererPlugin(self, plugin):
         self.plugin = plugin
@@ -437,6 +438,9 @@ class _FakeRecorder:
 
     def SetColorCorrectionMode(self, mode):
         self.mode = mode
+
+    def SetActiveRenderSettingsPrimPath(self, path):
+        self.settings_path = str(path)
 
     def Record(self, stage, camera, time_code, path):
         self.calls.append((time_code.GetValue(), path))
@@ -510,7 +514,7 @@ class TestHydraMode:
 
         fake = recorder or _FakeRecorder()
         monkeypatch.setattr(mod, "_hydra_available", lambda: True)
-        monkeypatch.setattr(mod, "_make_recorder", lambda _n: fake)
+        monkeypatch.setattr(mod, "_make_recorder", lambda _n, settings_path="": fake)
         return mod, rop, fake, stage
 
     def test_records_one_frame_by_default(self, monkeypatch, tmp_path):
@@ -531,6 +535,61 @@ class TestHydraMode:
 
         assert [c[0] for c in fake.calls] == [1.0, 2.0, 3.0]
         assert [c[1].endswith(n) for c, n in zip(fake.calls, ("0001.png", "0002.png", "0003.png"))]
+
+    def test_settings_prim_is_handed_to_the_delegate(self, monkeypatch, tmp_path):
+        """Not just read for a camera: a delegate implementing HdRenderSettings walks
+        the RenderProducts and RenderVars it names and writes those files itself, which
+        is what makes a network's AOVs come out instead of one beauty frame."""
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Hydra"
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+        rop.get_param("settings_path").value = settings.get_param("reference").value
+
+        from pxr import UsdGeom
+        UsdGeom.Camera.Define(stage, "/cameras/shotcam")
+
+        captured = {}
+        real_make = mod._make_recorder
+        monkeypatch.setattr(mod, "_hydra_available", lambda: True)
+
+        def _fake_make(node, settings_path=""):
+            captured["settings_path"] = settings_path
+            fake = _FakeRecorder()
+            if settings_path:
+                fake.SetActiveRenderSettingsPrimPath(settings_path)
+            return fake
+
+        monkeypatch.setattr(mod, "_make_recorder", _fake_make)
+        mod.commit(rop)
+
+        assert captured["settings_path"] == settings.get_param("reference").value
+
+    def test_settings_prim_falls_back_to_the_stage_metadatum(self, monkeypatch, tmp_path):
+        """A Render Settings chunk publishes renderSettingsPrimPath by default, so a
+        network that wired nothing should still render the settings it authored."""
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Hydra"
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+        assert not rop.get_param("settings_path").value
+
+        from pxr import UsdGeom
+        UsdGeom.Camera.Define(stage, "/cameras/shotcam")
+
+        captured = {}
+        monkeypatch.setattr(mod, "_hydra_available", lambda: True)
+        monkeypatch.setattr(
+            mod, "_make_recorder",
+            lambda node, settings_path="": (captured.setdefault("p", settings_path), _FakeRecorder())[1],
+        )
+        mod.commit(rop)
+
+        assert captured["p"] == settings.get_param("reference").value
 
     def test_never_shells_out(self, monkeypatch, tmp_path):
         """The whole point of the default mode — no subprocess, no PATH lookup."""
@@ -561,7 +620,7 @@ class TestHydraMode:
 
         fake = _FakeRecorder()
         monkeypatch.setattr(mod, "_hydra_available", lambda: True)
-        monkeypatch.setattr(mod, "_make_recorder", lambda _n: fake)
+        monkeypatch.setattr(mod, "_make_recorder", lambda _n, settings_path="": fake)
 
         mod.commit(rop)
         assert not fake.calls, "should bail before recording when there is no camera"
