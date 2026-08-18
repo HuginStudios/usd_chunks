@@ -25,28 +25,9 @@ _CONFORM_POLICIES = [
 
 _STAGE_SETTINGS_METADATA = "renderSettingsPrimPath"
 
-_DELEGATE_NONE = "None"
-
-#: Params that belong to the chunk itself and survive a delegate change. Everything else
-#: on the chunk was lofted from a renderer's settings definition and gets rebuilt.
-_FIXED = {
-    "primpath_location", "resolution", "pixel_aspect_ratio", "aspect_ratio_conform_policy",
-    "camera", "products", "included_purposes", "material_binding_purposes",
-    "rendering_color_space", "data_window_ndc", "disable_motion_blur",
-    "disable_depth_of_field", "set_stage_settings", "reference", "delegate",
-}
-
-
 def _delegate_defs():
-    """Renderer settings definitions by label, for the delegate menu."""
+    """Renderer settings definitions by label."""
     return {d.label: d for d in render_defs.iter_render_settings_defs()}
-
-
-def _clear_delegate_params(owner):
-    """Remove every param lofted from the previously selected delegate."""
-    for param in owner.get_my_params():
-        if param.name not in _FIXED:
-            owner.remove_param_or_group(param)
 
 
 #: Where a group parks the settings it has not built params for yet.
@@ -176,58 +157,56 @@ def _loft_group(owner, name, contents, authored):
     return True
 
 
-def _loft_delegate_params(owner, definition):
-    """Create the groups for a renderer's settings, filling in what is already needed.
+def _loft_delegate_params(owner):
+    """Give every installed renderer a group of its own settings.
 
-    render_defs.group_props follows the structure already in the names -- Settings splits
-    into Camera, ImageSampler, Options, and Options again into geom, light, mtl -- and
-    returns a tree, so this walks it. Params themselves are deferred to first expand.
+    All of them at once, not one selected renderer: a RenderSettings prim is meant to
+    carry several renderers' settings side by side, each in its own namespace and each
+    delegate ignoring the rest. That is how Houdini shows Karma and RenderMan together,
+    and it means nothing has to be switched here to match what the Render chunk is
+    actually rendering with.
+
+    Affordable only because the params inside are built on first expand -- a group per
+    renderer costs a header, not its settings.
     """
-    authored = _authored_settings(owner)
-    authored_leaves = {leaf for _path, leaf, _value in authored}
+    for definition in render_defs.iter_render_settings_defs():
+        _loft_group(owner, definition.label, render_defs.group_props(definition.props), set())
 
-    for group_name, contents in render_defs.group_props(definition.props).items():
-        _loft_group(owner, group_name, contents, authored_leaves)
 
-    # Re-apply saved values now the params exist. Load restores inputs: attributes in
-    # prim order, so a setting may well have been restored before the delegate that
-    # creates it, and that write would have found no param to land on.
-    for param_path, _leaf, value in authored:
-        param = owner.get_param(param_path)
-        if param is not None and value is not None and param.value != value:
-            param.value = value
+def _populate_groups_holding(node, leaves):
+    """Build the params of any group still holding one of these settings."""
+    for child in node.get_my_params():
+        if not hasattr(child, "get_my_params"):
+            continue
+        pending = getattr(child, _PENDING, None)
+        if pending:
+            if any(prop.name in leaves for prop in pending):
+                _populate(child)
+        else:
+            _populate_groups_holding(child, leaves)
 
 
 def _chunk_loaded(owner, notice, sender):
-    """Loft the delegate's settings for a chunk restored from a file.
+    """Put saved settings values back, building whichever groups hold them.
 
-    Needed as well as the param callback: load suppresses reactive notices while it
-    restores values, so setting delegate from the saved inputs:delegate never reaches
-    _delegate_changed, and the settings would come back as a bare standard chunk.
+    Needed as its own hook because load suppresses reactive notices while restoring
+    values, and because the params those values belong to are built lazily -- a setting
+    restored before its group was ever expanded would otherwise have nowhere to land.
     """
     _chunk = owner.get_chunk() if hasattr(owner, "get_chunk") else owner
-    if _chunk is None or _chunk.get_param("delegate") is None:
-        return
-    _delegate_changed(_chunk, notice, sender)
-
-
-def _delegate_changed(owner, notice, sender):
-    _chunk = owner.get_chunk()
     if _chunk is None:
         return
 
-    _clear_delegate_params(_chunk)
-
-    label = _chunk.get_param("delegate").value
-    if not label or label == _DELEGATE_NONE:
+    entries = _authored_settings(_chunk)
+    if not entries:
         return
 
-    definition = _delegate_defs().get(label)
-    if definition is None:
-        logger.warning("Render Settings: no renderer settings named %r are installed here.", label)
-        return
+    _populate_groups_holding(_chunk, {leaf for _path, leaf, _value in entries})
 
-    _loft_delegate_params(_chunk, definition)
+    for param_path, _leaf, value in entries:
+        param = _chunk.get_param(param_path)
+        if param is not None and value is not None and param.value != value:
+            param.value = value
 
 
 def _set_stage_settings_path(stage, prim_path):
@@ -253,41 +232,35 @@ def _author_delegate_settings(node, prim):
     layer unreadable in a diff -- the same reason chunk params only create an inputs:
     attribute once their value leaves the default.
     """
-    delegate_param = node.get_param("delegate")
-    if delegate_param is None:
-        return
+    for definition in render_defs.iter_render_settings_defs():
+        touched = False
 
-    label = delegate_param.value
-    if not label or label == _DELEGATE_NONE:
-        return
+        for prop in definition.props:
+            param = node.get_param(prop.name)
+            if param is None:
+                continue  # its group has never been opened, so it cannot have changed
 
-    definition = _delegate_defs().get(label)
-    if definition is None:
-        return
+            value = param.value
+            if value is None or value == prop.default:
+                continue
 
-    if definition.schema_name:
-        # AddAppliedSchema rather than ApplyAPI: the schema's library is not loaded
-        # until something uses it, so the TfType ApplyAPI wants is not resolvable here.
-        prim.AddAppliedSchema(definition.schema_name)
+            value_type = Sdf.ValueTypeNames.Find(prop.sdf_type)
+            if not value_type:
+                continue
 
-    for prop in definition.props:
-        param = node.get_param(prop.name)
-        if param is None:
-            continue
+            attr = prim.CreateAttribute(prop.attr_name, value_type)
+            try:
+                attr.Set(value)
+                touched = True
+            except Exception as exc:  # noqa: BLE001 - a param value this attr cannot hold
+                logger.debug("Render Settings: could not author %s: %s", prop.attr_name, exc)
 
-        value = param.value
-        if value is None or value == prop.default:
-            continue
-
-        value_type = Sdf.ValueTypeNames.Find(prop.sdf_type)
-        if not value_type:
-            continue
-
-        attr = prim.CreateAttribute(prop.attr_name, value_type)
-        try:
-            attr.Set(value)
-        except Exception as exc:  # noqa: BLE001 - a param value this attr cannot hold
-            logger.debug("Render Settings: could not author %s: %s", prop.attr_name, exc)
+        # Only claim the schema for a renderer that actually has settings here, so an
+        # installed-but-unused renderer leaves no trace on the prim.
+        if touched and definition.schema_name:
+            # AddAppliedSchema rather than ApplyAPI: the schema's library is not loaded
+            # until something uses it, so the TfType ApplyAPI wants is not resolvable.
+            prim.AddAppliedSchema(definition.schema_name)
 
 
 def _token_list(value):
@@ -353,13 +326,7 @@ def main():
         ),
     ])
 
-    delegate = chunk.Menu(
-        "delegate", "Delegate",
-        menu_items=[_DELEGATE_NONE] + sorted(_delegate_defs()),
-        default_value=_DELEGATE_NONE,
-    )
-    delegate.add_callback(_delegate_changed, send_on_create=False)
-    chunk_api.add_param(delegate)
+    _loft_delegate_params(chunk_api)
     chunk_api.add_callback(
         _chunk_loaded,
         notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED,
@@ -439,15 +406,8 @@ def execute(node):
 
 
 def config():
-    # One menu entry per renderer whose settings this USD can describe, so V-Ray shows
-    # up because Chaos ships a schema rather than because anything here knows about
-    # V-Ray. Empty in a runtime with no renderer plugins, which is the right answer
-    # there rather than an error.
-    variants = [(label, {"delegate": label}) for label in sorted(_delegate_defs())]
-
     return chunk.DefaulConfig(
         category=chunk.StandardCategory.UTILS,
-        variants=variants,
         description="""
         Render Settings chunk — creates a UsdRender.Settings prim describing one
         render: its resolution, the camera it uses, and the products it writes.
@@ -488,24 +448,31 @@ def config():
             runtime state that never lands in a saved scene file. A handed-off file
             therefore carries the RenderSettings prim but not the pointer to it;
             tell the renderer the path explicitly in that case.
-          - Delegate: which renderer's own settings to expose alongside the standard
-            ones. The menu lists every renderer this USD build can describe, and each
-            also appears as its own entry in the chunk menu.
-
-            Selecting one lofts that renderer's settings onto the chunk, grouped the
-            way its own UI groups them and collapsed by default -- V-Ray declares 258
-            of them. Only values changed from their default are authored, as
-            namespaced attributes on the RenderSettings prim (vray:..., ri:...), which
-            is how every renderer reads its settings: Hydra gathers them and each
-            delegate picks out the namespace it owns. The matching API schema is
-            applied at the same time where there is one.
-
-            Nothing here is renderer-specific. A renderer appears because it declares
-            its settings in a way USD can read -- V-Ray ships an applied API schema,
-            RenderMan registers .args files into the shader registry -- so installing
-            one is all it takes for it to show up.
           - Reference (output): the authored prim path, for wiring into a Render
             chunk.
+
+        Every installed renderer also gets a group of its own settings alongside the
+        standard ones -- all of them at once, not one selected renderer. A RenderSettings
+        prim is meant to carry several renderers side by side, each in its own namespace
+        and each delegate ignoring the rest, which is how Houdini shows Karma and
+        RenderMan together. So nothing has to be switched here to match whatever the
+        Render chunk renders with, and one renderer's settings are never lost by looking
+        at another's.
+
+        Those settings are grouped the way the renderer's own UI groups them and
+        collapsed by default; V-Ray declares 258. The params inside a group are built the
+        first time it is expanded, since building all of them up front took twenty
+        seconds before a single one was visible.
+
+        Only values changed from their default are authored, as namespaced attributes on
+        the RenderSettings prim (vray:..., ri:...) -- Hydra gathers those and hands each
+        delegate the namespace it owns. A renderer's API schema is applied only once it
+        actually has a setting here, so an installed but unused renderer leaves no trace.
+
+        Nothing here is renderer-specific. A renderer appears because it declares its
+        settings in a way USD can read -- V-Ray ships an applied API schema, RenderMan
+        registers .args files into the shader registry -- so installing one is all it
+        takes for it to show up.
 
         Everything authored is standard UsdRender scene description, readable by
         any renderer whether or not usd_chunks is installed.

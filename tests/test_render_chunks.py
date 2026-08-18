@@ -270,40 +270,35 @@ class TestDelegateSettings:
         mod = importlib.import_module("scripts.render_settings")
         return mod, _make(scene, mod, "render_settings")
 
-    def test_no_delegate_by_default(self):
+    @requires_renderer
+    def test_every_installed_renderer_gets_a_group(self):
+        """All of them at once, not one selected renderer -- a RenderSettings prim is
+        meant to carry several side by side, each in its own namespace."""
         scene, _stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
 
-        assert settings.get_param("delegate").value == "None"
+        names = {p.name for p in settings.get_my_params()}
+        for definition in _schema_delegates():
+            assert definition.label in names
 
-    def test_variants_offer_every_describable_renderer(self):
-        mod = importlib.import_module("scripts.render_settings")
-        labels = [label for label, _presets in mod.config().variants]
+    def test_there_is_nothing_to_switch(self):
+        """No delegate selector: one would have to be kept in step with the Render
+        chunk's own renderer menu, and picking one would hide the others' settings."""
+        scene, _stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
 
-        from usd_chunks import render_defs
-        assert labels == sorted(d.label for d in render_defs.iter_render_settings_defs())
+        assert settings.get_param("delegate") is None
 
     @requires_renderer
-    def test_selecting_a_delegate_lofts_its_settings(self):
-        scene, _stage = _setup_stage()
+    def test_an_untouched_renderer_leaves_no_trace_on_the_prim(self):
+        """Installed is not the same as used: a renderer nobody has set a setting on
+        should not claim its API schema on the prim."""
+        scene, stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
-        before = len(settings.get_my_params())
+        settings.execute()
 
-        settings.get_param("delegate").value = _schema_delegates()[0].label
-
-        assert len(settings.get_my_params()) > before
-
-    @requires_renderer
-    def test_switching_delegates_clears_the_previous_ones(self):
-        scene, _stage = _setup_stage()
-        _mod, settings = self._settings_chunk(scene)
-        label = _schema_delegates()[0].label
-
-        settings.get_param("delegate").value = label
-        lofted = len(settings.get_my_params())
-        settings.get_param("delegate").value = "None"
-
-        assert len(settings.get_my_params()) < lofted
+        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        assert list(prim.GetAppliedSchemas()) == []
 
     @requires_renderer
     def test_groups_start_empty_and_fill_on_expand(self):
@@ -313,12 +308,20 @@ class TestDelegateSettings:
 
         scene, _stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
-        settings.get_param("delegate").value = _schema_delegates()[0].label
+        # every renderer is lofted on creation; nothing to select
 
-        group = next(
-            g for g in settings.get_my_params()
-            if hasattr(g, "get_my_params") and getattr(g, "_pending_settings", None)
-        )
+        def first_pending(node):
+            for child in node.get_my_params():
+                if not hasattr(child, "get_my_params"):
+                    continue
+                if getattr(child, "_pending_settings", None):
+                    return child
+                if found := first_pending(child):
+                    return found
+            return None
+
+        group = first_pending(settings)
+        assert group is not None
         assert len(group.get_my_params()) == 0
 
         group.unset_state(ChunkFlags.State.COLLAPSED)
@@ -333,7 +336,7 @@ class TestDelegateSettings:
         scene, _stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
         definition = _schema_delegates()[0]
-        settings.get_param("delegate").value = definition.label
+        # every renderer is lofted on creation; nothing to select
 
         target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
         _populate_containing(settings, target.name)
@@ -352,21 +355,27 @@ class TestDelegateSettings:
         from usd_chunks.plugins.chunk_usd import load_chunks
         load_chunks(stage2, scene2)
 
+        from usd_chunks.plugins.usdchunks_cli import _all_chunks
+
         reloaded = next(
-            c for c in scene2.get_chunks()
-            if c.get_param("delegate") is not None
+            (c for c in _all_chunks(scene2.get_chunks())
+             if c.get_param("set_stage_settings") is not None),
+            None,
         )
-        assert reloaded.get_param("delegate").value == definition.label
+        assert reloaded is not None, "the Render Settings chunk should come back on load"
         restored = reloaded.get_param(target.name)
         assert restored is not None, "the param holding a saved value must exist after load"
         assert restored.value is True
 
     @requires_renderer
-    def test_api_schema_is_applied_to_the_settings_prim(self):
+    def test_api_schema_is_applied_once_a_setting_is_used(self):
         scene, stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
         definition = _schema_delegates()[0]
-        settings.get_param("delegate").value = definition.label
+
+        target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
+        _populate_containing(settings, target.name)
+        settings.get_param(target.name).value = True
         settings.execute()
 
         prim = stage.GetPrimAtPath(settings.get_param("reference").value)
@@ -378,7 +387,7 @@ class TestDelegateSettings:
         scene, stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
         definition = _schema_delegates()[0]
-        settings.get_param("delegate").value = definition.label
+        # every renderer is lofted on creation; nothing to select
         settings.execute()
 
         prim = stage.GetPrimAtPath(settings.get_param("reference").value)
@@ -393,7 +402,7 @@ class TestDelegateSettings:
         scene, stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
         definition = _schema_delegates()[0]
-        settings.get_param("delegate").value = definition.label
+        # every renderer is lofted on creation; nothing to select
 
         target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
         _populate_containing(settings, target.name)
