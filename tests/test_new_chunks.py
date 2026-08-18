@@ -571,3 +571,74 @@ class TestBindMaterialResilience:
         c.get_param("material_path").value = ""
         self.mod.execute(node)
         assert not self._bound(stage), "emptying the field must still clear the binding"
+
+
+class TestAMDMaterialXCaching:
+    """Applying a material must not re-download a package already in the cache.
+
+    _download_and_apply is a reactive hook: it re-runs on every scene load and on every
+    recook (diving into the node and back out is two). It used to do a package-metadata
+    lookup plus a full zip download every single time, re-extracting a package already
+    sitting in the cache dir -- measured at ~3.5s of pure SSL/socket time out of a 4.2s
+    scene load, and the same cost again on each dive.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+        """main() builds Qt widgets."""
+
+    def setup_method(self):
+        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
+        _load("scripts.reference")
+        _load("scripts.bind_material")
+
+    def test_second_apply_hits_the_cache_and_makes_no_network_call(self, monkeypatch, tmp_path):
+        stage = Usd.Stage.CreateInMemory()
+
+        class _StageScene(_DummyScene):
+            def get_stage(self):
+                return stage
+
+        scene = _StageScene()
+        chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        init_chunk_usd(stage, scene)
+
+        c = self.mod.main()
+        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c.get_param("target_primpath").value = "/geo/mesh"
+        c.get_param("mat_scope").value = "/materials"
+        c.get_param("cache_dir").value = str(tmp_path)
+        scene.add_chunk(c)
+
+        self.mod._results_by_title["Gold"] = {
+            "title": "Gold", "packages": ["pkg1"], "mtlx_material_name": "Gold",
+        }
+        picks: list = []
+        gets: list = []
+
+        def _pick(package_ids, resolution):
+            picks.append(resolution)
+            return {"file_url": "http://fake/pkg.zip", "label": "2k"}
+
+        def _get(url, timeout=120):
+            gets.append(url)
+            return _FakeZipResponse(TestAMDMaterialXLibraryChildCreation._fake_zip_bytes())
+
+        monkeypatch.setattr(self.mod, "_pick_package", _pick)
+        monkeypatch.setattr(self.mod.requests, "get", _get)
+
+        c.get_param("picked_title").value = "Gold"
+        self.mod.execute(c)
+        assert gets, "test setup must be faithful -- the first apply must actually download"
+        first_downloads = len(gets)
+
+        # Re-run exactly as a reload or a dive in/out would.
+        self.mod.execute(c)
+
+        assert len(gets) == first_downloads, (
+            "a package already extracted in the cache dir must not be downloaded again"
+        )
+        assert len(picks) == 1, (
+            "a cache hit must also skip the package-metadata lookup -- that is a network call too"
+        )
+        assert c.get_param("resolved_material_path").value == "/materials/Gold"

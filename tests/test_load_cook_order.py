@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import weakref
 
-import pytest
 from pxr import Sdf, Usd, UsdShade
 
 from usd_chunks import chunk_registry

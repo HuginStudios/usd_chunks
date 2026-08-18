@@ -376,6 +376,29 @@ def _create_child(module_key: str, parent):
     return child
 
 
+def _cached_mtlx(cache_dir: str, title: str, resolution: str) -> str | None:
+    """Path to an already-extracted .mtlx for this material+resolution, or None.
+
+    _download_and_apply extracts each package to <cache_dir>/<Title>_<label>, and
+    _pick_package only ever picks a label starting with the requested resolution -- so
+    matching that same prefix is what keeps a cache hit honest about resolution.
+    """
+    if not cache_dir or not os.path.isdir(cache_dir):
+        return None
+    prefix = _safe_prim_name(f"{title}_{resolution}")
+    for entry in sorted(os.listdir(cache_dir)):
+        if not entry.startswith(prefix):
+            continue
+        mat_dir = os.path.join(cache_dir, entry)
+        if not os.path.isdir(mat_dir):
+            continue
+        for root, _dirs, files in os.walk(mat_dir):
+            for name in sorted(files):
+                if name.endswith(".mtlx"):
+                    return os.path.join(root, name).replace("\\", "/")
+    return None
+
+
 def _download_and_apply(node, title: str) -> str:
     resolution = node.get_param("resolution", chunk.is_inst(chunk.Menu)).value
     mat_scope = (node.get_param("mat_scope", chunk.is_param_t(str)).value or "/materials").rstrip("/")
@@ -387,33 +410,43 @@ def _download_and_apply(node, title: str) -> str:
     if not mat:
         return f"Material '{title}' not found in catalog"
 
-    try:
-        pkg = _pick_package(mat.get("packages", []), resolution)
-    except Exception as exc:
-        return f"Package lookup failed: {exc}"
+    # Reuse an already-extracted package before touching the network. This function is a
+    # reactive hook: it re-runs on every scene load and on every recook (diving into the
+    # node and back out is two), and it used to do a package-metadata lookup plus a full
+    # zip download every single time, re-extracting a package already sitting in the cache
+    # dir. That was ~3.5s of pure SSL/socket time on a measured 4.2s scene load, and the
+    # same cost again on each dive. The extracted directory is named after the resolution
+    # (the package label starts with it, see _pick_package), so a cache hit here still
+    # honours a resolution change -- that just misses and falls through to the download.
+    mtlx_path = _cached_mtlx(cache_dir, title, resolution)
+    if not mtlx_path:
+        try:
+            pkg = _pick_package(mat.get("packages", []), resolution)
+        except Exception as exc:
+            return f"Package lookup failed: {exc}"
 
-    if not pkg:
-        return "No package found"
-    file_url = pkg.get("file_url")
-    if not file_url:
-        return "Package has no download URL"
+        if not pkg:
+            return "No package found"
+        file_url = pkg.get("file_url")
+        if not file_url:
+            return "Package has no download URL"
 
-    mat_dir = os.path.join(cache_dir, _safe_prim_name(f"{title}_{pkg.get('label', resolution)}"))
-    os.makedirs(mat_dir, exist_ok=True)
+        mat_dir = os.path.join(cache_dir, _safe_prim_name(f"{title}_{pkg.get('label', resolution)}"))
+        os.makedirs(mat_dir, exist_ok=True)
 
-    try:
-        resp = requests.get(file_url, timeout=120)
-        resp.raise_for_status()
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-            z.extractall(mat_dir)
-            names = z.namelist()
-    except Exception as exc:
-        return f"Download failed: {exc}"
+        try:
+            resp = requests.get(file_url, timeout=120)
+            resp.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                z.extractall(mat_dir)
+                names = z.namelist()
+        except Exception as exc:
+            return f"Download failed: {exc}"
 
-    mtlx_path = next(
-        (os.path.join(mat_dir, n).replace("\\", "/") for n in names if n.endswith(".mtlx")),
-        None,
-    )
+        mtlx_path = next(
+            (os.path.join(mat_dir, n).replace("\\", "/") for n in names if n.endswith(".mtlx")),
+            None,
+        )
     if not mtlx_path:
         return "No .mtlx file in package"
 
