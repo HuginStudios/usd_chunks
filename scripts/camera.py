@@ -187,6 +187,21 @@ def execute(node):
 
 def config():
     return chunk.DefaulConfig(
+        # Focus distance is a scalar handle: one shape, one driven param. axis="Z" because
+        # the direction *is* the meaning here -- focus distance runs along the camera's -Z,
+        # and a handle that slid in any direction would lose that. It also gives a native
+        # host enough to build a real linear handle instead of a generic drag.
+        #
+        # The anchor is left to inference: primpath_location by name, since this chunk never
+        # sets PRIM_SELECTION on it.
+        #
+        # Note usd-guides already draws a focus reticle at fz = -focus_dist. The viewport
+        # work is promoting that existing curve to interactive, not drawing a second one on
+        # top of it.
+        gizmos=[
+            chunk.Gizmo("zdist", type="cube", label="Focus Distance",
+                        axis="Z", driver="focusDistance"),
+        ],
         category=chunk.StandardCategory.EXAMPLES,
         description="""
         Camera chunk — creates a UsdGeom.Camera prim and exposes its lens

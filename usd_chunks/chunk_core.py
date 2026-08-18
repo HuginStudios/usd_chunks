@@ -4133,6 +4133,36 @@ GIZMO_EDIT_MODES = frozenset({"onPrimSelection", "onChunkSelection", "always"})
 GIZMO_DEFAULT_EDIT_MODE = "onPrimSelection"
 # The slot a singular (string) driver binds to.
 GIZMO_VALUE_SLOT = "value"
+# Types needing more than one slot, and so more than one param group to drive. Only
+# `transform` genuinely is: `rotate` and `scale` each drive a single three-float slot, the
+# same shape `translate` does, so they sugar onto a Vector perfectly well.
+GIZMO_MULTI_SLOT_TYPES = frozenset({"transform"})
+
+
+def check_gizmo_sugar(owner: str, gizmo_type: str, scalar: bool) -> None:
+    """Validate a `gizmo=` kwarg against the param it was written on.
+
+    The whitelist is by **arity, not param class**: a shape type drives one value so it
+    belongs on a scalar param, a manipulator type drives three so it belongs on a Vector, and
+    `transform` needs several slots at once so it cannot be sugared at all.
+
+    Raises at param construction -- i.e. at chunk load -- rather than when a handle is first
+    resolved. `gizmo="transform"` on a Slider would otherwise silently bind one axis, which
+    looks like a broken handle rather than a broken declaration.
+    """
+    if gizmo_type in GIZMO_MULTI_SLOT_TYPES:
+        raise ValueError(
+            f"Param {owner!r}: gizmo={gizmo_type!r} drives several slots and cannot be sugared. "
+            f"Declare it as a Gizmo in config() with an explicit driver map."
+        )
+
+    allowed = GIZMO_SHAPE_TYPES if scalar else (GIZMO_MANIPULATOR_TYPES - GIZMO_MULTI_SLOT_TYPES)
+    if gizmo_type not in allowed:
+        kind = "a scalar param" if scalar else "a Vector"
+        raise ValueError(
+            f"Param {owner!r}: gizmo={gizmo_type!r} cannot go on {kind}. "
+            f"Valid here: {sorted(allowed)}"
+        )
 
 
 @attrs.define

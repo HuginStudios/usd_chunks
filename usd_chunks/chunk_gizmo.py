@@ -20,6 +20,7 @@ edit wiped by the next execute.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 from typing import Any, Iterable, Optional
@@ -91,9 +92,58 @@ def _slot_from_driver_attr(attr_name: str, gizmo_name: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def get_gizmos(chunk: "core.ChunkBase") -> list:
-    """The gizmos a chunk declares, or an empty list. Safe on any chunk."""
+    """Every gizmo a chunk declares -- in config(), plus any `gizmo=` sugar on its params.
+
+    Desugaring happens here rather than at load because it needs both halves at once: the
+    type token lives on the param (built in main()) and the resulting Gizmo belongs beside
+    the config's list (built in config()). The two are assembled at different times, and
+    every caller that wants gizmos already comes through this function.
+
+    The sugar's *validation* is not deferred -- that runs in the param's constructor, so a
+    bad `gizmo=` still fails at load rather than at first drag.
+    """
     config = chunk.get_config() if hasattr(chunk, "get_config") else None
-    return list(getattr(config, "gizmos", None) or ())
+    gizmos = list(getattr(config, "gizmos", None) or ())
+
+    declared = {g.name for g in gizmos}
+    for sugared in _sugared_gizmos(chunk):
+        # An explicit Gizmo of the same name wins: the escalation path from sugar to config
+        # form is "write the full one", and that has to actually replace the short one.
+        if sugared.name not in declared:
+            gizmos.append(sugared)
+    return gizmos
+
+
+def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
+    """`gizmo=` kwargs on this chunk's params, as Gizmo records.
+
+    Scalar params drive the singular `value` slot; a Vector drives the slot its type names
+    (`gizmo="translate"` -> the translate slot). Sugar is type-only, so anything wanting an
+    axis, an editmode, several slots or a cross-chunk driver escalates to the config form --
+    exactly one escalation path, with no tuple-or-dict middle ground between them.
+    """
+    sugared = []
+    for path, param in _iter_params(chunk):
+        if gizmo_type := getattr(param, "gizmo", None):
+            sugared.append(core.GizmoBase(
+                name=param.name,
+                type=gizmo_type,
+                label=param.label or param.name,
+                driver={core.GIZMO_VALUE_SLOT: (path,)},
+            ))
+
+    for path, vector in _iter_vectors(chunk):
+        if gizmo_type := getattr(vector, "gizmo", None):
+            # One entry, not three. A Vector is stored as a single vector-typed attribute
+            # (inputs:aim), not as inputs:aim:x/y/z -- so the driver connects to the vector
+            # itself and write-back assigns the whole value.
+            sugared.append(core.GizmoBase(
+                name=vector.name,
+                type=gizmo_type,
+                label=vector.label or vector.name,
+                driver={gizmo_type: (path,)},
+            ))
+    return sugared
 
 
 def find_gizmo(chunk: "core.ChunkBase", name: str):
@@ -198,6 +248,17 @@ def _iter_params(obj, prefix: str = ""):
             yield from _iter_params(param, path)
 
 
+def _iter_vectors(obj, prefix: str = ""):
+    """(path, vector) for every ChunkVectorBase under obj. Vectors are skipped by
+    _iter_params, which walks scalars only."""
+    for param in obj.get_my_params():
+        path = f"{prefix}.{param.name}" if prefix else param.name
+        if isinstance(param, core.ChunkVectorBase):
+            yield path, param
+        elif not isinstance(param, (core.ChunkParamBase, core.ChunkListGroupBase)):
+            yield from _iter_vectors(param, path)
+
+
 def _param_path(chunk: "core.ChunkBase", entry: str) -> str:
     """The full dotted path of a driven param, from either its path or its bare name.
 
@@ -206,7 +267,7 @@ def _param_path(chunk: "core.ChunkBase", entry: str) -> str:
     turning the declared entry into an attribute name would author a connection to
     `inputs:tx`, which resolves to nothing and fails silently.
     """
-    for path, param in _iter_params(chunk):
+    for path, param in itertools.chain(_iter_params(chunk), _iter_vectors(chunk)):
         if path == entry or param.name == entry:
             return path
     raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")

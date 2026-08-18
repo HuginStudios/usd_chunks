@@ -68,6 +68,7 @@ from usd_chunks.chunk_core import (
     ChunkBase,
     ChunkConfig as _cfg,
     GizmoBase as _gizmo,
+    check_gizmo_sugar as _check_gizmo_sugar,
     ChunkParamBase,
     ChunkGroupBase,
     ChunkVectorBase,
@@ -176,6 +177,12 @@ class Vector(ChunkVectorBase):
 
     # Override defaults
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+    gizmo: Optional[str] = field(default=None)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        if self.gizmo is not None:
+            _check_gizmo_sugar(self.name, self.gizmo, scalar=False)
 
 
 def _apply_usd_hard_limits(param, attr) -> None:
@@ -205,6 +212,12 @@ class Slider(ChunkParamBase[int | float]):
     max_value: Optional[float | int] = field(default=None)
     is_int: bool = field(default=False)
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+    gizmo: Optional[str] = field(default=None)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        if self.gizmo is not None:
+            _check_gizmo_sugar(self.name, self.gizmo, scalar=True)
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
