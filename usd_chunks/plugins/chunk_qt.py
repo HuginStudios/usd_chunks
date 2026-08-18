@@ -558,7 +558,19 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         ctx = view_chunk.get_context()
         if not ctx:
             return
+        # A view chunk's context is not always a TAB: a view living inside a chunkgroup
+        # belongs to that group, which only has a tab of its own while the user is dived
+        # into it. get_chunk_context_index then returns None, and passing that straight to
+        # get_chunk_context raised TypeError out of QTabWidget.widget(None) -- from inside
+        # the CHUNK_LOADED dispatch, which aborted the whole rest of load_chunks' restore
+        # pass: the remaining chunks never got their DAG dependencies rebuilt or their
+        # execute() called. Live-reported as a saved scene reopening with a chunkgroup's
+        # inner chunks (an AMD MaterialX Library's Reference/BindMaterial) never taking
+        # effect -- an empty layer and the original material -- until the user dived into
+        # the group and back out, which finally cooked them.
         idx = self.tab_widget.get_chunk_context_index(ctx)
+        if idx is None:
+            return
         tab_cw = self.tab_widget.get_chunk_context(idx)
         if tab_cw is not None:
             tab_cw._reorder_chunk_widget_after(view_chunk, sources[0])

@@ -5,7 +5,7 @@ import types as _types
 from pathlib import Path
 
 import pytest
-from pxr import Gf, Sdf, Usd, UsdGeom
+from pxr import Gf, Sdf, Tf, Usd, UsdGeom
 
 from usd_chunks.plugins.chunk_usd import (
     _CHUNK_PRIM_TYPENAME,
@@ -16,6 +16,7 @@ from usd_chunks.plugins.chunk_usd import (
     _INPUTS_PREFIX,
     _author_prim,
     _load_wire_inputs,
+    _reorder_graph_layers_by_rank,
     ChunkStageSync,
     export_chunks,
     initialize as _chunk_usd_init,
@@ -1026,6 +1027,48 @@ def test_external_prim_deactivate_disables_chunk() -> None:
     assert not c.has_state(chunk.ChunkFlags.State.DISABLED)
 
 
+def test_on_objects_changed_survives_a_none_sender() -> None:
+    """Live-reported: connecting a wire crashed with AttributeError:
+    'NoneType' object has no attribute 'GetRootLayer' inside _on_objects_changed --
+    Tf.Notice.RegisterGlobally's sender argument was observed arriving as None for a
+    real Usd.Notice.ObjectsChanged in the app, even though sender.GetRootLayer() assumed
+    it was always a valid stage. _on_objects_changed must resolve the stage from
+    notice.GetStage() instead, exactly like _on_contents_changed already does for this
+    same class of problem, so a None sender is harmless.
+    """
+    stage = Usd.Stage.CreateInMemory()
+
+    class _SyncScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _SyncScene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+    sync = ChunkStageSync()
+
+    c = _chunk_with_module("none_sender")
+    scene.add_chunk(c)
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/none_sender")
+
+    # A Usd.Notice wrapper is only valid for the duration of the dispatch that delivers
+    # it -- storing one and calling methods on it later segfaults. So the None-sender
+    # replay has to happen synchronously from inside a second, temporary listener on the
+    # same real dispatch, not from a notice captured and reused afterward.
+    called = []
+
+    def _replay_with_none_sender(notice, _real_sender):
+        called.append(1)
+        sync._on_objects_changed(notice, None)  # must not raise
+
+    listener = Tf.Notice.RegisterGlobally(Usd.Notice.ObjectsChanged, _replay_with_none_sender)
+    try:
+        prim.SetActive(False)
+    finally:
+        listener.Revoke()
+    assert called, "test setup must be faithful -- a real notice must have fired"
+
+
 # ---------------------------------------------------------------------------
 # ChunkStageSync lifecycle: chunk disable / enable toggles prim active state
 # ---------------------------------------------------------------------------
@@ -1999,6 +2042,231 @@ def test_recook_recurses_into_group() -> None:
 
     recook_for_view(stage, scene, _Root(), None)
     assert inner_node.is_blocked()  # group hidden → inner tree muted
+
+
+def test_focusing_a_group_keeps_its_own_upstream_composed() -> None:
+    """Diving into a group must not mute the content that group's own chunks act ON.
+
+    Live-reported: diving into an AMD MaterialX Library node dropped the material it had
+    just applied to a mesh, and diving back out never restored it. recook_focus mutes +
+    blocks everything outside the focused group's subtree -- which included the group's
+    OWN upstream (the Sublayer bringing the mesh onto the stage at all). The group's
+    inner chunks then executed against a stage where their target prim didn't exist, so
+    they authored nothing, and since a chunk's execute() Clear()s its own layer first,
+    the binding it had authored moments earlier was destroyed in the process. Nothing
+    re-executes those inner chunks on the way back out (their params never changed), so
+    the loss was permanent.
+
+    Muting a focused group's upstream was never the point of that pass -- it exists to
+    stop the parent tab's active view and unrelated sibling branches bleeding through.
+    """
+    import weakref
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, recook_focus
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # upstream_a -> upstream_b -> group  (the group's own input chain), plus an entirely
+    # unrelated sibling branch that SHOULD still be muted while the group has focus.
+    upstream_a = _mk(primmod)
+    upstream_b = _mk(primmod)
+    _wire(upstream_b, upstream_a)
+
+    unrelated = _mk(primmod)
+
+    grp = _mk(grpmod)
+    _wire(grp, upstream_b)
+
+    scene._current_context = weakref.ref(grp)
+    inner_node = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner_node)
+    scene._current_context = None
+
+    lm = chunk_registry.ChunkLayerManager()
+    recook_focus(stage, scene, grp, inner_view)
+
+    for name, c in (("upstream_a", upstream_a), ("upstream_b", upstream_b)):
+        assert not c.is_blocked(), f"{name} feeds the focused group -- it must stay unblocked"
+        layer = lm.get_layer(c)
+        assert layer is not None and not stage.IsLayerMuted(layer.identifier), (
+            f"{name} feeds the focused group -- its content must stay composed, not muted"
+        )
+
+    # The companion check: focus still hides what it is supposed to hide.
+    assert unrelated.is_blocked(), "an unrelated branch must still be blocked while a group has focus"
+
+
+def test_reorder_graph_layers_leaves_unranked_idents_where_they_were() -> None:
+    """Live-reported: a chunkgroup's own content (Reference/BindMaterial, closest to its
+    inner view) ranked WEAKER than unrelated sibling chunks in the same tab (Transform,
+    Sublayer), even though those siblings have nothing to do with the group's exec chain.
+
+    A chunkgroup's own children share their parent's physical graph layer, so this SAME
+    layer's subLayerPaths gets reordered once per context, recursively: the group's own
+    inner recook runs first and correctly ranks its children by proximity to ITS view, but
+    the OUTER context's own recook then runs the SAME reorder over the SAME layer with an
+    ident_rank that knows nothing about those children -- a global sort defaulting unknown
+    idents to the single weakest rank silently stomped the inner call's ordering.
+
+    _reorder_graph_layers_by_rank must only move idents it has a rank for, leaving every
+    other ident (a nested group's own children, an entirely unrelated chunk) exactly where
+    a more specific call already put it.
+    """
+    layer = Sdf.Layer.CreateAnonymous("graph_test")
+    layer.subLayerPaths = ["unrelated_a", "known_weak", "known_strong", "unrelated_b"]
+
+    # This call only knows about two of the four idents -- as the outer context's own
+    # recook would, when the other two belong to a nested group's inner cook_list instead.
+    _reorder_graph_layers_by_rank([layer], {"known_weak": 0, "known_strong": 1})
+
+    result = list(layer.subLayerPaths)
+    assert result.index("known_strong") < result.index("known_weak"), (
+        "higher-ranked ident must end up strongest (earlier) among the ranked idents"
+    )
+    assert result[0] == "unrelated_a" and result[3] == "unrelated_b", (
+        "idents this call has no rank for must stay in their original slots, not get "
+        "shoved to the bottom by a default rank"
+    )
+
+
+def test_ranked_group_children_inherit_the_groups_own_rank() -> None:
+    """End-to-end companion to test_reorder_graph_layers_leaves_unranked_idents_where_they_were:
+    the unit test proves a group's children no longer get actively demoted; this proves they
+    also get correctly PROMOTED to rank alongside the group once it's wired into a real view.
+
+    Real reported wiring: Sublayer -> Transform -> AMD MaterialX Library (a chunkgroup) ->
+    View. AMD ranking above Transform/Sublayer once wired in was already correct (a ranked
+    group is an ordinary cook_list entry). What stayed broken: AMD's own inner children
+    (Reference -> BindMaterial -> AMD's own inner view) are ranked by a completely separate,
+    incomparable numbering scheme -- the group's own inner recook's cook_list -- so from the
+    outer recook's perspective they were simply invisible and stayed wherever they were first
+    inserted, nowhere near the group that actually produced them.
+
+    recook_for_view must give every descendant of a ranked group the group's own rank, so the
+    whole cluster (group + its children) moves together to sit above the group's outer
+    siblings, while the children's own correct relative order (from the group's inner recook)
+    survives via the stable sort.
+    """
+    import weakref
+    from usd_chunks.plugins.chunk_usd import recook_for_view, get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # Sublayer -> Transform, unrelated-to-the-group outer siblings.
+    sublayer = _mk(primmod)
+    transform = _mk(primmod)
+    _wire(transform, sublayer)
+
+    # The group, with its own chained children + inner view.
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    reference = _mk(primmod)
+    bind_material = _mk(primmod)
+    _wire(bind_material, reference)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, bind_material)
+    scene._current_context = None
+
+    # Real reported wiring: Sublayer -> Transform -> AMD(group) -> View.
+    _wire(grp, transform)
+    outer_view = _mk(viewmod)
+    _wire(outer_view, grp)
+
+    class _Root:
+        prim_path = _CHUNKS_ROOT
+
+    # One recook to settle everyone into a single shared graph-aggregator layer (each
+    # chunk has its own individual layer; those get sublayered under one graph layer per
+    # (graph_id, target)).
+    recook_for_view(stage, scene, _Root(), outer_view)
+
+    lm = chunk_registry.ChunkLayerManager()
+    idents = {
+        "reference": lm.get_layer(reference).identifier,
+        "bind_material": lm.get_layer(bind_material).identifier,
+        "grp": lm.get_layer(grp).identifier,
+        "transform": lm.get_layer(transform).identifier,
+        "sublayer": lm.get_layer(sublayer).identifier,
+    }
+    g_layer = next(
+        (gl for gl in lm.graph_layers.values() if set(idents.values()) <= set(gl.subLayerPaths)),
+        None,
+    )
+    assert g_layer is not None, (
+        "test setup must be faithful -- everything must share one physical graph layer"
+    )
+
+    # Scramble to the worst case -- the group's children dead last -- mirroring how the
+    # real bug actually manifested (insertion order alone doesn't reliably favor the
+    # correct outcome; a second recook, e.g. from diving out of the group's tab and back,
+    # is what has to re-establish it). Without the fix under test this scramble would
+    # simply persist, since bind_material/reference are what get shoved to the bottom and
+    # there's no wrong direction to test past that.
+    scrambled = [i for i in g_layer.subLayerPaths if i not in (idents["reference"], idents["bind_material"])]
+    scrambled += [idents["reference"], idents["bind_material"]]
+    g_layer.subLayerPaths = scrambled  # type: ignore
+
+    recook_for_view(stage, scene, _Root(), outer_view)
+
+    order = list(g_layer.subLayerPaths)
+    idx = {name: order.index(ident) for name, ident in idents.items()}
+    assert idx["bind_material"] < idx["reference"] < idx["grp"] < idx["transform"] < idx["sublayer"], (
+        f"expected bind_material < reference < grp < transform < sublayer (index 0 = strongest), got {idx}"
+    )
 
 
 def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode() -> None:

@@ -30,6 +30,7 @@ from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
 
 _PORT_RADIUS = 5
+_PORT_SNAP_PIXELS = 20  # on-screen click-tolerance radius for dropping a dragged wire near a port
 _NODE_WIDTH = 220
 _NODE_HEADER_H = 40
 
@@ -3356,6 +3357,23 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         and self._drag_target_ok(port)
                     )
 
+    def _nearest_target_port(self, scene_pos: QtCore.QPointF) -> Optional[ChunkPortItem]:
+        """Closest valid drop target to scene_pos within _PORT_SNAP_PIXELS on screen, if any."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return None
+        scale = self.transform().m11() or 1.0
+        max_dist = _PORT_SNAP_PIXELS / scale
+        best, best_dist = None, max_dist
+        for node in graph_scene._nodes.values():
+            for port in node._ports:
+                if not self._drag_target_ok(port):
+                    continue
+                dist = QtCore.QLineF(port.scenePos(), scene_pos).length()
+                if dist <= best_dist:
+                    best, best_dist = port, dist
+        return best
+
     def _finish_wire_drag(self, scene_pos: QtCore.QPointF) -> None:
         # Use items() instead of itemAt() so the rubber-band edge (Z=10) doesn't
         # occlude the port underneath it.
@@ -3363,6 +3381,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             (item for item in self.scene().items(scene_pos) if isinstance(item, ChunkPortItem)),
             None,
         )
+        # A pixel-perfect drop on the tiny port dot is hard to land, especially when zoomed
+        # out. If the cursor didn't land squarely on a valid target, snap to the nearest
+        # compatible port within a comfortable on-screen radius instead.
+        if hit is None or not self._drag_target_ok(hit):
+            snapped = self._nearest_target_port(scene_pos)
+            if snapped is not None:
+                hit = snapped
         graph_scene = self.scene()
         if hit is not None and self._drag_target_ok(hit):
             if hit.is_input == self._drag_src_port.is_input:
