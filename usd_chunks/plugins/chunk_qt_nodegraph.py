@@ -2451,6 +2451,50 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
+        # Bare D (disable toggle): identical fragility and identical gating to Delete above.
+        # Additionally gated on `not ctrl_down` because Ctrl+D is DUPLICATE, claimed by the
+        # Ctrl+C/V/D/X block further up -- this must only ever take the un-modified key.
+        # `not typing_in_proxy` matters more here than anywhere else: D is a printable
+        # character, so without it every "d" typed into a node's text field would toggle
+        # the node disabled instead of reaching the field.
+        if not typing_in_proxy and not ctrl_down and event.key() == QtCore.Qt.Key.Key_D:
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    view._toggle_disable_selected()
+                    event.accept()
+                    return True
+
+        # Escape: cancel an in-flight wire drag, otherwise drop the proxy focus -- the same
+        # two jobs ChunkGraphView.keyPressEvent's own Escape does, with the same native-focus
+        # fragility as Delete and D.
+        #
+        # Deliberately NOT gated on `not typing_in_proxy`, unlike every other key here.
+        # That flag tracks the proxy's LOGICAL focus, which in usdview is routinely a text
+        # field the user is typing into while native focus sits elsewhere -- and escaping
+        # out of that field is exactly what Escape is for, so the fallthrough below
+        # (forwarding it to a QLineEdit, which ignores it) is the broken behaviour, not the
+        # one to preserve. A field holding genuine NATIVE focus is a different case and has
+        # already returned above, left to Qt to deliver normally. An open popup returned
+        # above too, so a menu's own Escape still closes the menu rather than reaching here.
+        if event.key() == QtCore.Qt.Key.Key_Escape:
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    if view._drag_src_port is not None:
+                        view._cancel_wire_drag()
+                    else:
+                        self.set_active(None)
+                        view.setFocus()
+                    event.accept()
+                    return True
+
         if self._active is None:
             return False
         if etype == QtCore.QEvent.Type.ShortcutOverride:
