@@ -21,7 +21,7 @@ _selected_title: str = ""
 _thumbnail_cache: dict[str, bytes] = {}  # render_id → jpeg bytes
 _downloading: set[str] = set()  # titles with an in-flight background download
 
-THUMB_SIZE = 90
+THUMB_SIZE = 85
 
 
 def _safe_prim_name(s: str) -> str:
