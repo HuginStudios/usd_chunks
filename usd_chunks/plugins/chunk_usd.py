@@ -3516,7 +3516,23 @@ def load_chunks(
                 # immediately below is the one and only pass over the graph.
                 reconcile_edit_targets(stage, scene, cook=False)
 
-                for prim, added in deferred:
+                # Cook exec roots OUTERMOST-FIRST. Only roots are run here; everything with
+                # a dependency cooks by cascade from one. But a chunkgroup's inner chunks
+                # are roots of their OWN subgraph, and nothing connects them to the group's
+                # upstream -- only the GROUP itself is wired into the outer chain -- so the
+                # DAG imposes no order between them and the outer chunks whose content they
+                # act on. In `deferred` order a group's inner root could therefore cook
+                # first, against a stage that did not yet hold what it needs. Live-reported:
+                # reopening a saved scene ran an AMD MaterialX Library's inner BindMaterial
+                # before the Sublayer feeding the group had brought the mesh onto the stage,
+                # so it found no target, authored nothing, and never ran again -- the file
+                # opened with the original material still bound. Prim-path depth is exactly
+                # the nesting the ordering has to respect (/chunks/Tab1/Sublayer before
+                # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial), and sorted() is stable, so
+                # chunks at the same depth keep their existing relative order.
+                for prim, added in sorted(
+                    deferred, key=lambda item: get_chunk_prim_path(item[1]).count("/")
+                ):
                     if id(added) not in chunks_with_dependencies:
                         is_top_level = id(added) in top_level_chunk_ids
                         if is_top_level or can_execute_sub_chunks:
