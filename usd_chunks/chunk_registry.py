@@ -178,7 +178,17 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         if not os.path.exists(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
 
-        chunk_serial.save_json(self._env_cache_file(), serial)
+        # Silence logging for the duration of the write. This runs from atexit, by which
+        # point pytest -- or any host that redirects output -- has already closed the stream
+        # our handlers write to. logging then reports its own failure to stderr, printing a
+        # full traceback *after* a run that already said "45 passed", which reads like a
+        # crash. Nothing logged this late can be read anyway.
+        previously_disabled = logging.root.manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            chunk_serial.save_json(self._env_cache_file(), serial)
+        finally:
+            logging.disable(previously_disabled)
 
     def _load_cache(self):
         # Loads the cache from disk
