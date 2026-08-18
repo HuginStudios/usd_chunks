@@ -67,6 +67,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
     ChunkConfig as _cfg,
+    GizmoBase as _gizmo,
     ChunkParamBase,
     ChunkGroupBase,
     ChunkVectorBase,
@@ -106,6 +107,29 @@ class DefaulConfig(_cfg):
     """
 
     pass
+
+
+class Gizmo(_gizmo):
+    """A viewport handle driven by this chunk's params.
+
+    usd_chunks records; the DCC interprets. Declaring one authors ui:gizmo:* attributes on
+    the chunk prim -- what the handle is, which prim it hangs off, and which params it
+    writes. Drawing, picking and dragging live in the viewport layer.
+
+    ``` py
+    def config():
+        return chunk.DefaulConfig(
+            gizmos=[
+                chunk.Gizmo("body", type="transform", anchor="primpath_location",
+                            driver={"translate": ("tx", "ty", "tz")}),
+            ],
+        )
+    ```
+
+    Write-back goes through params, never through the prim: a chunk like transform.py
+    clears its own layer and re-authors on every cook, so a handle that wrote the prim
+    directly would be clobbered by the next execute.
+    """
 
 
 class StandardCategory(str, Enum):

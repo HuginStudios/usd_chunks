@@ -105,6 +105,17 @@ def main():
 
 def config():
     return chunk.DefaulConfig(
+        # Translate only for now -- a translate slot is a plain Vec3d, so it needs none of
+        # the Euler decomposition the rotate and scale slots do. Those land once the
+        # compose/decompose round trip is proven against the composition above.
+        gizmos=[
+            chunk.Gizmo(
+                "body",
+                type="transform",
+                anchor="primpath_location",
+                driver={"translate": ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")},
+            ),
+        ],
         category=chunk.StandardCategory.EXAMPLES,
         description="""
         Transform chunk — applies translate, rotate (XYZ Euler, degrees), and

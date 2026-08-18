@@ -4119,6 +4119,108 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         return super().has_flag(flag)
 
 
+# Gizmo vocabulary. Kept as frozensets rather than enums so a chunk author writes a plain
+# string in config() and a host reads a plain token out of USD -- the whole point of the
+# schema is that nothing on either side needs to import usd_chunks to understand it.
+GIZMO_MANIPULATOR_TYPES = frozenset({"transform", "translate", "rotate", "scale"})
+GIZMO_SHAPE_TYPES = frozenset({"cube", "sphere"})
+GIZMO_TYPES = GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES
+# Slot -> what the host sends back for it. "value" is the singular-driver slot: one
+# driven attribute, whatever type it happens to be.
+GIZMO_SLOTS = frozenset({"translate", "rotate", "scale", "value"})
+GIZMO_AXES = frozenset({"X", "Y", "Z", "screen"})
+GIZMO_EDIT_MODES = frozenset({"onPrimSelection", "onChunkSelection", "always"})
+GIZMO_DEFAULT_EDIT_MODE = "onPrimSelection"
+# The slot a singular (string) driver binds to.
+GIZMO_VALUE_SLOT = "value"
+
+
+@attrs.define
+class GizmoBase:
+    """A viewport manipulator declared by a chunk.
+
+    Deliberately a plain record, not an AttributesBase: a gizmo declaration is static
+    config read once at load, never mutated at runtime, so it needs none of the notice
+    or validation machinery the param classes carry.
+
+    Attributes:
+        name (str): Namespace segment under ui:gizmo:. The gizmo's *name*, never its type --
+            two cubes on one chunk is ordinary (a camera wants a body handle and a distance
+            handle), so the type cannot be the key.
+        type (str): One of GIZMO_TYPES. Manipulator types are multi-slot; shape types drive
+            a single scalar.
+        label (str): Display name. Falls back to the chunk's name when empty.
+        anchor (str): Name of the param holding the target prim path. Empty means infer --
+            see chunk_gizmo.resolve_anchor_param.
+        driver (dict[str, tuple[str, ...]]): Which params the handle writes, per slot. A bare
+            string is sugar for a single driven attribute and normalises to
+            {"value": (that,)}. Entries are either a param path on the own chunk ("tx") or a
+            full property path to another chunk's param ("/chunks/Tab/Transform.inputs:tx").
+        axis (str | None): Optional drag direction in the anchor's local space. None means
+            free drag -- any mouse direction moves the driven param, which is the common case.
+            Set it where the direction carries the meaning (focus distance along -Z), which is
+            also what lets a native host build a real linear handle.
+        space (str): "local" or "world".
+        editmode (tuple[str, ...]): When the host should show the handle.
+    """
+
+    name: str
+    type: str
+    label: str = ""
+    anchor: str = ""
+    driver: Any = attrs.field(factory=dict)
+    axis: Optional[str] = None
+    space: str = "local"
+    editmode: Any = (GIZMO_DEFAULT_EDIT_MODE,)
+
+    def __attrs_post_init__(self) -> None:
+        if self.type not in GIZMO_TYPES:
+            raise ValueError(
+                f"Gizmo {self.name!r}: unknown type {self.type!r}. Known types: {sorted(GIZMO_TYPES)}"
+            )
+
+        # str -> single-slot dict, so everything downstream sees exactly one shape.
+        driver = self.driver
+        if isinstance(driver, str):
+            driver = {GIZMO_VALUE_SLOT: (driver,)}
+        elif isinstance(driver, dict):
+            driver = {
+                slot: (entries,) if isinstance(entries, str) else tuple(entries)
+                for slot, entries in driver.items()
+            }
+        else:
+            raise ValueError(
+                f"Gizmo {self.name!r}: driver must be a str or a dict of slot -> params, got {type(driver).__name__}"
+            )
+
+        if not driver:
+            raise ValueError(f"Gizmo {self.name!r}: driver is required -- a handle that writes nothing is not a gizmo")
+
+        for slot, entries in driver.items():
+            if slot not in GIZMO_SLOTS:
+                raise ValueError(
+                    f"Gizmo {self.name!r}: unknown driver slot {slot!r}. Known slots: {sorted(GIZMO_SLOTS)}"
+                )
+            if not entries:
+                raise ValueError(f"Gizmo {self.name!r}: driver slot {slot!r} binds no params")
+        self.driver = driver
+
+        if self.axis is not None and self.axis not in GIZMO_AXES:
+            raise ValueError(
+                f"Gizmo {self.name!r}: unknown axis {self.axis!r}. Known axes: {sorted(GIZMO_AXES)}"
+            )
+
+        editmode = (self.editmode,) if isinstance(self.editmode, str) else tuple(self.editmode)
+        if not editmode:
+            raise ValueError(f"Gizmo {self.name!r}: editmode cannot be empty")
+        for mode in editmode:
+            if mode not in GIZMO_EDIT_MODES:
+                raise ValueError(
+                    f"Gizmo {self.name!r}: unknown editmode {mode!r}. Known modes: {sorted(GIZMO_EDIT_MODES)}"
+                )
+        self.editmode = editmode
+
+
 class ChunkConfig(AttributesBase):
     """
     Base class for Configs. A config sets some load time configurations for a chunk.
@@ -4134,6 +4236,7 @@ class ChunkConfig(AttributesBase):
     terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
     outputs: list[tuple[str, str]] = attrs.field(factory=list)  # extra typed output ports: [(name, SdfTypeName), ...]
     variants: list[tuple[str, dict]] = attrs.field(factory=list)  # extra menu entries: [(label, {param: value}), ...]
+    gizmos: list[GizmoBase] = attrs.field(factory=list)  # viewport handles: authored as ui:gizmo:* on the chunk prim
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
