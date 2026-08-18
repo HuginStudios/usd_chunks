@@ -35,11 +35,12 @@ class TestGrouping:
         )
 
     def test_second_namespace_segment_wins(self):
-        props = [self._prop(n) for n in ("vray:cloud:upload", "vray:cloud:job", "vray:geom:x")]
+        props = [self._prop(n) for n in ("vray:cloud:upload", "vray:cloud:job",
+                                         "vray:geom:x", "vray:geom:y")]
         groups = render_defs.group_props(props)
 
         assert list(groups["cloud"]) == props[:2]
-        assert [p.attr_name for p in groups["geom"]] == ["vray:geom:x"]
+        assert [p.attr_name for p in groups["geom"]] == ["vray:geom:x", "vray:geom:y"]
 
     def test_shared_underscore_prefix_earns_a_group(self):
         props = [self._prop(f"vray:BakeView_{n}") for n in ("fov", "mode", "dilation")]
@@ -48,19 +49,72 @@ class TestGrouping:
         assert "BakeView" in groups
         assert len(groups["BakeView"]) == 3
 
-    def test_rare_prefix_falls_back_to_general(self):
-        """Two settings sharing a prefix is a coincidence, not a section."""
-        props = [self._prop("vray:odd_one"), self._prop("vray:odd_two")]
+    def test_a_lone_prefix_falls_back_to_general(self):
+        """One setting sharing a prefix with nothing is not a section of one."""
+        props = [self._prop("vray:odd_one"), self._prop("vray:cloud:a"), self._prop("vray:cloud:b")]
         groups = render_defs.group_props(props)
 
         assert "odd" not in groups
-        assert len(groups["General"]) == 2
+        assert [p.attr_name for p in groups["General"]] == ["vray:odd_one"]
 
     def test_general_is_last(self):
-        props = [self._prop("vray:loose"), self._prop("vray:cloud:upload")]
+        props = [self._prop("vray:loose"), self._prop("vray:cloud:a"), self._prop("vray:cloud:b")]
         groups = render_defs.group_props(props)
 
         assert list(groups)[-1] == "General"
+
+    def test_a_big_group_nests_on_the_next_segment(self):
+        props = [self._prop(f"vray:Opt_geom_{i}") for i in range(5)]
+        props += [self._prop(f"vray:Opt_light_{i}") for i in range(5)]
+        groups = render_defs.group_props(props)
+
+        assert isinstance(groups["Opt"], dict)
+        assert set(groups["Opt"]) == {"geom", "light"}
+        assert len(groups["Opt"]["geom"]) == 5
+
+    def test_a_small_group_is_left_flat(self):
+        """Nesting a group that already fits costs a click and buys nothing."""
+        props = [self._prop(f"vray:Opt_geom_{i}") for i in range(3)]
+        groups = render_defs.group_props(props)
+
+        assert isinstance(groups["Opt"], list)
+
+    def test_an_unproductive_split_is_rejected(self):
+        """A group that divides into a couple of pairs and a pile of leftovers reads
+        worse split than flat -- BakeView splits into u, v and ten others."""
+        props = [self._prop(f"vray:Bake_u_{i}") for i in range(2)]
+        props += [self._prop(f"vray:Bake_v_{i}") for i in range(2)]
+        props += [self._prop(f"vray:Bake_thing{i}") for i in range(10)]
+        groups = render_defs.group_props(props)
+
+        assert isinstance(groups["Bake"], list)
+        assert len(groups["Bake"]) == 14
+
+    def test_nesting_stops_at_max_depth(self):
+        deep = [self._prop("vray:" + "_".join(f"s{d}" for d in range(8)) + f"_{i}") for i in range(20)]
+        groups = render_defs.group_props(deep)
+
+        def depth(node, d=0):
+            if not isinstance(node, dict):
+                return d
+            return max(depth(v, d + 1) for v in node.values())
+
+        assert depth(groups) <= render_defs._MAX_DEPTH + 1
+
+    def test_every_prop_lands_somewhere_exactly_once(self):
+        props = [self._prop(n) for n in (
+            "vray:cloud:a", "vray:cloud:b", "vray:loose", "vray:Opt_geom_x", "vray:Opt_geom_y",
+        )]
+        groups = render_defs.group_props(props)
+
+        def flatten(node):
+            for value in node.values():
+                if isinstance(value, dict):
+                    yield from flatten(value)
+                else:
+                    yield from value
+
+        assert sorted(p.attr_name for p in flatten(groups)) == sorted(p.attr_name for p in props)
 
     def test_unnamespaced_names_survive(self):
         props = [self._prop("plain")]
@@ -118,6 +172,56 @@ class TestSchemaBackend:
         assert render_defs.available_delegates() == [
             d.label for d in render_defs.iter_render_settings_defs()
         ]
+
+
+class TestHostVariableDefaults:
+    """V-Ray's schema is generated for Solaris, so its string defaults arrive full of
+    Houdini expansions. Nothing here expands them, and a path default of
+    "${HIP}/render/${HIPNAME}.<frame04>.exr" would be written out literally."""
+
+    def test_houdini_expansions_are_dropped(self):
+        for value in (
+            "${HIP}/${HIPNAME}.vrscene",
+            "${HIP}/render/${HIPNAME}.<frame04>.exr",
+            "<TEMP>/",
+            "$HIP/out.exr",
+        ):
+            assert render_defs._sanitize_default(value) == ""
+
+    def test_ordinary_defaults_are_untouched(self):
+        for value in ("beauty.exr", "", "C:/renders/out.exr", 2.0, False, None):
+            assert render_defs._sanitize_default(value) == value
+
+    @requires_renderer
+    def test_no_installed_renderer_leaks_a_host_variable(self):
+        for definition in _schema_defs():
+            leaked = [
+                p.attr_name for p in definition.props
+                if isinstance(p.default, str) and render_defs._HOST_VARIABLE.search(p.default)
+            ]
+            assert not leaked, f"unresolvable defaults: {leaked[:5]}"
+
+
+class TestDiscoveryIsCached:
+    """Building a definition is not cheap -- V-Ray's is 258 attributes, each needing a
+    spec, a fallback and its docs -- and it is asked for on every cook."""
+
+    def test_repeated_reads_return_the_same_objects(self):
+        first = list(render_defs.iter_render_settings_defs())
+        second = list(render_defs.iter_render_settings_defs())
+
+        assert len(first) == len(second)
+        assert all(a is b for a, b in zip(first, second)), "should be cached, not rebuilt"
+
+    def test_clear_cache_forces_a_rebuild(self):
+        first = list(render_defs.iter_render_settings_defs())
+        render_defs.clear_cache()
+        second = list(render_defs.iter_render_settings_defs())
+
+        assert len(first) == len(second)
+        if first:
+            assert first[0] is not second[0]
+            assert first[0].key == second[0].key
 
 
 class TestLabels:

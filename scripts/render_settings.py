@@ -48,22 +48,31 @@ def _clear_delegate_params(owner):
             owner.remove_param_or_group(param)
 
 
-def _loft_delegate_params(owner, definition):
-    """Create params for a renderer's settings, in collapsed groups.
+def _new_group(name):
+    group = chunk.Group(
+        name, name,
+        flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED,
+    )
+    # Collapsed by default: a renderer declares hundreds of settings, and every group
+    # expanded makes a node taller than the graph.
+    group.set_state(chunk.ChunkFlags.State.COLLAPSED)
+    return group
 
-    V-Ray declares 258 of them, so grouping is not cosmetic -- render_defs.group_props
-    buckets them the way the renderer's own UI does (SettingsImageSampler, SettingsGI,
-    ...), and every group starts collapsed so the node stays a node.
+
+def _loft_group(owner, name, contents):
+    """Add one group of settings to owner, recursing into nested groups.
+
+    Returns True when the group had anything in it -- an all-unmapped group is dropped
+    rather than presented as an empty section.
     """
-    for group_name, props in render_defs.group_props(definition.props).items():
-        group = chunk.Group(
-            group_name, group_name,
-            flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED,
-        )
-        group.set_state(chunk.ChunkFlags.State.COLLAPSED)
+    group = _new_group(name)
+    added = False
 
-        added = False
-        for prop in props:
+    if isinstance(contents, dict):
+        for sub_name, sub_contents in contents.items():
+            added |= _loft_group(group, sub_name, sub_contents)
+    else:
+        for prop in contents:
             param = render_defs.param_for_setting(prop)
             if param is None:
                 continue
@@ -72,8 +81,21 @@ def _loft_delegate_params(owner, definition):
             group.add_param(param)
             added = True
 
-        if added:
-            owner.add_param(group)
+    if added:
+        owner.add_param(group)
+    return added
+
+
+def _loft_delegate_params(owner, definition):
+    """Create params for a renderer's settings, in nested collapsed groups.
+
+    V-Ray declares 258, so grouping is not cosmetic. render_defs.group_props follows the
+    structure already in the names -- SettingsOptions splits into geom, light, mtl and
+    the rest, the way the renderer's own UI divides them -- and returns a tree, so this
+    just walks it.
+    """
+    for group_name, contents in render_defs.group_props(definition.props).items():
+        _loft_group(owner, group_name, contents)
 
 
 def _delegate_changed(owner, notice, sender):

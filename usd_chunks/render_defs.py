@@ -31,8 +31,10 @@ for group, props in group_props(d.props).items():
 from __future__ import annotations
 
 import logging
+import re
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Dict, Iterator, List, Optional
 
 from pxr import Plug, Usd
@@ -56,11 +58,30 @@ _SDR_OPTION_NODES: Dict[str, tuple] = {
     "ri": ("PRManOptions", "PRManGlobalOptions"),
 }
 
-#: A group needs at least this many members before an underscore prefix earns one,
-#: so a handful of unrelated names do not each become their own section.
-_MIN_GROUP_SIZE = 3
+#: A segment needs at least this many settings sharing it before it earns a group, so a
+#: one-off name does not become a section of one.
+_MIN_GROUP_SIZE = 2
+
+#: A group larger than this is split again on the next name segment. Small enough that a
+#: section fits on screen, large enough that tidy groups are left alone.
+_MAX_FLAT_GROUP = 8
+
+#: Names carry at most a few meaningful segments; beyond this the nesting costs more to
+#: navigate than the grouping saves.
+_MAX_DEPTH = 3
+
+#: Fraction of a group that must land in real subgroups for splitting it to be worth it.
+#: Below this the split is mostly leftovers -- BakeView divides into u, v and ten others,
+#: which reads worse than the flat fourteen it started as.
+_MIN_SPLIT_COVERAGE = 0.6
 
 _GENERAL_GROUP = "General"
+
+#: Host-application variables that survive into a schema's defaults. V-Ray's schema is
+#: generated for Solaris, so paths arrive as ${HIP}/${HIPNAME}.vrscene and
+#: ${HIP}/render/${HIPNAME}.<frame04>.exr -- Houdini expansions that nothing outside
+#: Houdini resolves, leaving a path that would be written literally.
+_HOST_VARIABLE = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_]\w*|<[^>]+>")
 
 
 @dataclass(frozen=True)
@@ -129,6 +150,20 @@ def _namespace_of(attr_names) -> str:
     return max(counts, key=counts.get) if counts else ""
 
 
+def _sanitize_default(value):
+    """Drop a default that only means something inside another application.
+
+    A schema generated for Solaris carries Houdini expansions in its string defaults.
+    Nothing here expands them, so keeping one would offer a path that renders to the
+    literal text "${HIP}/render/${HIPNAME}.<frame04>.exr". Blank is the honest default:
+    the setting is unset until someone fills it in, and because only values that differ
+    from their default are authored, an untouched one stays out of the layer either way.
+    """
+    if isinstance(value, str) and _HOST_VARIABLE.search(value):
+        return ""
+    return value
+
+
 def _prop_from_definition(prim_def, attr_name: str, namespace: str) -> Optional[RenderSettingProp]:
     """Normalise one attribute of an applied API schema's prim definition."""
     spec = prim_def.GetSchemaAttributeSpec(attr_name)
@@ -143,7 +178,7 @@ def _prop_from_definition(prim_def, attr_name: str, namespace: str) -> Optional[
         attr_name=attr_name,
         label=remainder.replace(":", " ").replace("_", " "),
         sdf_type=str(spec.typeName),
-        default=prim_def.GetAttributeFallbackValue(attr_name),
+        default=_sanitize_default(prim_def.GetAttributeFallbackValue(attr_name)),
         help=prim_def.GetPropertyDocumentation(attr_name) or "",
         options=tuple(str(t) for t in (tokens or ())),
     )
@@ -228,21 +263,44 @@ def _def_from_sdr(namespace: str, identifiers: tuple) -> Optional[RenderSettings
     return None
 
 
-def iter_render_settings_defs() -> Iterator[RenderSettingsDef]:
-    """Every renderer whose settings this USD can describe, schema-declared first."""
+@lru_cache(maxsize=1)
+def _discover() -> tuple:
+    """Read every renderer's settings once per process.
+
+    Cached because building a definition is not cheap -- V-Ray's is 258 attributes, each
+    needing a spec, a fallback and its documentation out of the schema registry -- and it
+    is asked for repeatedly: once to populate the delegate menu, again per chunk-menu
+    variant, and again on every cook to decide what to author. The registries this reads
+    are fixed for the life of the process, so re-reading them only ever returns the same
+    answer more slowly.
+    """
+    found = []
+
     for schema_name in _schema_names_for_render_settings():
         try:
             if definition := _def_from_schema(schema_name):
-                yield definition
+                found.append(definition)
         except Exception as exc:  # noqa: BLE001 - a schema this USD cannot read
             logger.debug("Could not read render settings schema %s: %s", schema_name, exc)
 
     for namespace, identifiers in _SDR_OPTION_NODES.items():
         try:
             if definition := _def_from_sdr(namespace, identifiers):
-                yield definition
+                found.append(definition)
         except Exception as exc:  # noqa: BLE001 - registry shapes vary by USD version
             logger.debug("Could not read Sdr render settings for %s: %s", namespace, exc)
+
+    return tuple(found)
+
+
+def clear_cache() -> None:
+    """Forget the discovered definitions, for a test that registers a renderer late."""
+    _discover.cache_clear()
+
+
+def iter_render_settings_defs() -> Iterator[RenderSettingsDef]:
+    """Every renderer whose settings this USD can describe, schema-declared first."""
+    yield from _discover()
 
 
 def get_render_settings_def(key: str) -> Optional[RenderSettingsDef]:
@@ -258,35 +316,97 @@ def available_delegates() -> List[str]:
     return [d.label for d in iter_render_settings_defs()]
 
 
-def group_props(props) -> "OrderedDict[str, List[RenderSettingProp]]":
-    """Bucket settings into collapsible groups, the way a renderer's own UI would.
+def _split_segment(remainder: str):
+    """Leading name segment and what is left, or (None, remainder) when indivisible.
 
-    Namespaced names carry the grouping already -- vray:cloud:upload belongs with the
-    other cloud settings -- so a second namespace segment wins. Failing that, an
-    underscore prefix shared by several settings (BakeView_fov, BakeView_mode, ...) is
-    good enough, but only once enough of them share it to be worth a section of its own.
-    Everything else lands in General.
+    ':' before '_': a renderer that namespaces a setting has already said where it
+    belongs, so that split is meant, where an underscore is only a convention.
     """
-    prefix_counts: Dict[str, int] = defaultdict(int)
-    for prop in props:
-        remainder = prop.attr_name.partition(":")[2] or prop.attr_name
-        if ":" not in remainder and "_" in remainder:
-            prefix_counts[remainder.partition("_")[0]] += 1
+    for separator in (":", "_"):
+        if separator in remainder:
+            head, _, rest = remainder.partition(separator)
+            if head and rest:
+                return head, rest
+    return None, remainder
 
-    grouped: "OrderedDict[str, List[RenderSettingProp]]" = OrderedDict()
-    for prop in props:
-        remainder = prop.attr_name.partition(":")[2] or prop.attr_name
-        if ":" in remainder:
-            group = remainder.partition(":")[0]
+
+def _bucket(items):
+    """One level of grouping over (prop, remaining name) pairs."""
+    counts: Dict[str, int] = defaultdict(int)
+    for _prop, remainder in items:
+        head, _rest = _split_segment(remainder)
+        if head:
+            counts[head] += 1
+
+    buckets: "OrderedDict[str, list]" = OrderedDict()
+    for prop, remainder in items:
+        head, rest = _split_segment(remainder)
+        if head and counts[head] >= _MIN_GROUP_SIZE:
+            buckets.setdefault(head, []).append((prop, rest))
         else:
-            prefix = remainder.partition("_")[0]
-            group = prefix if prefix_counts.get(prefix, 0) >= _MIN_GROUP_SIZE else _GENERAL_GROUP
-        grouped.setdefault(group, []).append(prop)
+            buckets.setdefault(_GENERAL_GROUP, []).append((prop, remainder))
+    return buckets
+
+
+def _divides_well(sub, total: int) -> bool:
+    """Whether a split earned its nesting.
+
+    Two ways it does not: everything lands in one bucket (Foo > Foo), or most of it
+    falls through to leftovers and the nesting only buries a few settings one level
+    deeper than the rest.
+    """
+    if len(sub) <= 1:
+        return False
+
+    real = sum(
+        (len(v) if isinstance(v, list) else _count(v))
+        for name, v in sub.items()
+        if name != _GENERAL_GROUP
+    )
+    return real >= total * _MIN_SPLIT_COVERAGE
+
+
+def _count(node) -> int:
+    return sum(len(v) if isinstance(v, list) else _count(v) for v in node.values())
+
+
+def _tree(items, depth: int):
+    grouped: "OrderedDict[str, Any]" = OrderedDict()
+
+    for name, members in _bucket(items).items():
+        split_further = (
+            name != _GENERAL_GROUP
+            and depth < _MAX_DEPTH
+            and len(members) > _MAX_FLAT_GROUP
+        )
+        if split_further:
+            sub = _tree(members, depth + 1)
+            if _divides_well(sub, len(members)):
+                grouped[name] = sub
+                continue
+
+        grouped[name] = [prop for prop, _rest in members]
 
     # General last: it is the leftovers, not the headline.
     if _GENERAL_GROUP in grouped:
         grouped.move_to_end(_GENERAL_GROUP)
     return grouped
+
+
+def group_props(props) -> "OrderedDict[str, Any]":
+    """Bucket settings into nested collapsible groups, the way a renderer's own UI does.
+
+    Setting names are structured -- ``vray:SettingsImageSampler_progressive_maxSubdivs``
+    names a plugin, a section within it, and the setting -- so grouping just follows the
+    segments. A segment earns a group once a couple of settings share it, and a group
+    that is still too big to read is split again on the next segment, up to a few levels
+    deep. Anything left over lands in General, which sorts last.
+
+    Returns an ordered mapping of group name to either a list of settings or a nested
+    mapping of the same shape, so a caller renders it by recursing rather than by
+    knowing any renderer's layout.
+    """
+    return _tree([(p, p.attr_name.partition(":")[2] or p.attr_name) for p in props], 0)
 
 
 def param_for_setting(prop: RenderSettingProp):
