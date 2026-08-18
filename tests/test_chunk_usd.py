@@ -2044,6 +2044,85 @@ def test_recook_recurses_into_group() -> None:
     assert inner_node.is_blocked()  # group hidden → inner tree muted
 
 
+def test_focusing_a_group_keeps_its_own_upstream_composed() -> None:
+    """Diving into a group must not mute the content that group's own chunks act ON.
+
+    Live-reported: diving into an AMD MaterialX Library node dropped the material it had
+    just applied to a mesh, and diving back out never restored it. recook_focus mutes +
+    blocks everything outside the focused group's subtree -- which included the group's
+    OWN upstream (the Sublayer bringing the mesh onto the stage at all). The group's
+    inner chunks then executed against a stage where their target prim didn't exist, so
+    they authored nothing, and since a chunk's execute() Clear()s its own layer first,
+    the binding it had authored moments earlier was destroyed in the process. Nothing
+    re-executes those inner chunks on the way back out (their params never changed), so
+    the loss was permanent.
+
+    Muting a focused group's upstream was never the point of that pass -- it exists to
+    stop the parent tab's active view and unrelated sibling branches bleeding through.
+    """
+    import weakref
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, recook_focus
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+    viewmod = reg.get_chunk_module("view")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    def _wire(dst, src):
+        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
+        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+
+    # upstream_a -> upstream_b -> group  (the group's own input chain), plus an entirely
+    # unrelated sibling branch that SHOULD still be muted while the group has focus.
+    upstream_a = _mk(primmod)
+    upstream_b = _mk(primmod)
+    _wire(upstream_b, upstream_a)
+
+    unrelated = _mk(primmod)
+
+    grp = _mk(grpmod)
+    _wire(grp, upstream_b)
+
+    scene._current_context = weakref.ref(grp)
+    inner_node = _mk(primmod)
+    inner_view = _mk(viewmod)
+    _wire(inner_view, inner_node)
+    scene._current_context = None
+
+    lm = chunk_registry.ChunkLayerManager()
+    recook_focus(stage, scene, grp, inner_view)
+
+    for name, c in (("upstream_a", upstream_a), ("upstream_b", upstream_b)):
+        assert not c.is_blocked(), f"{name} feeds the focused group -- it must stay unblocked"
+        layer = lm.get_layer(c)
+        assert layer is not None and not stage.IsLayerMuted(layer.identifier), (
+            f"{name} feeds the focused group -- its content must stay composed, not muted"
+        )
+
+    # The companion check: focus still hides what it is supposed to hide.
+    assert unrelated.is_blocked(), "an unrelated branch must still be blocked while a group has focus"
+
+
 def test_reorder_graph_layers_leaves_unranked_idents_where_they_were() -> None:
     """Live-reported: a chunkgroup's own content (Reference/BindMaterial, closest to its
     inner view) ranked WEAKER than unrelated sibling chunks in the same tab (Transform,

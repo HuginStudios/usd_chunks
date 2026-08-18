@@ -2998,12 +2998,31 @@ def recook_focus(
         lm = chunk_registry.ChunkLayerManager()
         group_path = get_chunk_prim_path(context)
         inside_prefix = group_path + "/"
+        # A focused group's own UPSTREAM must stay composed. The group's inner chunks
+        # author on top of that content -- BindMaterial inside AMD MaterialX Library
+        # binds a material onto a mesh that a Sublayer several nodes upstream is what
+        # brings onto the stage at all. Muting it (as this loop otherwise does for
+        # everything outside the group) means those inner chunks execute against a stage
+        # where their target prims simply don't exist, so they author nothing -- and
+        # since a chunk's execute() Clear()s its own layer first, whatever it authored
+        # last time is destroyed in the process. Live-reported: diving into the AMD node
+        # dropped the applied material, and diving back out never brought it back
+        # (nothing re-executes BindMaterial once its params haven't changed).
+        #
+        # Muting the group's upstream was never the point of this pass anyway -- it
+        # exists to stop the parent tab's active view and UNRELATED sibling branches
+        # bleeding through, and the group's own upstream is neither.
+        upstream_keep = {
+            get_chunk_prim_path(u) for u in get_exec_upstream_chunks(context, stage, scene)
+        }
         for c in scene.get_chunks():
             if is_view_chunk(c):
                 continue
             cp = get_chunk_prim_path(c)
             # Keep the focused group itself and its descendants — recook_for_view handles those.
             if cp == group_path or cp.startswith(inside_prefix):
+                continue
+            if cp in upstream_keep:
                 continue
             # NEVER block a context/container (a tab or group). is_blocked() climbs the owner
             # chain, so blocking the focused group's ANCESTOR would propagate down and block the
