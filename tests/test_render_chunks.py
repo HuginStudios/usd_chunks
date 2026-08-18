@@ -169,6 +169,47 @@ class TestRenderSettings:
         assert not prim.GetAttribute("materialBindingPurposes").HasAuthoredValue()
         assert not prim.GetAttribute("renderingColorSpace").HasAuthoredValue()
 
+    def test_camera_from_a_messy_prim_selection_does_not_raise(self):
+        """The camera param carries PRIM_SELECTION, so it is seeded from whatever was
+        selected when the chunk was created. That can be several paths at once or a
+        relative one, and a relationship target must be a single absolute path -- USD
+        raises rather than ignoring a bad one, which took the whole cook down just by
+        dropping the node onto the graph."""
+        for value in ("not/absolute", "/cam_a,/cam_b", "   "):
+            scene, stage = _setup_stage()
+            from pxr import UsdGeom
+            UsdGeom.Camera.Define(stage, "/cam_a")
+            UsdGeom.Camera.Define(stage, "/cam_b")
+            _var, product, settings = _render_network(scene)
+
+            settings.get_param("camera").value = value
+            product.get_param("camera").value = value
+            settings.execute()
+            product.execute()
+
+    def test_multiple_selected_cameras_take_the_first(self):
+        scene, stage = _setup_stage()
+        from pxr import UsdGeom
+        UsdGeom.Camera.Define(stage, "/cam_a")
+        UsdGeom.Camera.Define(stage, "/cam_b")
+        _var, _product, settings = _render_network(scene)
+
+        settings.get_param("camera").value = "/cam_a,/cam_b"
+        settings.execute()
+
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        assert [str(t) for t in usd_settings.GetCameraRel().GetTargets()] == ["/cam_a"]
+
+    def test_blank_camera_authors_no_relationship(self):
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+
+        settings.get_param("camera").value = "   "
+        settings.execute()
+
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        assert usd_settings.GetCameraRel().GetTargets() == []
+
     def test_stage_render_settings_metadata_is_set(self):
         """A renderer finds the settings prim through stage metadata, not by path
         convention — so the checkbox that writes it is what makes the network

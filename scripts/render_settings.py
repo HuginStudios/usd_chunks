@@ -275,8 +275,12 @@ def execute(node):
         settings.CreateDisableMotionBlurAttr().Set(bool(node.get_param("disable_motion_blur").value))
         settings.CreateDisableDepthOfFieldAttr().Set(bool(node.get_param("disable_depth_of_field").value))
 
-        if camera_path := node.get_param("camera").value:
-            settings.CreateCameraRel().SetTargets([Sdf.Path(camera_path)])
+        # Resolved, not taken verbatim: the camera param carries PRIM_SELECTION, so it is
+        # seeded from whatever happened to be selected when the chunk was created -- which
+        # may be several paths at once, or none of them a prim. A relationship target has
+        # to be a single absolute path, and USD raises rather than ignoring a bad one.
+        if camera_targets := _resolve_targets(stage, node.get_param("camera"))[:1]:
+            settings.CreateCameraRel().SetTargets(camera_targets)
 
         if product_paths := _resolve_targets(stage, node.get_param("products")):
             settings.CreateProductsRel().SetTargets(product_paths)

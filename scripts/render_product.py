@@ -81,8 +81,10 @@ def execute(node):
             product.CreateProductNameAttr().Set(product_name)
         product.CreateProductTypeAttr().Set(node.get_param("product_type").value)
 
-        if camera_path := node.get_param("camera").value:
-            product.CreateCameraRel().SetTargets([Sdf.Path(camera_path)])
+        # Resolved rather than taken verbatim -- see render_settings.py: a PRIM_SELECTION
+        # param can hold several paths, and a relationship target must be one absolute path.
+        if camera_targets := _resolve_targets(stage, node.get_param("camera"))[:1]:
+            product.CreateCameraRel().SetTargets(camera_targets)
 
         if var_paths := _resolve_targets(stage, node.get_param("ordered_vars")):
             product.CreateOrderedVarsRel().SetTargets(var_paths)
