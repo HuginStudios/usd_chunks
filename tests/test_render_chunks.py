@@ -591,6 +591,59 @@ class TestHydraMode:
 
         assert captured["p"] == settings.get_param("reference").value
 
+    def test_relative_paths_resolve_against_the_scene(self, tmp_path):
+        """Otherwise they resolve against whatever directory the host started in, which
+        for usdview is arbitrary and rarely where anyone wants renders."""
+        import os
+        mod = importlib.import_module("scripts.render")
+
+        scene_file = tmp_path / "shot" / "scene.usda"
+        scene_file.parent.mkdir()
+        stage = Usd.Stage.CreateNew(str(scene_file))
+        stage.Save()
+
+        assert mod._stage_relative(stage, "renders/b.exr") == os.path.normpath(
+            str(tmp_path / "shot" / "renders" / "b.exr")
+        )
+        absolute = str(tmp_path / "abs.exr")
+        assert mod._stage_relative(stage, absolute) == absolute
+
+    def test_output_directory_is_created(self, monkeypatch, tmp_path):
+        """No renderer creates it -- which is how a render that completed successfully
+        still failed with "Unable to open file for write"."""
+        mod, rop, fake, _stage = self._hydra_rop(monkeypatch)
+        rop.get_param("output_image").value = str(tmp_path / "renders" / "beauty.exr")
+
+        mod.commit(rop)
+
+        assert (tmp_path / "renders").is_dir()
+        assert fake.calls[0][1] == str(tmp_path / "renders" / "beauty.exr")
+
+    def test_product_directories_are_created(self, monkeypatch, tmp_path):
+        """The delegate writes RenderProducts itself, so their paths never pass through
+        the recorder -- but they fail the same way when the folder is missing."""
+        scene, stage = _setup_stage()
+        _var, product, _settings = _render_network(scene)
+
+        # Through the chunk's own param: a productName authored from outside is
+        # overridden by the chunk layer that owns the prim.
+        product.get_param("product_name").value = str(tmp_path / "aovs" / "beauty.exr")
+        product.execute()
+
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Hydra"
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+
+        from pxr import UsdGeom
+        UsdGeom.Camera.Define(stage, "/cameras/shotcam")
+
+        monkeypatch.setattr(mod, "_hydra_available", lambda: True)
+        monkeypatch.setattr(mod, "_make_recorder", lambda _n, settings_path="": _FakeRecorder())
+        mod.commit(rop)
+
+        assert (tmp_path / "aovs").is_dir()
+
     def test_never_shells_out(self, monkeypatch, tmp_path):
         """The whole point of the default mode — no subprocess, no PATH lookup."""
         mod, rop, _fake, _stage = self._hydra_rop(monkeypatch)

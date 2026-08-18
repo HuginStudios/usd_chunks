@@ -6,9 +6,45 @@ Requires: pxr (OpenUSD), usd_chunks.
 
 from __future__ import annotations
 
+import logging
+import os
+
 from pxr import Sdf, UsdRender
 
 from usd_chunks import chunk, chunk_notice, chunk_utils
+
+logger = logging.getLogger(__name__)
+
+#: Formats that hold one image, so a product written to one cannot carry several AOVs.
+#: EXR is the notable absence -- multi-part and multi-channel, which is why AOVs
+#: conventionally go there as layers.
+_SINGLE_IMAGE_FORMATS = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".gif", ".ppm"}
+
+
+def _warn_if_format_cannot_hold(product_name, var_paths):
+    """Say so when a product asks a format to carry more AOVs than it can.
+
+    In USD one RenderProduct is one file, so several AOVs in one product means several
+    layers in one image. PNG has nowhere to put them: what a renderer does with that is
+    undefined and differs between them, and the usual outcome is quietly losing all but
+    the first. Caught at cook time rather than at render time.
+    """
+    if len(var_paths) < 2 or not product_name:
+        return
+
+    extension = os.path.splitext(product_name)[1].lower()
+    if extension not in _SINGLE_IMAGE_FORMATS:
+        return
+
+    logger.warning(
+        "Render Product: %r is %s, which holds one image, but this product has %d AOVs "
+        "(%s). Give each AOV its own Render Product, or write to .exr to keep them as "
+        "layers in one file.",
+        product_name,
+        extension,
+        len(var_paths),
+        ", ".join(p.name for p in var_paths),
+    )
 
 
 def _resolve_targets(stage, param):
@@ -88,6 +124,7 @@ def execute(node):
 
         if var_paths := _resolve_targets(stage, node.get_param("ordered_vars")):
             product.CreateOrderedVarsRel().SetTargets(var_paths)
+            _warn_if_format_cannot_hold(node.get_param("product_name").value, var_paths)
 
         authored = product.GetPrim().GetPath().pathString
         if not var_selections and authored != target_path:
@@ -110,6 +147,12 @@ def config():
           - Output File: the productName attribute — the file the renderer writes.
             Frame-numbering conventions (render.####.exr) are passed through
             untouched for the renderer to expand.
+
+            One product is one file, so several Ordered Vars means several layers
+            in one image. EXR holds them; PNG and the other single-image formats
+            do not, and what a renderer does when asked anyway is undefined. That
+            case is warned about at cook time — give each AOV its own Render
+            Product to write separate files.
           - Product Type: what kind of output this is. "raster" is the only type
             defined by UsdRender itself; renderers may understand others.
           - Camera: the camera prim to render from. Leave empty to inherit the

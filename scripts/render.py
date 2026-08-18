@@ -166,6 +166,65 @@ def _camera_at(stage, path):
     return camera or None
 
 
+def _stage_relative(stage, path):
+    """Resolve a relative output path against the stage rather than the process.
+
+    A relative path is otherwise interpreted against whatever directory the host
+    happened to start in, which for usdview is arbitrary and rarely where anyone wants
+    renders. Next to the scene is the predictable answer.
+    """
+    if not path or os.path.isabs(path):
+        return path
+
+    root_layer = stage.GetRootLayer()
+    base = os.path.dirname(root_layer.realPath) if root_layer and root_layer.realPath else os.getcwd()
+    return os.path.normpath(os.path.join(base, path))
+
+
+def _ensure_parent_dir(path):
+    """Create the directory an image is about to be written into.
+
+    Renderers do not create it. V-Ray reports the product it could not write and
+    OpenEXR fails with "Unable to open file for write", both a directory late rather
+    than a render that went wrong.
+    """
+    parent = os.path.dirname(path)
+    if not parent or os.path.isdir(parent):
+        return
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Render: could not create %s (%s)", parent, exc)
+
+
+def _prepare_product_dirs(stage, settings_path):
+    """Create the directories the settings' RenderProducts will write into.
+
+    The delegate writes those files itself, so their paths never pass through here --
+    but they fail the same way, and the renderer will not make the folder either. Both
+    interpretations of a relative productName are prepared, since the delegate resolves
+    it against the process while everything here resolves against the stage.
+    """
+    if not settings_path:
+        return
+
+    prim = stage.GetPrimAtPath(Sdf.Path(settings_path))
+    if not prim or not prim.IsValid():
+        return
+
+    for target in UsdRender.Settings(prim).GetProductsRel().GetTargets():
+        product_prim = stage.GetPrimAtPath(target)
+        if not product_prim or not product_prim.IsValid():
+            continue
+
+        name = UsdRender.Product(product_prim).GetProductNameAttr().Get()
+        if not name:
+            continue
+
+        _ensure_parent_dir(str(name))
+        _ensure_parent_dir(_stage_relative(stage, str(name)))
+
+
 def _resolve_settings_path(node, stage):
     """The RenderSettings prim to render, as an explicit path or the stage's own.
 
@@ -401,11 +460,16 @@ def _render_hydra(node, output_image):
     if recorder is None:
         return
 
+    _prepare_product_dirs(stage, settings_path)
+
     time_codes = [Usd.TimeCode(f) for f in frames] or [Usd.TimeCode.EarliestTime()]
     written = []
     try:
         for time_code in time_codes:
-            path = format_output_path(output_image, time_code.GetValue() if frames else None)
+            path = _stage_relative(
+                stage, format_output_path(output_image, time_code.GetValue() if frames else None)
+            )
+            _ensure_parent_dir(path)
             if not recorder.Record(stage, camera, time_code, path):
                 logger.error("Render: failed writing %s", path)
                 return
@@ -528,6 +592,12 @@ def config():
           - Output Image: the file to write. Frame placeholders are substituted
             when Frames is set — both render.####.exr and render.{frame}.exr work,
             with hashes padded to their own width.
+
+            A relative path is resolved against the scene rather than against
+            whatever directory the host started in, and the directory is created
+            if it does not exist. The same is done for the directories the
+            settings' RenderProducts write into, since the delegate writes those
+            itself and no renderer creates the folder for you.
           - Frames: which frames to render, usdrecord-style — comma-separated
             entries, each a single frame, a start:end range, or a strided
             start:endxstride range. Empty renders one image at the stage's default
