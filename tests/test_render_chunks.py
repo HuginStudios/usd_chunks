@@ -132,6 +132,42 @@ class TestRenderSettings:
         targets = usd_settings.GetProductsRel().GetTargets()
         assert [str(t) for t in targets] == [product.get_param("reference").value]
 
+    def test_data_window_and_effect_switches_are_authored(self):
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+
+        settings.get_param("data_window_ndc").value = (0.25, 0.25, 0.75, 0.75)
+        settings.get_param("disable_motion_blur").value = True
+        settings.get_param("disable_depth_of_field").value = True
+        settings.execute()
+
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        assert tuple(usd_settings.GetDataWindowNDCAttr().Get()) == (0.25, 0.25, 0.75, 0.75)
+        assert usd_settings.GetDisableMotionBlurAttr().Get() is True
+        assert usd_settings.GetDisableDepthOfFieldAttr().Get() is True
+
+    def test_material_binding_purposes_and_color_space(self):
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+
+        settings.get_param("material_binding_purposes").value = "full, preview"
+        settings.get_param("rendering_color_space").value = "acescg"
+        settings.execute()
+
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        assert list(usd_settings.GetMaterialBindingPurposesAttr().Get()) == ["full", "preview"]
+        assert usd_settings.GetRenderingColorSpaceAttr().Get() == "acescg"
+
+    def test_empty_optional_tokens_are_left_unauthored(self):
+        """An empty field must not author an empty token list — that would override
+        the schema fallback with something meaningless."""
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+
+        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        assert not prim.GetAttribute("materialBindingPurposes").HasAuthoredValue()
+        assert not prim.GetAttribute("renderingColorSpace").HasAuthoredValue()
+
     def test_stage_render_settings_metadata_is_set(self):
         """A renderer finds the settings prim through stage metadata, not by path
         convention — so the checkbox that writes it is what makes the network
