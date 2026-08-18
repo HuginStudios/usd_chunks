@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import types
 
+import pytest
 from pxr import Usd, UsdRender
 
 from usd_chunks import chunk_registry, chunk_scheduler
@@ -188,6 +189,104 @@ class TestRenderSettings:
         settings.execute()
 
         assert not UsdRender.Settings.GetStageRenderSettings(stage)
+
+
+def _schema_delegates():
+    from usd_chunks import render_defs
+    return [d for d in render_defs.iter_render_settings_defs() if d.source == "schema"]
+
+
+requires_renderer = pytest.mark.skipif(
+    not _schema_delegates(),
+    reason="no renderer ships an applied API schema for RenderSettings in this USD build",
+)
+
+
+class TestDelegateSettings:
+    """Renderer settings lofted onto the RenderSettings chunk from whatever the renderer
+    declares -- an applied API schema for V-Ray, .args in Sdr for RenderMan."""
+
+    def _settings_chunk(self, scene):
+        mod = importlib.import_module("scripts.render_settings")
+        return mod, _make(scene, mod, "render_settings")
+
+    def test_no_delegate_by_default(self):
+        scene, _stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+
+        assert settings.get_param("delegate").value == "None"
+
+    def test_variants_offer_every_describable_renderer(self):
+        mod = importlib.import_module("scripts.render_settings")
+        labels = [label for label, _presets in mod.config().variants]
+
+        from usd_chunks import render_defs
+        assert labels == sorted(d.label for d in render_defs.iter_render_settings_defs())
+
+    @requires_renderer
+    def test_selecting_a_delegate_lofts_its_settings(self):
+        scene, _stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+        before = len(settings.get_my_params())
+
+        settings.get_param("delegate").value = _schema_delegates()[0].label
+
+        assert len(settings.get_my_params()) > before
+
+    @requires_renderer
+    def test_switching_delegates_clears_the_previous_ones(self):
+        scene, _stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+        label = _schema_delegates()[0].label
+
+        settings.get_param("delegate").value = label
+        lofted = len(settings.get_my_params())
+        settings.get_param("delegate").value = "None"
+
+        assert len(settings.get_my_params()) < lofted
+
+    @requires_renderer
+    def test_api_schema_is_applied_to_the_settings_prim(self):
+        scene, stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+        definition = _schema_delegates()[0]
+        settings.get_param("delegate").value = definition.label
+        settings.execute()
+
+        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        assert definition.schema_name in prim.GetAppliedSchemas()
+
+    @requires_renderer
+    def test_defaults_are_not_authored(self):
+        """258 attributes at their schema defaults would bury the few that were changed."""
+        scene, stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+        definition = _schema_delegates()[0]
+        settings.get_param("delegate").value = definition.label
+        settings.execute()
+
+        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        authored = [
+            a.GetName() for a in prim.GetAttributes()
+            if a.GetName().startswith(definition.namespace + ":") and a.HasAuthoredValue()
+        ]
+        assert authored == []
+
+    @requires_renderer
+    def test_a_changed_setting_is_authored_namespaced(self):
+        scene, stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+        definition = _schema_delegates()[0]
+        settings.get_param("delegate").value = definition.label
+
+        target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
+        settings.get_param(target.name).value = True
+        settings.execute()
+
+        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        attr = prim.GetAttribute(target.attr_name)
+        assert attr.HasAuthoredValue()
+        assert attr.Get() is True
 
 
 class _FakeRecorder:

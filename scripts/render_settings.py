@@ -6,10 +6,13 @@ Requires: pxr (OpenUSD), usd_chunks.
 
 from __future__ import annotations
 
+import logging
+
 from pxr import Gf, Sdf, Usd, UsdRender
 
-from usd_chunks import chunk, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_notice, chunk_utils, render_defs
 
+logger = logging.getLogger(__name__)
 
 _CONFORM_POLICIES = [
     "expandAperture",
@@ -20,6 +23,76 @@ _CONFORM_POLICIES = [
 ]
 
 _STAGE_SETTINGS_METADATA = "renderSettingsPrimPath"
+
+_DELEGATE_NONE = "None"
+
+#: Params that belong to the chunk itself and survive a delegate change. Everything else
+#: on the chunk was lofted from a renderer's settings definition and gets rebuilt.
+_FIXED = {
+    "primpath_location", "resolution", "pixel_aspect_ratio", "aspect_ratio_conform_policy",
+    "camera", "products", "included_purposes", "material_binding_purposes",
+    "rendering_color_space", "data_window_ndc", "disable_motion_blur",
+    "disable_depth_of_field", "set_stage_settings", "reference", "delegate",
+}
+
+
+def _delegate_defs():
+    """Renderer settings definitions by label, for the delegate menu."""
+    return {d.label: d for d in render_defs.iter_render_settings_defs()}
+
+
+def _clear_delegate_params(owner):
+    """Remove every param lofted from the previously selected delegate."""
+    for param in owner.get_my_params():
+        if param.name not in _FIXED:
+            owner.remove_param_or_group(param)
+
+
+def _loft_delegate_params(owner, definition):
+    """Create params for a renderer's settings, in collapsed groups.
+
+    V-Ray declares 258 of them, so grouping is not cosmetic -- render_defs.group_props
+    buckets them the way the renderer's own UI does (SettingsImageSampler, SettingsGI,
+    ...), and every group starts collapsed so the node stays a node.
+    """
+    for group_name, props in render_defs.group_props(definition.props).items():
+        group = chunk.Group(
+            group_name, group_name,
+            flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED,
+        )
+        group.set_state(chunk.ChunkFlags.State.COLLAPSED)
+
+        added = False
+        for prop in props:
+            param = render_defs.param_for_setting(prop)
+            if param is None:
+                continue
+            if prop.help:
+                param.description = prop.help
+            group.add_param(param)
+            added = True
+
+        if added:
+            owner.add_param(group)
+
+
+def _delegate_changed(owner, notice, sender):
+    _chunk = owner.get_chunk()
+    if _chunk is None:
+        return
+
+    _clear_delegate_params(_chunk)
+
+    label = _chunk.get_param("delegate").value
+    if not label or label == _DELEGATE_NONE:
+        return
+
+    definition = _delegate_defs().get(label)
+    if definition is None:
+        logger.warning("Render Settings: no renderer settings named %r are installed here.", label)
+        return
+
+    _loft_delegate_params(_chunk, definition)
 
 
 def _set_stage_settings_path(stage, prim_path):
@@ -35,6 +108,51 @@ def _set_stage_settings_path(stage, prim_path):
             stage.SetMetadata(_STAGE_SETTINGS_METADATA, prim_path)
         elif stage.HasAuthoredMetadata(_STAGE_SETTINGS_METADATA):
             stage.ClearMetadata(_STAGE_SETTINGS_METADATA)
+
+
+def _author_delegate_settings(node, prim):
+    """Apply the selected renderer's API schema and author the settings that differ.
+
+    Only non-default values are written. The schema already carries every fallback, so
+    authoring all 258 would bury the handful that were actually changed and make the
+    layer unreadable in a diff -- the same reason chunk params only create an inputs:
+    attribute once their value leaves the default.
+    """
+    delegate_param = node.get_param("delegate")
+    if delegate_param is None:
+        return
+
+    label = delegate_param.value
+    if not label or label == _DELEGATE_NONE:
+        return
+
+    definition = _delegate_defs().get(label)
+    if definition is None:
+        return
+
+    if definition.schema_name:
+        # AddAppliedSchema rather than ApplyAPI: the schema's library is not loaded
+        # until something uses it, so the TfType ApplyAPI wants is not resolvable here.
+        prim.AddAppliedSchema(definition.schema_name)
+
+    for prop in definition.props:
+        param = node.get_param(prop.name)
+        if param is None:
+            continue
+
+        value = param.value
+        if value is None or value == prop.default:
+            continue
+
+        value_type = Sdf.ValueTypeNames.Find(prop.sdf_type)
+        if not value_type:
+            continue
+
+        attr = prim.CreateAttribute(prop.attr_name, value_type)
+        try:
+            attr.Set(value)
+        except Exception as exc:  # noqa: BLE001 - a param value this attr cannot hold
+            logger.debug("Render Settings: could not author %s: %s", prop.attr_name, exc)
 
 
 def _token_list(value):
@@ -99,6 +217,15 @@ def main():
             flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
         ),
     ])
+
+    delegate = chunk.Menu(
+        "delegate", "Delegate",
+        menu_items=[_DELEGATE_NONE] + sorted(_delegate_defs()),
+        default_value=_DELEGATE_NONE,
+    )
+    delegate.add_callback(_delegate_changed, send_on_create=False)
+    chunk_api.add_param(delegate)
+
     return chunk_api
 
 
@@ -160,6 +287,8 @@ def execute(node):
 
         node.get_param("reference").value = authored
 
+        _author_delegate_settings(node, settings.GetPrim())
+
     # Renderers find the settings prim through this stage metadatum rather than by
     # path convention. Outside the variant context and the chunk's edit target,
     # since stage metadata is only accepted on the root or session layer.
@@ -167,8 +296,15 @@ def execute(node):
 
 
 def config():
+    # One menu entry per renderer whose settings this USD can describe, so V-Ray shows
+    # up because Chaos ships a schema rather than because anything here knows about
+    # V-Ray. Empty in a runtime with no renderer plugins, which is the right answer
+    # there rather than an error.
+    variants = [(label, {"delegate": label}) for label in sorted(_delegate_defs())]
+
     return chunk.DefaulConfig(
         category=chunk.StandardCategory.UTILS,
+        variants=variants,
         description="""
         Render Settings chunk — creates a UsdRender.Settings prim describing one
         render: its resolution, the camera it uses, and the products it writes.
@@ -209,6 +345,22 @@ def config():
             runtime state that never lands in a saved scene file. A handed-off file
             therefore carries the RenderSettings prim but not the pointer to it;
             tell the renderer the path explicitly in that case.
+          - Delegate: which renderer's own settings to expose alongside the standard
+            ones. The menu lists every renderer this USD build can describe, and each
+            also appears as its own entry in the chunk menu.
+
+            Selecting one lofts that renderer's settings onto the chunk, grouped the
+            way its own UI groups them and collapsed by default -- V-Ray declares 258
+            of them. Only values changed from their default are authored, as
+            namespaced attributes on the RenderSettings prim (vray:..., ri:...), which
+            is how every renderer reads its settings: Hydra gathers them and each
+            delegate picks out the namespace it owns. The matching API schema is
+            applied at the same time where there is one.
+
+            Nothing here is renderer-specific. A renderer appears because it declares
+            its settings in a way USD can read -- V-Ray ships an applied API schema,
+            RenderMan registers .args files into the shader registry -- so installing
+            one is all it takes for it to show up.
           - Reference (output): the authored prim path, for wiring into a Render
             chunk.
 
