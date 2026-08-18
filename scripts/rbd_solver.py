@@ -7,6 +7,7 @@ Optional: scipy — smoother/denser heightfield colliders; falls back gracefully
 from __future__ import annotations
 
 import math
+import random
 from collections.abc import Generator
 
 from PySide6 import QtCore
@@ -23,6 +24,58 @@ try:
 except ImportError:
     _HAS_MUJOCO = False
     _np = None
+
+
+def _force_phases(seed: int) -> tuple:
+    """Six fixed phase offsets for the turbulence field, so a given Seed always gives the
+    same gusts -- a re-run has to reproduce the take you just approved."""
+    rnd = random.Random(int(seed))
+    return tuple(rnd.uniform(0.0, 2.0 * math.pi) for _ in range(6))
+
+
+def _turbulence_accel(pos, t: float, amp: float, scale: float, speed: float, phases) -> tuple:
+    """Turbulence acceleration at a world point, as a smooth flow field.
+
+    Each axis is driven by the OTHER two axes' positions, so neighbouring points get
+    different pushes and a body tumbles through the field instead of being shoved
+    uniformly (which is what a plain per-frame random force feels like -- jitter, not
+    wind). Sampled analytically from position + time, so it costs nothing to evaluate,
+    needs no grid, and is continuous however small the substep gets.
+
+    *scale* is the world-space size of one gust, *speed* how fast the field drifts.
+    """
+    if amp <= 0.0:
+        return (0.0, 0.0, 0.0)
+    k = (2.0 * math.pi / scale) if scale > 1e-6 else 0.0
+    x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+    p = phases
+    return (
+        math.sin(k * y + speed * t + p[0]) * math.cos(k * z - speed * t + p[1]) * amp,
+        math.sin(k * z + speed * t + p[2]) * math.cos(k * x - speed * t + p[3]) * amp,
+        math.sin(k * x + speed * t + p[4]) * math.cos(k * y - speed * t + p[5]) * amp,
+    )
+
+
+def _apply_wind(model, data, body_ids, wind, amp: float, scale: float, speed: float, phases, t: float) -> None:
+    """Push wind + turbulence onto each dynamic body for the coming step.
+
+    Applied as a FORCE, deliberately not divided out by mass. A heavier body therefore
+    accelerates less and shrugs the wind off, which is both the real behaviour of a
+    constant force and the intuition to reach for ("make it lighter so the wind catches
+    it"). It is also the only knob that gives Mass a visible job at all: gravity is
+    mass-independent by nature, so on a plain drop Mass changes nothing no matter what
+    it is set to.
+
+    xfrc_applied persists across steps, so this rewrites it every substep rather than
+    accumulating; with no wind and no turbulence it is never written and stays zero.
+    """
+    if amp <= 0.0 and not any(wind):
+        return
+    for bid in body_ids:
+        fx, fy, fz = _turbulence_accel(data.xpos[bid], t, amp, scale, speed, phases)
+        data.xfrc_applied[bid][0] = wind[0] + fx
+        data.xfrc_applied[bid][1] = wind[1] + fy
+        data.xfrc_applied[bid][2] = wind[2] + fz
 
 
 def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_cell: float = 0.0) -> dict | None:
@@ -372,6 +425,11 @@ def _sim_prim_gen_mj(
     hull_max_verts: int = 0,
     hfield_res: int = 96,
     floor_drop: float = 0.0,
+    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    turbulence: float = 0.0,
+    turb_scale: float = 100.0,
+    turb_speed: float = 1.0,
+    turb_seed: int = 0,
 ) -> Generator[int, None, list[Gf.Matrix4d] | None]:
     """MuJoCo rigid body simulation — yields frame index, returns all_mats.
 
@@ -564,6 +622,8 @@ def _sim_prim_gen_mj(
 
     # --- Debug: write collision geoms to USD session layer for visualization ---
     # --- simulation loop ---
+    phases = _force_phases(turb_seed)
+    sim_t = 0.0
     all_mats = []
     for frame in range(frame_count):
         # Update kinematic (mocap) collision bodies from USD time samples
@@ -589,7 +649,9 @@ def _sim_prim_gen_mj(
         all_mats.append(world_mat)
 
         for _ in range(substeps):
+            _apply_wind(model, data, (bid,), wind, turbulence, turb_scale, turb_speed, phases, sim_t)
             _mj.mj_step(model, data)
+            sim_t += sub_dt
 
         # Update debug collision geoms for this frame
         yield frame
@@ -668,6 +730,11 @@ def simulate_mujoco(
     solver_iters: int = 30,
     hfield_res: int = 96,
     floor_drop: float = 0.0,
+    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    turbulence: float = 0.0,
+    turb_scale: float = 100.0,
+    turb_speed: float = 1.0,
+    turb_seed: int = 0,
 ) -> list[Gf.Matrix4d] | None:
     """Run MuJoCo simulation."""
     if not _HAS_MUJOCO:
@@ -716,6 +783,11 @@ def simulate_mujoco(
         ang_damping,
         hfield_res=hfield_res,
         floor_drop=floor_drop,
+        wind=wind,
+        turbulence=turbulence,
+        turb_scale=turb_scale,
+        turb_speed=turb_speed,
+        turb_seed=turb_seed,
     )
 
     # Exhaust the generator to get all_mats
@@ -796,6 +868,11 @@ def simulate_mujoco_instancer(
     solver_iters: int = 30,
     hfield_res: int = 96,
     floor_drop: float = 0.0,
+    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    turbulence: float = 0.0,
+    turb_scale: float = 100.0,
+    turb_speed: float = 1.0,
+    turb_seed: int = 0,
 ) -> None:
     """Run MuJoCo multi-body simulation for a UsdGeom.PointInstancer using MjSpec.
 
@@ -1034,6 +1111,8 @@ def simulate_mujoco_instancer(
     _mj.mj_forward(model, data)
 
     # Simulate
+    phases = _force_phases(turb_seed)
+    sim_t = 0.0
     all_positions = []
     all_orientations = []
     for frame in range(frame_count):
@@ -1068,7 +1147,9 @@ def simulate_mujoco_instancer(
         all_orientations.append(frame_ori)
 
         for _ in range(substeps):
+            _apply_wind(model, data, bids, wind, turbulence, turb_scale, turb_speed, phases, sim_t)
             _mj.mj_step(model, data)
+            sim_t += sub_dt
 
     # Write time samples
     with Usd.EditContext(stage, layer):
@@ -1089,11 +1170,14 @@ def simulate_mujoco_instancer(
 # ---------------------------------------------------------------------------
 
 
-def _parse_vec3(s: str) -> list[float]:
-    parts = (s or "").split()
-    if len(parts) >= 3:
-        return [float(parts[0]), float(parts[1]), float(parts[2])]
-    return [0.0, 0.0, 0.0]
+def _vec3(node, name: str) -> list[float]:
+    """Read a 3-component Vector param as plain floats."""
+    param = node.get_param(name)
+    value = getattr(param, "value", None) if param is not None else None
+    if value is None:
+        return [0.0, 0.0, 0.0]
+    out = [float(v) for v in value][:3]
+    return out + [0.0] * (3 - len(out))
 
 
 def _parse_collision_prims(value: str, stage: Usd.Stage | None) -> list[Usd.Prim]:
@@ -1225,15 +1309,18 @@ def _run(owner, notice, sender) -> None:
     lin_damping = _chunk.get_param("lin_damping", is_f).value
     ang_damping = _chunk.get_param("ang_damping", is_f).value
     shape_type = _chunk.get_param("shape_type", is_s).value
-    otx = _chunk.get_param("off_tx", is_f).value
-    oty = _chunk.get_param("off_ty", is_f).value
-    otz = _chunk.get_param("off_tz", is_f).value
-    orx = _chunk.get_param("off_rx", is_f).value
-    ory = _chunk.get_param("off_ry", is_f).value
-    orz = _chunk.get_param("off_rz", is_f).value
-    init_vel = _parse_vec3(_chunk.get_param("initial_velocity", is_s).value)
-    ang_vel = _parse_vec3(_chunk.get_param("angular_velocity", is_s).value)
+    otx, oty, otz = _vec3(_chunk, "offset_translate")
+    orx, ory, orz = _vec3(_chunk, "offset_rotate")
+    init_vel = _vec3(_chunk, "initial_velocity")
+    ang_vel = _vec3(_chunk, "angular_velocity")
     floor_drop = _chunk.get_param("floor_drop", is_f).value
+    forces = dict(
+        wind=_vec3(_chunk, "wind"),
+        turbulence=_chunk.get_param("turbulence", is_f).value,
+        turb_scale=_chunk.get_param("turb_scale", is_f).value,
+        turb_speed=_chunk.get_param("turb_speed", is_f).value,
+        turb_seed=_chunk.get_param("turb_seed", is_i).value,
+    )
 
     layer = owner.get_edit_context()
     if not layer:
@@ -1286,6 +1373,7 @@ def _run(owner, notice, sender) -> None:
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
             floor_drop=floor_drop,
+            **forces,
         )
     else:
         xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
@@ -1335,6 +1423,7 @@ def _run(owner, notice, sender) -> None:
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
             floor_drop=floor_drop,
+            **forces,
         )
 
     # Ensure the baked animation overrides any chunk (e.g. ScatterPoints) that authored
@@ -1357,7 +1446,6 @@ _AUTO_RUN_DELAY_MS = 600
 # the collision-list buttons are controls, not sim inputs).
 _STALE_IGNORE_PARAMS = {
     "run_sim",
-    "run_sim_top",
     "reset_sim",
     "auto_sim",
     "add_collision",
@@ -1420,19 +1508,30 @@ def _schedule_auto_run(root_chunk) -> None:
 def main() -> chunk.Chunk:
     chunk_api = chunk.Chunk("RBD Solver")
 
-    prim_path = chunk.LineEdit(
-        "prim_path",
-        "Target Prim",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-        tooltip="The prim to simulate — a single mesh, or a PointInstancer to simulate every instance.",
+    # ------------------------------------------------------------------
+    # Header -- the things you touch on every single sim, left uncollapsed so the node
+    # reads as "pick a prim, press go" at a glance.
+    chunk_api.add_param(
+        chunk.LineEdit(
+            "prim_path",
+            "Target Prim",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+            tooltip="The prim to simulate — a single mesh, or a PointInstancer to simulate every instance.",
+        )
     )
-    chunk_api.add_param(prim_path)
 
-    run_btn_top = chunk.Button(
-        "run_sim_top", "Run Simulation", tooltip="Simulate and bake the animation onto the target prim."
+    # One Run button, at the top. There used to be a second identical one at the bottom of
+    # the node purely so it stayed reachable past the param list; the sections below are
+    # collapsed now, so the list is short enough not to need it.
+    run_btn = chunk.Button(
+        "run_sim", "Run Simulation", tooltip="Simulate and bake the animation onto the target prim."
     )
-    run_btn_top.add_callback(_run)
-    chunk_api.add_param(run_btn_top)
+    run_btn.add_callback(_run)
+    chunk_api.add_param(run_btn)
+
+    reset_btn = chunk.Button("reset_sim", "Reset", tooltip="Clear the baked animation from this chunk's layer.")
+    reset_btn.add_callback(reset)
+    chunk_api.add_param(reset_btn)
 
     auto_sim = chunk.Checkbox(
         "auto_sim",
@@ -1451,7 +1550,20 @@ def main() -> chunk.Chunk:
         | chunk.ChunkFlags.GroupFlags.FRAMED
     )
 
-    col_grp = chunk.Group("Collision", flags=_GF)
+    def _section(name: str, label: str) -> chunk.Group:
+        """A folded section.
+
+        Every section starts collapsed: the solver has ~30 params, and showing them all
+        meant scrolling past a wall of spinboxes to reach Run. Folding is a pure UI
+        preference and is deliberately not treated as a change to the chunk.
+        """
+        grp = chunk.Group(name, label, flags=_GF)
+        grp.set_state(chunk.ChunkFlags.State.COLLAPSED)
+        return grp
+
+    # ------------------------------------------------------------------
+    # Collision -- what the body hits.
+    col_grp = _section("Collision", "Collision")
     col_grp.add_param(
         chunk.TextEdit(
             "collision_path",
@@ -1469,11 +1581,7 @@ def main() -> chunk.Chunk:
     add_col_btn.add_callback(add_collision)
     col_grp.add_param(add_col_btn)
 
-    clear_col_btn = chunk.Button(
-        "clear_collision",
-        "Clear",
-        tooltip="Remove all collider prims.",
-    )
+    clear_col_btn = chunk.Button("clear_collision", "Clear", tooltip="Remove all collider prims.")
     clear_col_btn.add_callback(clear_collision)
     col_grp.add_param(clear_col_btn)
     col_grp.add_param(
@@ -1487,56 +1595,22 @@ def main() -> chunk.Chunk:
     )
     chunk_api.add_param(col_grp)
 
-    sim_grp = chunk.Group("Simulation", flags=_GF)
-    sim_grp.add_param(
-        chunk.Spinbox(
-            "frame_count",
-            "Frame Count",
-            default_value=120,
-            is_int=True,
-            tooltip="Number of frames to simulate and bake.",
-        )
-    )
-    sim_grp.add_param(
-        chunk.Spinbox(
-            "fps", "FPS", default_value=24.0, tooltip="Frames per second — sets the simulation timestep (1/fps)."
-        )
-    )
-    sim_grp.add_param(
-        chunk.Spinbox(
-            "gravity",
-            "Gravity",
-            default_value=-981.0,
-            tooltip="Gravity along the scene's up axis, in scene units/s². Default -981 assumes centimetres.",
-        )
-    )
-    sim_grp.add_param(
-        chunk.Spinbox(
-            "substeps",
-            "Substeps",
-            default_value=8,
-            is_int=True,
-            tooltip="Physics steps per frame. Higher = more stable/accurate but slower.",
-        )
-    )
-    sim_grp.add_param(
-        chunk.Spinbox(
-            "start_frame", "Start Frame", default_value=1, is_int=True, tooltip="First frame of the baked animation."
-        )
-    )
-    chunk_api.add_param(sim_grp)
-
-    physics_grp = chunk.Group("Physics", flags=_GF)
-    # Sphere is the most stable shape against the heightfield collider; Convex
-    # Hull is more accurate on flat ground but can be unstable on heightfields.
+    # ------------------------------------------------------------------
+    # Physics -- what the body is made of.
+    physics_grp = _section("Physics", "Physics")
     physics_grp.add_param(
         chunk.Menu(
             "shape_type",
             "Collision Shape",
-            menu_items=["Sphere", "Box", "Convex Hull"],
-            default_value="Sphere",
-            tooltip="Collision shape for the dynamic body: Sphere (fastest, most stable), Box, "
-            "or Convex Hull (most accurate, can be unstable on concave colliders).",
+            menu_items=["Convex Hull", "Sphere", "Box"],
+            # Convex Hull is what you almost always want: it is the shape the body actually
+            # looks like. Sphere used to be the default because it was the only one that
+            # stayed put on a heightfield collider -- which turned out to be a defect in how
+            # those colliders were built (a phantom trench through low-poly geometry), not a
+            # property of the hull.
+            default_value="Convex Hull",
+            tooltip="Collision shape for the dynamic body: Convex Hull (accurate, matches "
+            "the mesh), Sphere (fastest, most forgiving in dense piles), or Box.",
         )
     )
     physics_grp.add_param(
@@ -1558,20 +1632,51 @@ def main() -> chunk.Chunk:
         )
     )
     physics_grp.add_param(
-        chunk.Spinbox("friction", "Friction", default_value=0.5, tooltip="Surface friction (0 = frictionless).")
-    )
-    physics_grp.add_param(
         chunk.Spinbox(
-            "restitution", "Bounce", default_value=0.1, tooltip="Bounciness: 0 = no bounce, 1 = fully elastic."
+            "mass",
+            "Mass",
+            default_value=1.0,
+            tooltip="Mass of the dynamic body — a relative weight, in no particular unit "
+            "(not kg or g). Nothing pins it to one: gravity is applied as an acceleration, "
+            "so Mass never becomes a weight you could calibrate against. It only ever acts "
+            "as the divisor in acceleration = force / Mass, against the numbers you type "
+            "into Wind and Turbulence. Read it as a ratio: 1 is the reference, 10 is ten "
+            "times harder to push around.\n\n"
+            "So Mass shows up wherever a force other than gravity acts — Wind, Turbulence, "
+            "how fast Damping bleeds off motion, and how momentum is traded in a collision. "
+            "On a plain drop it looks like it does nothing, and that is correct: a heavy "
+            "body and a light one fall identically.",
         )
     )
-    physics_grp.add_param(chunk.Spinbox("mass", "Mass", default_value=1.0, tooltip="Mass of the dynamic body."))
+    # Friction and Bounce are physically 0..1, so they get sliders -- you can feel the range
+    # instead of guessing which numbers are sensible.
+    physics_grp.add_param(
+        chunk.Slider(
+            "friction",
+            "Friction",
+            min_value=0.0,
+            max_value=1.0,
+            default_value=0.5,
+            tooltip="Surface friction: 0 = frictionless, 1 = grippy.",
+        )
+    )
+    physics_grp.add_param(
+        chunk.Slider(
+            "restitution",
+            "Bounce",
+            min_value=0.0,
+            max_value=1.0,
+            default_value=0.1,
+            tooltip="Bounciness: 0 = no bounce, 1 = fully elastic.",
+        )
+    )
     physics_grp.add_param(
         chunk.Spinbox(
             "lin_damping",
             "Linear Damping",
             default_value=0.0,
-            tooltip="Linear drag slowing the body's motion (0 = none).",
+            tooltip="Linear drag slowing the body's motion (0 = none). Raise it for a floaty, "
+            "air-resisted feel.",
         )
     )
     physics_grp.add_param(
@@ -1581,43 +1686,154 @@ def main() -> chunk.Chunk:
     )
     chunk_api.add_param(physics_grp)
 
-    _ot_tip = "Shift the body's start position along {} before simulating, in scene units."
-    _or_tip = "Pre-rotate the body around {} before simulating, in degrees."
-    offset_grp = chunk.Group("Offsets", flags=_GF)
-    offset_grp.add_param(chunk.Spinbox("off_tx", "Offset X", default_value=0.0, tooltip=_ot_tip.format("X")))
-    offset_grp.add_param(chunk.Spinbox("off_ty", "Offset Y", default_value=0.0, tooltip=_ot_tip.format("Y")))
-    offset_grp.add_param(chunk.Spinbox("off_tz", "Offset Z", default_value=0.0, tooltip=_ot_tip.format("Z")))
-    offset_grp.add_param(chunk.Spinbox("off_rx", "Rotate X", default_value=0.0, tooltip=_or_tip.format("X")))
-    offset_grp.add_param(chunk.Spinbox("off_ry", "Rotate Y", default_value=0.0, tooltip=_or_tip.format("Y")))
-    offset_grp.add_param(chunk.Spinbox("off_rz", "Rotate Z", default_value=0.0, tooltip=_or_tip.format("Z")))
-    chunk_api.add_param(offset_grp)
-
-    vel_grp = chunk.Group("Velocity", flags=_GF)
-    vel_grp.add_param(
-        chunk.LineEdit(
+    # ------------------------------------------------------------------
+    # Initial State -- where it starts and how hard it is thrown. Replaces the old Offsets
+    # group (six loose spinboxes) and Velocity group (two text fields you had to type
+    # space-separated numbers into).
+    init_grp = _section("InitialState", "Initial State")
+    init_grp.add_param(
+        chunk.Vector(
+            "offset_translate",
+            "Position Offset",
+            param=chunk.Spinbox(),
+            length=3,
+            suffixes="XYZ",
+            default_value=(0.0, 0.0, 0.0),
+            tooltip="Shift the body's start position before simulating, in scene units.",
+        )
+    )
+    init_grp.add_param(
+        chunk.Vector(
+            "offset_rotate",
+            "Rotation Offset",
+            param=chunk.Spinbox(),
+            length=3,
+            suffixes="XYZ",
+            default_value=(0.0, 0.0, 0.0),
+            tooltip="Pre-rotate the body before simulating, in degrees.",
+        )
+    )
+    init_grp.add_param(
+        chunk.Vector(
             "initial_velocity",
             "Linear Velocity",
-            default_value="0 0 0",
-            tooltip="Starting linear velocity as 'x y z', in scene units/s.",
+            param=chunk.Spinbox(),
+            length=3,
+            suffixes="XYZ",
+            default_value=(0.0, 0.0, 0.0),
+            tooltip="Starting linear velocity, in scene units/s — throw the body rather than dropping it.",
         )
     )
-    vel_grp.add_param(
-        chunk.LineEdit(
+    init_grp.add_param(
+        chunk.Vector(
             "angular_velocity",
             "Angular Velocity",
-            default_value="0 0 0",
-            tooltip="Starting angular velocity as 'x y z', in radians/s.",
+            param=chunk.Spinbox(),
+            length=3,
+            suffixes="XYZ",
+            default_value=(0.0, 0.0, 0.0),
+            tooltip="Starting angular velocity, in radians/s — give the body spin as it launches.",
         )
     )
-    chunk_api.add_param(vel_grp)
+    chunk_api.add_param(init_grp)
 
-    run_btn = chunk.Button("run_sim", "Run Simulation", tooltip="Simulate and bake the animation onto the target prim.")
-    run_btn.add_callback(_run)
-    chunk_api.add_param(run_btn)
+    # ------------------------------------------------------------------
+    # Forces -- what pushes the body around mid-flight.
+    forces_grp = _section("Forces", "Forces")
+    forces_grp.add_param(
+        chunk.Vector(
+            "wind",
+            "Wind",
+            param=chunk.Spinbox(),
+            length=3,
+            suffixes="XYZ",
+            default_value=(0.0, 0.0, 0.0),
+            tooltip="Constant directional push on every body. Applied as a force, so a "
+            "heavier body shrugs it off and a lighter one gets carried -- turn Mass down to "
+            "let the wind take something.",
+        )
+    )
+    forces_grp.add_param(
+        chunk.Spinbox(
+            "turbulence",
+            "Turbulence",
+            default_value=0.0,
+            tooltip="Strength of the swirling noise added on top of Wind. 0 = perfectly "
+            "steady wind. Like Wind this is a force, so it fights the body's Mass; try "
+            "roughly a tenth of gravity x mass to start (≈100 on a centimetre scene at "
+            "mass 1).",
+        )
+    )
+    forces_grp.add_param(
+        chunk.Spinbox(
+            "turb_scale",
+            "Turbulence Scale",
+            default_value=100.0,
+            tooltip="World-space size of one gust, in scene units. Small = fine, busy chop; "
+            "large = slow, broad swells that neighbouring bodies ride together.",
+        )
+    )
+    forces_grp.add_param(
+        chunk.Spinbox(
+            "turb_speed",
+            "Turbulence Speed",
+            default_value=1.0,
+            tooltip="How fast the turbulence field itself drifts and reshapes over time. "
+            "0 = a frozen field the bodies simply move through.",
+        )
+    )
+    forces_grp.add_param(
+        chunk.Spinbox(
+            "turb_seed",
+            "Seed",
+            default_value=0,
+            is_int=True,
+            tooltip="Changes the gust pattern without changing its strength — the knob to reach "
+            "for when a take is nearly right but one body lands badly.",
+        )
+    )
+    chunk_api.add_param(forces_grp)
 
-    reset_btn = chunk.Button("reset_sim", "Reset", tooltip="Clear the baked animation from this chunk's layer.")
-    reset_btn.add_callback(reset)
-    chunk_api.add_param(reset_btn)
+    # ------------------------------------------------------------------
+    # Simulation -- how the solve itself is run. Last: set once, rarely touched.
+    sim_grp = _section("Simulation", "Simulation")
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "start_frame", "Start Frame", default_value=1, is_int=True, tooltip="First frame of the baked animation."
+        )
+    )
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "frame_count",
+            "Frame Count",
+            default_value=120,
+            is_int=True,
+            tooltip="Number of frames to simulate and bake.",
+        )
+    )
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "fps", "FPS", default_value=24.0, tooltip="Frames per second — sets the simulation timestep (1/fps)."
+        )
+    )
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "substeps",
+            "Substeps",
+            default_value=8,
+            is_int=True,
+            tooltip="Physics steps per frame. Higher = more stable/accurate but slower.",
+        )
+    )
+    sim_grp.add_param(
+        chunk.Spinbox(
+            "gravity",
+            "Gravity",
+            default_value=-981.0,
+            tooltip="Gravity along the scene's up axis, in scene units/s². Default -981 assumes centimetres.",
+        )
+    )
+    chunk_api.add_param(sim_grp)
 
     # Any real simulation input marks the chunk stale (orange node border) until the next
     # successful Run; an upstream chunk changing does the same via the global listener above.
@@ -1633,6 +1849,7 @@ def main() -> chunk.Chunk:
     chunk_api.set_state(chunk.ChunkFlags.State.STALE)
 
     return chunk_api
+
 
 
 def config() -> chunk.DefaulConfig:
