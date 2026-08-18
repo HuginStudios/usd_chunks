@@ -456,15 +456,18 @@ def test_wrong_value_count_fails_loudly() -> None:
         chunk_gizmo.apply_bindings(c, "body", {"translate": (1.0, 2.0)})
 
 
-def test_cross_chunk_driver_is_not_silently_dropped() -> None:
-    """Slice 06 wires this up; until then it must say so rather than no-op."""
+def test_a_cross_chunk_driver_pointing_nowhere_is_survivable() -> None:
+    """A full property path targets another chunk, which can be deleted or renamed
+    independently. Losing it must cost that slot, not the whole drag -- unlike a bare name
+    that does not resolve, which is the chunk's own config naming a param it lacks and stays
+    loud. Cross-chunk resolution itself is covered in test_chunk_gizmo_cross_chunk.py."""
     c = _transform_chunk()
     c._config = ChunkConfig(module="transform", gizmos=[
         chunk.Gizmo("body", type="transform", anchor="primpath_location",
-                    driver={"value": ("/chunks/Other.inputs:tx",)}),
+                    driver={"value": ("/chunks/Nowhere.inputs:tx",)}),
     ])
-    with pytest.raises(NotImplementedError):
-        chunk_gizmo.apply_bindings(c, "body", {"value": 1.0})
+
+    chunk_gizmo.apply_bindings(c, "body", {"value": 1.0})  # must not raise
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
 logger = logging.getLogger(__name__)
 
 GIZMO_PREFIX = "ui:gizmo:"
+_INPUTS_PREFIX = "inputs:"
 
 
 @attrs.frozen
@@ -572,16 +573,52 @@ def decompose(matrix: "Gf.Matrix4d") -> dict:
 # write-back
 # ---------------------------------------------------------------------------
 
+def chunk_at_prim_path(path) -> Optional["core.ChunkBase"]:
+    """The chunk whose chunk prim sits at `path`, if it is still around."""
+    scene = getattr(ChunkRegistry(), "scene", None)
+    if scene is None:
+        return None
+    wanted = str(path)
+    for candidate in scene.get_chunks():
+        own = getattr(candidate, "_exec_prim_path", None) or getattr(candidate, "prim_path", None)
+        if own and str(own) == wanted:
+            return candidate
+    return None
+
+
 def _param_for_entry(chunk: "core.ChunkBase", entry: str):
+    """The param a driver entry names, or None if a cross-chunk target has gone away.
+
+    Two different kinds of "not found", handled differently on purpose:
+
+    * A bare name that does not resolve on the own chunk is a **declaration bug** -- the
+      chunk's own config names a param it does not have -- so it raises.
+    * A full property path that does not resolve is a **runtime condition**. The chunk it
+      points at can be deleted or disabled independently at any time, and the gizmo it
+      belongs to is still perfectly good. Returns None so the caller can drop that one slot
+      and keep the rest working.
+    """
     text = str(entry).strip().strip("<>")
-    if text.startswith("/"):
-        raise NotImplementedError(
-            f"Cross-chunk driver {text!r} is not wired up yet -- write-back currently resolves "
-            f"params on the gizmo's own chunk."
-        )
-    param = chunk.get_param(text)
+
+    if not text.startswith("/"):
+        param = chunk.get_param(text)
+        if param is None:
+            raise ValueError(f"Chunk {chunk.name!r} has no param {text!r} to drive")
+        return param
+
+    path = Sdf.Path(text)
+    owner = chunk_at_prim_path(path.GetPrimPath())
+    if owner is None:
+        logger.warning("Gizmo driver %s: no chunk at %s", text, path.GetPrimPath())
+        return None
+
+    # /chunks/Tab/Transform.inputs:translate_grp:tx -> translate_grp.tx
+    prop = path.name
+    if prop.startswith(_INPUTS_PREFIX):
+        prop = prop[len(_INPUTS_PREFIX):]
+    param = owner.get_param(prop.replace(":", "."))
     if param is None:
-        raise ValueError(f"Chunk {chunk.name!r} has no param {text!r} to drive")
+        logger.warning("Gizmo driver %s: chunk %r has no param %r", text, owner.name, prop)
     return param
 
 
@@ -631,4 +668,9 @@ def apply_bindings(chunk: "core.ChunkBase", name: str, values: dict) -> None:
                 f"Declared slots: {sorted(gizmo.driver)}"
             )
         for entry, item in zip(entries, _values_for(entries, value)):
-            _param_for_entry(chunk, entry).value = item
+            # A cross-chunk target that has gone away drops out here rather than taking the
+            # whole drag with it. Writing the param -- on whichever chunk owns it -- is what
+            # dirties that chunk and propagates downstream, which is the entire reason this
+            # goes through params instead of writing prims.
+            if (param := _param_for_entry(chunk, entry)) is not None:
+                param.value = item
