@@ -4820,6 +4820,29 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """Set the viewport to look through the given camera prim."""
         pass
 
+    # -- Gizmo capability -----------------------------------------------------------------
+    #
+    # Reserved shape only: nothing in v1 calls these. Activation is declarative -- a gizmo's
+    # `editmode` says onPrimSelection, the host already knows its own viewport selection, and
+    # the layer stack does the rest, so no push from us is needed. They exist for the case
+    # `editmode = onChunkSelection` describes, where node-graph selection should drive
+    # viewport handles and the host has no way to know which chunk is selected.
+    #
+    # Non-abstract with safe defaults, exactly like get_active_camera / set_viewport_camera
+    # above: usdview implements those, Kraken does not, and both work.
+
+    def supports_gizmos(self) -> bool:
+        """Whether this host can display chunk gizmos at all."""
+        return False
+
+    def show_gizmos(self, chunk: "ChunkBase", gizmos: list) -> None:
+        """Ask the host to display these gizmos. See chunk_gizmo.resolve_gizmos."""
+        pass
+
+    def hide_gizmos(self, chunk: "ChunkBase") -> None:
+        """Ask the host to stop displaying this chunk's gizmos."""
+        pass
+
     def primSelectionChangedCallback(self, *args, **kwargs):
         chunk_notice.send_notice(
             chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.get_selected_prims()

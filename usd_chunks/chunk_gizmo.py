@@ -29,6 +29,7 @@ import attrs
 from pxr import Gf, Sdf, Usd
 
 from usd_chunks import chunk_core as core
+from usd_chunks import chunk_notice
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
 
 logger = logging.getLogger(__name__)
@@ -658,15 +659,19 @@ def apply_bindings(chunk: "core.ChunkBase", name: str, values: dict) -> None:
     if gizmo is None:
         raise ValueError(f"Chunk {chunk.name!r} declares no gizmo named {name!r}")
 
-    for slot, value in values.items():
-        entries = gizmo.driver.get(slot)
-        if entries is None:
+    # Validate every slot before writing any of them, so a bad slot cannot leave the chunk
+    # half-updated -- during a drag that would show as the object tearing apart mid-gesture.
+    for slot in values:
+        if slot not in gizmo.driver:
             # Loudly: a host sending a slot this gizmo does not declare is a contract
             # mismatch, and silently dropping it looks exactly like a handle that does not work.
             raise KeyError(
                 f"Gizmo {name!r} on chunk {chunk.name!r} has no driver for slot {slot!r}. "
                 f"Declared slots: {sorted(gizmo.driver)}"
             )
+
+    for slot, value in values.items():
+        entries = gizmo.driver[slot]
         for entry, item in zip(entries, _values_for(entries, value)):
             # A cross-chunk target that has gone away drops out here rather than taking the
             # whole drag with it. Writing the param -- on whichever chunk owns it -- is what
@@ -674,3 +679,7 @@ def apply_bindings(chunk: "core.ChunkBase", name: str, values: dict) -> None:
             # goes through params instead of writing prims.
             if (param := _param_for_entry(chunk, entry)) is not None:
                 param.value = item
+
+    # One per tick, inside the START/STOP bracket. Deliberately after the writes, so a
+    # listener seeing CHANGED can read the new values straight off the params.
+    chunk.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_CHANGED, gizmo.name)

@@ -149,10 +149,13 @@ class ChunkNoticeAlias(IntEnum):
     MENU_ACTION_NOTICE = auto()
     WIDGET_CHANGED = auto()
 
-    # Gizmo notices
+    # Gizmo notices. START and STOP bracket a stream of CHANGED, one per drag tick, so a
+    # native host with its own undo stack can open a block on START and close it on STOP.
+    # usdview and Kraken need none of this -- usd-undo intercepts at Sdf level and coalesces
+    # a drag on its own, without caring whether the write came from a gizmo or a slider.
     GIZMO_START = auto()
     GIZMO_STOP = auto()
-    GIZMO_CHNAGED = auto()
+    GIZMO_CHANGED = auto()
 
     # Stage notices
     PRIM_SELECTION_CHANGED = auto()
@@ -353,7 +356,7 @@ class GizmoStoppedNotice(ChunkNotice):
     pass
 
 
-@chunk_notice(ChunkNoticeAlias.GIZMO_CHNAGED)
+@chunk_notice(ChunkNoticeAlias.GIZMO_CHANGED)
 class GizmoChangedNotice(ChunkNotice):
     pass
 
