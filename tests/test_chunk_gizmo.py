@@ -68,6 +68,16 @@ def _stage_with_cube(path: str = "/World/Cube") -> Usd.Stage:
     stage = Usd.Stage.CreateInMemory()
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         UsdGeom.Cube.Define(stage, path)
+
+    # Point the registry's scene at this stage. transform.py resolves its targets through
+    # `param.resolve_paths()`, which reads `get_stage()` off the scene -- and the registry is
+    # a singleton, so without this a test passes or fails depending on which test ran before
+    # it and what scene that one happened to leave behind.
+    class _StagedScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    chunk_registry.ChunkRegistry().initialize(_StagedScene(), "pytest")
     return stage
 
 

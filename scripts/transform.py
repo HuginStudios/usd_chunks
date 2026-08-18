@@ -105,15 +105,20 @@ def main():
 
 def config():
     return chunk.DefaulConfig(
-        # Translate only for now -- a translate slot is a plain Vec3d, so it needs none of
-        # the Euler decomposition the rotate and scale slots do. Those land once the
-        # compose/decompose round trip is proven against the composition above.
+        # Per-slot rather than a single matrix driver: the params really are nine separate
+        # floats, and a matrix driver could not be bound half to this chunk and half to
+        # another one. Rotations are Euler XYZ degrees, matching execute()'s composition --
+        # chunk_gizmo.decompose is the inverse and has to stay that way.
         gizmos=[
             chunk.Gizmo(
                 "body",
                 type="transform",
                 anchor="primpath_location",
-                driver={"translate": ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")},
+                driver={
+                    "translate": ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz"),
+                    "rotate": ("rotate_grp.rx", "rotate_grp.ry", "rotate_grp.rz"),
+                    "scale": ("scale_grp.sx", "scale_grp.sy", "scale_grp.sz"),
+                },
             ),
         ],
         category=chunk.StandardCategory.EXAMPLES,

@@ -21,10 +21,11 @@ edit wiped by the next execute.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Iterable, Optional
 
 import attrs
-from pxr import Sdf, Usd
+from pxr import Gf, Sdf, Usd
 
 from usd_chunks import chunk_core as core
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
@@ -445,6 +446,65 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
         if chunk_prim is not None:
             descs.extend(_read_gizmos(chunk_prim))
     return descs
+
+
+# ---------------------------------------------------------------------------
+# matrix -> slot dict
+# ---------------------------------------------------------------------------
+
+# Below this, cos(ry) is small enough that the Z angle stops being separable from X and the
+# atan2 pair below turns numerical noise into large, jittery angles. At exactly +-90 degrees
+# they are genuinely not separable at all (gimbal lock) -- Z is folded into X by convention.
+_GIMBAL_EPSILON = 1e-9
+
+
+def decompose(matrix: "Gf.Matrix4d") -> dict:
+    """A TRS matrix as a slot dict, in the convention transform.py composes in.
+
+    **Offered to hosts, not required of them.** The contract boundary is the slot dict; a
+    native handle that already produces Euler angles ignores this entirely. Keeping it here
+    means the Euler convention lives in exactly one place instead of being re-derived, subtly
+    differently, in every host.
+
+    Must invert `transform.py`'s composition exactly::
+
+        Gf.Rotation(X, rx) * Gf.Rotation(Y, ry) * Gf.Rotation(Z, rz)
+
+    which in Gf's row-vector convention is the matrix product Mx * My * Mz, giving::
+
+        M[0][2] = -sin(ry)
+        M[0][0], M[0][1] = cos(ry)cos(rz), cos(ry)sin(rz)
+        M[1][2], M[2][2] = sin(rx)cos(ry), cos(rx)cos(ry)
+
+    Note `Gf.Rotation.Decompose` is *not* this convention and returns different angles for
+    the same rotation -- it looks like the obvious call to make and quietly is not.
+
+    A mismatch here does not fail loudly. It shows up as the handle drifting a little further
+    from the object on each successive drag, which is miserable to diagnose from a bug report.
+
+    Rotations are Euler XYZ in degrees; translate and scale are `Gf.Vec3d`.
+    """
+    transform = Gf.Transform(matrix)
+    rotation = Gf.Matrix3d(transform.GetRotation().GetQuat())
+
+    sin_y = max(-1.0, min(1.0, -rotation[0][2]))
+    angle_y = math.asin(sin_y)
+
+    if abs(rotation[0][2]) < 1.0 - _GIMBAL_EPSILON:
+        angle_z = math.atan2(rotation[0][1], rotation[0][0])
+        angle_x = math.atan2(rotation[1][2], rotation[2][2])
+    else:
+        # Gimbal lock: X and Z rotate about the same world axis, so the split between them is
+        # arbitrary. Pin Z to zero and put the whole thing in X -- an arbitrary choice, but a
+        # *stable* one, which is what keeps repeated drags from wandering.
+        angle_z = 0.0
+        angle_x = math.atan2(rotation[1][0] * (1.0 if sin_y > 0 else -1.0), rotation[1][1])
+
+    return {
+        "translate": Gf.Vec3d(transform.GetTranslation()),
+        "rotate": Gf.Vec3d(math.degrees(angle_x), math.degrees(angle_y), math.degrees(angle_z)),
+        "scale": Gf.Vec3d(transform.GetScale()),
+    }
 
 
 # ---------------------------------------------------------------------------
