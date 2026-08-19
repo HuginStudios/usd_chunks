@@ -94,6 +94,12 @@ the chunk you are looking at.
 | `offset` | `tuple[float,float,float] \| None` | Where the handle sits relative to the anchor. `None` means on it. |
 | `size` | `float \| None` | Relative size hint. **`None` means you decide** — usually the right answer, since a viewport wants a screen-constant handle and only you know the camera distance. |
 
+A chunk can suppress one of its own handles while a mode of its own would fight it —
+camera.py hides its transform handle while `lock_to_freecam` is on, because the freecam
+re-authors the transform every frame and a drag would silently snap back. **`resolve_gizmos`
+simply does not return a suppressed handle**, so route A needs no check. Route B must
+honour `ui:gizmo:<name>:hidden = true`, which is authored for exactly this purpose.
+
 **Several anchor targets means one handle at their averaged pivot**, not one handle per
 target. A transform chunk pointed at three prims is ordinary use.
 

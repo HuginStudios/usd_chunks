@@ -396,10 +396,29 @@ def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase") -> 
             logger.exception("Failed to author gizmo %r on chunk %r", gizmo.name, chunk.name)
 
 
+def _author_hidden(prim: Usd.Prim, chunk: "core.ChunkBase", name: str) -> None:
+    """Author (or clear) the suppression flag for one handle.
+
+    Written into USD rather than only answered by resolve_gizmos, so a host doing pure-USD
+    discovery honours it too. Cleared rather than left stale when the chunk stops
+    suppressing -- a handle that never comes back is worse than one that never hid.
+    """
+    hidden = is_gizmo_hidden(chunk, name)
+    attr_name = _attr_name(name, "hidden")
+    if hidden:
+        attr = prim.CreateAttribute(attr_name, Sdf.ValueTypeNames.Bool, custom=False)
+        attr.SetVariability(Sdf.VariabilityUniform)
+        attr.Set(True)
+    elif (existing := prim.GetAttribute(attr_name)) and existing.IsValid():
+        existing.Set(False)
+
+
 def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase", gizmo) -> None:
     _uniform_token(prim, _attr_name(gizmo.name, "type")).Set(gizmo.type)
     _uniform_token(prim, _attr_name(gizmo.name, "label")).Set(gizmo.label or chunk.name)
     _uniform_token(prim, _attr_name(gizmo.name, "editmode"), array=True).Set(list(gizmo.editmode))
+
+    _author_hidden(prim, chunk, gizmo.name)
 
     if gizmo.axis is not None:
         _uniform_token(prim, _attr_name(gizmo.name, "axis")).Set(gizmo.axis)
@@ -432,7 +451,7 @@ def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase", gizmo
 
 
 def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
-    """Re-resolve every gizmo's anchor rel against the chunk's current param values.
+    """Re-resolve every gizmo's anchor rel, and its suppression flag, from current params.
 
     Cheap no-op for the overwhelming majority of chunks, which declare no gizmos at all --
     that early return is why this can hang off the generic param-changed path.
@@ -442,6 +461,13 @@ def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBa
         return
 
     for gizmo in gizmos:
+        # Suppression is a mode toggle, so it changes far more often than an anchor does --
+        # ticking lock_to_freecam has to hide the handle without waiting for a re-author.
+        try:
+            _author_hidden(prim, chunk, gizmo.name)
+        except Exception:
+            logger.debug("Could not refresh hidden flag for %r", gizmo.name, exc_info=True)
+
         try:
             targets = _anchor_targets(chunk, gizmo, stage)
         except Exception:
@@ -476,6 +502,12 @@ def _gizmo_names(prim: Usd.Prim) -> list:
 def _read_gizmos(prim: Usd.Prim) -> list:
     descs = []
     for name in _gizmo_names(prim):
+        hidden_attr = prim.GetAttribute(_attr_name(name, "hidden"))
+        if hidden_attr and hidden_attr.Get():
+            # Suppressed by its own chunk. Dropped here rather than flagged, so a host
+            # cannot draw it by forgetting to check.
+            continue
+
         type_attr = prim.GetAttribute(_attr_name(name, "type"))
         gizmo_type = type_attr.Get() if type_attr else None
         if not gizmo_type:
@@ -673,6 +705,39 @@ def _param_for_entry(chunk: "core.ChunkBase", entry: str):
     if param is None:
         raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")
     return param
+
+
+GIZMO_HIDDEN_HOOK = "gizmo_hidden"
+
+
+def is_gizmo_hidden(chunk: "core.ChunkBase", name: str) -> bool:
+    """Whether a chunk is currently suppressing one of its own handles.
+
+    Some chunks have a mode that fights a handle. camera.py's `lock_to_freecam` re-authors
+    the camera's transform from the DCC freecam on every CAMERA_CHANGED, so a transform
+    drag would be overwritten a frame later -- the handle would look draggable and silently
+    snap back, which is the worst of both.
+
+    A chunk opts in with a module-level function::
+
+        def gizmo_hidden(node, gizmo):
+            return gizmo == "transform" and node.get_param("lock_to_freecam").value
+
+    Chunk-side rather than a call into the host: it needs no new contract, works in every
+    host including ones that never import us, and the chunk is the only thing that knows
+    its own modes.
+    """
+    module = getattr(chunk, "_module", None)
+    hook = getattr(module, GIZMO_HIDDEN_HOOK, None)
+    if not callable(hook):
+        return False
+    try:
+        return bool(hook(chunk, name))
+    except Exception:
+        # A failing hook must not take the handle away -- a visible handle that misbehaves
+        # is easier to diagnose than one that silently never appears.
+        logger.exception("gizmo_hidden hook failed for gizmo %r on chunk %r", name, chunk.name)
+        return False
 
 
 GIZMO_CHANGED_HOOK = "gizmo_changed"

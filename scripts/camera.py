@@ -89,6 +89,19 @@ def _set_as_viewport_camera(owner, notice, sender):
     scene.set_viewport_camera(prim)
 
 
+def gizmo_hidden(node, gizmo):
+    """Hide the transform handle while the freecam owns the transform.
+
+    `_apply_freecam_transform` re-authors the camera's transform from the DCC freecam on
+    every CAMERA_CHANGED, so a drag would be overwritten a frame later. The handle would
+    look draggable and silently snap back, which is worse than not offering it.
+
+    Only the transform handle. Focus distance is untouched by the lock -- the freecam only
+    seeds it once, when the prim has no value yet -- so that handle stays usable.
+    """
+    return gizmo == "transform" and node.get_param("lock_to_freecam").value
+
+
 def _camera_matrix(node):
     """Compose the camera's transform params, in the same order transform.py uses.
 

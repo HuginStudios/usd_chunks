@@ -502,6 +502,9 @@ def _camera_chunk_and_stage():
     chunk_registry.ChunkRegistry().initialize(_StagedScene(), "pytest")
     c = camera_mod.main()
     c._config = ChunkConfig(module="camera", gizmos=camera_mod.config().gizmos)
+    # The framework attaches the chunk's module; module-level hooks like gizmo_hidden and
+    # gizmo_changed are looked up on it, so without this they are simply never found.
+    c._module = camera_mod
     return camera_mod, c, stage
 
 
@@ -610,3 +613,89 @@ def test_an_unsigned_and_a_signed_axis_are_different_declarations() -> None:
     """Both valid, opposite meanings. The schema has to be able to say which."""
     assert chunk.Gizmo("g", type="cube", axis="Z", driver="focusDistance").axis == "Z"
     assert chunk.Gizmo("g", type="cube", axis="-Z", driver="focusDistance").axis == "-Z"
+
+
+# ---------------------------------------------------------------------------
+# a chunk hiding its own handle
+# ---------------------------------------------------------------------------
+
+def test_the_camera_hides_its_transform_handle_under_the_freecam_lock() -> None:
+    """The freecam re-authors the camera transform on every CAMERA_CHANGED, so a drag would
+    be overwritten a frame later. A handle that looks draggable and silently snaps back is
+    worse than no handle."""
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    _author_prim(stage, c)
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Camera")
+
+    assert "transform" in [d.name for d in chunk_gizmo.resolve_gizmos(prim)]
+
+    c.get_param("lock_to_freecam").value = True
+    chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
+
+    assert "transform" not in [d.name for d in chunk_gizmo.resolve_gizmos(prim)]
+
+
+def test_the_focus_handle_survives_the_freecam_lock() -> None:
+    """The lock only seeds focusDistance once, when the prim has no value yet, so that
+    handle is never fighting anyone."""
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    _author_prim(stage, c)
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Camera")
+
+    c.get_param("lock_to_freecam").value = True
+    chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
+
+    assert "zdist" in [d.name for d in chunk_gizmo.resolve_gizmos(prim)]
+
+
+def test_unticking_the_lock_brings_the_handle_back() -> None:
+    """A flag that only ever goes one way would strand the handle forever."""
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    _author_prim(stage, c)
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Camera")
+
+    c.get_param("lock_to_freecam").value = True
+    chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
+    c.get_param("lock_to_freecam").value = False
+    chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
+
+    assert "transform" in [d.name for d in chunk_gizmo.resolve_gizmos(prim)]
+
+
+def test_suppression_is_visible_in_the_usd_not_only_through_resolve() -> None:
+    """So a host doing pure-USD discovery honours it too, rather than drawing a handle we
+    have decided should not exist right now."""
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    _author_prim(stage, c)
+    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Camera")
+
+    c.get_param("lock_to_freecam").value = True
+    chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
+
+    assert prim.GetAttribute("ui:gizmo:transform:hidden").Get() is True
+
+
+def test_a_chunk_without_the_hook_hides_nothing() -> None:
+    c = _camera_like([chunk.Gizmo("zdist", type="cube", driver="focusDistance")])
+    assert chunk_gizmo.is_gizmo_hidden(c, "zdist") is False
+
+
+def test_a_failing_hook_leaves_the_handle_visible() -> None:
+    """A visible handle that misbehaves is easier to diagnose than one that silently never
+    appears at all."""
+    import types as _types
+
+    c = _camera_like([chunk.Gizmo("zdist", type="cube", driver="focusDistance")])
+    module = _types.ModuleType("scripts.camera_stub")
+
+    def gizmo_hidden(node, gizmo):
+        raise RuntimeError("boom")
+
+    module.gizmo_hidden = gizmo_hidden
+    c._module = module
+
+    assert chunk_gizmo.is_gizmo_hidden(c, "zdist") is False
