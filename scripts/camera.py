@@ -1,8 +1,8 @@
 import os
 import json
 import http.client
-from pxr import UsdGeom
-from usd_chunks import chunk, chunk_notice, chunk_utils
+from pxr import Gf, UsdGeom
+from usd_chunks import chunk, chunk_core, chunk_notice, chunk_utils
 
 
 def _download_camera_types_cache(camera_cache):
@@ -89,8 +89,67 @@ def _set_as_viewport_camera(owner, notice, sender):
     scene.set_viewport_camera(prim)
 
 
+def _camera_matrix(node):
+    """Compose the camera's transform params, in the same order transform.py uses.
+
+    Deliberately identical: chunk_gizmo.decompose is the inverse of exactly this, so a
+    transform handle that round-trips through one chunk must round-trip through the other.
+    Diverging here would show up as the camera handle drifting while the transform chunk's
+    behaves.
+    """
+    rotation = (
+        Gf.Rotation(Gf.Vec3d(1, 0, 0), node.get_param("rx").value) *
+        Gf.Rotation(Gf.Vec3d(0, 1, 0), node.get_param("ry").value) *
+        Gf.Rotation(Gf.Vec3d(0, 0, 1), node.get_param("rz").value)
+    )
+    xform = Gf.Transform()
+    xform.SetTranslation(Gf.Vec3d(
+        node.get_param("tx").value,
+        node.get_param("ty").value,
+        node.get_param("tz").value,
+    ))
+    xform.SetRotation(rotation)
+    xform.SetScale(Gf.Vec3d(
+        node.get_param("sx").value or 1.0,
+        node.get_param("sy").value or 1.0,
+        node.get_param("sz").value or 1.0,
+    ))
+    return xform.GetMatrix()
+
+
+def _author_camera_transform(node, stage):
+    """Write the camera's own transform onto its own prim, in its own layer.
+
+    The camera carries its transform rather than reaching across to an upstream Transform
+    chunk -- the same shape Houdini's asset-reference node has, with a transform built in.
+    That is what makes cross-chunk gizmo drivers unnecessary rather than merely unused: the
+    handle drives params that belong to the chunk it is declared on.
+    """
+    if node.get_param("lock_to_freecam").value:
+        # The freecam owns the transform while the lock is on, and re-authors it on every
+        # CAMERA_CHANGED. Writing params here would be silently overwritten a frame later,
+        # which is worse than not writing them.
+        return
+
+    path = node.get_param("primpath_location").value
+    if not path:
+        return
+
+    with chunk_utils.author_in_variant_context(stage, path) as target_path:
+        prim = stage.GetPrimAtPath(target_path)
+        if not prim.IsValid():
+            return
+        xformable = UsdGeom.Xformable(stage.OverridePrim(target_path))
+        existing = {op.GetOpName(): op for op in xformable.GetOrderedXformOps()}
+        transform_op = existing.get("xformOp:transform") or xformable.AddTransformOp()
+        transform_op.Set(_camera_matrix(node))
+
+
 def main():
-    chunk_api = chunk.Chunk("Camera")
+    # gizmo="transform" gives the whole chunk one native manipulator, built from the three
+    # groups below. The focus-distance handle is declared separately in config(), since it
+    # needs an axis and sugar is type-only.
+    chunk_api = chunk.Chunk("Camera", gizmo="transform")
 
     # prim location
     stage = chunk_api.get_stage()
@@ -127,6 +186,26 @@ def main():
     default_cam = next((c for c in cameras if c.get("model") == menu.value), cameras[0])
     formats.menu_items = [f.get("format") for f in default_cam.get("sensorSize", [])]
 
+    # The camera's own transform, so it needs no upstream Transform chunk to be placed.
+    # Same param names and grouping as transform.py, so the one transform handle behaves
+    # identically wherever it appears.
+    for grp_name, grp_label, axes, min_v, max_v, default, gizmo in [
+        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0, "translate"),
+        ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"), -180.0, 180.0, 0.0, "rotate"),
+        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),    0.0, 100.0, 1.0, "scale"),
+    ]:
+        grp = chunk.Group(
+            grp_name, grp_label, gizmo=gizmo,
+            flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
+        )
+        grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
+        for name, label in zip(axes, ("X", "Y", "Z")):
+            grp.add_param(chunk.Slider(
+                name, label, min_value=min_v, max_value=max_v, default_value=default,
+                flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            ))
+        chunk_api.add_param(grp)
+
     lock_cam = chunk.Checkbox("lock_to_freecam", "Lock to Free Camera")
     lock_cam.add_callback(_apply_freecam_transform)
     chunk_api.add_param(lock_cam)
@@ -148,7 +227,13 @@ def execute(node):
 
     raw_path = node.get_param("primpath_location").value
 
+    # The path-unchanged guard used to skip the whole function. It still skips re-creating
+    # the prim -- get_unique_path would otherwise rename the camera on every cook -- but the
+    # transform below has to be re-authored whenever its params change, and that is exactly
+    # the case where the path has *not* moved. Leaving the early return in place made the
+    # transform handle appear to do nothing at all.
     if raw_path == getattr(node, '_last_camera_path', None):
+        _author_camera_transform(node, stage)
         return
 
     chunk_layer = stage.GetEditTarget().GetLayer()
@@ -177,6 +262,9 @@ def execute(node):
         if not var_selections and prim.GetPath().pathString != target_path:
             node.get_param("primpath_location").value = prim.GetPath().pathString
             node._last_camera_path = prim.GetPath().pathString
+
+    # After the prim exists, and after the Clear above -- authoring it earlier would be wiped.
+    _author_camera_transform(node, stage)
 
     if node.get_param("lock_to_freecam").value:
         scene = node.get_scene()

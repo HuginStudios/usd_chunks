@@ -1,6 +1,6 @@
 """The scalar half of the schema: a shape driving one param, plus `gizmo=` sugar.
 
-Where the transform gizmo is a multi-slot manipulator, this is the one-dimensional handle --
+Where a transform handle hands back a whole matrix, this is the one-dimensional handle --
 grab a cube, drag, one float changes. Camera focusDistance is the reference case, and it
 differs from transform.py on three axes at once: its params propagate through
 connect_usd_attr rather than a recompute, its path param carries no PRIM_SELECTION flag, and
@@ -182,10 +182,9 @@ def test_manipulator_type_sugars_onto_a_vector() -> None:
     assert gizmos[0].driver == ("aim",)
 
 
-def test_transform_is_no_longer_a_type_at_all() -> None:
-    """It existed to drive translate, rotate and scale from one handle. Three separate
-    handles cover the same ground without every host needing to be told which part of a
-    drag it was looking at."""
+def test_transform_belongs_on_the_chunk_not_on_a_param() -> None:
+    """It is a whole-chunk handle built from three groups, so there is nothing for it to bind
+    to on a single param or vector."""
     with pytest.raises(ValueError, match="cannot go on"):
         chunk.Slider("focusDistance", gizmo="transform")
     with pytest.raises(ValueError, match="cannot go on"):
@@ -321,6 +320,7 @@ def test_every_single_slot_manipulator_sugars_onto_a_group(gizmo_type) -> None:
 
 
 def test_transform_is_not_a_group_type_either() -> None:
+    """A group names one part of a transform, not the whole of it."""
     with pytest.raises(ValueError, match="cannot go on"):
         chunk.Group("everything", "Everything", gizmo="transform")
 
@@ -483,3 +483,123 @@ def test_an_incomplete_transform_chunk_falls_back_to_its_groups() -> None:
 def test_a_transform_declared_by_hand_must_drive_nine() -> None:
     with pytest.raises(ValueError, match="drives 9 params"):
         chunk.Gizmo("body", type="transform", driver=("tx", "ty", "tz"))
+
+
+# ---------------------------------------------------------------------------
+# the camera carries its own transform
+# ---------------------------------------------------------------------------
+
+def _camera_chunk_and_stage():
+    """The real camera chunk, cooking against a stage of its own."""
+    camera_mod = importlib.import_module("scripts.camera")
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StagedScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    chunk_registry.ChunkRegistry().initialize(_StagedScene(), "pytest")
+    c = camera_mod.main()
+    c._config = ChunkConfig(module="camera", gizmos=camera_mod.config().gizmos)
+    return camera_mod, c, stage
+
+
+class _CamNode:
+    def __init__(self, chunk_obj, stage):
+        self._chunk, self._stage = chunk_obj, stage
+
+    def get_stage(self):
+        return self._stage
+
+    def get_param(self, name):
+        return self._chunk.get_param(name)
+
+    def get_scene(self):
+        return self._chunk.get_scene()
+
+
+def test_the_camera_declares_both_handles() -> None:
+    """A focus-distance handle and a whole-chunk transform, which is what Dan asked for --
+    and the transform drives the camera's *own* params, so nothing reaches across chunks."""
+    camera_mod, c, _stage = _camera_chunk_and_stage()
+
+    names = sorted(g.name for g in chunk_gizmo.get_gizmos(c))
+    assert names == ["transform", "zdist"]
+
+
+def test_the_camera_transform_drives_its_own_params() -> None:
+    camera_mod, c, _stage = _camera_chunk_and_stage()
+    transform = next(g for g in chunk_gizmo.get_gizmos(c) if g.name == "transform")
+
+    assert transform.driver[:3] == ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")
+    assert all(not entry.startswith("/") for entry in transform.driver), "no cross-chunk paths"
+
+
+def test_dragging_the_camera_transform_moves_the_camera_prim() -> None:
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)  # creates the prim
+
+    moved = Gf.Transform()
+    moved.SetTranslation(Gf.Vec3d(3.0, 0.0, -4.0))
+    chunk_gizmo.apply_bindings(c, "transform", moved.GetMatrix())
+    camera_mod.execute(node)
+
+    prim = stage.GetPrimAtPath(c.get_param("primpath_location").value)
+    matrix = UsdGeom.Xformable(prim).GetLocalTransformation()
+    assert matrix.ExtractTranslation() == Gf.Vec3d(3.0, 0.0, -4.0)
+
+
+def test_the_transform_updates_when_only_the_params_change() -> None:
+    """execute() short-circuits when the prim path has not moved, which is exactly the case a
+    handle drag produces. Before this was handled, dragging the camera did nothing at all."""
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)
+
+    c.get_param("ty").value = 7.0
+    camera_mod.execute(node)  # same path -- the short-circuiting run
+
+    prim = stage.GetPrimAtPath(c.get_param("primpath_location").value)
+    matrix = UsdGeom.Xformable(prim).GetLocalTransformation()
+    assert matrix.ExtractTranslation()[1] == pytest.approx(7.0)
+
+
+def test_the_freecam_lock_keeps_the_transform_params_out_of_it() -> None:
+    """While the lock is on the freecam re-authors the transform on every CAMERA_CHANGED, so
+    a param write here would be silently overwritten a frame later. Not writing is the honest
+    behaviour; the handle suppression itself is still an open question."""
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)
+
+    c.get_param("lock_to_freecam").value = True
+    c.get_param("tx").value = 99.0
+    camera_mod.execute(node)
+
+    prim = stage.GetPrimAtPath(c.get_param("primpath_location").value)
+    matrix = UsdGeom.Xformable(prim).GetLocalTransformation()
+    assert matrix.ExtractTranslation()[0] != pytest.approx(99.0)
+
+
+def test_the_camera_composes_transforms_the_same_way_transform_py_does() -> None:
+    """Both chunks must invert to the same decomposition, or one handle drifts and the other
+    does not -- which would look like a gizmo bug rather than a chunk bug."""
+    camera_mod, c, _stage = _camera_chunk_and_stage()
+    transform_mod = importlib.import_module("scripts.transform")
+
+    for name, value in [("tx", 1.0), ("ty", -2.0), ("rx", 30.0), ("ry", 15.0), ("sz", 2.0)]:
+        c.get_param(name).value = value
+
+    t = transform_mod.main()
+    for name, value in [("tx", 1.0), ("ty", -2.0), ("rx", 30.0), ("ry", 15.0), ("sz", 2.0)]:
+        t.get_param(name).value = value
+
+    from_camera = camera_mod._camera_matrix(c)
+    expected = chunk_gizmo.decompose(from_camera)
+
+    assert expected["translate"] == pytest.approx(Gf.Vec3d(1.0, -2.0, 0.0))
+    assert expected["rotate"] == pytest.approx(Gf.Vec3d(30.0, 15.0, 0.0), abs=1e-6)
