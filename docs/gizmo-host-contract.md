@@ -21,7 +21,7 @@ our geometry would be a downgrade there. Nothing below asks you to draw our shap
 
 ```python
 chunk_gizmo.resolve_gizmos(prim) -> list[GizmoDesc]   # what handles exist
-chunk_gizmo.apply_bindings(chunk, name, value)        # write-back
+chunk_gizmo.apply_bindings(chunk_prim, name, value)   # write-back
 chunk.start_gizmo() / chunk.stop_gizmo()              # drag bracket
 ```
 
@@ -85,6 +85,7 @@ the chunk you are looking at.
 | `name` | `str` | Identity within the chunk. The namespace segment, never the type — two cubes on one chunk is ordinary. |
 | `type` | `str` | What kind of handle, and what it sends back. See §3. |
 | `label` | `str` | Display name. Falls back to the chunk's name. |
+| `chunk_prim` | `Sdf.Path` | Which chunk declared this handle. **Pass it straight back to `apply_bindings`**, and use it to filter to the chunk the user selected. `name` is not unique across chunks — more than one calls its handle `transform`. |
 | `anchor` | `tuple[Sdf.Path]` | The scene prims the handle hangs off. Already resolved — never a param to evaluate. |
 | `anchor_source` | `str` | The param that produced them. For our write-back; you do not need it. |
 | `driver` | `tuple[Sdf.Path]` | The properties this handle writes, in order. Informational — write through `apply_bindings`, not directly. |
@@ -188,9 +189,12 @@ side — treat it as reserved.
 ```python
 chunk.start_gizmo()
 while dragging:
-    chunk_gizmo.apply_bindings(chunk, desc.name, value)   # every tick
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, value)   # every tick
 chunk.stop_gizmo()
 ```
+
+`apply_bindings` takes either the chunk prim path off the record or a live chunk object, so
+a host that only ever holds `GizmoDesc` needs no lookup of its own.
 
 ### Do not write the prim directly
 

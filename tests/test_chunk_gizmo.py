@@ -508,3 +508,33 @@ def test_the_shipped_transform_chunk_declares_gizmos() -> None:
     assert [g.name for g in gizmos] == ["transform"]
     assert gizmos[0].type == "transform"
     assert gizmos[0].driver[:3] == ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")
+
+
+def test_a_host_can_close_the_loop_from_the_record_alone() -> None:
+    """The contract as a third-party host actually uses it: select a prim, ask what handles
+    exist, drag, write back -- with nothing but what resolve_gizmos handed over.
+
+    This is why GizmoDesc carries chunk_prim. Without it a host has a handle it cannot write
+    through: apply_bindings needs to know which chunk, and `name` is not unique across them
+    -- transform.py and camera.py both call their handle "transform".
+    """
+    stage, scene = _synced_scene()
+    c = _transform_chunk()
+    scene.add_chunk(c)
+    _author_prim(stage, c)
+    _touch_from_chunk_layer(stage, c)
+
+    desc = next(d for d in chunk_gizmo.resolve_gizmos(stage.GetPrimAtPath("/World/Cube"))
+                if d.name == "body")
+
+    assert desc.chunk_prim is not None, "a host has no other route back to the chunk"
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, Gf.Vec3d(7.0, 2.0, 0.0))
+
+    assert c.get_param("tx").value == pytest.approx(7.0)
+
+
+def test_writing_to_a_chunk_path_that_is_gone_is_loud() -> None:
+    """A stale record after the chunk was deleted -- better to say so than to write nowhere."""
+    stage, scene = _synced_scene()
+    with pytest.raises(ValueError, match="No chunk at"):
+        chunk_gizmo.apply_bindings(Sdf.Path("/chunks/Vanished"), "body", Gf.Vec3d(0, 0, 0))

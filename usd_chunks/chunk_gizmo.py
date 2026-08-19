@@ -52,6 +52,11 @@ class GizmoDesc:
     name: str
     type: str
     label: str = ""
+    # Which chunk declared this handle. A host needs it for two things: to filter to the
+    # chunk the user has selected, and to name the chunk when writing back. Without it the
+    # loop cannot be closed at all -- `name` is not unique across chunks, since more than
+    # one of them calls its handle "transform".
+    chunk_prim: Optional["Sdf.Path"] = None
     anchor: tuple = ()          # resolved scene prims the handle hangs off
     anchor_source: str = ""     # the param that produced them, for our own write-back
     driver: tuple = ()          # the properties this handle writes, in order
@@ -532,6 +537,7 @@ def _read_gizmos(prim: Usd.Prim) -> list:
         descs.append(GizmoDesc(
             name=name,
             type=gizmo_type,
+            chunk_prim=prim.GetPath(),
             label=(label_attr.Get() if label_attr else "") or "",
             anchor=tuple(anchor_rel.GetTargets()) if anchor_rel else (),
             anchor_source=(source_attr.Get() if source_attr else "") or "",
@@ -690,6 +696,23 @@ def decompose(matrix: "Gf.Matrix4d") -> dict:
 # write-back
 # ---------------------------------------------------------------------------
 
+def chunk_at_prim_path(path) -> Optional["core.ChunkBase"]:
+    """The chunk whose chunk prim sits at `path`, if it is still around.
+
+    The bridge from a GizmoDesc back to something writable: `resolve_gizmos` gives a host
+    plain data, and `apply_bindings` needs the live chunk.
+    """
+    scene = getattr(ChunkRegistry(), "scene", None)
+    if scene is None:
+        return None
+    wanted = str(path)
+    for candidate in scene.get_chunks():
+        own = getattr(candidate, "_exec_prim_path", None) or getattr(candidate, "prim_path", None)
+        if own and str(own) == wanted:
+            return candidate
+    return None
+
+
 def _param_for_entry(chunk: "core.ChunkBase", entry: str):
     """The param a driver entry names.
 
@@ -835,6 +858,14 @@ def apply_bindings(chunk: "core.ChunkBase", name: str, value: Any) -> None:
     handle, which is what a viewport does anyway: you grab the arrows or the ring, never a
     single thing that is somehow both.
     """
+    # A host holds a GizmoDesc, which carries a chunk *path* rather than a live object --
+    # accept either, so closing the loop needs no lookup the caller has to know about.
+    if not isinstance(chunk, core.ChunkBase):
+        resolved = chunk_at_prim_path(chunk)
+        if resolved is None:
+            raise ValueError(f"No chunk at {chunk!r} to write {name!r} to")
+        chunk = resolved
+
     gizmo = find_gizmo(chunk, name)
     if gizmo is None:
         raise ValueError(f"Chunk {chunk.name!r} declares no gizmo named {name!r}")
