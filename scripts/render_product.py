@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from pxr import Sdf, UsdRender
 
@@ -19,6 +20,41 @@ logger = logging.getLogger(__name__)
 #: EXR is the notable absence -- multi-part and multi-channel, which is why AOVs
 #: conventionally go there as layers.
 _SINGLE_IMAGE_FORMATS = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".gif", ".ppm"}
+
+#: A run of hashes, or a {frame} field -- the two ways a product path asks for a frame
+#: number. Renderers expand them; USD's own check for a written product does not.
+_FRAME_PLACEHOLDER = re.compile(r"#+|\{frame\}")
+
+
+def _warn_if_usd_cannot_find_it(product_name):
+    """Say so when USD will not recognise a product the renderer did write.
+
+    After rendering, UsdAppUtils.FrameRecorder decides whether the delegate produced a
+    product by opening productName -- verbatim, with ArchOpenFile. It expands nothing
+    and resolves nothing, so two shapes make that check fail even when the file exists:
+    a relative path, which it looks for under the process's working directory rather
+    than the scene's, and a frame placeholder, which never matches the numbered file a
+    renderer actually writes. Either way the render is fine and the report is wrong --
+    "Missing generated Product" with the image sitting on disk.
+    """
+    if not product_name:
+        return
+
+    if _FRAME_PLACEHOLDER.search(product_name):
+        logger.warning(
+            "Render Product: %r contains a frame placeholder. USD checks for a written "
+            "product by opening the name exactly as written, so it will report this one "
+            "missing even when the renderer wrote the numbered file.",
+            product_name,
+        )
+
+    if not os.path.isabs(product_name):
+        logger.warning(
+            "Render Product: %r is relative, and USD looks for a written product under "
+            "the working directory rather than beside the scene. An absolute path is "
+            "checked where it actually lands.",
+            product_name,
+        )
 
 
 def _warn_if_format_cannot_hold(product_name, var_paths):
@@ -115,6 +151,7 @@ def execute(node):
 
         if product_name := node.get_param("product_name").value:
             product.CreateProductNameAttr().Set(product_name)
+            _warn_if_usd_cannot_find_it(product_name)
         product.CreateProductTypeAttr().Set(node.get_param("product_type").value)
 
         # Resolved rather than taken verbatim -- see render_settings.py: a PRIM_SELECTION
@@ -153,6 +190,15 @@ def config():
             do not, and what a renderer does when asked anyway is undefined. That
             case is warned about at cook time — give each AOV its own Render
             Product to write separate files.
+
+            Two shapes are warned about for a different reason. After rendering,
+            USD decides whether the delegate produced a product by opening this
+            name verbatim: it expands no frame placeholder and resolves nothing
+            against the scene. So a relative path is looked for under the working
+            directory, and a ####-style name never matches the numbered file a
+            renderer writes — reporting "Missing generated Product" while the
+            image sits on disk. An absolute path without a placeholder is the one
+            USD can confirm.
           - Product Type: what kind of output this is. "raster" is the only type
             defined by UsdRender itself; renderers may understand others.
           - Camera: the camera prim to render from. Leave empty to inherit the

@@ -107,6 +107,29 @@ class TestRenderProduct:
         targets = UsdRender.Product(prim).GetOrderedVarsRel().GetTargets()
         assert [str(t) for t in targets] == [var.get_param("reference").value]
 
+    def test_warns_when_usd_cannot_confirm_the_product(self, caplog):
+        """USD checks for a written product by opening productName verbatim -- no frame
+        expansion, no resolution -- so these two shapes report a product missing while
+        the image is on disk."""
+        import logging
+        mod = importlib.import_module("scripts.render_product")
+
+        for name in ("renders/beauty.####.exr", "beauty.{frame}.exr", "renders/beauty.exr"):
+            with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+                caplog.clear()
+                mod._warn_if_usd_cannot_find_it(name)
+            assert caplog.records, f"{name} should warn"
+
+    def test_an_absolute_unnumbered_product_is_not_warned_about(self, caplog):
+        import logging, os
+        mod = importlib.import_module("scripts.render_product")
+
+        absolute = os.path.abspath("beauty.exr")
+        with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+            caplog.clear()
+            mod._warn_if_usd_cannot_find_it(absolute)
+        assert not caplog.records, "an absolute path with no placeholder is checkable"
+
     def test_product_name_and_type_are_authored(self):
         scene, stage = _setup_stage()
         _var, product, _settings = _render_network(scene)
