@@ -699,3 +699,69 @@ def test_a_failing_hook_leaves_the_handle_visible() -> None:
     c._module = module
 
     assert chunk_gizmo.is_gizmo_hidden(c, "zdist") is False
+
+
+def test_unlocking_the_freecam_leaves_the_camera_where_it_was_flown() -> None:
+    """The regression that giving the camera its own transform introduced.
+
+    While locked, the freecam places the prim and our params sit at their defaults. Unticking
+    the lock used to author those defaults straight over it, snapping the camera to the
+    origin -- losing a position you just flew to is a bad way to discover that two systems
+    disagree about who owns the transform.
+    """
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)
+
+    # The freecam flies the camera somewhere, exactly as _apply_freecam_transform does.
+    c.get_param("lock_to_freecam").value = True
+    path = c.get_param("primpath_location").value
+    UsdGeom.Xformable(stage.GetPrimAtPath(path)).MakeMatrixXform().Set(
+        Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0)))
+    camera_mod.execute(node)
+
+    c.get_param("lock_to_freecam").value = False
+    camera_mod.execute(node)
+
+    # Re-fetch: prim handles expire across the layer.Clear() inside execute().
+    matrix = UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetLocalTransformation()
+    assert matrix.ExtractTranslation() == Gf.Vec3d(100.0, 50.0, -200.0)
+
+
+def test_unlocking_also_seeds_the_params_so_the_handle_picks_up_from_there() -> None:
+    """Staying put is only half of it -- the params have to agree, or the first drag would
+    jump the camera back to the origin instead of moving it from where it is."""
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)
+
+    c.get_param("lock_to_freecam").value = True
+    path = c.get_param("primpath_location").value
+    UsdGeom.Xformable(stage.GetPrimAtPath(path)).MakeMatrixXform().Set(
+        Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0)))
+    camera_mod.execute(node)
+
+    c.get_param("lock_to_freecam").value = False
+    camera_mod.execute(node)
+
+    assert c.get_param("tx").value == pytest.approx(100.0)
+    assert c.get_param("tz").value == pytest.approx(-200.0)
+
+
+def test_adopting_never_overwrites_a_real_edit() -> None:
+    """It only fires while every param is still at its default, so a user who has typed a
+    position keeps it even if the prim carries something else."""
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)
+
+    c.get_param("ty").value = 5.0
+    path = c.get_param("primpath_location").value
+    UsdGeom.Xformable(stage.GetPrimAtPath(path)).MakeMatrixXform().Set(
+        Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0)))
+    camera_mod.execute(node)
+
+    assert c.get_param("ty").value == pytest.approx(5.0)

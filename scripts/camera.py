@@ -2,7 +2,7 @@ import os
 import json
 import http.client
 from pxr import Gf, UsdGeom
-from usd_chunks import chunk, chunk_core, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_utils
 
 
 def _download_camera_types_cache(camera_cache):
@@ -130,6 +130,41 @@ def _camera_matrix(node):
     return xform.GetMatrix()
 
 
+_TRANSFORM_PARAMS = ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz")
+
+
+def _adopt_existing_transform(node, prim):
+    """Seed the transform params from the prim, if they are untouched and it already has one.
+
+    Without this, unticking `lock_to_freecam` snaps the camera back to the origin: the
+    freecam placed the prim while the lock was on, our params are still at their defaults,
+    and the very next cook authors those defaults straight over it. Losing a camera position
+    you just flew to is a bad way to find out the two systems disagree.
+
+    Only when *every* param is still at its default, so it never overwrites a real edit.
+    After seeding they are non-default, so this runs once and then gets out of the way.
+    """
+    if any(node.get_param(n).value != node.get_param(n).default_value for n in _TRANSFORM_PARAMS):
+        return
+
+    existing = {op.GetOpName(): op for op in UsdGeom.Xformable(prim).GetOrderedXformOps()}
+    op = existing.get("xformOp:transform")
+    matrix = op.Get() if op else None
+    if matrix is None:
+        return
+
+    # decompose is the exact inverse of _camera_matrix, so the seeded params recompose to
+    # the transform we just read rather than to something subtly rotated.
+    parts = chunk_gizmo.decompose(matrix)
+    for names, values in (
+        (("tx", "ty", "tz"), parts["translate"]),
+        (("rx", "ry", "rz"), parts["rotate"]),
+        (("sx", "sy", "sz"), parts["scale"]),
+    ):
+        for name, value in zip(names, values):
+            node.get_param(name).value = float(value)
+
+
 def _author_camera_transform(node, stage):
     """Write the camera's own transform onto its own prim, in its own layer.
 
@@ -152,6 +187,9 @@ def _author_camera_transform(node, stage):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
             return
+        # Take on whatever is already there before overwriting it -- see the docstring.
+        _adopt_existing_transform(node, prim)
+
         xformable = UsdGeom.Xformable(stage.OverridePrim(target_path))
         existing = {op.GetOpName(): op for op in xformable.GetOrderedXformOps()}
         transform_op = existing.get("xformOp:transform") or xformable.AddTransformOp()
