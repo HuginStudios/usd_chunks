@@ -271,6 +271,25 @@ def _resolve_camera(node, stage, settings_path=""):
     return None
 
 
+def _why_refused(renderer, use_gpu):
+    """The likely reason a delegate would not load, phrased as something to do about it.
+
+    Turning the GPU off does not just remove a feature: a delegate that renders on the
+    GPU stops being a supported plugin at all, and the engine then reports having no
+    plugins rather than naming the one it rejected.
+    """
+    if not use_gpu:
+        return (
+            f"With Use GPU off, a GPU-only delegate is not available -- Storm is one. "
+            f"Turn Use GPU back on to render with {renderer}, or choose a delegate that "
+            f"renders on the CPU."
+        )
+    return (
+        "Check that the delegate is installed and that this host has an OpenGL context; "
+        "with Use GPU on, one is required even for a delegate that does not use it."
+    )
+
+
 def _make_recorder(node, settings_path=""):
     """A configured FrameRecorder, or None when this build cannot render."""
     try:
@@ -301,11 +320,21 @@ def _make_recorder(node, settings_path=""):
             recorder = UsdAppUtils.FrameRecorder(plugin, use_gpu)
         except TypeError:
             recorder = None  # older USD: no such constructor
+        except Exception as exc:  # noqa: BLE001 - the delegate refused these conditions
+            logger.error("Render: %s cannot render here. %s", renderer, _why_refused(renderer, use_gpu))
+            logger.debug("Render: SetRendererPlugin(%s) failed: %s", plugin, exc)
+            return None
 
     if recorder is None:
-        recorder = UsdAppUtils.FrameRecorder()
-        if plugin:
-            recorder.SetRendererPlugin(plugin)
+        try:
+            recorder = UsdAppUtils.FrameRecorder()
+            if plugin:
+                recorder.SetRendererPlugin(plugin)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Render: %s cannot render here. %s", renderer, _why_refused(renderer, use_gpu))
+            logger.debug("Render: recorder setup failed: %s", exc)
+            return None
+
         if not use_gpu:
             logger.warning(
                 "Render: this USD build cannot disable the GPU, so a headless run may "
