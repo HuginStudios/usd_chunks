@@ -153,7 +153,7 @@ def test_a_drag_brackets_its_changes() -> None:
 
     c.start_gizmo()
     for value in (1.0, 2.0, 3.0):
-        chunk_gizmo.apply_bindings(c, "handle", {"value": value})
+        chunk_gizmo.apply_bindings(c, "handle", value)
     c.stop_gizmo()
 
     assert seen == [
@@ -181,7 +181,7 @@ def test_every_tick_writes_rather_than_batching_to_the_end() -> None:
 
     c.start_gizmo()
     for value in (1.0, 2.0, 3.0, 4.0):
-        chunk_gizmo.apply_bindings(c, "handle", {"value": value})
+        chunk_gizmo.apply_bindings(c, "handle", value)
     c.stop_gizmo()
 
     assert observed == [1.0, 2.0, 3.0, 4.0]
@@ -197,20 +197,28 @@ def test_changed_fires_after_the_write_not_before() -> None:
         globally=True,
     )
 
-    chunk_gizmo.apply_bindings(c, "handle", {"value": 7.0})
+    chunk_gizmo.apply_bindings(c, "handle", 7.0)
 
     assert seen_values == [7.0]
 
 
-def test_a_rejected_slot_writes_nothing_and_announces_nothing() -> None:
-    """A half-applied drag would show as the object tearing apart mid-gesture."""
-    c = _chunk()
+def test_a_rejected_value_writes_nothing_and_announces_nothing() -> None:
+    """A half-applied drag would show as the object tearing apart mid-gesture, so a value the
+    handle cannot use must land nowhere at all -- not partially."""
+    c = chunk.Chunk("Mover")
+    c.add_param(chunk.LineEdit("primpath_location", default_value="/World/Cube"))
+    grp = chunk.Group("move_grp", "Move", gizmo="translate")
+    for axis in ("x", "y", "z"):
+        grp.add_param(chunk.Slider(axis, axis.upper(), default_value=0.0))
+    c.add_param(grp)
+    c._config = ChunkConfig(module="mover")
+
     seen, _connections = _record(c)
 
-    with pytest.raises(KeyError):
-        chunk_gizmo.apply_bindings(c, "handle", {"value": 5.0, "rotate": Gf.Vec3d(0, 0, 0)})
+    with pytest.raises(ValueError, match="drives 3 params"):
+        chunk_gizmo.apply_bindings(c, "move_grp", (1.0, 2.0))  # one short
 
-    assert c.get_param("amount").value == pytest.approx(0.0)
+    assert c.get_param("x").value == pytest.approx(0.0)
     assert seen == []
 
 

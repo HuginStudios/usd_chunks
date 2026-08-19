@@ -1,4 +1,4 @@
-"""The TRS round trip: gizmo matrix -> slot dict -> params -> chunk recomposes.
+"""The TRS round trip: gizmo matrix -> one value per handle -> params -> chunk recomposes.
 
 This closes only if `chunk_gizmo.decompose` inverts `transform.py`'s composition exactly.
 A mismatch does not raise -- it shows up as the handle drifting further from the object on
@@ -58,16 +58,16 @@ def _recompose(slots: dict) -> Gf.Matrix4d:
     return _compose(slots["translate"], slots["rotate"], slots["scale"])
 
 
-# Which handle owns which slot. transform.py declares three separate gizmos -- one per
-# param group -- rather than one multi-slot handle, so a full TRS drag is three calls. That
-# is the viewport's shape too: you grab the translate handle or the rotate ring, never a
-# single thing that is somehow all three at once.
+# decompose() is keyed by gizmo *type*, so this maps each part of a matrix onto the handle
+# that owns it. transform.py declares three separate gizmos, one per param group, so a full
+# TRS drag is three calls -- which is the viewport's shape anyway: you grab the arrows or
+# the ring, never a single thing that is somehow both.
 _HANDLES = {"translate": "translate_grp", "rotate": "rotate_grp", "scale": "scale_grp"}
 
 
-def _apply(chunk_obj, slots: dict) -> None:
-    for slot, value in slots.items():
-        chunk_gizmo.apply_bindings(chunk_obj, _HANDLES[slot], {slot: value})
+def _apply(chunk_obj, parts: dict) -> None:
+    for gizmo_type, value in parts.items():
+        chunk_gizmo.apply_bindings(chunk_obj, _HANDLES[gizmo_type], value)
 
 
 CASES = [
@@ -214,7 +214,7 @@ def test_full_trs_drag_lands_as_the_same_matrix() -> None:
 def test_rotate_slot_writes_the_euler_params() -> None:
     c = _transform_chunk()
 
-    chunk_gizmo.apply_bindings(c, "rotate_grp", {"rotate": Gf.Vec3d(10.0, 20.0, 30.0)})
+    chunk_gizmo.apply_bindings(c, "rotate_grp", Gf.Vec3d(10.0, 20.0, 30.0))
 
     assert c.get_param("rx").value == pytest.approx(10.0)
     assert c.get_param("ry").value == pytest.approx(20.0)
@@ -224,7 +224,7 @@ def test_rotate_slot_writes_the_euler_params() -> None:
 def test_scale_slot_writes_the_scale_params() -> None:
     c = _transform_chunk()
 
-    chunk_gizmo.apply_bindings(c, "scale_grp", {"scale": Gf.Vec3d(2.0, 3.0, 4.0)})
+    chunk_gizmo.apply_bindings(c, "scale_grp", Gf.Vec3d(2.0, 3.0, 4.0))
 
     assert c.get_param("sx").value == pytest.approx(2.0)
     assert c.get_param("sz").value == pytest.approx(4.0)
@@ -235,7 +235,7 @@ def test_partial_slot_dicts_leave_other_params_alone() -> None:
     c = _transform_chunk()
     c.get_param("rx").value = 45.0
 
-    chunk_gizmo.apply_bindings(c, "translate_grp", {"translate": Gf.Vec3d(1.0, 0.0, 0.0)})
+    chunk_gizmo.apply_bindings(c, "translate_grp", Gf.Vec3d(1.0, 0.0, 0.0))
 
     assert c.get_param("rx").value == pytest.approx(45.0)
 
@@ -269,13 +269,13 @@ def test_each_group_authors_its_own_handle() -> None:
     _author_prim(stage, c)
     prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Transform")
 
-    for slot, handle in _HANDLES.items():
-        attr = prim.GetAttribute(f"ui:gizmo:{handle}:driver:{slot}")
+    for handle in _HANDLES.values():
+        attr = prim.GetAttribute(f"ui:gizmo:{handle}:driver")
         assert attr.IsValid(), handle
         assert len(attr.GetConnections()) == 3, handle
 
 
-def test_resolve_returns_one_single_slot_handle_per_group() -> None:
+def test_resolve_returns_one_handle_per_group() -> None:
     stage = _stage_with_cube()
     c = _transform_chunk()
     _author_prim(stage, c)
@@ -284,8 +284,9 @@ def test_resolve_returns_one_single_slot_handle_per_group() -> None:
     by_name = {d.name: d for d in descs}
 
     assert set(by_name) == set(_HANDLES.values())
-    for slot, handle in _HANDLES.items():
-        assert set(by_name[handle].driver) == {slot}
+    for gizmo_type, handle in _HANDLES.items():
+        assert by_name[handle].type == gizmo_type
+        assert len(by_name[handle].driver) == 3
 
 
 def test_the_shipped_transform_chunk_declares_its_handles_on_the_groups() -> None:
@@ -296,5 +297,5 @@ def test_the_shipped_transform_chunk_declares_its_handles_on_the_groups() -> Non
 
     assert transform_mod.config().gizmos == []
     assert set(gizmos) == {"translate_grp", "rotate_grp", "scale_grp"}
-    assert gizmos["rotate_grp"].driver["rotate"] == ("rotate_grp.rx", "rotate_grp.ry", "rotate_grp.rz")
-    assert gizmos["scale_grp"].driver["scale"] == ("scale_grp.sx", "scale_grp.sy", "scale_grp.sz")
+    assert gizmos["rotate_grp"].driver == ("rotate_grp.rx", "rotate_grp.ry", "rotate_grp.rz")
+    assert gizmos["scale_grp"].driver == ("scale_grp.sx", "scale_grp.sy", "scale_grp.sz")

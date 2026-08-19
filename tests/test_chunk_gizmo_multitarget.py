@@ -183,7 +183,7 @@ def test_write_back_sets_the_params_once_regardless_of_target_count() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B", "/World/C")
     c = _transform_chunk("/World/A,/World/B,/World/C")
 
-    chunk_gizmo.apply_bindings(c, "translate_grp", {"translate": Gf.Vec3d(4.0, 0.0, 0.0)})
+    chunk_gizmo.apply_bindings(c, "translate_grp", Gf.Vec3d(4.0, 0.0, 0.0))
 
     assert c.get_param("tx").value == pytest.approx(4.0)
 
@@ -192,7 +192,7 @@ def test_every_target_moves_on_the_cook() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B")
     c = _transform_chunk("/World/A,/World/B")
 
-    chunk_gizmo.apply_bindings(c, "translate_grp", {"translate": Gf.Vec3d(0.0, 6.0, 0.0)})
+    chunk_gizmo.apply_bindings(c, "translate_grp", Gf.Vec3d(0.0, 6.0, 0.0))
 
     class _FakeNode:
         def get_stage(self):

@@ -74,7 +74,7 @@ def test_singular_driver_authors_one_connection() -> None:
 def test_value_slot_writes_the_scalar() -> None:
     c = _camera_like([chunk.Gizmo("zdist", type="cube", driver="focusDistance")])
 
-    chunk_gizmo.apply_bindings(c, "zdist", {"value": 42.5})
+    chunk_gizmo.apply_bindings(c, "zdist", 42.5)
 
     assert c.get_param("focusDistance").value == pytest.approx(42.5)
 
@@ -89,7 +89,7 @@ def test_resolve_round_trips_a_scalar_gizmo() -> None:
     assert desc.type == "cube"
     assert desc.label == "Focus Distance"
     assert desc.axis == "Z"
-    assert set(desc.driver) == {"value"}
+    assert len(desc.driver) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ def test_shape_type_sugars_onto_a_slider() -> None:
     assert [g.name for g in gizmos] == ["focusDistance"]
     assert gizmos[0].type == "cube"
     assert gizmos[0].label == "Focus Distance"
-    assert gizmos[0].driver == {"value": ("focusDistance",)}
+    assert gizmos[0].driver == ("focusDistance",)
 
 
 def test_sugar_authors_the_same_usd_as_the_config_form() -> None:
@@ -179,14 +179,16 @@ def test_manipulator_type_sugars_onto_a_vector() -> None:
     gizmos = chunk_gizmo.get_gizmos(c)
     assert [g.name for g in gizmos] == ["aim"]
     # One entry: a Vector is stored as a single vector-typed attr, not as x/y/z.
-    assert gizmos[0].driver == {"translate": ("aim",)}
+    assert gizmos[0].driver == ("aim",)
 
 
-def test_transform_cannot_be_sugared_anywhere() -> None:
-    """It needs several slots at once, so there is nothing sensible for sugar to bind."""
-    with pytest.raises(ValueError, match="cannot be sugared"):
+def test_transform_is_no_longer_a_type_at_all() -> None:
+    """It existed to drive translate, rotate and scale from one handle. Three separate
+    handles cover the same ground without every host needing to be told which part of a
+    drag it was looking at."""
+    with pytest.raises(ValueError, match="cannot go on"):
         chunk.Slider("focusDistance", gizmo="transform")
-    with pytest.raises(ValueError, match="cannot be sugared"):
+    with pytest.raises(ValueError, match="cannot go on"):
         chunk.Vector("aim", gizmo="transform")
 
 
@@ -253,7 +255,7 @@ def test_shipped_camera_declares_a_focus_distance_handle() -> None:
 
     assert [g.name for g in gizmos] == ["zdist"]
     assert gizmos[0].type == "cube"
-    assert gizmos[0].driver == {"value": ("focusDistance",)}
+    assert gizmos[0].driver == ("focusDistance",)
 
 
 def test_shipped_camera_pins_the_handle_to_the_camera_axis() -> None:
@@ -286,7 +288,7 @@ def test_a_group_declares_a_handle_over_its_own_params() -> None:
     gizmos = chunk_gizmo.get_gizmos(_grouped())
 
     assert [g.name for g in gizmos] == ["translate_grp"]
-    assert gizmos[0].driver == {"translate": ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")}
+    assert gizmos[0].driver == ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")
 
 
 def test_group_sugar_takes_the_group_label() -> None:
@@ -302,7 +304,7 @@ def test_group_sugar_authors_the_same_usd_as_the_config_form() -> None:
     explicit.add_param(grp)
     explicit._config = ChunkConfig(module="mover", gizmos=[
         chunk.Gizmo("translate_grp", type="translate", label="Translate",
-                    driver={"translate": ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")}),
+                    driver=("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")),
     ])
 
     def gizmo_lines(chunk_obj):
@@ -318,8 +320,8 @@ def test_every_single_slot_manipulator_sugars_onto_a_group(gizmo_type) -> None:
     assert chunk_gizmo.get_gizmos(_grouped(gizmo_type))[0].type == gizmo_type
 
 
-def test_transform_cannot_be_sugared_onto_a_group_either() -> None:
-    with pytest.raises(ValueError, match="cannot be sugared"):
+def test_transform_is_not_a_group_type_either() -> None:
+    with pytest.raises(ValueError, match="cannot go on"):
         chunk.Group("everything", "Everything", gizmo="transform")
 
 

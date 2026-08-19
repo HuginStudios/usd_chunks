@@ -56,8 +56,8 @@ def _transform_chunk(name: str = "Transform", target: str = "/World/Cube") -> ch
 
 def _body_gizmo() -> GizmoBase:
     return chunk.Gizmo(
-        "body", type="transform", anchor="primpath_location",
-        driver={"translate": ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")},
+        "body", type="translate", anchor="primpath_location",
+        driver=("translate_grp.tx", "translate_grp.ty", "translate_grp.tz"),
     )
 
 
@@ -115,23 +115,31 @@ def test_config_defaults_to_no_gizmos() -> None:
     assert ChunkConfig(module="transform").gizmos == []
 
 
-def test_string_driver_normalises_to_the_value_slot() -> None:
-    """A chunk with one driven attribute should not have to spell out a slot dict."""
-    g = chunk.Gizmo("zdist", type="cube", driver="focusDistance")
-    assert g.driver == {"value": ("focusDistance",)}
+def test_a_bare_string_driver_becomes_a_one_tuple() -> None:
+    """A handle driving one param should not have to spell out a sequence."""
+    assert chunk.Gizmo("zdist", type="cube", driver="focusDistance").driver == ("focusDistance",)
 
 
-def test_dict_driver_normalises_entries_to_tuples() -> None:
-    g = chunk.Gizmo("body", type="transform", driver={"translate": ["tx", "ty", "tz"]})
-    assert g.driver == {"translate": ("tx", "ty", "tz")}
+def test_a_driver_sequence_normalises_to_a_tuple() -> None:
+    g = chunk.Gizmo("body", type="translate", driver=["tx", "ty", "tz"])
+    assert g.driver == ("tx", "ty", "tz")
+
+
+def test_what_a_handle_sends_is_decided_by_its_type() -> None:
+    """There is no slot. A manipulator sends a Vec3d, a shape sends a number, so the type
+    already answers the only question a host has. An earlier draft had one handle driving
+    translate *and* rotate *and* scale at once, which meant every host had to be told which
+    of them a given drag meant."""
+    assert chunk.Gizmo("g", type="translate", driver=("tx", "ty", "tz")).type == "translate"
+    assert chunk.Gizmo("g", type="cube", driver="amount").type == "cube"
 
 
 def test_editmode_defaults_to_prim_selection() -> None:
-    assert chunk.Gizmo("body", type="transform", driver="tx").editmode == ("onPrimSelection",)
+    assert chunk.Gizmo("body", type="translate", driver="tx").editmode == ("onPrimSelection",)
 
 
 def test_bare_editmode_string_normalises_to_a_tuple() -> None:
-    g = chunk.Gizmo("body", type="transform", driver="tx", editmode="always")
+    g = chunk.Gizmo("body", type="translate", driver="tx", editmode="always")
     assert g.editmode == ("always",)
 
 
@@ -142,11 +150,10 @@ def test_axis_defaults_to_free_drag() -> None:
 
 @pytest.mark.parametrize("kwargs, fragment", [
     ({"type": "wobble", "driver": "tx"}, "unknown type"),
-    ({"type": "transform", "driver": {"wobble": ("tx",)}}, "unknown driver slot"),
+    ({"type": "transform", "driver": "tx"}, "unknown type"),
     ({"type": "cube", "driver": "tx", "axis": "W"}, "unknown axis"),
     ({"type": "cube", "driver": "tx", "editmode": ["onWobble"]}, "unknown editmode"),
-    ({"type": "transform", "driver": {}}, "driver is required"),
-    ({"type": "transform", "driver": {"translate": ()}}, "binds no params"),
+    ({"type": "translate", "driver": ()}, "driver is required"),
 ])
 def test_malformed_declarations_fail_loudly(kwargs, fragment) -> None:
     """Loudly at load, not silently at drag time -- a handle that quietly does nothing is
@@ -162,7 +169,7 @@ def test_malformed_declarations_fail_loudly(kwargs, fragment) -> None:
 def test_authors_type_label_and_editmode() -> None:
     stage, prim = _authored(_transform_chunk())
 
-    assert prim.GetAttribute("ui:gizmo:body:type").Get() == "transform"
+    assert prim.GetAttribute("ui:gizmo:body:type").Get() == "translate"
     assert prim.GetAttribute("ui:gizmo:body:label").Get() == "Transform"
     assert list(prim.GetAttribute("ui:gizmo:body:editmode").Get()) == ["onPrimSelection"]
 
@@ -193,7 +200,7 @@ def test_driver_authors_connections_to_the_nested_param_paths() -> None:
     Authoring inputs:tx instead would resolve to nothing and fail silently."""
     _, prim = _authored(_transform_chunk())
 
-    conns = prim.GetAttribute("ui:gizmo:body:driver:translate").GetConnections()
+    conns = prim.GetAttribute("ui:gizmo:body:driver").GetConnections()
     assert [str(c) for c in conns] == [
         "/chunks/Transform.inputs:translate_grp:tx",
         "/chunks/Transform.inputs:translate_grp:ty",
@@ -201,8 +208,8 @@ def test_driver_authors_connections_to_the_nested_param_paths() -> None:
     ]
 
 
-def test_singular_driver_authors_an_unsuffixed_attr() -> None:
-    """A chunk with one driven attribute reads as one, in the usda and in a host's parser."""
+def test_a_scalar_handle_authors_one_connection() -> None:
+    """One driver attribute whatever the arity -- no per-slot suffix for a host to parse."""
     c = chunk.Chunk("Camera")
     c.add_param(chunk.LineEdit("primpath_location", default_value="/World/Cube"))
     c.add_param(chunk.Slider("focusDistance", min_value=0.0, max_value=1000.0))
@@ -212,8 +219,7 @@ def test_singular_driver_authors_an_unsuffixed_attr() -> None:
 
     _, prim = _authored(c)
 
-    assert prim.GetAttribute("ui:gizmo:zdist:driver").GetConnections()
-    assert not prim.GetAttribute("ui:gizmo:zdist:driver:value").IsValid()
+    assert len(prim.GetAttribute("ui:gizmo:zdist:driver").GetConnections()) == 1
     assert prim.GetAttribute("ui:gizmo:zdist:axis").Get() == "Z"
 
 
@@ -248,13 +254,13 @@ def test_one_bad_gizmo_does_not_take_the_chunk_prim_down() -> None:
     """The rest of the prim's bookkeeping is what makes the chunk work at all."""
     c = _transform_chunk()
     c._config = ChunkConfig(module="transform", gizmos=[
-        chunk.Gizmo("broken", type="transform", anchor="nope", driver="translate_grp.tx"),
+        chunk.Gizmo("broken", type="translate", anchor="nope", driver="translate_grp.tx"),
         _body_gizmo(),
     ])
     _, prim = _authored(c)
 
     assert prim.GetAttribute("outputs:chunk").IsValid()
-    assert prim.GetAttribute("ui:gizmo:body:type").Get() == "transform"
+    assert prim.GetAttribute("ui:gizmo:body:type").Get() == "translate"
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +269,7 @@ def test_one_bad_gizmo_does_not_take_the_chunk_prim_down() -> None:
 
 def test_anchor_inference_prefers_the_conventional_name() -> None:
     c = _transform_chunk()
-    param = chunk_gizmo.resolve_anchor_param(c, chunk.Gizmo("g", type="transform", driver="translate_grp.tx"))
+    param = chunk_gizmo.resolve_anchor_param(c, chunk.Gizmo("g", type="translate", driver="translate_grp.tx"))
     assert param.name == "primpath_location"
 
 
@@ -293,7 +299,7 @@ def test_explicit_but_missing_anchor_param_fails_loudly() -> None:
     c = _transform_chunk()
     with pytest.raises(ValueError, match="does not exist"):
         chunk_gizmo.resolve_anchor_param(
-            c, chunk.Gizmo("g", type="transform", anchor="nope", driver="translate_grp.tx")
+            c, chunk.Gizmo("g", type="translate", anchor="nope", driver="translate_grp.tx")
         )
 
 
@@ -308,15 +314,14 @@ def test_resolve_round_trips_the_declaration() -> None:
     assert len(descs) == 1
     desc = descs[0]
     assert desc.name == "body"
-    assert desc.type == "transform"
+    assert desc.type == "translate"
     assert desc.label == "Transform"
     assert desc.anchor_source == "primpath_location"
     assert [str(p) for p in desc.anchor] == ["/World/Cube"]
     assert desc.axis is None
     assert desc.space == "local"
     assert desc.editmode == ("onPrimSelection",)
-    assert set(desc.driver) == {"translate"}
-    assert len(desc.driver["translate"]) == 3
+    assert len(desc.driver) == 3
 
 
 def test_resolve_is_a_plain_record() -> None:
@@ -412,7 +417,7 @@ def test_muting_a_chunk_layer_drops_its_gizmos() -> None:
 def test_apply_bindings_writes_the_translate_params() -> None:
     c = _transform_chunk()
 
-    chunk_gizmo.apply_bindings(c, "body", {"translate": Gf.Vec3d(1.0, 2.0, 3.0)})
+    chunk_gizmo.apply_bindings(c, "body", Gf.Vec3d(1.0, 2.0, 3.0))
 
     assert c.get_param("tx").value == pytest.approx(1.0)
     assert c.get_param("ty").value == pytest.approx(2.0)
@@ -421,7 +426,7 @@ def test_apply_bindings_writes_the_translate_params() -> None:
 
 def test_apply_bindings_accepts_a_plain_sequence() -> None:
     c = _transform_chunk()
-    chunk_gizmo.apply_bindings(c, "body", {"translate": [4.0, 5.0, 6.0]})
+    chunk_gizmo.apply_bindings(c, "body", [4.0, 5.0, 6.0])
     assert c.get_param("tz").value == pytest.approx(6.0)
 
 
@@ -433,41 +438,20 @@ def test_apply_bindings_writes_a_scalar_through_the_value_slot() -> None:
         chunk.Gizmo("zdist", type="cube", driver="focusDistance"),
     ])
 
-    chunk_gizmo.apply_bindings(c, "zdist", {"value": 12.5})
+    chunk_gizmo.apply_bindings(c, "zdist", 12.5)
     assert c.get_param("focusDistance").value == pytest.approx(12.5)
-
-
-def test_unknown_slot_fails_loudly() -> None:
-    """Silently dropping it looks exactly like a handle that does not work."""
-    c = _transform_chunk()
-    with pytest.raises(KeyError, match="no driver for slot"):
-        chunk_gizmo.apply_bindings(c, "body", {"rotate": Gf.Vec3d(0, 0, 0)})
 
 
 def test_unknown_gizmo_name_fails_loudly() -> None:
     c = _transform_chunk()
     with pytest.raises(ValueError, match="declares no gizmo"):
-        chunk_gizmo.apply_bindings(c, "nope", {"translate": Gf.Vec3d(0, 0, 0)})
+        chunk_gizmo.apply_bindings(c, "nope", Gf.Vec3d(0, 0, 0))
 
 
 def test_wrong_value_count_fails_loudly() -> None:
     c = _transform_chunk()
     with pytest.raises(ValueError, match="drives 3 params"):
-        chunk_gizmo.apply_bindings(c, "body", {"translate": (1.0, 2.0)})
-
-
-def test_a_cross_chunk_driver_pointing_nowhere_is_survivable() -> None:
-    """A full property path targets another chunk, which can be deleted or renamed
-    independently. Losing it must cost that slot, not the whole drag -- unlike a bare name
-    that does not resolve, which is the chunk's own config naming a param it lacks and stays
-    loud. Cross-chunk resolution itself is covered in test_chunk_gizmo_cross_chunk.py."""
-    c = _transform_chunk()
-    c._config = ChunkConfig(module="transform", gizmos=[
-        chunk.Gizmo("body", type="transform", anchor="primpath_location",
-                    driver={"value": ("/chunks/Nowhere.inputs:tx",)}),
-    ])
-
-    chunk_gizmo.apply_bindings(c, "body", {"value": 1.0})  # must not raise
+        chunk_gizmo.apply_bindings(c, "body", (1.0, 2.0))
 
 
 # ---------------------------------------------------------------------------
@@ -486,9 +470,9 @@ def test_drag_writes_params_and_the_cook_moves_the_prim() -> None:
 
     _author_prim(stage, c)
     chunk_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Transform")
-    desc = next(d for d in chunk_gizmo.resolve_gizmos(chunk_prim) if "translate" in d.driver)
+    desc = next(d for d in chunk_gizmo.resolve_gizmos(chunk_prim) if d.type == "translate")
 
-    chunk_gizmo.apply_bindings(c, desc.name, {"translate": Gf.Vec3d(5.0, 0.0, -2.0)})
+    chunk_gizmo.apply_bindings(c, desc.name, Gf.Vec3d(5.0, 0.0, -2.0))
 
     class _FakeNode:
         def __init__(self, chunk_obj):
@@ -521,5 +505,5 @@ def test_the_shipped_transform_chunk_declares_gizmos() -> None:
 
     assert set(gizmos) == {"translate_grp", "rotate_grp", "scale_grp"}
     assert gizmos["translate_grp"].type == "translate"
-    assert gizmos["translate_grp"].driver["translate"] == (
+    assert gizmos["translate_grp"].driver == (
         "translate_grp.tx", "translate_grp.ty", "translate_grp.tz")

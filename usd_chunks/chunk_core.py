@@ -4122,41 +4122,31 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
 # Gizmo vocabulary. Kept as frozensets rather than enums so a chunk author writes a plain
 # string in config() and a host reads a plain token out of USD -- the whole point of the
 # schema is that nothing on either side needs to import usd_chunks to understand it.
-GIZMO_MANIPULATOR_TYPES = frozenset({"transform", "translate", "rotate", "scale"})
+# Every gizmo drives exactly one thing, and its type says what: a manipulator sends a
+# Gf.Vec3d, a shape sends a single number. That makes the type and the payload the same
+# question, which is why there is no separate notion of a "slot" -- an earlier draft had
+# one gizmo driving translate *and* rotate *and* scale at once, and every host then needed
+# to be told which of them a given drag meant.
+GIZMO_MANIPULATOR_TYPES = frozenset({"translate", "rotate", "scale"})
 GIZMO_SHAPE_TYPES = frozenset({"cube", "sphere"})
 GIZMO_TYPES = GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES
-# Slot -> what the host sends back for it. "value" is the singular-driver slot: one
-# driven attribute, whatever type it happens to be.
-GIZMO_SLOTS = frozenset({"translate", "rotate", "scale", "value"})
 GIZMO_AXES = frozenset({"X", "Y", "Z", "screen"})
 GIZMO_EDIT_MODES = frozenset({"onPrimSelection", "onChunkSelection", "always"})
 GIZMO_DEFAULT_EDIT_MODE = "onPrimSelection"
-# The slot a singular (string) driver binds to.
-GIZMO_VALUE_SLOT = "value"
-# Types needing more than one slot, and so more than one param group to drive. Only
-# `transform` genuinely is: `rotate` and `scale` each drive a single three-float slot, the
-# same shape `translate` does, so they sugar onto a Vector perfectly well.
-GIZMO_MULTI_SLOT_TYPES = frozenset({"transform"})
 
 
 def check_gizmo_sugar(owner: str, gizmo_type: str, scalar: bool) -> None:
     """Validate a `gizmo=` kwarg against the param it was written on.
 
-    The whitelist is by **arity, not param class**: a shape type drives one value so it
-    belongs on a scalar param, a manipulator type drives three so it belongs on a Vector, and
-    `transform` needs several slots at once so it cannot be sugared at all.
+    The whitelist is by **arity, not param class**: a shape type sends one number so it
+    belongs on a scalar param, a manipulator type sends a vector so it belongs on a Vector
+    or a param group.
 
     Raises at param construction -- i.e. at chunk load -- rather than when a handle is first
-    resolved. `gizmo="transform"` on a Slider would otherwise silently bind one axis, which
+    resolved. `gizmo="translate"` on a Slider would otherwise silently bind one axis, which
     looks like a broken handle rather than a broken declaration.
     """
-    if gizmo_type in GIZMO_MULTI_SLOT_TYPES:
-        raise ValueError(
-            f"Param {owner!r}: gizmo={gizmo_type!r} drives several slots and cannot be sugared. "
-            f"Declare it as a Gizmo in config() with an explicit driver map."
-        )
-
-    allowed = GIZMO_SHAPE_TYPES if scalar else (GIZMO_MANIPULATOR_TYPES - GIZMO_MULTI_SLOT_TYPES)
+    allowed = GIZMO_SHAPE_TYPES if scalar else GIZMO_MANIPULATOR_TYPES
     if gizmo_type not in allowed:
         kind = "a scalar param" if scalar else "a Vector or param group"
         raise ValueError(
@@ -4187,10 +4177,9 @@ class GizmoBase:
         label (str): Display name. Falls back to the chunk's name when empty.
         anchor (str): Name of the param holding the target prim path. Empty means infer --
             see chunk_gizmo.resolve_anchor_param.
-        driver (dict[str, tuple[str, ...]]): Which params the handle writes, per slot. A bare
-            string is sugar for a single driven attribute and normalises to
-            {"value": (that,)}. Entries are either a param path on the own chunk ("tx") or a
-            full property path to another chunk's param ("/chunks/Tab/Transform.inputs:tx").
+        driver (tuple[str, ...]): The params this handle writes, as paths on its own chunk --
+            ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz"), or a single entry
+            for a scalar or a vector-typed param. A bare string normalises to a one-tuple.
         axis (str | None): Optional drag direction in the anchor's local space. None means
             free drag -- any mouse direction moves the driven param, which is the common case.
             Set it where the direction carries the meaning (focus distance along -Z), which is
@@ -4216,30 +4205,13 @@ class GizmoBase:
                 f"Gizmo {self.name!r}: unknown type {self.type!r}. Known types: {sorted(GIZMO_TYPES)}"
             )
 
-        # str -> single-slot dict, so everything downstream sees exactly one shape.
-        driver = self.driver
-        if isinstance(driver, str):
-            driver = {GIZMO_VALUE_SLOT: (driver,)}
-        elif isinstance(driver, dict):
-            driver = {
-                slot: (entries,) if isinstance(entries, str) else tuple(entries)
-                for slot, entries in driver.items()
-            }
-        else:
-            raise ValueError(
-                f"Gizmo {self.name!r}: driver must be a str or a dict of slot -> params, got {type(driver).__name__}"
-            )
-
+        # One param, three params, or a single vector-typed one -- but always a flat list,
+        # never keyed by anything. What the handle sends is decided by its type.
+        driver = (self.driver,) if isinstance(self.driver, str) else tuple(self.driver or ())
         if not driver:
             raise ValueError(f"Gizmo {self.name!r}: driver is required -- a handle that writes nothing is not a gizmo")
-
-        for slot, entries in driver.items():
-            if slot not in GIZMO_SLOTS:
-                raise ValueError(
-                    f"Gizmo {self.name!r}: unknown driver slot {slot!r}. Known slots: {sorted(GIZMO_SLOTS)}"
-                )
-            if not entries:
-                raise ValueError(f"Gizmo {self.name!r}: driver slot {slot!r} binds no params")
+        if not all(isinstance(entry, str) for entry in driver):
+            raise ValueError(f"Gizmo {self.name!r}: driver entries must be param paths, got {driver!r}")
         self.driver = driver
 
         if self.axis is not None and self.axis not in GIZMO_AXES:

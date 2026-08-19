@@ -8,7 +8,7 @@ Kraken) or in a host's native handle system.
 The whole "hook into any DCC" surface is four calls:
 
     chunk_gizmo.resolve_gizmos(prim) -> list[GizmoDesc]   # what handles exist
-    chunk_gizmo.apply_bindings(chunk, name, values)       # write-back
+    chunk_gizmo.apply_bindings(chunk, name, value)        # write-back
     chunk.start_gizmo() / chunk.stop_gizmo()              # drag bracket
 
 Write-back is the crux and must stay here. A host computes a handle transform, but only
@@ -42,7 +42,7 @@ _INPUTS_PREFIX = "inputs:"
 class GizmoDesc:
     """What a host needs to build a handle, and nothing else.
 
-    Deliberately a plain data record: type token, resolved anchor paths, driver map, axis,
+    Deliberately a plain data record: type token, resolved anchor paths, driven properties,
     space, editmode. No Qt types, no callbacks into host-specific objects, nothing beyond
     what `pxr` gives every host. If a third-party DCC needs something that is not on this
     record, the schema is under-specified and that is a finding, not a reason to widen the
@@ -54,7 +54,7 @@ class GizmoDesc:
     label: str = ""
     anchor: tuple = ()          # resolved scene prims the handle hangs off
     anchor_source: str = ""     # the param that produced them, for our own write-back
-    driver: dict = attrs.field(factory=dict)   # slot -> tuple[Sdf.Path] of driven properties
+    driver: tuple = ()          # the properties this handle writes, in order
     axis: Optional[str] = None
     space: str = "local"
     editmode: tuple = (core.GIZMO_DEFAULT_EDIT_MODE,)
@@ -74,21 +74,8 @@ def _attr_name(gizmo_name: str, *parts: str) -> str:
     return GIZMO_PREFIX + ":".join((gizmo_name, *parts))
 
 
-def _driver_attr_name(gizmo_name: str, slot: str) -> str:
-    # The singular driver is `...:driver`, not `...:driver:value` -- a chunk with one driven
-    # attribute should read as one, in the usda and in a host's parser.
-    if slot == core.GIZMO_VALUE_SLOT:
-        return _attr_name(gizmo_name, "driver")
-    return _attr_name(gizmo_name, "driver", slot)
-
-
-def _slot_from_driver_attr(attr_name: str, gizmo_name: str) -> Optional[str]:
-    base = _attr_name(gizmo_name, "driver")
-    if attr_name == base:
-        return core.GIZMO_VALUE_SLOT
-    if attr_name.startswith(base + ":"):
-        return attr_name[len(base) + 1:]
-    return None
+def _driver_attr_name(gizmo_name: str) -> str:
+    return _attr_name(gizmo_name, "driver")
 
 
 # ---------------------------------------------------------------------------
@@ -121,10 +108,10 @@ def get_gizmos(chunk: "core.ChunkBase") -> list:
 def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
     """`gizmo=` kwargs on this chunk's params, as Gizmo records.
 
-    Scalar params drive the singular `value` slot; a Vector drives the slot its type names
-    (`gizmo="translate"` -> the translate slot). Sugar is type-only, so anything wanting an
-    axis, an editmode, several slots or a cross-chunk driver escalates to the config form --
-    exactly one escalation path, with no tuple-or-dict middle ground between them.
+    A scalar param drives itself; a Vector drives itself as one vector-typed attribute; a
+    Group drives its children. Sugar is type-only, so anything wanting an axis, an editmode,
+    an offset or a size escalates to the full Gizmo in config() -- exactly one escalation
+    path, with no middle ground between them.
     """
     sugared = []
     for path, param in _iter_params(chunk):
@@ -133,7 +120,7 @@ def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
                 name=param.name,
                 type=gizmo_type,
                 label=param.label or param.name,
-                driver={core.GIZMO_VALUE_SLOT: (path,)},
+                driver=(path,),
             ))
 
     for path, group in _iter_groups(chunk):
@@ -153,7 +140,7 @@ def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
                 name=group.name,
                 type=gizmo_type,
                 label=group.label or group.name,
-                driver={gizmo_type: children},
+                driver=children,
             ))
 
     for path, vector in _iter_vectors(chunk):
@@ -165,7 +152,7 @@ def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
                 name=vector.name,
                 type=gizmo_type,
                 label=vector.label or vector.name,
-                driver={gizmo_type: (path,)},
+                driver=(path,),
             ))
     return sugared
 
@@ -396,9 +383,8 @@ def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase", gizmo
     rel = prim.CreateRelationship(_attr_name(gizmo.name, "anchor"), custom=False)
     rel.SetTargets(_anchor_targets(chunk, gizmo, stage))
 
-    for slot, entries in gizmo.driver.items():
-        attr = _uniform_token(prim, _driver_attr_name(gizmo.name, slot))
-        attr.SetConnections(_driver_targets(prim, chunk, entries))
+    attr = _uniform_token(prim, _driver_attr_name(gizmo.name))
+    attr.SetConnections(_driver_targets(prim, chunk, gizmo.driver))
 
 
 def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
@@ -452,14 +438,8 @@ def _read_gizmos(prim: Usd.Prim) -> list:
             # Namespaced attrs with no type are not a gizmo -- skip rather than fabricate one.
             continue
 
-        driver = {}
-        for attr in prim.GetAttributes():
-            slot = _slot_from_driver_attr(attr.GetName(), name)
-            if slot is None:
-                continue
-            connections = tuple(attr.GetConnections())
-            if connections:
-                driver[slot] = connections
+        driver_attr = prim.GetAttribute(_driver_attr_name(name))
+        driver = tuple(driver_attr.GetConnections()) if driver_attr else ()
 
         anchor_rel = prim.GetRelationship(_attr_name(name, "anchor"))
         label_attr = prim.GetAttribute(_attr_name(name, "label"))
@@ -567,7 +547,7 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
 
 
 # ---------------------------------------------------------------------------
-# matrix -> slot dict
+# matrix -> one value per handle
 # ---------------------------------------------------------------------------
 
 # Below this, cos(ry) is small enough that the Z angle stops being separable from X and the
@@ -577,12 +557,17 @@ _GIMBAL_EPSILON = 1e-9
 
 
 def decompose(matrix: "Gf.Matrix4d") -> dict:
-    """A TRS matrix as a slot dict, in the convention transform.py composes in.
+    """Split a TRS matrix into one value per handle, in the convention transform.py composes in.
 
-    **Offered to hosts, not required of them.** The contract boundary is the slot dict; a
-    native handle that already produces Euler angles ignores this entirely. Keeping it here
-    means the Euler convention lives in exactly one place instead of being re-derived, subtly
-    differently, in every host.
+    Returns ``{"translate": Vec3d, "rotate": Vec3d, "scale": Vec3d}`` -- keyed by gizmo
+    *type*, so each entry goes straight to the handle of that name::
+
+        for gizmo_type, value in decompose(matrix).items():
+            apply_bindings(chunk, handles[gizmo_type], value)
+
+    **Offered to hosts, not required of them.** A native handle that already produces Euler
+    angles ignores this entirely. Keeping it here means the Euler convention lives in exactly
+    one place instead of being re-derived, subtly differently, in every host.
 
     Must invert `transform.py`'s composition exactly::
 
@@ -629,59 +614,27 @@ def decompose(matrix: "Gf.Matrix4d") -> dict:
 # write-back
 # ---------------------------------------------------------------------------
 
-def chunk_at_prim_path(path) -> Optional["core.ChunkBase"]:
-    """The chunk whose chunk prim sits at `path`, if it is still around."""
-    scene = getattr(ChunkRegistry(), "scene", None)
-    if scene is None:
-        return None
-    wanted = str(path)
-    for candidate in scene.get_chunks():
-        own = getattr(candidate, "_exec_prim_path", None) or getattr(candidate, "prim_path", None)
-        if own and str(own) == wanted:
-            return candidate
-    return None
-
-
 def _param_for_entry(chunk: "core.ChunkBase", entry: str):
-    """The param a driver entry names, or None if a cross-chunk target has gone away.
+    """The param a driver entry names.
 
-    Two different kinds of "not found", handled differently on purpose:
+    Own chunk only. An earlier draft let an entry be a full property path into another
+    chunk, so a camera's body handle could drive an upstream Transform's params -- but the
+    answer to that case turned out to be "put the handle on the Transform chunk", the way
+    Houdini drops an Edit node at the end of a chain. Nothing needed the indirection.
 
-    * A bare name that does not resolve on the own chunk is a **declaration bug** -- the
-      chunk's own config names a param it does not have -- so it raises.
-    * A full property path that does not resolve is a **runtime condition**. The chunk it
-      points at can be deleted or disabled independently at any time, and the gizmo it
-      belongs to is still perfectly good. Returns None so the caller can drop that one slot
-      and keep the rest working.
+    A name that does not resolve is a declaration bug -- the chunk's own config naming a
+    param it does not have -- so it raises rather than quietly doing nothing.
     """
-    text = str(entry).strip().strip("<>")
-
-    if not text.startswith("/"):
-        param = chunk.get_param(text)
-        if param is None:
-            raise ValueError(f"Chunk {chunk.name!r} has no param {text!r} to drive")
-        return param
-
-    path = Sdf.Path(text)
-    owner = chunk_at_prim_path(path.GetPrimPath())
-    if owner is None:
-        logger.warning("Gizmo driver %s: no chunk at %s", text, path.GetPrimPath())
-        return None
-
-    # /chunks/Tab/Transform.inputs:translate_grp:tx -> translate_grp.tx
-    prop = path.name
-    if prop.startswith(_INPUTS_PREFIX):
-        prop = prop[len(_INPUTS_PREFIX):]
-    param = owner.get_param(prop.replace(":", "."))
+    param = chunk.get_param(str(entry).strip())
     if param is None:
-        logger.warning("Gizmo driver %s: chunk %r has no param %r", text, owner.name, prop)
+        raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")
     return param
 
 
 GIZMO_CHANGED_HOOK = "gizmo_changed"
 
 
-def _dispatch_solve_hook(chunk: "core.ChunkBase", name: str, values: dict) -> bool:
+def _dispatch_solve_hook(chunk: "core.ChunkBase", name: str, value: Any) -> bool:
     """Give the chunk's module a chance to solve this drag itself. True if it did.
 
     Some handles are not 1:1 with any param, so there is nothing to declare. A lookat point's
@@ -690,7 +643,7 @@ def _dispatch_solve_hook(chunk: "core.ChunkBase", name: str, values: dict) -> bo
 
     A chunk opts in with a module-level function::
 
-        def gizmo_changed(node, gizmo, values):
+        def gizmo_changed(node, gizmo, value):
             if gizmo == "aim":
                 ...            # decompose into rx/ry/rz + focusDistance
                 return True     # and say so
@@ -700,7 +653,7 @@ def _dispatch_solve_hook(chunk: "core.ChunkBase", name: str, values: dict) -> bo
     the normal path. Signalling explicitly beats inferring from side effects, which would
     mean guessing whether a hook that wrote nothing declined or simply had nothing to do.
 
-    The DCC contract is identical either way: the host emits slot values and never learns
+    The DCC contract is identical either way: the host emits a value and never learns
     what a chunk means by them. That property is the only reason this hook is acceptable --
     anything making hosts aware of per-chunk solving would be a design failure.
 
@@ -717,7 +670,7 @@ def _dispatch_solve_hook(chunk: "core.ChunkBase", name: str, values: dict) -> bo
         return False
 
     try:
-        return bool(hook(chunk, name, values))
+        return bool(hook(chunk, name, value))
     except Exception:
         # Treated as handled, deliberately. Falling through to the declarative path after a
         # half-finished custom solve would combine two different intents into one frame,
@@ -727,65 +680,63 @@ def _dispatch_solve_hook(chunk: "core.ChunkBase", name: str, values: dict) -> bo
 
 
 def _values_for(entries: tuple, value: Any) -> list:
+    """One value per driven param.
+
+    A single entry takes the value whole -- that covers both a scalar handle and a
+    vector-typed param, which is stored as one attribute rather than three. Several entries
+    means the value is unpacked across them, which is the ordinary translate/rotate/scale
+    case where the params really are separate floats.
+    """
     if len(entries) == 1:
         return [value]
     try:
         values = list(value)
     except TypeError:
         raise ValueError(
-            f"Slot drives {len(entries)} params but got a single {type(value).__name__}"
+            f"Handle drives {len(entries)} params but got a single {type(value).__name__}"
         ) from None
     if len(values) != len(entries):
-        raise ValueError(f"Slot drives {len(entries)} params but got {len(values)} values")
+        raise ValueError(f"Handle drives {len(entries)} params but got {len(values)} values")
     return values
 
 
-def apply_bindings(chunk: "core.ChunkBase", name: str, values: dict) -> None:
-    """Write a handle's slot values back through the chunk's params.
+def apply_bindings(chunk: "core.ChunkBase", name: str, value: Any) -> None:
+    """Write a handle's value back through the chunk's params.
 
-    `values` is a slot dict, never a matrix -- keyed by the same slot names the driver map
-    uses:
+    One value, because a gizmo drives one thing and its **type** says what::
 
-        apply_bindings(chunk, "body",  {"translate": Gf.Vec3d(1, 2, 3)})
-        apply_bindings(chunk, "zdist", {"value": 12.5})
+        apply_bindings(chunk, "translate_grp", Gf.Vec3d(1, 2, 3))   # type="translate"
+        apply_bindings(chunk, "zdist", 12.5)                        # type="cube"
 
-    Native hosts already produce a scalar for a scalar handle (Houdini's linear handle and
-    Blender's arrow gizmo both hand back a float), so making them compose a matrix just so we
-    can extract the float again is work in both directions -- and lossy in the direction that
-    matters, since a float inside a matrix no longer says which axis it came from. Arity
-    comes from the driver map instead of the signature, so one call shape covers every gizmo
-    type without this boundary knowing any geometry.
+    A manipulator type sends a `Gf.Vec3d`; rotations are Euler XYZ in degrees. A shape type
+    sends a single number.
 
-    Hosts that genuinely hold a matrix call `decompose()` to get the slot dict.
+    Never a matrix. Native hosts already produce a scalar for a scalar handle -- Houdini's
+    linear handle and Blender's arrow gizmo both hand back a float -- so making them compose
+    a matrix just so we can extract the float again is work in both directions, and lossy in
+    the direction that matters, since a float inside a matrix no longer says which axis it
+    came from. A host holding a full transform calls `decompose()` and makes one call per
+    handle, which is what a viewport does anyway: you grab the arrows or the ring, never a
+    single thing that is somehow both.
     """
     gizmo = find_gizmo(chunk, name)
     if gizmo is None:
         raise ValueError(f"Chunk {chunk.name!r} declares no gizmo named {name!r}")
 
-    if _dispatch_solve_hook(chunk, name, values):
+    if _dispatch_solve_hook(chunk, name, value):
         chunk.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_CHANGED, name)
         return
 
-    # Validate every slot before writing any of them, so a bad slot cannot leave the chunk
-    # half-updated -- during a drag that would show as the object tearing apart mid-gesture.
-    for slot in values:
-        if slot not in gizmo.driver:
-            # Loudly: a host sending a slot this gizmo does not declare is a contract
-            # mismatch, and silently dropping it looks exactly like a handle that does not work.
-            raise KeyError(
-                f"Gizmo {name!r} on chunk {chunk.name!r} has no driver for slot {slot!r}. "
-                f"Declared slots: {sorted(gizmo.driver)}"
-            )
+    # Resolve every param before writing any of them, so a bad driver cannot leave the chunk
+    # half-updated -- mid-drag that would show as the object tearing apart rather than as an
+    # error.
+    items = _values_for(gizmo.driver, value)
+    params = [_param_for_entry(chunk, entry) for entry in gizmo.driver]
 
-    for slot, value in values.items():
-        entries = gizmo.driver[slot]
-        for entry, item in zip(entries, _values_for(entries, value)):
-            # A cross-chunk target that has gone away drops out here rather than taking the
-            # whole drag with it. Writing the param -- on whichever chunk owns it -- is what
-            # dirties that chunk and propagates downstream, which is the entire reason this
-            # goes through params instead of writing prims.
-            if (param := _param_for_entry(chunk, entry)) is not None:
-                param.value = item
+    for param, item in zip(params, items):
+        # Writing the param is what dirties the chunk and propagates downstream, which is
+        # the entire reason this goes through params instead of writing prims.
+        param.value = item
 
     # One per tick, inside the START/STOP bracket. Deliberately after the writes, so a
     # listener seeing CHANGED can read the new values straight off the params.
