@@ -43,6 +43,11 @@ _COLOR_CORRECTION_MODES = ["disabled", "sRGB", "openColorIO"]
 
 _FRAME_PLACEHOLDER = re.compile(r"#+")
 
+#: Formats written as 8-bit, where the renderer's output has to be display-referred to
+#: look right -- so losing colour correction on the way out is visible rather than
+#: something comp puts back.
+_DISPLAY_REFERRED = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".gif"}
+
 
 def _available_renderers():
     """Hydra render delegates this USD build can actually load.
@@ -277,13 +282,35 @@ def _make_recorder(node, settings_path=""):
         )
         return None
 
-    recorder = UsdAppUtils.FrameRecorder()
-
     renderer = node.get_param("renderer").value
-    if plugin := _plugin_id(renderer):
-        recorder.SetRendererPlugin(plugin)
-    elif renderer:
+    plugin = _plugin_id(renderer)
+    if renderer and not plugin:
         logger.warning("Render: no Hydra plugin named %r; using the default delegate.", renderer)
+
+    use_gpu = bool(node.get_param("use_gpu").value)
+
+    # The plugin and the GPU switch go through the constructor when this USD offers it,
+    # because whether the engine is GPU-backed is decided as it is built and cannot be
+    # turned off afterwards. With the GPU enabled the recorder needs a real GL context
+    # even for a delegate that does not render on the GPU, which is what makes a
+    # headless run die where the same render works inside usdview. usdrecord solves it
+    # the same way, with --disableGpu.
+    recorder = None
+    if plugin:
+        try:
+            recorder = UsdAppUtils.FrameRecorder(plugin, use_gpu)
+        except TypeError:
+            recorder = None  # older USD: no such constructor
+
+    if recorder is None:
+        recorder = UsdAppUtils.FrameRecorder()
+        if plugin:
+            recorder.SetRendererPlugin(plugin)
+        if not use_gpu:
+            logger.warning(
+                "Render: this USD build cannot disable the GPU, so a headless run may "
+                "fail without an OpenGL context."
+            )
 
     if width := int(node.get_param("image_width").value or 0):
         recorder.SetImageWidth(width)
@@ -293,6 +320,22 @@ def _make_recorder(node, settings_path=""):
     mode = node.get_param("color_correction").value
     if mode and hasattr(recorder, "SetColorCorrectionMode"):
         recorder.SetColorCorrectionMode(mode)
+
+    # Colour correction is a GPU task inside the engine, so with the GPU off the call
+    # above is accepted and does nothing. Harmless writing EXR, which is linear and
+    # colour-managed downstream anyway; visible writing PNG, which is expected to be
+    # display-referred and will come out dark.
+    if not use_gpu and mode and mode != "disabled":
+        extension = os.path.splitext(node.get_param("output_image").value or "")[1].lower()
+        if extension in _DISPLAY_REFERRED:
+            logger.warning(
+                "Render: Color Correction %r cannot be applied with Use GPU off -- it "
+                "runs on the GPU -- so %s will be written uncorrected. Render to .exr "
+                "and convert downstream, or turn Use GPU back on where there is a "
+                "display to render against.",
+                mode,
+                extension,
+            )
 
     # Hand the delegate the settings prim rather than only reading a camera off it.
     # A delegate implementing HdRenderSettings then walks its RenderProducts and
@@ -466,9 +509,11 @@ def _render_hydra(node, output_image):
     written = []
     try:
         for time_code in time_codes:
-            path = _stage_relative(
-                stage, format_output_path(output_image, time_code.GetValue() if frames else None)
-            )
+            # Substituted even with no frame spec: a path written as beauty.####.exr
+            # should never reach disk with the hashes still in it, and the single
+            # render is frame 0 rather than EarliestTime's -inf.
+            frame_number = time_code.GetValue() if frames else 0
+            path = _stage_relative(stage, format_output_path(output_image, frame_number))
             _ensure_parent_dir(path)
             if not recorder.Record(stage, camera, time_code, path):
                 logger.error("Render: failed writing %s", path)
@@ -517,6 +562,7 @@ def main():
             "color_correction", "Color Correction",
             menu_items=_COLOR_CORRECTION_MODES, default_value="sRGB",
         ),
+        chunk.Checkbox("use_gpu", "Use GPU", default_value=True),
         chunk.Checkbox("render_on_commit", "Render on Commit", default_value=True),
         chunk.LineEdit("render_command", "Render Command", default_value="usdrecord"),
         chunk.LineEdit("extra_args", "Extra Args"),
@@ -608,7 +654,17 @@ def config():
             aspect ratio.
           - Complexity: refinement level, matching usdview's — low, medium, high,
             very high.
-          - Color Correction: disabled, sRGB, or openColorIO.
+          - Color Correction: disabled, sRGB, or openColorIO. Applied by a GPU task
+            inside the engine, so it does nothing with Use GPU off, and the chunk
+            says so when that would be visible. EXR is unaffected in practice —
+            it is linear and colour-managed downstream — while a PNG written
+            headless comes out uncorrected.
+          - Use GPU: on by default, which is right inside a DCC. Turn it off to
+            render headless: with it on the recorder builds a GPU-backed engine
+            and needs a real OpenGL context even for a delegate that does not
+            render on the GPU, so a farm or a terminal run dies where the same
+            render succeeds in usdview. usdrecord has the same switch, spelled
+            --disableGpu.
           - Render on Commit: whether `usdchunks run` renders. On by default. Turn
             it off for a network where rendering should only ever be explicit.
           - Render Command: Command mode only — the executable to run, usdrecord by
