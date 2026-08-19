@@ -231,18 +231,41 @@ def _prepare_product_dirs(stage, settings_path):
 
 
 def _resolve_settings_path(node, stage):
-    """The RenderSettings prim to render, as an explicit path or the stage's own.
+    """The RenderSettings prim to render: explicit, via a render pass, or the stage's.
 
-    Falling back to the stage metadatum matters because that is what a Render Settings
-    chunk publishes by default, so a network that wired nothing still renders the
-    settings it authored rather than silently ignoring them.
+    The same order usdrecord resolves it in. Falling back to the stage metadatum
+    matters because that is what a Render Settings chunk publishes by default, so a
+    network that wired nothing still renders the settings it authored.
     """
     path = (node.get_param("settings_path").value or "").strip()
     if path:
         return path
 
+    if pass_path := _resolve_pass_path(node, stage):
+        render_pass = UsdRender.Pass(stage.GetPrimAtPath(Sdf.Path(pass_path)))
+        targets = render_pass.GetRenderSourceRel().GetTargets() if render_pass else []
+        if targets:
+            if len(targets) > 1:
+                logger.warning(
+                    "Render: render pass %s has several sources; using %s.", pass_path, targets[0]
+                )
+            return str(targets[0])
+
     stage_settings = UsdRender.Settings.GetStageRenderSettings(stage)
     return str(stage_settings.GetPath()) if stage_settings else ""
+
+
+def _resolve_pass_path(node, stage):
+    """The RenderPass prim to drive the render with, if one is named and real."""
+    path = (node.get_param("pass_path").value or "").strip()
+    if not path:
+        return ""
+
+    prim = stage.GetPrimAtPath(Sdf.Path(path))
+    if not prim or not prim.IsValid():
+        logger.warning("Render: no render pass at %s.", path)
+        return ""
+    return path
 
 
 def _settings_camera(stage, settings_path):
@@ -290,7 +313,7 @@ def _why_refused(renderer, use_gpu):
     )
 
 
-def _make_recorder(node, settings_path=""):
+def _make_recorder(node, settings_path="", pass_path=""):
     """A configured FrameRecorder, or None when this build cannot render."""
     try:
         from pxr import UsdAppUtils
@@ -341,10 +364,23 @@ def _make_recorder(node, settings_path=""):
                 "fail without an OpenGL context."
             )
 
+    # Pass and settings first, before every other setter -- the order usdrecord uses.
+    # These say what is being rendered; the rest adjust how, and a couple of them
+    # deliberately override what the settings prim asked for.
+    if pass_path and hasattr(recorder, "SetActiveRenderPassPrimPath"):
+        recorder.SetActiveRenderPassPrimPath(Sdf.Path(pass_path))
+
+    if settings_path and hasattr(recorder, "SetActiveRenderSettingsPrimPath"):
+        recorder.SetActiveRenderSettingsPrimPath(Sdf.Path(settings_path))
+
     if width := int(node.get_param("image_width").value or 0):
         recorder.SetImageWidth(width)
 
     recorder.SetComplexity(_COMPLEXITIES.get(node.get_param("complexity").value, 1.0))
+
+    if purposes := _purposes(node, settings_path):
+        if hasattr(recorder, "SetIncludedPurposes"):
+            recorder.SetIncludedPurposes(purposes)
 
     mode = node.get_param("color_correction").value
     if mode and hasattr(recorder, "SetColorCorrectionMode"):
@@ -366,15 +402,25 @@ def _make_recorder(node, settings_path=""):
                 extension,
             )
 
-    # Hand the delegate the settings prim rather than only reading a camera off it.
-    # A delegate implementing HdRenderSettings then walks its RenderProducts and
-    # RenderVars and writes those files itself -- which is what makes the AOVs a
-    # network authors actually come out, instead of a single beauty frame. Guarded by
-    # hasattr because older USD builds have no such hook.
-    if settings_path and hasattr(recorder, "SetActiveRenderSettingsPrimPath"):
-        recorder.SetActiveRenderSettingsPrimPath(Sdf.Path(settings_path))
-
     return recorder
+
+
+def _purposes(node, settings_path):
+    """Purposes to render, from the settings prim the render is driven by.
+
+    The recorder takes its own list and does not read the settings prim for it, so a
+    network that says includedPurposes gets ignored unless it is passed through here.
+    """
+    stage = node.get_stage()
+    if not stage or not settings_path:
+        return []
+
+    prim = stage.GetPrimAtPath(Sdf.Path(settings_path))
+    if not prim or not prim.IsValid():
+        return []
+
+    purposes = UsdRender.Settings(prim).GetIncludedPurposesAttr().Get()
+    return [str(p) for p in (purposes or [])]
 
 
 def _resolve_command(command):
@@ -521,6 +567,7 @@ def _render_hydra(node, output_image):
         logger.error("Render: %s", exc)
         return
 
+    pass_path = _resolve_pass_path(node, stage)
     settings_path = _resolve_settings_path(node, stage)
 
     camera = _resolve_camera(node, stage, settings_path)
@@ -528,7 +575,7 @@ def _render_hydra(node, output_image):
         logger.error("Render: no camera to render from — set Camera, or point Render Settings at one.")
         return
 
-    recorder = _make_recorder(node, settings_path)
+    recorder = _make_recorder(node, settings_path, pass_path)
     if recorder is None:
         return
 
@@ -574,6 +621,7 @@ def main():
 
     chunk_api.add_params([
         chunk.LineEdit("settings_path", "Render Settings", flags=chunk.ChunkFlags.ParamFlags.LABELED),
+        chunk.LineEdit("pass_path", "Render Pass", flags=chunk.ChunkFlags.ParamFlags.LABELED),
         chunk.Menu("mode", "Mode", menu_items=_MODES, default_value="Hydra"),
         chunk.Menu("renderer", "Renderer", menu_items=renderers, default_value=default_renderer),
         chunk.LineEdit("output_image", "Output Image", default_value="render.####.png"),
@@ -640,10 +688,16 @@ def config():
         dependency on finding and launching a script on PATH.
 
         Parameters:
+          - Render Pass: path of a RenderPass prim to drive the render with. Wire a
+            Render Pass chunk's Reference output in here. Optional, and worth
+            trying when a delegate ignores the settings prim: a renderer may
+            implement passes without implementing render settings, and the pass
+            also supplies the settings through its renderSource.
           - Render Settings: path of the RenderSettings prim to render. Wire a
-            Render Settings chunk's Reference output in here. Left empty, the
-            stage's own renderSettingsPrimPath is used, which a Render Settings
-            chunk publishes by default.
+            Render Settings chunk's Reference output in here. Left empty, it is
+            taken from Render Pass's renderSource, then from the stage's own
+            renderSettingsPrimPath, which a Render Settings chunk publishes by
+            default — the same order usdrecord resolves it in.
 
             In Hydra mode this is handed to the delegate, not just read for a
             camera. A delegate implementing HdRenderSettings then walks the

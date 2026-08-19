@@ -415,6 +415,123 @@ class TestDelegateSettings:
         assert attr.Get() is True
 
 
+class TestRenderPass:
+    """A pass sits above settings: it names which rendering this is and what it renders
+    with. Also a possible way in -- a delegate may implement passes without implementing
+    render settings prims."""
+
+    def _pass(self, scene, settings):
+        mod = importlib.import_module("scripts.render_pass")
+        rp = _make(scene, mod, "render_pass")
+        rp.get_param("render_source").value = settings.get_param("reference").value
+        rp.execute()
+        return rp
+
+    def test_authors_a_render_pass_pointing_at_the_settings(self):
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+        rp = self._pass(scene, settings)
+
+        prim = stage.GetPrimAtPath(rp.get_param("reference").value)
+        assert prim
+        targets = UsdRender.Pass(prim).GetRenderSourceRel().GetTargets()
+        assert [str(t) for t in targets] == [settings.get_param("reference").value]
+
+    def test_pass_type_and_input_passes(self):
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+        first = self._pass(scene, settings)
+
+        mod = importlib.import_module("scripts.render_pass")
+        second = _make(scene, mod, "render_pass")
+        second.get_param("primpath_location").value = "/Render/Passes/comp"
+        second.get_param("pass_type").value = "comp"
+        second.get_param("input_passes").value = first.get_param("reference").value
+        second.execute()
+
+        prim = stage.GetPrimAtPath(second.get_param("reference").value)
+        usd_pass = UsdRender.Pass(prim)
+        assert usd_pass.GetPassTypeAttr().Get() == "comp"
+        assert [str(t) for t in usd_pass.GetInputPassesRel().GetTargets()] == [
+            first.get_param("reference").value
+        ]
+
+    def test_only_one_render_source_is_kept(self):
+        """renderSource is what this pass renders, and a pass renders one thing."""
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+
+        mod = importlib.import_module("scripts.render_pass")
+        rp = _make(scene, mod, "render_pass")
+        rp.get_param("render_source").value = "/Render/settings,/Render/Products/beauty"
+        rp.execute()
+
+        targets = UsdRender.Pass(stage.GetPrimAtPath(rp.get_param("reference").value))
+        assert len(targets.GetRenderSourceRel().GetTargets()) == 1
+
+    def test_render_chunk_takes_settings_from_the_pass(self):
+        """usdrecord's resolution order: explicit, then via the pass, then the stage."""
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+        rp = self._pass(scene, settings)
+
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("pass_path").value = rp.get_param("reference").value
+        assert not rop.get_param("settings_path").value
+
+        assert mod._resolve_settings_path(rop, stage) == settings.get_param("reference").value
+        assert mod._resolve_pass_path(rop, stage) == rp.get_param("reference").value
+
+    def test_an_explicit_settings_path_still_wins(self):
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+        rp = self._pass(scene, settings)
+
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("pass_path").value = rp.get_param("reference").value
+        rop.get_param("settings_path").value = "/Render/other"
+
+        assert mod._resolve_settings_path(rop, stage) == "/Render/other"
+
+    def test_a_missing_pass_is_reported_not_used(self):
+        scene, stage = _setup_stage()
+        _render_network(scene)
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("pass_path").value = "/Render/Passes/nope"
+
+        assert mod._resolve_pass_path(rop, stage) == ""
+
+    def test_pass_is_handed_to_the_delegate(self, monkeypatch, tmp_path):
+        scene, stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+        rp = self._pass(scene, settings)
+
+        from pxr import UsdGeom
+        UsdGeom.Camera.Define(stage, "/cameras/shotcam")
+
+        mod = importlib.import_module("scripts.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("mode").value = "Hydra"
+        rop.get_param("pass_path").value = rp.get_param("reference").value
+        rop.get_param("output_image").value = str(tmp_path / "beauty.exr")
+
+        captured = {}
+        monkeypatch.setattr(mod, "_hydra_available", lambda: True)
+
+        def _fake(node, settings_path="", pass_path=""):
+            captured.update(settings=settings_path, pass_=pass_path)
+            return _FakeRecorder()
+
+        monkeypatch.setattr(mod, "_make_recorder", _fake)
+        mod.commit(rop)
+
+        assert captured["pass_"] == rp.get_param("reference").value
+        assert captured["settings"] == settings.get_param("reference").value
+
+
 class _FakeRecorder:
     """Stands in for UsdAppUtils.FrameRecorder, which the usd-core wheels do not ship."""
 
@@ -514,7 +631,7 @@ class TestHydraMode:
 
         fake = recorder or _FakeRecorder()
         monkeypatch.setattr(mod, "_hydra_available", lambda: True)
-        monkeypatch.setattr(mod, "_make_recorder", lambda _n, settings_path="": fake)
+        monkeypatch.setattr(mod, "_make_recorder", lambda _n, settings_path="", pass_path="": fake)
         return mod, rop, fake, stage
 
     def test_records_one_frame_by_default(self, monkeypatch, tmp_path):
@@ -555,7 +672,7 @@ class TestHydraMode:
         real_make = mod._make_recorder
         monkeypatch.setattr(mod, "_hydra_available", lambda: True)
 
-        def _fake_make(node, settings_path=""):
+        def _fake_make(node, settings_path="", pass_path=""):
             captured["settings_path"] = settings_path
             fake = _FakeRecorder()
             if settings_path:
@@ -585,7 +702,7 @@ class TestHydraMode:
         monkeypatch.setattr(mod, "_hydra_available", lambda: True)
         monkeypatch.setattr(
             mod, "_make_recorder",
-            lambda node, settings_path="": (captured.setdefault("p", settings_path), _FakeRecorder())[1],
+            lambda node, settings_path="", pass_path="": (captured.setdefault("p", settings_path), _FakeRecorder())[1],
         )
         mod.commit(rop)
 
@@ -639,7 +756,7 @@ class TestHydraMode:
         UsdGeom.Camera.Define(stage, "/cameras/shotcam")
 
         monkeypatch.setattr(mod, "_hydra_available", lambda: True)
-        monkeypatch.setattr(mod, "_make_recorder", lambda _n, settings_path="": _FakeRecorder())
+        monkeypatch.setattr(mod, "_make_recorder", lambda _n, settings_path="", pass_path="": _FakeRecorder())
         mod.commit(rop)
 
         assert (tmp_path / "aovs").is_dir()
@@ -673,7 +790,7 @@ class TestHydraMode:
 
         fake = _FakeRecorder()
         monkeypatch.setattr(mod, "_hydra_available", lambda: True)
-        monkeypatch.setattr(mod, "_make_recorder", lambda _n, settings_path="": fake)
+        monkeypatch.setattr(mod, "_make_recorder", lambda _n, settings_path="", pass_path="": fake)
 
         mod.commit(rop)
         assert not fake.calls, "should bail before recording when there is no camera"
