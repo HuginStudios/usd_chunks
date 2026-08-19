@@ -58,6 +58,8 @@ class GizmoDesc:
     axis: Optional[str] = None
     space: str = "local"
     editmode: tuple = (core.GIZMO_DEFAULT_EDIT_MODE,)
+    offset: Optional[tuple] = None   # where the handle sits relative to the anchor
+    size: Optional[float] = None     # relative size hint; None means the host decides
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +134,26 @@ def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
                 type=gizmo_type,
                 label=param.label or param.name,
                 driver={core.GIZMO_VALUE_SLOT: (path,)},
+            ))
+
+    for path, group in _iter_groups(chunk):
+        if gizmo_type := getattr(group, "gizmo", None):
+            # The group already *is* the params the handle drives, so nothing needs listing.
+            # This is the lightest declaration there is, and the reason it exists: spelling
+            # the same three param paths out in config() was consistently longer than every
+            # other line in the config put together.
+            children = tuple(
+                f"{path}.{child.name}" for child in group.get_my_params()
+                if isinstance(child, core.ChunkParamBase)
+            )
+            if not children:
+                logger.warning("Group %r declares gizmo=%r but has no params to drive", group.name, gizmo_type)
+                continue
+            sugared.append(core.GizmoBase(
+                name=group.name,
+                type=gizmo_type,
+                label=group.label or group.name,
+                driver={gizmo_type: children},
             ))
 
     for path, vector in _iter_vectors(chunk):
@@ -250,6 +272,21 @@ def _iter_params(obj, prefix: str = ""):
             yield from _iter_params(param, path)
 
 
+def _iter_groups(obj, prefix: str = ""):
+    """(path, group) for every plain container under obj.
+
+    Vectors and list groups are excluded: a Vector is one attribute rather than a bag of
+    params, and a list group's contents change size at runtime, so neither can stand in for
+    "these are the params my handle drives".
+    """
+    for param in obj.get_my_params():
+        if isinstance(param, (core.ChunkParamBase, core.ChunkVectorBase, core.ChunkListGroupBase)):
+            continue
+        path = f"{prefix}.{param.name}" if prefix else param.name
+        yield path, param
+        yield from _iter_groups(param, path)
+
+
 def _iter_vectors(obj, prefix: str = ""):
     """(path, vector) for every ChunkVectorBase under obj. Vectors are skipped by
     _iter_params, which walks scalars only."""
@@ -338,6 +375,18 @@ def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase", gizmo
     if gizmo.space and gizmo.space != "local":
         _uniform_token(prim, _attr_name(gizmo.name, "space")).Set(gizmo.space)
 
+    # Only authored when set. An absent size means "host decides", which is usually the
+    # right answer -- a viewport wants a screen-constant handle and only it knows the camera
+    # distance, so authoring a default here would be us guessing at something we cannot see.
+    if gizmo.offset is not None:
+        attr = prim.CreateAttribute(_attr_name(gizmo.name, "offset"), Sdf.ValueTypeNames.Float3, custom=False)
+        attr.SetVariability(Sdf.VariabilityUniform)
+        attr.Set(Gf.Vec3f(*gizmo.offset))
+    if gizmo.size is not None:
+        attr = prim.CreateAttribute(_attr_name(gizmo.name, "size"), Sdf.ValueTypeNames.Float, custom=False)
+        attr.SetVariability(Sdf.VariabilityUniform)
+        attr.Set(float(gizmo.size))
+
     # anchorSource is for us, not for hosts: write-back needs to know which param produced
     # the target, and a host that had to read it would be back to the two-hop lookup this
     # schema exists to avoid.
@@ -419,6 +468,10 @@ def _read_gizmos(prim: Usd.Prim) -> list:
         source_attr = prim.GetAttribute(_attr_name(name, "anchorSource"))
         mode_attr = prim.GetAttribute(_attr_name(name, "editmode"))
         modes = tuple(mode_attr.Get() or ()) if mode_attr else ()
+        offset_attr = prim.GetAttribute(_attr_name(name, "offset"))
+        size_attr = prim.GetAttribute(_attr_name(name, "size"))
+        offset = offset_attr.Get() if offset_attr else None
+        size = size_attr.Get() if size_attr else None
 
         descs.append(GizmoDesc(
             name=name,
@@ -430,6 +483,8 @@ def _read_gizmos(prim: Usd.Prim) -> list:
             axis=(axis_attr.Get() if axis_attr else None) or None,
             space=(space_attr.Get() if space_attr else None) or "local",
             editmode=modes or (core.GIZMO_DEFAULT_EDIT_MODE,),
+            offset=tuple(offset) if offset is not None else None,
+            size=float(size) if size is not None else None,
         ))
     return descs
 

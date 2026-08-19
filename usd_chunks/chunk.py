@@ -157,10 +157,24 @@ class Chunk(ChunkBase):
 
 
 class Group(ChunkGroupBase):
-    """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
+    """Group is a container holding child ChunkParamBase and ChunkGroupBase instances
+
+    A group can carry a `gizmo=` type, which is usually the lightest way to declare a
+    handle: the group already *is* the params the handle drives, so nothing needs listing.
+
+    ``` py
+    grp = chunk.Group("translate_grp", "Translate", gizmo="translate")
+    ```
+    """
 
     # Override defaults
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+    gizmo: Optional[str] = field(default=None)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        if self.gizmo is not None:
+            _check_gizmo_sugar(self.name, self.gizmo, scalar=False)
 
 
 class ListGroup(ChunkListGroupBase):

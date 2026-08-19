@@ -4158,7 +4158,7 @@ def check_gizmo_sugar(owner: str, gizmo_type: str, scalar: bool) -> None:
 
     allowed = GIZMO_SHAPE_TYPES if scalar else (GIZMO_MANIPULATOR_TYPES - GIZMO_MULTI_SLOT_TYPES)
     if gizmo_type not in allowed:
-        kind = "a scalar param" if scalar else "a Vector"
+        kind = "a scalar param" if scalar else "a Vector or param group"
         raise ValueError(
             f"Param {owner!r}: gizmo={gizmo_type!r} cannot go on {kind}. "
             f"Valid here: {sorted(allowed)}"
@@ -4174,6 +4174,11 @@ class GizmoBase:
     or validation machinery the param classes carry.
 
     Attributes:
+        offset (tuple[float, float, float] | None): Where the handle sits relative to its
+            anchor, in the anchor's local space. None means on the anchor.
+        size (float | None): Relative size hint. None leaves it entirely to the host, which
+            is usually right -- a viewport wants a screen-constant handle, not a world-sized
+            one, and only it knows the camera distance.
         name (str): Namespace segment under ui:gizmo:. The gizmo's *name*, never its type --
             two cubes on one chunk is ordinary (a camera wants a body handle and a distance
             handle), so the type cannot be the key.
@@ -4202,6 +4207,8 @@ class GizmoBase:
     axis: Optional[str] = None
     space: str = "local"
     editmode: Any = (GIZMO_DEFAULT_EDIT_MODE,)
+    offset: Any = None
+    size: Optional[float] = None
 
     def __attrs_post_init__(self) -> None:
         if self.type not in GIZMO_TYPES:
@@ -4239,6 +4246,17 @@ class GizmoBase:
             raise ValueError(
                 f"Gizmo {self.name!r}: unknown axis {self.axis!r}. Known axes: {sorted(GIZMO_AXES)}"
             )
+
+        if self.offset is not None:
+            offset = tuple(float(v) for v in self.offset)
+            if len(offset) != 3:
+                raise ValueError(f"Gizmo {self.name!r}: offset must be three numbers, got {len(offset)}")
+            self.offset = offset
+
+        if self.size is not None:
+            if float(self.size) <= 0.0:
+                raise ValueError(f"Gizmo {self.name!r}: size must be positive, got {self.size}")
+            self.size = float(self.size)
 
         editmode = (self.editmode,) if isinstance(self.editmode, str) else tuple(self.editmode)
         if not editmode:

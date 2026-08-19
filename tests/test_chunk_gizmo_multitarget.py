@@ -68,7 +68,7 @@ def test_anchor_carries_all_targets() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B", "/World/C")
     prim = _authored(stage, _transform_chunk("/World/A,/World/B,/World/C"))
 
-    targets = prim.GetRelationship("ui:gizmo:body:anchor").GetTargets()
+    targets = prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()
     assert [str(t) for t in targets] == ["/World/A", "/World/B", "/World/C"]
 
 
@@ -77,18 +77,20 @@ def test_a_glob_expands_to_every_match() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B")
     prim = _authored(stage, _transform_chunk("/World/*"))
 
-    targets = prim.GetRelationship("ui:gizmo:body:anchor").GetTargets()
+    targets = prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()
     assert sorted(str(t) for t in targets) == ["/World/A", "/World/B"]
 
 
-def test_three_targets_still_resolve_to_one_gizmo() -> None:
-    """One handle at the averaged pivot, not three handles fighting for the same drag."""
+def test_target_count_does_not_multiply_the_handles() -> None:
+    """Three targets is still one handle per group at the averaged pivot -- not one handle
+    per target fighting for the same drag. The chunk declares three (translate, rotate,
+    scale); the number of prims it points at must not change that."""
     stage = _stage_with_cubes("/World/A", "/World/B", "/World/C")
     prim = _authored(stage, _transform_chunk("/World/A,/World/B,/World/C"))
 
     descs = chunk_gizmo.resolve_gizmos(prim)
-    assert len(descs) == 1
-    assert len(descs[0].anchor) == 3
+    assert sorted(d.name for d in descs) == ["rotate_grp", "scale_grp", "translate_grp"]
+    assert all(len(d.anchor) == 3 for d in descs)
 
 
 def test_desc_exposes_the_full_target_list() -> None:
@@ -129,8 +131,8 @@ def test_a_missing_target_does_not_kill_the_gizmo() -> None:
     prim = _authored(stage, _transform_chunk("/World/A,/World/Ghost"))
 
     descs = chunk_gizmo.resolve_gizmos(prim)
-    assert len(descs) == 1
-    assert "/World/A" in [str(p) for p in descs[0].anchor]
+    assert descs, "losing one target must not lose the handles"
+    assert all("/World/A" in [str(p) for p in d.anchor] for d in descs)
 
 
 def test_a_target_that_does_not_exist_yet_is_still_authored() -> None:
@@ -140,7 +142,7 @@ def test_a_target_that_does_not_exist_yet_is_still_authored() -> None:
     stage = _stage_with_cubes()
     prim = _authored(stage, _transform_chunk("/World/NotYet"))
 
-    targets = prim.GetRelationship("ui:gizmo:body:anchor").GetTargets()
+    targets = prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()
     assert [str(t) for t in targets] == ["/World/NotYet"]
 
 
@@ -152,7 +154,7 @@ def test_garbage_in_the_path_param_does_not_raise() -> None:
     stage = _stage_with_cubes("/World/A")
     prim = _authored(stage, _transform_chunk("/World/A,not a path,,,"))
 
-    targets = [str(t) for t in prim.GetRelationship("ui:gizmo:body:anchor").GetTargets()]
+    targets = [str(t) for t in prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()]
     assert "/World/A" in targets
     assert all(Sdf.Path(t).IsAbsolutePath() and Sdf.Path(t).IsPrimPath() for t in targets)
 
@@ -167,7 +169,7 @@ def test_a_relative_path_never_reaches_the_anchor() -> None:
     c.get_param("primpath_location").value = "some/relative/path"
     chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
 
-    for target in prim.GetRelationship("ui:gizmo:body:anchor").GetTargets():
+    for target in prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets():
         assert target.IsAbsolutePath()
 
 
@@ -181,7 +183,7 @@ def test_write_back_sets_the_params_once_regardless_of_target_count() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B", "/World/C")
     c = _transform_chunk("/World/A,/World/B,/World/C")
 
-    chunk_gizmo.apply_bindings(c, "body", {"translate": Gf.Vec3d(4.0, 0.0, 0.0)})
+    chunk_gizmo.apply_bindings(c, "translate_grp", {"translate": Gf.Vec3d(4.0, 0.0, 0.0)})
 
     assert c.get_param("tx").value == pytest.approx(4.0)
 
@@ -190,7 +192,7 @@ def test_every_target_moves_on_the_cook() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B")
     c = _transform_chunk("/World/A,/World/B")
 
-    chunk_gizmo.apply_bindings(c, "body", {"translate": Gf.Vec3d(0.0, 6.0, 0.0)})
+    chunk_gizmo.apply_bindings(c, "translate_grp", {"translate": Gf.Vec3d(0.0, 6.0, 0.0)})
 
     class _FakeNode:
         def get_stage(self):
@@ -218,7 +220,7 @@ def test_repointing_the_param_re_resolves_the_anchor() -> None:
     c.get_param("primpath_location").value = "/World/B"
     chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
 
-    assert [str(t) for t in prim.GetRelationship("ui:gizmo:body:anchor").GetTargets()] == ["/World/B"]
+    assert [str(t) for t in prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()] == ["/World/B"]
 
 
 def test_widening_the_param_adds_targets() -> None:
@@ -229,7 +231,7 @@ def test_widening_the_param_adds_targets() -> None:
     c.get_param("primpath_location").value = "/World/A,/World/B"
     chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
 
-    assert len(prim.GetRelationship("ui:gizmo:body:anchor").GetTargets()) == 2
+    assert len(prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()) == 2
 
 
 def test_refresh_is_a_no_op_for_a_chunk_without_gizmos() -> None:

@@ -79,14 +79,18 @@ def main():
     )
     chunk_api.add_param(primpath)
 
-    for grp_name, grp_label, axes, min_v, max_v, default in [
-        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0),
-        ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"),  -180.0,  180.0, 0.0),
-        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),   0.0,  100.0, 1.0),
+    # The last column is the whole gizmo declaration. A group already *is* the three params
+    # its handle drives, so nothing needs listing -- and three separate handles is what a
+    # viewport wants anyway, rather than one handle with modes.
+    for grp_name, grp_label, axes, min_v, max_v, default, gizmo in [
+        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0, "translate"),
+        ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"),  -180.0,  180.0, 0.0, "rotate"),
+        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),   0.0,  100.0, 1.0, "scale"),
     ]:
         grp = chunk.Group(
             grp_name,
             grp_label,
+            gizmo=gizmo,
             flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
         )
         if grp_name != "translate_grp":
@@ -105,22 +109,7 @@ def main():
 
 def config():
     return chunk.DefaulConfig(
-        # Per-slot rather than a single matrix driver: the params really are nine separate
-        # floats, and a matrix driver could not be bound half to this chunk and half to
-        # another one. Rotations are Euler XYZ degrees, matching execute()'s composition --
-        # chunk_gizmo.decompose is the inverse and has to stay that way.
-        gizmos=[
-            chunk.Gizmo(
-                "body",
-                type="transform",
-                anchor="primpath_location",
-                driver={
-                    "translate": ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz"),
-                    "rotate": ("rotate_grp.rx", "rotate_grp.ry", "rotate_grp.rz"),
-                    "scale": ("scale_grp.sx", "scale_grp.sy", "scale_grp.sz"),
-                },
-            ),
-        ],
+        # No gizmos block: the handles are declared as gizmo= on the three groups in main().
         category=chunk.StandardCategory.EXAMPLES,
         description="""
         Transform chunk — applies translate, rotate (XYZ Euler, degrees), and

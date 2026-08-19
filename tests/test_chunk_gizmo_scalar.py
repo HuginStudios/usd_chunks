@@ -198,7 +198,7 @@ def test_a_manipulator_type_on_a_slider_fails_at_load() -> None:
 
 
 def test_a_shape_type_on_a_vector_fails_at_load() -> None:
-    with pytest.raises(ValueError, match="cannot go on a Vector"):
+    with pytest.raises(ValueError, match="cannot go on a Vector or param group"):
         chunk.Vector("aim", gizmo="cube")
 
 
@@ -261,3 +261,136 @@ def test_shipped_camera_pins_the_handle_to_the_camera_axis() -> None:
     thing the number means."""
     camera_mod = importlib.import_module("scripts.camera")
     assert camera_mod.config().gizmos[0].axis == "Z"
+
+
+# ---------------------------------------------------------------------------
+# group sugar -- the lightest declaration there is
+# ---------------------------------------------------------------------------
+
+def _grouped(gizmo_type: str = "translate"):
+    """A chunk shaped like transform.py: a param group that *is* the handle."""
+    c = chunk.Chunk("Mover")
+    c.add_param(chunk.LineEdit("primpath_location", default_value="/World/Cam"))
+    grp = chunk.Group("translate_grp", "Translate", gizmo=gizmo_type)
+    for axis in ("tx", "ty", "tz"):
+        grp.add_param(chunk.Slider(axis, axis.upper(), default_value=0.0))
+    c.add_param(grp)
+    c._config = ChunkConfig(module="mover")
+    return c
+
+
+def test_a_group_declares_a_handle_over_its_own_params() -> None:
+    """Nothing needs listing: the group already *is* the params the handle drives. This is
+    the whole reason the form exists -- spelling three paths out in config() was longer than
+    the rest of the config put together."""
+    gizmos = chunk_gizmo.get_gizmos(_grouped())
+
+    assert [g.name for g in gizmos] == ["translate_grp"]
+    assert gizmos[0].driver == {"translate": ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")}
+
+
+def test_group_sugar_takes_the_group_label() -> None:
+    assert chunk_gizmo.get_gizmos(_grouped())[0].label == "Translate"
+
+
+def test_group_sugar_authors_the_same_usd_as_the_config_form() -> None:
+    explicit = chunk.Chunk("Mover")
+    explicit.add_param(chunk.LineEdit("primpath_location", default_value="/World/Cam"))
+    grp = chunk.Group("translate_grp", "Translate")
+    for axis in ("tx", "ty", "tz"):
+        grp.add_param(chunk.Slider(axis, axis.upper(), default_value=0.0))
+    explicit.add_param(grp)
+    explicit._config = ChunkConfig(module="mover", gizmos=[
+        chunk.Gizmo("translate_grp", type="translate", label="Translate",
+                    driver={"translate": ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")}),
+    ])
+
+    def gizmo_lines(chunk_obj):
+        stage = _stage()
+        _author_prim(stage, chunk_obj)
+        return sorted(ln.strip() for ln in stage.ExportToString().splitlines() if "ui:gizmo" in ln)
+
+    assert gizmo_lines(_grouped()) == gizmo_lines(explicit)
+
+
+@pytest.mark.parametrize("gizmo_type", ["translate", "rotate", "scale"])
+def test_every_single_slot_manipulator_sugars_onto_a_group(gizmo_type) -> None:
+    assert chunk_gizmo.get_gizmos(_grouped(gizmo_type))[0].type == gizmo_type
+
+
+def test_transform_cannot_be_sugared_onto_a_group_either() -> None:
+    with pytest.raises(ValueError, match="cannot be sugared"):
+        chunk.Group("everything", "Everything", gizmo="transform")
+
+
+def test_a_shape_type_on_a_group_fails_at_load() -> None:
+    with pytest.raises(ValueError, match="cannot go on a Vector or param group"):
+        chunk.Group("translate_grp", gizmo="cube")
+
+
+def test_an_empty_group_declares_nothing() -> None:
+    """A handle driving no params is not a handle. Warn rather than author a dead one."""
+    c = chunk.Chunk("Mover")
+    c.add_param(chunk.LineEdit("primpath_location", default_value="/World/Cam"))
+    c.add_param(chunk.Group("empty_grp", "Empty", gizmo="translate"))
+    c._config = ChunkConfig(module="mover")
+
+    assert chunk_gizmo.get_gizmos(c) == []
+
+
+def test_a_group_without_the_kwarg_declares_nothing() -> None:
+    c = _grouped()
+    c.get_param("translate_grp").gizmo = None
+    assert chunk_gizmo.get_gizmos(c) == []
+
+
+# ---------------------------------------------------------------------------
+# offset and size
+# ---------------------------------------------------------------------------
+
+def test_offset_and_size_are_omitted_unless_set() -> None:
+    """An absent size means 'host decides', which is usually right: a viewport wants a
+    screen-constant handle and only it knows the camera distance."""
+    stage = _stage()
+    prim = _authored(stage, _camera_like([
+        chunk.Gizmo("zdist", type="cube", driver="focusDistance"),
+    ]))
+
+    assert not prim.GetAttribute("ui:gizmo:zdist:offset").IsValid()
+    assert not prim.GetAttribute("ui:gizmo:zdist:size").IsValid()
+
+    desc = chunk_gizmo.resolve_gizmos(prim)[0]
+    assert desc.offset is None
+    assert desc.size is None
+
+
+def test_offset_and_size_round_trip() -> None:
+    stage = _stage()
+    prim = _authored(stage, _camera_like([
+        chunk.Gizmo("zdist", type="cube", driver="focusDistance",
+                    offset=(0.0, 1.5, 0.0), size=2.0),
+    ]))
+
+    desc = chunk_gizmo.resolve_gizmos(prim)[0]
+    assert tuple(desc.offset) == pytest.approx((0.0, 1.5, 0.0))
+    assert desc.size == pytest.approx(2.0)
+
+
+def test_offset_is_authored_as_a_float3() -> None:
+    stage = _stage()
+    prim = _authored(stage, _camera_like([
+        chunk.Gizmo("zdist", type="cube", driver="focusDistance", offset=(1, 2, 3)),
+    ]))
+
+    assert prim.GetAttribute("ui:gizmo:zdist:offset").GetTypeName() == Sdf.ValueTypeNames.Float3
+
+
+def test_a_malformed_offset_fails_at_load() -> None:
+    with pytest.raises(ValueError, match="three numbers"):
+        chunk.Gizmo("zdist", type="cube", driver="focusDistance", offset=(1.0, 2.0))
+
+
+def test_a_non_positive_size_fails_at_load() -> None:
+    """Zero or negative would draw nothing or draw inside out; neither is a thing to ship."""
+    with pytest.raises(ValueError, match="size must be positive"):
+        chunk.Gizmo("zdist", type="cube", driver="focusDistance", size=0.0)
