@@ -103,6 +103,22 @@ honour `ui:gizmo:<name>:hidden = true`, which is authored for exactly this purpo
 **Several anchor targets means one handle at their averaged pivot**, not one handle per
 target. A transform chunk pointed at three prims is ordinary use.
 
+### Where to draw it
+
+The anchor says *what the handle is attached to*. It is not always where the handle sits.
+
+**Read the driven value and offset by it.** Follow the `driver` connections, read the
+current values, and place the handle accordingly:
+
+- A `translate` handle driving an **offset** — "shift this body 3 units from its start" —
+  belongs at `anchor + (3, 0, 0)`. Drawn on the anchor it would sit at zero and never move.
+- A `cube` on **focus distance** with `axis = "-Z"` belongs at the focus point, `distance`
+  along the camera's -Z. That is where the existing focus reticle already draws.
+
+The rule is the same in both cases: the handle shows *the value*, and the anchor is the
+frame that value is measured in. `offset` (below) is a static nudge on top, for handles
+that need clearance from the thing they attach to — not a substitute for reading the value.
+
 ---
 
 ## 3. Types, and what each one sends back
