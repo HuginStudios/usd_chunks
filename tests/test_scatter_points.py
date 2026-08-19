@@ -25,6 +25,21 @@ def _mk(mod, scene):
     return cs[0]
 
 
+def _set_proto(scatter, path, row=0, weight=None, scale=None):
+    """Set row `row` of the Prototypes list (creating rows as needed)."""
+    from usd_chunks import chunk
+
+    rows = scatter.get_param("prototypes", chunk.is_inst(chunk.ListGroup))
+    if rows.size <= row:
+        rows.size = row + 1
+    rows.get_indexed_param(rows.get_param("proto_path"), row).value = path
+    if weight is not None:
+        rows.get_indexed_param(rows.get_param("proto_weight"), row).value = weight
+    if scale is not None:
+        rows.get_indexed_param(rows.get_param("proto_scale"), row).value = scale
+    return rows
+
+
 def _wire(dst, src):
     # Wire through the dependency API alone and let ChunkStageSync's listener author
     # inputs:chunk. It writes into the chunk-prim bookkeeping (session) layer, which is where
@@ -224,7 +239,7 @@ def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -
     surface.GetFaceVertexIndicesAttr().Set([0, 1, 2])
 
     scatter.get_param("surface_prim").value = "/surface"
-    scatter.get_param("proto_prim").value = "/vanished_proto"
+    _set_proto(scatter, "/vanished_proto")
     scatter.get_param("max_count").value = 1
 
     # get_upstream_stage() is what proto_prim actually gets read through -- point it at a
@@ -240,3 +255,317 @@ def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -
     assert proto.IsValid()
     assert proto.GetTypeName() == "Cube", "should fall back to the default cube, not a dangling reference"
     assert not proto.HasAuthoredReferences(), "no reference should be left dangling"
+
+
+# ---------------------------------------------------------------------------
+# multi-prototype list, variants, stacking
+# ---------------------------------------------------------------------------
+
+
+def _bootstrap():
+    """A stage + registry + a Scatter Points chunk, ready to execute() by hand."""
+    from pxr import UsdGeom as _UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    _UsdGeom.SetStageUpAxis(stage, _UsdGeom.Tokens.z)
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    mod = reg.get_chunk_module("scatter_points")
+    return stage, mod, _mk(mod, scene)
+
+
+def _plate(stage, path="/plate", half=20.0, height=0.0):
+    """A flat quad in the XY plane at z=height."""
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.GetPointsAttr().Set(
+        [(-half, -half, height), (half, -half, height), (half, half, height), (-half, half, height)]
+    )
+    mesh.GetFaceVertexCountsAttr().Set([4])
+    mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+    return mesh
+
+
+def _crayon(stage, path="/crayon", length=10.0, thickness=1.0):
+    """A box that is long in X and thin in Y/Z — a crayon lying down."""
+    hl, ht = length * 0.5, thickness * 0.5
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    pts = [
+        (-hl, -ht, -ht), (hl, -ht, -ht), (hl, ht, -ht), (-hl, ht, -ht),
+        (-hl, -ht, ht), (hl, -ht, ht), (hl, ht, ht), (-hl, ht, ht),
+    ]
+    mesh.GetPointsAttr().Set(pts)
+    mesh.GetFaceVertexCountsAttr().Set([4, 4, 4, 4, 4, 4])
+    mesh.GetFaceVertexIndicesAttr().Set(
+        [0, 1, 2, 3, 4, 7, 6, 5, 0, 4, 5, 1, 1, 5, 6, 2, 2, 6, 7, 3, 3, 7, 4, 0]
+    )
+    return mesh
+
+
+def _instancer(stage):
+    return UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer"))
+
+
+def test_prototype_mix_is_an_exact_quota() -> None:
+    """A row's Mix % has to mean an exact count, not a probability — 25% of 100 is 25."""
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    UsdGeom.Cube.Define(stage, "/proto_a")
+    UsdGeom.Cube.Define(stage, "/proto_b")
+
+    _set_proto(scatter, "/proto_a", row=0, weight=75.0)
+    _set_proto(scatter, "/proto_b", row=1, weight=25.0)
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("auto_spacing").value = False
+    scatter.get_param("spacing").value = 0.0
+    scatter.get_param("max_count").value = 100
+
+    mod.module.execute(scatter)
+
+    indices = list(_instancer(stage).GetProtoIndicesAttr().Get())
+    assert len(indices) == 100
+    assert indices.count(0) == 75
+    assert indices.count(1) == 25
+    assert len(_instancer(stage).GetPrototypesRel().GetTargets()) == 2
+    # Relative, not absolute: 3/1 is the same mix as 75/25.
+    _set_proto(scatter, "/proto_a", row=0, weight=3.0)
+    _set_proto(scatter, "/proto_b", row=1, weight=1.0)
+    mod.module.execute(scatter)
+    indices = list(_instancer(stage).GetProtoIndicesAttr().Get())
+    assert indices.count(0) == 75 and indices.count(1) == 25
+
+    # ... and the count/prototype outputs other chunks read are filled in.
+    assert scatter.get_param("out_count").value == 100
+    assert scatter.get_param("out_prototypes").value == 2
+
+
+def test_prototype_variant_selection_in_the_path() -> None:
+    """/prim{set=variant} selects per prototype; {set=*} expands to one per variant."""
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+
+    asset = stage.DefinePrim("/asset", "Xform")
+    vset = asset.GetVariantSets().AddVariantSet("color")
+    for name in ("red", "green", "blue"):
+        vset.AddVariant(name)
+        vset.SetVariantSelection(name)  # authoring lands in the *selected* variant
+        with vset.GetVariantEditContext():
+            UsdGeom.Cube.Define(stage, f"/asset/{name}_geom")
+    vset.SetVariantSelection("red")
+
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 30
+    _set_proto(scatter, "/asset{color=blue}")
+    mod.module.execute(scatter)
+
+    proto = stage.GetPrimAtPath("/ScatterInstancer/Prototypes/proto_0")
+    assert proto.GetVariantSets().GetVariantSet("color").GetVariantSelection() == "blue"
+    assert proto.GetChild("blue_geom").IsValid(), "the selected variant's geometry must compose"
+    assert not proto.GetChild("red_geom").IsValid(), "and only that variant's"
+    assert stage.GetPrimAtPath("/asset").GetVariantSets().GetVariantSet("color").GetVariantSelection() == "red", (
+        "the source asset's own selection must be left alone — the selection is per prototype"
+    )
+
+    # Wildcard: one prototype per variant, all from the single row.
+    _set_proto(scatter, "/asset{color=*}")
+    mod.module.execute(scatter)
+
+    selections = [
+        stage.GetPrimAtPath(f"/ScatterInstancer/Prototypes/proto_{i}")
+        .GetVariantSets()
+        .GetVariantSet("color")
+        .GetVariantSelection()
+        for i in range(3)
+    ]
+    assert selections == ["blue", "green", "red"], "one prototype per variant, in variant-set order"
+    # Each prototype really composes its own variant's geometry, not a shared one.
+    for i, name in enumerate(selections):
+        proto = stage.GetPrimAtPath(f"/ScatterInstancer/Prototypes/proto_{i}")
+        assert proto.GetChild(f"{name}_geom").IsValid()
+        assert len(proto.GetChildren()) == 1
+    indices = list(_instancer(stage).GetProtoIndicesAttr().Get())
+    # One row, so the three variants split that row's share evenly.
+    assert {indices.count(i) for i in range(3)} == {10}
+
+
+def test_stack_mode_packs_tight_stands_up_and_rests_on_the_surface() -> None:
+    """The crayons-in-a-cup case: pitch from the prototype's oriented bounds.
+
+    Long axis turned to world up, every instance's bounding box bottom exactly on the plate,
+    no two instances closer laterally than their footprint, and a second level lifted by
+    exactly the prototype's height.
+    """
+    from pxr import Gf
+
+    stage, mod, scatter = _bootstrap()
+    _plate(stage, half=10.0, height=3.0)
+    _crayon(stage, length=10.0, thickness=1.0)
+
+    _set_proto(scatter, "/crayon")
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("scatter_mode").value = "Stack"
+    scatter.get_param("max_count").value = 500
+    mod.module.execute(scatter)
+
+    inst = _instancer(stage)
+    positions = list(inst.GetPositionsAttr().Get())
+    orientations = list(inst.GetOrientationsAttr().Get())
+    assert len(positions) > 50, f"a 20x20 plate should pack many 1-unit crayons, got {len(positions)}"
+
+    # Standing up: the prototype's long axis (X) ends up along world up (Z).
+    for quat in orientations[:20]:
+        rotated = Gf.Quatf(quat.GetReal(), Gf.Vec3f(*quat.GetImaginary())).Transform(Gf.Vec3f(1, 0, 0))
+        assert rotated[2] == pytest.approx(1.0, abs=1e-3), f"long axis should point up, got {rotated}"
+
+    # Resting exactly on the plate: centre is half the crayon's length above it.
+    for p in positions:
+        assert p[2] == pytest.approx(3.0 + 5.0, abs=1e-3)
+
+    # Tight but not intersecting: never closer than the 1-unit footprint.
+    worst = min(
+        (positions[i][0] - positions[j][0]) ** 2 + (positions[i][1] - positions[j][1]) ** 2
+        for i in range(len(positions))
+        for j in range(i + 1, len(positions))
+    )
+    assert worst ** 0.5 >= 1.0 - 1e-4, f"instances overlap: closest pair {worst ** 0.5}"
+
+    # A second level sits exactly one crayon-height higher.
+    scatter.get_param("pack_levels").value = 2
+    mod.module.execute(scatter)
+    zs = sorted({round(p[2], 3) for p in _instancer(stage).GetPositionsAttr().Get()})
+    assert zs == [8.0, 18.0]
+
+
+def test_stack_mode_respects_the_surface_outline_and_padding() -> None:
+    """Conform drops lattice points with no surface under them, so the pack follows the mesh.
+
+    Padding widens the pitch, which must reduce the count.
+    """
+    stage, mod, scatter = _bootstrap()
+    # Two separate small plates with a gap between them: nothing may land in the gap.
+    _plate(stage, path="/plate_a", half=5.0)
+    left = _plate(stage, path="/plate_b", half=5.0)
+    UsdGeom.Xformable(left).AddTranslateOp().Set((30.0, 0.0, 0.0))
+    group = stage.DefinePrim("/plates", "Xform")
+    stage.GetPrimAtPath("/plate_a").GetParent()  # plates are siblings; scatter both explicitly
+    assert group.IsValid()
+
+    UsdGeom.Cube.Define(stage, "/proto")
+    _set_proto(scatter, "/proto")
+    scatter.get_param("surface_prim").value = "/plate_a,/plate_b"
+    scatter.get_param("scatter_mode").value = "Stack"
+    scatter.get_param("max_count").value = 2000
+    mod.module.execute(scatter)
+
+    xs = [p[0] for p in _instancer(stage).GetPositionsAttr().Get()]
+    assert xs, "expected instances on both plates"
+    assert not any(6.0 < x < 24.0 for x in xs), "nothing may be placed in the gap between plates"
+
+    tight = len(xs)
+    scatter.get_param("pack_padding").value = 4.0
+    mod.module.execute(scatter)
+    assert len(_instancer(stage).GetPositionsAttr().Get()) < tight
+
+
+def test_legacy_proto_prim_migrates_into_the_list() -> None:
+    """A scene saved before the Prototypes list keeps working, and shows up in the new UI."""
+    from usd_chunks import chunk
+
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    UsdGeom.Cube.Define(stage, "/old_proto")
+
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 5
+    scatter.get_param("proto_prim").value = "/old_proto"  # the pre-list field
+
+    mod.module.execute(scatter)
+
+    rows = scatter.get_param("prototypes", chunk.is_inst(chunk.ListGroup))
+    assert rows.get_indexed_param(rows.get_param("proto_path"), 0).value == "/old_proto"
+    assert not scatter.get_param("proto_prim").value, "legacy field is cleared once migrated"
+    proto = stage.GetPrimAtPath("/ScatterInstancer/Prototypes/proto_0")
+    assert proto.GetPrimStack()  # composed
+    assert [str(r.assetPath or r.primPath) for r in proto.GetMetadata("references").ApplyOperations([])] == [
+        "/old_proto"
+    ]
+
+
+def test_editing_a_prototype_row_recooks_on_its_own() -> None:
+    """A list row has to behave like any other param: touching it re-cooks the scatter.
+
+    Verified live before being written down (the whole point of the list is that it is
+    editable in the UI, not just from execute()).
+    """
+    from usd_chunks import chunk
+
+    stage, _, scatter = _bootstrap()
+    _plate(stage)
+    UsdGeom.Cube.Define(stage, "/red")
+    UsdGeom.Cube.Define(stage, "/blue")
+
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 20
+
+    rows = scatter.get_param("prototypes", chunk.is_inst(chunk.ListGroup))
+    rows.get_indexed_param(rows.get_param("proto_path"), 0).value = "/red"
+    proto = stage.GetPrimAtPath("/ScatterInstancer/Prototypes/proto_0")
+    assert proto.IsValid() and proto.GetChildren() or proto.GetTypeName(), "row edit must re-cook"
+    assert _instancer(stage).GetProtoIndicesAttr().Get(), "instances must exist after the row edit"
+
+    rows.size = 2  # adding a row is a param change too
+    rows.get_indexed_param(rows.get_param("proto_path"), 1).value = "/blue"
+    assert len(_instancer(stage).GetPrototypesRel().GetTargets()) == 2
+    indices = list(_instancer(stage).GetProtoIndicesAttr().Get())
+    assert indices.count(0) == 10 and indices.count(1) == 10, "two equal rows split the mix evenly"
+
+
+def test_stack_can_lay_prototypes_down_along_the_rows() -> None:
+    """Lay Along Rows turns the long axis into the row direction — a woodpile, not a cup."""
+    from pxr import Gf
+
+    stage, mod, scatter = _bootstrap()
+    _plate(stage, half=10.0)
+    _crayon(stage, length=10.0, thickness=1.0)
+
+    _set_proto(scatter, "/crayon")
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("scatter_mode").value = "Stack"
+    scatter.get_param("stack_orient").value = "Lay Along Rows"
+    scatter.get_param("stack_row_axis").value = "Y"
+    scatter.get_param("max_count").value = 50
+    mod.module.execute(scatter)
+
+    orientations = list(_instancer(stage).GetOrientationsAttr().Get())
+    assert orientations
+    for quat in orientations[:10]:
+        rotated = Gf.Quatf(quat.GetReal(), Gf.Vec3f(*quat.GetImaginary())).Transform(Gf.Vec3f(1, 0, 0))
+        assert abs(rotated[1]) == pytest.approx(1.0, abs=1e-3), f"long axis should lie along Y, got {rotated}"
+    # Lying down, the crayon is only 1 unit tall, so it rests half a thickness up.
+    for p in _instancer(stage).GetPositionsAttr().Get():
+        assert p[2] == pytest.approx(0.5, abs=1e-3)
+
+
+def test_spacing_default_and_collapsed_groups() -> None:
+    """Spacing starts at 10, and the long groups start collapsed."""
+    from usd_chunks import chunk
+
+    _, _, scatter = _bootstrap()
+    assert scatter.get_param("spacing").default_value == pytest.approx(10.0)
+    for name in ("Distribution", "Stacking", "Region", "Variation"):
+        group = scatter.get_param(name)
+        assert group is not None, f"missing group {name}"
+        assert group.has_state(chunk.ChunkFlags.State.COLLAPSED), f"{name} should start collapsed"
+    # Stack-only controls stay out of the way until the mode asks for them.
+    assert scatter.get_param("Stacking").has_state(chunk.ChunkFlags.State.HIDDEN)
+    scatter.get_param("scatter_mode").value = "Stack"
+    assert not scatter.get_param("Stacking").has_state(chunk.ChunkFlags.State.HIDDEN)
+    assert scatter.get_param("Region").has_state(chunk.ChunkFlags.State.HIDDEN)
