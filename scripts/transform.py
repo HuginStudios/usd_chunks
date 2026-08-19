@@ -69,7 +69,10 @@ def execute(node):
 
 
 def main():
-    chunk_api = chunk.Chunk("Transform")
+    # One handle for the whole chunk: in effect "host, run your native transform manipulator
+    # and give me the result". It absorbs the three gizmo= groups below into a single
+    # manipulator rather than leaving three that would fight over the same drag.
+    chunk_api = chunk.Chunk("Transform", gizmo="transform")
 
     primpath = chunk.LineEdit(
         "primpath_location",
@@ -79,14 +82,18 @@ def main():
     )
     chunk_api.add_param(primpath)
 
-    for grp_name, grp_label, axes, min_v, max_v, default in [
-        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0),
-        ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"),  -180.0,  180.0, 0.0),
-        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),   0.0,  100.0, 1.0),
+    # The last column is the whole gizmo declaration. A group already *is* the three params
+    # its handle drives, so nothing needs listing -- and three separate handles is what a
+    # viewport wants anyway, rather than one handle with modes.
+    for grp_name, grp_label, axes, min_v, max_v, default, gizmo in [
+        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0, "translate"),
+        ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"),  -180.0,  180.0, 0.0, "rotate"),
+        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),   0.0,  100.0, 1.0, "scale"),
     ]:
         grp = chunk.Group(
             grp_name,
             grp_label,
+            gizmo=gizmo,
             flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
         )
         if grp_name != "translate_grp":
@@ -105,6 +112,7 @@ def main():
 
 def config():
     return chunk.DefaulConfig(
+        # No gizmos block: the handles are declared as gizmo= on the three groups in main().
         category=chunk.StandardCategory.EXAMPLES,
         description="""
         Transform chunk — applies translate, rotate (XYZ Euler, degrees), and

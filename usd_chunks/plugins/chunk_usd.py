@@ -18,6 +18,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
+from usd_chunks import chunk_gizmo
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
@@ -626,6 +627,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
                         self._sync_param_input(chunk, owner)
+                        self._refresh_gizmo_anchors(chunk)
                 elif isinstance(owner, core.ChunkVectorBase):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
@@ -964,6 +966,27 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     if chunk_layer and (cur := attr.Get()) is not None:
                         with Usd.EditContext(self._stage, chunk_layer):
                             old_attr.Set(cur)
+
+    def _refresh_gizmo_anchors(self, chunk: "core.ChunkBase") -> None:
+        """Keep every gizmo's anchor rel pointing at the prim the chunk currently targets.
+
+        Hangs off the generic param-changed path rather than watching the anchor param
+        specifically: which param is the anchor is per-gizmo and can be inferred, so there is
+        no single name to watch. Cheap enough to sit here because chunk_gizmo returns
+        immediately for a chunk that declares no gizmos, which is nearly all of them.
+        """
+        if not chunk_gizmo.get_gizmos(chunk):
+            return
+        prim_path = self._chunk_prim_paths.get(id(chunk))
+        if not prim_path:
+            return
+        prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
+        if not (prim and prim.IsValid()):
+            return
+        home = chunk_utils.get_bookkeeping_layer(self._stage, chunk)
+        ctx = Usd.EditContext(self._stage, home) if home else contextlib.nullcontext()
+        with ctx:
+            chunk_gizmo.refresh_gizmo_anchors(self._stage, prim, chunk)
 
     def _sync_param_input(self, chunk: "core.ChunkBase", param: "core.ChunkParamBase", force: bool = False) -> None:
         """Create and wire a single param's chunk-prim input attr on first non-default change.
@@ -1401,6 +1424,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
                     if out_type is not None:
                         prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
+
+            chunk_gizmo.author_gizmos(self._stage, prim, chunk)
 
             deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
             if not deps and prev_chunk:
@@ -4098,6 +4123,8 @@ def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.Ch
             out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
             if out_type is not None:
                 prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
+
+    chunk_gizmo.author_gizmos(stage, prim, chunk)
 
     deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
     if not deps:
