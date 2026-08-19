@@ -288,7 +288,7 @@ def config():
         # top of it.
         gizmos=[
             chunk.Gizmo("zdist", type="cube", label="Focus Distance",
-                        axis="Z", driver="focusDistance"),
+                        axis="-Z", driver="focusDistance"),
         ],
         category=chunk.StandardCategory.EXAMPLES,
         description="""

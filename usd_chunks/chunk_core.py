@@ -4136,7 +4136,10 @@ GIZMO_SHAPE_TYPES = frozenset({"cube", "sphere"})
 GIZMO_TRANSFORM_TYPE = "transform"
 GIZMO_TRANSFORM_ARITY = 9
 GIZMO_TYPES = GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES | {GIZMO_TRANSFORM_TYPE}
-GIZMO_AXES = frozenset({"X", "Y", "Z", "screen"})
+# Signed, because direction is half the meaning. Focus distance runs along the camera's
+# *-Z*: an unsigned token would put the handle out the back of the camera, and nothing else
+# in the schema could correct it.
+GIZMO_AXES = frozenset({"X", "-X", "Y", "-Y", "Z", "-Z", "screen"})
 GIZMO_EDIT_MODES = frozenset({"onPrimSelection", "onChunkSelection", "always"})
 GIZMO_DEFAULT_EDIT_MODE = "onPrimSelection"
 

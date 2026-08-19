@@ -120,7 +120,7 @@ def test_axis_is_a_token_not_a_vector() -> None:
     assert attr.Get() == "Z"
 
 
-@pytest.mark.parametrize("axis", ["X", "Y", "Z", "screen"])
+@pytest.mark.parametrize("axis", ["X", "-X", "Y", "-Y", "Z", "-Z", "screen"])
 def test_every_axis_token_is_accepted(axis) -> None:
     assert chunk.Gizmo("g", type="cube", axis=axis, driver="focusDistance").axis == axis
 
@@ -257,11 +257,12 @@ def test_shipped_camera_declares_a_focus_distance_handle() -> None:
     assert gizmos[0].driver == ("focusDistance",)
 
 
-def test_shipped_camera_pins_the_handle_to_the_camera_axis() -> None:
-    """Focus distance runs along -Z; a handle that slid in any direction would lose the one
-    thing the number means."""
+def test_shipped_camera_pins_the_handle_to_the_cameras_view_direction() -> None:
+    """Signed, and the sign matters: a camera looks down -Z, so an unsigned "Z" would put the
+    focus handle out the back of the camera. Found by reconstructing the handle on paper from
+    the authored USD alone -- exactly what that exercise is for."""
     camera_mod = importlib.import_module("scripts.camera")
-    assert camera_mod.config().gizmos[0].axis == "Z"
+    assert camera_mod.config().gizmos[0].axis == "-Z"
 
 
 # ---------------------------------------------------------------------------
@@ -603,3 +604,9 @@ def test_the_camera_composes_transforms_the_same_way_transform_py_does() -> None
 
     assert expected["translate"] == pytest.approx(Gf.Vec3d(1.0, -2.0, 0.0))
     assert expected["rotate"] == pytest.approx(Gf.Vec3d(30.0, 15.0, 0.0), abs=1e-6)
+
+
+def test_an_unsigned_and_a_signed_axis_are_different_declarations() -> None:
+    """Both valid, opposite meanings. The schema has to be able to say which."""
+    assert chunk.Gizmo("g", type="cube", axis="Z", driver="focusDistance").axis == "Z"
+    assert chunk.Gizmo("g", type="cube", axis="-Z", driver="focusDistance").axis == "-Z"
