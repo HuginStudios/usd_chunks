@@ -4129,7 +4129,13 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
 # to be told which of them a given drag meant.
 GIZMO_MANIPULATOR_TYPES = frozenset({"translate", "rotate", "scale"})
 GIZMO_SHAPE_TYPES = frozenset({"cube", "sphere"})
-GIZMO_TYPES = GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES
+# A whole-chunk handle: "run your native transform manipulator and give me the result".
+# Its payload is a Gf.Matrix4d rather than a vector, and it drives nine params in a fixed
+# order -- translate, then rotate, then scale. Declared on the Chunk, not on a group,
+# because it is the chunk's handle rather than one group's.
+GIZMO_TRANSFORM_TYPE = "transform"
+GIZMO_TRANSFORM_ARITY = 9
+GIZMO_TYPES = GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES | {GIZMO_TRANSFORM_TYPE}
 GIZMO_AXES = frozenset({"X", "Y", "Z", "screen"})
 GIZMO_EDIT_MODES = frozenset({"onPrimSelection", "onChunkSelection", "always"})
 GIZMO_DEFAULT_EDIT_MODE = "onPrimSelection"
@@ -4212,6 +4218,14 @@ class GizmoBase:
             raise ValueError(f"Gizmo {self.name!r}: driver is required -- a handle that writes nothing is not a gizmo")
         if not all(isinstance(entry, str) for entry in driver):
             raise ValueError(f"Gizmo {self.name!r}: driver entries must be param paths, got {driver!r}")
+        if self.type == GIZMO_TRANSFORM_TYPE and len(driver) != GIZMO_TRANSFORM_ARITY:
+            # Fixed order, checked here rather than discovered during a drag: a transform
+            # handle writing the wrong nine params would look like a broken manipulator
+            # rather than a broken declaration.
+            raise ValueError(
+                f"Gizmo {self.name!r}: a transform handle drives {GIZMO_TRANSFORM_ARITY} params "
+                f"(translate xyz, rotate xyz, scale xyz, in that order), got {len(driver)}"
+            )
         self.driver = driver
 
         if self.axis is not None and self.axis not in GIZMO_AXES:

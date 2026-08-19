@@ -69,7 +69,10 @@ def execute(node):
 
 
 def main():
-    chunk_api = chunk.Chunk("Transform")
+    # One handle for the whole chunk: in effect "host, run your native transform manipulator
+    # and give me the result". It absorbs the three gizmo= groups below into a single
+    # manipulator rather than leaving three that would fight over the same drag.
+    chunk_api = chunk.Chunk("Transform", gizmo="transform")
 
     primpath = chunk.LineEdit(
         "primpath_location",

@@ -69,6 +69,7 @@ from usd_chunks.chunk_core import (
     ChunkConfig as _cfg,
     GizmoBase as _gizmo,
     check_gizmo_sugar as _check_gizmo_sugar,
+    GIZMO_TRANSFORM_TYPE as _GIZMO_TRANSFORM,
     ChunkParamBase,
     ChunkGroupBase,
     ChunkVectorBase,
@@ -148,12 +149,30 @@ class StandardCategory(str, Enum):
 
 
 class Chunk(ChunkBase):
-    """Chunk is the top level container, holding params and groups which in turn make up the final, displayed chunk."""
+    """Chunk is the top level container, holding params and groups which in turn make up the final, displayed chunk.
+
+    `gizmo="transform"` declares a single whole-chunk manipulator -- in effect "host, run
+    your native transform handle and give me the result". It absorbs the `gizmo=` groups
+    below it into one handle instead of leaving three:
+
+    ``` py
+    chunk_api = chunk.Chunk("Transform", gizmo="transform")
+    ```
+    """
 
     # Override defaults
     flags: IntFlag = field(
         default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
+    gizmo: Optional[str] = field(default=None)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        if self.gizmo is not None and self.gizmo != _GIZMO_TRANSFORM:
+            raise ValueError(
+                f"Chunk {self.name!r}: only gizmo={_GIZMO_TRANSFORM!r} can be declared on a chunk. "
+                f"Put {self.gizmo!r} on the param or group it drives."
+            )
 
 
 class Group(ChunkGroupBase):

@@ -55,6 +55,13 @@ def _transform_chunk(target: str):
     return c
 
 
+def _moved_by(x, y, z) -> Gf.Matrix4d:
+    """A transform handle's payload is a whole matrix -- the host ran its own manipulator."""
+    xform = Gf.Transform()
+    xform.SetTranslation(Gf.Vec3d(x, y, z))
+    return xform.GetMatrix()
+
+
 def _authored(stage, c):
     _author_prim(stage, c)
     return stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/{c.name}")
@@ -68,7 +75,7 @@ def test_anchor_carries_all_targets() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B", "/World/C")
     prim = _authored(stage, _transform_chunk("/World/A,/World/B,/World/C"))
 
-    targets = prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()
+    targets = prim.GetRelationship("ui:gizmo:transform:anchor").GetTargets()
     assert [str(t) for t in targets] == ["/World/A", "/World/B", "/World/C"]
 
 
@@ -77,7 +84,7 @@ def test_a_glob_expands_to_every_match() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B")
     prim = _authored(stage, _transform_chunk("/World/*"))
 
-    targets = prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()
+    targets = prim.GetRelationship("ui:gizmo:transform:anchor").GetTargets()
     assert sorted(str(t) for t in targets) == ["/World/A", "/World/B"]
 
 
@@ -89,8 +96,8 @@ def test_target_count_does_not_multiply_the_handles() -> None:
     prim = _authored(stage, _transform_chunk("/World/A,/World/B,/World/C"))
 
     descs = chunk_gizmo.resolve_gizmos(prim)
-    assert sorted(d.name for d in descs) == ["rotate_grp", "scale_grp", "translate_grp"]
-    assert all(len(d.anchor) == 3 for d in descs)
+    assert [d.name for d in descs] == ["transform"]
+    assert len(descs[0].anchor) == 3
 
 
 def test_desc_exposes_the_full_target_list() -> None:
@@ -142,7 +149,7 @@ def test_a_target_that_does_not_exist_yet_is_still_authored() -> None:
     stage = _stage_with_cubes()
     prim = _authored(stage, _transform_chunk("/World/NotYet"))
 
-    targets = prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()
+    targets = prim.GetRelationship("ui:gizmo:transform:anchor").GetTargets()
     assert [str(t) for t in targets] == ["/World/NotYet"]
 
 
@@ -154,7 +161,7 @@ def test_garbage_in_the_path_param_does_not_raise() -> None:
     stage = _stage_with_cubes("/World/A")
     prim = _authored(stage, _transform_chunk("/World/A,not a path,,,"))
 
-    targets = [str(t) for t in prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()]
+    targets = [str(t) for t in prim.GetRelationship("ui:gizmo:transform:anchor").GetTargets()]
     assert "/World/A" in targets
     assert all(Sdf.Path(t).IsAbsolutePath() and Sdf.Path(t).IsPrimPath() for t in targets)
 
@@ -169,7 +176,7 @@ def test_a_relative_path_never_reaches_the_anchor() -> None:
     c.get_param("primpath_location").value = "some/relative/path"
     chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
 
-    for target in prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets():
+    for target in prim.GetRelationship("ui:gizmo:transform:anchor").GetTargets():
         assert target.IsAbsolutePath()
 
 
@@ -183,7 +190,7 @@ def test_write_back_sets_the_params_once_regardless_of_target_count() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B", "/World/C")
     c = _transform_chunk("/World/A,/World/B,/World/C")
 
-    chunk_gizmo.apply_bindings(c, "translate_grp", Gf.Vec3d(4.0, 0.0, 0.0))
+    chunk_gizmo.apply_bindings(c, "transform", _moved_by(4.0, 0.0, 0.0))
 
     assert c.get_param("tx").value == pytest.approx(4.0)
 
@@ -192,7 +199,7 @@ def test_every_target_moves_on_the_cook() -> None:
     stage = _stage_with_cubes("/World/A", "/World/B")
     c = _transform_chunk("/World/A,/World/B")
 
-    chunk_gizmo.apply_bindings(c, "translate_grp", Gf.Vec3d(0.0, 6.0, 0.0))
+    chunk_gizmo.apply_bindings(c, "transform", _moved_by(0.0, 6.0, 0.0))
 
     class _FakeNode:
         def get_stage(self):
@@ -220,7 +227,7 @@ def test_repointing_the_param_re_resolves_the_anchor() -> None:
     c.get_param("primpath_location").value = "/World/B"
     chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
 
-    assert [str(t) for t in prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()] == ["/World/B"]
+    assert [str(t) for t in prim.GetRelationship("ui:gizmo:transform:anchor").GetTargets()] == ["/World/B"]
 
 
 def test_widening_the_param_adds_targets() -> None:
@@ -231,7 +238,7 @@ def test_widening_the_param_adds_targets() -> None:
     c.get_param("primpath_location").value = "/World/A,/World/B"
     chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)
 
-    assert len(prim.GetRelationship("ui:gizmo:translate_grp:anchor").GetTargets()) == 2
+    assert len(prim.GetRelationship("ui:gizmo:transform:anchor").GetTargets()) == 2
 
 
 def test_refresh_is_a_no_op_for_a_chunk_without_gizmos() -> None:

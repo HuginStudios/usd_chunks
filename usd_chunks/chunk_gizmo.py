@@ -113,6 +113,12 @@ def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
     an offset or a size escalates to the full Gizmo in config() -- exactly one escalation
     path, with no middle ground between them.
     """
+    if whole_chunk := _whole_chunk_transform(chunk):
+        # Absorbs the groups below it rather than sitting beside them. Three handles and one
+        # combined handle over the same nine params would fight for the same drag, and the
+        # host has no way to know they are the same thing.
+        return [whole_chunk]
+
     sugared = []
     for path, param in _iter_params(chunk):
         if gizmo_type := getattr(param, "gizmo", None):
@@ -155,6 +161,44 @@ def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
                 driver=(path,),
             ))
     return sugared
+
+
+_TRANSFORM_PARTS = ("translate", "rotate", "scale")
+
+
+def _whole_chunk_transform(chunk: "core.ChunkBase"):
+    """The single transform handle a chunk declares with `gizmo="transform"`, if it does.
+
+    The params come from the groups already carrying `gizmo="translate"` / `"rotate"` /
+    `"scale"`, so the chunk-level kwarg says only *how to present* them -- as one native
+    manipulator rather than three. No naming convention to guess at, and a chunk that wants
+    three separate handles just leaves the chunk-level kwarg off.
+    """
+    if getattr(chunk, "gizmo", None) != core.GIZMO_TRANSFORM_TYPE:
+        return None
+
+    by_type = {}
+    for path, group in _iter_groups(chunk):
+        if (gizmo_type := getattr(group, "gizmo", None)) in _TRANSFORM_PARTS:
+            by_type[gizmo_type] = tuple(
+                f"{path}.{child.name}" for child in group.get_my_params()
+                if isinstance(child, core.ChunkParamBase)
+            )
+
+    missing = [part for part in _TRANSFORM_PARTS if len(by_type.get(part, ())) != 3]
+    if missing:
+        logger.warning(
+            "Chunk %r declares gizmo=transform but has no three-param group for: %s",
+            chunk.name, ", ".join(missing),
+        )
+        return None
+
+    return core.GizmoBase(
+        name=core.GIZMO_TRANSFORM_TYPE,
+        type=core.GIZMO_TRANSFORM_TYPE,
+        label=chunk.name,
+        driver=tuple(entry for part in _TRANSFORM_PARTS for entry in by_type[part]),
+    )
 
 
 def find_gizmo(chunk: "core.ChunkBase", name: str):
@@ -687,6 +731,13 @@ def _values_for(entries: tuple, value: Any) -> list:
     means the value is unpacked across them, which is the ordinary translate/rotate/scale
     case where the params really are separate floats.
     """
+    if len(entries) == core.GIZMO_TRANSFORM_ARITY and isinstance(value, Gf.Matrix4d):
+        # The one type whose payload is a matrix: the host ran its own transform manipulator
+        # and handed back the result whole. Flattened here in the declared order rather than
+        # asking the host to take it apart, so the Euler convention stays on this side.
+        parts = decompose(value)
+        return [component for part in _TRANSFORM_PARTS for component in parts[part]]
+
     if len(entries) == 1:
         return [value]
     try:

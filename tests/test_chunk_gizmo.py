@@ -150,7 +150,7 @@ def test_axis_defaults_to_free_drag() -> None:
 
 @pytest.mark.parametrize("kwargs, fragment", [
     ({"type": "wobble", "driver": "tx"}, "unknown type"),
-    ({"type": "transform", "driver": "tx"}, "unknown type"),
+    ({"type": "transform", "driver": "tx"}, "drives 9 params"),
     ({"type": "cube", "driver": "tx", "axis": "W"}, "unknown axis"),
     ({"type": "cube", "driver": "tx", "editmode": ["onWobble"]}, "unknown editmode"),
     ({"type": "translate", "driver": ()}, "driver is required"),
@@ -470,9 +470,11 @@ def test_drag_writes_params_and_the_cook_moves_the_prim() -> None:
 
     _author_prim(stage, c)
     chunk_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Transform")
-    desc = next(d for d in chunk_gizmo.resolve_gizmos(chunk_prim) if d.type == "translate")
+    desc = next(d for d in chunk_gizmo.resolve_gizmos(chunk_prim) if d.type == "transform")
 
-    chunk_gizmo.apply_bindings(c, desc.name, Gf.Vec3d(5.0, 0.0, -2.0))
+    moved = Gf.Transform()
+    moved.SetTranslation(Gf.Vec3d(5.0, 0.0, -2.0))
+    chunk_gizmo.apply_bindings(c, desc.name, moved.GetMatrix())
 
     class _FakeNode:
         def __init__(self, chunk_obj):
@@ -501,9 +503,8 @@ def test_the_shipped_transform_chunk_declares_gizmos() -> None:
     c = transform_mod.main()
     c._config = ChunkConfig(module="transform")
 
-    gizmos = {g.name: g for g in chunk_gizmo.get_gizmos(c)}
+    gizmos = chunk_gizmo.get_gizmos(c)
 
-    assert set(gizmos) == {"translate_grp", "rotate_grp", "scale_grp"}
-    assert gizmos["translate_grp"].type == "translate"
-    assert gizmos["translate_grp"].driver == (
-        "translate_grp.tx", "translate_grp.ty", "translate_grp.tz")
+    assert [g.name for g in gizmos] == ["transform"]
+    assert gizmos[0].type == "transform"
+    assert gizmos[0].driver[:3] == ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")

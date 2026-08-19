@@ -58,16 +58,13 @@ def _recompose(slots: dict) -> Gf.Matrix4d:
     return _compose(slots["translate"], slots["rotate"], slots["scale"])
 
 
-# decompose() is keyed by gizmo *type*, so this maps each part of a matrix onto the handle
-# that owns it. transform.py declares three separate gizmos, one per param group, so a full
-# TRS drag is three calls -- which is the viewport's shape anyway: you grab the arrows or
-# the ring, never a single thing that is somehow both.
-_HANDLES = {"translate": "translate_grp", "rotate": "rotate_grp", "scale": "scale_grp"}
+# transform.py declares one whole-chunk handle: the host runs its own transform manipulator
+# and hands back the result whole, so a full TRS drag is a single call with a matrix.
+_HANDLE = "transform"
 
 
-def _apply(chunk_obj, parts: dict) -> None:
-    for gizmo_type, value in parts.items():
-        chunk_gizmo.apply_bindings(chunk_obj, _HANDLES[gizmo_type], value)
+def _apply(chunk_obj, matrix: Gf.Matrix4d) -> None:
+    chunk_gizmo.apply_bindings(chunk_obj, _HANDLE, matrix)
 
 
 CASES = [
@@ -204,40 +201,43 @@ def test_full_trs_drag_lands_as_the_same_matrix() -> None:
     c = _transform_chunk()
     dragged = _compose((3, -1, 2), (25, -40, 65), (2, 2, 0.5))
 
-    _apply(c, chunk_gizmo.decompose(dragged))
+    _apply(c, dragged)
     transform_mod.execute(_FakeNode(c, stage))
 
     authored = UsdGeom.Xformable(stage.GetPrimAtPath("/World/Cube")).GetLocalTransformation()
     assert _matrices_close(dragged, authored, tol=1e-6)
 
 
-def test_rotate_slot_writes_the_euler_params() -> None:
+def test_a_transform_drag_writes_the_euler_params() -> None:
     c = _transform_chunk()
 
-    chunk_gizmo.apply_bindings(c, "rotate_grp", Gf.Vec3d(10.0, 20.0, 30.0))
+    _apply(c, _compose((0, 0, 0), (10, 20, 30), (1, 1, 1)))
 
     assert c.get_param("rx").value == pytest.approx(10.0)
     assert c.get_param("ry").value == pytest.approx(20.0)
     assert c.get_param("rz").value == pytest.approx(30.0)
 
 
-def test_scale_slot_writes_the_scale_params() -> None:
+def test_a_transform_drag_writes_the_scale_params() -> None:
     c = _transform_chunk()
 
-    chunk_gizmo.apply_bindings(c, "scale_grp", Gf.Vec3d(2.0, 3.0, 4.0))
+    _apply(c, _compose((0, 0, 0), (0, 0, 0), (2, 3, 4)))
 
     assert c.get_param("sx").value == pytest.approx(2.0)
     assert c.get_param("sz").value == pytest.approx(4.0)
 
 
-def test_partial_slot_dicts_leave_other_params_alone() -> None:
-    """A host dragging a translate-only handle must not silently zero the rotation."""
+def test_a_transform_drag_writes_all_nine_params() -> None:
+    """One handle means one intent: the matrix the host hands back describes the whole
+    transform, so every param it covers is written. A rotation set earlier is replaced
+    rather than preserved -- that is the manipulator's answer, not a lost edit."""
     c = _transform_chunk()
     c.get_param("rx").value = 45.0
 
-    chunk_gizmo.apply_bindings(c, "translate_grp", Gf.Vec3d(1.0, 0.0, 0.0))
+    _apply(c, _compose((1, 0, 0), (0, 0, 0), (1, 1, 1)))
 
-    assert c.get_param("rx").value == pytest.approx(45.0)
+    assert c.get_param("tx").value == pytest.approx(1.0)
+    assert c.get_param("rx").value == pytest.approx(0.0)
 
 
 def test_repeated_drags_through_the_chunk_do_not_drift() -> None:
@@ -247,13 +247,13 @@ def test_repeated_drags_through_the_chunk_do_not_drift() -> None:
     c = _transform_chunk()
     original = _compose((1, 2, 3), (15, 35, -20), (1, 1, 1))
 
-    _apply(c, chunk_gizmo.decompose(original))
+    _apply(c, original)
     transform_mod.execute(_FakeNode(c, stage))
 
     xformable = UsdGeom.Xformable(stage.GetPrimAtPath("/World/Cube"))
     for _ in range(50):
         current = xformable.GetLocalTransformation()
-        _apply(c, chunk_gizmo.decompose(current))
+        _apply(c, current)
         transform_mod.execute(_FakeNode(c, stage))
 
     assert _matrices_close(original, xformable.GetLocalTransformation(), tol=1e-6)
@@ -263,39 +263,39 @@ def test_repeated_drags_through_the_chunk_do_not_drift() -> None:
 # authoring
 # ---------------------------------------------------------------------------
 
-def test_each_group_authors_its_own_handle() -> None:
+def test_the_chunk_authors_one_handle() -> None:
     stage = _stage_with_cube()
     c = _transform_chunk()
     _author_prim(stage, c)
     prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Transform")
 
-    for handle in _HANDLES.values():
-        attr = prim.GetAttribute(f"ui:gizmo:{handle}:driver")
-        assert attr.IsValid(), handle
-        assert len(attr.GetConnections()) == 3, handle
+    attr = prim.GetAttribute(f"ui:gizmo:{_HANDLE}:driver")
+    assert attr.IsValid()
+    assert len(attr.GetConnections()) == 9, "translate, rotate and scale, in that order"
 
 
-def test_resolve_returns_one_handle_per_group() -> None:
+def test_resolve_returns_the_single_chunk_handle() -> None:
     stage = _stage_with_cube()
     c = _transform_chunk()
     _author_prim(stage, c)
 
     descs = chunk_gizmo.resolve_gizmos(stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Transform"))
-    by_name = {d.name: d for d in descs}
 
-    assert set(by_name) == set(_HANDLES.values())
-    for gizmo_type, handle in _HANDLES.items():
-        assert by_name[handle].type == gizmo_type
-        assert len(by_name[handle].driver) == 3
+    assert [d.name for d in descs] == [_HANDLE]
+    assert descs[0].type == "transform"
+    assert len(descs[0].driver) == 9
 
 
-def test_the_shipped_transform_chunk_declares_its_handles_on_the_groups() -> None:
-    """No gizmos block in config() at all -- the declaration is one kwarg per group, which is
-    the whole point of the group form. Driver paths stay nested (rotate_grp.rx, not rx),
-    since that is what makes the authored connection resolve to anything."""
-    gizmos = {g.name: g for g in chunk_gizmo.get_gizmos(_transform_chunk())}
+def test_the_shipped_transform_chunk_declares_one_whole_chunk_handle() -> None:
+    """No gizmos block in config() at all: gizmo="transform" on the Chunk, and gizmo= on each
+    group to say which params. Driver paths stay nested (rotate_grp.rx, not rx), since that
+    is what makes the authored connection resolve to anything."""
+    gizmos = chunk_gizmo.get_gizmos(_transform_chunk())
 
     assert transform_mod.config().gizmos == []
-    assert set(gizmos) == {"translate_grp", "rotate_grp", "scale_grp"}
-    assert gizmos["rotate_grp"].driver == ("rotate_grp.rx", "rotate_grp.ry", "rotate_grp.rz")
-    assert gizmos["scale_grp"].driver == ("scale_grp.sx", "scale_grp.sy", "scale_grp.sz")
+    assert [g.name for g in gizmos] == ["transform"]
+    assert gizmos[0].driver == (
+        "translate_grp.tx", "translate_grp.ty", "translate_grp.tz",
+        "rotate_grp.rx", "rotate_grp.ry", "rotate_grp.rz",
+        "scale_grp.sx", "scale_grp.sy", "scale_grp.sz",
+    )

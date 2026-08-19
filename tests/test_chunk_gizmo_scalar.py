@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from pxr import Sdf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_gizmo, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
@@ -396,3 +396,90 @@ def test_a_non_positive_size_fails_at_load() -> None:
     """Zero or negative would draw nothing or draw inside out; neither is a thing to ship."""
     with pytest.raises(ValueError, match="size must be positive"):
         chunk.Gizmo("zdist", type="cube", driver="focusDistance", size=0.0)
+
+
+# ---------------------------------------------------------------------------
+# the whole-chunk transform handle
+# ---------------------------------------------------------------------------
+
+def _transform_shaped(chunk_gizmo_type="transform"):
+    """transform.py's shape: three gizmo= groups under a chunk that combines them."""
+    c = chunk.Chunk("Transform", gizmo=chunk_gizmo_type)
+    c.add_param(chunk.LineEdit("primpath_location", default_value="/World/Cam"))
+    for name, axes, part in [("translate_grp", "xyz", "translate"),
+                             ("rotate_grp", "xyz", "rotate"),
+                             ("scale_grp", "xyz", "scale")]:
+        grp = chunk.Group(name, name.title(), gizmo=part)
+        for axis in axes:
+            grp.add_param(chunk.Slider(f"{part[0]}{axis}", axis.upper(), default_value=0.0))
+        c.add_param(grp)
+    c._config = ChunkConfig(module="transform")
+    return c
+
+
+def test_a_chunk_level_transform_absorbs_its_groups() -> None:
+    """Three handles and one combined handle over the same nine params would fight for the
+    same drag, and a host has no way to know they are the same thing."""
+    gizmos = chunk_gizmo.get_gizmos(_transform_shaped())
+
+    assert [g.name for g in gizmos] == ["transform"]
+    assert len(gizmos[0].driver) == 9
+
+
+def test_the_driver_order_is_translate_rotate_scale() -> None:
+    """Fixed, because the payload is a matrix -- there is no key to match on, only order."""
+    driver = chunk_gizmo.get_gizmos(_transform_shaped())[0].driver
+
+    assert driver[:3] == ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz")
+    assert driver[3:6] == ("rotate_grp.rx", "rotate_grp.ry", "rotate_grp.rz")
+    assert driver[6:] == ("scale_grp.sx", "scale_grp.sy", "scale_grp.sz")
+
+
+def test_without_the_chunk_kwarg_the_groups_stay_separate() -> None:
+    """Opting out is leaving it off, so a chunk wanting three handles needs no new concept."""
+    gizmos = chunk_gizmo.get_gizmos(_transform_shaped(chunk_gizmo_type=None))
+
+    assert sorted(g.name for g in gizmos) == ["rotate_grp", "scale_grp", "translate_grp"]
+
+
+def test_a_transform_handle_takes_a_matrix_and_writes_nine_params() -> None:
+    c = _transform_shaped()
+    xform = Gf.Transform()
+    xform.SetTranslation(Gf.Vec3d(1.0, 2.0, 3.0))
+    xform.SetScale(Gf.Vec3d(2.0, 2.0, 2.0))
+
+    chunk_gizmo.apply_bindings(c, "transform", xform.GetMatrix())
+
+    assert c.get_param("tx").value == pytest.approx(1.0)
+    assert c.get_param("tz").value == pytest.approx(3.0)
+    assert c.get_param("sy").value == pytest.approx(2.0)
+
+
+def test_only_transform_may_be_declared_on_a_chunk() -> None:
+    """Anything else belongs on the param or group it drives, where the params are already
+    named -- a chunk-level shape type would have nothing to bind to."""
+    with pytest.raises(ValueError, match="only gizmo='transform'"):
+        chunk.Chunk("Nope", gizmo="cube")
+
+
+def test_an_incomplete_transform_chunk_falls_back_to_its_groups() -> None:
+    """Missing a group means we cannot say which nine params a matrix would fill, so the
+    combined handle is declined -- but the groups that *did* declare a handle still get one.
+    Degrading to a working translate handle beats dropping every handle on the chunk over a
+    presentation detail."""
+    c = chunk.Chunk("Half", gizmo="transform")
+    c.add_param(chunk.LineEdit("primpath_location", default_value="/World/Cam"))
+    grp = chunk.Group("translate_grp", "Translate", gizmo="translate")
+    for axis in "xyz":
+        grp.add_param(chunk.Slider(f"t{axis}", axis.upper(), default_value=0.0))
+    c.add_param(grp)
+    c._config = ChunkConfig(module="half")
+
+    gizmos = chunk_gizmo.get_gizmos(c)
+    assert [g.name for g in gizmos] == ["translate_grp"]
+    assert gizmos[0].type == "translate"
+
+
+def test_a_transform_declared_by_hand_must_drive_nine() -> None:
+    with pytest.raises(ValueError, match="drives 9 params"):
+        chunk.Gizmo("body", type="transform", driver=("tx", "ty", "tz"))
