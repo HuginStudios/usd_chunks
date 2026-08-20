@@ -274,10 +274,17 @@ if desc:
 Same idea as Houdini dropping an Edit node in front of geometry you start moving. We decide
 what to create and where it lands in the graph, so a host never learns the `/chunks` layout:
 
-- **Only when nothing already offers one.** The test is "is there a `transform` handle",
-  not "is there a Transform chunk" — an RBD solver or an offset-transform declaring
-  `gizmo="transform"` already owns that prim's placement and must not get a second chunk
-  stacked on it. Declaring a transform handle is how a chunk opts out of this.
+- **Only when nothing already places the prim.** The test is `placement_gizmos(prim)` —
+  any handle of type `transform`, `translate`, `rotate` or `scale`. Not "is there a
+  Transform chunk", and deliberately not "is there a `transform` handle" either: rbd_solver
+  declares separate `translate` and `rotate` offsets and no `scale`, so it can never form a
+  whole-chunk transform, yet it plainly owns where that body starts. Testing only for
+  `transform` reported such a prim as unowned and stacked a duplicate chunk on top of it.
+  Declaring any placement handle is how a chunk opts out.
+- **A prim can be owned without offering one matrix-taking handle.** `ensure_transform_chunk`
+  then returns `None` having created nothing — that is "owned by parts", not "unowned".
+  Drive the parts individually: `decompose(matrix)` keys by gizmo *type*, so each entry goes
+  to the handle of that type, and a type with no handle is simply not written.
 - **At the end of the active context's chain**, wired to the tail, with any view moved
   along to it — the same placement as creating it by hand in the Params tab.
 - **Seeded from the prim's current local transform**, so the object does not jump when the

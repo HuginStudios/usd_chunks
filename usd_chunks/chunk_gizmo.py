@@ -950,13 +950,29 @@ def apply_bindings(chunk: "core.ChunkBase", name: str, value: Any) -> None:
 AUTO_TRANSFORM_MODULE = "transform"
 
 
-def transform_desc(prim: Usd.Prim):
-    """The transform handle that already applies to `prim`, from *any* chunk.
+#: Handle types that place a prim in the world. A chunk offering any of these owns that
+#: prim's placement, and must not have a second chunk stacked on top doing the same job.
+GIZMO_PLACEMENT_TYPES = core.GIZMO_MANIPULATOR_TYPES | {core.GIZMO_TRANSFORM_TYPE}
 
-    Deliberately not "is there a Transform chunk". A chunk offering a transform handle is
-    a chunk that owns this prim's placement, whatever module it came from -- an RBD solver
-    or an offset-transform declaring ``gizmo="transform"`` answers here too, and so must
-    not get a second chunk stacked on top of it doing the same job.
+
+def placement_gizmos(prim: Usd.Prim) -> list:
+    """Every handle that positions `prim`, from any chunk.
+
+    Deliberately not "is there a transform handle". A chunk can own a prim's placement
+    without offering a single combined manipulator: rbd_solver declares separate `translate`
+    and `rotate` offsets and no `scale`, so it cannot form a whole-chunk transform -- yet it
+    plainly owns where that body starts. Testing only for `transform` reported the prim as
+    unowned and stacked an auto-created Transform chunk on top of the solver, which is the
+    exact duplicate this check exists to prevent.
+    """
+    return [d for d in resolve_gizmos(prim) if d.type in GIZMO_PLACEMENT_TYPES]
+
+
+def transform_desc(prim: Usd.Prim):
+    """The single whole-transform handle for `prim`, if some chunk offers one.
+
+    Narrower than `placement_gizmos` on purpose: this is "who takes a whole matrix", which
+    is not the same question as "who owns this prim".
     """
     for desc in resolve_gizmos(prim):
         if desc.type == core.GIZMO_TRANSFORM_TYPE:
@@ -982,8 +998,14 @@ def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
     if not (prim and prim.IsValid()):
         return None
 
-    if (existing := transform_desc(prim)) is not None or not create:
-        return existing
+    # Ownership is the broad question (anything that places the prim), the return value is
+    # the narrow one (who takes a whole matrix). A prim owned by separate translate/rotate
+    # handles gets no chunk created AND no transform desc -- the caller drives those handles
+    # individually via decompose(), which is what the host contract already tells it to do.
+    if existing := placement_gizmos(prim):
+        return transform_desc(prim)
+    if not create:
+        return None
 
     # Read where the prim is BEFORE anything is created. Targeting the chunk at the prim is
     # a param change, which cooks it, which authors an identity xformOp:transform from the

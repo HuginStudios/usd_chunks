@@ -195,3 +195,60 @@ def test_a_muted_solver_layer_offers_no_handles(solver) -> None:
 
 def _cube_of(stage):
     return stage.GetPrimAtPath("/World/Cube")
+
+
+# ---------------------------------------------------------------------------
+# the solver owns the prim, so nothing may be stacked on top of it
+# ---------------------------------------------------------------------------
+
+def test_the_solver_blocks_the_auto_created_transform_chunk(solver, monkeypatch) -> None:
+    """Reported live: a cube targeted by an RBD solver was dragged and got a Transform chunk
+    anyway.
+
+    The ownership test looked for a `transform`-type handle, and the solver declares
+    `translate` and `rotate` -- it has no scale offset, so it cannot form a whole-chunk
+    transform at all. It plainly owns where that body starts, so testing only for
+    `transform` reported the prim as unowned and stacked a duplicate on top.
+    """
+    stage, _node = solver
+    registry = chunk_registry.ChunkRegistry()
+
+    class _StubTransform:
+        loaded = True
+        creates = 0
+
+        def create(self):
+            _StubTransform.creates += 1
+            transform_mod = importlib.import_module("scripts.transform")
+            c = transform_mod.main()
+            c._config = ChunkConfig(module="transform")
+            c._module = transform_mod
+            return [c]
+
+        load = create
+
+    module = _StubTransform()
+    monkeypatch.setitem(registry.registered_modules, "transform", module)
+    monkeypatch.setattr(chunk_usd, "_params_tab_create", False, raising=False)
+    monkeypatch.setattr(chunk_usd, "_pin_new_chunks", None, raising=False)
+    monkeypatch.setattr(chunk_usd, "_create_node_pos", None, raising=False)
+
+    chunk_gizmo.ensure_transform_chunk(_cube_of(stage))
+
+    assert module.creates == 0, "auto-create fired on a prim the solver already owns"
+
+
+def test_placement_gizmos_sees_the_part_handles(solver) -> None:
+    stage, _node = solver
+
+    types = {d.type for d in chunk_gizmo.placement_gizmos(_cube_of(stage))}
+
+    assert types == {"translate", "rotate"}
+
+
+def test_there_is_still_no_whole_transform_handle_to_return(solver) -> None:
+    """Owned, but by parts. A caller wanting one matrix-taking handle correctly gets None
+    and has to drive the parts individually -- which is what the host contract says."""
+    stage, _node = solver
+
+    assert chunk_gizmo.transform_desc(_cube_of(stage)) is None
