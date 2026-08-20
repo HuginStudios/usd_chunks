@@ -3323,7 +3323,17 @@ class ChunkContainerBase(ChunkCommon):
         failed_msg += " Reason: {}"
 
         found_params: set[ChunkCommon] = set()
-        found_names: set[str] = set()
+
+        # Names are checked among siblings, not across the whole hierarchy: a param is
+        # addressed relative to its owner, so two groups may each hold a "General"
+        # without either becoming unreachable. Renderer settings are the case that
+        # proves it -- every installed renderer gets a group and every one of them ends
+        # up with a General for its leftovers.
+        #
+        # Keyed by id() rather than by the owner itself, so this never depends on how a
+        # param defines equality: two distinct groups that happen to compare equal must
+        # still be two scopes.
+        found_names: Dict[int, set[str]] = {}
 
         for p in self.get_params():
             if isinstance(p, ChunkBase):
@@ -3353,14 +3363,17 @@ class ChunkContainerBase(ChunkCommon):
                 raise NameError(failed_msg.format(f"{p.name} is duplicated in the hierarchy"))
             found_params.add(p)
 
-            # Vector children are scoped to their parent vector; skip global name uniqueness for them.
             direct_owner = p.get_owner()
             if isinstance(direct_owner, NameSyncedContainer):
                 direct_owner = direct_owner.get_owner()
-            if not isinstance(direct_owner, ChunkVectorBase):
-                if p.name in found_names:
-                    raise NameError(failed_msg.format(f"param name: {p.name} is not unique in the hierarchy"))
-                found_names.add(p.name)
+
+            siblings = found_names.setdefault(id(direct_owner), set())
+            if p.name in siblings:
+                owner_name = getattr(direct_owner, "name", "<no owner>")
+                raise NameError(
+                    failed_msg.format(f"param name: {p.name} is not unique under {owner_name}")
+                )
+            siblings.add(p.name)
 
     def print_hierarchy(self):
         """
