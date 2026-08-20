@@ -26,10 +26,11 @@ import math
 from typing import Any, Iterable, Optional
 
 import attrs
-from pxr import Gf, Sdf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI
 
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_notice
+from usd_chunks import chunk_utils
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
 
 logger = logging.getLogger(__name__)
@@ -994,15 +995,101 @@ def _create_chunk_at_tail(module_name: str):
     # is right when a user places a node by hand and wrong here: nobody asked for a node, so
     # nobody is going to wire it up.
     prev_create, prev_pin = chunk_usd._params_tab_create, chunk_usd._pin_new_chunks
+    prev_pos = chunk_usd._create_node_pos
     chunk_usd._params_tab_create = True
     chunk_usd._pin_new_chunks = True
+    # Where the node lands, read before the create so the tail is still the tail. The default
+    # (child-count * step) counts a view as a child, so an auto-created node is placed by how
+    # many prims happen to exist rather than by where it sits in the chain -- which is how it
+    # ends up stacked behind the view instead of after the chunk it was wired onto.
+    chunk_usd._create_node_pos = _position_after_tail(scene)
     try:
         scene.add_chunk(chunk)
     finally:
         chunk_usd._params_tab_create = prev_create
         chunk_usd._pin_new_chunks = prev_pin
+        chunk_usd._create_node_pos = prev_pos
 
+    _nudge_downstream_views(chunk)
     return chunk
+
+
+def _node_pos(prim: Usd.Prim) -> "tuple[float, float] | None":
+    """A chunk prim's authored node-graph position, in USD space (Y-up)."""
+    if prim is None or not prim.IsValid():
+        return None
+    pos_attr = UsdUI.NodeGraphNodeAPI(prim).GetPosAttr()
+    if not (pos_attr and pos_attr.HasAuthoredValue()):
+        return None
+    value = pos_attr.Get()
+    return (float(value[0]), float(value[1]))
+
+
+def _position_after_tail(scene) -> "tuple[float, float] | None":
+    """One step right of the chunk the new node is about to be chained onto.
+
+    None means "no opinion" -- the caller's default placement then applies, which is right
+    when there is no tail to sit after.
+
+    Takes the context off the *scene*, not off the chunk. The chunk has not been added yet,
+    so `chunk.get_context()` is still None and the tail lookup silently finds nothing --
+    which reads as "no tail" and falls back to the default placement being fixed here.
+    """
+    from usd_chunks.plugins import chunk_usd
+
+    sync = chunk_usd.ChunkStageSync()
+    stage = getattr(sync, "_stage", None)
+    if stage is None:
+        return None
+    current = getattr(scene, "_current_context", None)
+    tail = sync._find_dag_tail(current() if current else None)
+    if tail is None:
+        return None
+    pos = _node_pos(_chunk_prim(stage, tail))
+    return None if pos is None else (pos[0] + chunk_usd._NODE_STEP, pos[1])
+
+
+def _nudge_downstream_views(chunk: "core.ChunkBase") -> None:
+    """Move any view that just got repointed onto `chunk` out from under it.
+
+    View-follows-tail rewires the view to consume the new chunk but leaves it where it was
+    -- which is the slot the new node has just been placed in, so the two overlap.
+    """
+    from usd_chunks.plugins import chunk_usd
+
+    sync = chunk_usd.ChunkStageSync()
+    stage = getattr(sync, "_stage", None)
+    if stage is None:
+        return
+    prim = _chunk_prim(stage, chunk)
+    pos = _node_pos(prim)
+    if pos is None:
+        return
+
+    scene = getattr(ChunkRegistry(), "scene", None)
+    if scene is None:
+        return
+    target_x = pos[0] + chunk_usd._NODE_STEP
+    for candidate in scene.get_chunks():
+        if not chunk_usd.is_view_chunk(candidate):
+            continue
+        view_prim = _chunk_prim(stage, candidate)
+        if view_prim is None:
+            continue
+        exec_in = view_prim.GetAttribute(chunk_usd._EXEC_INPUT)
+        if not (exec_in and exec_in.IsValid()):
+            continue
+        if not any(c.GetPrimPath() == prim.GetPath() for c in exec_in.GetConnections()):
+            continue
+        view_pos = _node_pos(view_prim)
+        if view_pos is None or view_pos[0] >= target_x:
+            continue
+        # Same home-layer rule as every other bit of node bookkeeping: write where the
+        # attribute's spec already lives, not wherever the ambient edit target points.
+        with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, candidate)):
+            UsdUI.NodeGraphNodeAPI.Apply(view_prim).CreatePosAttr().Set(
+                Gf.Vec2f(target_x, view_pos[1])
+            )
 
 
 def _target_prim(chunk: "core.ChunkBase", prim: Usd.Prim) -> None:

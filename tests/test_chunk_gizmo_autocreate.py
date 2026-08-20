@@ -13,9 +13,9 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from pxr import Gf, Sdf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI
 
-from usd_chunks import chunk, chunk_gizmo, chunk_registry
+from usd_chunks import chunk, chunk_gizmo, chunk_registry, chunk_utils
 from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
 from usd_chunks.plugins import chunk_usd
 
@@ -98,6 +98,7 @@ def scene(monkeypatch):
     # flag should leak out of the call.
     monkeypatch.setattr(chunk_usd, "_params_tab_create", False, raising=False)
     monkeypatch.setattr(chunk_usd, "_pin_new_chunks", None, raising=False)
+    monkeypatch.setattr(chunk_usd, "_create_node_pos", None, raising=False)
 
     yield stage, registry, module, scene_layer
 
@@ -189,6 +190,63 @@ def test_the_new_chunk_targets_the_dragged_prim(scene) -> None:
     created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
 
     assert created.get_param("primpath_location").value == "/World/Cube"
+
+
+# ---------------------------------------------------------------------------
+# where the node lands
+# ---------------------------------------------------------------------------
+
+def _pos(stage, prim_path):
+    attr = UsdUI.NodeGraphNodeAPI(stage.GetPrimAtPath(Sdf.Path(str(prim_path)))).GetPosAttr()
+    return (float(attr.Get()[0]), float(attr.Get()[1])) if attr.HasAuthoredValue() else None
+
+
+def _existing_node(registry, stage, name, x):
+    """A chunk already in the chain, sitting at a known place on the canvas."""
+    c = chunk.Chunk(name)
+    c._config = ChunkConfig(module="sublayer")
+    registry.scene.add_chunk(c)
+    prim = stage.GetPrimAtPath(Sdf.Path(f"{chunk_usd._CHUNKS_ROOT}/{c.name}"))
+    # Through the bookkeeping layer, as the node graph does when you drag a node. A plain
+    # Set() goes to the ambient edit target, which loses to the layer _define_prim already
+    # authored the position into -- so the node silently stays where it was.
+    with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, c)):
+        UsdUI.NodeGraphNodeAPI.Apply(prim).CreatePosAttr().Set(Gf.Vec2f(x, 0.0))
+    assert _pos(stage, prim.GetPath()) == (x, 0.0), "test setup failed to move the node"
+    return c, prim
+
+
+def test_the_node_lands_after_the_chunk_it_was_wired_onto(scene) -> None:
+    """The default placement is child-count * step, which counts a view as a child -- so the
+    node is positioned by how many prims happen to exist rather than by where it sits in the
+    chain, and ends up stacked behind the view instead of after the tail."""
+    stage, registry, _module, _scene_layer = scene
+    _tail, tail_prim = _existing_node(registry, stage, "Sublayer", x=500.0)
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+
+    tail_x = _pos(stage, tail_prim.GetPath())[0]
+    assert _pos(stage, desc.chunk_prim)[0] == tail_x + chunk_usd._NODE_STEP
+
+
+def test_no_tail_means_no_opinion(scene) -> None:
+    """Nothing to sit after: leave the default placement alone rather than inventing one."""
+    stage, _registry, _module, _scene_layer = scene
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+
+    assert _pos(stage, desc.chunk_prim) is not None  # still positioned, just not by us
+
+
+def test_creation_does_not_leak_the_position_override(scene) -> None:
+    """_create_node_pos is a module-level global on chunk_usd. Left set, every subsequent
+    create in the session would land on top of this one."""
+    stage, registry, _module, _scene_layer = scene
+    _existing_node(registry, stage, "Sublayer", x=500.0)
+
+    chunk_gizmo.ensure_transform_chunk(_cube(stage))
+
+    assert chunk_usd._create_node_pos is None
 
 
 def test_repeated_calls_reuse_the_first_chunk(scene) -> None:
