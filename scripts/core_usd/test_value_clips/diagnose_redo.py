@@ -233,6 +233,70 @@ def mirror_report():
     print()
 
 
+def audit():
+    """Every layer that holds a chunk-prim spec or a scene-prim override, composed or not.
+
+    For "I deleted a chunk and it came back". Deletion removes the prim spec from every
+    layer in stage.GetLayerStack(), so a spec sitting in a layer that is NOT in the stack at
+    that moment -- muted, detached, or known only to ChunkLayerManager -- survives untouched
+    and can be recomposed later. state() cannot show this: it reads the composed stage, so
+    a spec in an uncomposed layer is invisible to it.
+
+    Run it right after deleting, and again after the drag that brings them back.
+    """
+    reg = chunk_registry.ChunkRegistry()
+    scene = getattr(reg, "scene", None)
+    stage = scene.get_stage() if scene else None
+    if stage is None:
+        print("no stage")
+        return
+
+    manager = chunk_registry.ChunkLayerManager()
+    in_stack = {l.identifier: l for l in stage.GetLayerStack(includeSessionLayers=True)}
+    known = dict(in_stack)
+    for layer in (getattr(manager, "chunk_layers", None) or {}).values():
+        if layer is not None:
+            known.setdefault(layer.identifier, layer)
+
+    print("\n=== layers holding chunk prims or prim overrides ===")
+    for identifier, layer in known.items():
+        if layer is None:
+            continue
+        chunk_specs, overrides = [], []
+
+        def _walk(spec):
+            for child in spec.nameChildren:
+                path = str(child.path)
+                if child.typeName == chunk_usd._CHUNK_PRIM_TYPENAME:
+                    chunk_specs.append(path)
+                elif child.properties or child.nameChildren:
+                    if not path.startswith("/chunks") and "/Tab" not in path:
+                        if child.properties:
+                            overrides.append(path)
+                _walk(child)
+
+        try:
+            _walk(layer.pseudoRoot)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  {identifier[-24:]}  <unreadable: {exc}>")
+            continue
+        if not chunk_specs and not overrides:
+            continue
+        composed = "IN STACK" if identifier in in_stack else "NOT COMPOSED  <-- delete cannot reach it"
+        print(f"  {identifier[-24:]}  [{composed}]")
+        for path in chunk_specs:
+            _line("    chunk prim", path)
+        for path in overrides:
+            _line("    prim override", path)
+
+    print("\n=== live chunks ===")
+    _line("names", [c.name for c in scene.get_chunks()])
+    muted = [m for m in stage.GetMutedLayers()]
+    if muted:
+        _line("muted layers", [m[-24:] for m in muted])
+    print()
+
+
 def undo_entries():
     """How many entries are on the real undo stack right now.
 
@@ -335,10 +399,11 @@ def report():
 
 print(__doc__)
 print("Commands:  state()  watch()  report()  trace_mirror()  mirror_report()")
-print("           undo_entries()  drag_test()  drag_result()")
+print("           undo_entries()  drag_test()  drag_result()  audit()")
 print()
 print("For the MISSING NODE:  reproduce it (drag, undo back, redo), then run  state()")
 print("For the SLIDERS:       move the gizmo, run  watch(), press Ctrl+Z, run  report()")
 print("For UNDO MISSING STEPS: run  trace_mirror(), undo several times, run  mirror_report()")
 print("For UNEVEN UNDO STEPS:  run  drag_test(), do ONE drag, run  drag_result()")
+print("For DELETED-BUT-BACK:   delete the chunks, run  audit(), drag, run  audit() again")
 print()
