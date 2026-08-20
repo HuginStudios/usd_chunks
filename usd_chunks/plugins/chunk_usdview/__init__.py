@@ -3,6 +3,8 @@
 This module provides a framework for dynamically loading and managing custom UI modules
 """
 
+import logging
+
 from pxr import Tf, Usd, Gf
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
@@ -12,6 +14,8 @@ from usd_chunks import chunk_registry, chunk_core, chunk_serial
 from usd_chunks.plugins import chunk_qt, chunk_usd
 
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 
 class UsdviewScene(chunk_core.SceneSender):
@@ -128,6 +132,42 @@ class UsdviewScene(chunk_core.SceneSender):
                 ctrl._UpdateTimeSamples()
             except Exception:
                 pass
+
+    def _get_stage_view(self):
+        ctrl = self._get_ctrl()
+        return getattr(ctrl, "_stageView", None) if ctrl else None
+
+    def get_viewport_renderer(self) -> str:
+        view = self._get_stage_view()
+        if view is None:
+            return ""
+        try:
+            return str(view.GetCurrentRendererId() or "")
+        except Exception:
+            return ""
+
+    def set_viewport_renderer_settings(self, settings) -> None:
+        """Hand settings to the delegate usdview is drawing with.
+
+        StageView.SetRendererSetting is the same call usdview's own Hydra Settings menu
+        makes, so this reaches the delegate exactly where the built-in UI does -- and
+        the two do overwrite each other, last write winning, since there is only one
+        delegate between them.
+
+        Each call redraws the viewport, so the mapping handed in is expected to hold
+        only what actually changed. One bad setting is skipped rather than abandoning
+        the rest: keys come from what a delegate said it accepts, but a value can still
+        be one it refuses.
+        """
+        view = self._get_stage_view()
+        if view is None:
+            return
+
+        for key, value in settings.items():
+            try:
+                view.SetRendererSetting(Tf.Token(key), value)
+            except Exception as exc:  # noqa: BLE001 - a value this delegate will not take
+                logger.debug("Could not set renderer setting %s=%r: %s", key, value, exc)
 
     def _get_free_camera(self):
         app = self.usdviewAPI._UsdviewApi__appController

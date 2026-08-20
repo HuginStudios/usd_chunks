@@ -34,6 +34,7 @@ from typing import (
     Generic,
     Iterable,
     List,
+    Mapping,
     Optional,
     Protocol,
     Set,
@@ -4635,6 +4636,35 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def get_active_camera(self) -> Gf.Camera | None:
         """Return the current viewport camera as a Gf.Camera, or None if unsupported."""
         return None
+
+    @abstractmethod
+    def get_viewport_renderer(self) -> str:
+        """Hydra plugin id the viewport is drawing with, or "" when there is no viewport.
+
+        Used to decide which renderer's settings are worth sending: a delegate ignores a
+        namespace it does not own, so sending it another renderer's is only wasted work.
+        """
+        return ""
+
+    @abstractmethod
+    def set_viewport_renderer_settings(self, settings: Mapping[str, Any]) -> None:
+        """Send renderer settings straight to the viewport's render delegate.
+
+        Deliberately not scene description. Most delegates -- Cycles and RPR among them
+        -- never read a UsdRenderSettings prim, and take settings only through this
+        call, so a chunk that authors a prim and stops has no effect on what they draw.
+        Authoring stays the portable record; this is what makes the viewport agree with
+        it.
+
+        Every value is sent, so the caller is the one that must avoid re-sending what has
+        not changed: a delegate generally restarts its render on each setting it is
+        handed, whether or not the value is new.
+
+        Args:
+            settings (Mapping[str, Any]): Setting key to value, keys spelled the way the
+                delegate declares them rather than as USD attribute names -- the two
+                differ for a renderer whose keys are not valid USD identifiers.
+        """
 
     @abstractmethod
     def get_current_frame(self) -> float:

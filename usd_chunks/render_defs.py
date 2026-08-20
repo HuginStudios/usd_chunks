@@ -465,6 +465,38 @@ def get_render_settings_def(key: str) -> Optional[RenderSettingsDef]:
     return None
 
 
+def def_for_plugin(plugin_id: str) -> Optional[RenderSettingsDef]:
+    """The settings def belonging to a Hydra plugin id, or None when it has none.
+
+    Matched on the key first, since a def read from a delegate is keyed by the very
+    plugin id being asked about. A def that came from a schema instead has no plugin id
+    in it, so that one falls back to comparing display names -- the same normalised
+    comparison discovery uses to avoid loading a renderer twice.
+
+    Used to send one renderer's settings without sending every renderer's: a delegate
+    redraws for each setting it is handed and discards the namespaces it does not own.
+    """
+    for definition in iter_render_settings_defs():
+        if definition.key == f"delegate:{plugin_id}":
+            return definition
+
+    label = ""
+    if UsdImagingGL is not None:
+        try:
+            label = UsdImagingGL.Engine.GetRendererDisplayName(plugin_id) or ""
+        except Exception as exc:  # noqa: BLE001 - an id this build does not know
+            logger.debug("Could not resolve a display name for %s: %s", plugin_id, exc)
+
+    if not label:
+        return None
+
+    wanted = _normalised(label)
+    for definition in iter_render_settings_defs():
+        if _normalised(definition.label) == wanted:
+            return definition
+    return None
+
+
 def available_delegates() -> List[str]:
     """Labels of every renderer with describable settings, for a menu."""
     return [d.label for d in iter_render_settings_defs()]

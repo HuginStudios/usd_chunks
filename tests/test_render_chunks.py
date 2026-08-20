@@ -25,12 +25,20 @@ class _DummyScene(SceneSender):
     def __init__(self):
         super().__init__()
         self._stage = None
+        self.renderer = ""
+        self.pushes = []
 
     def get_stage(self):
         return self._stage
 
     def get_selected_prims(self):
         return []
+
+    def get_viewport_renderer(self):
+        return self.renderer
+
+    def set_viewport_renderer_settings(self, settings):
+        self.pushes.append(dict(settings))
 
 
 def _setup_stage():
@@ -436,6 +444,144 @@ class TestDelegateSettings:
         attr = prim.GetAttribute(target.attr_name)
         assert attr.HasAuthoredValue()
         assert attr.Get() is True
+
+
+class TestViewportPush:
+    """Settings handed straight to the running delegate, because most renderers read
+    nothing else -- Cycles, RPR, Aurora and OSPRay all decline Hydra's renderSettings
+    prim, so what the chunk authors for them reaches them through nothing at all.
+
+    Driven off a stand-in def rather than a real renderer: what is under test is the
+    diffing and the renderer filter, and those are the same whoever declared the
+    settings.
+    """
+
+    def _def(self):
+        from usd_chunks import render_defs
+
+        return render_defs.RenderSettingsDef(
+            key="delegate:HdFakePlugin",
+            label="Fake",
+            namespace="fake",
+            source="delegate",
+            props=[
+                render_defs.RenderSettingProp(
+                    name="fake_samples", attr_name="fake:samples",
+                    sdf_type="int", default=64,
+                ),
+                render_defs.RenderSettingProp(
+                    name="fake_bounces", attr_name="fake:bounces",
+                    sdf_type="int", default=4,
+                ),
+            ],
+        )
+
+    def _rig(self, monkeypatch, values, renderer="HdFakePlugin"):
+        """A node whose params are exactly `values`, and a scene that records pushes.
+
+        The scene goes in through the registry the same way every other test here sets
+        one up. Monkeypatching the attribute onto the singleton instead would delete it
+        on teardown whenever it did not already exist, which takes out whichever test
+        runs next and reads it.
+        """
+        from usd_chunks import render_defs
+
+        mod = importlib.import_module("scripts.render_settings")
+        definition = self._def()
+        monkeypatch.setattr(
+            render_defs, "def_for_plugin",
+            lambda plugin_id: definition if plugin_id == "HdFakePlugin" else None,
+        )
+
+        scene, _stage = _setup_stage()
+        scene.renderer = renderer
+        params = {name: types.SimpleNamespace(value=v) for name, v in values.items()}
+        node = types.SimpleNamespace(get_param=params.get)
+        return mod, node, scene, scene.pushes
+
+    def test_only_params_that_exist_are_sent(self, monkeypatch):
+        """A param is built when its group is first expanded, so one that does not exist
+        has never been touched and the delegate already sits at the same fallback."""
+        mod, node, _scene, pushes = self._rig(monkeypatch, {"fake_samples": 128})
+        mod._push_to_viewport(node)
+
+        assert pushes == [{"fake:samples": 128}]
+
+    def test_an_unchanged_cook_sends_nothing(self, monkeypatch):
+        """Each setting costs the viewport a render restart and execute() runs on every
+        param drag, so re-sending what has not moved is what makes it unusable."""
+        mod, node, _scene, pushes = self._rig(monkeypatch, {"fake_samples": 128})
+        mod._push_to_viewport(node)
+        mod._push_to_viewport(node)
+
+        assert len(pushes) == 1
+
+    def test_only_what_changed_is_sent(self, monkeypatch):
+        mod, node, _scene, pushes = self._rig(
+            monkeypatch, {"fake_samples": 128, "fake_bounces": 3}
+        )
+        mod._push_to_viewport(node)
+        node.get_param("fake_samples").value = 256
+        mod._push_to_viewport(node)
+
+        assert pushes[-1] == {"fake:samples": 256}
+
+    def test_a_value_back_at_its_default_is_still_sent(self, monkeypatch):
+        """Nothing resolves a fallback on the delegate's side the way USD does for an
+        unauthored attribute -- a setting stays wherever it was last put."""
+        mod, node, _scene, pushes = self._rig(monkeypatch, {"fake_samples": 128})
+        mod._push_to_viewport(node)
+        node.get_param("fake_samples").value = 64  # the prop's declared default
+        mod._push_to_viewport(node)
+
+        assert pushes[-1] == {"fake:samples": 64}
+
+    def test_another_renderer_gets_nothing(self, monkeypatch):
+        """A delegate redraws for every setting handed to it and discards the namespaces
+        it does not own, so sending it another renderer's is pure stall."""
+        mod, node, _scene, pushes = self._rig(
+            monkeypatch, {"fake_samples": 128}, renderer="HdOtherPlugin"
+        )
+        mod._push_to_viewport(node)
+
+        assert pushes == []
+
+    def test_switching_renderer_resends_everything(self, monkeypatch):
+        """What the last delegate was told says nothing about what this one already has."""
+        mod, node, scene, pushes = self._rig(monkeypatch, {"fake_samples": 128})
+        mod._push_to_viewport(node)
+        scene.renderer = "HdOtherPlugin"
+        mod._push_to_viewport(node)
+        scene.renderer = "HdFakePlugin"
+        mod._push_to_viewport(node)
+
+        assert pushes[-1] == {"fake:samples": 128}
+
+    def test_no_viewport_is_not_an_error(self, monkeypatch):
+        """A headless cook, a CLI run, or a DCC with no Hydra viewport at all."""
+        mod, node, scene, pushes = self._rig(monkeypatch, {"fake_samples": 128})
+        scene.renderer = ""
+        mod._push_to_viewport(node)
+
+        assert pushes == []
+
+
+class TestViewportPushSeam:
+    """The SceneSender seam the push goes through. Its defaults have to be inert, since
+    every DCC that is not usdview inherits them."""
+
+    def test_the_base_sender_does_nothing(self):
+        class _Bare(SceneSender):
+            def get_stage(self):
+                return None
+
+            def get_selected_prims(self):
+                return []
+
+        scene = _Bare()
+
+        assert scene.get_viewport_renderer() == ""
+        assert scene.set_viewport_renderer_settings({"fake:samples": 1}) is None
 
 
 class TestRenderPass:

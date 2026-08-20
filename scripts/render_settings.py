@@ -10,7 +10,7 @@ import logging
 
 from pxr import Gf, Sdf, Usd, UsdRender
 
-from usd_chunks import chunk, chunk_notice, chunk_utils, render_defs
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils, render_defs
 from usd_chunks.plugins import chunk_usd
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,11 @@ def _delegate_defs():
 
 #: Where a group parks the settings it has not built params for yet.
 _PENDING = "_pending_settings"
+
+#: Where the chunk remembers what it last sent the viewport, as (renderer id, mapping).
+#: A delegate restarts its render on every setting handed to it whether or not the value
+#: is new, so re-sending an unchanged one is not free -- it stalls the viewport.
+_SENT = "_sent_viewport_settings"
 
 #: Namespace every chunk param's saved value lives under on the chunk prim.
 _INPUTS_PREFIX = "inputs:"
@@ -282,6 +287,72 @@ def _author_delegate_settings(node, prim):
             prim.AddAppliedSchema(definition.schema_name)
 
 
+def _settings_for_renderer(node, renderer_id):
+    """The current values of the settings the running delegate actually owns.
+
+    Only that renderer's, because a delegate is handed every key it is sent and redraws
+    for each one; the rest would be redraws for settings it discards.
+
+    Only settings whose param exists, too. A param is built the first time its group is
+    expanded, so one that does not exist has never been touched and the delegate is
+    already sitting at the same fallback the param would have been born with. That
+    bounds a push to what someone has actually looked at rather than to all 63 of
+    Cycles'.
+
+    Values that have gone back to their default are kept rather than dropped. Nothing
+    resolves a fallback on the delegate's side the way USD does for an unauthored
+    attribute -- a setting stays wherever it was last put -- so returning one to its
+    default has to be said just as explicitly as moving it away.
+
+    The key sent is attr_name, which for a delegate-sourced def is the descriptor key
+    the renderer declared, since that is where discovery read it from.
+    """
+    definition = render_defs.def_for_plugin(renderer_id)
+    if definition is None:
+        return {}
+
+    settings = {}
+    for prop in definition.props:
+        param = node.get_param(prop.name)
+        if param is None or param.value is None:
+            continue
+
+        settings[prop.attr_name] = param.value
+    return settings
+
+
+def _push_to_viewport(node):
+    """Send what changed since last time to the viewport's render delegate.
+
+    The delegate is the only thing most renderers listen to. Cycles, RPR, Aurora and
+    OSPRay all decline Hydra's renderSettings prim, so the attributes this chunk authors
+    reach them through nothing at all and the settings appear to do nothing. V-Ray and
+    Arnold do read the prim, and for them this is the viewport agreeing with the file
+    sooner rather than a different answer.
+
+    Diffed rather than sent wholesale because each setting costs the viewport a restart,
+    and execute() runs on every param drag. A renderer switch resets the record, since
+    what the last delegate was told says nothing about what this one already has.
+    """
+    scene = chunk_registry.ChunkRegistry().scene
+    if scene is None:
+        return
+
+    renderer_id = scene.get_viewport_renderer()
+    if not renderer_id:
+        return  # no viewport, so nothing to keep in step
+
+    wanted = _settings_for_renderer(node, renderer_id)
+    last_renderer, last_sent = getattr(node, _SENT, ("", {}))
+    if last_renderer != renderer_id:
+        last_sent = {}
+
+    changed = {k: v for k, v in wanted.items() if k not in last_sent or last_sent[k] != v}
+    setattr(node, _SENT, (renderer_id, dict(wanted)))
+
+    if changed:
+        scene.set_viewport_renderer_settings(changed)
+
 
 def _token_list(value):
     """Comma-separated tokens, trimmed, with empties dropped."""
@@ -340,6 +411,7 @@ def main():
         chunk.Checkbox("disable_motion_blur", "Disable Motion Blur", default_value=False),
         chunk.Checkbox("disable_depth_of_field", "Disable Depth of Field", default_value=False),
         chunk.Checkbox("set_stage_settings", "Set as Stage Render Settings", default_value=True),
+        chunk.Checkbox("apply_to_viewport", "Apply to Viewport", default_value=True),
         chunk.LineEdit(
             "reference", "Reference",
             flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
@@ -424,6 +496,11 @@ def execute(node):
     # since stage metadata is only accepted on the root or session layer.
     _set_stage_settings_path(stage, authored if node.get_param("set_stage_settings").value else None)
 
+    # Last, and outside the edit target: this writes nothing to any layer. It hands the
+    # running delegate the same values that were just authored, because most delegates
+    # never read them off the prim.
+    if node.get_param("apply_to_viewport").value:
+        _push_to_viewport(node)
 
 
 def config():
@@ -469,6 +546,18 @@ def config():
             runtime state that never lands in a saved scene file. A handed-off file
             therefore carries the RenderSettings prim but not the pointer to it;
             tell the renderer the path explicitly in that case.
+          - Apply to Viewport: hands these settings straight to the render delegate
+            the viewport is drawing with, as well as authoring them. On by default,
+            because for most renderers it is the only thing that has any effect:
+            Cycles, RPR, Aurora and OSPRay all decline Hydra's renderSettings prim,
+            so what is authored here reaches them through nothing at all. V-Ray and
+            Arnold do read the prim, and for those two this only makes the viewport
+            agree sooner. Only the running renderer's settings are sent, only the
+            ones that changed, and only from groups that have been opened — a
+            delegate restarts its render on every setting it is handed. Note this is
+            the same channel as usdview's own Hydra Settings menu, so the two
+            overwrite each other, and that it touches no layer: nothing about it is
+            saved, and it does not reach a batch render.
           - Reference (output): the authored prim path, for wiring into a Render
             chunk.
 
