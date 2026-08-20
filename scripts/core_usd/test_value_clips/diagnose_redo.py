@@ -233,6 +233,67 @@ def mirror_report():
     print()
 
 
+def undo_entries():
+    """How many entries are on the real undo stack right now.
+
+    usd-undo coalesces by mouse press/release: its app-level event filter accumulates edits
+    from MouseButtonPress and flushes one entry on MouseButtonRelease. Anything arriving
+    AFTER the release goes through a 0ms timer and becomes a separate entry -- and a chunk's
+    cook is deferred, so its write to the prim can land there. That second entry holds the
+    prim move with no param change in it, which is what an undo step that shifts the object
+    but not the sliders looks like.
+
+    Usage: run it, do ONE drag, run it again. A rise of 1 means the drag is a single entry
+    and the theory is wrong. A rise of 2 or more confirms it.
+    """
+    try:
+        import hugin
+    except ImportError:
+        print("usd-undo not loaded in this session")
+        return None
+    manager = hugin.initialize()
+    undo = len(getattr(manager, "_undoStack", ()))
+    redo = len(getattr(manager, "_redoStack", ()))
+    pending = manager._timer.isActive() if hasattr(manager, "_timer") else "?"
+    _line("undo entries", undo)
+    _line("redo entries", redo)
+    _line("flush pending (post-release edit)", pending)
+    return undo
+
+
+def drag_test():
+    """Guided version of undo_entries(): prints the before count and what to do next."""
+    before = undo_entries()
+    if before is None:
+        return
+    drag_test._before = before
+    print()
+    print(f"  baseline {before}. Now do ONE drag, then run:  drag_result()")
+
+
+def drag_result():
+    before = getattr(drag_test, "_before", None)
+    if before is None:
+        print("run drag_test() first")
+        return
+    after = undo_entries()
+    if after is None:
+        return
+    grew = after - before
+    print()
+    _line("entries added by one drag", grew)
+    print()
+    if grew <= 1:
+        print("  => one drag is one undo entry. The cook is landing inside the drag, so")
+        print("     the deferred-cook theory is WRONG and the extra steps come from")
+        print("     somewhere else (chunk creation, stray clicks elsewhere in the UI).")
+    else:
+        print("  => one drag produced more than one entry, so the cook (or something else")
+        print("     deferred) is landing after the release and becoming its own step.")
+        print("     Undoing that one moves the prim and leaves the sliders alone.")
+    print()
+
+
 def report():
     """What USD said during the undo -- the deciding evidence for bug A."""
     unwatch()
@@ -273,9 +334,11 @@ def report():
 
 
 print(__doc__)
-print("Commands:  state()   watch()   report()   trace_mirror()   mirror_report()")
+print("Commands:  state()  watch()  report()  trace_mirror()  mirror_report()")
+print("           undo_entries()  drag_test()  drag_result()")
 print()
 print("For the MISSING NODE:  reproduce it (drag, undo back, redo), then run  state()")
 print("For the SLIDERS:       move the gizmo, run  watch(), press Ctrl+Z, run  report()")
 print("For UNDO MISSING STEPS: run  trace_mirror(), undo several times, run  mirror_report()")
+print("For UNEVEN UNDO STEPS:  run  drag_test(), do ONE drag, run  drag_result()")
 print()
