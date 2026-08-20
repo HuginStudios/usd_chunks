@@ -157,43 +157,51 @@ def unwatch():
 _traced = []
 
 
+_trace_listener = None
+
+
 def trace_mirror():
-    """Wrap ChunkStageSync's handler and record whether each notice was acted on.
+    """Record, per notice, whether it carried param paths and whether a write was in flight.
 
-    For "undo works for a while and then stops". Undo one step at a time, then run
-    mirror_report(). A run of `SUPPRESSED` entries carrying param paths is a change that
-    arrived while a write was in flight -- those used to be discarded, so the slider missed
-    that step while the prim still moved.
+    For "undo works for a while and then stops". Run it, undo several steps, then run
+    mirror_report().
+
+    Its own listener rather than a wrapper around ChunkStageSync's handler. Wrapping does
+    not work and looked like it did: Tf.Notice.Register was handed a *bound method* when
+    the plugin started, and a bound method captures the function at bind time -- so
+    reassigning the attribute afterwards changes nothing about what USD calls, and the
+    trace comes back empty with no error. Registering separately sees the same notices, and
+    _usd_write_active is a module-level flag set around whole write blocks, so reading it
+    here gives the same answer the real handler got regardless of listener order.
     """
-    sync = chunk_usd.ChunkStageSync()
-    if getattr(sync, "_traced_original", None) is not None:
-        print("already tracing. Run mirror_report() when done.")
-        return
+    global _trace_listener
+    stop_trace()
     _traced.clear()
-    original = sync._on_objects_changed
 
-    def wrapped(notice, sender):
+    def _on(notice, sender):
         paths = [str(p) for p in notice.GetResyncedPaths()]
         paths += [str(p) for p in notice.GetChangedInfoOnlyPaths()]
         params = [p for p in paths if "inputs:" in p]
-        suppressed = bool(chunk_notice._usd_write_active)
-        _traced.append((suppressed, params))
-        return original(notice, sender)
+        _traced.append((bool(chunk_notice._usd_write_active), params))
 
-    sync._traced_original = original
-    sync._on_objects_changed = wrapped
-    print("tracing. Undo a few steps, then run:  mirror_report()")
+    # Held on the function: Tf.Notice keeps Python callables only weakly.
+    trace_mirror._cb = _on
+    _trace_listener = Tf.Notice.RegisterGlobally(Usd.Notice.ObjectsChanged, trace_mirror._cb)
+    print("tracing. Undo several steps, then run:  mirror_report()")
+
+
+def stop_trace():
+    global _trace_listener
+    if _trace_listener is not None:
+        _trace_listener.Revoke()
+        _trace_listener = None
 
 
 def mirror_report():
-    sync = chunk_usd.ChunkStageSync()
-    original = getattr(sync, "_traced_original", None)
-    if original is not None:
-        sync._on_objects_changed = original
-        sync._traced_original = None
+    stop_trace()
 
     if not _traced:
-        print("nothing traced -- did any undo run?")
+        print("nothing traced -- did any undo actually run? Click the VIEWPORT first.")
         return
 
     acted = [p for s, p in _traced if not s and p]
@@ -203,14 +211,25 @@ def mirror_report():
     _line("carrying param paths, SUPPRESSED", len(dropped))
     print()
     if dropped:
-        print("  => changes arrived while a write was in flight.")
-        print("     Those paths are now kept and drained on the next notice that gets")
-        print("     through; before that they were dropped, so the slider missed a step")
-        print("     while the prim still moved.")
+        print("  => some notices arrived while a write was in flight, and were discarded.")
+        print()
+        print("     Read the ACTED ON count, not this one. A chunk cooking after a mirrored")
+        print("     write emits suppressed notices carrying its own param paths, and those")
+        print("     are correctly ignored -- so SUPPRESSED is inflated by normal activity.")
+        print(f"     The real question: you undid N steps, and {len(acted)} notices carrying")
+        print("     param paths got through. If that is well short of N, undos are being")
+        print("     swallowed. If it matches N, they are not, and the mirror's write is")
+        print("     being undone by something after it.")
         _line("example dropped", dropped[0][:3])
+    elif acted:
+        print("  => nothing was suppressed, so the in-flight-write theory is WRONG.")
+        print(f"     {len(acted)} notices carried param paths and the mirror saw them all.")
+        print("     If fewer sliders moved than that, the mirror ran and its write did not")
+        print("     stick -- suspect the chunk cooking straight over it.")
     else:
-        print("  => nothing was suppressed, so the miss is NOT the in-flight-write case.")
-        print("     Next suspect: the undo stack itself not recording every param write.")
+        print("  => no notice carried a param path at all.")
+        print("     The undo never touched inputs:*, so the prim moved by some other route")
+        print("     and the params were never part of the undo to begin with.")
     print()
 
 
