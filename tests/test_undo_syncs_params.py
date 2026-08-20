@@ -23,6 +23,7 @@ is provoked directly through Sdf instead.
 """
 from __future__ import annotations
 
+import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
@@ -153,6 +154,43 @@ def test_a_resynced_param_is_mirrored_back() -> None:
     )
 
 
+def test_a_change_arriving_mid_write_is_still_dropped() -> None:
+    """Documents a known gap rather than a fix, so the next attempt does not repeat mine.
+
+    _on_objects_changed bails while _usd_write_active is set, and the paths it saw are
+    discarded. A change landing mid-write is therefore lost -- a candidate for the reported
+    "undo moved the prim every step but the sliders followed only about half the time".
+
+    Keeping those paths and replaying them on the next notice does NOT work. A suppressed
+    notice means we were mid-write, and a multi-component write leaves USD transiently
+    holding partial values: the replay pushed a stale (1, 0, 0) over a param that already
+    correctly held (1, 2, 3), breaking test_vector_math_ops_expression. Any real fix has to
+    drain at a point where USD is known consistent -- as the write block closes -- not on
+    the next unrelated notice.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    reg, scene = _session(stage)
+    chunk = _transform_chunk(reg, scene)
+
+    chunk.get_param("tx").value = 5.0
+    chunk.get_param("ty").value = 4.0
+    attr_path = chunk.get_param("tx")._param_attr_path
+
+    import usd_chunks.chunk_notice as cn
+
+    previous = cn._usd_write_active
+    cn._usd_write_active = True
+    try:
+        _resync_param(stage, attr_path, 2.0)
+    finally:
+        cn._usd_write_active = previous
+
+    # An unrelated notice does not catch it up. Asserted as-is so that a future fix has to
+    # come here and change it deliberately.
+    _resync_param(stage, chunk.get_param("ty")._param_attr_path, 1.0)
+    assert chunk.get_param("tx").value == 5.0
+
+
 def test_float32_rounding_is_not_treated_as_a_change() -> None:
     """A param can hold a 64-bit float while USD stores 32, so the two differ in the 8th
     significant digit. These are the exact values a live session reported:
@@ -217,3 +255,32 @@ def test_an_ordinary_edit_still_syncs() -> None:
         stage.GetAttributeAtPath(Sdf.Path(attr_path)).Set(7.5)
 
     assert chunk.get_param("tx").value == 7.5
+
+
+def test_a_vector_expression_survives_a_resync() -> None:
+    """The scalar branch of the mirror has always skipped expression-driven params; the
+    vector branch did not. Latent while the mirror only ran for info-only paths, and a live
+    hazard now that resyncs reach it: writing the resolved value over the expression swaps a
+    live link for a frozen number, and the vector silently stops tracking its source.
+
+    Found while chasing the undo bugs, not reported -- so it gets its own test rather than
+    riding along untested in the fix that exposed it.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    reg, scene = _session(stage)
+    mod = reg.get_chunk_module("vector_math_ops")
+    source = (mod.create() if mod.loaded else mod.load())[0]
+    source.name = "VecSource"
+    scene.add_chunk(source)
+    target = (mod.create() if mod.loaded else mod.load())[0]
+    target.name = "VecTarget"
+    scene.add_chunk(target)
+
+    source.get_param("a").value = (1.0, 2.0, 3.0)
+    expression = f"@{source.name}.a@"
+    target.get_param("a").value = expression
+    assert target.get_param("a").value == pytest.approx((1.0, 2.0, 3.0)), "expression never resolved"
+
+    _resync_param(stage, target.get_param("a")._param_attr_path, (9.0, 9.0, 9.0))
+
+    assert target.get_param("a").raw_value == expression, "the expression was frozen to a value"

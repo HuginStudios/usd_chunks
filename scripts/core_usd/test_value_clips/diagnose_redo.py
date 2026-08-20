@@ -154,6 +154,66 @@ def unwatch():
         _listener = None
 
 
+_traced = []
+
+
+def trace_mirror():
+    """Wrap ChunkStageSync's handler and record whether each notice was acted on.
+
+    For "undo works for a while and then stops". Undo one step at a time, then run
+    mirror_report(). A run of `SUPPRESSED` entries carrying param paths is a change that
+    arrived while a write was in flight -- those used to be discarded, so the slider missed
+    that step while the prim still moved.
+    """
+    sync = chunk_usd.ChunkStageSync()
+    if getattr(sync, "_traced_original", None) is not None:
+        print("already tracing. Run mirror_report() when done.")
+        return
+    _traced.clear()
+    original = sync._on_objects_changed
+
+    def wrapped(notice, sender):
+        paths = [str(p) for p in notice.GetResyncedPaths()]
+        paths += [str(p) for p in notice.GetChangedInfoOnlyPaths()]
+        params = [p for p in paths if "inputs:" in p]
+        suppressed = bool(chunk_notice._usd_write_active)
+        _traced.append((suppressed, params))
+        return original(notice, sender)
+
+    sync._traced_original = original
+    sync._on_objects_changed = wrapped
+    print("tracing. Undo a few steps, then run:  mirror_report()")
+
+
+def mirror_report():
+    sync = chunk_usd.ChunkStageSync()
+    original = getattr(sync, "_traced_original", None)
+    if original is not None:
+        sync._on_objects_changed = original
+        sync._traced_original = None
+
+    if not _traced:
+        print("nothing traced -- did any undo run?")
+        return
+
+    acted = [p for s, p in _traced if not s and p]
+    dropped = [p for s, p in _traced if s and p]
+    print(f"\n=== {len(_traced)} notices ===")
+    _line("carrying param paths, acted on", len(acted))
+    _line("carrying param paths, SUPPRESSED", len(dropped))
+    print()
+    if dropped:
+        print("  => changes arrived while a write was in flight.")
+        print("     Those paths are now kept and drained on the next notice that gets")
+        print("     through; before that they were dropped, so the slider missed a step")
+        print("     while the prim still moved.")
+        _line("example dropped", dropped[0][:3])
+    else:
+        print("  => nothing was suppressed, so the miss is NOT the in-flight-write case.")
+        print("     Next suspect: the undo stack itself not recording every param write.")
+    print()
+
+
 def report():
     """What USD said during the undo -- the deciding evidence for bug A."""
     unwatch()
@@ -194,8 +254,9 @@ def report():
 
 
 print(__doc__)
-print("Commands:  state()   watch()   report()")
+print("Commands:  state()   watch()   report()   trace_mirror()   mirror_report()")
 print()
 print("For the MISSING NODE:  reproduce it (drag, undo back, redo), then run  state()")
 print("For the SLIDERS:       move the gizmo, run  watch(), press Ctrl+Z, run  report()")
+print("For UNDO MISSING STEPS: run  trace_mirror(), undo several times, run  mirror_report()")
 print()

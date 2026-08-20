@@ -506,6 +506,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         changed = {str(p) for p in notice.GetChangedInfoOnlyPaths()}
         # Include resynced paths for editors (e.g. usdview) that author active via the layer
         all_changed = changed | {str(p) for p in notice.GetResyncedPaths()}
+        # NOT extended with paths from notices that the guard above suppressed, though the
+        # temptation is strong: a change arriving mid-write is genuinely lost, which is a
+        # candidate for "undo moved the prim every step but the sliders followed only about
+        # half the time". Replaying them is unsound. A suppressed notice means WE were
+        # writing, and a multi-component write leaves USD transiently holding partial
+        # values -- replaying such a path afterwards pushed a stale (1, 0, 0) over a param
+        # that already correctly held (1, 2, 3). That is precisely what the guard is for.
+        # Fixing the dropped-undo case needs the drain to happen where USD is known
+        # consistent (as the write block closes), not on the next unrelated notice.
+        param_paths = all_changed
         if not all_changed:
             return
         self._reconcile_changed_exec_inputs(all_changed)
@@ -518,10 +528,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # while the chunk's sliders kept the undone value, and only caught up when the
             # gizmo was next touched. Confirmed live -- a real Ctrl+Z reports
             # `<chunk>.inputs:translate_grp:tz` as resynced, with nothing in the info-only set.
-            if all_changed:
+            if param_paths:
                 for _, param in _iter_chunk_params(chunk):
                     data_path = getattr(param, "_param_attr_path", None)
-                    if not data_path or data_path not in all_changed:
+                    if not data_path or data_path not in param_paths:
                         continue
                     attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
@@ -532,12 +542,19 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                             param.value = val
                 for _, vector in _iter_chunk_vectors(chunk):
                     data_path = getattr(vector, "_param_attr_path", None)
-                    if not data_path or data_path not in all_changed:
+                    if not data_path or data_path not in param_paths:
                         continue
                     attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
                         val = attr.Get(0)
-                        if val is not None and not _values_agree(val, vector.value):
+                        # Same expression guard the scalar branch above has always had.
+                        # Missing here, which went unnoticed while this only ran for
+                        # info-only paths: writing the resolved value over the expression
+                        # replaces a live link with a frozen number, and the vector stops
+                        # tracking whatever it was pointed at.
+                        raw = getattr(vector, 'raw_value', None)
+                        if (val is not None and not _values_agree(val, vector.value)
+                                and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
                             vector.value = val
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
             if not chunk_prim_path or chunk_prim_path not in all_changed:
