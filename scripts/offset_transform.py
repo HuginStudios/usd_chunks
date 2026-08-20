@@ -134,7 +134,14 @@ def execute(node: chunk.Chunk) -> None:
 
 
 def main():
-    chunk_api = chunk.Chunk("Offset Transform")
+    # One handle for the whole chunk, as transform.py does: the three groups below carry the
+    # parts, and gizmo="transform" says to present them as a single native manipulator
+    # rather than three that would fight over the same drag.
+    #
+    # Declaring it also makes this chunk own its prim's placement as far as the gizmo layer
+    # is concerned, so dragging a prim this chunk targets edits THESE params instead of
+    # auto-creating a Transform chunk on top of it -- which is how a chunk opts out of that.
+    chunk_api = chunk.Chunk("Offset Transform", gizmo="transform")
 
     prim_path = chunk.LineEdit(
         "prim_path",
@@ -146,21 +153,21 @@ def main():
     prim_path.add_callback(_run)
 
     _t_tip = "Added to the prim's current {} translation, in scene units."
-    translate_grp = chunk.Group("Translate")
+    translate_grp = chunk.Group("Translate", gizmo="translate")
     translate_grp.add_param(chunk.Spinbox("tx", "Translate X", default_value=0.0, tooltip=_t_tip.format("X")))
     translate_grp.add_param(chunk.Spinbox("ty", "Translate Y", default_value=0.0, tooltip=_t_tip.format("Y")))
     translate_grp.add_param(chunk.Spinbox("tz", "Translate Z", default_value=0.0, tooltip=_t_tip.format("Z")))
     chunk_api.add_param(translate_grp)
 
     _r_tip = "Added to the prim's current {} rotation, in degrees."
-    rotate_grp = chunk.Group("Rotate")
+    rotate_grp = chunk.Group("Rotate", gizmo="rotate")
     rotate_grp.add_param(chunk.Spinbox("rx", "Rotate X", default_value=0.0, tooltip=_r_tip.format("X")))
     rotate_grp.add_param(chunk.Spinbox("ry", "Rotate Y", default_value=0.0, tooltip=_r_tip.format("Y")))
     rotate_grp.add_param(chunk.Spinbox("rz", "Rotate Z", default_value=0.0, tooltip=_r_tip.format("Z")))
     chunk_api.add_param(rotate_grp)
 
     _s_tip = "Multiplies the prim's current {} scale (1 = unchanged)."
-    scale_grp = chunk.Group("Scale")
+    scale_grp = chunk.Group("Scale", gizmo="scale")
     scale_grp.add_param(chunk.Spinbox("sx", "Scale X", default_value=1.0, tooltip=_s_tip.format("X")))
     scale_grp.add_param(chunk.Spinbox("sy", "Scale Y", default_value=1.0, tooltip=_s_tip.format("Y")))
     scale_grp.add_param(chunk.Spinbox("sz", "Scale Z", default_value=1.0, tooltip=_s_tip.format("Z")))

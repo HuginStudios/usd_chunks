@@ -626,7 +626,58 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
         chunk_prim = _chunk_prim(stage, chunk)
         if chunk_prim is not None:
             descs.extend(_read_gizmos(chunk_prim))
-    return descs
+    if descs:
+        return descs
+
+    # Nothing has authored on this prim yet. That is not the same as nothing offering a
+    # handle for it: the layer-stack route only sees chunks that have already written
+    # something, and a chunk which cooks on demand rather than on every change has written
+    # nothing at all until you ask it to. rbd_solver is the case in hand -- it is entirely
+    # button-driven, so its offset handles, the very things you want to set BEFORE running a
+    # simulation, would not appear until after the first one.
+    #
+    # So fall back to what the gizmos themselves say. Each carries a resolved anchor, which
+    # is exactly the claim "this handle belongs to that prim", and it is authored as soon as
+    # the chunk exists. Deliberately a fallback rather than the primary route: the layer
+    # stack additionally drops disabled and muted chunks for free, which anchors do not.
+    return _gizmos_anchored_at(prim)
+
+
+def _gizmos_anchored_at(prim: Usd.Prim) -> list:
+    """Gizmos from any chunk whose anchor resolves to `prim`."""
+    scene = getattr(ChunkRegistry(), "scene", None)
+    if scene is None:
+        return []
+    stage = prim.GetStage()
+    prim_path = prim.GetPath()
+    found = []
+    for chunk in scene.get_chunks():
+        if _is_silenced(stage, chunk):
+            continue
+        chunk_prim = _chunk_prim(stage, chunk)
+        if chunk_prim is None or chunk_prim.GetPath() == prim_path:
+            continue
+        for desc in _read_gizmos(chunk_prim):
+            if any(Sdf.Path(str(a)) == prim_path for a in desc.anchor):
+                found.append(desc)
+    return found
+
+
+def _is_silenced(stage: Usd.Stage, chunk: "core.ChunkBase") -> bool:
+    """Whether this chunk should be offering no handles at all.
+
+    The layer-stack route gets this for free -- a disabled or muted chunk has no spec in the
+    prim's stack, so it simply does not come up. Anchors carry no such information: they are
+    authored once and keep pointing at the prim regardless, so muting a chunk's layer left
+    its handles on screen driving a chunk that is no longer contributing anything.
+    """
+    if chunk.has_state(core.ChunkFlags.State.DISABLED):
+        return True
+    try:
+        layer = chunk.get_edit_context()
+    except Exception:  # noqa: BLE001 - a chunk without a layer is not muted
+        return False
+    return bool(layer is not None and stage.IsLayerMuted(layer.identifier))
 
 
 # ---------------------------------------------------------------------------

@@ -1691,6 +1691,15 @@ def main() -> chunk.Chunk:
     # group (six loose spinboxes) and Velocity group (two text fields you had to type
     # space-separated numbers into).
     init_grp = _section("InitialState", "Initial State")
+    # gizmo= on the two offsets: these place the body before the sim runs, which is exactly
+    # the thing you want to do by dragging in the viewport rather than by typing numbers
+    # into a collapsed section. Deliberately two separate handles rather than a chunk-level
+    # gizmo="transform" -- that one absorbs translate/rotate/scale into a single manipulator
+    # and there is no scale offset here, so it would not resolve.
+    #
+    # No anchor= needed: prim_path is the only PRIM_SELECTION param on this chunk, which is
+    # what resolve_anchor_param falls back to. Adding a second such param would make that
+    # ambiguous, and it raises with the chunk's name rather than silently drawing nothing.
     init_grp.add_param(
         chunk.Vector(
             "offset_translate",
@@ -1699,6 +1708,7 @@ def main() -> chunk.Chunk:
             length=3,
             suffixes="XYZ",
             default_value=(0.0, 0.0, 0.0),
+            gizmo="translate",
             tooltip="Shift the body's start position before simulating, in scene units.",
         )
     )
@@ -1710,6 +1720,7 @@ def main() -> chunk.Chunk:
             length=3,
             suffixes="XYZ",
             default_value=(0.0, 0.0, 0.0),
+            gizmo="rotate",
             tooltip="Pre-rotate the body before simulating, in degrees.",
         )
     )
