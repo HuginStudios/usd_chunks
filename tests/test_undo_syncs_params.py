@@ -3,19 +3,23 @@
 Reported live in usdview: Ctrl+Z moves the object back, but the chunk's translate values
 stay where they were -- and only catch up once you touch the gizmo again.
 
-**These pass, so they do not reproduce the report.** Kept as a regression guard for the
-mirror they do exercise, and as a record of what has been ruled out.
+ChunkStageSync mirrors USD back into params in _on_objects_changed, but used to read only
+GetChangedInfoOnlyPaths(). A real Ctrl+Z in usdview was instrumented and reports the param
+as a **resync** instead:
 
-ChunkStageSync mirrors USD back into params in _on_objects_changed, but only for paths in
-GetChangedInfoOnlyPaths(). The theory was that undo restores whole layer contents, which
-USD would report as a *resync* the mirror never looks at. Modelling undo as a layer-content
-restore, USD still reports it as info-only and the mirror runs -- so that theory is wrong,
-or at least incomplete, and no fix has been made on the strength of it.
+    resynced   ['/Tab1/Transform.inputs:translate_grp:tz', ...]
+    info-only  ['/sopcreate1', '/sopcreate1/mesh_0']
 
-The real engine cannot be driven from here: hugin is a binary built for Python 3.11 against
-the bundle's USD and does not import under this interpreter. diagnose_redo.py's watch() /
-report() print which of the two USD actually uses during a real Ctrl+Z, and whether the
-guards at the top of the handler suppressed it.
+so the mirror never saw it. Precisely the edits a user cannot make by hand -- undo, redo, a
+layer reload -- were the ones ignored.
+
+Note the layer-content-restore tests below pass either way: re-importing a layer's text is
+reported as info-only, so it does NOT model a real undo. They are kept as a regression
+guard, and as a warning to anyone who reaches for that as a stand-in for undo again.
+
+The real engine cannot be driven from here -- hugin is a binary built for Python 3.11
+against the bundle's USD and does not import under this interpreter -- so the resync case
+is provoked directly through Sdf instead.
 """
 from __future__ import annotations
 
@@ -23,7 +27,7 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.plugins.chunk_usd import _values_agree, initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):
@@ -107,6 +111,93 @@ def test_redo_moves_the_param_forward_again() -> None:
     _restore(stage, after)
 
     assert chunk.get_param("tx").value == 11.0
+
+
+def _resync_param(stage, attr_path, value):
+    """Change a param attribute in a way USD reports as a RESYNC, not an info-only change.
+
+    Removing the property spec and re-adding it is a structural edit, which is the notice
+    shape a real undo produces. Setting the attribute normally would be info-only and would
+    exercise the path that already worked.
+    """
+    path = Sdf.Path(attr_path)
+    layer = stage.GetSessionLayer()
+    with Usd.EditContext(stage, layer):
+        prim_spec = layer.GetPrimAtPath(path.GetPrimPath())
+        prop = prim_spec.properties.get(path.name) if prim_spec else None
+        assert prop is not None, f"no spec at {attr_path} to resync"
+        type_name = prop.typeName
+        # Inside a change block, so the whole edit lands as ONE resync. Without it the
+        # trailing `.default = value` is its own info-only notice, which the mirror already
+        # handled -- the test would then pass with or without the fix, proving nothing.
+        with Sdf.ChangeBlock():
+            del prim_spec.properties[path.name]
+            Sdf.AttributeSpec(prim_spec, path.name, type_name).default = value
+
+
+def test_a_resynced_param_is_mirrored_back() -> None:
+    """The reported bug. A real Ctrl+Z reports the param as resynced, and the mirror used to
+    read only the info-only set -- so the prim moved back and the slider did not."""
+    stage = Usd.Stage.CreateInMemory()
+    reg, scene = _session(stage)
+    chunk = _transform_chunk(reg, scene)
+
+    chunk.get_param("tx").value = 5.0
+    attr_path = getattr(chunk.get_param("tx"), "_param_attr_path", None)
+    assert attr_path, "param never got an attribute to mirror"
+
+    _resync_param(stage, attr_path, 2.0)
+
+    assert chunk.get_param("tx").value == 2.0, (
+        "the slider kept the undone value -- the prim moves back but the chunk disagrees"
+    )
+
+
+def test_float32_rounding_is_not_treated_as_a_change() -> None:
+    """A param can hold a 64-bit float while USD stores 32, so the two differ in the 8th
+    significant digit. These are the exact values a live session reported:
+
+        Transform.tx   param=-3.3492076146840537   USD=-3.349207639694214
+
+    Compared exactly they are permanently unequal -- so now that resyncs reach the mirror,
+    every notice mentioning the attribute would rewrite the param, dirtying the chunk and
+    cooking it. Harmless once; resyncs are frequent enough that it is not once.
+
+    Tested at the comparison rather than end-to-end because assigning through the param
+    setter rounds it too, which makes the drifted state impossible to reach that way.
+    """
+    assert _values_agree(-3.349207639694214, -3.3492076146840537)
+    assert _values_agree(-7.938231468200684, -7.938231637851604)
+    assert _values_agree(-2.4296252727508545, -2.4296252931861098)
+
+    # A real edit still reads as one. An undo moves things by far more than this.
+    assert not _values_agree(-3.349, -3.35)
+    assert not _values_agree(0.0, 1e-3)
+
+
+def test_agreement_stays_exact_where_it_has_to() -> None:
+    """The tolerance is for float32 round-tripping only -- it must not blur anything else."""
+    assert not _values_agree(True, False)
+    assert not _values_agree("/World/Cube", "/World/Sphere")
+    assert _values_agree((1.0, 2.0), (1.0, 2.0))
+    assert not _values_agree((1.0, 2.0), (1.0, 9.0))
+    # Different lengths are not "equal as far as they go".
+    assert not _values_agree((1.0, 2.0), (1.0, 2.0, 3.0))
+
+
+def test_equal_length_strings_do_not_recurse() -> None:
+    """A str is iterable and yields 1-character strs, which are iterable in turn -- so
+    treating strings as sequences recurses until the stack dies, taking down whatever is
+    holding the notice.
+
+    Its own length is what hides it: unequal lengths raise out of zip(strict=True) and land
+    on plain equality, so "/World/Cube" vs "/World/Sphere" passes happily while any two prim
+    paths of the SAME length blow up. Which is how it reached a full test run before being
+    caught, in three unrelated loft tests.
+    """
+    assert not _values_agree("/World/Cube", "/World/Cyl0")
+    assert _values_agree("/World/Cube", "/World/Cube")
+    assert not _values_agree("abc", "abd")
 
 
 def test_an_ordinary_edit_still_syncs() -> None:

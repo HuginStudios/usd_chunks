@@ -104,11 +104,14 @@ def state():
             if not (attr and attr.IsValid()):
                 continue
             usd_val = attr.Get(0)
-            if usd_val is not None and usd_val != param.value:
+            # Same tolerance the mirror uses. A param holds a 64-bit float and USD stores
+            # 32, so an exact compare reports every round-tripped value as drifted -- which
+            # it did on the first run here, for three values that were in fact fine.
+            if usd_val is not None and not chunk_usd._values_agree(usd_val, param.value):
                 mismatched += 1
                 _line(f"{c.name}.{param.name}", f"param={param.value}  USD={usd_val}  <-- DRIFTED")
     if not mismatched:
-        print("  params agree with USD")
+        print("  params agree with USD (float32 rounding ignored)")
 
     try:
         import shiboken6

@@ -2169,6 +2169,25 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 v._recook_pending = True
                 QtCore.QTimer.singleShot(0, v._run_pending_recook)
 
+    def _node_set_is_stale(self, root) -> bool:
+        """Whether the nodes on screen still match the chunk prims under `root`.
+
+        Deliberately compares against prims rather than against live chunk objects: a chunk
+        with no prim has no node either way, so it is not evidence of staleness, whereas a
+        prim with no node is exactly the reported symptom.
+        """
+        root_prim = self._stage.GetPrimAtPath(root)
+        if not root_prim.IsValid():
+            return False  # nothing to compare against; _rebuild_nodes owns this case
+        on_stage = {
+            str(p.GetPath()) for p in root_prim.GetFilteredChildren(_INCLUDE_INACTIVE)
+            if p.GetTypeName() == _CHUNK_PRIM_TYPENAME
+        }
+        # Only prims-without-nodes. A node whose prim is gone is already handled by the
+        # fast path above (removing a prim IS a prim-level resync), and treating it as
+        # staleness here would schedule a second, redundant rebuild for every delete.
+        return bool(on_stage - set(self._nodes))
+
     def _on_objects_changed(self, notice, sender):
         if not self._stage or not sender:
             return
@@ -2185,6 +2204,26 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         ):
             self._schedule_rebuild()
             return
+        # Self-heal. The check above is the fast path and covers ordinary creates/deletes,
+        # but it is not sufficient on its own: the graph can be left holding a node set that
+        # no longer matches the stage, with nothing scheduled to correct it.
+        #
+        # Seen live after undoing a chunk create and redoing it -- the chunk prim was back
+        # and active, the chunk object was alive, the two paired up perfectly, and the node
+        # simply never returned. Two things combine to produce that. Undoing away every
+        # chunk makes the root invalid, which _rebuild_nodes treats as a transient
+        # recomposition: it keeps the current graph and retries, then gives up after 20
+        # attempts. And the redo that follows reports its restore as *property*-level
+        # resyncs (`<chunk>.inputs:...`), which the check above ignores by design. Nothing
+        # was left to trigger a rebuild, so the graph stayed frozen.
+        #
+        # Rather than widen the fast path (property resyncs are the hot path -- every cook
+        # emits hundreds), reconcile only when something under the root was resynced AND the
+        # node set provably disagrees with the stage. Costs one prim scan on a rare notice.
+        if root is not None and any(p.HasPrefix(root) for p in notice.GetResyncedPaths()):
+            if self._node_set_is_stale(root):
+                self._schedule_rebuild()
+                return
         for path in notice.GetChangedInfoOnlyPaths():
             if path.IsPropertyPath() and path.name == "ui:nodegraph:node:pos":
                 prim_path = str(path.GetPrimPath())

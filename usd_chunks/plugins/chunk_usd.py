@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import logging
+import math
 import re
 import weakref
 from pathlib import Path
@@ -115,6 +116,41 @@ _pin_new_chunks: "bool | None" = None
 # right-click / wire-drop point). _define_prim reads it for the node pos instead of the far-away
 # index default. None → use the default. Cleared by the caller after the create.
 _create_node_pos: "tuple[float, float] | None" = None
+
+# Just above float32's ~1e-7 relative precision. A param holds a Python float (64-bit) but
+# is stored in USD as a 32-bit float, so a value that made the round trip comes back
+# differing in the 8th significant digit -- e.g. param -3.3492076146840537 vs USD
+# -3.349207639694214, seen live. Comparing those exactly makes them permanently unequal, so
+# every notice mentioning the attribute would write the param again; harmless per write, but
+# it dirties the chunk and cooks it, and resyncs are frequent enough for that to matter.
+_FLOAT_AGREEMENT = 1e-6
+
+
+def _values_agree(usd_value, param_value) -> bool:
+    """Whether a value read back from USD is the same as the param's, allowing for float32.
+
+    Falls back to plain equality for anything not a pair of numbers -- strings, tokens,
+    bools -- where exactness is the whole point.
+    """
+    # Strings first, and not merely for speed: a str is iterable, and iterating one yields
+    # 1-character strs that are iterable in turn, so falling through to the sequence branch
+    # below recurses until the stack runs out. Equal-length strings are the trigger --
+    # different lengths raise from strict=True and land on plain equality, which is why a
+    # test comparing "/World/Cube" with "/World/Sphere" passes while any prim path compared
+    # against another of the same length brings down whatever is holding the notice.
+    if isinstance(usd_value, (str, bytes)) or isinstance(param_value, (str, bytes)):
+        return usd_value == param_value
+    if isinstance(usd_value, bool) or isinstance(param_value, bool):
+        return usd_value == param_value
+    if isinstance(usd_value, (int, float)) and isinstance(param_value, (int, float)):
+        return math.isclose(usd_value, param_value, rel_tol=_FLOAT_AGREEMENT, abs_tol=_FLOAT_AGREEMENT)
+    # Vectors and other sequences: compare component-wise under the same rule.
+    try:
+        pairs = list(zip(usd_value, param_value, strict=True))
+    except (TypeError, ValueError):
+        return usd_value == param_value
+    return all(_values_agree(a, b) for a, b in pairs)
+
 
 _SDF_TYPE_MAP = {
     bool: Sdf.ValueTypeNames.Bool,
@@ -474,25 +510,34 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
         self._reconcile_changed_exec_inputs(all_changed)
         for chunk in self._scene.get_chunks():
-            if changed:
+            # all_changed, not just the info-only set. An ordinary edit -- typing in a field,
+            # a gizmo writing a param -- arrives as an info-only change, but undo restores
+            # layer content wholesale and USD reports THAT as a resync. Reading only the
+            # info-only set meant precisely the edits a user cannot make by hand (undo, redo,
+            # a layer reload) were the ones the mirror ignored: Ctrl+Z moved the prim back
+            # while the chunk's sliders kept the undone value, and only caught up when the
+            # gizmo was next touched. Confirmed live -- a real Ctrl+Z reports
+            # `<chunk>.inputs:translate_grp:tz` as resynced, with nothing in the info-only set.
+            if all_changed:
                 for _, param in _iter_chunk_params(chunk):
                     data_path = getattr(param, "_param_attr_path", None)
-                    if not data_path or data_path not in changed:
+                    if not data_path or data_path not in all_changed:
                         continue
                     attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
                         val = attr.Get(0)
                         raw = getattr(param, 'raw_value', None)
-                        if val is not None and val != param.value and not (isinstance(raw, str) and chunk_utils.has_expression(raw)):
+                        if (val is not None and not _values_agree(val, param.value)
+                                and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
                             param.value = val
                 for _, vector in _iter_chunk_vectors(chunk):
                     data_path = getattr(vector, "_param_attr_path", None)
-                    if not data_path or data_path not in changed:
+                    if not data_path or data_path not in all_changed:
                         continue
                     attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
                         val = attr.Get(0)
-                        if val is not None:
+                        if val is not None and not _values_agree(val, vector.value):
                             vector.value = val
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
             if not chunk_prim_path or chunk_prim_path not in all_changed:
