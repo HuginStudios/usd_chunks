@@ -446,6 +446,69 @@ class TestDelegateSettings:
         assert attr.Get() is True
 
 
+class TestCameraChoice:
+    """Which camera a render used, and why. The third fallback is nobody's decision --
+    whichever camera Traverse reaches first -- so a frame that looks nothing like the
+    viewport needs the log to account for it."""
+
+    def _stage(self):
+        from pxr import Sdf, Usd, UsdGeom, UsdRender
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.Camera.Define(stage, "/World/aaa_first")
+        UsdGeom.Camera.Define(stage, "/World/shotCam")
+        UsdRender.Settings.Define(stage, "/Render/settings")
+        return stage, Sdf
+
+    def _node(self, camera_value):
+        return types.SimpleNamespace(
+            get_param=lambda name: types.SimpleNamespace(value=camera_value)
+        )
+
+    def test_an_override_is_named_as_such(self, caplog):
+        mod = importlib.import_module("scripts.render")
+        stage, _sdf = self._stage()
+
+        with caplog.at_level("INFO"):
+            camera = mod._resolve_camera(self._node("/World/shotCam"), stage, "/Render/settings")
+
+        assert camera.GetPath() == "/World/shotCam"
+        assert "set on this chunk" in caplog.text
+
+    def test_a_settings_camera_is_named_as_such(self, caplog):
+        mod = importlib.import_module("scripts.render")
+        stage, sdf = self._stage()
+        from pxr import UsdRender
+
+        settings = UsdRender.Settings(stage.GetPrimAtPath("/Render/settings"))
+        settings.CreateCameraRel().SetTargets([sdf.Path("/World/shotCam")])
+
+        with caplog.at_level("INFO"):
+            camera = mod._resolve_camera(self._node(""), stage, "/Render/settings")
+
+        assert camera.GetPath() == "/World/shotCam"
+        assert "named by Render Settings" in caplog.text
+
+    def test_the_arbitrary_fallback_says_nothing_chose_it(self, caplog):
+        """The one worth flagging: it takes whichever camera sorts first, which is why
+        a render can come out framed differently from the viewport."""
+        mod = importlib.import_module("scripts.render")
+        stage, _sdf = self._stage()
+
+        with caplog.at_level("INFO"):
+            camera = mod._resolve_camera(self._node(""), stage, "/Render/settings")
+
+        assert camera.GetPath() == "/World/aaa_first", "not the one anyone picked"
+        assert "nothing chose it" in caplog.text
+
+    def test_no_camera_still_returns_none(self):
+        from pxr import Usd
+
+        mod = importlib.import_module("scripts.render")
+
+        assert mod._resolve_camera(self._node(""), Usd.Stage.CreateInMemory(), "") is None
+
+
 class TestViewportPush:
     """Settings handed straight to the running delegate, because most renderers read
     nothing else -- Cycles, RPR, Aurora and OSPRay all decline Hydra's renderSettings

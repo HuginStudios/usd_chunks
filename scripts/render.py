@@ -283,15 +283,29 @@ def _settings_camera(stage, settings_path):
 
 def _resolve_camera(node, stage, settings_path=""):
     """The camera to render from: the chunk's own override, else the one the render
-    settings name, else the first camera on the stage."""
+    settings name, else the first camera on the stage.
+
+    Which of the three it was is said out loud, because the last one is nobody's
+    decision -- it is whichever camera Traverse happens to reach first, and there is no
+    reason for that to be the one the viewport is showing. A frame that comes out
+    looking nothing like the viewport is then something the log accounts for rather
+    than a mystery to go hunting for.
+    """
     if camera := _camera_at(stage, node.get_param("camera").value):
-        return camera
-    if camera := _settings_camera(stage, settings_path):
-        return camera
-    for prim in stage.Traverse():
-        if prim.IsA(UsdGeom.Camera):
-            return UsdGeom.Camera(prim)
-    return None
+        source = "set on this chunk"
+    elif camera := _settings_camera(stage, settings_path):
+        source = "named by Render Settings"
+    else:
+        camera = next(
+            (UsdGeom.Camera(prim) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)),
+            None,
+        )
+        if camera is None:
+            return None
+        source = "first camera found on the stage, nothing chose it"
+
+    logger.info("Render: rendering from <%s>, %s.", camera.GetPath(), source)
+    return camera
 
 
 def _why_refused(renderer, use_gpu):
