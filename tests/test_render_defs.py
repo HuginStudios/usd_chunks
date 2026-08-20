@@ -2,8 +2,9 @@
 
 Every renderer authors settings the same way -- namespaced attributes on the
 RenderSettings prim -- but declares them differently. V-Ray ships an applied API schema;
-RenderMan registers .args files into Sdr. These cover the shared model both produce, and
-the schema backend against a real renderer when one is registered.
+RenderMan registers .args files into Sdr; Cycles ships neither and only tells Hydra at
+runtime. These cover the shared model all three produce, and each backend against a real
+renderer when one is registered.
 
 The renderer-dependent tests skip rather than fail when no such renderer is installed:
 the usd-core wheels carry no render delegates at all, and "no renderers describable" is
@@ -20,10 +21,38 @@ def _schema_defs():
     return [d for d in render_defs.iter_render_settings_defs() if d.source == "schema"]
 
 
+def _delegate_defs():
+    return [d for d in render_defs.iter_render_settings_defs() if d.source == "delegate"]
+
+
 requires_renderer = pytest.mark.skipif(
     not _schema_defs(),
     reason="no renderer ships an applied API schema for RenderSettings in this USD build",
 )
+
+requires_delegate = pytest.mark.skipif(
+    not _delegate_defs(),
+    reason="no loadable render delegate here declares its settings only to Hydra",
+)
+
+
+class _Setting:
+    """Stand-in for a Hydra render setting descriptor as the Python binding hands it out.
+
+    Its type is an enum whose name is the only part read, so the real
+    UsdImagingGL.RendererSettingType is not needed to exercise the mapping -- which
+    matters, since the wheels these tests usually run against ship no imaging at all.
+    """
+
+    class _Type:
+        def __init__(self, name):
+            self.name = name
+
+    def __init__(self, key, name, type_name, default):
+        self.key = key
+        self.name = name
+        self.type = self._Type(type_name)
+        self.defValue = default
 
 
 class TestGrouping:
@@ -193,6 +222,116 @@ class TestSchemaBackend:
         assert render_defs.available_delegates() == [
             d.label for d in render_defs.iter_render_settings_defs()
         ]
+
+
+class TestDelegateBackend:
+    """Cycles declares its settings in C++ and ships neither a schema nor .args, so the
+    descriptors a loaded delegate hands out are the only description that exists."""
+
+    def _settings(self):
+        return [
+            _Setting("cycles:samples", "Sample Count", "INT", 1024),
+            _Setting("cycles:integrator:max_bounce", "Max Bounce", "INT", 7),
+            _Setting("cycles:integrator:use_denoise", "Use Denoiser", "FLAG", False),
+            _Setting("cycles:integrator:ao_factor", "AO Factor", "FLOAT", 0.0),
+        ]
+
+    def test_descriptors_become_a_def(self):
+        definition = render_defs._def_from_delegate(
+            "HdCyclesPlugin", "Cycles", self._settings()
+        )
+
+        assert definition.key == "delegate:HdCyclesPlugin"
+        assert definition.label == "Cycles"
+        assert definition.namespace == "cycles"
+        assert definition.source == "delegate"
+        assert len(definition.props) == 4
+
+    def test_no_schema_to_apply(self):
+        """There is no API schema behind a descriptor, so nothing must claim one -- the
+        chunk applies schema_name to the prim whenever it authors a setting."""
+        definition = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", self._settings())
+
+        assert definition.schema_name == ""
+
+    def test_setting_types_map_to_sdf_types(self):
+        definition = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", self._settings())
+        by_attr = {p.attr_name: p for p in definition.props}
+
+        assert by_attr["cycles:samples"].sdf_type == "int"
+        assert by_attr["cycles:integrator:use_denoise"].sdf_type == "bool"
+        assert by_attr["cycles:integrator:ao_factor"].sdf_type == "float"
+
+    def test_the_key_is_the_attribute_to_author(self):
+        """A descriptor key is already the namespaced attribute name, which is what makes
+        this backend a matter of renaming rather than translation."""
+        definition = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", self._settings())
+        prop = next(p for p in definition.props if p.attr_name == "cycles:integrator:max_bounce")
+
+        assert prop.name == "cycles_integrator_max_bounce"
+        assert prop.default == 7
+
+    def test_the_renderers_own_name_survives_as_help(self):
+        """group_props rewrites labels to drop what the enclosing groups already say, so
+        the tooltip is the only place a descriptor's name lives on -- and it is the only
+        documentation there is, since a descriptor carries none."""
+        definition = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", self._settings())
+        prop = next(p for p in definition.props if p.attr_name == "cycles:integrator:use_denoise")
+
+        assert prop.help == "Use Denoiser"
+
+    def test_an_unmappable_type_is_skipped_not_guessed(self):
+        settings = self._settings() + [_Setting("cycles:odd", "Odd", "MATRIX", None)]
+        definition = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", settings)
+
+        assert "cycles:odd" not in {p.attr_name for p in definition.props}
+
+    def test_unnamespaced_settings_are_refused(self):
+        """Storm's are engine-side viewport toggles, not scene description. Authoring
+        them unnamespaced would collide with UsdRender's own attributes."""
+        settings = [
+            _Setting("enableTinyPrimCulling", "Tiny Prim Culling", "FLAG", False),
+            _Setting("maxLights", "Max Lights", "INT", 16),
+        ]
+
+        assert render_defs._def_from_delegate("HdStormRendererPlugin", "Storm", settings) is None
+
+    def test_a_delegate_with_nothing_to_say_is_not_a_def(self):
+        assert render_defs._def_from_delegate("HdFooPlugin", "Foo", []) is None
+
+    @requires_delegate
+    def test_a_real_delegate_is_described(self):
+        for definition in _delegate_defs():
+            assert definition.namespace
+            assert definition.props
+            assert not definition.schema_name
+
+    @requires_delegate
+    def test_every_real_prop_builds_a_param(self):
+        definition = _delegate_defs()[0]
+        unmapped = [p for p in definition.props if render_defs.param_for_setting(p) is None]
+
+        assert not unmapped, f"unmapped types: {sorted({p.sdf_type for p in unmapped})}"
+
+    @requires_delegate
+    def test_a_delegate_never_duplicates_a_schema(self):
+        """Loading a delegate is the expensive part, so a renderer a schema already
+        described is skipped by name -- and dropped on its namespace when the two
+        spellings of that name did not match."""
+        namespaces = [d.namespace for d in render_defs.iter_render_settings_defs()]
+
+        assert len(namespaces) == len(set(namespaces))
+
+
+class TestNameNormalisation:
+    """A delegate's display name and its schema's label are written by different people,
+    and only match once the punctuation and the case are gone."""
+
+    def test_a_delegate_name_matches_its_schema_label(self):
+        assert render_defs._normalised("V-Ray") == render_defs._normalised("VRay")
+
+    def test_different_renderers_still_differ(self):
+        assert render_defs._normalised("Cycles") != render_defs._normalised("Storm")
 
 
 class TestHostVariableDefaults:

@@ -166,6 +166,11 @@ def _loft_delegate_params(owner):
     and it means nothing has to be switched here to match what the Render chunk is
     actually rendering with.
 
+    Whether a delegate reads back what is authored for it is the delegate's business,
+    not this chunk's -- hdCycles declares its settings but does not yet support the
+    renderSettings Bprim that would deliver them, so its group edits scene description
+    that its own delegate currently ignores.
+
     Affordable only because the params inside are built on first expand -- a group per
     renderer costs a header, not its settings.
     """
@@ -275,6 +280,7 @@ def _author_delegate_settings(node, prim):
             # AddAppliedSchema rather than ApplyAPI: the schema's library is not loaded
             # until something uses it, so the TfType ApplyAPI wants is not resolvable.
             prim.AddAppliedSchema(definition.schema_name)
+
 
 
 def _token_list(value):
@@ -419,6 +425,7 @@ def execute(node):
     _set_stage_settings_path(stage, authored if node.get_param("set_stage_settings").value else None)
 
 
+
 def config():
     return chunk.DefaulConfig(
         category=chunk.StandardCategory.UTILS,
@@ -478,6 +485,13 @@ def config():
         first time it is expanded, since building all of them up front took twenty
         seconds before a single one was visible.
 
+        Whether a delegate reads any of that back is up to the delegate. Reading a
+        RenderSettings prim means supporting Hydra's renderSettings Bprim, and of the
+        renderers surveyed only V-Ray and Arnold do; Cycles, RPR, Aurora and OSPRay take
+        settings solely through the delegate API, which is what Apply to Viewport is for.
+        Authoring is still the portable half — it is what husk, Solaris and any future
+        delegate read — but on its own it is not what makes a viewport change.
+
         Only values changed from their default are authored, as namespaced attributes on
         the RenderSettings prim (vray:..., ri:...) -- Hydra gathers those and hands each
         delegate the namespace it owns. A renderer's API schema is applied only once it
@@ -485,8 +499,17 @@ def config():
 
         Nothing here is renderer-specific. A renderer appears because it declares its
         settings in a way USD can read -- V-Ray ships an applied API schema, RenderMan
-        registers .args files into the shader registry -- so installing one is all it
-        takes for it to show up.
+        registers .args files into the shader registry, and Cycles, which ships neither,
+        declares them to Hydra at runtime where loading the delegate is the only way to
+        ask. So installing a renderer is all it takes for it to show up.
+
+        Authoring them is standard either way, but consuming them is up to the delegate.
+        A delegate reads a RenderSettings prim by supporting Hydra's renderSettings
+        Bprim; hdCycles does not yet, so its settings are authored correctly and read by
+        nothing -- changing Sample Count here leaves the render identical. They are
+        still worth writing: the scene description is the portable part and outlives the
+        delegate that cannot read it. Until hdCycles catches up, set Cycles' settings in
+        usdview's own Hydra Settings, which drives the delegate directly.
 
         Everything authored is standard UsdRender scene description, readable by
         any renderer whether or not usd_chunks is installed.

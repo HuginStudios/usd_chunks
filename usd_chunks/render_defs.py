@@ -14,9 +14,15 @@ needs:
   then knows every attribute, its type, its fallback value and its documentation.
 * **Sdr** -- RenderMan ships ``.args`` files that register into the shader registry
   instead, with no USD schema involved.
+* **The delegate itself** -- Cycles ships neither. hdCycles declares its settings in C++
+  as Hydra render setting descriptors, so the only way to read them is to load the
+  delegate and ask it, which is what ``UsdImagingGL.Engine.GetRendererSettingsList``
+  does. Its keys are already namespaced (``cycles:integrator:max_bounce``), so what
+  comes back needs no more translation than the other two.
 
-Both are read here and returned as the same :class:`RenderSettingsDef`, so a chunk never
-learns which renderer or which mechanism produced a setting. Nothing here imports Qt.
+All three are read here and returned as the same :class:`RenderSettingsDef`, so a chunk
+never learns which renderer or which mechanism produced a setting. Nothing here imports
+Qt.
 
 ``` py
 for d in iter_render_settings_defs():
@@ -41,6 +47,11 @@ from pxr import Plug, Usd
 
 from usd_chunks import shader_defs
 
+try:
+    from pxr import UsdImagingGL
+except ImportError:  # usd-core wheels ship no imaging, so no delegate to ask
+    UsdImagingGL = None
+
 logger = logging.getLogger(__name__)
 
 #: Prim type these settings attach to. Applied API schemas advertise this in plugInfo.
@@ -56,6 +67,17 @@ _LABEL_SUFFIXES = ("RendererSettingsAPI", "RenderSettingsAPI", "SettingsAPI", "A
 #: than a tested mapping.
 _SDR_OPTION_NODES: Dict[str, tuple] = {
     "ri": ("PRManOptions", "PRManGlobalOptions"),
+}
+
+#: Sdf type for each of the four types a Hydra render setting descriptor can reach Python
+#: as. The binding drops any other type with a "doesn't have a UI implementation" warning
+#: before it gets here -- that is how hdCycles' double Time Limit and its float[] pixel
+#: jitter override go missing -- so this table is complete by construction, not by choice.
+_DELEGATE_SDF_TYPES = {
+    "FLAG": "bool",
+    "INT": "int",
+    "FLOAT": "float",
+    "STRING": "string",
 }
 
 #: A segment needs at least this many settings sharing it before it earns a group, so a
@@ -122,11 +144,13 @@ class RenderSettingsDef:
     """One renderer's settings, however they were declared.
 
     Attributes:
-        key (str): Stable identifier -- the schema type name, or "sdr:<identifier>"
+        key (str): Stable identifier -- the schema type name, "sdr:<identifier>", or
+            "delegate:<plugin id>"
         label (str): Display name, e.g. "VRay"
         namespace (str): Attribute namespace this renderer owns, e.g. "vray"
-        source (str): "schema" or "sdr", for diagnostics only
-        schema_name (str): Applied API schema to ApplyAPI, empty for Sdr-sourced defs
+        source (str): "schema", "sdr" or "delegate", for diagnostics only
+        schema_name (str): Applied API schema to ApplyAPI, empty when the settings did
+            not come from one
         props (List[RenderSettingProp]): The settings
     """
 
@@ -272,6 +296,116 @@ def _def_from_sdr(namespace: str, identifiers: tuple) -> Optional[RenderSettings
     return None
 
 
+def _normalised(label: str) -> str:
+    """A renderer name reduced to what two spellings of it agree on.
+
+    A delegate's display name and its schema's label are written by different people --
+    "V-Ray" against VRayRendererSettingsAPI's "VRay" -- so they only match once the
+    punctuation and case are gone.
+    """
+    return "".join(ch for ch in label.lower() if ch.isalnum())
+
+
+def _def_from_delegate(plugin_id: str, label: str, settings) -> Optional[RenderSettingsDef]:
+    """A settings def from a loaded render delegate's setting descriptors.
+
+    Cycles declares its settings in C++ and ships neither a schema nor .args, so the
+    descriptors Hydra hands out at runtime are the only description of them that exists.
+    They are already in the form this module wants: the key is the namespaced attribute
+    name to author, and the name is the renderer's own label for it.
+
+    The name is kept as the help text rather than as the label, because the label is
+    rewritten by :func:`group_props` to drop whatever the enclosing groups already say.
+    So the tooltip is where a renderer's own wording survives -- and for a delegate that
+    is the only documentation there is, since a descriptor carries none.
+    """
+    namespace = _namespace_of([setting.key for setting in settings])
+
+    # No namespace means these are not settings that belong on a RenderSettings prim.
+    # hdOSPRay declares samplesPerFrame and maxDepth bare, which would sit in the same
+    # namespace as UsdRender's own resolution and camera with nothing keeping the two
+    # apart; hdGatling declares max-bounces, which Sdf refuses outright because a USD
+    # property name cannot contain a hyphen. Neither delegate reads a RenderSettings
+    # prim anyway -- an unnamespaced key is a sign the settings were only ever meant to
+    # be set on the delegate directly.
+    if not namespace:
+        return None
+
+    props = []
+    for setting in settings:
+        if not setting.key.startswith(namespace + ":"):
+            continue
+        sdf_type = _DELEGATE_SDF_TYPES.get(getattr(setting.type, "name", ""))
+        if not sdf_type:
+            continue
+        props.append(
+            RenderSettingProp(
+                name=setting.key.replace(":", "_"),
+                attr_name=setting.key,
+                label=setting.name or _prettify(setting.key[len(namespace) + 1:]),
+                sdf_type=sdf_type,
+                default=_sanitize_default(setting.defValue),
+                help=setting.name or "",
+            )
+        )
+
+    if not props:
+        return None
+
+    return RenderSettingsDef(
+        key=f"delegate:{plugin_id}",
+        label=label,
+        namespace=namespace,
+        source="delegate",
+        props=props,
+    )
+
+
+def _defs_from_delegates(existing) -> List[RenderSettingsDef]:
+    """Ask every render delegate not already described for its setting descriptors.
+
+    Loading a delegate is the expensive part -- V-Ray's takes two seconds to bring up its
+    AppSDK and start a session, and Cycles' costs a minute the first time it is asked on
+    a cold machine, against a fraction of a second once its libraries are resident -- so
+    a renderer whose settings a schema or Sdr already described is skipped by name before
+    it is loaded. When the two spellings of a name do not match, the load happens anyway
+    and the duplicate is dropped afterwards on its namespace, which costs time but not
+    correctness.
+
+    Every failure here is one renderer's, not the whole discovery's: a delegate that
+    cannot be loaded at all is normal rather than exceptional. Storm refuses outright in
+    a headless process because it needs a GL context that is not there, which is exactly
+    right -- Storm has no settings to author on a RenderSettings prim either way.
+    """
+    if UsdImagingGL is None:
+        return []
+
+    described = {_normalised(d.label) for d in existing}
+    claimed = {d.namespace for d in existing if d.namespace}
+
+    engine = UsdImagingGL.Engine()
+    found = []
+    for plugin_id in UsdImagingGL.Engine.GetRendererPlugins():
+        label = UsdImagingGL.Engine.GetRendererDisplayName(plugin_id) or plugin_id
+        if _normalised(label) in described:
+            continue
+
+        try:
+            if not engine.SetRendererPlugin(plugin_id):
+                continue
+            settings = engine.GetRendererSettingsList()
+        except Exception as exc:  # noqa: BLE001 - a delegate that will not load here
+            logger.debug("Could not read render settings from %s: %s", plugin_id, exc)
+            continue
+
+        definition = _def_from_delegate(plugin_id, label, settings)
+        if definition and definition.namespace not in claimed:
+            claimed.add(definition.namespace)
+            found.append(definition)
+
+    return found
+
+
 @lru_cache(maxsize=1)
 def _discover() -> tuple:
     """Read every renderer's settings once per process.
@@ -282,6 +416,10 @@ def _discover() -> tuple:
     variant, and again on every cook to decide what to author. The registries this reads
     are fixed for the life of the process, so re-reading them only ever returns the same
     answer more slowly.
+
+    More so once delegates are in the mix, since asking one costs loading it. Caching is
+    what keeps that to a single load per renderer for the life of the process rather than
+    one per cook.
     """
     found = []
 
@@ -298,6 +436,13 @@ def _discover() -> tuple:
                 found.append(definition)
         except Exception as exc:  # noqa: BLE001 - registry shapes vary by USD version
             logger.debug("Could not read Sdr render settings for %s: %s", namespace, exc)
+
+    # Last, because it is the only source that has to load anything to answer, and
+    # because what the other two already found is what lets it skip most of that work.
+    try:
+        found.extend(_defs_from_delegates(found))
+    except Exception as exc:  # noqa: BLE001 - no imaging, no GL, no delegates at all
+        logger.debug("Could not read render settings from any delegate: %s", exc)
 
     return tuple(found)
 
