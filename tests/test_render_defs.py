@@ -323,6 +323,93 @@ class TestDelegateBackend:
         assert len(namespaces) == len(set(namespaces))
 
 
+class TestDelegateEnums:
+    """A Hydra render setting descriptor has no field for allowed values, so an enum
+    arrives as a bare int and its names are lost. The table restores them, which is the
+    difference between a menu of denoiser names and a slider showing 4."""
+
+    def _setting(self, key, default):
+        return _Setting(key, "Denoiser Type", "INT", default)
+
+    def test_a_known_enum_becomes_options_and_values(self):
+        settings = [self._setting("cycles:integrator:denoiser_type", 4)]
+        definition = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", settings)
+        prop = definition.props[0]
+
+        assert prop.options == ("none", "optix", "openimagedenoise")
+        assert prop.option_values == (0, 2, 4)
+
+    def test_the_numeric_default_becomes_its_label(self):
+        """The param is a Menu of names, so its default has to be one of them."""
+        settings = [self._setting("cycles:integrator:denoiser_type", 4)]
+        definition = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", settings)
+
+        assert definition.props[0].default == "openimagedenoise"
+
+    def test_a_label_authors_its_number(self):
+        settings = [self._setting("cycles:integrator:denoiser_type", 4)]
+        prop = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", settings).props[0]
+
+        assert render_defs.authored_value(prop, "none") == 0
+        assert render_defs.authored_value(prop, "optix") == 2
+        assert render_defs.authored_value(prop, "openimagedenoise") == 4
+
+    def test_pairing_is_explicit_not_positional(self):
+        """Cycles registers sampling_pattern's blue_noise_round (4) before
+        blue_noise_first (3), so anything index-based writes the wrong pattern."""
+        settings = [_Setting("cycles:integrator:sampling_pattern", "Sampling Pattern", "INT", 1)]
+        prop = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", settings).props[0]
+
+        assert render_defs.authored_value(prop, "blue_noise_round") == 4
+        assert render_defs.authored_value(prop, "blue_noise_first") == 3
+        assert prop.options.index("blue_noise_round") < prop.options.index("blue_noise_first")
+
+    def test_an_unknown_label_authors_nothing(self):
+        """Rather than writing a number the renderer would reject."""
+        settings = [self._setting("cycles:integrator:denoiser_type", 4)]
+        prop = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", settings).props[0]
+
+        assert render_defs.authored_value(prop, "not-a-denoiser") is None
+
+    def test_an_ordinary_setting_is_passed_straight_through(self):
+        """Only an enum needs translating; everything else must be untouched."""
+        settings = [_Setting("cycles:samples", "Sample Count", "INT", 1024)]
+        prop = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", settings).props[0]
+
+        assert prop.options == ()
+        assert prop.option_values == ()
+        assert render_defs.authored_value(prop, 77) == 77
+
+    def test_a_known_enum_builds_a_menu(self):
+        settings = [self._setting("cycles:integrator:denoiser_type", 4)]
+        prop = render_defs._def_from_delegate("HdCyclesPlugin", "Cycles", settings).props[0]
+        param = render_defs.param_for_setting(prop)
+
+        assert type(param).__name__ == "Menu"
+        assert list(param.menu_items) == ["none", "optix", "openimagedenoise"]
+
+    def test_every_table_entry_is_self_consistent(self):
+        """Transcribed by hand from the renderer's headers, so worth pinning."""
+        for attr, pairs in render_defs._DELEGATE_ENUMS.items():
+            labels = [label for label, _v in pairs]
+            values = [value for _l, value in pairs]
+
+            assert attr.count(":") >= 1, f"{attr} is not namespaced"
+            assert len(set(labels)) == len(labels), f"{attr} repeats a label"
+            assert len(set(values)) == len(values), f"{attr} repeats a value"
+            assert all(isinstance(v, int) for v in values), f"{attr} has a non-int value"
+
+    @requires_delegate
+    def test_the_table_matches_what_the_delegate_declares(self):
+        """An entry for a setting this renderer does not have is dead weight, and a
+        default that is not one of the options would leave the menu on the wrong item."""
+        for definition in _delegate_defs():
+            for prop in definition.props:
+                if prop.attr_name in render_defs._DELEGATE_ENUMS:
+                    assert prop.default in prop.options, prop.attr_name
+                    assert len(prop.options) == len(prop.option_values)
+
+
 class TestNameNormalisation:
     """A delegate's display name and its schema's label are written by different people,
     and only match once the punctuation and the case are gone."""

@@ -268,6 +268,13 @@ def _author_delegate_settings(node, prim):
             if value is None or value == prop.default:
                 continue
 
+            # Translated after the default comparison, not before: the param and the
+            # default are both labels for a menu-backed enum, and comparing a number
+            # against a label would author every one of them on every cook.
+            value = render_defs.authored_value(prop, value)
+            if value is None:
+                continue
+
             value_type = Sdf.ValueTypeNames.Find(prop.sdf_type)
             if not value_type:
                 continue
@@ -317,7 +324,11 @@ def _settings_for_renderer(node, renderer_id):
         if param is None or param.value is None:
             continue
 
-        settings[prop.attr_name] = param.value
+        # A menu-backed enum holds a readable label; the delegate wants the number.
+        value = render_defs.authored_value(prop, param.value)
+        if value is None:
+            continue
+        settings[prop.attr_name] = value
     return settings
 
 

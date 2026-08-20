@@ -80,6 +80,54 @@ _DELEGATE_SDF_TYPES = {
     "STRING": "string",
 }
 
+#: Enumerated settings a delegate can only describe as a bare integer, as
+#: (attribute name -> ((label, value), ...)).
+#:
+#: A Hydra render setting descriptor carries a name, a key and a default and nothing
+#: else -- there is no field for allowed values -- so an enum arrives as an int and its
+#: names are lost in transit. That leaves a settings UI offering "4" on an unbounded
+#: slider, where 1 and 3 are equally reachable and mean nothing at all.
+#:
+#: Transcribed from the renderer's own NodeEnum declarations rather than inferred, and
+#: paired explicitly rather than by position: Cycles registers sampling_pattern's
+#: blue_noise_round (4) before blue_noise_first (3), so anything index-based would
+#: quietly write the wrong pattern.
+#:
+#: Renderer-specific by necessity, in the same spirit as _SDR_OPTION_NODES. A schema
+#: renderer needs no entry here -- V-Ray's allowedTokens already reach options.
+_DELEGATE_ENUMS: Dict[str, tuple] = {
+    "cycles:integrator:denoiser_type": (
+        ("none", 0), ("optix", 2), ("openimagedenoise", 4),
+    ),
+    "cycles:integrator:denoiser_prefilter": (
+        ("none", 1), ("fast", 2), ("accurate", 3),
+    ),
+    "cycles:integrator:denoiser_quality": (
+        ("high", 1), ("balanced", 2), ("fast", 3),
+    ),
+    "cycles:integrator:sampling_pattern": (
+        ("sobol_burley", 0), ("tabulated_sobol", 1), ("blue_noise_pure", 2),
+        ("blue_noise_round", 4), ("blue_noise_first", 3),
+    ),
+    "cycles:integrator:guiding_distribution_type": (
+        ("PARALLAX_AWARE_VMM", 0), ("DIRECTIONAL_QUAD_TREE", 1), ("VMM", 2),
+    ),
+    "cycles:integrator:guiding_directional_sampling_type": (
+        ("MIS", 0), ("RIS", 1), ("ROUGHNESS", 2),
+    ),
+    "cycles:integrator:direct_light_sampling_type": (
+        ("multiple_importance_sampling", 0), ("forward_path_tracing", 1),
+        ("next_event_estimation", 2),
+    ),
+}
+
+#: Leading name segments that qualify a setting rather than naming one. A renderer that
+#: calls its switch use_denoise has said "denoise", not "use" -- so grouping on the first
+#: segment files the switch away from the thing it switches, and Cycles ends up with the
+#: denoiser's controls under "denoiser" and no way to turn it on anywhere near them. The
+#: segment after the qualifier is the subject, and that is what earns the group.
+_QUALIFIER_SEGMENTS = {"use", "enable", "enabled"}
+
 #: A segment needs at least this many settings sharing it before it earns a group, so a
 #: one-off name does not become a section of one.
 _MIN_GROUP_SIZE = 2
@@ -127,7 +175,10 @@ class RenderSettingProp:
         sdf_type (str): Sdf type name, e.g. "string"
         default (Any): Fallback value from the schema, or None
         help (str): Documentation, used as the param tooltip
-        options (tuple): Allowed token values, making the param a Menu
+        options (tuple): Allowed values, making the param a Menu
+        option_values (tuple): What each option authors, when that differs from the
+            option itself -- an enum a renderer only describes as an int. Empty when
+            the option is its own value, as an allowedTokens enum is.
     """
 
     name: str
@@ -137,6 +188,7 @@ class RenderSettingProp:
     default: Any = None
     help: str = ""
     options: tuple = ()
+    option_values: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -296,6 +348,32 @@ def _def_from_sdr(namespace: str, identifiers: tuple) -> Optional[RenderSettings
     return None
 
 
+def authored_value(prop: RenderSettingProp, value):
+    """What a param's current value should actually be written as.
+
+    An option is normally its own value, so this is a no-op. It is not for an enum the
+    renderer only described as an int: there the param holds a readable label and the
+    attribute -- and the delegate -- want the number behind it.
+
+    Returns None for a label that is not one of the options, which a caller skips rather
+    than authoring something the renderer would reject.
+    """
+    if not prop.option_values:
+        return value
+    try:
+        return prop.option_values[list(prop.options).index(value)]
+    except ValueError:
+        return None
+
+
+def _labelled_default(pairs: tuple, default):
+    """The label standing for a numeric default, or the first label if none matches."""
+    for label, value in pairs:
+        if value == default:
+            return label
+    return pairs[0][0]
+
+
 def _normalised(label: str) -> str:
     """A renderer name reduced to what two spellings of it agree on.
 
@@ -338,14 +416,27 @@ def _def_from_delegate(plugin_id: str, label: str, settings) -> Optional[RenderS
         sdf_type = _DELEGATE_SDF_TYPES.get(getattr(setting.type, "name", ""))
         if not sdf_type:
             continue
+        default = _sanitize_default(setting.defValue)
+        options: tuple = ()
+        option_values: tuple = ()
+
+        # An enum the descriptor flattened to an int, restored from the table above so
+        # the param can be a menu of names rather than a slider over magic numbers.
+        if pairs := _DELEGATE_ENUMS.get(setting.key):
+            options = tuple(label for label, _value in pairs)
+            option_values = tuple(value for _label, value in pairs)
+            default = _labelled_default(pairs, default)
+
         props.append(
             RenderSettingProp(
                 name=setting.key.replace(":", "_"),
                 attr_name=setting.key,
                 label=setting.name or _prettify(setting.key[len(namespace) + 1:]),
                 sdf_type=sdf_type,
-                default=_sanitize_default(setting.defValue),
+                default=default,
                 help=setting.name or "",
+                options=options,
+                option_values=option_values,
             )
         )
 
@@ -514,10 +605,22 @@ def _split_segment(remainder: str):
     belongs, so that split is meant, where an underscore is only a convention.
     """
     for separator in (":", "_"):
-        if separator in remainder:
-            head, _, rest = remainder.partition(separator)
-            if head and rest:
-                return head, rest
+        if separator not in remainder:
+            continue
+
+        head, _, rest = remainder.partition(separator)
+        if not head or not rest:
+            continue
+
+        if head.lower() in _QUALIFIER_SEGMENTS:
+            subject, _, _tail = rest.partition(separator)
+            if subject:
+                # The whole name stays as the label: inside a "denoise" group the switch
+                # reads "use denoise", which is what distinguishes it from "use gpu"
+                # sitting beside it.
+                return subject, remainder
+
+        return head, rest
     return None, remainder
 
 
