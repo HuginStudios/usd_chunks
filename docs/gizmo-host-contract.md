@@ -25,10 +25,11 @@ chunk_gizmo.apply_bindings(chunk_prim, name, value)   # write-back
 chunk.start_gizmo() / chunk.stop_gizmo()              # drag bracket
 ```
 
-Plus one optional helper:
+Plus two optional helpers:
 
 ```python
 chunk_gizmo.decompose(matrix) -> {"translate": Vec3d, "rotate": Vec3d, "scale": Vec3d}
+chunk_gizmo.ensure_transform_chunk(prim) -> GizmoDesc | None   # see §8
 ```
 
 That is all of it. There is no callback to register, no base class to subclass, and
@@ -253,6 +254,41 @@ gets them silently wrong.
 A DCC that has never heard of `ui:gizmo:` ignores the attributes completely. They are
 plain `uniform token` attributes and one relationship on a prim it already ignores. There
 is no plugin to register and nothing breaks.
+
+---
+
+## 8. A prim no chunk drives
+
+`resolve_gizmos` returns nothing for a prim that no chunk touches — an imported mesh, a
+cube from a sublayer. The obvious fallback is to write the prim directly, and it is the
+wrong one: that edit is not in the graph, so it does not survive the driving chunk's next
+cook and it is not what gets written out when the scene is saved. The user moved something
+and nothing recorded it.
+
+```python
+desc = chunk_gizmo.ensure_transform_chunk(prim)   # creates one if nothing offers a handle
+if desc:
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, matrix)
+```
+
+Same idea as Houdini dropping an Edit node in front of geometry you start moving. We decide
+what to create and where it lands in the graph, so a host never learns the `/chunks` layout:
+
+- **Only when nothing already offers one.** The test is "is there a `transform` handle",
+  not "is there a Transform chunk" — an RBD solver or an offset-transform declaring
+  `gizmo="transform"` already owns that prim's placement and must not get a second chunk
+  stacked on it. Declaring a transform handle is how a chunk opts out of this.
+- **At the end of the active context's chain**, wired to the tail, with any view moved
+  along to it — the same placement as creating it by hand in the Params tab.
+- **Seeded from the prim's current local transform**, so the object does not jump when the
+  chunk appears.
+- **Idempotent.** Safe to call once per mouse-move; the second call resolves the chunk the
+  first one made.
+- Returns `None` if it could not create one (no `transform` module, no live scene). Decide
+  for yourself whether that is fatal or a reason to fall back to writing the prim.
+
+Call it at grab time if you have a drag-start hook, so the creation lands inside your undo
+bracket. Calling it on the first commit works too, one frame later.
 
 ---
 

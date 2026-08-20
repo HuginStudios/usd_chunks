@@ -1,0 +1,292 @@
+"""Auto-creating a chunk for a prim that no chunk drives.
+
+The rule these tests defend: **a viewport edit never lands on the prim.** A direct write is
+not in the graph, so it does not survive the next cook and is not what gets saved with the
+scene. Dragging a prim nothing owns therefore has to create the chunk that will own it --
+the same move Houdini makes when editing geometry drops an Edit node in front of you.
+
+Uses the real scripts/transform.py rather than a stand-in: the point is partly that its
+param names and gizmo names are the ones the auto-create path reaches for.
+"""
+from __future__ import annotations
+
+import importlib
+
+import pytest
+from pxr import Gf, Sdf, Usd, UsdGeom
+
+from usd_chunks import chunk, chunk_gizmo, chunk_registry
+from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks.plugins import chunk_usd
+
+transform_mod = importlib.import_module("scripts.transform")
+
+
+# ---------------------------------------------------------------------------
+# harness
+# ---------------------------------------------------------------------------
+
+class _Scene(SceneSender):
+    def __init__(self, stage):
+        super().__init__()
+        self._stage = stage
+
+    def get_stage(self):
+        return self._stage
+
+    def get_selected_prims(self):
+        return []
+
+
+class _StubModule:
+    """Stands in for a registered ChunkModule.
+
+    Only the three things _create_chunk_at_tail touches. Registering the real module would
+    drag in directory scanning and plugin filters, none of which is what is under test.
+    """
+
+    def __init__(self, factory):
+        self._factory = factory
+        self.loaded = True
+        self.creates = 0
+
+    def create(self):
+        self.creates += 1
+        c = self._factory()
+        c._config = ChunkConfig(module="transform")
+        # The real ChunkModule.create sets this too, and without it the chunk has no module
+        # to run: execute() finds no `_module` and cooks nothing, silently.
+        c._module = transform_mod
+        return [c]
+
+    def load(self):
+        return self.create()
+
+
+@pytest.fixture
+def scene(monkeypatch):
+    """A live registry with a stage, a cube, and `transform` available to create.
+
+    The cube lives in a *sublayer*, which is the case that matters and the one the report
+    came from ("added cube.usda as a sublayer"). Chunk layers insert at the front of the
+    root's subLayerPaths, so they win over it -- put the cube in the session or root layer
+    instead and it outranks every chunk, which quietly turns "the chunk drives the prim"
+    into an assertion that can pass without the chunk doing anything at all.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    scene_layer = Sdf.Layer.CreateAnonymous("scene")
+    stage.GetRootLayer().subLayerPaths.append(scene_layer.identifier)
+    with Usd.EditContext(stage, scene_layer):
+        UsdGeom.Cube.Define(stage, "/World/Cube")
+
+    registry = chunk_registry.ChunkRegistry()
+    scene_sender = _Scene(stage)
+    registry.initialize(scene_sender, "pytest")
+    # chunks_for_prim -- the route from a scene prim back to the chunk that touched it --
+    # goes through the layer manager, and answers "nothing touched this" when it has never
+    # been initialised. Reuse would look broken for the wrong reason.
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    # The live sync is what turns an added chunk into a prim carrying `ui:gizmo:*`. Without
+    # it a chunk can be created and still resolve to no handle, which is the session
+    # behaviour these tests are standing in for.
+    chunk_usd.ChunkStageSync().initialize(stage, scene_sender)
+
+    module = _StubModule(transform_mod.main)
+    monkeypatch.setitem(registry.registered_modules, "transform", module)
+
+    # Creation goes through the Params-tab path, which reaches into the stage sync. Neither
+    # flag should leak out of the call.
+    monkeypatch.setattr(chunk_usd, "_params_tab_create", False, raising=False)
+    monkeypatch.setattr(chunk_usd, "_pin_new_chunks", None, raising=False)
+
+    yield stage, registry, module, scene_layer
+
+
+def _cube(stage):
+    return stage.GetPrimAtPath("/World/Cube")
+
+
+def _place(stage, scene_layer, translation):
+    """Put the cube somewhere via a layer that is not any chunk's -- a plain scene edit."""
+    with Usd.EditContext(stage, scene_layer):
+        xf = UsdGeom.Xformable(stage.GetPrimAtPath("/World/Cube"))
+        xf.AddTransformOp().Set(Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(*translation)))
+
+
+def _local(prim):
+    matrix = UsdGeom.Xformable(prim).GetLocalTransformation(Usd.TimeCode.Default())
+    return matrix[0] if isinstance(matrix, tuple) else matrix
+
+
+# ---------------------------------------------------------------------------
+# what counts as "already driven"
+# ---------------------------------------------------------------------------
+
+def test_a_prim_no_chunk_touches_has_no_handle(scene) -> None:
+    stage, _registry, _module, scene_layer = scene
+    assert chunk_gizmo.transform_desc(_cube(stage)) is None
+
+
+def test_any_chunk_offering_a_transform_handle_counts(scene) -> None:
+    """Not "is there a Transform chunk" -- an RBD solver declaring a transform handle owns
+    the prim's placement just as much, and stacking a second chunk doing the same job on top
+    of it is exactly the duplicate this check exists to prevent."""
+    stage, registry, module, _scene_layer = scene
+
+    solver = chunk.Chunk("RBDSolver", gizmo="transform")
+    solver.add_param(chunk.LineEdit(
+        "primpath_location", "Prim Path",
+        flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.PRIM_SELECTION,
+    ))
+    solver.get_param("primpath_location").value = "/World/Cube"
+    # gizmo= on each group, as transform.py does: the chunk-level kwarg only says "present
+    # these as one manipulator", so without the parts it declares nothing at all.
+    for grp_name, prefix, part in (
+        ("translate_grp", "t", "translate"),
+        ("rotate_grp", "r", "rotate"),
+        ("scale_grp", "s", "scale"),
+    ):
+        grp = chunk.Group(grp_name, grp_name, gizmo=part)
+        for axis in "xyz":
+            grp.add_param(chunk.Slider(f"{prefix}{axis}", axis.upper(), default_value=0.0))
+        solver.add_param(grp)
+    solver._config = ChunkConfig(module="rbd_solver")
+    registry.scene.add_chunk(solver)
+
+    # The solver has to have actually touched the prim -- that layer-stack link is how a
+    # scene prim gets back to its chunk.
+    with Usd.EditContext(stage, solver.get_edit_context()):
+        UsdGeom.Xformable(stage.OverridePrim("/World/Cube")).AddTransformOp().Set(Gf.Matrix4d(1))
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+
+    assert desc is not None
+    assert module.creates == 0, "should have reused the solver's handle, not created a chunk"
+
+
+# ---------------------------------------------------------------------------
+# creating one
+# ---------------------------------------------------------------------------
+
+def test_dragging_an_unowned_prim_creates_a_chunk(scene) -> None:
+    stage, registry, module, _scene_layer = scene
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+
+    assert module.creates == 1
+    assert desc is not None
+    assert desc.type == "transform"
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+    assert created is not None
+    assert created in registry.scene.get_chunks()
+
+
+def test_the_new_chunk_targets_the_dragged_prim(scene) -> None:
+    """Without this the chunk exists but drives nothing, and the drag goes nowhere."""
+    stage, _registry, _module, scene_layer = scene
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+
+    assert created.get_param("primpath_location").value == "/World/Cube"
+
+
+def test_repeated_calls_reuse_the_first_chunk(scene) -> None:
+    """The host's commit runs on every mouse-move, so this is called once per frame of a
+    drag -- with no cook in between that the caller controls. Anything less than idempotent
+    here stacks a Transform node per frame onto the same object.
+
+    It holds because targeting the prim is itself a param change, so the chunk has cooked
+    and put a spec in the prim's layer stack before the first call even returns.
+    """
+    stage, _registry, module, _scene_layer = scene
+
+    descs = [chunk_gizmo.ensure_transform_chunk(_cube(stage)) for _ in range(5)]
+
+    assert module.creates == 1
+    assert len({d.chunk_prim for d in descs}) == 1
+
+
+def test_create_false_reports_the_gap_without_filling_it(scene) -> None:
+    """A caller that only wants to know whether a handle exists must not cause a side effect
+    the size of a new node."""
+    stage, _registry, module, _scene_layer = scene
+
+    assert chunk_gizmo.ensure_transform_chunk(_cube(stage), create=False) is None
+    assert module.creates == 0
+
+
+def test_an_invalid_prim_creates_nothing(scene) -> None:
+    stage, _registry, module, _scene_layer = scene
+
+    assert chunk_gizmo.ensure_transform_chunk(stage.GetPrimAtPath("/nope")) is None
+    assert module.creates == 0
+
+
+# ---------------------------------------------------------------------------
+# not moving anything by appearing
+# ---------------------------------------------------------------------------
+
+def test_the_new_chunk_starts_where_the_prim_already_is(scene) -> None:
+    """A fresh Transform chunk is identity and its cook *overwrites* xformOp:transform, so
+    an unseeded one would snap an already-placed prim to the origin -- the object jumping
+    away from the handle at the instant you grab it."""
+    stage, _registry, _module, scene_layer = scene
+    _place(stage, scene_layer, (5.0, 6.0, 7.0))
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+
+    assert [created.get_param(n).value for n in ("tx", "ty", "tz")] == [5.0, 6.0, 7.0]
+
+
+def test_seeding_survives_the_first_cook(scene) -> None:
+    """The params agreeing is only half of it -- what the viewport shows is the cook."""
+    stage, _registry, _module, scene_layer = scene
+    _place(stage, scene_layer, (5.0, 6.0, 7.0))
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+
+    assert Gf.IsClose(_local(_cube(stage)).ExtractTranslation(), Gf.Vec3d(5.0, 6.0, 7.0), 1e-6)
+
+
+def test_a_prim_at_the_origin_is_left_alone(scene) -> None:
+    stage, _registry, _module, scene_layer = scene
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+
+    assert [created.get_param(n).value for n in ("tx", "ty", "tz")] == [0.0, 0.0, 0.0]
+    assert [created.get_param(n).value for n in ("sx", "sy", "sz")] == [1.0, 1.0, 1.0]
+
+
+# ---------------------------------------------------------------------------
+# the edit actually flows
+# ---------------------------------------------------------------------------
+
+def test_a_drag_through_the_new_chunk_moves_the_prim(scene) -> None:
+    """End to end: the prim had no chunk, and after this it is placed by params that a save
+    will write out -- which is the whole reason for auto-creating rather than writing it."""
+    stage, _registry, _module, scene_layer = scene
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+    chunk_gizmo.apply_bindings(
+        desc.chunk_prim, desc.name, Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(1.0, 2.0, 3.0))
+    )
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+    created.execute()
+
+    assert [created.get_param(n).value for n in ("tx", "ty", "tz")] == [1.0, 2.0, 3.0]
+    assert Gf.IsClose(_local(_cube(stage)).ExtractTranslation(), Gf.Vec3d(1.0, 2.0, 3.0), 1e-6)
+
+
+def test_creation_does_not_leak_the_params_tab_flags(scene) -> None:
+    """They are module-level globals on chunk_usd. Left set, every subsequent node-graph
+    create would silently auto-chain and auto-pin."""
+    stage, _registry, _module, scene_layer = scene
+
+    chunk_gizmo.ensure_transform_chunk(_cube(stage))
+
+    assert chunk_usd._params_tab_create is False
+    assert chunk_usd._pin_new_chunks is None

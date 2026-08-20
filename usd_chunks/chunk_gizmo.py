@@ -26,7 +26,7 @@ import math
 from typing import Any, Iterable, Optional
 
 import attrs
-from pxr import Gf, Sdf, Usd
+from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_notice
@@ -888,3 +888,170 @@ def apply_bindings(chunk: "core.ChunkBase", name: str, value: Any) -> None:
     # One per tick, inside the START/STOP bracket. Deliberately after the writes, so a
     # listener seeing CHANGED can read the new values straight off the params.
     chunk.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_CHANGED, gizmo.name)
+
+
+# ---------------------------------------------------------------------------
+# auto-create: a prim nothing drives still gets a chunk
+# ---------------------------------------------------------------------------
+
+#: Module a chunk is created from when a prim has no transform handle of its own.
+AUTO_TRANSFORM_MODULE = "transform"
+
+
+def transform_desc(prim: Usd.Prim):
+    """The transform handle that already applies to `prim`, from *any* chunk.
+
+    Deliberately not "is there a Transform chunk". A chunk offering a transform handle is
+    a chunk that owns this prim's placement, whatever module it came from -- an RBD solver
+    or an offset-transform declaring ``gizmo="transform"`` answers here too, and so must
+    not get a second chunk stacked on top of it doing the same job.
+    """
+    for desc in resolve_gizmos(prim):
+        if desc.type == core.GIZMO_TRANSFORM_TYPE:
+            return desc
+    return None
+
+
+def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
+    """A transform handle for `prim`, creating a Transform chunk if nothing offers one.
+
+    The point is an invariant, not a convenience: **a viewport edit must never land on the
+    prim directly.** A direct write is not in the graph, so it is not reproducible, does not
+    survive a chunk re-cook, and is not what gets written out when the scene is saved. If
+    the only way to drag a prim is through a chunk, then dragging a prim that no chunk owns
+    has to *make* one -- the same move Houdini makes when editing geometry drops an Edit
+    node in front of you.
+
+    The new chunk lands at the end of the active context's chain, seeded from the prim's
+    current local transform so that creating it does not move anything. Returns the handle
+    to write through, or None if a chunk could not be created (no ``transform`` module
+    registered, no live scene) -- callers decide whether that is fatal.
+    """
+    if not (prim and prim.IsValid()):
+        return None
+
+    if (existing := transform_desc(prim)) is not None or not create:
+        return existing
+
+    # Read where the prim is BEFORE anything is created. Targeting the chunk at the prim is
+    # a param change, which cooks it, which authors an identity xformOp:transform from the
+    # chunk's own layer -- and that layer is stronger than wherever the prim was placed. Read
+    # it afterwards and the seed is always identity, i.e. the object snaps to the origin the
+    # instant you grab it.
+    placement = _local_transform(prim)
+
+    chunk = _create_chunk_at_tail(AUTO_TRANSFORM_MODULE)
+    if chunk is None:
+        return None
+
+    _target_prim(chunk, prim)
+    if placement is not None:
+        _seed(chunk, placement)
+
+    # Re-resolve rather than synthesising: the desc a caller gets from here has to be the
+    # same record it would have got had the chunk existed all along, anchor included.
+    return transform_desc(prim) or _own_transform_desc(chunk)
+
+
+def _own_transform_desc(chunk: "core.ChunkBase"):
+    """The chunk's own transform gizmo, read off the chunk rather than the scene prim.
+
+    Fallback for the window where the chunk exists but its `ui:gizmo:*` has not been
+    authored onto a prim yet -- resolve_gizmos goes via the layer stack, which only knows
+    about the prim once the chunk has cooked at least once.
+    """
+    stage = getattr(chunk, "get_stage", lambda: None)()
+    chunk_prim = _chunk_prim(stage, chunk) if stage is not None else None
+    if chunk_prim is None:
+        return None
+    for desc in _read_gizmos(chunk_prim):
+        if desc.type == core.GIZMO_TRANSFORM_TYPE:
+            return desc
+    return None
+
+
+def _create_chunk_at_tail(module_name: str):
+    """Create one chunk from `module_name` and add it to the end of the active chain."""
+    registry = ChunkRegistry()
+    entry = getattr(registry, "registered_modules", {}).get(module_name)
+    scene = getattr(registry, "scene", None)
+    if entry is None or scene is None:
+        logger.warning("Cannot auto-create %r: module or scene unavailable", module_name)
+        return None
+
+    created = entry.create() if entry.loaded else entry.load()
+    if not created:
+        logger.warning("Module %r produced no chunk", module_name)
+        return None
+    chunk = created[0]
+
+    # Imported here, not at module scope: chunk_usd imports this module to author gizmos, so
+    # a top-level import would be circular.
+    from usd_chunks.plugins import chunk_usd
+
+    # Borrow the Params-tab create semantics -- chain onto the tail of the current context
+    # and pull any view along with it. Without this the chunk is created unconnected, which
+    # is right when a user places a node by hand and wrong here: nobody asked for a node, so
+    # nobody is going to wire it up.
+    prev_create, prev_pin = chunk_usd._params_tab_create, chunk_usd._pin_new_chunks
+    chunk_usd._params_tab_create = True
+    chunk_usd._pin_new_chunks = True
+    try:
+        scene.add_chunk(chunk)
+    finally:
+        chunk_usd._params_tab_create = prev_create
+        chunk_usd._pin_new_chunks = prev_pin
+
+    return chunk
+
+
+def _target_prim(chunk: "core.ChunkBase", prim: Usd.Prim) -> None:
+    """Point the new chunk at the prim being dragged."""
+    param = chunk.get_param("primpath_location")
+    if param is None:
+        raise ValueError(
+            f"{AUTO_TRANSFORM_MODULE!r} has no 'primpath_location' param to target a prim with"
+        )
+    setter = getattr(param, "set_prims", None)
+    if callable(setter):
+        setter([prim])
+    else:
+        param.value = str(prim.GetPath())
+
+
+def _local_transform(prim: Usd.Prim) -> "Gf.Matrix4d | None":
+    """The prim's current local transform, or None if it has none worth carrying over."""
+    xformable = UsdGeom.Xformable(prim)
+    if not xformable:
+        return None
+    local = xformable.GetLocalTransformation(Usd.TimeCode.Default())
+    # The signature differs across USD versions: some return the matrix, some
+    # (matrix, resetsXformStack).
+    if isinstance(local, tuple):
+        local = local[0]
+    return None if local == Gf.Matrix4d(1.0) else local
+
+
+def _seed(chunk: "core.ChunkBase", matrix: "Gf.Matrix4d") -> None:
+    """Start the chunk where the prim already was, so creating it moves nothing."""
+    by_type = {g.type: g.name for g in get_gizmos(chunk)}
+
+    # A chunk declaring gizmo="transform" absorbs its translate/rotate/scale groups into one
+    # handle, and get_gizmos then reports only that one -- so seeding per part would match
+    # nothing. The whole-chunk handle takes the matrix as-is, which is also the lossless
+    # route: no decompose, no Euler convention to agree on.
+    if (whole := by_type.get(core.GIZMO_TRANSFORM_TYPE)) is not None:
+        apply_bindings(chunk, whole, matrix)
+        return
+
+    # decompose() keys by gizmo *type*; apply_bindings takes a gizmo *name*. In transform.py
+    # those differ ("translate" vs "translate_grp"), and a host is told to map between them
+    # -- so do the same here rather than assuming this module's naming.
+    for gizmo_type, value in decompose(matrix).items():
+        name = by_type.get(gizmo_type)
+        if name is None:
+            # A module declaring only some of translate/rotate/scale is fine; seed the
+            # handles it does declare rather than refusing to seed at all.
+            logger.debug("No %r handle to seed on %r", gizmo_type, chunk.name)
+            continue
+        apply_bindings(chunk, name, value)
