@@ -297,6 +297,53 @@ def audit():
     print()
 
 
+def gizmo_pos():
+    """Why a handle is drawn somewhere other than on the prim.
+
+    Select the prim, then run this. The handler positions the gizmo from
+    XformCache.GetLocalToWorldTransform on whatever is in selectedPrims, so the answer is
+    one of: the path it tracked is not the prim you picked, the prim does not resolve, or
+    the world transform genuinely is the identity.
+    """
+    from pxr import UsdGeom
+    import shiboken6
+    from PySide6 import QtWidgets
+
+    handler = None
+    for w in QtWidgets.QApplication.allWidgets():
+        if not shiboken6.isValid(w):
+            continue
+        press = getattr(w, "mousePressEvent", None)
+        owner = getattr(getattr(press, "func", None), "__self__", None)
+        if owner is not None and type(owner).__name__ == "GizmoHandler":
+            handler = owner
+            break
+    if handler is None:
+        print("no GizmoHandler found -- is usd_gizmos loaded?")
+        return
+
+    stage = handler.scene.get_stage()
+    _line("tracked selection", [str(p) for p in handler.selectedPrims])
+    try:
+        _line("host says selected", [str(p) for p in (handler.scene.get_selected_prims() or [])])
+    except NotImplementedError:
+        _line("host says selected", "<not implemented>")
+
+    fresh = UsdGeom.XformCache(0)
+    for path in handler.selectedPrims:
+        prim = stage.GetPrimAtPath(path)
+        if not (prim and prim.IsValid()):
+            _line(str(path), "PRIM DOES NOT RESOLVE  <-- gizmo falls back to the origin")
+            continue
+        cached = handler._xformCache.GetLocalToWorldTransform(prim)
+        live = fresh.GetLocalToWorldTransform(prim)
+        _line(str(path).rsplit("/", 1)[-1], f"cached={cached.ExtractTranslation()}  fresh={live.ExtractTranslation()}")
+        if cached.ExtractTranslation() != live.ExtractTranslation():
+            _line("", "  <-- STALE CACHE: only cleared after a drag, never on selection")
+    _line("gizmo.world", getattr(handler.gizmo, "world", None))
+    print()
+
+
 def undo_entries():
     """How many entries are on the real undo stack right now.
 
@@ -399,7 +446,7 @@ def report():
 
 print(__doc__)
 print("Commands:  state()  watch()  report()  trace_mirror()  mirror_report()")
-print("           undo_entries()  drag_test()  drag_result()  audit()")
+print("           undo_entries()  drag_test()  drag_result()  audit()  gizmo_pos()")
 print()
 print("For the MISSING NODE:  reproduce it (drag, undo back, redo), then run  state()")
 print("For the SLIDERS:       move the gizmo, run  watch(), press Ctrl+Z, run  report()")
