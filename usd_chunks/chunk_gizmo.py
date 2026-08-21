@@ -626,21 +626,25 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
         chunk_prim = _chunk_prim(stage, chunk)
         if chunk_prim is not None:
             descs.extend(_read_gizmos(chunk_prim))
-    if descs:
-        return descs
-
-    # Nothing has authored on this prim yet. That is not the same as nothing offering a
-    # handle for it: the layer-stack route only sees chunks that have already written
-    # something, and a chunk which cooks on demand rather than on every change has written
-    # nothing at all until you ask it to. rbd_solver is the case in hand -- it is entirely
-    # button-driven, so its offset handles, the very things you want to set BEFORE running a
-    # simulation, would not appear until after the first one.
+    # Then add anything anchored here that has not authored yet. The layer-stack route only
+    # sees chunks that have already written something, and plenty have not: rbd_solver is
+    # button-driven, so its offset handles -- the very things you want before running a
+    # simulation -- would not appear until after the first one. An Offset Transform sitting
+    # at zero authors nothing either, by design.
     #
-    # So fall back to what the gizmos themselves say. Each carries a resolved anchor, which
-    # is exactly the claim "this handle belongs to that prim", and it is authored as soon as
-    # the chunk exists. Deliberately a fallback rather than the primary route: the layer
-    # stack additionally drops disabled and muted chunks for free, which anchors do not.
-    return _gizmos_anchored_at(prim)
+    # Appended rather than used only when the first route comes back empty, which is what
+    # this was at first. That was wrong in a way that only shows in a chain: one Transform
+    # that HAS authored was enough to make an un-authored Offset Transform on the same prim
+    # invisible, so it could never be dragged into offering its first value.
+    #
+    # Order matters and is preserved: chunks_for_prim walks GetPrimStack(), which USD
+    # returns strength-ordered, so the chunk whose result is actually on screen stays first
+    # and a host driving handles[0] drives the one the user can see.
+    seen = {(str(d.chunk_prim), d.name) for d in descs}
+    for desc in _gizmos_anchored_at(prim):
+        if (str(desc.chunk_prim), desc.name) not in seen:
+            descs.append(desc)
+    return descs
 
 
 def _gizmos_anchored_at(prim: Usd.Prim) -> list:

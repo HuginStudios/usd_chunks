@@ -4,7 +4,7 @@ Requires: pxr (OpenUSD), usd_chunks.
 """
 
 from pxr import Gf, UsdGeom
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_gizmo
 
 _ROTATE_TYPES = frozenset(
     [
@@ -90,7 +90,17 @@ def _run(owner, notice, sender):
             if v is None:
                 continue
             op_type = op.GetOpType()
-            if op_type == UsdGeom.XformOp.TypeTranslate:
+            if op_type == UsdGeom.XformOp.TypeTransform:
+                # A single matrix op, which the loop below cannot see: it only recognises
+                # the separate translate/rotate/scale spellings. Anything upstream that
+                # authors one -- a Transform chunk, or an asset exported with a baked
+                # matrix -- was therefore read as identity, and the offset was applied to
+                # nothing instead of to the placement actually in effect.
+                parts = chunk_gizmo.decompose(Gf.Matrix4d(v))
+                base_t = Gf.Vec3d(parts["translate"])
+                base_r = Gf.Vec3f(*[float(x) for x in parts["rotate"]])
+                base_s = Gf.Vec3f(*[float(x) for x in parts["scale"]])
+            elif op_type == UsdGeom.XformOp.TypeTranslate:
                 base_t = Gf.Vec3d(float(v[0]), float(v[1]), float(v[2]))
             elif op_type == UsdGeom.XformOp.TypeRotateX:
                 base_r = Gf.Vec3f(float(v), base_r[1], base_r[2])
