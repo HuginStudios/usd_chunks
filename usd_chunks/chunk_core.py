@@ -4543,6 +4543,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             # so ChunkStageSync can create their USD prim. Tab contexts skip this.
             send_added = bool(c.get_config() and c.get_config().module)
             self.chunks.add(c, send_added)
+            self.chunks.add_nested(c.children)
+
             if send_added:
                 # Restore parent context so subsequent chunks don't fall into the group.
                 self._current_context = c._parent_context
