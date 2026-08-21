@@ -583,12 +583,35 @@ def chunks_for_prim(prim: Usd.Prim) -> list:
     found = []
     for spec in prim.GetPrimStack():
         layer = getattr(spec, "layer", None)
-        if layer is None:
+        if layer is None or not _is_meaningful_spec(spec):
             continue
         for chunk in by_identifier.get(layer.identifier, ()):
             if not any(chunk is seen for seen in found):
                 found.append(chunk)
     return found
+
+
+def _is_meaningful_spec(spec) -> bool:
+    """Whether this spec is the chunk actually touching the prim, or just scaffolding.
+
+    Authoring an override on a prim implicitly creates empty `over` specs for every
+    ancestor, because the descendant needs a path to hang off. Those are not a claim on the
+    ancestor, but they are in its prim stack all the same -- so a Transform chunk driving
+    `/apple/grp/mesh` looked like it also drove `/apple` and `/apple/grp`.
+
+    Reported live as an asymmetry, which is what gives it away: dragging the mesh and then
+    its parent reused the mesh's chunk, while dragging the parent and then the mesh
+    correctly made a second one. A descendant is not scaffolding for an ancestor, so only
+    one direction breaks.
+
+    Anything the chunk genuinely authored -- a property, metadata such as an `active` flag
+    from a prune, or a specifier that defines rather than overrides -- counts.
+    """
+    if spec.properties:
+        return True
+    if set(spec.ListInfoKeys()) - {"specifier"}:
+        return True
+    return spec.specifier != Sdf.SpecifierOver
 
 
 def _chunk_prim(stage: Usd.Stage, chunk: "core.ChunkBase") -> Optional[Usd.Prim]:
