@@ -26,10 +26,11 @@ import math
 from typing import Any, Iterable, Optional
 
 import attrs
-from pxr import Gf, Sdf, Usd
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI
 
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_notice
+from usd_chunks import chunk_utils
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
 
 logger = logging.getLogger(__name__)
@@ -582,12 +583,35 @@ def chunks_for_prim(prim: Usd.Prim) -> list:
     found = []
     for spec in prim.GetPrimStack():
         layer = getattr(spec, "layer", None)
-        if layer is None:
+        if layer is None or not _is_meaningful_spec(spec):
             continue
         for chunk in by_identifier.get(layer.identifier, ()):
             if not any(chunk is seen for seen in found):
                 found.append(chunk)
     return found
+
+
+def _is_meaningful_spec(spec) -> bool:
+    """Whether this spec is the chunk actually touching the prim, or just scaffolding.
+
+    Authoring an override on a prim implicitly creates empty `over` specs for every
+    ancestor, because the descendant needs a path to hang off. Those are not a claim on the
+    ancestor, but they are in its prim stack all the same -- so a Transform chunk driving
+    `/apple/grp/mesh` looked like it also drove `/apple` and `/apple/grp`.
+
+    Reported live as an asymmetry, which is what gives it away: dragging the mesh and then
+    its parent reused the mesh's chunk, while dragging the parent and then the mesh
+    correctly made a second one. A descendant is not scaffolding for an ancestor, so only
+    one direction breaks.
+
+    Anything the chunk genuinely authored -- a property, metadata such as an `active` flag
+    from a prune, or a specifier that defines rather than overrides -- counts.
+    """
+    if spec.properties:
+        return True
+    if set(spec.ListInfoKeys()) - {"specifier"}:
+        return True
+    return spec.specifier != Sdf.SpecifierOver
 
 
 def _chunk_prim(stage: Usd.Stage, chunk: "core.ChunkBase") -> Optional[Usd.Prim]:
@@ -625,7 +649,112 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
         chunk_prim = _chunk_prim(stage, chunk)
         if chunk_prim is not None:
             descs.extend(_read_gizmos(chunk_prim))
-    return descs
+    # Then add anything anchored here that has not authored yet. The layer-stack route only
+    # sees chunks that have already written something, and plenty have not: rbd_solver is
+    # button-driven, so its offset handles -- the very things you want before running a
+    # simulation -- would not appear until after the first one. An Offset Transform sitting
+    # at zero authors nothing either, by design.
+    #
+    # Appended rather than used only when the first route comes back empty, which is what
+    # this was at first. That was wrong in a way that only shows in a chain: one Transform
+    # that HAS authored was enough to make an un-authored Offset Transform on the same prim
+    # invisible, so it could never be dragged into offering its first value.
+    #
+    # Order matters and is preserved: chunks_for_prim walks GetPrimStack(), which USD
+    # returns strength-ordered, so the chunk whose result is actually on screen stays first
+    # and a host driving handles[0] drives the one the user can see.
+    seen = {(str(d.chunk_prim), d.name) for d in descs}
+    for desc in _gizmos_anchored_at(prim):
+        if (str(desc.chunk_prim), desc.name) not in seen:
+            descs.append(desc)
+    return _ordered_downstream_first(stage, descs)
+
+
+def _exec_depth(stage: Usd.Stage, chunk_prim_path) -> int:
+    """How far down the exec chain a chunk prim sits. Bigger is further downstream."""
+    from usd_chunks.plugins import chunk_usd
+
+    depth, path, seen = 0, Sdf.Path(str(chunk_prim_path)), set()
+    while path not in seen:
+        seen.add(path)
+        prim = stage.GetPrimAtPath(path)
+        if not (prim and prim.IsValid()):
+            break
+        upstream = chunk_usd.exec_input_connections(prim)
+        if not upstream:
+            break
+        # The strongest branch, matching how the chain is read everywhere else. A merge
+        # feeding several inputs makes depth approximate, and approximate is fine: it only
+        # decides which of two handles on ONE prim is offered first.
+        path = upstream[0].GetPrimPath()
+        depth += 1
+    return depth
+
+
+def _ordered_downstream_first(stage: Usd.Stage, descs: list) -> list:
+    """Nearest the view first, so a host driving descs[0] edits the chunk that has the
+    final say.
+
+    Layer strength alone is not enough, which is what prompted this. A chunk that has not
+    authored yet is not in the prim's layer stack at all -- an Offset Transform sitting at
+    zero authors nothing by design -- so it sorted last however far downstream it was.
+    Reported live: adding an Offset Transform after a Transform and dragging kept editing
+    the Transform, until a value was typed into the Offset by hand, at which point it
+    started authoring and took over. The ownership flipped based on whether a number had
+    been entered, which is not something anyone should have to know.
+
+    Exec depth answers it for authored and un-authored chunks alike, and agrees with layer
+    strength where both apply: recook already orders each graph layer's subLayerPaths so the
+    chunk nearest the view wins, so this is the same rule read off the graph rather than off
+    the composed result.
+    """
+    if len(descs) < 2:
+        return descs
+    depths = {}
+    for desc in descs:
+        key = str(desc.chunk_prim)
+        if key not in depths:
+            depths[key] = _exec_depth(stage, desc.chunk_prim)
+    # Stable, so handles from one chunk keep their declared order and equal-depth chunks
+    # keep the layer-stack order they arrived in.
+    return sorted(descs, key=lambda d: -depths[str(d.chunk_prim)])
+
+
+def _gizmos_anchored_at(prim: Usd.Prim) -> list:
+    """Gizmos from any chunk whose anchor resolves to `prim`."""
+    scene = getattr(ChunkRegistry(), "scene", None)
+    if scene is None:
+        return []
+    stage = prim.GetStage()
+    prim_path = prim.GetPath()
+    found = []
+    for chunk in scene.get_chunks():
+        if _is_silenced(stage, chunk):
+            continue
+        chunk_prim = _chunk_prim(stage, chunk)
+        if chunk_prim is None or chunk_prim.GetPath() == prim_path:
+            continue
+        for desc in _read_gizmos(chunk_prim):
+            if any(Sdf.Path(str(a)) == prim_path for a in desc.anchor):
+                found.append(desc)
+    return found
+
+
+def _is_silenced(stage: Usd.Stage, chunk: "core.ChunkBase") -> bool:
+    """Whether this chunk should be offering no handles at all.
+
+    The layer-stack route gets this for free -- a disabled or muted chunk has no spec in the
+    prim's stack, so it simply does not come up. Anchors carry no such information: they are
+    authored once and keep pointing at the prim regardless, so muting a chunk's layer left
+    its handles on screen driving a chunk that is no longer contributing anything.
+    """
+    if chunk.has_state(core.ChunkFlags.State.DISABLED):
+        return True
+    try:
+        layer = chunk.get_edit_context()
+    except Exception:  # noqa: BLE001 - a chunk without a layer is not muted
+        return False
+    return bool(layer is not None and stage.IsLayerMuted(layer.identifier))
 
 
 # ---------------------------------------------------------------------------
@@ -888,3 +1017,278 @@ def apply_bindings(chunk: "core.ChunkBase", name: str, value: Any) -> None:
     # One per tick, inside the START/STOP bracket. Deliberately after the writes, so a
     # listener seeing CHANGED can read the new values straight off the params.
     chunk.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_CHANGED, gizmo.name)
+
+
+# ---------------------------------------------------------------------------
+# auto-create: a prim nothing drives still gets a chunk
+# ---------------------------------------------------------------------------
+
+#: Module a chunk is created from when a prim has no transform handle of its own.
+AUTO_TRANSFORM_MODULE = "transform"
+
+
+#: Handle types that place a prim in the world. A chunk offering any of these owns that
+#: prim's placement, and must not have a second chunk stacked on top doing the same job.
+GIZMO_PLACEMENT_TYPES = core.GIZMO_MANIPULATOR_TYPES | {core.GIZMO_TRANSFORM_TYPE}
+
+
+def placement_gizmos(prim: Usd.Prim) -> list:
+    """Every handle that positions `prim`, from any chunk.
+
+    Deliberately not "is there a transform handle". A chunk can own a prim's placement
+    without offering a single combined manipulator: rbd_solver declares separate `translate`
+    and `rotate` offsets and no `scale`, so it cannot form a whole-chunk transform -- yet it
+    plainly owns where that body starts. Testing only for `transform` reported the prim as
+    unowned and stacked an auto-created Transform chunk on top of the solver, which is the
+    exact duplicate this check exists to prevent.
+    """
+    return [d for d in resolve_gizmos(prim) if d.type in GIZMO_PLACEMENT_TYPES]
+
+
+def transform_desc(prim: Usd.Prim):
+    """The single whole-transform handle for `prim`, if some chunk offers one.
+
+    Narrower than `placement_gizmos` on purpose: this is "who takes a whole matrix", which
+    is not the same question as "who owns this prim".
+    """
+    for desc in resolve_gizmos(prim):
+        if desc.type == core.GIZMO_TRANSFORM_TYPE:
+            return desc
+    return None
+
+
+def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
+    """A transform handle for `prim`, creating a Transform chunk if nothing offers one.
+
+    The point is an invariant, not a convenience: **a viewport edit must never land on the
+    prim directly.** A direct write is not in the graph, so it is not reproducible, does not
+    survive a chunk re-cook, and is not what gets written out when the scene is saved. If
+    the only way to drag a prim is through a chunk, then dragging a prim that no chunk owns
+    has to *make* one -- the same move Houdini makes when editing geometry drops an Edit
+    node in front of you.
+
+    The new chunk lands at the end of the active context's chain, seeded from the prim's
+    current local transform so that creating it does not move anything. Returns the handle
+    to write through, or None if a chunk could not be created (no ``transform`` module
+    registered, no live scene) -- callers decide whether that is fatal.
+    """
+    if not (prim and prim.IsValid()):
+        return None
+
+    # Ownership is the broad question (anything that places the prim), the return value is
+    # the narrow one (who takes a whole matrix). A prim owned by separate translate/rotate
+    # handles gets no chunk created AND no transform desc -- the caller drives those handles
+    # individually via decompose(), which is what the host contract already tells it to do.
+    if existing := placement_gizmos(prim):
+        return transform_desc(prim)
+    if not create:
+        return None
+
+    # Read where the prim is BEFORE anything is created. Targeting the chunk at the prim is
+    # a param change, which cooks it, which authors an identity xformOp:transform from the
+    # chunk's own layer -- and that layer is stronger than wherever the prim was placed. Read
+    # it afterwards and the seed is always identity, i.e. the object snaps to the origin the
+    # instant you grab it.
+    placement = _local_transform(prim)
+
+    chunk = _create_chunk_at_tail(AUTO_TRANSFORM_MODULE)
+    if chunk is None:
+        return None
+
+    _target_prim(chunk, prim)
+    if placement is not None:
+        _seed(chunk, placement)
+
+    # Re-resolve rather than synthesising: the desc a caller gets from here has to be the
+    # same record it would have got had the chunk existed all along, anchor included.
+    return transform_desc(prim) or _own_transform_desc(chunk)
+
+
+def _own_transform_desc(chunk: "core.ChunkBase"):
+    """The chunk's own transform gizmo, read off the chunk rather than the scene prim.
+
+    Fallback for the window where the chunk exists but its `ui:gizmo:*` has not been
+    authored onto a prim yet -- resolve_gizmos goes via the layer stack, which only knows
+    about the prim once the chunk has cooked at least once.
+    """
+    stage = getattr(chunk, "get_stage", lambda: None)()
+    chunk_prim = _chunk_prim(stage, chunk) if stage is not None else None
+    if chunk_prim is None:
+        return None
+    for desc in _read_gizmos(chunk_prim):
+        if desc.type == core.GIZMO_TRANSFORM_TYPE:
+            return desc
+    return None
+
+
+def _create_chunk_at_tail(module_name: str):
+    """Create one chunk from `module_name` and add it to the end of the active chain."""
+    registry = ChunkRegistry()
+    entry = getattr(registry, "registered_modules", {}).get(module_name)
+    scene = getattr(registry, "scene", None)
+    if entry is None or scene is None:
+        logger.warning("Cannot auto-create %r: module or scene unavailable", module_name)
+        return None
+
+    created = entry.create() if entry.loaded else entry.load()
+    if not created:
+        logger.warning("Module %r produced no chunk", module_name)
+        return None
+    chunk = created[0]
+
+    # Imported here, not at module scope: chunk_usd imports this module to author gizmos, so
+    # a top-level import would be circular.
+    from usd_chunks.plugins import chunk_usd
+
+    # Borrow the Params-tab create semantics -- chain onto the tail of the current context
+    # and pull any view along with it. Without this the chunk is created unconnected, which
+    # is right when a user places a node by hand and wrong here: nobody asked for a node, so
+    # nobody is going to wire it up.
+    prev_create, prev_pin = chunk_usd._params_tab_create, chunk_usd._pin_new_chunks
+    prev_pos = chunk_usd._create_node_pos
+    chunk_usd._params_tab_create = True
+    chunk_usd._pin_new_chunks = True
+    # Where the node lands, read before the create so the tail is still the tail. The default
+    # (child-count * step) counts a view as a child, so an auto-created node is placed by how
+    # many prims happen to exist rather than by where it sits in the chain -- which is how it
+    # ends up stacked behind the view instead of after the chunk it was wired onto.
+    chunk_usd._create_node_pos = _position_after_tail(scene)
+    try:
+        scene.add_chunk(chunk)
+    finally:
+        chunk_usd._params_tab_create = prev_create
+        chunk_usd._pin_new_chunks = prev_pin
+        chunk_usd._create_node_pos = prev_pos
+
+    _nudge_downstream_views(chunk)
+    return chunk
+
+
+def _node_pos(prim: Usd.Prim) -> "tuple[float, float] | None":
+    """A chunk prim's authored node-graph position, in USD space (Y-up)."""
+    if prim is None or not prim.IsValid():
+        return None
+    pos_attr = UsdUI.NodeGraphNodeAPI(prim).GetPosAttr()
+    if not (pos_attr and pos_attr.HasAuthoredValue()):
+        return None
+    value = pos_attr.Get()
+    return (float(value[0]), float(value[1]))
+
+
+def _position_after_tail(scene) -> "tuple[float, float] | None":
+    """One step right of the chunk the new node is about to be chained onto.
+
+    None means "no opinion" -- the caller's default placement then applies, which is right
+    when there is no tail to sit after.
+
+    Takes the context off the *scene*, not off the chunk. The chunk has not been added yet,
+    so `chunk.get_context()` is still None and the tail lookup silently finds nothing --
+    which reads as "no tail" and falls back to the default placement being fixed here.
+    """
+    from usd_chunks.plugins import chunk_usd
+
+    sync = chunk_usd.ChunkStageSync()
+    stage = getattr(sync, "_stage", None)
+    if stage is None:
+        return None
+    current = getattr(scene, "_current_context", None)
+    tail = sync._find_dag_tail(current() if current else None)
+    if tail is None:
+        return None
+    pos = _node_pos(_chunk_prim(stage, tail))
+    return None if pos is None else (pos[0] + chunk_usd._NODE_STEP, pos[1])
+
+
+def _nudge_downstream_views(chunk: "core.ChunkBase") -> None:
+    """Move any view that just got repointed onto `chunk` out from under it.
+
+    View-follows-tail rewires the view to consume the new chunk but leaves it where it was
+    -- which is the slot the new node has just been placed in, so the two overlap.
+    """
+    from usd_chunks.plugins import chunk_usd
+
+    sync = chunk_usd.ChunkStageSync()
+    stage = getattr(sync, "_stage", None)
+    if stage is None:
+        return
+    prim = _chunk_prim(stage, chunk)
+    pos = _node_pos(prim)
+    if pos is None:
+        return
+
+    scene = getattr(ChunkRegistry(), "scene", None)
+    if scene is None:
+        return
+    target_x = pos[0] + chunk_usd._NODE_STEP
+    for candidate in scene.get_chunks():
+        if not chunk_usd.is_view_chunk(candidate):
+            continue
+        view_prim = _chunk_prim(stage, candidate)
+        if view_prim is None:
+            continue
+        exec_in = view_prim.GetAttribute(chunk_usd._EXEC_INPUT)
+        if not (exec_in and exec_in.IsValid()):
+            continue
+        if not any(c.GetPrimPath() == prim.GetPath() for c in exec_in.GetConnections()):
+            continue
+        view_pos = _node_pos(view_prim)
+        if view_pos is None or view_pos[0] >= target_x:
+            continue
+        # Same home-layer rule as every other bit of node bookkeeping: write where the
+        # attribute's spec already lives, not wherever the ambient edit target points.
+        with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, candidate)):
+            UsdUI.NodeGraphNodeAPI.Apply(view_prim).CreatePosAttr().Set(
+                Gf.Vec2f(target_x, view_pos[1])
+            )
+
+
+def _target_prim(chunk: "core.ChunkBase", prim: Usd.Prim) -> None:
+    """Point the new chunk at the prim being dragged."""
+    param = chunk.get_param("primpath_location")
+    if param is None:
+        raise ValueError(
+            f"{AUTO_TRANSFORM_MODULE!r} has no 'primpath_location' param to target a prim with"
+        )
+    setter = getattr(param, "set_prims", None)
+    if callable(setter):
+        setter([prim])
+    else:
+        param.value = str(prim.GetPath())
+
+
+def _local_transform(prim: Usd.Prim) -> "Gf.Matrix4d | None":
+    """The prim's current local transform, or None if it has none worth carrying over."""
+    xformable = UsdGeom.Xformable(prim)
+    if not xformable:
+        return None
+    local = xformable.GetLocalTransformation(Usd.TimeCode.Default())
+    # The signature differs across USD versions: some return the matrix, some
+    # (matrix, resetsXformStack).
+    if isinstance(local, tuple):
+        local = local[0]
+    return None if local == Gf.Matrix4d(1.0) else local
+
+
+def _seed(chunk: "core.ChunkBase", matrix: "Gf.Matrix4d") -> None:
+    """Start the chunk where the prim already was, so creating it moves nothing."""
+    by_type = {g.type: g.name for g in get_gizmos(chunk)}
+
+    # A chunk declaring gizmo="transform" absorbs its translate/rotate/scale groups into one
+    # handle, and get_gizmos then reports only that one -- so seeding per part would match
+    # nothing. The whole-chunk handle takes the matrix as-is, which is also the lossless
+    # route: no decompose, no Euler convention to agree on.
+    if (whole := by_type.get(core.GIZMO_TRANSFORM_TYPE)) is not None:
+        apply_bindings(chunk, whole, matrix)
+        return
+
+    # decompose() keys by gizmo *type*; apply_bindings takes a gizmo *name*. In transform.py
+    # those differ ("translate" vs "translate_grp"), and a host is told to map between them
+    # -- so do the same here rather than assuming this module's naming.
+    for gizmo_type, value in decompose(matrix).items():
+        name = by_type.get(gizmo_type)
+        if name is None:
+            # A module declaring only some of translate/rotate/scale is fine; seed the
+            # handles it does declare rather than refusing to seed at all.
+            logger.debug("No %r handle to seed on %r", gizmo_type, chunk.name)
+            continue
+        apply_bindings(chunk, name, value)
