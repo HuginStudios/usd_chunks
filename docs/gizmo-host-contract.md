@@ -69,9 +69,19 @@ Write-back still needs us. See §5.
 > nothing to trace. Chunks cook on creation, so this is rarely visible — but if handles
 > are missing on a freshly loaded scene, this is why.
 
+**Order is meaningful: nearest the view first.** `resolve_gizmos` returns handles sorted by
+exec depth, so `descs[0]` is the chunk with the final say over that prim. A host with no
+chunk selected can drive `descs[0]` and be editing the one the user can actually see.
+
+Sorted by the graph rather than by layer strength, because the two disagree in one case
+that matters: a chunk which has not authored anything yet is not in the prim's layer stack
+at all. An Offset Transform sitting at zero authors nothing by design, so it would sort
+last however far downstream it sat -- and ownership would flip the moment someone typed a
+number into it.
+
 **Which handle belongs to whom.** `resolve_gizmos` returns handles from *every* chunk in
 the prim's layer stack, upstream ones included. **You filter to the chunk the user has
-selected.** A prim touched by two transform chunks in one chain would otherwise show two
+selected**, if your UI has a notion of one. A prim touched by two transform chunks in one chain would otherwise show two
 identical handles in the same place. Stated the other way round: a handle only ever edits
 the chunk you are looking at.
 

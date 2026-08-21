@@ -327,3 +327,86 @@ def test_dragging_twice_does_not_compound(scene) -> None:
 
     assert offset.get_param("ty").value == pytest.approx(3.0)
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0.0, 8.0, 0.0))
+
+
+# ---------------------------------------------------------------------------
+# who owns the prim: nearest the view, authored or not
+# ---------------------------------------------------------------------------
+
+def _wire(stage, downstream, upstream):
+    """downstream consumes upstream, the way the graph chains chunks."""
+    from usd_chunks.plugins.chunk_usd import _EXEC_INPUT, _EXEC_OUTPUT
+
+    prim = stage.GetPrimAtPath(Sdf.Path(f"/chunks/{downstream}"))
+    attr = prim.GetAttribute(_EXEC_INPUT)
+    if not attr.IsValid():
+        attr = prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+    attr.SetConnections([Sdf.Path(f"/chunks/{upstream}.{_EXEC_OUTPUT}")])
+
+
+def test_an_unauthored_downstream_chunk_still_owns_the_prim(scene) -> None:
+    """Reported live: adding an Offset Transform after a Transform and dragging kept
+    editing the Transform. Only after typing a value into the Offset by hand -- which made
+    it start authoring, and so join the prim's layer stack -- did it take over.
+
+    Ownership must not depend on whether a number has been entered.
+    """
+    stage, sender, scene_layer = scene
+    transform = _mk(sender, transform_mod, "T1")
+    transform.get_param("ty").value = 5.0
+    transform.execute()
+    _mk(sender, offset_mod, "Off")
+    _wire(stage, "Off", "T1")
+
+    handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
+
+    assert str(handles[0].chunk_prim) == "/chunks/Off", (
+        "the chunk nearest the view has the final say, authored or not"
+    )
+
+
+def test_the_upstream_chunk_is_still_offered(scene) -> None:
+    """Ordered, not filtered -- a host that wants a specific chunk's handle still finds it."""
+    stage, sender, scene_layer = scene
+    transform = _mk(sender, transform_mod, "T1")
+    transform.get_param("ty").value = 5.0
+    transform.execute()
+    _mk(sender, offset_mod, "Off")
+    _wire(stage, "Off", "T1")
+
+    prims = {str(d.chunk_prim) for d in chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))}
+
+    assert prims == {"/chunks/T1", "/chunks/Off"}
+
+
+def test_ownership_does_not_flip_once_the_offset_authors(scene) -> None:
+    """The other half of the report: it used to change hands the moment a value was typed."""
+    stage, sender, scene_layer = scene
+    transform = _mk(sender, transform_mod, "T1")
+    transform.get_param("ty").value = 5.0
+    transform.execute()
+    offset = _mk(sender, offset_mod, "Off")
+    _wire(stage, "Off", "T1")
+    before = str(chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))[0].chunk_prim)
+
+    offset.get_param("tx").value = 1.0
+
+    after = str(chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))[0].chunk_prim)
+    assert before == after == "/chunks/Off"
+
+
+def test_an_unwired_chunk_does_not_jump_the_queue(scene) -> None:
+    """Depth 0 for everything unconnected, so the layer-stack order still decides -- the
+    chunk whose result is actually on screen stays first."""
+    stage, sender, scene_layer = scene
+    first = _mk(sender, transform_mod, "T1")
+    second = _mk(sender, transform_mod, "T2")
+    first.get_param("ty").value = 5.0
+    second.get_param("ty").value = 3.0
+    first.execute()
+    second.execute()
+
+    handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
+    winner = {Gf.Vec3d(0, 5, 0): "T1", Gf.Vec3d(0, 3, 0): "T2"}[_translation(stage)]
+
+    assert str(handles[0].chunk_prim).rsplit("/", 1)[-1] == winner

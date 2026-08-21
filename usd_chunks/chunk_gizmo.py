@@ -667,7 +667,57 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
     for desc in _gizmos_anchored_at(prim):
         if (str(desc.chunk_prim), desc.name) not in seen:
             descs.append(desc)
-    return descs
+    return _ordered_downstream_first(stage, descs)
+
+
+def _exec_depth(stage: Usd.Stage, chunk_prim_path) -> int:
+    """How far down the exec chain a chunk prim sits. Bigger is further downstream."""
+    from usd_chunks.plugins import chunk_usd
+
+    depth, path, seen = 0, Sdf.Path(str(chunk_prim_path)), set()
+    while path not in seen:
+        seen.add(path)
+        prim = stage.GetPrimAtPath(path)
+        if not (prim and prim.IsValid()):
+            break
+        upstream = chunk_usd.exec_input_connections(prim)
+        if not upstream:
+            break
+        # The strongest branch, matching how the chain is read everywhere else. A merge
+        # feeding several inputs makes depth approximate, and approximate is fine: it only
+        # decides which of two handles on ONE prim is offered first.
+        path = upstream[0].GetPrimPath()
+        depth += 1
+    return depth
+
+
+def _ordered_downstream_first(stage: Usd.Stage, descs: list) -> list:
+    """Nearest the view first, so a host driving descs[0] edits the chunk that has the
+    final say.
+
+    Layer strength alone is not enough, which is what prompted this. A chunk that has not
+    authored yet is not in the prim's layer stack at all -- an Offset Transform sitting at
+    zero authors nothing by design -- so it sorted last however far downstream it was.
+    Reported live: adding an Offset Transform after a Transform and dragging kept editing
+    the Transform, until a value was typed into the Offset by hand, at which point it
+    started authoring and took over. The ownership flipped based on whether a number had
+    been entered, which is not something anyone should have to know.
+
+    Exec depth answers it for authored and un-authored chunks alike, and agrees with layer
+    strength where both apply: recook already orders each graph layer's subLayerPaths so the
+    chunk nearest the view wins, so this is the same rule read off the graph rather than off
+    the composed result.
+    """
+    if len(descs) < 2:
+        return descs
+    depths = {}
+    for desc in descs:
+        key = str(desc.chunk_prim)
+        if key not in depths:
+            depths[key] = _exec_depth(stage, desc.chunk_prim)
+    # Stable, so handles from one chunk keep their declared order and equal-depth chunks
+    # keep the layer-stack order they arrived in.
+    return sorted(descs, key=lambda d: -depths[str(d.chunk_prim)])
 
 
 def _gizmos_anchored_at(prim: Usd.Prim) -> list:
