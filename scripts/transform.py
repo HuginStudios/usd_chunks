@@ -1,4 +1,4 @@
-from pxr import UsdGeom, Gf
+from pxr import Gf, Sdf, UsdGeom
 from usd_chunks import chunk, chunk_core, chunk_utils
 
 
@@ -62,10 +62,25 @@ def execute(node):
         if not prim.IsValid():
             continue
 
-        xformable = UsdGeom.Xformable(stage.OverridePrim(target_path))
-        existing = {op.GetOpName(): op for op in xformable.GetOrderedXformOps()}
-        transform_op = existing.get("xformOp:transform") or xformable.AddTransformOp()
-        transform_op.Set(matrix)
+        over = stage.OverridePrim(target_path)
+        xformable = UsdGeom.Xformable(over)
+        # Author the attribute outright rather than going through GetOrderedXformOps() /
+        # AddTransformOp(). Both of those trust xformOpOrder, and xformOpOrder can name an
+        # op that no layer defines with a type -- ordinary leftover state after chunks are
+        # deleted and re-added, since the order and the attribute live in different layers
+        # and go away independently. In that state the two USD versions in use here fail
+        # differently and both fail: 25.05 hands back an untyped op and Set() raises "Empty
+        # typeName for <...xformOp:transform>", while 25.08 skips the op, leaves `existing`
+        # empty, and AddTransformOp() then raises because the name IS already in the order.
+        #
+        # CreateAttribute is idempotent and gives the attribute its type in THIS chunk's
+        # layer, which is what makes the composed op well-formed again regardless of what
+        # any other layer left behind.
+        transform_attr = over.CreateAttribute(
+            "xformOp:transform", Sdf.ValueTypeNames.Matrix4d, custom=False
+        )
+        transform_attr.Set(matrix)
+        transform_op = UsdGeom.XformOp(transform_attr)
         # Replace the op stack, don't append to it. AddTransformOp appends, so on a prim
         # that already has ops -- which every real asset does; an exported apple carries
         # translate + rotateXYZ + scale -- the composed order became

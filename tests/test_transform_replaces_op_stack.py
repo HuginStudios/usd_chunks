@@ -171,3 +171,60 @@ def test_a_prim_with_no_ops_still_works(asset) -> None:
     matrix = UsdGeom.Xformable(plain).GetLocalTransformation(Usd.TimeCode.Default())
     matrix = matrix[0] if isinstance(matrix, tuple) else matrix
     assert Gf.IsClose(matrix.ExtractTranslation(), Gf.Vec3d(1.0, 2.0, 3.0), 1e-6)
+
+
+# ---------------------------------------------------------------------------
+# leftover state from deleting and re-adding chunks
+# ---------------------------------------------------------------------------
+
+def _dangling_order(stage, layer, path="/food_apple"):
+    """xformOpOrder naming an op that no layer defines with a type.
+
+    Ordinary leftover state, not a contrived one: the order and the attribute are authored
+    into different layers and go away independently, so deleting and re-adding transform
+    chunks reaches it. Reported live from exactly that sequence.
+    """
+    with Usd.EditContext(stage, layer):
+        stage.GetPrimAtPath(Sdf.Path(path)).CreateAttribute(
+            "xformOpOrder", Sdf.ValueTypeNames.TokenArray, custom=False
+        ).Set(["xformOp:transform"])
+
+
+def test_a_dangling_op_order_does_not_crash_the_cook(asset) -> None:
+    """Reported live, mid-drag, once per mouse-move:
+
+        Error in UsdStage::_GetAttributeValueType: 'Empty typeName for
+        </food_apple_01_4k.xformOp:transform>'
+
+    The two USD versions in use fail differently and both fail: 25.05 hands back an untyped
+    op so Set() raises the above, while 25.08 skips the op entirely, so AddTransformOp()
+    raises instead because the name IS already in xformOpOrder. Authoring the attribute
+    outright sidesteps both.
+    """
+    stage, scene_layer = asset
+    _dangling_order(stage, scene_layer)
+
+    desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
+    chunk_gizmo.apply_bindings(
+        desc.chunk_prim, desc.name, Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 4.0, 0.0))
+    )
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+
+    assert Gf.IsClose(_local(stage).ExtractTranslation(), Gf.Vec3d(0.0, 4.0, 0.0), 1e-6)
+
+
+def test_the_attribute_gets_its_type_from_the_chunks_own_layer(asset) -> None:
+    """What makes the composed op well-formed again whatever another layer left behind."""
+    stage, scene_layer = asset
+    _dangling_order(stage, scene_layer)
+    desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+    created.execute()
+
+    attr = _prim(stage).GetAttribute("xformOp:transform")
+
+    assert attr.GetTypeName() == Sdf.ValueTypeNames.Matrix4d
+    spec = created.get_edit_context().GetAttributeAtPath(
+        Sdf.Path("/food_apple.xformOp:transform")
+    )
+    assert spec is not None and spec.typeName == Sdf.ValueTypeNames.Matrix4d
