@@ -252,3 +252,51 @@ def test_there_is_still_no_whole_transform_handle_to_return(solver) -> None:
     stage, _node = solver
 
     assert chunk_gizmo.transform_desc(_cube_of(stage)) is None
+
+
+# ---------------------------------------------------------------------------
+# an offset is a delta here too
+# ---------------------------------------------------------------------------
+
+def _place(stage, y):
+    """A body already placed, which is the case that exposes absolute-vs-relative. On a body
+    at the origin the two coincide, which is how this passed a live test earlier."""
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        UsdGeom.Xformable(stage.GetPrimAtPath("/World/Cube")).AddTransformOp().Set(
+            Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, y, 0.0))
+        )
+
+
+def test_dragging_the_position_handle_on_a_placed_body_writes_a_delta(solver) -> None:
+    """Same shape as the offset_transform bug: writing the raw value in makes the offset the
+    placement, so a body at y=5 dragged to y=8 would start at 13."""
+    stage, node = solver
+    _place(stage, 5.0)
+    desc = next(d for d in chunk_gizmo.resolve_gizmos(_cube_of(stage)) if d.type == "translate")
+
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, Gf.Vec3d(0.0, 8.0, 0.0))
+
+    assert node.get_param("offset_translate").value == pytest.approx((0.0, 3.0, 0.0))
+
+
+def test_dragging_a_body_at_the_origin_is_unchanged(solver) -> None:
+    """The case that already worked, kept so the delta conversion cannot regress it."""
+    stage, node = solver
+    desc = next(d for d in chunk_gizmo.resolve_gizmos(_cube_of(stage)) if d.type == "translate")
+
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, Gf.Vec3d(1.0, 2.0, 3.0))
+
+    assert node.get_param("offset_translate").value == pytest.approx((1.0, 2.0, 3.0))
+
+
+def test_the_rotation_handle_is_a_delta_too(solver) -> None:
+    stage, node = solver
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        UsdGeom.Xformable(stage.GetPrimAtPath("/World/Cube")).AddTransformOp().Set(
+            Gf.Matrix4d(1.0).SetRotate(Gf.Rotation(Gf.Vec3d(0, 1, 0), 30.0))
+        )
+    desc = next(d for d in chunk_gizmo.resolve_gizmos(_cube_of(stage)) if d.type == "rotate")
+
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, Gf.Vec3d(0.0, 90.0, 0.0))
+
+    assert node.get_param("offset_rotate").value == pytest.approx((0.0, 60.0, 0.0), abs=1e-4)

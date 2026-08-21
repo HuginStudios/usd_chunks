@@ -13,7 +13,7 @@ from collections.abc import Generator
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk, chunk_gizmo, chunk_registry
 from usd_chunks.plugins import chunk_usd
 
 try:
@@ -1503,6 +1503,45 @@ def _schedule_auto_run(root_chunk) -> None:
         timer.timeout.connect(lambda: _run(root_chunk, None, None))
         root_chunk._auto_run_timer = timer
     timer.start(_AUTO_RUN_DELAY_MS)
+
+
+def gizmo_changed(node, gizmo, value):
+    """Turn a dragged absolute placement into an offset from where the body already is.
+
+    Same reasoning as offset_transform's hook, and the same bug if it is missing: the
+    handle emits an absolute local transform (correct, and what every transform handle
+    emits) while these params mean "shift the body's start by this much". Writing the raw
+    value in makes the offset the placement, so a body already at y=5 dragged to y=8 gets
+    an offset of 8 and starts at 13.
+
+    Invisible on a body at the origin, where absolute and relative coincide -- which is
+    exactly how it passed a live test earlier.
+    """
+    if gizmo not in ("offset_translate", "offset_rotate"):
+        return False
+    prims = node.get_param("prim_path").get_prims()
+    if not prims:
+        return False
+
+    base = _gizmo_base(prims[0])
+    part = "translate" if gizmo == "offset_translate" else "rotate"
+    delta = [float(v) - float(b) for v, b in zip(value, base[part])]
+    node.get_param(gizmo).value = tuple(delta)
+    return True
+
+
+def _gizmo_base(prim):
+    """Where the body sits before these offsets are applied.
+
+    The solver does not author its offsets onto the prim -- it bakes simulated animation --
+    so unlike offset_transform there is no output of its own to read back and no risk of
+    compounding. The prim's current placement IS the base.
+    """
+    matrix = UsdGeom.Xformable(prim).GetLocalTransformation(Usd.TimeCode.Default())
+    if isinstance(matrix, tuple):
+        matrix = matrix[0]
+    return chunk_gizmo.decompose(matrix)
+
 
 
 def main() -> chunk.Chunk:
