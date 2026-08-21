@@ -4,7 +4,7 @@ Requires: pxr (OpenUSD), usd_chunks.
 """
 
 from pxr import Gf, UsdGeom
-from usd_chunks import chunk, chunk_gizmo
+from usd_chunks import chunk, chunk_core, chunk_gizmo
 
 _ROTATE_TYPES = frozenset(
     [
@@ -25,6 +25,91 @@ def _clear_chunk_xform(owner):
     layer = owner.get_edit_context()
     if layer and (lreg := chunk.get_layer_manager()):
         lreg.clear_layer(layer.identifier)
+
+
+def _read_base(prim):
+    """The placement in effect on `prim`, as translate / rotate / scale.
+
+    Read before this chunk writes anything, so it is what the offset is added *to*.
+    """
+    xformable = UsdGeom.Xformable(prim)
+    base_t = Gf.Vec3d(0.0, 0.0, 0.0)
+    base_r = Gf.Vec3f(0.0, 0.0, 0.0)
+    base_s = Gf.Vec3f(1.0, 1.0, 1.0)
+    for op in xformable.GetOrderedXformOps():
+        v = op.Get(0)
+        if v is None:
+            continue
+        op_type = op.GetOpType()
+        if op_type == UsdGeom.XformOp.TypeTransform:
+            # A single matrix op, which the branches below cannot see: they only recognise
+            # the separate translate/rotate/scale spellings. Anything upstream that authors
+            # one -- a Transform chunk, or an asset exported with a baked matrix -- was
+            # therefore read as identity, and the offset was applied to nothing instead of
+            # to the placement actually in effect.
+            parts = chunk_gizmo.decompose(Gf.Matrix4d(v))
+            base_t = Gf.Vec3d(parts["translate"])
+            base_r = Gf.Vec3f(*[float(x) for x in parts["rotate"]])
+            base_s = Gf.Vec3f(*[float(x) for x in parts["scale"]])
+        elif op_type == UsdGeom.XformOp.TypeTranslate:
+            base_t = Gf.Vec3d(float(v[0]), float(v[1]), float(v[2]))
+        elif op_type == UsdGeom.XformOp.TypeRotateX:
+            base_r = Gf.Vec3f(float(v), base_r[1], base_r[2])
+        elif op_type == UsdGeom.XformOp.TypeRotateY:
+            base_r = Gf.Vec3f(base_r[0], float(v), base_r[2])
+        elif op_type == UsdGeom.XformOp.TypeRotateZ:
+            base_r = Gf.Vec3f(base_r[0], base_r[1], float(v))
+        elif op_type in _ROTATE_TYPES:
+            base_r = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+        elif op_type == UsdGeom.XformOp.TypeScale:
+            base_s = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+    return base_t, base_r, base_s
+
+
+def _base_for(node, prim):
+    """This chunk's base, preferring the one it stored when it last wrote.
+
+    Once it has written, the prim's current ops are its OWN output -- reading them back
+    would treat the offset as part of the base and compound it on every drag.
+    """
+    last = _last_applied.get(id(node))
+    if last and last["path"] == str(prim.GetPath()):
+        return (Gf.Vec3d(*last["base_t"]), Gf.Vec3f(*last["base_r"]), Gf.Vec3f(*last["base_s"]))
+    return _read_base(prim)
+
+
+def gizmo_changed(node, gizmo, value):
+    """Turn a dragged absolute transform into an offset from the base.
+
+    Without this the handle wrote its raw value straight into the offset params, and an
+    offset is not a placement. Reported live: a Transform chunk adopting an asset's scale of
+    100, an Offset Transform added on the same prim, and one drag later the scale was
+    100 x 100. The translate read wrong too -- it just looks less alarming than 10000.
+
+    Doing it here rather than in the host is the point of the hook: an offset is this
+    chunk's own idea, so nothing outside it has to learn about the distinction. Every host
+    keeps emitting the same absolute matrix it emits for any transform handle.
+    """
+    if gizmo != chunk_core.GIZMO_TRANSFORM_TYPE:
+        return False
+    prims = node.get_param("prim_path").get_prims()
+    if not prims:
+        return False
+
+    base_t, base_r, base_s = _base_for(node, prims[0])
+    parts = chunk_gizmo.decompose(Gf.Matrix4d(value))
+    target_t, target_r, target_s = parts["translate"], parts["rotate"], parts["scale"]
+
+    is_f = chunk.is_param_t(float)
+    for name, target, base in zip(("tx", "ty", "tz"), target_t, base_t):
+        node.get_param(name, is_f).value = float(target - base)
+    for name, target, base in zip(("rx", "ry", "rz"), target_r, base_r):
+        node.get_param(name, is_f).value = float(target - base)
+    for name, target, base in zip(("sx", "sy", "sz"), target_s, base_s):
+        # Scale composes by multiplication, so the offset is a ratio. A base scale of 0
+        # cannot be scaled back to anything, so leave that axis alone rather than divide.
+        node.get_param(name, is_f).value = float(target / base) if base else 1.0
+    return True
 
 
 def _run(owner, notice, sender):
@@ -79,39 +164,7 @@ def _run(owner, notice, sender):
         base_r = Gf.Vec3f(*last["base_r"])
         base_s = Gf.Vec3f(*last["base_s"])
     else:
-        # First run for this prim — read the current scene transform before we
-        # write anything to the session layer.
-        xformable = UsdGeom.Xformable(prim)
-        base_t = Gf.Vec3d(0.0, 0.0, 0.0)
-        base_r = Gf.Vec3f(0.0, 0.0, 0.0)
-        base_s = Gf.Vec3f(1.0, 1.0, 1.0)
-        for op in xformable.GetOrderedXformOps():
-            v = op.Get(0)
-            if v is None:
-                continue
-            op_type = op.GetOpType()
-            if op_type == UsdGeom.XformOp.TypeTransform:
-                # A single matrix op, which the loop below cannot see: it only recognises
-                # the separate translate/rotate/scale spellings. Anything upstream that
-                # authors one -- a Transform chunk, or an asset exported with a baked
-                # matrix -- was therefore read as identity, and the offset was applied to
-                # nothing instead of to the placement actually in effect.
-                parts = chunk_gizmo.decompose(Gf.Matrix4d(v))
-                base_t = Gf.Vec3d(parts["translate"])
-                base_r = Gf.Vec3f(*[float(x) for x in parts["rotate"]])
-                base_s = Gf.Vec3f(*[float(x) for x in parts["scale"]])
-            elif op_type == UsdGeom.XformOp.TypeTranslate:
-                base_t = Gf.Vec3d(float(v[0]), float(v[1]), float(v[2]))
-            elif op_type == UsdGeom.XformOp.TypeRotateX:
-                base_r = Gf.Vec3f(float(v), base_r[1], base_r[2])
-            elif op_type == UsdGeom.XformOp.TypeRotateY:
-                base_r = Gf.Vec3f(base_r[0], float(v), base_r[2])
-            elif op_type == UsdGeom.XformOp.TypeRotateZ:
-                base_r = Gf.Vec3f(base_r[0], base_r[1], float(v))
-            elif op_type in _ROTATE_TYPES:
-                base_r = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
-            elif op_type == UsdGeom.XformOp.TypeScale:
-                base_s = Gf.Vec3f(float(v[0]), float(v[1]), float(v[2]))
+        base_t, base_r, base_s = _read_base(prim)
 
     new_t = Gf.Vec3d(base_t[0] + otx, base_t[1] + oty, base_t[2] + otz)
     new_r = Gf.Vec3f(base_r[0] + orx, base_r[1] + ory, base_r[2] + orz)

@@ -248,3 +248,82 @@ def test_neither_a_transform_nor_an_offset_triggers_auto_create(scene, monkeypat
     chunk_gizmo.ensure_transform_chunk(stage.GetPrimAtPath("/cube"))
 
     assert stub.creates == 0
+
+
+# ---------------------------------------------------------------------------
+# dragging an Offset Transform: an offset is a delta, not a placement
+# ---------------------------------------------------------------------------
+
+def test_dragging_an_offset_writes_a_delta_not_the_absolute_value(scene) -> None:
+    """Reported live: a Transform chunk adopting an asset's scale of 100, an Offset
+    Transform added on the same prim, one drag, and the scale became 100 x 100.
+
+    The handle emits an absolute local transform -- correct, and the same thing every
+    transform handle emits. An offset is not a placement, so the chunk converts.
+    """
+    stage, sender, scene_layer = scene
+    _bake(stage, scene_layer, (0.0, 5.0, 0.0))
+    offset = _mk(sender, offset_mod, "Off")
+
+    # Drag it to where it already is: the offset must come out as nothing.
+    chunk_gizmo.apply_bindings(
+        Sdf.Path("/chunks/Off"), "transform",
+        Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 5.0, 0.0)),
+    )
+
+    assert [offset.get_param(n).value for n in ("tx", "ty", "tz")] == pytest.approx([0, 0, 0])
+    assert [offset.get_param(n).value for n in ("sx", "sy", "sz")] == pytest.approx([1, 1, 1])
+
+
+def test_dragging_an_offset_moves_the_prim_where_it_was_dragged(scene) -> None:
+    stage, sender, scene_layer = scene
+    _bake(stage, scene_layer, (0.0, 5.0, 0.0))
+    _mk(sender, offset_mod, "Off")
+
+    chunk_gizmo.apply_bindings(
+        Sdf.Path("/chunks/Off"), "transform",
+        Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 8.0, 0.0)),
+    )
+
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0.0, 8.0, 0.0)), (
+        "dragged to 8 from a base of 5, so the offset is 3 and the prim lands on 8"
+    )
+
+
+def test_a_scale_offset_is_a_ratio_not_a_copy(scene) -> None:
+    """The 100 x 100 case exactly. Scale composes by multiplication."""
+    stage, sender, scene_layer = scene
+    with Usd.EditContext(stage, scene_layer):
+        UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).AddTransformOp().Set(
+            Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(100.0, 100.0, 100.0))
+        )
+    offset = _mk(sender, offset_mod, "Off")
+
+    chunk_gizmo.apply_bindings(
+        Sdf.Path("/chunks/Off"), "transform",
+        Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(100.0, 100.0, 100.0)),
+    )
+
+    assert [offset.get_param(n).value for n in ("sx", "sy", "sz")] == pytest.approx([1, 1, 1])
+    matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetLocalTransformation(
+        Usd.TimeCode.Default()
+    )
+    matrix = matrix[0] if isinstance(matrix, tuple) else matrix
+    assert matrix.GetRow3(0).GetLength() == pytest.approx(100.0), "100, not 10000"
+
+
+def test_dragging_twice_does_not_compound(scene) -> None:
+    """Once the chunk has written, the prim's ops are its OWN output. Reading them back as
+    the base would fold the offset into it and grow on every drag."""
+    stage, sender, scene_layer = scene
+    _bake(stage, scene_layer, (0.0, 5.0, 0.0))
+    offset = _mk(sender, offset_mod, "Off")
+
+    for _ in range(3):
+        chunk_gizmo.apply_bindings(
+            Sdf.Path("/chunks/Off"), "transform",
+            Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 8.0, 0.0)),
+        )
+
+    assert offset.get_param("ty").value == pytest.approx(3.0)
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0.0, 8.0, 0.0))
