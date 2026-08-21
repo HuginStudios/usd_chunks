@@ -1084,20 +1084,18 @@ def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
     if not create:
         return None
 
-    # Read where the prim is BEFORE anything is created. Targeting the chunk at the prim is
-    # a param change, which cooks it, which authors an identity xformOp:transform from the
-    # chunk's own layer -- and that layer is stronger than wherever the prim was placed. Read
-    # it afterwards and the seed is always identity, i.e. the object snaps to the origin the
-    # instant you grab it.
-    placement = _local_transform(prim)
-
+    # Deliberately no seeding. A chunk used to REPLACE the prim's transform, so a new one
+    # had to be pre-loaded with the prim's current placement or the object jumped to the
+    # origin the moment you grabbed it -- and only this path did that, so the same node
+    # behaved differently depending on whether it was dragged into existence or added by
+    # hand. Now that a chunk owns its own xformOp and composes on top of what is already
+    # there, an untouched chunk contributes identity and moves nothing. The drag itself is
+    # converted from absolute to op-local by the module's gizmo_changed hook.
     chunk = _create_chunk_at_tail(AUTO_TRANSFORM_MODULE)
     if chunk is None:
         return None
 
     _target_prim(chunk, prim)
-    if placement is not None:
-        _seed(chunk, placement)
 
     # Re-resolve rather than synthesising: the desc a caller gets from here has to be the
     # same record it would have got had the chunk existed all along, anchor included.

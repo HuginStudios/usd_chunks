@@ -144,12 +144,11 @@ def test_an_offset_scales_from_the_matrix_base(scene) -> None:
 # two Transforms on one prim
 # ---------------------------------------------------------------------------
 
-def test_two_transforms_are_last_one_wins_not_additive(scene) -> None:
-    """Not a bug, and worth pinning so nobody "fixes" it into addition later.
+def test_two_transforms_compose(scene) -> None:
+    """The point of the whole change, and the exact inverse of what this asserted before.
 
-    Transform means "set the transform". Each one authors xformOpOrder, and USD resolves
-    that attribute as a whole -- the strongest opinion decides, there is no merging of op
-    lists across layers. Adding is what Offset Transform is for.
+    Each chunk used to author the same attribute, so USD picked the strongest layer and
+    discarded the other -- 5 or 3, never 8. Owning a named op each, they compose.
     """
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
@@ -160,17 +159,15 @@ def test_two_transforms_are_last_one_wins_not_additive(scene) -> None:
     first.execute()
     second.execute()
 
-    assert _translation(stage) in (Gf.Vec3d(0, 5, 0), Gf.Vec3d(0, 3, 0)), (
-        "one of them wins outright; 8 would mean they had started stacking"
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 8, 0)), (
+        "both contribute now; 5 or 3 alone would mean one had discarded the other"
     )
 
 
-def test_handles_come_back_strongest_first(scene) -> None:
-    """What makes a host with no chunk selected still do the right thing: it drives
-    handles[0], and that is the chunk whose result is actually on screen.
+def test_each_transform_owns_a_distinct_op(scene) -> None:
+    """What makes composing possible: they are no longer writing the same attribute."""
+    from usd_chunks import chunk_utils
 
-    chunks_for_prim walks GetPrimStack(), which USD returns strength-ordered.
-    """
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
     second = _mk(sender, transform_mod, "T2")
@@ -179,10 +176,42 @@ def test_handles_come_back_strongest_first(scene) -> None:
     first.execute()
     second.execute()
 
-    handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
-    winner = {Gf.Vec3d(0, 5, 0): "T1", Gf.Vec3d(0, 3, 0): "T2"}[_translation(stage)]
+    names = {chunk_utils.xform_op_name(first), chunk_utils.xform_op_name(second)}
+    order = list(UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetXformOpOrderAttr().Get())
 
-    assert str(handles[0].chunk_prim).rsplit("/", 1)[-1] == winner
+    assert len(names) == 2
+    assert names <= set(order)
+
+
+def test_a_chunks_op_id_survives_a_rename(scene) -> None:
+    """Identity rests on the id, not the name, so renaming does not orphan the op a chunk
+    has already authored."""
+    from usd_chunks import chunk_utils
+
+    stage, sender, scene_layer = scene
+    node = _mk(sender, transform_mod, "T1")
+    node.get_param("ty").value = 5.0
+    node.execute()
+    before = chunk_utils.xform_op_name(node)
+
+    node.name = "RenamedLater"
+
+    assert chunk_utils.xform_op_name(node) == before
+
+
+def test_both_chunks_offer_a_handle(scene) -> None:
+    """Neither is discarded any more, so both are draggable and both show up."""
+    stage, sender, scene_layer = scene
+    first = _mk(sender, transform_mod, "T1")
+    second = _mk(sender, transform_mod, "T2")
+    first.get_param("ty").value = 5.0
+    second.get_param("ty").value = 3.0
+    first.execute()
+    second.execute()
+
+    prims = {str(d.chunk_prim) for d in chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))}
+
+    assert prims == {"/chunks/T1", "/chunks/T2"}
 
 
 def test_dragging_moves_the_prim_by_what_was_dragged(scene) -> None:
@@ -395,18 +424,25 @@ def test_ownership_does_not_flip_once_the_offset_authors(scene) -> None:
     assert before == after == "/chunks/Off"
 
 
-def test_an_unwired_chunk_does_not_jump_the_queue(scene) -> None:
-    """Depth 0 for everything unconnected, so the layer-stack order still decides -- the
-    chunk whose result is actually on screen stays first."""
+def test_dragging_the_downstream_chunk_lands_where_it_was_dragged(scene) -> None:
+    """The handle reports an absolute placement while a composing chunk contributes only its
+    own share, so the chunk has to divide the upstream contribution back out. Getting that
+    backwards conjugates the drag rather than merely offsetting it."""
     stage, sender, scene_layer = scene
-    first = _mk(sender, transform_mod, "T1")
-    second = _mk(sender, transform_mod, "T2")
-    first.get_param("ty").value = 5.0
-    second.get_param("ty").value = 3.0
-    first.execute()
-    second.execute()
+    upstream = _mk(sender, transform_mod, "T1")
+    downstream = _mk(sender, transform_mod, "T2")
+    upstream.get_param("ty").value = 5.0
+    upstream.execute()
+    downstream.execute()
+    _wire(stage, "T2", "T1")
 
-    handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
-    winner = {Gf.Vec3d(0, 5, 0): "T1", Gf.Vec3d(0, 3, 0): "T2"}[_translation(stage)]
+    chunk_gizmo.apply_bindings(
+        Sdf.Path("/chunks/T2"), "transform",
+        Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 9.0, 0.0)),
+    )
+    upstream.execute()
+    downstream.execute()
 
-    assert str(handles[0].chunk_prim).rsplit("/", 1)[-1] == winner
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 9, 0))
+    assert upstream.get_param("ty").value == 5.0, "the upstream chunk must not be touched"
+    assert downstream.get_param("ty").value == pytest.approx(4.0), "9 total, 5 from upstream"

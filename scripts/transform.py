@@ -1,5 +1,5 @@
-from pxr import Gf, Sdf, UsdGeom
-from usd_chunks import chunk, chunk_core, chunk_utils
+from pxr import Gf, Sdf, Usd, UsdGeom
+from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_utils
 
 
 def _rescale_translate_range(node, stage):
@@ -64,6 +64,26 @@ def execute(node):
 
         over = stage.OverridePrim(target_path)
         xformable = UsdGeom.Xformable(over)
+
+        # This chunk's own op, not the shared xformOp:transform every chunk used to write.
+        # Two chunks placing one prim were competing for one attribute, and USD settles that
+        # by picking the strongest layer and discarding the rest -- which is why a Transform
+        # and an Offset Transform on the same prim used to annihilate each other rather than
+        # compose. Owning a named op each, they compose.
+        op_name = chunk_utils.xform_op_name(node)
+
+        # The order is rebuilt from what is COMPOSED right now, never from a remembered
+        # list. execute() has already cleared this chunk's layer, so what is read here is
+        # exactly everything else that currently applies -- the asset's own ops plus any
+        # other chunk's, and nothing from a chunk that has since been muted or disabled.
+        # Remembering the list instead would leave it naming ops whose values are no longer
+        # on the stage, which is the "Empty typeName" crash all over again.
+        order = [op for op in (xformable.GetXformOpOrderAttr().Get() or [])]
+        if op_name not in order:
+            # Appended, so this chunk applies after everything upstream of it. Cook order
+            # runs upstream first, so a downstream chunk sees its predecessors already here
+            # and lands after them without anyone computing graph depth.
+            order.append(op_name)
         # Author the attribute outright rather than going through GetOrderedXformOps() /
         # AddTransformOp(). Both of those trust xformOpOrder, and xformOpOrder can name an
         # op that no layer defines with a type -- ordinary leftover state after chunks are
@@ -77,23 +97,76 @@ def execute(node):
         # layer, which is what makes the composed op well-formed again regardless of what
         # any other layer left behind.
         transform_attr = over.CreateAttribute(
-            "xformOp:transform", Sdf.ValueTypeNames.Matrix4d, custom=False
+            op_name, Sdf.ValueTypeNames.Matrix4d, custom=False
         )
         transform_attr.Set(matrix)
-        transform_op = UsdGeom.XformOp(transform_attr)
-        # Replace the op stack, don't append to it. AddTransformOp appends, so on a prim
-        # that already has ops -- which every real asset does; an exported apple carries
-        # translate + rotateXYZ + scale -- the composed order became
-        # [translate, rotateXYZ, scale, transform] and our matrix was applied ON TOP of the
-        # prim's own placement rather than instead of it. Reported as dragging a parent
-        # prim suddenly showing rotate X -90 and scale 100: those are the asset's real
-        # values, being applied twice. A scale of 100 came out as 10000.
-        #
-        # This chunk is absolute ("set the transform"), which is what makes replacing right;
-        # offset_transform is the one that adds to what is already there. The order is
-        # authored into this chunk's own layer, so the asset's ops are untouched and come
-        # back the moment the chunk is deleted or muted.
-        xformable.SetXformOpOrder([transform_op])
+        # Authored into this chunk's own layer, so the asset's own ops are untouched and
+        # come back the moment this chunk is deleted or muted.
+        xformable.CreateXformOpOrderAttr().Set(order)
+
+
+def gizmo_changed(node, gizmo, value):
+    """Turn a dragged absolute placement into this chunk's own op value.
+
+    The handle reports where the object should END UP. This chunk's op composes on top of
+    everything upstream of it -- the asset's ops, and any chunk before it in the chain -- so
+    writing the dragged matrix in raw would apply that upstream placement twice.
+
+    This replaces the old seeding step, and is why that step is gone. Because the op used to
+    REPLACE the prim's transform, a newly created chunk had to be pre-loaded with the prim's
+    current placement or the object jumped to the origin the moment you grabbed it -- and
+    only the auto-created path did that, so the same node behaved differently depending on
+    whether it was dragged into existence or added by hand. Composing needs no seeding: an
+    untouched chunk contributes identity and moves nothing.
+    """
+    if gizmo != "transform":
+        return False
+    primpath_param = node.get_param("primpath_location")
+    if not primpath_param or not primpath_param.value:
+        return False
+    stage = node.get_stage()
+    targets = list(chunk_utils.iter_prim_targets(stage, primpath_param))
+    if not targets:
+        return False
+
+    prim = stage.GetPrimAtPath(targets[0])
+    if not prim.IsValid():
+        return False
+
+    upstream = _upstream_of(node, prim)
+    parts = chunk_gizmo.decompose(Gf.Matrix4d(value) * upstream.GetInverse())
+    for names, key in ((("tx", "ty", "tz"), "translate"),
+                       (("rx", "ry", "rz"), "rotate"),
+                       (("sx", "sy", "sz"), "scale")):
+        for name, component in zip(names, parts[key]):
+            node.get_param(name).value = float(component)
+    return True
+
+
+def _upstream_of(node, prim):
+    """Everything that applies to `prim` before this chunk's own op.
+
+    Taken as the composed local transform with this chunk's contribution divided back out,
+    rather than by re-composing the op list by hand: the composed value is the one actually
+    in effect, muting and layer strength included.
+    """
+    xformable = UsdGeom.Xformable(prim)
+    local = xformable.GetLocalTransformation(Usd.TimeCode.Default())
+    if isinstance(local, tuple):
+        local = local[0]
+
+    mine = Gf.Matrix4d(1.0)
+    attr = prim.GetAttribute(chunk_utils.xform_op_name(node))
+    if attr and attr.IsValid():
+        current = attr.Get()
+        if current is not None:
+            mine = Gf.Matrix4d(current)
+    # Ordering, verified rather than assumed: for xformOpOrder [rot, translate] USD
+    # composes T * R, so the LAST op multiplies on the left. This chunk's op is appended,
+    # hence local = mine * upstream and upstream = mine^-1 * local. Getting this backwards
+    # is not a small error -- it conjugates the drag, so a 5-unit move through an asset
+    # rotated -90 and scaled 100 came out as -500 on a different axis.
+    return mine.GetInverse() * local
 
 
 def main():

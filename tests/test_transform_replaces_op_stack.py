@@ -21,7 +21,7 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_gizmo, chunk_registry
+from usd_chunks import chunk_gizmo, chunk_registry, chunk_utils
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins import chunk_usd
 
@@ -104,14 +104,22 @@ def test_auto_creating_on_an_asset_does_not_move_it(asset) -> None:
     assert Gf.IsClose(after.ExtractTranslation(), before.ExtractTranslation(), 1e-6)
 
 
-def test_the_chunk_replaces_the_op_stack(asset) -> None:
+def test_the_chunk_appends_its_own_op(asset) -> None:
+    """The asset's ops stay, in order, and this chunk's op goes on the end.
+
+    This used to replace the stack outright, which is why a new chunk had to be seeded with
+    the prim's current placement. Appending composes instead, so nothing needs seeding.
+    """
     stage, _layer = asset
     desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
-    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+    created.execute()
 
     order = list(UsdGeom.Xformable(_prim(stage)).GetXformOpOrderAttr().Get() or [])
 
-    assert order == ["xformOp:transform"], f"stacked instead of replacing: {order}"
+    assert order[:3] == ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    assert order[3] == chunk_utils.xform_op_name(created)
+    assert len(order) == 4
 
 
 def test_the_assets_own_ops_are_left_alone(asset) -> None:
@@ -139,7 +147,7 @@ def test_deleting_the_chunk_gives_the_asset_back(asset) -> None:
     assert _scale_of(after) == pytest.approx(_scale_of(before))
     assert list(UsdGeom.Xformable(_prim(stage)).GetXformOpOrderAttr().Get()) == [
         "xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale",
-    ]
+    ], "the chunk's op should have gone with it, leaving the asset's own"
 
 
 def test_dragging_moves_it_by_exactly_what_was_dragged(asset) -> None:
@@ -221,10 +229,7 @@ def test_the_attribute_gets_its_type_from_the_chunks_own_layer(asset) -> None:
     created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
     created.execute()
 
-    attr = _prim(stage).GetAttribute("xformOp:transform")
-
-    assert attr.GetTypeName() == Sdf.ValueTypeNames.Matrix4d
-    spec = created.get_edit_context().GetAttributeAtPath(
-        Sdf.Path("/food_apple.xformOp:transform")
-    )
+    op_name = chunk_utils.xform_op_name(created)
+    assert _prim(stage).GetAttribute(op_name).GetTypeName() == Sdf.ValueTypeNames.Matrix4d
+    spec = created.get_edit_context().GetAttributeAtPath(Sdf.Path(f"/food_apple.{op_name}"))
     assert spec is not None and spec.typeName == Sdf.ValueTypeNames.Matrix4d

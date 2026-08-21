@@ -1,4 +1,5 @@
 import re
+import uuid
 from contextlib import contextmanager, ExitStack
 from pxr import Sdf, Usd
 
@@ -488,3 +489,92 @@ def show_attribute(prim, target_group, collapse_non_inputs=True):
 
         if param and tgt_grp:
             tgt_grp.add_param(param)
+
+
+# ---------------------------------------------------------------------------
+# stable xformOp identity
+# ---------------------------------------------------------------------------
+
+#: Where a chunk records the op suffix it owns, so op -> chunk is a lookup rather than a
+#: string match, and so the name survives a reload unchanged.
+XFORM_OP_ID_ATTR = "chunk:xformOpId"
+
+_XFORM_OP_PREFIX = "xformOp:transform:"
+_SANITISE_RE = re.compile(r"[^A-Za-z0-9_]")
+
+
+def xform_op_name(node) -> str:
+    """The xformOp suffix this chunk owns: readable, unique, and stable across renames.
+
+    Chunks used to author `xformOp:transform` -- the same attribute on every chunk -- so
+    two chunks placing one prim competed for one slot and USD discarded the loser. Owning a
+    distinctly named op each is what lets them compose instead.
+
+    The name carries two things because it has two jobs. The id is what identity rests on:
+    generated once, recorded on the chunk's prim, and never regenerated, so renaming a
+    chunk does not orphan the op it already authored. The readable prefix is there because
+    the point of all this is to select a prim, look at its ops, and see which chunk each one
+    belongs to -- `xformOp:transform:a3f2c1` answers nothing at a glance.
+
+        xformOp:transform:Transform1_a3f2c1
+
+    The prefix is taken from the chunk's name at first use and deliberately not kept in
+    sync afterwards. Renaming the op would be possible -- unlike before, a chunk owns its
+    attribute outright and nobody else writes it -- but it rewrites the file for a cosmetic
+    gain, and anything that needs the true mapping should read XFORM_OP_ID_ATTR.
+    """
+    return _XFORM_OP_PREFIX + _stable_suffix(node)
+
+
+def _readable(node) -> str:
+    name = _SANITISE_RE.sub("_", str(getattr(node, "name", "") or "Transform"))
+    return name or "Transform"
+
+
+def _stable_suffix(node) -> str:
+    """Read the chunk's op suffix, minting one on first use.
+
+    The WHOLE suffix is stored, readable part included, not just the id. Recomputing the
+    readable part from the chunk's current name on every call would change the op name on a
+    rename -- orphaning the op the chunk had already authored, which is precisely what the
+    stable id exists to prevent. The name is a snapshot from first use, by design.
+
+    Stored on the chunk's own prim rather than derived from anything, because everything it
+    could be derived from can change: the name is editable, the prim path moves between
+    contexts, and the in-memory hash does not survive a reload.
+    """
+    cached = getattr(node, "_xform_op_suffix", None)
+    if cached:
+        return cached
+
+    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    prim = _chunk_prim_of(stage, node) if stage is not None else None
+
+    suffix = None
+    if prim is not None:
+        attr = prim.GetAttribute(XFORM_OP_ID_ATTR)
+        if attr and attr.IsValid():
+            suffix = attr.Get()
+
+    if not suffix:
+        suffix = f"{_readable(node)}_{uuid.uuid4().hex[:8]}"
+        if prim is not None:
+            # Into the chunk's own bookkeeping layer, like every other bit of chunk
+            # bookkeeping -- not wherever the ambient edit target happens to point.
+            with Usd.EditContext(stage, get_bookkeeping_layer(stage, node)):
+                written = prim.CreateAttribute(
+                    XFORM_OP_ID_ATTR, Sdf.ValueTypeNames.String, custom=True
+                )
+                written.SetVariability(Sdf.VariabilityUniform)
+                written.Set(suffix)
+
+    object.__setattr__(node, "_xform_op_suffix", suffix)
+    return suffix
+
+
+def _chunk_prim_of(stage, node):
+    path = getattr(node, "_exec_prim_path", None) or getattr(node, "prim_path", None)
+    if not path:
+        return None
+    prim = stage.GetPrimAtPath(Sdf.Path(str(path)))
+    return prim if prim and prim.IsValid() else None

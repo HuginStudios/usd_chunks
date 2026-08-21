@@ -285,17 +285,24 @@ def test_an_invalid_prim_creates_nothing(scene) -> None:
 # not moving anything by appearing
 # ---------------------------------------------------------------------------
 
-def test_the_new_chunk_starts_where_the_prim_already_is(scene) -> None:
-    """A fresh Transform chunk is identity and its cook *overwrites* xformOp:transform, so
-    an unseeded one would snap an already-placed prim to the origin -- the object jumping
-    away from the handle at the instant you grab it."""
+def test_the_new_chunk_starts_empty_and_moves_nothing(scene) -> None:
+    """No seeding, deliberately.
+
+    A chunk used to REPLACE the prim's transform, so a new one had to be pre-loaded with the
+    prim's current placement or the object jumped to the origin -- and only the auto-created
+    path did that, so the same node behaved differently depending on whether it was dragged
+    into existence or added by hand. Now that it owns its own op and composes on top, an
+    untouched chunk contributes identity: the params start empty and the prim does not move.
+    """
     stage, _registry, _module, scene_layer = scene
     _place(stage, scene_layer, (5.0, 6.0, 7.0))
 
     desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
     created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+    created.execute()
 
-    assert [created.get_param(n).value for n in ("tx", "ty", "tz")] == [5.0, 6.0, 7.0]
+    assert [created.get_param(n).value for n in ("tx", "ty", "tz")] == [0.0, 0.0, 0.0]
+    assert Gf.IsClose(_local(_cube(stage)).ExtractTranslation(), Gf.Vec3d(5, 6, 7), 1e-6)
 
 
 def test_seeding_survives_the_first_cook(scene) -> None:
