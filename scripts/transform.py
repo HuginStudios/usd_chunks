@@ -66,6 +66,19 @@ def execute(node):
         existing = {op.GetOpName(): op for op in xformable.GetOrderedXformOps()}
         transform_op = existing.get("xformOp:transform") or xformable.AddTransformOp()
         transform_op.Set(matrix)
+        # Replace the op stack, don't append to it. AddTransformOp appends, so on a prim
+        # that already has ops -- which every real asset does; an exported apple carries
+        # translate + rotateXYZ + scale -- the composed order became
+        # [translate, rotateXYZ, scale, transform] and our matrix was applied ON TOP of the
+        # prim's own placement rather than instead of it. Reported as dragging a parent
+        # prim suddenly showing rotate X -90 and scale 100: those are the asset's real
+        # values, being applied twice. A scale of 100 came out as 10000.
+        #
+        # This chunk is absolute ("set the transform"), which is what makes replacing right;
+        # offset_transform is the one that adds to what is already there. The order is
+        # authored into this chunk's own layer, so the asset's ops are untouched and come
+        # back the moment the chunk is deleted or muted.
+        xformable.SetXformOpOrder([transform_op])
 
 
 def main():

@@ -1,0 +1,173 @@
+"""A Transform chunk sets a prim's transform; it does not stack onto the prim's own ops.
+
+Reported live: dragging a parent prim (`/food_apple_01_4k`, not its mesh) went haywire --
+"as soon as I start to drag the y axis, it applies a -90 to the rotate x and applies 100 on
+scale x,y and z".
+
+Those are the asset's real values. An exported asset carries separate translate + rotateXYZ
++ scale ops, AddTransformOp appends, so the composed order became
+
+    [translate, rotateXYZ, scale, transform]
+
+and the chunk's matrix was applied ON TOP of the prim's own placement instead of instead of
+it. A scale of 100 composed to 10000.
+
+Invisible on a bare cube, which has no ops at all -- which is why every earlier test passed.
+"""
+from __future__ import annotations
+
+import importlib
+
+import pytest
+from pxr import Gf, Sdf, Usd, UsdGeom
+
+from usd_chunks import chunk_gizmo, chunk_registry
+from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.plugins import chunk_usd
+
+transform_mod = importlib.import_module("scripts.transform")
+
+
+class _Scene(SceneSender):
+    def __init__(self, stage):
+        super().__init__()
+        self._stage = stage
+
+    def get_stage(self):
+        return self._stage
+
+    def get_selected_prims(self):
+        return []
+
+
+class _StubModule:
+    loaded = True
+
+    def create(self):
+        c = transform_mod.main()
+        c._config = ChunkConfig(module="transform")
+        c._module = transform_mod
+        return [c]
+
+    load = create
+
+
+@pytest.fixture
+def asset(monkeypatch):
+    """A prim shaped like a real exported asset: three separate ops, not one matrix."""
+    stage = Usd.Stage.CreateInMemory()
+    scene_layer = Sdf.Layer.CreateAnonymous("scene")
+    stage.GetRootLayer().subLayerPaths.append(scene_layer.identifier)
+    with Usd.EditContext(stage, scene_layer):
+        xform = UsdGeom.Xform.Define(stage, "/food_apple")
+        xform.AddTranslateOp().Set(Gf.Vec3d(2.0, 0.0, 0.0))
+        xform.AddRotateXYZOp().Set(Gf.Vec3f(-90.0, 0.0, 0.0))
+        xform.AddScaleOp().Set(Gf.Vec3f(100.0, 100.0, 100.0))
+        UsdGeom.Cube.Define(stage, "/food_apple/mesh")
+
+    registry = chunk_registry.ChunkRegistry()
+    sender = _Scene(stage)
+    registry.initialize(sender, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    chunk_usd.ChunkStageSync().initialize(stage, sender)
+
+    monkeypatch.setitem(registry.registered_modules, "transform", _StubModule())
+    monkeypatch.setattr(chunk_usd, "_params_tab_create", False, raising=False)
+    monkeypatch.setattr(chunk_usd, "_pin_new_chunks", None, raising=False)
+    monkeypatch.setattr(chunk_usd, "_create_node_pos", None, raising=False)
+    return stage, scene_layer
+
+
+def _prim(stage):
+    return stage.GetPrimAtPath("/food_apple")
+
+
+def _local(stage):
+    matrix = UsdGeom.Xformable(_prim(stage)).GetLocalTransformation(Usd.TimeCode.Default())
+    return matrix[0] if isinstance(matrix, tuple) else matrix
+
+
+def _scale_of(matrix):
+    return matrix.GetRow3(0).GetLength()
+
+
+def test_auto_creating_on_an_asset_does_not_move_it(asset) -> None:
+    """The headline bug. Seed then cook has to be a no-op, whatever ops the prim had."""
+    stage, _layer = asset
+    before = _local(stage)
+
+    desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+
+    after = _local(stage)
+    assert _scale_of(after) == pytest.approx(_scale_of(before)), "scale was applied twice"
+    assert Gf.IsClose(after.ExtractTranslation(), before.ExtractTranslation(), 1e-6)
+
+
+def test_the_chunk_replaces_the_op_stack(asset) -> None:
+    stage, _layer = asset
+    desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+
+    order = list(UsdGeom.Xformable(_prim(stage)).GetXformOpOrderAttr().Get() or [])
+
+    assert order == ["xformOp:transform"], f"stacked instead of replacing: {order}"
+
+
+def test_the_assets_own_ops_are_left_alone(asset) -> None:
+    """The order is overridden in the chunk's layer, never in the asset's."""
+    stage, scene_layer = asset
+    desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+
+    spec = scene_layer.GetPrimAtPath(Sdf.Path("/food_apple"))
+    authored = list(spec.properties["xformOpOrder"].default)
+
+    assert authored == ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+
+def test_deleting_the_chunk_gives_the_asset_back(asset) -> None:
+    stage, _layer = asset
+    before = _local(stage)
+    desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+    created.execute()
+
+    created.request_delete()
+
+    after = _local(stage)
+    assert _scale_of(after) == pytest.approx(_scale_of(before))
+    assert list(UsdGeom.Xformable(_prim(stage)).GetXformOpOrderAttr().Get()) == [
+        "xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale",
+    ]
+
+
+def test_dragging_moves_it_by_exactly_what_was_dragged(asset) -> None:
+    """Absolute, and once. Stacked, a drag to y=5 landed somewhere else entirely."""
+    stage, _layer = asset
+    desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+
+    matrix = Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 5.0, 0.0))
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, matrix)
+    created.execute()
+
+    assert Gf.IsClose(_local(stage).ExtractTranslation(), Gf.Vec3d(0.0, 5.0, 0.0), 1e-6)
+
+
+def test_a_prim_with_no_ops_still_works(asset) -> None:
+    """The case that always passed, kept so the fix cannot regress it."""
+    stage, _layer = asset
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        UsdGeom.Cube.Define(stage, "/plain")
+    plain = stage.GetPrimAtPath("/plain")
+
+    desc = chunk_gizmo.ensure_transform_chunk(plain)
+    chunk_gizmo.apply_bindings(
+        desc.chunk_prim, desc.name, Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(1.0, 2.0, 3.0))
+    )
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+
+    matrix = UsdGeom.Xformable(plain).GetLocalTransformation(Usd.TimeCode.Default())
+    matrix = matrix[0] if isinstance(matrix, tuple) else matrix
+    assert Gf.IsClose(matrix.ExtractTranslation(), Gf.Vec3d(1.0, 2.0, 3.0), 1e-6)
