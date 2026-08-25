@@ -72,18 +72,14 @@ def execute(node):
         # compose. Owning a named op each, they compose.
         op_name = chunk_utils.xform_op_name(node)
 
-        # The order is rebuilt from what is COMPOSED right now, never from a remembered
-        # list. execute() has already cleared this chunk's layer, so what is read here is
-        # exactly everything else that currently applies -- the asset's own ops plus any
-        # other chunk's, and nothing from a chunk that has since been muted or disabled.
-        # Remembering the list instead would leave it naming ops whose values are no longer
-        # on the stage, which is the "Empty typeName" crash all over again.
-        order = [op for op in (xformable.GetXformOpOrderAttr().Get() or [])]
-        if op_name not in order:
-            # Appended, so this chunk applies after everything upstream of it. Cook order
-            # runs upstream first, so a downstream chunk sees its predecessors already here
-            # and lands after them without anyone computing graph depth.
-            order.append(op_name)
+        # Built from the exec chain, not from what happens to be composed at this instant.
+        # Every chunk writes its own copy of xformOpOrder into its own layer and USD keeps
+        # only the strongest, so copies built from "what I can see right now" DIFFER and the
+        # result depends on which one survives -- a chunk that cooked before its neighbour
+        # existed holds a list naming only itself, and if that copy wins the neighbour's op
+        # is never read. Copies built from the graph are identical, so it stops mattering
+        # which one is kept.
+        order = chunk_gizmo.xform_op_order(node, prim, op_name)
         # Author the attribute outright rather than going through GetOrderedXformOps() /
         # AddTransformOp(). Both of those trust xformOpOrder, and xformOpOrder can name an
         # op that no layer defines with a type -- ordinary leftover state after chunks are

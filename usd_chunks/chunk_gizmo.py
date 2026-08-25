@@ -1290,3 +1290,54 @@ def _seed(chunk: "core.ChunkBase", matrix: "Gf.Matrix4d") -> None:
             logger.debug("No %r handle to seed on %r", gizmo_type, chunk.name)
             continue
         apply_bindings(chunk, name, value)
+
+
+# ---------------------------------------------------------------------------
+# xformOpOrder, derived from the graph
+# ---------------------------------------------------------------------------
+
+def xform_op_order(node: "core.ChunkBase", prim: Usd.Prim, my_op: str) -> list:
+    """The full `xformOpOrder` for `prim`: its own ops, then every chunk's op upstream-first.
+
+    Derived from the exec chain rather than from whatever happens to be composed when a
+    chunk runs, and that is the whole point.
+
+    Each chunk authors its own copy of `xformOpOrder` into its own layer, and USD keeps one
+    copy -- the strongest. Building each copy from "what I can see right now" makes the
+    copies DIFFER, so which one survives decides the result: a chunk that cooked before its
+    neighbour existed holds a list naming only itself, and if that copy wins, the
+    neighbour's op sits on the prim, typed and valued, and is never read. The chunk silently
+    does nothing, which is worse than an odd order and is what blocked retiring
+    offset_transform.
+
+    Building every copy from the graph instead makes them IDENTICAL, so it stops mattering
+    which one USD keeps. The contention is not resolved, it is made irrelevant -- which is
+    also why this needs no coordination between chunks and no cook-order guarantees.
+
+    The graph order and the op order are the same order, incidentally: the chain says A
+    feeds B, and the op list says A's op then B's op. One fact, written twice.
+    """
+    stage = prim.GetStage()
+    depths: dict = {}
+    for desc in placement_gizmos(prim):
+        owner = chunk_at_prim_path(desc.chunk_prim)
+        if owner is None:
+            continue
+        # Never mint here: asking whether some other chunk owns an op must not give it one.
+        op_name = my_op if owner is node else chunk_utils.existing_xform_op_name(owner)
+        if op_name:
+            depths[op_name] = _exec_depth(stage, desc.chunk_prim)
+    depths.setdefault(my_op, _exec_depth(stage, _own_prim_path(stage, node)))
+
+    # The prim's own ops keep their place at the front. Anything a chunk owns is dropped and
+    # re-added below, so an op does not appear twice when a chunk's position changes.
+    composed = [op for op in (UsdGeom.Xformable(prim).GetXformOpOrderAttr().Get() or [])]
+    base = [op for op in composed if op not in depths]
+    # Ties keep a stable order by name so two unconnected chunks do not swap places between
+    # cooks -- identical copies matter more here than any particular winner.
+    return base + sorted(depths, key=lambda name: (depths[name], name))
+
+
+def _own_prim_path(stage: Usd.Stage, node: "core.ChunkBase"):
+    prim = _chunk_prim(stage, node)
+    return prim.GetPath() if prim is not None else Sdf.Path("/")

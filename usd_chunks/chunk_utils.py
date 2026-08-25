@@ -503,6 +503,25 @@ _XFORM_OP_PREFIX = "xformOp:transform:"
 _SANITISE_RE = re.compile(r"[^A-Za-z0-9_]")
 
 
+def existing_xform_op_name(node):
+    """This chunk's op name if it already has one, without minting one.
+
+    For asking "does this chunk own an op" while building someone else's order -- minting
+    on that question would give an op to every chunk that was merely looked at.
+    """
+    suffix = getattr(node, "_xform_op_suffix", None)
+    if suffix:
+        return _XFORM_OP_PREFIX + suffix
+    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    prim = _chunk_prim_of(stage, node) if stage is not None else None
+    if prim is None:
+        return None
+    attr = prim.GetAttribute(XFORM_OP_ID_ATTR)
+    if attr and attr.IsValid() and attr.Get():
+        return _XFORM_OP_PREFIX + attr.Get()
+    return None
+
+
 def xform_op_name(node) -> str:
     """The xformOp suffix this chunk owns: readable, unique, and stable across renames.
 

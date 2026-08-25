@@ -452,15 +452,6 @@ def test_dragging_the_downstream_chunk_lands_where_it_was_dragged(scene) -> None
 # a second Transform IS an offset
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    reason="xformOpOrder is still one attribute: each chunk writes its own copy into its "
-           "own layer, so which chunk's ORDER wins is decided by layer strength, and that "
-           "depends on the creation/cook sequence. Cooking one chunk before the second "
-           "exists leaves the first chunk's order (naming only its own op) winning, so the "
-           "second contributes nothing. The known open item in the design -- rebuild the "
-           "order from the exec chain rather than letting layer strength decide it.",
-    strict=True,
-)
 def test_a_second_transform_offsets_the_first(scene) -> None:
     """The claim that makes offset_transform redundant.
 
@@ -475,19 +466,55 @@ def test_a_second_transform_offsets_the_first(scene) -> None:
 
     nudge = _mk(sender, transform_mod, "Nudge")
     nudge.get_param("ty").value = 2.0
+    # Wired, as a graph actually is. Two chunks with no connection between them have no
+    # order to derive -- see test_two_unconnected_chunks_have_no_defined_order.
+    nudge.add_dependency(placed)
     nudge.execute()
 
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 7, 0))
     assert placed.get_param("ty").value == 5.0, "the original placement is untouched"
+    # Note Placed was never re-cooked: the order each chunk writes is derived from the graph
+    # rather than from what it could see at the time, so the copies agree without anyone
+    # having to re-run.
 
 
-# A "deleting the offset leaves the placement" test belongs here and is deliberately absent:
-# while the second chunk contributes nothing (see the xfails), deleting it and finding the
-# placement intact passes for the wrong reason and would guard nothing. Add it once the
-# ordering is derived from the exec chain.
+def test_removing_the_offset_leaves_the_placement(scene) -> None:
+    """The other half of non-destructive, and the thing replacing could never give."""
+    stage, sender, scene_layer = scene
+    placed = _mk(sender, transform_mod, "Placed")
+    placed.get_param("ty").value = 5.0
+    placed.execute()
+    nudge = _mk(sender, transform_mod, "Nudge")
+    nudge.get_param("ty").value = 2.0
+    nudge.add_dependency(placed)
+    nudge.execute()
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 7, 0)), "precondition"
+
+    nudge.request_delete()
+    placed.execute()
+
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 5, 0))
 
 
-@pytest.mark.xfail(reason="same xformOpOrder contention as above", strict=True)
+def test_two_unconnected_chunks_have_no_defined_order(scene) -> None:
+    """The honest limit of deriving the order from the graph: with no connection between
+    them there is no graph relationship to derive, so which applies first is undefined.
+
+    Not a gap to fix. Asserting the undefined case has a particular answer would invent a
+    guarantee. What IS guaranteed is that both contribute -- neither silently vanishes,
+    which is the failure this whole change exists to remove.
+    """
+    stage, sender, scene_layer = scene
+    first = _mk(sender, transform_mod, "T1")
+    second = _mk(sender, transform_mod, "T2")
+    first.get_param("ty").value = 5.0
+    second.get_param("ty").value = 3.0
+    first.execute()
+    second.execute()
+
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 8, 0))
+
+
 def test_a_scale_offset_multiplies(scene) -> None:
     """Scale composes by multiplication, which the offset node had to special-case and a
     composing Transform gets for free."""
@@ -497,6 +524,7 @@ def test_a_scale_offset_multiplies(scene) -> None:
     base.execute()
     nudge = _mk(sender, transform_mod, "Nudge")
     nudge.get_param("sx").value = 3.0
+    nudge.add_dependency(base)
     nudge.execute()
 
     matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetLocalTransformation(
