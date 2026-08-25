@@ -1,10 +1,5 @@
 """A baked simulation and the Transform that placed the body must both apply.
 
-Two of these pass and two are xfail, and the split is the useful part: after a bake, the
-Transform still works -- nudging it moves the chair correctly -- but the BAKE is what gets
-lost, because the Transform's older copy of xformOpOrder wins and does not name the
-solver's op.
-
 
 Reported live: a chair wired Transform -> RBD Solver. Run the sim, then nudge the Transform,
 and the chair jumped.
@@ -98,6 +93,26 @@ def _bake(stage, solver, ends_at):
     )
 
 
+def _downstream_wins(upstream, downstream):
+    """Rank the downstream chunk's layer above the upstream one's, as a live graph does.
+
+    Recook reorders each graph layer's subLayerPaths so the chunk nearest the view wins, so
+    downstream is always the stronger of the two. Nothing establishes that in a short test
+    without the Qt view machinery -- plain creation order decides instead, and the chunk
+    created FIRST ends up stronger, which is the opposite of a real session. Forcing it here
+    is reproducing ordinary state, not staging a special case.
+    """
+    manager = chunk_registry.ChunkLayerManager()
+    up_layer = manager.get_layer(upstream)
+    down_layer = manager.get_layer(downstream)
+    graph = next(
+        g for g in manager.graph_layers.values() if up_layer.identifier in g.subLayerPaths
+    )
+    graph.subLayerPaths = [down_layer.identifier] + [
+        p for p in graph.subLayerPaths if p != down_layer.identifier
+    ]
+
+
 def _wired_pair(stage, sender):
     move = _mk(sender, transform_mod, "Move", "transform")
     move.get_param("primpath_location").value = "/chair"
@@ -107,19 +122,10 @@ def _wired_pair(stage, sender):
     solver = _mk(sender, rbd_mod, "Solver", "rbd_solver")
     solver.get_param("prim_path").value = "/chair"
     solver.add_dependency(move)
+    _downstream_wins(move, solver)
     return move, solver
 
 
-@pytest.mark.xfail(
-    reason="xformOpOrder has no correct home yet. Every chunk writes its own copy into its "
-           "own layer, and USD keeps the STRONGEST rather than the most recent -- so the "
-           "Transform's copy, written before the solver had ever baked, wins and omits the "
-           "solver's op. The bake is on the prim, typed and valued, and never read. Moving "
-           "the order to a layer shared by the graph fixes exactly this and breaks four "
-           "other tests, because the order then stops muting with its chunk; see "
-           "chunk_utils._xform_order_layer_unused for what that costs.",
-    strict=True,
-)
 def test_the_bake_uses_the_solvers_own_op(chair) -> None:
     stage, sender = chair
     _move, solver = _wired_pair(stage, sender)
@@ -144,7 +150,6 @@ def test_the_transforms_op_survives_the_bake(chair) -> None:
     assert chunk_utils.xform_op_name(move) in order
 
 
-@pytest.mark.xfail(reason="same xformOpOrder homing problem", strict=True)
 def test_the_placement_and_the_sim_compose(chair) -> None:
     stage, sender = chair
     _move, solver = _wired_pair(stage, sender)
