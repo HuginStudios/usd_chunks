@@ -446,3 +446,61 @@ def test_dragging_the_downstream_chunk_lands_where_it_was_dragged(scene) -> None
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 9, 0))
     assert upstream.get_param("ty").value == 5.0, "the upstream chunk must not be touched"
     assert downstream.get_param("ty").value == pytest.approx(4.0), "9 total, 5 from upstream"
+
+
+# ---------------------------------------------------------------------------
+# a second Transform IS an offset
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(
+    reason="xformOpOrder is still one attribute: each chunk writes its own copy into its "
+           "own layer, so which chunk's ORDER wins is decided by layer strength, and that "
+           "depends on the creation/cook sequence. Cooking one chunk before the second "
+           "exists leaves the first chunk's order (naming only its own op) winning, so the "
+           "second contributes nothing. The known open item in the design -- rebuild the "
+           "order from the exec chain rather than letting layer strength decide it.",
+    strict=True,
+)
+def test_a_second_transform_offsets_the_first(scene) -> None:
+    """The claim that makes offset_transform redundant.
+
+    "I want the apple here, and now nudge it up a bit for the sim without destroying that
+    placement" -- the case the Offset Transform node exists for. A second Transform now does
+    it, because the two compose instead of one discarding the other.
+    """
+    stage, sender, scene_layer = scene
+    placed = _mk(sender, transform_mod, "Placed")
+    placed.get_param("ty").value = 5.0
+    placed.execute()
+
+    nudge = _mk(sender, transform_mod, "Nudge")
+    nudge.get_param("ty").value = 2.0
+    nudge.execute()
+
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 7, 0))
+    assert placed.get_param("ty").value == 5.0, "the original placement is untouched"
+
+
+# A "deleting the offset leaves the placement" test belongs here and is deliberately absent:
+# while the second chunk contributes nothing (see the xfails), deleting it and finding the
+# placement intact passes for the wrong reason and would guard nothing. Add it once the
+# ordering is derived from the exec chain.
+
+
+@pytest.mark.xfail(reason="same xformOpOrder contention as above", strict=True)
+def test_a_scale_offset_multiplies(scene) -> None:
+    """Scale composes by multiplication, which the offset node had to special-case and a
+    composing Transform gets for free."""
+    stage, sender, scene_layer = scene
+    base = _mk(sender, transform_mod, "Base")
+    base.get_param("sx").value = 2.0
+    base.execute()
+    nudge = _mk(sender, transform_mod, "Nudge")
+    nudge.get_param("sx").value = 3.0
+    nudge.execute()
+
+    matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetLocalTransformation(
+        Usd.TimeCode.Default()
+    )
+    matrix = matrix[0] if isinstance(matrix, tuple) else matrix
+    assert matrix.GetRow3(0).GetLength() == pytest.approx(6.0)
