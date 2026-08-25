@@ -643,6 +643,30 @@ def _sim_prim_gen_mj(
     return all_mats
 
 
+def _upstream_xform(prim: Usd.Prim, op_name: str) -> Gf.Matrix4d:
+    """Everything applying to `prim` before this chunk's own op.
+
+    Read as the composed local transform with this chunk's own contribution divided back
+    out, so it reflects what is actually in effect -- muting and layer strength included --
+    rather than a re-composition of the op list by hand.
+
+    Ordering, verified rather than assumed: for xformOpOrder [rot, translate] USD composes
+    T * R, so the last op multiplies on the left. An appended op therefore gives
+    local = mine * upstream, hence upstream = mine^-1 * local.
+    """
+    xformable = UsdGeom.Xformable(prim)
+    local = xformable.GetLocalTransformation(Usd.TimeCode.Default())
+    if isinstance(local, tuple):
+        local = local[0]
+    mine = Gf.Matrix4d(1.0)
+    attr = prim.GetAttribute(op_name)
+    if attr and attr.IsValid():
+        current = attr.Get()
+        if current is not None:
+            mine = Gf.Matrix4d(current)
+    return mine.GetInverse() * local
+
+
 def _write_prim_results(
     stage: Usd.Stage,
     prim: Usd.Prim,
@@ -692,9 +716,21 @@ def _write_prim_results(
         xf_attr = prim.GetAttribute(op_name)
         if not xf_attr:
             xf_attr = prim.CreateAttribute(op_name, Sdf.ValueTypeNames.Matrix4d)
-        xf_attr.Set(_local(all_mats[0]))
+        # Bake this chunk's SHARE, not the absolute placement.
+        #
+        # _local() gives where the body should end up in its parent's space. That used to be
+        # the whole answer, because the bake replaced the prim's op stack. It composes on top
+        # of the upstream ops now, so writing the absolute value in applies whatever placed
+        # the body a second time -- reported as the chair jumping away the moment Run
+        # Simulation was pressed, with a Transform upstream of the solver.
+        #
+        # Same conversion the gizmo write-back does, for the same reason: an absolute answer
+        # arriving at something that contributes a share has to have the share divided out.
+        upstream = _upstream_xform(prim, op_name)
+        inv_upstream = upstream.GetInverse()
+        xf_attr.Set(_local(all_mats[0]) * inv_upstream)
         for frame_idx, mat in enumerate(all_mats):
-            xf_attr.Set(_local(mat), Usd.TimeCode(start_frame + frame_idx))
+            xf_attr.Set(_local(mat) * inv_upstream, Usd.TimeCode(start_frame + frame_idx))
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         stage.SetStartTimeCode(start_frame)
         stage.SetEndTimeCode(start_frame + len(all_mats) - 1)

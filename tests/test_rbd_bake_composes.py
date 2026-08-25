@@ -77,15 +77,21 @@ def _local(stage):
     return matrix.ExtractTranslation()
 
 
-def _bake(stage, solver, fall=5.0):
-    """Author what _write_prim_results authors, without running the solver."""
-    prim = stage.GetPrimAtPath("/chair")
+def _bake(stage, solver, ends_at):
+    """Author what _write_prim_results authors, without running the solver.
+
+    `ends_at` is where the simulation says the body finishes, in parent space -- absolute,
+    which is what the real solver hands the writer. It must be consistent with where the
+    body actually STARTS: a sim on a chair placed at x=20 ends near x=20, not near the
+    origin. An earlier draft ignored that and fed a result of (0, -5, 0) for a chair at
+    x=20, which is not a simulation of that chair at all, and made a correct bake look wrong.
+    """
     rbd_mod._write_prim_results(
         stage,
-        prim,
+        stage.GetPrimAtPath("/chair"),
         solver.get_edit_context(),
         Gf.Matrix4d(1.0),
-        [Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, -fall, 0.0))],
+        [Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(*ends_at))],
         1,
         None,
         solver,
@@ -118,7 +124,7 @@ def test_the_bake_uses_the_solvers_own_op(chair) -> None:
     stage, sender = chair
     _move, solver = _wired_pair(stage, sender)
 
-    _bake(stage, solver)
+    _bake(stage, solver, ends_at=(20.0, -5.0, 0.0))
 
     order = list(UsdGeom.Xformable(stage.GetPrimAtPath("/chair")).GetXformOpOrderAttr().Get())
     assert chunk_utils.xform_op_name(solver) in order
@@ -132,7 +138,7 @@ def test_the_transforms_op_survives_the_bake(chair) -> None:
     stage, sender = chair
     move, solver = _wired_pair(stage, sender)
 
-    _bake(stage, solver)
+    _bake(stage, solver, ends_at=(20.0, -5.0, 0.0))
 
     order = list(UsdGeom.Xformable(stage.GetPrimAtPath("/chair")).GetXformOpOrderAttr().Get())
     assert chunk_utils.xform_op_name(move) in order
@@ -143,7 +149,7 @@ def test_the_placement_and_the_sim_compose(chair) -> None:
     stage, sender = chair
     _move, solver = _wired_pair(stage, sender)
 
-    _bake(stage, solver, fall=5.0)
+    _bake(stage, solver, ends_at=(20.0, -5.0, 0.0))
 
     assert _local(stage) == pytest.approx(Gf.Vec3d(20.0, -5.0, 0.0)), (
         "placed at x=20 by the Transform, dropped 5 by the sim -- both, not one"
@@ -155,7 +161,7 @@ def test_nudging_the_transform_after_a_bake_moves_the_chair(chair) -> None:
     what was asked, not throw it somewhere else."""
     stage, sender = chair
     move, solver = _wired_pair(stage, sender)
-    _bake(stage, solver, fall=5.0)
+    _bake(stage, solver, ends_at=(20.0, -5.0, 0.0))
 
     move.get_param("tx").value = 21.0
 
@@ -168,6 +174,65 @@ def test_the_solver_still_bakes_alone(chair) -> None:
     solver = _mk(sender, rbd_mod, "Solver", "rbd_solver")
     solver.get_param("prim_path").value = "/chair"
 
-    _bake(stage, solver, fall=3.0)
+    _bake(stage, solver, ends_at=(0.0, -3.0, 0.0))
 
     assert _local(stage) == pytest.approx(Gf.Vec3d(0.0, -3.0, 0.0))
+
+
+# ---------------------------------------------------------------------------
+# the bake is a share, not an absolute placement
+# ---------------------------------------------------------------------------
+
+def test_running_the_sim_does_not_jump_the_body(chair) -> None:
+    """Reported live: with a Transform upstream, pressing Run Simulation threw the chair
+    away.
+
+    _local() gives where the body should end up in its parent's space, which was the whole
+    answer while the bake replaced the op stack. Composing on top of the upstream ops, that
+    absolute value applies the Transform's placement a second time -- 20 becomes 40.
+    """
+    stage, sender = chair
+    _move, solver = _wired_pair(stage, sender)   # Transform places the chair at x=20
+
+    # A sim that changes nothing: the body ends where it started. Whatever the bake writes,
+    # the chair must not move.
+    rbd_mod._write_prim_results(
+        stage,
+        stage.GetPrimAtPath("/chair"),
+        solver.get_edit_context(),
+        Gf.Matrix4d(1.0),
+        [Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(20.0, 0.0, 0.0))],
+        1,
+        None,
+        solver,
+    )
+
+    assert _local(stage) == pytest.approx(Gf.Vec3d(20.0, 0.0, 0.0)), (
+        "a no-op simulation moved the body, so the placement was applied twice"
+    )
+
+
+def test_the_baked_share_excludes_the_upstream_placement(chair) -> None:
+    """What the solver actually stores: the difference it is responsible for."""
+    stage, sender = chair
+    _move, solver = _wired_pair(stage, sender)
+
+    _bake(stage, solver, ends_at=(20.0, -5.0, 0.0))   # sim result: (0, -5, 0) in parent space
+
+    own = stage.GetPrimAtPath("/chair").GetAttribute(chunk_utils.xform_op_name(solver)).Get()
+    assert Gf.Matrix4d(own).ExtractTranslation() == pytest.approx(Gf.Vec3d(0.0, -5.0, 0.0)), (
+        "the share is the sim result minus the placement the Transform already contributes: "
+        "the chair fell 5, and the 20 it was placed at is not the solver's to re-apply"
+    )
+
+
+def test_a_solver_with_nothing_upstream_bakes_the_result_directly(chair) -> None:
+    """No upstream to divide out, so the share IS the result -- the ordinary case."""
+    stage, sender = chair
+    solver = _mk(sender, rbd_mod, "Solver", "rbd_solver")
+    solver.get_param("prim_path").value = "/chair"
+
+    _bake(stage, solver, ends_at=(0.0, -3.0, 0.0))
+
+    own = stage.GetPrimAtPath("/chair").GetAttribute(chunk_utils.xform_op_name(solver)).Get()
+    assert Gf.Matrix4d(own).ExtractTranslation() == pytest.approx(Gf.Vec3d(0.0, -3.0, 0.0))
