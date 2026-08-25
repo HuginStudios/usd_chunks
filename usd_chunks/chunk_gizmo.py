@@ -1308,7 +1308,7 @@ def xform_op_order(node: "core.ChunkBase", prim: Usd.Prim, my_op: str) -> list:
     neighbour existed holds a list naming only itself, and if that copy wins, the
     neighbour's op sits on the prim, typed and valued, and is never read. The chunk silently
     does nothing, which is worse than an odd order and is what blocked retiring
-    offset_transform.
+    a Transform chunk further down the chain.
 
     Building every copy from the graph instead makes them IDENTICAL, so it stops mattering
     which one USD keeps. The contention is not resolved, it is made irrelevant -- which is

@@ -66,22 +66,26 @@ def _reload(scene, tmp_path, name: str, content_setup=None):
     return scene2, stage2
 
 
-def test_offset_transform_reapplies_on_reload(tmp_path) -> None:
+def test_transform_reapplies_on_reload(tmp_path) -> None:
+    """Was written against offset_transform, which is gone -- a second Transform composes on
+    top of the first now, so it did the same job with a second way to do it. The reload
+    behaviour it guards is the same either way: a chunk whose work happens in execute() must
+    reapply on load, not merely restore its param values."""
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     UsdGeom.Xform.Define(stage, "/box")
 
-    c = _make(scene, "offset_transform")
-    c.get_param("prim_path").value = "/box"
+    c = _make(scene, "transform")
+    c.get_param("primpath_location").value = "/box"
     c.get_param("tx").value = 5.0
 
     ops = UsdGeom.Xformable(stage.GetPrimAtPath("/box")).GetOrderedXformOps()
-    assert list(ops[0].Get(0)) == [5.0, 0.0, 0.0]  # sanity: live authoring works
+    assert ops and ops[0].Get(0)[3][0] == 5.0  # sanity: live authoring works
 
-    scene2, stage2 = _reload(scene, tmp_path, "offset_transform", lambda s: UsdGeom.Xform.Define(s, "/box"))
+    scene2, stage2 = _reload(scene, tmp_path, "transform", lambda s: UsdGeom.Xform.Define(s, "/box"))
     ops2 = UsdGeom.Xformable(stage2.GetPrimAtPath("/box")).GetOrderedXformOps()
-    assert ops2, "offset must be reapplied on reload, not left with no xform ops at all"
-    assert list(ops2[0].Get(0)) == [5.0, 0.0, 0.0]
+    assert ops2, "the transform must be reapplied on reload, not left with no xform ops"
+    assert ops2[0].Get(0)[3][0] == 5.0
 
 
 def test_reset_transform_reapplies_on_reload(tmp_path) -> None:

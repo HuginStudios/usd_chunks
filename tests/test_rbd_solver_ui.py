@@ -55,7 +55,7 @@ def test_collision_shape_defaults_to_convex_hull(solver):
 
 
 @pytest.mark.parametrize(
-    "name", ["initial_velocity", "angular_velocity", "offset_translate", "offset_rotate", "wind"]
+    "name", ["initial_velocity", "angular_velocity", "wind"]
 )
 def test_spatial_params_are_real_three_component_vectors(solver, name):
     """Velocity used to be a single text box you typed "0 0 0" into, and the offsets were
@@ -133,7 +133,6 @@ def _drop(**forces):
         ang_vel=[0, 0, 0],
         start_frame=1,
         parent_world_inv=Gf.Matrix4d(1.0),
-        otx=0, oty=0, otz=0, orx=0, ory=0, orz=0,
         collision_prims=None,
         shape_type="Convex Hull",
         **forces,

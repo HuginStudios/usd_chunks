@@ -13,7 +13,7 @@ from collections.abc import Generator
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_gizmo, chunk_registry
+from usd_chunks import chunk, chunk_registry
 from usd_chunks.plugins import chunk_usd
 
 try:
@@ -408,12 +408,6 @@ def _sim_prim_gen_mj(
     ang_vel: list[float],
     start_frame: int,
     dt: float,
-    otx: float,
-    oty: float,
-    otz: float,
-    orx: float,
-    ory: float,
-    orz: float,
     up_idx: int,
     shape_type: str,
     collision_margin: float,
@@ -447,16 +441,6 @@ def _sim_prim_gen_mj(
         sz = rng.GetMax() - rng.GetMin()
         half_extents = [sz[0] / 2, sz[1] / 2, sz[2] / 2]
         z_offset = (rng.GetMin()[up_idx] + rng.GetMax()[up_idx]) / 2 - translate[up_idx]
-
-    # --- apply the initial rotation offset up front, so the hull, the body
-    # quaternion and the geom offset are all built in the same final frame ---
-    if orx != 0.0 or ory != 0.0 or orz != 0.0:
-        rot = (
-            rot
-            * Gf.Rotation(Gf.Vec3d(1, 0, 0), orx)
-            * Gf.Rotation(Gf.Vec3d(0, 1, 0), ory)
-            * Gf.Rotation(Gf.Vec3d(0, 0, 1), orz)
-        )
 
     # The body frame is placed at the prim's transform origin (not the bbox
     # centre), so the body rotates about exactly the same point as the USD
@@ -533,7 +517,7 @@ def _sim_prim_gen_mj(
 
     # --- initial position: body origin == prim transform origin (no z_offset;
     # the geometry offset is carried by the geom, see geom_offset) ---
-    init_pos = [translate[0] + otx, translate[1] + oty, translate[2] + otz]
+    init_pos = [translate[0], translate[1], translate[2]]
 
     lat = [j for j in range(3) if j != up_idx]
 
@@ -713,12 +697,6 @@ def simulate_mujoco(
     ang_vel: list[float],
     start_frame: int,
     parent_world_inv: Gf.Matrix4d,
-    otx: float,
-    oty: float,
-    otz: float,
-    orx: float,
-    ory: float,
-    orz: float,
     collision_prims: list[Usd.Prim] | None = None,
     friction: float = 0.5,
     restitution: float = 0.1,
@@ -767,12 +745,6 @@ def simulate_mujoco(
         ang_vel,
         start_frame,
         dt,
-        otx,
-        oty,
-        otz,
-        orx,
-        ory,
-        orz,
         up_idx,
         shape_type,
         collision_margin,
@@ -853,12 +825,6 @@ def simulate_mujoco_instancer(
     init_vel: list[float],
     ang_vel: list[float],
     start_frame: int,
-    otx: float,
-    oty: float,
-    otz: float,
-    orx: float,
-    ory: float,
-    orz: float,
     friction: float = 0.5,
     restitution: float = 0.1,
     lin_damping: float = 0.0,
@@ -976,15 +942,7 @@ def simulate_mujoco_instancer(
 
     dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
 
-    # Rotation offset applied to every instance's initial orientation (mirrors the
-    # single-prim path). Only meaningful physically for Box / Convex Hull colliders.
-    off_rot = None
-    if orx != 0.0 or ory != 0.0 or orz != 0.0:
-        off_rot = (
-            Gf.Rotation(Gf.Vec3d(1, 0, 0), orx)
-            * Gf.Rotation(Gf.Vec3d(0, 1, 0), ory)
-            * Gf.Rotation(Gf.Vec3d(0, 0, 1), orz)
-        )
+    off_rot = None  # no rotation offset on this chunk any more; see main()
 
     # Convex hull: extract the shared prototype geometry once, then build one mesh
     # asset per distinct instance scale (MuJoCo computes the hull per asset).
@@ -1022,9 +980,9 @@ def simulate_mujoco_instancer(
     for i in range(num_instances):
         lp = positions[i]
         pos_world = world_xf.Transform(Gf.Vec3d(float(lp[0]), float(lp[1]), float(lp[2])))
-        px = float(pos_world[0]) + otx
-        py = float(pos_world[1]) + oty
-        pz = float(pos_world[2]) + otz
+        px = float(pos_world[0])
+        py = float(pos_world[1])
+        pz = float(pos_world[2])
 
         if orientations and i < len(orientations):
             q = orientations[i]
@@ -1309,8 +1267,6 @@ def _run(owner, notice, sender) -> None:
     lin_damping = _chunk.get_param("lin_damping", is_f).value
     ang_damping = _chunk.get_param("ang_damping", is_f).value
     shape_type = _chunk.get_param("shape_type", is_s).value
-    otx, oty, otz = _vec3(_chunk, "offset_translate")
-    orx, ory, orz = _vec3(_chunk, "offset_rotate")
     init_vel = _vec3(_chunk, "initial_velocity")
     ang_vel = _vec3(_chunk, "angular_velocity")
     floor_drop = _chunk.get_param("floor_drop", is_f).value
@@ -1358,12 +1314,6 @@ def _run(owner, notice, sender) -> None:
             init_vel,
             ang_vel,
             start_frame,
-            otx,
-            oty,
-            otz,
-            orx,
-            ory,
-            orz,
             friction=friction,
             restitution=restitution,
             lin_damping=lin_damping,
@@ -1406,12 +1356,6 @@ def _run(owner, notice, sender) -> None:
             ang_vel,
             start_frame,
             parent_world_inv,
-            otx,
-            oty,
-            otz,
-            orx,
-            ory,
-            orz,
             collision_prims=collision_prims,
             friction=friction,
             restitution=restitution,
@@ -1503,45 +1447,6 @@ def _schedule_auto_run(root_chunk) -> None:
         timer.timeout.connect(lambda: _run(root_chunk, None, None))
         root_chunk._auto_run_timer = timer
     timer.start(_AUTO_RUN_DELAY_MS)
-
-
-def gizmo_changed(node, gizmo, value):
-    """Turn a dragged absolute placement into an offset from where the body already is.
-
-    Same reasoning as offset_transform's hook, and the same bug if it is missing: the
-    handle emits an absolute local transform (correct, and what every transform handle
-    emits) while these params mean "shift the body's start by this much". Writing the raw
-    value in makes the offset the placement, so a body already at y=5 dragged to y=8 gets
-    an offset of 8 and starts at 13.
-
-    Invisible on a body at the origin, where absolute and relative coincide -- which is
-    exactly how it passed a live test earlier.
-    """
-    if gizmo not in ("offset_translate", "offset_rotate"):
-        return False
-    prims = node.get_param("prim_path").get_prims()
-    if not prims:
-        return False
-
-    base = _gizmo_base(prims[0])
-    part = "translate" if gizmo == "offset_translate" else "rotate"
-    delta = [float(v) - float(b) for v, b in zip(value, base[part])]
-    node.get_param(gizmo).value = tuple(delta)
-    return True
-
-
-def _gizmo_base(prim):
-    """Where the body sits before these offsets are applied.
-
-    The solver does not author its offsets onto the prim -- it bakes simulated animation --
-    so unlike offset_transform there is no output of its own to read back and no risk of
-    compounding. The prim's current placement IS the base.
-    """
-    matrix = UsdGeom.Xformable(prim).GetLocalTransformation(Usd.TimeCode.Default())
-    if isinstance(matrix, tuple):
-        matrix = matrix[0]
-    return chunk_gizmo.decompose(matrix)
-
 
 
 def main() -> chunk.Chunk:
@@ -1730,39 +1635,10 @@ def main() -> chunk.Chunk:
     # group (six loose spinboxes) and Velocity group (two text fields you had to type
     # space-separated numbers into).
     init_grp = _section("InitialState", "Initial State")
-    # gizmo= on the two offsets: these place the body before the sim runs, which is exactly
-    # the thing you want to do by dragging in the viewport rather than by typing numbers
-    # into a collapsed section. Deliberately two separate handles rather than a chunk-level
-    # gizmo="transform" -- that one absorbs translate/rotate/scale into a single manipulator
-    # and there is no scale offset here, so it would not resolve.
-    #
-    # No anchor= needed: prim_path is the only PRIM_SELECTION param on this chunk, which is
-    # what resolve_anchor_param falls back to. Adding a second such param would make that
-    # ambiguous, and it raises with the chunk's name rather than silently drawing nothing.
-    init_grp.add_param(
-        chunk.Vector(
-            "offset_translate",
-            "Position Offset",
-            param=chunk.Spinbox(),
-            length=3,
-            suffixes="XYZ",
-            default_value=(0.0, 0.0, 0.0),
-            gizmo="translate",
-            tooltip="Shift the body's start position before simulating, in scene units.",
-        )
-    )
-    init_grp.add_param(
-        chunk.Vector(
-            "offset_rotate",
-            "Rotation Offset",
-            param=chunk.Spinbox(),
-            length=3,
-            suffixes="XYZ",
-            default_value=(0.0, 0.0, 0.0),
-            gizmo="rotate",
-            tooltip="Pre-rotate the body before simulating, in degrees.",
-        )
-    )
+    # No position or rotation offset here any more, and no gizmo on this chunk. Transform
+    # chunks compose, so an upstream Transform does that job -- and having it in two places
+    # was actively harmful: with a chair wired Transform -> RBD Solver, going back to adjust
+    # the Transform while the solver held its own offset put the chair back at the origin.
     init_grp.add_param(
         chunk.Vector(
             "initial_velocity",
