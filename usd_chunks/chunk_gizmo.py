@@ -1318,16 +1318,24 @@ def xform_op_order(node: "core.ChunkBase", prim: Usd.Prim, my_op: str) -> list:
     feeds B, and the op list says A's op then B's op. One fact, written twice.
     """
     stage = prim.GetStage()
+    scene = getattr(ChunkRegistry(), "scene", None)
     depths: dict = {}
-    for desc in placement_gizmos(prim):
-        owner = chunk_at_prim_path(desc.chunk_prim)
-        if owner is None:
+    for owner in (scene.get_chunks() if scene is not None else ()):
+        if owner is node:
             continue
         # Never mint here: asking whether some other chunk owns an op must not give it one.
-        op_name = my_op if owner is node else chunk_utils.existing_xform_op_name(owner)
-        if op_name:
-            depths[op_name] = _exec_depth(stage, desc.chunk_prim)
-    depths.setdefault(my_op, _exec_depth(stage, _own_prim_path(stage, node)))
+        op_name = chunk_utils.existing_xform_op_name(owner)
+        # Sourced from "who owns an op that is on this prim", NOT from who declares a gizmo.
+        # The RBD solver bakes an op and declares no handle at all, so a gizmo-based lookup
+        # left it out of everyone else's list -- and the moment another chunk's copy of the
+        # order won, the bake was excluded and the simulation vanished.
+        if not op_name or not prim.HasAttribute(op_name):
+            continue
+        owner_prim = _chunk_prim(stage, owner)
+        if owner_prim is None:
+            continue
+        depths[op_name] = _exec_depth(stage, owner_prim.GetPath())
+    depths[my_op] = _exec_depth(stage, _own_prim_path(stage, node))
 
     # The prim's own ops keep their place at the front. Anything a chunk owns is dropped and
     # re-added below, so an op does not appear twice when a chunk's position changes.

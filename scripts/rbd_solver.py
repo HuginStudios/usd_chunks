@@ -13,7 +13,7 @@ from collections.abc import Generator
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk, chunk_gizmo, chunk_registry, chunk_utils
 from usd_chunks.plugins import chunk_usd
 
 try:
@@ -651,6 +651,7 @@ def _write_prim_results(
     all_mats: list[Gf.Matrix4d],
     start_frame: int,
     scale_xyz: tuple[float, float, float] | None = None,
+    node=None,
 ) -> None:
     """Write single-prim simulation results to USD (main-thread only)."""
     if scale_xyz and any(abs(s - 1.0) > 1e-6 for s in scale_xyz):
@@ -667,14 +668,30 @@ def _write_prim_results(
         def _local(mat):
             return mat * parent_world_inv
 
+    # Bake into THIS chunk's own named op, and derive the order the same way every other
+    # transform-authoring chunk does.
+    #
+    # This used to author the plain xformOp:transform and hard-set the order to just that.
+    # Under the old scheme that was merely the usual strongest-layer-wins; under the current
+    # one it is worse, because the solver sits downstream and so its one-item list outranks
+    # everyone else's -- excluding an upstream Transform's op from the order entirely. The
+    # op stayed on the prim, typed and valued, and was never read, so placing a chair with a
+    # Transform stopped working the moment a simulation existed. Reported as the chair
+    # jumping the instant the Transform was nudged.
+    op_name = chunk_utils.xform_op_name(node) if node is not None else "xformOp:transform"
     with Usd.EditContext(stage, layer):
+        order = (
+            chunk_gizmo.xform_op_order(node, prim, op_name)
+            if node is not None
+            else [op_name]
+        )
         order_attr = prim.GetAttribute("xformOpOrder")
         if not order_attr:
             order_attr = prim.CreateAttribute("xformOpOrder", Sdf.ValueTypeNames.TokenArray)
-        order_attr.Set(["xformOp:transform"])
-        xf_attr = prim.GetAttribute("xformOp:transform")
+        order_attr.Set(order)
+        xf_attr = prim.GetAttribute(op_name)
         if not xf_attr:
-            xf_attr = prim.CreateAttribute("xformOp:transform", Sdf.ValueTypeNames.Matrix4d)
+            xf_attr = prim.CreateAttribute(op_name, Sdf.ValueTypeNames.Matrix4d)
         xf_attr.Set(_local(all_mats[0]))
         for frame_idx, mat in enumerate(all_mats):
             xf_attr.Set(_local(mat), Usd.TimeCode(start_frame + frame_idx))
@@ -713,8 +730,13 @@ def simulate_mujoco(
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
+    node=None,
 ) -> list[Gf.Matrix4d] | None:
-    """Run MuJoCo simulation."""
+    """Run MuJoCo simulation.
+
+    `node` is the chunk itself, needed only so the bake lands in this chunk's own named
+    xformOp rather than the shared one -- see _write_prim_results.
+    """
     if not _HAS_MUJOCO:
         print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
         return
@@ -775,7 +797,7 @@ def simulate_mujoco(
         return
 
     # Write results using the proven writer
-    _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz)
+    _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz, node)
     print(f"[MuJoCoSolver] Baked {frame_count} frames on {prim.GetPath()}")
     return all_mats
 
@@ -1367,6 +1389,7 @@ def _run(owner, notice, sender) -> None:
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
             floor_drop=floor_drop,
+            node=_chunk,
             **forces,
         )
 

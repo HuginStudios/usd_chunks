@@ -597,3 +597,45 @@ def _chunk_prim_of(stage, node):
         return None
     prim = stage.GetPrimAtPath(Sdf.Path(str(path)))
     return prim if prim and prim.IsValid() else None
+
+
+
+# NOT used, and kept as a signpost rather than deleted: the obvious fix for the ordering
+# race is to give xformOpOrder a single writer in a layer shared by the graph, and it does
+# fix it -- the chair case below passes. It also breaks four things, because the order then
+# no longer mutes with its chunk: a muted or downstream chunk's op stays in the list, which
+# breaks upstream isolation (test_scatter_is_reactive_and_ignores_downstream_transform,
+# test_recook_for_view_reveals_upstream_incrementally,
+# test_get_upstream_stage_preserves_real_relative_order_among_included_chunks) and leaves a
+# deleted chunk's op named after it is gone (test_deleting_the_chunk_gives_the_asset_back).
+#
+# So the two placements each break something: per-chunk races, shared loses muting. A real
+# fix has to satisfy both -- most likely by re-cooking every chunk that touches a prim when
+# the participant set changes, so the per-chunk copies cannot go stale in the first place.
+def _xform_order_layer_unused(stage, node):
+
+    """The layer a chunk should author `xformOpOrder` into: shared, not its own.
+
+    The VALUES belong in each chunk's own layer -- that is what makes them compose and what
+    makes muting a chunk drop its contribution. The ORDER cannot work that way. It is a
+    single attribute, so per-chunk copies compete, and USD keeps whichever layer is
+    strongest rather than whichever is most recent. A chunk that cooked before its
+    neighbour existed holds a stale list, and if its layer happens to outrank the others,
+    that stale list wins and the neighbour's op is silently never read.
+
+    Building every copy from the same source does not fix that, which was the previous
+    attempt: identical copies only help if everyone re-cooks after every change, and they do
+    not. Reported twice from real graphs -- a second Transform contributing nothing, then a
+    baked simulation disappearing the moment its upstream Transform was nudged.
+
+    So there is one copy, in the layer shared by the chunks of a graph, and the most recent
+    cook wins. Each cook rebuilds the list from what is currently on the prim, so a stale
+    entry survives at most until the next one.
+    """
+    manager = chunk_registry.ChunkLayerManager()
+    own = node.get_edit_context() if hasattr(node, "get_edit_context") else None
+    if own is not None:
+        for parent in (getattr(manager, "graph_layers", None) or {}).values():
+            if own.identifier in parent.subLayerPaths:
+                return parent
+    return own
