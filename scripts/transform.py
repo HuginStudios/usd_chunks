@@ -165,6 +165,40 @@ def _upstream_of(node, prim):
     return mine.GetInverse() * local
 
 
+def zero_incoming(owner, notice, sender):
+    """Set this chunk's params so the target prim ends up at identity.
+
+    A Transform composes on top of what the prim already carries, which is what lets two of
+    them stack -- and it means the numbers are relative to the prim's rest pose rather than
+    absolute. On an asset exported with a -90 rotation, typing 50 gives -40 and the object
+    tilts the opposite way to what you asked for. That is correct and consistently
+    surprising, and it is arithmetic nobody should do in their head.
+
+    So: cancel the incoming placement once, then type from a known zero. Deliberately a
+    button rather than a world-space mode -- a mode would have to keep re-deriving the
+    offset on every upstream change, which is the kind of thing that quietly fights a drag.
+    """
+    node = owner.get_chunk()
+    stage = node.get_stage()
+    primpath_param = node.get_param("primpath_location")
+    if not stage or not primpath_param or not primpath_param.value:
+        return
+    targets = list(chunk_utils.iter_prim_targets(stage, primpath_param))
+    if not targets:
+        return
+    prim = stage.GetPrimAtPath(targets[0])
+    if not prim.IsValid():
+        return
+
+    # The inverse of everything upstream: composed with it, the prim lands on identity.
+    parts = chunk_gizmo.decompose(_upstream_of(node, prim).GetInverse())
+    for names, key in ((("tx", "ty", "tz"), "translate"),
+                       (("rx", "ry", "rz"), "rotate"),
+                       (("sx", "sy", "sz"), "scale")):
+        for name, component in zip(names, parts[key]):
+            node.get_param(name).value = float(component)
+
+
 def main():
     # One handle for the whole chunk: in effect "host, run your native transform manipulator
     # and give me the result". It absorbs the three gizmo= groups below into a single
@@ -178,6 +212,19 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
     chunk_api.add_param(primpath)
+
+    zero = chunk.Button(
+        "zero_incoming",
+        "Zero Prim",
+        tooltip="Cancel the placement this prim already has, so it sits at identity and "
+        "these values read from there. A Transform composes on top of whatever the prim "
+        "already carries -- its own baked ops, and any Transform before this one -- so "
+        "the numbers here are relative to that, not absolute. An asset exported with a "
+        "-90 rotation tilts the opposite way to what you type. This zeroes the incoming "
+        "placement once, as a starting point; it is not a mode.",
+    )
+    zero.add_callback(zero_incoming)
+    chunk_api.add_param(zero)
 
     # The last column is the whole gizmo declaration. A group already *is* the three params
     # its handle drives, so nothing needs listing -- and three separate handles is what a
