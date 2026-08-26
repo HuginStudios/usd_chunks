@@ -56,6 +56,7 @@ def execute(node):
         node.get_param("sz").value or 1.0,
     ))
     matrix = xform.GetMatrix()
+    matrix = matrix * _pre_matrix(node)
 
     for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
@@ -165,6 +166,60 @@ def _upstream_of(node, prim):
     return mine.GetInverse() * local
 
 
+def _pre_matrix(node) -> Gf.Matrix4d:
+    """The stored rotation offset, or identity when Align To World has not been used."""
+    param = node.get_param("pre_rotate")
+    rx, ry, rz = tuple(param.value) if param is not None and param.value else (0.0, 0.0, 0.0)
+    if (rx, ry, rz) == (0.0, 0.0, 0.0):
+        return Gf.Matrix4d(1.0)
+    return Gf.Matrix4d(1.0).SetRotate(
+        Gf.Rotation(Gf.Vec3d(1, 0, 0), rx)
+        * Gf.Rotation(Gf.Vec3d(0, 1, 0), ry)
+        * Gf.Rotation(Gf.Vec3d(0, 0, 1), rz)
+    )
+
+
+def align_to_world(owner, notice, sender):
+    """Cancel the rotation this prim inherits, so typed angles read as world angles.
+
+    ROTATION ONLY, and that is the whole lesson from three failed attempts at this. A
+    Transform composes on top of what the prim already has, so on an asset carrying a -90 a
+    typed 50 comes out at -40 and tilts the opposite way. Measured end to end: the apple
+    then rolls off the far side of the bowl, correctly, down a slope facing the wrong way.
+
+    What went wrong before, in order: writing the offset into the visible sliders (typing
+    over them threw it away); cancelling only the prim's LOCAL ops (the -90 is on an
+    ancestor, so there was nothing local to cancel and the button did nothing); and
+    cancelling the ancestors' whole world transform (which took their scale of 140 with it
+    and shrank the bowl to a speck). Scale and translation are inherited on purpose. Only
+    the rotation makes the numbers lie.
+    """
+    node = owner.get_chunk()
+    stage = node.get_stage()
+    primpath_param = node.get_param("primpath_location")
+    if not stage or not primpath_param or not primpath_param.value:
+        return
+    targets = list(chunk_utils.iter_prim_targets(stage, primpath_param))
+    if not targets:
+        return
+    prim = stage.GetPrimAtPath(targets[0])
+    if not prim.IsValid():
+        return
+
+    parent_world = Gf.Matrix4d(1.0)
+    parent = prim.GetParent()
+    if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
+        parent_world = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(parent)
+
+    # _upstream_of divides out this chunk's whole op, pre-rotation included, so pressing the
+    # button twice computes the same answer rather than stacking two cancellations.
+    inherited = _upstream_of(node, prim) * parent_world
+    rotation = inherited.RemoveScaleShear().ExtractRotation().GetInverse()
+    node.get_param("pre_rotate").value = tuple(
+        float(v) for v in chunk_gizmo.decompose(Gf.Matrix4d(1.0).SetRotate(rotation))["rotate"]
+    )
+
+
 def main():
     # One handle for the whole chunk: in effect "host, run your native transform manipulator
     # and give me the result". It absorbs the three gizmo= groups below into a single
@@ -178,6 +233,25 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
     chunk_api.add_param(primpath)
+
+    align = chunk.Button(
+        "align_to_world",
+        "Align To World",
+        tooltip="Cancel the ROTATION this prim inherits, so these angles read as world "
+        "angles. Scale and position are left alone. An asset exported with a -90 makes a "
+        "typed 50 come out as -40, tilting the opposite way to what you asked for; this "
+        "removes that offset once so the numbers mean what they say.",
+    )
+    align.add_callback(align_to_world)
+    chunk_api.add_param(align)
+
+    for name, default in (("pre_rotate", (0.0, 0.0, 0.0)),):
+        pre = chunk.Vector(
+            name, name, param=chunk.Spinbox(), length=3, suffixes="XYZ",
+            default_value=default,
+        )
+        pre.set_state(chunk_core.ChunkFlags.State.HIDDEN)
+        chunk_api.add_param(pre)
 
     # The last column is the whole gizmo declaration. A group already *is* the three params
     # its handle drives, so nothing needs listing -- and three separate handles is what a
