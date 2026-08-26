@@ -643,6 +643,24 @@ def _sim_prim_gen_mj(
     return all_mats
 
 
+def _bake_scale(prim: Usd.Prim, xform_cache) -> tuple:
+    """The scale the bake has to re-apply: the prim's WORLD scale, not its local one.
+
+    The bake converts a world-space result into local space with parent_world_inv, which
+    divides out every ancestor's scale -- and the simulation result is rotation and
+    translation only, so nothing puts that back. Reading the LOCAL scale compensates for the
+    wrong thing: a mesh under a parent scaled by 100 has a local scale of 1, so nothing was
+    re-applied and the baked op came out at 0.01, exactly the 1/100 the parent contributes.
+    Reported as the apple shrinking on Run Simulation.
+
+    It only ever worked because of where it was tested. A prim at the ROOT has the same
+    local and world scale, so the two coincide and the mistake is invisible -- which is
+    exactly why simulating /food_apple_01_4k was fine and simulating its mesh was not.
+    """
+    world = xform_cache.GetLocalToWorldTransform(prim)
+    return tuple(world.GetRow3(i).GetLength() for i in range(3))
+
+
 def _upstream_xform(prim: Usd.Prim, op_name: str) -> Gf.Matrix4d:
     """Everything applying to `prim` before this chunk's own op.
 
@@ -1390,16 +1408,7 @@ def _run(owner, notice, sender) -> None:
         if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
             parent_world_inv = xform_cache.GetLocalToWorldTransform(parent).GetInverse()
 
-        # Extract local scale so we can preserve it in the baked transform
-        local_xf = xform_cache.GetLocalTransformation(prim)[0]
-        _r0 = local_xf.GetRow3(0)
-        _r1 = local_xf.GetRow3(1)
-        _r2 = local_xf.GetRow3(2)
-        scale_xyz = (
-            (_r0[0] ** 2 + _r0[1] ** 2 + _r0[2] ** 2) ** 0.5,
-            (_r1[0] ** 2 + _r1[1] ** 2 + _r1[2] ** 2) ** 0.5,
-            (_r2[0] ** 2 + _r2[1] ** 2 + _r2[2] ** 2) ** 0.5,
-        )
+        scale_xyz = _bake_scale(prim, xform_cache)
 
         simulate_mujoco(
             stage,

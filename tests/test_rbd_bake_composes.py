@@ -241,3 +241,97 @@ def test_a_solver_with_nothing_upstream_bakes_the_result_directly(chair) -> None
 
     own = stage.GetPrimAtPath("/chair").GetAttribute(chunk_utils.xform_op_name(solver)).Get()
     assert Gf.Matrix4d(own).ExtractTranslation() == pytest.approx(Gf.Vec3d(0.0, -3.0, 0.0))
+
+
+# ---------------------------------------------------------------------------
+# scale survives the world -> local conversion
+# ---------------------------------------------------------------------------
+
+def _scaled_parent(stage, scale=100.0):
+    """A mesh under a scaled parent, which is what every real asset looks like.
+
+    The apple's 100 lives on /food_apple_01_4k, not on its mesh -- so the mesh's LOCAL scale
+    is 1 and its WORLD scale is 100. A prim at the root has the same value for both, which
+    is why this went unnoticed: simulating the parent worked and simulating its mesh did not.
+    """
+    with Usd.EditContext(stage, stage.GetRootLayer().subLayerPaths and
+                         Sdf.Layer.Find(stage.GetRootLayer().subLayerPaths[0])):
+        parent = UsdGeom.Xform.Define(stage, "/asset")
+        UsdGeom.Xformable(parent).AddScaleOp().Set(Gf.Vec3f(scale, scale, scale))
+        UsdGeom.Mesh.Define(stage, "/asset/mesh")
+    return stage.GetPrimAtPath("/asset/mesh")
+
+
+def _world_scale(stage, path):
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    return cache.GetLocalToWorldTransform(stage.GetPrimAtPath(path)).GetRow3(0).GetLength()
+
+
+def _bake_as_run_does(stage, solver, prim, ends_at):
+    """Mirror what _run does before calling the writer.
+
+    The scale comes from rbd_solver._bake_scale rather than being recomputed here. An
+    earlier version of this helper worked it out itself, which meant the tests passed
+    against the buggy derivation too -- they exercised the writer and never the line that
+    was actually wrong.
+    """
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    parent_inv = cache.GetLocalToWorldTransform(prim.GetParent()).GetInverse()
+    scale_xyz = rbd_mod._bake_scale(prim, cache)
+    rbd_mod._write_prim_results(
+        stage, prim, solver.get_edit_context(), parent_inv,
+        [Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(*ends_at))], 1, scale_xyz, solver,
+    )
+
+
+def test_a_mesh_under_a_scaled_parent_keeps_its_size(chair) -> None:
+    """Reported live: running a sim on the apple MESH shrank it, while running it on the
+    parent was fine.
+
+    The bake converts a world-space result to local with parent_world_inv, which divides out
+    every ancestor's scale -- and the sim result is rotation and translation only, so nothing
+    puts it back. The compensation read the prim's LOCAL scale, which is 1 for a mesh under a
+    scaled parent, so it compensated for nothing: the baked op came out at 0.01, exactly the
+    1/100 the parent contributes.
+    """
+    stage, sender = chair
+    prim = _scaled_parent(stage, scale=100.0)
+    solver = _mk(sender, rbd_mod, "Solver", "rbd_solver")
+    solver.get_param("prim_path").value = "/asset/mesh"
+    assert _world_scale(stage, "/asset/mesh") == pytest.approx(100.0)
+
+    _bake_as_run_does(stage, solver, prim, ends_at=(0.0, -1.0, 0.0))
+
+    assert _world_scale(stage, "/asset/mesh") == pytest.approx(100.0), (
+        "the apple shrank: the parent's scale was divided out and never restored"
+    )
+
+
+def test_the_parent_itself_still_works(chair) -> None:
+    """The case that always worked, because a prim at the root has the same local and world
+    scale -- kept so the fix cannot regress the thing that hid the bug."""
+    stage, sender = chair
+    _scaled_parent(stage, scale=100.0)
+    prim = stage.GetPrimAtPath("/asset")
+    solver = _mk(sender, rbd_mod, "Solver", "rbd_solver")
+    solver.get_param("prim_path").value = "/asset"
+
+    _bake_as_run_does(stage, solver, prim, ends_at=(0.0, -1.0, 0.0))
+
+    assert _world_scale(stage, "/asset") == pytest.approx(100.0)
+
+
+def test_the_bake_scale_is_the_world_scale(chair) -> None:
+    """Directly on the derivation, since going through the writer cannot distinguish the two
+    -- the writer is handed a number and has no way to know it came from the wrong place."""
+    stage, _sender = chair
+    prim = _scaled_parent(stage, scale=100.0)
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+
+    local = cache.GetLocalTransformation(prim)
+    local = local[0] if isinstance(local, tuple) else local
+    assert local.GetRow3(0).GetLength() == pytest.approx(1.0), "the mesh's own scale is 1"
+
+    assert rbd_mod._bake_scale(prim, cache)[0] == pytest.approx(100.0), (
+        "the bake needs the scale the parent contributes, which the local transform lacks"
+    )
