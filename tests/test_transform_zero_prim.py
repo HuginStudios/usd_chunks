@@ -89,15 +89,43 @@ def test_zeroing_puts_the_prim_at_identity(asset) -> None:
 
 
 def test_typing_after_zeroing_reads_as_written(asset) -> None:
-    """The whole point. From a zeroed prim, 50 means 50 rather than -40."""
+    """The whole point, and the thing the first version of this test got wrong.
+
+    It read the slider and ADDED 50, which is not what anyone does -- you type 50 into the
+    box. The first implementation put the cancellation in the visible sliders, so typing
+    over them threw it away and the result was identical to not having pressed the button.
+    The test passed because it encoded the workaround instead of the behaviour.
+    """
+    stage, node = asset
+    _press_zero(node)
+    node.execute()
+    assert node.get_param("rx").value == 0.0, "the sliders must come back to rest"
+
+    node.get_param("rx").value = 50.0        # typed, not added
+    node.execute()
+
+    assert chunk_gizmo.decompose(_local(stage))["rotate"][0] == pytest.approx(50.0, abs=1e-4)
+
+
+def test_typing_a_translation_after_zeroing_reads_as_written(asset) -> None:
     stage, node = asset
     _press_zero(node)
     node.execute()
 
-    node.get_param("rx").value = node.get_param("rx").value + 50.0
+    node.get_param("tx").value = 3.0
     node.execute()
 
-    assert chunk_gizmo.decompose(_local(stage))["rotate"][0] == pytest.approx(50.0, abs=1e-4)
+    assert Gf.IsClose(_local(stage).ExtractTranslation(), Gf.Vec3d(3.0, 0.0, 0.0), 1e-4)
+
+
+def test_the_sliders_read_at_rest_after_zeroing(asset) -> None:
+    """The visible values have to look zeroed, or the number in the box still lies."""
+    _stage, node = asset
+    _press_zero(node)
+
+    assert [node.get_param(n).value for n in ("tx", "ty", "tz")] == [0.0, 0.0, 0.0]
+    assert [node.get_param(n).value for n in ("rx", "ry", "rz")] == [0.0, 0.0, 0.0]
+    assert [node.get_param(n).value for n in ("sx", "sy", "sz")] == [1.0, 1.0, 1.0]
 
 
 def test_zeroing_is_idempotent(asset) -> None:

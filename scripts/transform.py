@@ -56,6 +56,10 @@ def execute(node):
         node.get_param("sz").value or 1.0,
     ))
     matrix = xform.GetMatrix()
+    # local = user * pre, and Zero Prim sets pre = upstream^-1 -- so with the sliders at
+    # rest the prim lands on identity, and whatever is typed reads from there rather than
+    # being composed on top of the asset's own rotation.
+    matrix = matrix * _pre_matrix(node)
 
     for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
@@ -165,6 +169,24 @@ def _upstream_of(node, prim):
     return mine.GetInverse() * local
 
 
+def _pre_matrix(node) -> Gf.Matrix4d:
+    """The stored pre-transform, or identity when nothing has been zeroed."""
+    def _vec(name, fallback):
+        param = node.get_param(name)
+        return tuple(param.value) if param is not None and param.value else fallback
+
+    xform = Gf.Transform()
+    xform.SetTranslation(Gf.Vec3d(*_vec("pre_translate", (0.0, 0.0, 0.0))))
+    rx, ry, rz = _vec("pre_rotate", (0.0, 0.0, 0.0))
+    xform.SetRotation(
+        Gf.Rotation(Gf.Vec3d(1, 0, 0), rx)
+        * Gf.Rotation(Gf.Vec3d(0, 1, 0), ry)
+        * Gf.Rotation(Gf.Vec3d(0, 0, 1), rz)
+    )
+    xform.SetScale(Gf.Vec3d(*_vec("pre_scale", (1.0, 1.0, 1.0))))
+    return xform.GetMatrix()
+
+
 def zero_incoming(owner, notice, sender):
     """Set this chunk's params so the target prim ends up at identity.
 
@@ -190,13 +212,21 @@ def zero_incoming(owner, notice, sender):
     if not prim.IsValid():
         return
 
-    # The inverse of everything upstream: composed with it, the prim lands on identity.
+    # Everything upstream, inverted. _upstream_of already divides out this chunk's WHOLE
+    # authored op -- user values and pre-transform together -- so what comes back is what
+    # the prim would sit at with this chunk contributing nothing. Multiplying the existing
+    # pre-transform back in first, as an earlier version did, cancels it twice: pressing
+    # the button a second time then moved the prim instead of leaving it where it was.
     parts = chunk_gizmo.decompose(_upstream_of(node, prim).GetInverse())
-    for names, key in ((("tx", "ty", "tz"), "translate"),
-                       (("rx", "ry", "rz"), "rotate"),
-                       (("sx", "sy", "sz"), "scale")):
-        for name, component in zip(names, parts[key]):
-            node.get_param(name).value = float(component)
+    node.get_param("pre_translate").value = tuple(float(v) for v in parts["translate"])
+    node.get_param("pre_rotate").value = tuple(float(v) for v in parts["rotate"])
+    node.get_param("pre_scale").value = tuple(float(v) for v in parts["scale"])
+
+    # And the visible sliders go back to rest, so what gets typed next reads as written.
+    for name in ("tx", "ty", "tz", "rx", "ry", "rz"):
+        node.get_param(name).value = 0.0
+    for name in ("sx", "sy", "sz"):
+        node.get_param(name).value = 1.0
 
 
 def main():
@@ -225,6 +255,22 @@ def main():
     )
     zero.add_callback(zero_incoming)
     chunk_api.add_param(zero)
+
+    # The pre-transform, hidden. Zero Prim puts the cancelling placement HERE rather than
+    # into the visible sliders, which is the whole point: the sliders stay at 0/1 and read
+    # as absolute from there. Putting it in the sliders instead -- the first attempt -- was
+    # useless, because typing a value over them throws the cancellation away and you are
+    # back where you started. Same idea as Houdini's pre-transform, for the same reason.
+    for name, default in (("pre_translate", (0.0, 0.0, 0.0)),
+                          ("pre_rotate", (0.0, 0.0, 0.0)),
+                          ("pre_scale", (1.0, 1.0, 1.0))):
+        pre = chunk.Vector(
+            name, name, param=chunk.Spinbox(), length=3, suffixes="XYZ",
+            default_value=default,
+        )
+        # HIDDEN is a State, not a ParamFlag -- it hints the UI not to draw the param.
+        pre.set_state(chunk_core.ChunkFlags.State.HIDDEN)
+        chunk_api.add_param(pre)
 
     # The last column is the whole gizmo declaration. A group already *is* the three params
     # its handle drives, so nothing needs listing -- and three separate handles is what a
