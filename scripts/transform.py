@@ -56,10 +56,6 @@ def execute(node):
         node.get_param("sz").value or 1.0,
     ))
     matrix = xform.GetMatrix()
-    # local = user * pre, and Zero Prim sets pre = upstream^-1 -- so with the sliders at
-    # rest the prim lands on identity, and whatever is typed reads from there rather than
-    # being composed on top of the asset's own rotation.
-    matrix = matrix * _pre_matrix(node)
 
     for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
@@ -169,79 +165,6 @@ def _upstream_of(node, prim):
     return mine.GetInverse() * local
 
 
-def _pre_matrix(node) -> Gf.Matrix4d:
-    """The stored pre-transform, or identity when nothing has been zeroed."""
-    def _vec(name, fallback):
-        param = node.get_param(name)
-        return tuple(param.value) if param is not None and param.value else fallback
-
-    xform = Gf.Transform()
-    xform.SetTranslation(Gf.Vec3d(*_vec("pre_translate", (0.0, 0.0, 0.0))))
-    rx, ry, rz = _vec("pre_rotate", (0.0, 0.0, 0.0))
-    xform.SetRotation(
-        Gf.Rotation(Gf.Vec3d(1, 0, 0), rx)
-        * Gf.Rotation(Gf.Vec3d(0, 1, 0), ry)
-        * Gf.Rotation(Gf.Vec3d(0, 0, 1), rz)
-    )
-    xform.SetScale(Gf.Vec3d(*_vec("pre_scale", (1.0, 1.0, 1.0))))
-    return xform.GetMatrix()
-
-
-def zero_incoming(owner, notice, sender):
-    """Set this chunk's params so the target prim ends up at identity.
-
-    A Transform composes on top of what the prim already carries, which is what lets two of
-    them stack -- and it means the numbers are relative to the prim's rest pose rather than
-    absolute. On an asset exported with a -90 rotation, typing 50 gives -40 and the object
-    tilts the opposite way to what you asked for. That is correct and consistently
-    surprising, and it is arithmetic nobody should do in their head.
-
-    So: cancel the incoming placement once, then type from a known zero. Deliberately a
-    button rather than a world-space mode -- a mode would have to keep re-deriving the
-    offset on every upstream change, which is the kind of thing that quietly fights a drag.
-    """
-    node = owner.get_chunk()
-    stage = node.get_stage()
-    primpath_param = node.get_param("primpath_location")
-    if not stage or not primpath_param or not primpath_param.value:
-        return
-    targets = list(chunk_utils.iter_prim_targets(stage, primpath_param))
-    if not targets:
-        return
-    prim = stage.GetPrimAtPath(targets[0])
-    if not prim.IsValid():
-        return
-
-    # Everything between this chunk and world, inverted: the prim's own upstream ops AND
-    # every ancestor's transform.
-    #
-    # The ancestors are the part that matters and the part the first version missed. It
-    # cancelled only the LOCAL upstream, and on the reported case there was none -- the
-    # bowl's -90 sits on /carved_wooden_plate_4k, not on Circle_002, whose only op is this
-    # chunk's. So the button computed identity, stored identity, and did nothing at all
-    # while looking like it had worked. Same local-versus-world mistake as the solver's
-    # scale bug, in a different place.
-    #
-    # Ordering: world = local * parent_world and local = user * pre * upstream, so with
-    # pre = (upstream * parent_world)^-1 the tail collapses to identity and world == user.
-    # Typed numbers then read as world, exactly, for any user value -- not only when the
-    # sliders happen to be at rest.
-    parent_world = Gf.Matrix4d(1.0)
-    parent = prim.GetParent()
-    if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
-        parent_world = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(parent)
-    parts = chunk_gizmo.decompose((_upstream_of(node, prim) * parent_world).GetInverse())
-    node.get_param("pre_translate").value = tuple(float(v) for v in parts["translate"])
-    node.get_param("pre_rotate").value = tuple(float(v) for v in parts["rotate"])
-    node.get_param("pre_scale").value = tuple(float(v) for v in parts["scale"])
-
-    # And the visible sliders go back to rest, so what gets typed next reads as written.
-    for name in ("tx", "ty", "tz", "rx", "ry", "rz"):
-        node.get_param(name).value = 0.0
-    for name in ("sx", "sy", "sz"):
-        node.get_param(name).value = 1.0
-
-
 def main():
     # One handle for the whole chunk: in effect "host, run your native transform manipulator
     # and give me the result". It absorbs the three gizmo= groups below into a single
@@ -255,35 +178,6 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
     chunk_api.add_param(primpath)
-
-    zero = chunk.Button(
-        "zero_incoming",
-        "Zero Prim",
-        tooltip="Cancel the placement this prim already has, so it sits at identity and "
-        "these values read from there. A Transform composes on top of whatever the prim "
-        "already carries -- its own baked ops, and any Transform before this one -- so "
-        "the numbers here are relative to that, not absolute. An asset exported with a "
-        "-90 rotation tilts the opposite way to what you type. This zeroes the incoming "
-        "placement once, as a starting point; it is not a mode.",
-    )
-    zero.add_callback(zero_incoming)
-    chunk_api.add_param(zero)
-
-    # The pre-transform, hidden. Zero Prim puts the cancelling placement HERE rather than
-    # into the visible sliders, which is the whole point: the sliders stay at 0/1 and read
-    # as absolute from there. Putting it in the sliders instead -- the first attempt -- was
-    # useless, because typing a value over them throws the cancellation away and you are
-    # back where you started. Same idea as Houdini's pre-transform, for the same reason.
-    for name, default in (("pre_translate", (0.0, 0.0, 0.0)),
-                          ("pre_rotate", (0.0, 0.0, 0.0)),
-                          ("pre_scale", (1.0, 1.0, 1.0))):
-        pre = chunk.Vector(
-            name, name, param=chunk.Spinbox(), length=3, suffixes="XYZ",
-            default_value=default,
-        )
-        # HIDDEN is a State, not a ParamFlag -- it hints the UI not to draw the param.
-        pre.set_state(chunk_core.ChunkFlags.State.HIDDEN)
-        chunk_api.add_param(pre)
 
     # The last column is the whole gizmo declaration. A group already *is* the three params
     # its handle drives, so nothing needs listing -- and three separate handles is what a
