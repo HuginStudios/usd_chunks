@@ -212,12 +212,25 @@ def zero_incoming(owner, notice, sender):
     if not prim.IsValid():
         return
 
-    # Everything upstream, inverted. _upstream_of already divides out this chunk's WHOLE
-    # authored op -- user values and pre-transform together -- so what comes back is what
-    # the prim would sit at with this chunk contributing nothing. Multiplying the existing
-    # pre-transform back in first, as an earlier version did, cancels it twice: pressing
-    # the button a second time then moved the prim instead of leaving it where it was.
-    parts = chunk_gizmo.decompose(_upstream_of(node, prim).GetInverse())
+    # Everything between this chunk and world, inverted: the prim's own upstream ops AND
+    # every ancestor's transform.
+    #
+    # The ancestors are the part that matters and the part the first version missed. It
+    # cancelled only the LOCAL upstream, and on the reported case there was none -- the
+    # bowl's -90 sits on /carved_wooden_plate_4k, not on Circle_002, whose only op is this
+    # chunk's. So the button computed identity, stored identity, and did nothing at all
+    # while looking like it had worked. Same local-versus-world mistake as the solver's
+    # scale bug, in a different place.
+    #
+    # Ordering: world = local * parent_world and local = user * pre * upstream, so with
+    # pre = (upstream * parent_world)^-1 the tail collapses to identity and world == user.
+    # Typed numbers then read as world, exactly, for any user value -- not only when the
+    # sliders happen to be at rest.
+    parent_world = Gf.Matrix4d(1.0)
+    parent = prim.GetParent()
+    if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
+        parent_world = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(parent)
+    parts = chunk_gizmo.decompose((_upstream_of(node, prim) * parent_world).GetInverse())
     node.get_param("pre_translate").value = tuple(float(v) for v in parts["translate"])
     node.get_param("pre_rotate").value = tuple(float(v) for v in parts["rotate"])
     node.get_param("pre_scale").value = tuple(float(v) for v in parts["scale"])

@@ -41,10 +41,16 @@ def asset():
     stage = Usd.Stage.CreateInMemory()
     scene_layer = Sdf.Layer.CreateAnonymous("scene")
     stage.GetRootLayer().subLayerPaths.append(scene_layer.identifier)
+    # The placement sits on an ANCESTOR, not on the target prim -- which is the reported
+    # shape and the one that broke the first version. The bowl's -90 is on
+    # /carved_wooden_plate_4k; Circle_002, the prim the chunk targets, carries no ops of its
+    # own at all. Putting it on the target instead makes the test pass against a version
+    # that only ever looked at the local transform.
     with Usd.EditContext(stage, scene_layer):
-        bowl = UsdGeom.Xform.Define(stage, "/bowl")
-        UsdGeom.Xformable(bowl).AddRotateXYZOp().Set(Gf.Vec3f(-90.0, 0.0, 0.0))
-        UsdGeom.Xformable(bowl).AddTranslateOp().Set(Gf.Vec3d(4.0, 0.0, 0.0))
+        asset = UsdGeom.Xform.Define(stage, "/plate")
+        UsdGeom.Xformable(asset).AddRotateXYZOp().Set(Gf.Vec3f(-90.0, 0.0, 0.0))
+        UsdGeom.Xformable(asset).AddTranslateOp().Set(Gf.Vec3d(4.0, 0.0, 0.0))
+        UsdGeom.Xform.Define(stage, "/plate/bowl")
 
     registry = chunk_registry.ChunkRegistry()
     sender = _Scene(stage)
@@ -56,16 +62,19 @@ def asset():
     node._config = ChunkConfig(module="transform")
     node._module = transform_mod
     sender.add_chunk(node)
-    node.get_param("primpath_location").value = "/bowl"
+    node.get_param("primpath_location").value = "/plate/bowl"
     node.execute()
     return stage, node
 
 
-def _local(stage):
-    matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/bowl")).GetLocalTransformation(
-        Usd.TimeCode.Default()
+def _world(stage):
+    """WORLD, not local: the ancestors are the whole point here."""
+    return UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(
+        stage.GetPrimAtPath("/plate/bowl")
     )
-    return matrix[0] if isinstance(matrix, tuple) else matrix
+
+
+_local = _world
 
 
 def _press_zero(node):
