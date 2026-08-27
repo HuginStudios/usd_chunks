@@ -146,6 +146,33 @@ DENSITY_PRIMVAR = "scatterDensity"
 _LOOKUP_DIVISIONS = 48
 
 
+#: What only means something when scatter is choosing the positions itself. Wire painted
+#: points in and every one of them is answering a question that has already been settled.
+_SAMPLING_ONLY = ("auto_spacing", "spacing", "max_count", "seed", "max_slope", "scatter_mode")
+
+
+def _update_sampling_params(owner) -> None:
+    """Hide the distribution controls while the positions are being handed to us.
+
+    Reported live: with Painted Points connected, Auto Spacing, Spacing, Max Count and Seed
+    all still sat there doing nothing. A control that cannot affect the result is worse than
+    an absent one -- it invites you to reach for it when something looks wrong.
+    """
+    placed = bool(owner.get_param("points_prim") and owner.get_param("points_prim").value)
+    for name in _SAMPLING_ONLY:
+        param = owner.get_param(name)
+        if param is None:
+            continue
+        if placed:
+            param.set_state(chunk.ChunkFlags.State.HIDDEN)
+        else:
+            param.unset_state(chunk.ChunkFlags.State.HIDDEN)
+
+
+def _on_points_input_changed(owner, notice, sender) -> None:
+    _update_sampling_params(owner.get_chunk())
+
+
 def _painted_points(stage, points_path):
     """Points a brush placed by hand, with the surface normal recorded at each.
 
@@ -730,15 +757,16 @@ def main():
             tooltip="Prim instanced at each scatter point. Empty = a default cube.",
         )
     )
-    chunk_api.add_param(
-        chunk.LineEdit(
-            "points_prim",
-            "Painted Points",
-            flags=chunk.ChunkFlags.ParamFlags.LABELED,
-            tooltip="Place one instance at each point a Scatter Brush painted, instead of "
-            "scattering. Wire this from the brush's Painted Points output.",
-        )
+    points_input = chunk.LineEdit(
+        "points_prim",
+        "Painted Points",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="Place one instance at each point a Scatter Brush painted, instead of "
+        "scattering. Wire this from the brush's Painted Points output. While it is "
+        "connected, the distribution settings below do nothing and are hidden.",
     )
+    points_input.add_callback(_on_points_input_changed)
+    chunk_api.add_param(points_input)
     chunk_api.add_param(
         chunk.LineEdit(
             "density_primvar",
@@ -882,6 +910,8 @@ def main():
         )
     )
     chunk_api.add_param(var_grp)
+
+    _update_sampling_params(chunk_api)
 
     return chunk_api
 

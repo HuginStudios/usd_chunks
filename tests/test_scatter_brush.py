@@ -875,17 +875,23 @@ def test_points_placed_before_normals_were_recorded_still_load() -> None:
     assert len(normals) == 1
 
 
-def test_clear_recooks_the_chain() -> None:
-    """Reported: clearing left every instance standing until something else was touched. Fill
-    and Clear are edits like any stroke, so the chain has to hear about them."""
+def test_clear_resets_the_stroke_count() -> None:
+    """Reported twice: clearing left every instance standing, and then left the count standing.
+
+    Clear does not merely change the paint, it takes it all away -- a count of strokes that
+    survived having nothing left to count read as the button not having worked. It is still a
+    param write, so the chain hears about it.
+    """
     stage = _stage_with_floor()
     c = _brush(stage, radius=5.0, strength=1.0)
-    _stroke(c, (5.0, 5.0, 0.0))
-    before = c.get_param("stroke_count").value
+    for _ in range(3):
+        _stroke(c, (5.0, 5.0, 0.0))
+        c.stop_gizmo()
+    assert c.get_param("stroke_count").value > 0
 
     brush_mod._clear_paint(c.get_param("clear_paint"), None, None)
 
-    assert c.get_param("stroke_count").value > before
+    assert c.get_param("stroke_count").value == 0
 
 
 def test_fill_recooks_the_chain() -> None:
@@ -931,3 +937,25 @@ def test_mode_sits_above_the_settings_it_governs() -> None:
     names = [p.name for p in c.get_param("brush_grp").get_my_params()]
 
     assert names.index("mode") < names.index("radius") < names.index("strength")
+
+
+def test_wiring_painted_points_hides_the_distribution_settings() -> None:
+    """Reported: with Painted Points connected, Auto Spacing, Spacing, Max Count and Seed all
+    still sat there doing nothing. A control that cannot affect the result is worse than an
+    absent one -- it invites you to reach for it when something looks wrong."""
+    import importlib
+
+    from usd_chunks import chunk as chunk_api
+    scatter_points = importlib.import_module("scripts.scatter_points")
+    sc = scatter_points.main()
+
+    def hidden(name):
+        return sc.get_param(name).has_state(chunk_api.ChunkFlags.State.HIDDEN)
+
+    assert not any(hidden(n) for n in scatter_points._SAMPLING_ONLY), "nothing wired yet"
+
+    sc.get_param("points_prim").value = "/chunks/ScatterBrush/PaintedPoints"
+    assert all(hidden(n) for n in scatter_points._SAMPLING_ONLY)
+
+    sc.get_param("points_prim").value = ""
+    assert not any(hidden(n) for n in scatter_points._SAMPLING_ONLY), "they must come back"

@@ -482,11 +482,21 @@ def _unpack(sample):
         return None, 0.0, None
 
 
-def _bump_strokes(node):
-    """Tell the chain something changed. See `_stroke_finished` for why it is a param write."""
+def _bump_strokes(node, reset=False):
+    """Tell the chain something changed. See `_stroke_finished` for why it is a param write.
+
+    `reset` is for Clear, which does not merely change the paint -- it takes it all away, and
+    a count of strokes that survived having nothing left to count read as the button not
+    having worked.
+    """
     try:
         counter = node.get_param("stroke_count")
-        counter.value = int(counter.value or 0) + 1
+        current = int(counter.value or 0)
+        # Still a write when it was already zero, so the chain hears about a Clear on a scene
+        # that was loaded rather than painted this session.
+        counter.value = 0 if reset else current + 1
+        if reset and current == 0:
+            counter.value = 0
     except Exception:  # noqa: BLE001
         logger.debug("Could not recook %s", node.name, exc_info=True)
 
@@ -497,7 +507,7 @@ def _set_everywhere(node, value):
     prim, stage = _surface_prim(node)
     # Fill and Clear are edits like any stroke, so the chain has to hear about them -- without
     # this, clearing left every instance standing until something else was touched.
-    _bump_strokes(node)
+    _bump_strokes(node, reset=(value == 0.0))
     if stage is not None and node.get_param("output").value == _OUTPUT_POINTS:
         # Points are the output in this mode, so Fill/Clear act on them instead. Filling a
         # point cloud has no meaning -- there is no "everywhere" to place one at -- so only
