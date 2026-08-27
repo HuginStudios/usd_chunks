@@ -866,6 +866,42 @@ def test_a_legacy_op_this_chunk_did_not_author_is_left_alone() -> None:
     assert prim.GetAttribute(camera_mod._LEGACY_OP).Get() is not None, "not ours to clear"
 
 
+
+def test_unlocking_hands_back_the_flight_even_after_the_camera_was_moved() -> None:
+    """Reported live. Move the camera with the gizmo, lock the freecam, fly somewhere, unlock
+    -- and the camera jumped back to where the gizmo left it, throwing the flight away.
+
+    Adopting only while every param sat at its default was protecting a "real edit" that is
+    stale by definition: while the lock is on, the freecam *is* the authority. So the handover
+    is edge-triggered on the lock coming off, not gated on the params.
+    """
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)
+    path = c.get_param("primpath_location").value
+
+    # A real edit first, which is what used to disable the handover.
+    moved = Gf.Transform()
+    moved.SetTranslation(Gf.Vec3d(3.0, 0.0, -4.0))
+    chunk_gizmo.apply_bindings(c, "transform", moved.GetMatrix())
+    camera_mod.execute(node)
+
+    c.get_param("lock_to_freecam").value = True
+    _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
+    camera_mod.execute(node)
+
+    c.get_param("lock_to_freecam").value = False
+    camera_mod.execute(node)
+
+    assert UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetLocalTransformation()         .ExtractTranslation() == Gf.Vec3d(100.0, 50.0, -200.0)
+    assert c.get_param("tx").value == pytest.approx(100.0), "the params have to agree too"
+
+    # And it fires once per lock, not on every cook afterwards.
+    c.get_param("tx").value = 7.0
+    camera_mod.execute(node)
+    assert c.get_param("tx").value == pytest.approx(7.0)
+
 def test_adopting_never_overwrites_a_real_edit() -> None:
     """It only fires while every param is still at its default, so a user who has typed a
     position keeps it even if the prim carries something else."""

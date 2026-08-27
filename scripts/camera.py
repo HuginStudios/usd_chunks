@@ -8,6 +8,10 @@ from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_utils
 #: owned a named one. Still read, so a camera saved before the change keeps its placement.
 _LEGACY_OP = "xformOp:transform"
 
+#: Set while `lock_to_freecam` owns the transform, so the first cook after it comes off knows
+#: to take the flown position back into the params instead of authoring stale ones over it.
+_FREECAM_OWNED = "_freecam_owned"
+
 
 def _download_camera_types_cache(camera_cache):
     conn = http.client.HTTPSConnection("api.physicallybased.info")
@@ -184,18 +188,27 @@ def _camera_matrix(node):
 _TRANSFORM_PARAMS = ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz")
 
 
-def _adopt_existing_transform(node, prim):
-    """Seed the transform params from the prim, if they are untouched and it already has one.
+def _adopt_existing_transform(node, prim, force=False):
+    """Seed the transform params from the prim, so a cook does not author over its placement.
 
-    Without this, unticking `lock_to_freecam` snaps the camera back to the origin: the
-    freecam placed the prim while the lock was on, our params are still at their defaults,
-    and the very next cook authors those defaults straight over it. Losing a camera position
-    you just flew to is a bad way to find out the two systems disagree.
+    Without this, unticking `lock_to_freecam` snaps the camera back: the freecam placed the
+    prim while the lock was on, our params still say something else, and the very next cook
+    authors those params straight over it. Losing a camera position you just flew to is a bad
+    way to find out the two systems disagree.
 
-    Only when *every* param is still at its default, so it never overwrites a real edit.
-    After seeding they are non-default, so this runs once and then gets out of the way.
+    Normally only when *every* param is still at its default, so it never overwrites a real
+    edit -- a user who typed a position keeps it even if the prim carries something else.
+
+    `force` is the exception, and it is the whole reason this takes an argument: while the
+    lock is on the freecam *is* the authority, so on the tick the lock comes off there is no
+    "real edit" to protect -- the params are stale by definition. Reported as: move the camera
+    with the gizmo, lock, fly somewhere, unlock, and the camera jumps back to where the gizmo
+    left it. The defaults-only guard was silently discarding the flight for any camera that
+    had ever been touched.
     """
-    if any(node.get_param(n).value != node.get_param(n).default_value for n in _TRANSFORM_PARAMS):
+    if not force and any(
+        node.get_param(n).value != node.get_param(n).default_value for n in _TRANSFORM_PARAMS
+    ):
         return
 
     # This chunk's own op first, then the shared one a camera saved before the named-op
@@ -237,7 +250,15 @@ def _author_camera_transform(node, stage):
         # The freecam owns the transform while the lock is on, and re-authors it on every
         # CAMERA_CHANGED. Writing params here would be silently overwritten a frame later,
         # which is worse than not writing them.
+        setattr(node, _FREECAM_OWNED, True)
         return
+
+    # Edge-triggered, not level-triggered: this is the first cook since the lock came off, so
+    # the params are stale by definition and adopting is not overwriting anything. Read and
+    # cleared here so it fires exactly once per lock, however many cooks follow.
+    handing_back = getattr(node, _FREECAM_OWNED, False)
+    if handing_back:
+        setattr(node, _FREECAM_OWNED, False)
 
     path = node.get_param("primpath_location").value
     if not path:
@@ -248,7 +269,7 @@ def _author_camera_transform(node, stage):
         if not prim.IsValid():
             return
         # Take on whatever is already there before overwriting it -- see the docstring.
-        _adopt_existing_transform(node, prim)
+        _adopt_existing_transform(node, prim, force=handing_back)
 
         _author_matrix(node, stage, stage.OverridePrim(target_path), _camera_matrix(node))
 
