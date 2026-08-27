@@ -514,53 +514,13 @@ def execute(node):
 def main():
     chunk_api = chunk.Chunk("Scatter Brush")
 
+    # Ordered as the work is done: what to paint on, what a stroke produces, how the brush
+    # behaves, how the result is shown, then the two whole-surface actions. Grew by accretion
+    # instead, with the mode switch buried below the brush settings it governs.
     chunk_api.add_param(chunk.LineEdit(
         "surface_prim", "Surface Mesh",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
         tooltip="The mesh to paint on. Wire this chunk upstream of Scatter Points.",
-    ))
-
-    # Published so a Scatter Points can be *wired* to this brush rather than agreeing with it
-    # by convention. OUTPUT makes it a real outputs: port on the chunk prim, which is what the
-    # node graph draws as a connectable socket -- the same shape Scatter Points already uses to
-    # hand its instancer to the RBD Solver. Reported as the two feeling like a black box: they
-    # were only ever related by both naming the same mesh, and nothing on screen said so.
-    chunk_api.add_param(chunk.LineEdit(
-        "density_name", "Density Field",
-        default_value=DENSITY_PRIMVAR,
-        flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
-    ))
-
-    grp = chunk.Group(
-        "brush_grp", "Brush",
-        flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
-    )
-    radius = chunk.Slider(
-        "radius", "Radius", min_value=0.0, max_value=100.0, default_value=10.0,
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
-        tooltip="Brush size in scene units. The viewport draws its ring from this.",
-    )
-    grp.add_param(radius)
-    strength = chunk.Slider(
-        "strength", "Strength", min_value=0.0, max_value=1.0, default_value=0.5,
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
-        tooltip="How much one stroke adds or removes.",
-    )
-    grp.add_param(strength)
-    mode = chunk.Menu(
-        "mode", "Mode", menu_items=_MODES, default_value="Add",
-        tooltip="Add paints instances in, Subtract paints them out, Smooth evens the field.",
-    )
-    grp.add_param(mode)
-    chunk_api.add_param(grp)
-
-
-    # Written on every stroke end and nothing else. OUTPUT keeps it out of the UI -- it is
-    # bookkeeping, not a setting -- while still being a real param write, which is what makes
-    # the chain recook.
-    chunk_api.add_param(chunk.Slider(
-        "stroke_count", "Strokes", default_value=0, is_int=True,
-        flags=chunk.ChunkFlags.ParamFlags.OUTPUT,
     ))
 
     output = chunk.Menu(
@@ -570,21 +530,67 @@ def main():
     )
     chunk_api.add_param(output)
 
+    # Published so a Scatter Points can be *wired* to this brush rather than agreeing with it
+    # by convention. OUTPUT makes it a real outputs: port on the chunk prim, which is what the
+    # node graph draws as a connectable socket -- the same shape Scatter Points already uses to
+    # hand its instancer to the RBD Solver.
+    chunk_api.add_param(chunk.LineEdit(
+        "density_name", "Density Field",
+        default_value=DENSITY_PRIMVAR,
+        flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
+    ))
+
+    # Written on every stroke end and nothing else. OUTPUT keeps it out of the UI -- it is
+    # bookkeeping, not a setting -- while still being a real param write, which is what makes
+    # the chain recook.
+    chunk_api.add_param(chunk.Slider(
+        "stroke_count", "Strokes", default_value=0, is_int=True,
+        flags=chunk.ChunkFlags.ParamFlags.OUTPUT,
+    ))
+
+    _GF = (chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE
+           | chunk_core.ChunkFlags.GroupFlags.LABELED
+           | chunk_core.ChunkFlags.GroupFlags.FRAMED)
+
+    grp = chunk.Group("brush_grp", "Brush", flags=_GF)
+    radius = chunk.Slider(
+        "radius", "Radius", min_value=0.0, max_value=100.0, default_value=10.0,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="Brush size in scene units. The viewport draws its ring from this, and in "
+                "Points mode it is also the spacing between placed points.",
+    )
+    grp.add_param(radius)
+    strength = chunk.Slider(
+        "strength", "Strength", min_value=0.0, max_value=1.0, default_value=0.5,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="How much one stroke adds or removes. Density mode only.",
+    )
+    grp.add_param(strength)
+    mode = chunk.Menu(
+        "mode", "Mode", menu_items=_MODES, default_value="Add",
+        tooltip="Add paints instances in, Subtract paints them out, Smooth evens the field. "
+                "Density mode only.",
+    )
+    grp.add_param(mode)
+    chunk_api.add_param(grp)
+
+    display = chunk.Group("display_grp", "Display", flags=_GF)
     colour = chunk.ColorPicker(
         "paint_color", "Paint Color", default_value=(0.15, 0.55, 1.0),
         tooltip="What painted areas are tinted toward. Blue by default because usdview "
                 "highlights selected prims in yellow, and you paint on selected prims.",
     )
     colour.add_callback(_show_paint_changed)
-    chunk_api.add_param(colour)
-
+    display.add_param(colour)
     show = chunk.Checkbox(
         "show_paint", "Show Paint", default_value=True,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
         tooltip="Tint the surface by painted weight. Authored in this chunk's layer, so "
                 "unticking it puts the original colours back.",
     )
     show.add_callback(_show_paint_changed)
-    chunk_api.add_param(show)
+    display.add_param(show)
+    chunk_api.add_param(display)
 
     fill = chunk.Button("fill_paint", "Fill", tooltip="Paint the whole surface.")
     fill.add_callback(_fill_paint)
