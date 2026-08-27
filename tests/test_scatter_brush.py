@@ -352,3 +352,163 @@ def test_brush_is_a_known_gizmo_type() -> None:
     from usd_chunks import chunk as chunk_api
 
     assert chunk_api.Gizmo("g", type="brush", driver="radius").type == "brush"
+
+
+# ---------------------------------------------------------------------------
+# the surface is a hierarchy, not a mesh
+# ---------------------------------------------------------------------------
+
+def _table(stage, root="/Kitchen_set/KitchenTable_1"):
+    """The shape a real asset actually has: an Xform whose meshes are children.
+
+    Reported live against Kitchen_set. Reading points off the picked prim found none and
+    painted nothing -- silently -- while the viewport's hit test walked the descendants
+    happily and reported 2392 triangles.
+    """
+    UsdGeom.Xform.Define(stage, root)
+    for name, offset in (("Top", 0.0), ("Legs", 40.0)):
+        mesh = _grid_mesh(stage, f"{root}/{name}", size=20.0, divisions=6)
+        UsdGeom.Xformable(mesh).AddTranslateOp().Set(Gf.Vec3d(offset, 0.0, 0.0))
+    return stage.GetPrimAtPath(root)
+
+
+def _painted_meshes(stage, root="/Kitchen_set/KitchenTable_1"):
+    found = {}
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root)):
+        primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar(brush_mod.DENSITY_PRIMVAR)
+        if primvar and primvar.HasValue():
+            found[prim.GetName()] = [float(v) for v in primvar.ComputeFlattened()]
+    return found
+
+
+def _hierarchy_stage():
+    stage = Usd.Stage.CreateInMemory()
+    _table(stage)
+
+    class _Staged(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    chunk_registry.ChunkRegistry().initialize(_Staged(), "pytest")
+    return stage
+
+
+def test_painting_an_xform_reaches_the_meshes_under_it() -> None:
+    """The reported failure. An Xform has no points of its own, so the brush found none and
+    returned False without a word."""
+    stage = _hierarchy_stage()
+    c = _brush(stage, target="/Kitchen_set/KitchenTable_1", radius=8.0, strength=1.0)
+
+    assert _stroke(c, (5.0, 5.0, 0.0)) is True
+
+    painted = _painted_meshes(stage)
+    assert "Top" in painted, "the mesh under the stroke was never painted"
+    assert max(painted["Top"]) > 0.5
+
+
+def test_a_stroke_only_changes_the_meshes_it_reached() -> None:
+    """A table is a dozen prims and a brush touches one.
+
+    Both meshes carry a primvar already -- the cook authors an empty field on each so a
+    scatter downstream resolves something -- so what matters is that a stroke leaves the ones
+    it did not touch alone, rather than rewriting every vertex array on every mouse-move.
+    """
+    stage = _hierarchy_stage()
+    c = _brush(stage, target="/Kitchen_set/KitchenTable_1", radius=5.0, strength=1.0)
+
+    _stroke(c, (5.0, 5.0, 0.0))
+
+    painted = _painted_meshes(stage)
+    assert max(painted["Top"]) > 0.0, "the mesh under the stroke should be painted"
+    assert max(painted["Legs"]) == pytest.approx(0.0), "a mesh 40 units away was painted"
+
+
+def test_fill_and_clear_cover_the_whole_hierarchy() -> None:
+    stage = _hierarchy_stage()
+    c = _brush(stage, target="/Kitchen_set/KitchenTable_1")
+
+    brush_mod._fill_paint(c.get_param("fill_paint"), None, None)
+    painted = _painted_meshes(stage)
+    assert set(painted) == {"Top", "Legs"}
+    assert all(min(v) == pytest.approx(1.0) for v in painted.values())
+
+    brush_mod._clear_paint(c.get_param("clear_paint"), None, None)
+    assert all(max(v) == pytest.approx(0.0) for v in _painted_meshes(stage).values())
+
+
+def test_scatter_reads_a_hierarchy_the_brush_painted() -> None:
+    """The seam again, on the shape a real asset has rather than on one flat mesh."""
+    stage = _hierarchy_stage()
+    c = _brush(stage, target="/Kitchen_set/KitchenTable_1", radius=8.0, strength=1.0)
+    for _ in range(3):
+        _stroke(c, (5.0, 5.0, 0.0))
+
+    mask = scatter_mod._density_mask(stage.GetPrimAtPath("/Kitchen_set/KitchenTable_1"))
+
+    assert mask is not None
+    assert mask(Gf.Vec3f(5.0, 5.0, 0.0), None) > 0.5
+
+
+# ---------------------------------------------------------------------------
+# seeing the paint
+# ---------------------------------------------------------------------------
+
+def _tint(stage, path="/World/Floor"):
+    attr = UsdGeom.Gprim(stage.GetPrimAtPath(path)).GetDisplayColorAttr()
+    return list(attr.Get()) if attr and attr.IsValid() and attr.Get() is not None else None
+
+
+def test_painting_tints_the_surface_so_the_stroke_is_visible() -> None:
+    """Reported live: "the paint doesn't give away at all that I have hit it". The field was
+    invisible until instances appeared downstream -- and invisible entirely before a scatter
+    was wired up."""
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=5.0, strength=1.0)
+
+    _stroke(c, (5.0, 5.0, 0.0))
+
+    colours = _tint(stage)
+    assert colours is not None, "nothing showed that a stroke had landed"
+    assert len(set(tuple(v) for v in colours)) > 1, "a gradient, not one flat colour"
+
+
+def test_the_tint_follows_the_weight() -> None:
+    """It has to show the gradient rather than a silhouette -- that is the whole difference
+    between a density and a mask."""
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=8.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+
+    weights = _weights(stage)
+    colours = _tint(stage)
+    hottest = colours[weights.index(max(weights))]
+    coldest = colours[weights.index(min(weights))]
+
+    assert hottest[0] > coldest[0], "the painted end should read hotter"
+
+
+def test_unticking_show_paint_puts_the_colours_back() -> None:
+    """The opinion was only ever ours, so it has to be removable -- a tint that outlived the
+    toggle would look like the asset had been recoloured."""
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=5.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+    assert _tint(stage) is not None
+
+    c.get_param("show_paint").value = False
+
+    assert _tint(stage) is None
+
+
+def test_the_tint_never_disturbs_the_field() -> None:
+    """It is feedback, not data. Scatter reads the weight, and toggling a display option must
+    not change where instances land."""
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=5.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+    before = _weights(stage)
+
+    c.get_param("show_paint").value = False
+    c.get_param("show_paint").value = True
+
+    assert _weights(stage) == before

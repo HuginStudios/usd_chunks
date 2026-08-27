@@ -58,14 +58,27 @@ def _surface_prim(node):
     return (prim, stage) if prim.IsValid() else (None, None)
 
 
-def _world_points(prim):
-    """The mesh's points in world space, which is the space strokes arrive in."""
-    mesh = UsdGeom.Mesh(prim)
-    points = mesh.GetPointsAttr().Get()
-    if not points:
-        return []
-    to_world = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-    return [to_world.Transform(Gf.Vec3d(p[0], p[1], p[2])) for p in points]
+def _paint_targets(prim):
+    """Every mesh under `prim`, with its points in world space.
+
+    A hierarchy, not a mesh. What a user picks as "the surface" is almost never a single
+    Mesh -- `KitchenTable_1` is an Xform whose meshes are children, and that is the ordinary
+    shape of any real asset. Reading points off the picked prim itself found none and painted
+    nothing, silently, while the hit test walked the descendants perfectly happily and
+    reported 2392 triangles. The two disagreeing about what "the surface" means is exactly
+    the bug that produced.
+
+    World space, which is the space strokes arrive in. Each mesh is kept separate because the
+    weight is authored per mesh: one primvar per prim that has points.
+    """
+    targets = []
+    for p in Usd.PrimRange(prim):
+        points = UsdGeom.Mesh(p).GetPointsAttr().Get()
+        if not points:
+            continue
+        to_world = UsdGeom.Xformable(p).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        targets.append((p, [to_world.Transform(Gf.Vec3d(q[0], q[1], q[2])) for q in points]))
+    return targets
 
 
 def _current_weights(prim, count):
@@ -84,6 +97,12 @@ def _current_weights(prim, count):
     return [0.0] * count
 
 
+#: Unpainted, and fully painted. Ordinary displayColor, so any renderer shows it and no
+#: viewport code is needed to draw the field.
+_COLD = Gf.Vec3f(0.25, 0.25, 0.30)
+_HOT = Gf.Vec3f(0.95, 0.55, 0.10)
+
+
 def _write_weights(node, stage, prim, weights):
     """Author the field into this chunk's own layer, as an over on the surface."""
     layer = node.get_edit_context()
@@ -94,6 +113,33 @@ def _write_weights(node, stage, prim, weights):
             DENSITY_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
         )
         primvar.Set(Vt.FloatArray([float(w) for w in weights]))
+        _write_tint(node, over, weights)
+
+
+def _write_tint(node, over, weights):
+    """Colour the surface by weight, so a stroke is visible the moment it lands.
+
+    Reported live: "the paint doesn't give away at all that I have hit it". The field was
+    invisible until instances appeared downstream, which is a slow and indirect way to judge
+    a stroke -- and no way at all to judge one before wiring up a scatter.
+
+    Ordinary `displayColor`, authored into this chunk's own layer, rather than anything drawn
+    by the viewport. It needs no host support, shows the gradient rather than a silhouette --
+    which is the whole difference between a density and a mask -- and unticking Show Paint or
+    deleting the chunk takes it away again, because the opinion was only ever ours.
+    """
+    show = node.get_param("show_paint")
+    attr = UsdGeom.Gprim(over).GetDisplayColorAttr()
+    if not show or not show.value:
+        # Cleared rather than left behind: a tint that outlived the toggle would look like
+        # the asset had been recoloured.
+        if attr and attr.IsValid():
+            attr.Clear()
+        return
+    attr = UsdGeom.Gprim(over).CreateDisplayColorAttr()
+    UsdGeom.Primvar(attr).SetInterpolation(UsdGeom.Tokens.vertex)
+    attr.Set(Vt.Vec3fArray([_COLD + (_HOT - _COLD) * max(0.0, min(1.0, float(w)))
+                            for w in weights]))
 
 
 class _null_context:
@@ -119,8 +165,8 @@ def gizmo_stroke(node, gizmo, samples):
     if prim is None:
         return False
 
-    points = _world_points(prim)
-    if not points:
+    targets = _paint_targets(prim)
+    if not targets:
         return False
 
     radius = float(node.get_param("radius").value or 0.0)
@@ -129,29 +175,34 @@ def gizmo_stroke(node, gizmo, samples):
     if radius <= 0.0 or strength <= 0.0:
         return False
 
-    weights = _current_weights(prim, len(points))
+    centres = [_unpack(sample) for sample in samples]
     radius_sq = radius * radius
     touched = False
 
-    for sample in samples:
-        centre, pressure = _unpack(sample)
-        if centre is None:
-            continue
-        for index, point in enumerate(points):
-            offset = point - centre
-            distance_sq = offset[0] ** 2 + offset[1] ** 2 + offset[2] ** 2
-            if distance_sq > radius_sq:
+    for mesh_prim, points in targets:
+        weights = _current_weights(mesh_prim, len(points))
+        changed = False
+        for centre, pressure in centres:
+            if centre is None:
                 continue
-            amount = strength * pressure * _falloff(distance_sq ** 0.5, radius)
-            if amount <= 0.0:
-                continue
-            weights[index] = _blend(mode, weights[index], amount)
+            for index, point in enumerate(points):
+                offset = point - centre
+                distance_sq = offset[0] ** 2 + offset[1] ** 2 + offset[2] ** 2
+                if distance_sq > radius_sq:
+                    continue
+                amount = strength * pressure * _falloff(distance_sq ** 0.5, radius)
+                if amount <= 0.0:
+                    continue
+                weights[index] = _blend(mode, weights[index], amount)
+                changed = True
+        # Written per mesh, and only the ones the stroke reached: a table is a dozen prims
+        # and a brush touches one of them, so re-authoring all of them every tick would put
+        # a full copy of every vertex array into the layer on each mouse-move.
+        if changed:
+            _write_weights(node, stage, mesh_prim, weights)
             touched = True
 
-    if not touched:
-        return False
-    _write_weights(node, stage, prim, weights)
-    return True
+    return touched
 
 
 def _blend(mode, current, amount):
@@ -180,26 +231,33 @@ def _unpack(sample):
         return None, 0.0
 
 
-def _clear_paint(owner, notice, sender):
-    """Wipe the field back to unpainted."""
+def _set_everywhere(node, value):
+    """Author one weight across every mesh under the surface."""
+    prim, stage = _surface_prim(node)
+    if prim is None:
+        return
+    for mesh_prim, points in _paint_targets(prim):
+        _write_weights(node, stage, mesh_prim, [value] * len(points))
+
+
+def _show_paint_changed(owner, notice, sender):
+    """Re-author the tint, or take it away, without touching the field itself."""
     node = owner.get_chunk()
     prim, stage = _surface_prim(node)
     if prim is None:
         return
-    points = _world_points(prim)
-    if points:
-        _write_weights(node, stage, prim, [0.0] * len(points))
+    for mesh_prim, points in _paint_targets(prim):
+        _write_weights(node, stage, mesh_prim, _current_weights(mesh_prim, len(points)))
+
+
+def _clear_paint(owner, notice, sender):
+    """Wipe the field back to unpainted."""
+    _set_everywhere(owner.get_chunk(), 0.0)
 
 
 def _fill_paint(owner, notice, sender):
     """Paint the whole surface, as a starting point for subtracting away from."""
-    node = owner.get_chunk()
-    prim, stage = _surface_prim(node)
-    if prim is None:
-        return
-    points = _world_points(prim)
-    if points:
-        _write_weights(node, stage, prim, [1.0] * len(points))
+    _set_everywhere(owner.get_chunk(), 1.0)
 
 
 def execute(node):
@@ -213,10 +271,11 @@ def execute(node):
     if prim is None:
         return
     # Only to make the attribute exist, so a scatter downstream resolves something rather
-    # than nothing the moment the two are wired together.
-    points = _world_points(prim)
-    if points and not UsdGeom.PrimvarsAPI(prim).GetPrimvar(DENSITY_PRIMVAR):
-        _write_weights(node, stage, prim, [0.0] * len(points))
+    # than nothing the moment the two are wired together. Per mesh, because the surface a
+    # user picks is a hierarchy far more often than it is a single Mesh.
+    for mesh_prim, points in _paint_targets(prim):
+        if not UsdGeom.PrimvarsAPI(mesh_prim).GetPrimvar(DENSITY_PRIMVAR):
+            _write_weights(node, stage, mesh_prim, [0.0] * len(points))
 
 
 def main():
@@ -247,6 +306,14 @@ def main():
         tooltip="Add paints instances in, Subtract paints them out, Smooth evens the field.",
     ))
     chunk_api.add_param(grp)
+
+    show = chunk.Checkbox(
+        "show_paint", "Show Paint", default_value=True,
+        tooltip="Tint the surface by painted weight. Authored in this chunk's layer, so "
+                "unticking it puts the original colours back.",
+    )
+    show.add_callback(_show_paint_changed)
+    chunk_api.add_param(show)
 
     fill = chunk.Button("fill_paint", "Fill", tooltip="Paint the whole surface.")
     fill.add_callback(_fill_paint)
