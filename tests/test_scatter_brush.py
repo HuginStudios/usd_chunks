@@ -558,3 +558,198 @@ def test_the_tint_does_not_blend_into_itself_over_a_drag() -> None:
     untouched = colours[weights.index(min(weights))]
 
     assert Gf.Vec3f(*untouched) == pytest.approx(original, abs=1e-6), "the tint crept outward"
+
+
+# ---------------------------------------------------------------------------
+# what recooks the chain, and what does not
+# ---------------------------------------------------------------------------
+
+def _routing_of(change):
+    """Which way a change is routed: 'dirty' recooks readers, 'presentation' does not.
+
+    Asked at the branch itself rather than by reading a dirty flag afterwards. The flag is
+    cleared again the moment the node solves, so a test that checked it later would report
+    "not dirtied" for everything and pass for entirely the wrong reason.
+    """
+    from usd_chunks import chunk_scheduler
+
+    seen = []
+    real_dirty = chunk_scheduler.propagate_dirty
+    real_presentation = chunk_scheduler.propagate_presentation
+
+    def spy_dirty(seed):
+        prop = seed.propagator
+        if prop is not None and prop.is_presentation_change():
+            seen.append("presentation")
+        else:
+            seen.append("dirty")
+        return real_dirty(seed)
+
+    chunk_scheduler.propagate_dirty = spy_dirty
+    try:
+        change()
+    finally:
+        chunk_scheduler.propagate_dirty = real_dirty
+        chunk_scheduler.propagate_presentation = real_presentation
+    return seen
+
+
+def test_brush_settings_do_not_recook_the_chain() -> None:
+    """Reported live: dragging Radius with a Scatter Points connected was unusably sticky,
+    because every tick dirtied the chain and the scatter recooked.
+
+    Nothing downstream computes from these. They steer a *stroke*, which happens outside any
+    cook -- execute() never reads them, and what a scatter sees is the painted field, not the
+    settings that produced it.
+    """
+    stage = _stage_with_floor()
+    c = _brush(stage)
+
+    for name, value in (("radius", 12.0), ("strength", 0.8), ("mode", "Subtract")):
+        routes = _routing_of(lambda n=name, v=value: setattr(c.get_param(n), "value", v))
+        assert "dirty" not in routes, f"{name} recooked the chain: {routes}"
+        assert "presentation" in routes, f"{name} routed nowhere: {routes}"
+
+
+def test_display_settings_do_not_recook_the_chain() -> None:
+    """A tint is feedback. Recooking a scatter because somebody picked a different colour to
+    look at would be the same bug wearing a different hat."""
+    stage = _stage_with_floor()
+    c = _brush(stage)
+
+    for name, value in (("paint_color", (1.0, 0.0, 0.0)), ("show_paint", False)):
+        assert "dirty" not in _routing_of(
+            lambda n=name, v=value: setattr(c.get_param(n), "value", v)
+        ), f"{name} recooked the chain"
+
+
+def test_the_settings_still_take_effect() -> None:
+    """Presentation-only stops the *dirtying*, not the change. The value still lands, and its
+    callbacks still run -- a radius that did not reach the stroke would be worse than a slow
+    one."""
+    stage = _stage_with_floor()
+    c = _brush(stage, strength=1.0)
+
+    c.get_param("radius").value = 3.0
+    _stroke(c, (5.0, 5.0, 0.0))
+    small = sum(1 for w in _weights(stage) if w > 0.0)
+
+    brush_mod._clear_paint(c.get_param("clear_paint"), None, None)
+    c.get_param("radius").value = 9.0
+    _stroke(c, (5.0, 5.0, 0.0))
+    large = sum(1 for w in _weights(stage) if w > 0.0)
+
+    assert large > small, "the radius change never reached the stroke"
+
+
+def test_the_surface_still_recooks_the_chain() -> None:
+    """The opt-out has to be earned per param. Which mesh is painted is a real input -- a
+    scatter reading a field off a prim this chunk no longer paints is stale."""
+    stage = _stage_with_floor()
+    c = _brush(stage)
+
+    assert "dirty" in _routing_of(
+        lambda: setattr(c.get_param("surface_prim"), "value", "/World/Other")
+    )
+
+
+def test_finishing_a_stroke_recooks_the_chain() -> None:
+    """The one moment it should. Painting writes USD rather than params, so without this
+    nothing downstream ever notices."""
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=5.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+
+    assert c.get_dag_node() is not None
+    c.get_dag_node()._dirty = False
+    c.stop_gizmo()
+    assert c.get_dag_node().dirty is True
+
+
+# ---------------------------------------------------------------------------
+# brush mode: a field, or actual points
+# ---------------------------------------------------------------------------
+
+def _points(stage, chunk_obj):
+    path = brush_mod._points_path(chunk_obj)
+    prim = stage.GetPrimAtPath(path) if path else None
+    values = UsdGeom.Points(prim).GetPointsAttr().Get() if prim and prim.IsValid() else None
+    return [Gf.Vec3f(*p) for p in values] if values else []
+
+
+def _points_brush(stage, **params):
+    c = _brush(stage, **params)
+    c._exec_prim_path = "/chunks/ScatterBrush"
+    c.get_param("output").value = brush_mod._OUTPUT_POINTS
+    return c
+
+
+def test_points_mode_drops_a_point_where_you_click() -> None:
+    """The other tool. Density says 'roughly this many, scattered'; Points says 'one, here'."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+
+    assert _stroke(c, (5.0, 5.0, 0.0)) is True
+
+    placed = _points(stage, c)
+    assert len(placed) == 1
+    assert placed[0] == pytest.approx(Gf.Vec3f(5.0, 5.0, 0.0), abs=1e-5)
+
+
+def test_points_mode_writes_no_density_field() -> None:
+    """The two outputs must not both fire, or a scatter would be governed by a field the user
+    thought they had switched away from."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+    before = _weights(stage)
+
+    _stroke(c, (5.0, 5.0, 0.0))
+
+    assert _weights(stage) == before
+
+
+def test_points_are_spaced_so_a_slow_drag_does_not_pile_up() -> None:
+    """A stroke arrives as one sample per mouse-move, so without spacing a careful drag leaves
+    hundreds of instances inside a centimetre and a fast one leaves four -- the result would
+    depend on how quickly you moved rather than on where you went."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=4.0, strength=1.0)
+
+    for step in range(12):
+        _stroke(c, (5.0 + step * 0.2, 5.0, 0.0))    # a slow drag over 2.4 units
+
+    assert len(_points(stage, c)) == 1, "a slow drag piled points on top of each other"
+
+
+def test_a_drag_across_the_surface_leaves_a_trail() -> None:
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+
+    for step in range(5):
+        _stroke(c, (2.0 + step * 5.0, 5.0, 0.0))
+
+    assert len(_points(stage, c)) == 5
+
+
+def test_clear_removes_placed_points() -> None:
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+    assert _points(stage, c)
+
+    brush_mod._clear_paint(c.get_param("clear_paint"), None, None)
+
+    assert _points(stage, c) == []
+
+
+def test_switching_back_to_density_paints_a_field_again() -> None:
+    """The modes share a cursor and nothing else; switching must not leave the brush half in
+    the other one."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=5.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+
+    c.get_param("output").value = brush_mod._OUTPUT_DENSITY
+    _stroke(c, (5.0, 5.0, 0.0))
+
+    assert max(_weights(stage)) > 0.0

@@ -33,6 +33,20 @@ DENSITY_PRIMVAR = "scatterDensity"
 
 _MODES = ["Add", "Subtract", "Smooth"]
 
+#: What a stroke produces.
+#:
+#: *Density* paints a weight and lets Scatter Points decide where instances actually land --
+#: "roughly this many, scattered". *Points* drops one instance per dab, exactly where the
+#: cursor was, and Scatter Points places those instead of sampling. Two different tools that
+#: happen to share a cursor, which is why this is a mode rather than two chunks.
+_OUTPUT_DENSITY = "Density"
+_OUTPUT_POINTS = "Points"
+_OUTPUTS = [_OUTPUT_DENSITY, _OUTPUT_POINTS]
+
+#: Where placed points are kept: a plain point cloud on the chunk's own prim, so it is
+#: inspectable USD like the density field is, and travels the same wire.
+POINTS_PRIM = "PaintedPoints"
+
 
 def _falloff(distance, radius):
     """Smoothstep from full strength at the centre to nothing at the rim.
@@ -260,6 +274,9 @@ def gizmo_stroke(node, gizmo, samples):
     if prim is None:
         return False
 
+    if node.get_param("output").value == _OUTPUT_POINTS:
+        return _place_points(node, stage, samples)
+
     targets = _cached_targets(node, prim)
     if not targets:
         return False
@@ -300,6 +317,69 @@ def gizmo_stroke(node, gizmo, samples):
     return touched
 
 
+def _place_points(node, stage, samples):
+    """Drop one point per dab, spaced so a slow drag does not pile them up.
+
+    A stroke arrives as one sample per mouse-move, so without spacing a careful drag leaves
+    hundreds of instances inside a centimetre and a fast one leaves four. Spacing makes the
+    result depend on where you dragged rather than on how quickly.
+
+    Points accumulate on this chunk's own prim as an ordinary point cloud -- inspectable USD,
+    like the density field, travelling the same wire.
+    """
+    spacing = float(node.get_param("radius").value or 0.0)
+    existing = _current_points(node, stage)
+    added = False
+
+    for sample in samples:
+        point, _pressure = _unpack(sample)
+        if point is None:
+            continue
+        if spacing > 0.0 and any(
+            (Gf.Vec3d(p) - point).GetLength() < spacing for p in existing
+        ):
+            continue
+        existing.append(Gf.Vec3f(point[0], point[1], point[2]))
+        added = True
+
+    if not added:
+        return False
+    _write_points(node, stage, existing)
+    return True
+
+
+def _points_path(node):
+    own = getattr(node, "_exec_prim_path", None) or getattr(node, "prim_path", None)
+    return Sdf.Path(str(own)).AppendChild(POINTS_PRIM) if own else None
+
+
+def _current_points(node, stage):
+    path = _points_path(node)
+    if path is None:
+        return []
+    points = UsdGeom.Points(stage.GetPrimAtPath(path)).GetPointsAttr().Get() if stage.GetPrimAtPath(path) else None
+    return [Gf.Vec3f(*p) for p in points] if points else []
+
+
+def _write_points(node, stage, points):
+    path = _points_path(node)
+    if path is None:
+        return
+    layer = node.get_edit_context()
+    context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
+    with context:
+        cloud = UsdGeom.Points.Define(stage, path)
+        cloud.CreatePointsAttr().Set(Vt.Vec3fArray(points))
+        # A visible radius, so placed points read as marks on the model rather than as
+        # single pixels -- the same reason the density mode tints.
+        width = max(float(node.get_param("radius").value or 1.0) * 0.25, 1e-4)
+        cloud.CreateWidthsAttr().Set(Vt.FloatArray([width] * len(points)))
+        UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
+        cloud.GetDisplayColorAttr().Set(
+            Vt.Vec3fArray([Gf.Vec3f(*(node.get_param("paint_color").value or (0.15, 0.55, 1.0)))])
+        )
+
+
 def _blend(mode, current, amount):
     """One vertex's new weight. Clamped, because the value is used as a probability."""
     if mode == "Subtract":
@@ -330,6 +410,13 @@ def _set_everywhere(node, value):
     """Author one weight across every mesh under the surface."""
     _drop_stroke_cache(node)
     prim, stage = _surface_prim(node)
+    if stage is not None and node.get_param("output").value == _OUTPUT_POINTS:
+        # Points are the output in this mode, so Fill/Clear act on them instead. Filling a
+        # point cloud has no meaning -- there is no "everywhere" to place one at -- so only
+        # clearing does anything.
+        if value == 0.0:
+            _write_points(node, stage, [])
+        return
     if prim is None:
         return
     for mesh_prim, points in _paint_targets(prim):
@@ -398,21 +485,32 @@ def main():
         "brush_grp", "Brush",
         flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
     )
-    grp.add_param(chunk.Slider(
+    radius = chunk.Slider(
         "radius", "Radius", min_value=0.0, max_value=100.0, default_value=10.0,
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
         tooltip="Brush size in scene units. The viewport draws its ring from this.",
-    ))
-    grp.add_param(chunk.Slider(
+    )
+    grp.add_param(radius)
+    strength = chunk.Slider(
         "strength", "Strength", min_value=0.0, max_value=1.0, default_value=0.5,
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
         tooltip="How much one stroke adds or removes.",
-    ))
-    grp.add_param(chunk.Menu(
+    )
+    grp.add_param(strength)
+    mode = chunk.Menu(
         "mode", "Mode", menu_items=_MODES, default_value="Add",
         tooltip="Add paints instances in, Subtract paints them out, Smooth evens the field.",
-    ))
+    )
+    grp.add_param(mode)
     chunk_api.add_param(grp)
+
+
+    output = chunk.Menu(
+        "output", "Output", menu_items=_OUTPUTS, default_value=_OUTPUT_DENSITY,
+        tooltip="Density paints a weight and lets Scatter Points decide where instances land. "
+                "Points drops one exactly where you click.",
+    )
+    chunk_api.add_param(output)
 
     colour = chunk.ColorPicker(
         "paint_color", "Paint Color", default_value=(0.15, 0.55, 1.0),
@@ -437,6 +535,13 @@ def main():
     clear = chunk.Button("clear_paint", "Clear", tooltip="Wipe the paint back to nothing.")
     clear.add_callback(_clear_paint)
     chunk_api.add_param(clear)
+
+    # Nothing downstream computes from these. They steer a *stroke*, which happens outside any
+    # cook -- execute() never reads them, and what a scatter sees is the painted field, not the
+    # settings that produced it. Without this, dragging Radius recooked the whole chain on
+    # every tick, reported as the brush being unusably sticky.
+    for param in (radius, strength, mode, colour, show):
+        param.presentation_only = True
 
     # The drag bracket the host already sends. GIZMO_START drops the geometry cache so a
     # stroke reads the surface as it is now; GIZMO_STOP is the one moment a recook is wanted.
