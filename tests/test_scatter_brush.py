@@ -660,10 +660,10 @@ def test_finishing_a_stroke_recooks_the_chain() -> None:
     c = _brush(stage, radius=5.0, strength=1.0)
     _stroke(c, (5.0, 5.0, 0.0))
 
-    assert c.get_dag_node() is not None
-    c.get_dag_node()._dirty = False
-    c.stop_gizmo()
-    assert c.get_dag_node().dirty is True
+    # Routing, not the flag: finishing a stroke now *solves* as well as dirtying, and a solve
+    # clears the flag again -- so reading it afterwards reports False for the very case that
+    # works. Marking dirty alone was the earlier bug, and it looked identical from here.
+    assert "dirty" in _routing_of(c.stop_gizmo)
 
 
 # ---------------------------------------------------------------------------

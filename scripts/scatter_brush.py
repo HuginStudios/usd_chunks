@@ -115,9 +115,16 @@ def _stroke_finished(owner, notice, sender):
     """
     _drop_stroke_cache(owner)
     try:
-        owner.get_dag_node().dirty = True
+        node = owner.get_dag_node()
+        node.dirty = True
+        # Marking dirty only records that a recook is due -- something has to run it. A param
+        # write gets that for free from the write path; a stroke writes USD, so nothing else
+        # was ever going to. Reported as instances still not appearing until a slider moved,
+        # even once the release was being heard.
+        for _ in node.solve_outputs():
+            pass
     except Exception:  # noqa: BLE001 - a failed recook must not break the gesture
-        logger.debug("Could not dirty %s after a stroke", owner.name, exc_info=True)
+        logger.debug("Could not recook after a stroke on %s", owner.name, exc_info=True)
 
 
 def _paint_targets(prim):
