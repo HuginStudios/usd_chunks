@@ -59,7 +59,7 @@ from attrs import field
 from enum import IntFlag, Enum
 from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast, TypeGuard, overload
 
-from pxr import Usd, Sdf
+from pxr import Gf, Usd, Sdf
 
 # Keep the ChunkNoticeAlias import as clients may use usd_chunks.chunk.ChunkNoticeAlias, without having to import chunk_notice
 from usd_chunks.chunk_notice import ChunkNoticeAlias  # noqa: F401
@@ -535,6 +535,39 @@ class ColorPicker(ChunkParamBase[tuple]):
 
     def evaluate_type(self) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.COLOR_PICKER
+
+
+class Matrix(ChunkParamBase[Gf.Matrix4d]):
+    """
+    A parameter holding a Gf.Matrix4d, stored in USD as a native matrix4d attribute.
+
+    Draws nothing. A matrix is data a chunk keeps -- a camera's placement, a baked
+    transform -- rather than something anyone wants to edit as sixteen numbers, so this
+    exists for values that have to survive a save, not for the UI.
+
+    Defaults to the identity, which also means an untransformed param stays at its
+    default and never authors an attribute -- the same "only write what changed" rule
+    every other param follows.
+    """
+
+    def convert_attr(self, attr: "Attribute", val: Any) -> Any:
+        # A matrix arriving from USD or from a sequence of sixteen numbers is still a
+        # matrix; only reject what cannot be read as one. Without this, restoring a saved
+        # value would have to be typed exactly right by every caller.
+        if attr.name in ("default_value", "value") and val is not None and not isinstance(val, Gf.Matrix4d):
+            try:
+                return Gf.Matrix4d(*[float(c) for row in val for c in row])
+            except (TypeError, ValueError):
+                try:
+                    return Gf.Matrix4d(*[float(c) for c in val])
+                except (TypeError, ValueError):
+                    pass
+
+        return super().convert_attr(attr, val)
+
+    @classmethod
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.MATRIX
 
 
 class Custom(ChunkParamBase):
