@@ -4135,7 +4135,15 @@ GIZMO_SHAPE_TYPES = frozenset({"cube", "sphere"})
 # because it is the chunk's handle rather than one group's.
 GIZMO_TRANSFORM_TYPE = "transform"
 GIZMO_TRANSFORM_ARITY = 9
-GIZMO_TYPES = GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES | {GIZMO_TRANSFORM_TYPE}
+# A surface tool rather than a manipulator: the user drags across geometry and what comes
+# back is *where they touched and how hard*, not a value. The only type whose payload is a
+# stream of samples, and the only one whose result is a field rather than a param -- see
+# apply_stroke. Its `driver` names the params holding the brush's own settings, so a host can
+# read the radius to draw the ring; it never writes them.
+GIZMO_BRUSH_TYPE = "brush"
+GIZMO_TYPES = (
+    GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES | {GIZMO_TRANSFORM_TYPE, GIZMO_BRUSH_TYPE}
+)
 # Signed, because direction is half the meaning. Focus distance runs along the camera's
 # *-Z*: an unsigned token would put the handle out the back of the camera, and nothing else
 # in the schema could correct it.
