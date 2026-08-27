@@ -103,7 +103,7 @@ the chunk you are looking at.
 | `axis` | `str \| None` | Signed direction token, in the anchor's local space. `None` means free drag. |
 | `space` | `str` | `"local"` or `"world"`. **Defaults to `"local"` and is only authored when non-default.** |
 | `editmode` | `tuple[str]` | When to show it. See §4. |
-| `offset` | `tuple[float,float,float] \| None` | Where the handle sits relative to the anchor. `None` means on it. |
+| `offset` | `tuple[float,float,float] \| None` | Where the handle sits, as a point in the anchor's own space. `None` means **you decide** — put it on the geometry. Not static: a chunk can move it between resolves. |
 | `size` | `float \| None` | Relative size hint. **`None` means you decide** — usually the right answer, since a viewport wants a screen-constant handle and only you know the camera distance. |
 
 A chunk can suppress one of its own handles while a mode of its own would fight it —
@@ -128,8 +128,54 @@ current values, and place the handle accordingly:
   along the camera's -Z. That is where the existing focus reticle already draws.
 
 The rule is the same in both cases: the handle shows *the value*, and the anchor is the
-frame that value is measured in. `offset` (below) is a static nudge on top, for handles
-that need clearance from the thing they attach to — not a substitute for reading the value.
+frame that value is measured in. `offset` is a point on top of that — not a substitute for
+reading the value.
+
+**`offset` is a pivot, and it is not static.** A Transform chunk with a pivot set reports it
+here, so:
+
+- `offset is None` — no chunk has an opinion. **Place the handle yourself**, and put it on
+  the geometry rather than on the transform origin: those differ more often than they look
+  like they should. A `Kitchen_set` cup carries a transform on its group and very nearly the
+  inverse on the mesh, so its world transform composes to the identity and its origin is out
+  at the world origin. The bbox centroid is the answer that stays useful.
+- `offset` set — draw there, and make your rotation turn about it. It is a point in the
+  anchor's **own object space**, so map it through the anchor's local-to-world:
+  `primWorld.Transform(offset)`. The chunk's op is the innermost one, so everything upstream
+  of it still applies to the pivot.
+
+The value moves *while the user drags a pivot slider*, so re-read it on stage change rather
+than caching it at selection time. Nothing else about the drag changes: you still report the
+absolute matrix the user dragged to, and the chunk solves its own params about its own pivot.
+
+### Letting the user drag the pivot
+
+Optional, and the reason `offset` has a write counterpart. Hold a modifier (usdview's gizmo
+uses `D`, matching its Maya-ish `W`/`E`/`R`/`M`) and a drag moves the pivot rather than the
+object:
+
+```python
+chunk_gizmo.apply_offset(desc.chunk_prim, desc.name, world_point)   # -> bool
+```
+
+**You send a world point.** You have a position under the mouse and nothing else; you do not
+know that a Transform chunk keeps its pivot in the anchor's object space, and you should not
+have to. The conversion happens on our side, exactly as `apply_bindings` takes an absolute
+matrix and lets the chunk work out its own share.
+
+Three rules:
+
+- **False means do nothing.** Unlike `commit_transform`, do *not* fall back to writing the
+  prim — there is nowhere on a prim to put a pivot, and moving the prim instead is the
+  opposite of what was asked. False just means no chunk here owns a pivot.
+- **Write every tick, never batch to mouse-release.** The chunk cooks per write, and that is
+  what keeps the object still while the pivot moves under it. Same rule as every other drag.
+- **Reset your handle when the gesture ends.** A pivot drag leaves your manipulator holding
+  the whole drag in its local translation; carry that into the next ordinary drag and the
+  object jumps by however far the pivot moved.
+
+A chunk that does not implement the write hook returns False, so this degrades to "no pivot
+dragging" rather than to anything surprising.
 
 ---
 
