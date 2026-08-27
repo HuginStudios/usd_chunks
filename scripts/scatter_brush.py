@@ -482,10 +482,22 @@ def _unpack(sample):
         return None, 0.0, None
 
 
+def _bump_strokes(node):
+    """Tell the chain something changed. See `_stroke_finished` for why it is a param write."""
+    try:
+        counter = node.get_param("stroke_count")
+        counter.value = int(counter.value or 0) + 1
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not recook %s", node.name, exc_info=True)
+
+
 def _set_everywhere(node, value):
     """Author one weight across every mesh under the surface."""
     _drop_stroke_cache(node)
     prim, stage = _surface_prim(node)
+    # Fill and Clear are edits like any stroke, so the chain has to hear about them -- without
+    # this, clearing left every instance standing until something else was touched.
+    _bump_strokes(node)
     if stage is not None and node.get_param("output").value == _OUTPUT_POINTS:
         # Points are the output in this mode, so Fill/Clear act on them instead. Filling a
         # point cloud has no meaning -- there is no "everywhere" to place one at -- so only
@@ -505,8 +517,28 @@ def _show_paint_changed(owner, notice, sender):
     prim, stage = _surface_prim(node)
     if prim is None:
         return
+    _show_points(node, stage)
     for mesh_prim, points in _paint_targets(prim):
         _write_weights(node, stage, mesh_prim, _current_weights(mesh_prim, len(points)))
+
+
+def _show_points(node, stage):
+    """Hide or show the placed points along with the tint.
+
+    Show Paint means "let me see what I painted", and in Points mode what you painted *is*
+    the points -- leaving them lit while the tint went away only turned off half of it.
+    Visibility rather than deletion, so unticking loses nothing.
+    """
+    path = _points_path(node)
+    prim = stage.GetPrimAtPath(path) if (stage is not None and path) else None
+    if not prim or not prim.IsValid():
+        return
+    show = node.get_param("show_paint")
+    layer = node.get_edit_context()
+    context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
+    with context:
+        imageable = UsdGeom.Imageable(prim)
+        imageable.MakeVisible() if (show and show.value) else imageable.MakeInvisible()
 
 
 def _clear_paint(owner, notice, sender):
@@ -549,13 +581,6 @@ def main():
         tooltip="The mesh to paint on. Wire this chunk upstream of Scatter Points.",
     ))
 
-    # The other half of the wire. Which output is live depends on the mode, so both ports
-    # exist and only one carries anything -- clearer than one socket whose meaning changes.
-    chunk_api.add_param(chunk.LineEdit(
-        "points_path", "Painted Points",
-        flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
-    ))
-
     output = chunk.Menu(
         "output", "Output", menu_items=_OUTPUTS, default_value=_OUTPUT_DENSITY,
         tooltip="Density paints a weight and lets Scatter Points decide where instances land. "
@@ -567,9 +592,16 @@ def main():
     # by convention. OUTPUT makes it a real outputs: port on the chunk prim, which is what the
     # node graph draws as a connectable socket -- the same shape Scatter Points already uses to
     # hand its instancer to the RBD Solver.
+    # The two outputs, together: one per mode, and only one carries anything at a time.
+    # Adjacent because they are the same decision seen twice -- reading them apart was
+    # reported as the layout feeling off.
     chunk_api.add_param(chunk.LineEdit(
         "density_name", "Density Field",
         default_value=DENSITY_PRIMVAR,
+        flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
+    ))
+    chunk_api.add_param(chunk.LineEdit(
+        "points_path", "Painted Points",
         flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
     ))
 
@@ -592,19 +624,20 @@ def main():
         tooltip="Brush size in scene units. The viewport draws its ring from this, and in "
                 "Points mode it is also the spacing between placed points.",
     )
-    grp.add_param(radius)
     strength = chunk.Slider(
         "strength", "Strength", min_value=0.0, max_value=1.0, default_value=0.5,
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
         tooltip="How much one stroke adds or removes. Density mode only.",
     )
-    grp.add_param(strength)
     mode = chunk.Menu(
         "mode", "Mode", menu_items=_MODES, default_value="Add",
         tooltip="Add paints instances in, Subtract paints them out, Smooth evens the field. "
                 "Density mode only.",
     )
+    # First in the group: it decides what Radius and Strength mean.
     grp.add_param(mode)
+    grp.add_param(radius)
+    grp.add_param(strength)
     chunk_api.add_param(grp)
 
     display = chunk.Group("display_grp", "Display", flags=_GF)

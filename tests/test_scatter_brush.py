@@ -873,3 +873,61 @@ def test_points_placed_before_normals_were_recorded_still_load() -> None:
 
     assert len(placed) == 1
     assert len(normals) == 1
+
+
+def test_clear_recooks_the_chain() -> None:
+    """Reported: clearing left every instance standing until something else was touched. Fill
+    and Clear are edits like any stroke, so the chain has to hear about them."""
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=5.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+    before = c.get_param("stroke_count").value
+
+    brush_mod._clear_paint(c.get_param("clear_paint"), None, None)
+
+    assert c.get_param("stroke_count").value > before
+
+
+def test_fill_recooks_the_chain() -> None:
+    stage = _stage_with_floor()
+    c = _brush(stage)
+    before = c.get_param("stroke_count").value
+
+    brush_mod._fill_paint(c.get_param("fill_paint"), None, None)
+
+    assert c.get_param("stroke_count").value > before
+
+
+def test_show_paint_hides_the_placed_points_too() -> None:
+    """Show Paint means "let me see what I painted", and in Points mode what you painted *is*
+    the points. Leaving them lit while the tint went away turned off only half of it."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+    prim = stage.GetPrimAtPath(brush_mod._points_path(c))
+    assert UsdGeom.Imageable(prim).ComputeVisibility() != UsdGeom.Tokens.invisible
+
+    c.get_param("show_paint").value = False
+
+    prim = stage.GetPrimAtPath(brush_mod._points_path(c))
+    assert UsdGeom.Imageable(prim).ComputeVisibility() == UsdGeom.Tokens.invisible
+
+
+def test_hiding_the_points_does_not_delete_them() -> None:
+    """Visibility, not deletion -- unticking a display option must lose nothing."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+
+    c.get_param("show_paint").value = False
+
+    placed, _normals = brush_mod._current_points(c, stage)
+    assert len(placed) == 1
+
+
+def test_mode_sits_above_the_settings_it_governs() -> None:
+    """Layout, reported twice. Mode decides what Radius and Strength even do."""
+    c = _brush(_stage_with_floor())
+    names = [p.name for p in c.get_param("brush_grp").get_my_params()]
+
+    assert names.index("mode") < names.index("radius") < names.index("strength")
