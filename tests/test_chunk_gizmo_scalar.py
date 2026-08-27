@@ -509,8 +509,18 @@ def _camera_chunk_and_stage():
 
 
 class _CamNode:
+    """What execute() gets in a real session: something with a stage and params.
+
+    Attribute reads and writes go to the chunk, because in production execute()'s node *is*
+    the chunk. A wrapper that kept them to itself splits the chunk's identity in two, and the
+    op-name machinery is built on that identity: the camera minted `Transform_6f1418d7`
+    against the wrapper and `Camera_a8da96e6` against the chunk, both landed in xformOpOrder,
+    and the camera's transform applied twice.
+    """
+
     def __init__(self, chunk_obj, stage):
-        self._chunk, self._stage = chunk_obj, stage
+        object.__setattr__(self, "_chunk", chunk_obj)
+        object.__setattr__(self, "_stage", stage)
 
     def get_stage(self):
         return self._stage
@@ -520,6 +530,12 @@ class _CamNode:
 
     def get_scene(self):
         return self._chunk.get_scene()
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_chunk"), name)
+
+    def __setattr__(self, name, value):
+        setattr(self._chunk, name, value)
 
 
 def test_the_camera_declares_both_handles() -> None:
@@ -701,6 +717,21 @@ def test_a_failing_hook_leaves_the_handle_visible() -> None:
     assert chunk_gizmo.is_gizmo_hidden(c, "zdist") is False
 
 
+def _fly_freecam_to(camera_mod, chunk_obj, stage, path, translate):
+    """Place the prim the way `_apply_freecam_transform` does, rather than reimplementing it.
+
+    It used to call MakeMatrixXform() here, which is what the freecam itself used to do --
+    but that resets xformOpOrder to a lone `xformOp:transform`, so once the camera owned a
+    named op the simulation stopped matching the thing it was simulating. The test then
+    described a state the code could no longer produce, and failed for that instead of for a
+    real regression. Migration from a genuine legacy op has its own test below.
+    """
+    camera_mod._author_matrix(
+        chunk_obj, stage, stage.GetPrimAtPath(path),
+        Gf.Matrix4d().SetTranslate(Gf.Vec3d(*translate)),
+    )
+
+
 def test_unlocking_the_freecam_leaves_the_camera_where_it_was_flown() -> None:
     """The regression that giving the camera its own transform introduced.
 
@@ -717,8 +748,7 @@ def test_unlocking_the_freecam_leaves_the_camera_where_it_was_flown() -> None:
     # The freecam flies the camera somewhere, exactly as _apply_freecam_transform does.
     c.get_param("lock_to_freecam").value = True
     path = c.get_param("primpath_location").value
-    UsdGeom.Xformable(stage.GetPrimAtPath(path)).MakeMatrixXform().Set(
-        Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0)))
+    _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
     camera_mod.execute(node)
 
     c.get_param("lock_to_freecam").value = False
@@ -739,8 +769,7 @@ def test_unlocking_also_seeds_the_params_so_the_handle_picks_up_from_there() -> 
 
     c.get_param("lock_to_freecam").value = True
     path = c.get_param("primpath_location").value
-    UsdGeom.Xformable(stage.GetPrimAtPath(path)).MakeMatrixXform().Set(
-        Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0)))
+    _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
     camera_mod.execute(node)
 
     c.get_param("lock_to_freecam").value = False
@@ -748,6 +777,93 @@ def test_unlocking_also_seeds_the_params_so_the_handle_picks_up_from_there() -> 
 
     assert c.get_param("tx").value == pytest.approx(100.0)
     assert c.get_param("tz").value == pytest.approx(-200.0)
+
+
+
+def test_a_cook_survives_an_order_naming_an_op_nothing_defines() -> None:
+    """The crash this authoring change exists for, reproduced on a camera prim.
+
+    `xformOpOrder` can name an op that no layer defines with a type -- ordinary leftover state
+    after a chunk is deleted and re-added, since the order and the attribute live in different
+    layers and go away independently. `GetOrderedXformOps()` silently skips it and hands back
+    an empty list, and `AddTransformOp()` then raises because the name *is* already in the
+    order:
+
+        The xformOp 'xformOp:transform' already exists in xformOpOrder [[xformOp:transform]].
+
+    25.05 fails differently and also fails. Authoring the attribute outright sidesteps both.
+    """
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)
+    path = c.get_param("primpath_location").value
+
+    # The leftover state, established explicitly rather than left to whatever the cook
+    # happened to author -- the op is *named* by the order and *defined* by nothing.
+    prim = stage.GetPrimAtPath(path)
+    prim.RemoveProperty(camera_mod._LEGACY_OP)
+    UsdGeom.Xformable(prim).GetXformOpOrderAttr().Set([camera_mod._LEGACY_OP])
+
+    camera_mod.execute(node)   # must not raise
+
+    assert c.get_param("primpath_location").value == path
+
+def test_a_camera_saved_before_named_ops_keeps_its_placement() -> None:
+    """Migration, and the doubling it could cause.
+
+    A camera authored before this chunk owned a named op carries a plain `xformOp:transform`
+    holding its placement. The first cook has to adopt that into the params rather than
+    author identity over it -- and must drop it from the order afterwards, or the camera's
+    transform applies twice: once from the legacy op and once from the named one the params
+    now write. That doubling is what turned a scale of 100 into 10000 in transform.py.
+    """
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)
+    path = c.get_param("primpath_location").value
+
+    # Rewind to how an older version of this chunk left the prim: the shared op holding the
+    # placement, no named op of ours at all.
+    prim = stage.GetPrimAtPath(path)
+    named = camera_mod.chunk_utils.existing_xform_op_name(c)
+    prim.GetAttribute(named).Clear()
+    UsdGeom.Xformable(prim).MakeMatrixXform().Set(
+        Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0)))
+
+    camera_mod.execute(node)
+
+    prim = stage.GetPrimAtPath(path)
+    order = list(prim.GetAttribute("xformOpOrder").Get() or [])
+    assert camera_mod._LEGACY_OP not in order, "the legacy op would apply the placement twice"
+    assert UsdGeom.Xformable(prim).GetLocalTransformation().ExtractTranslation() ==         Gf.Vec3d(100.0, 50.0, -200.0)
+    assert c.get_param("tx").value == pytest.approx(100.0)
+
+
+def test_a_legacy_op_this_chunk_did_not_author_is_left_alone() -> None:
+    """Only an op in *this chunk's* layer is reclaimed. A camera that genuinely ships with an
+    `xformOp:transform` -- from a reference or a sublayer -- keeps it, and keeps its place at
+    the front of the order.
+
+    Tested against the rule directly rather than through a cook: execute() renames a path that
+    already resolves, so pointing the chunk at a shipped camera makes it create a second one
+    beside it, and the test ends up describing that instead.
+    """
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    asset = Sdf.Layer.CreateAnonymous("asset.usda")
+    stage.GetRootLayer().subLayerPaths = [asset.identifier]
+    with Usd.EditContext(stage, asset):
+        cam = UsdGeom.Camera.Define(stage, "/cameras/shipped")
+        UsdGeom.Xformable(cam).MakeMatrixXform().Set(
+            Gf.Matrix4d().SetTranslate(Gf.Vec3d(7.0, 0.0, 0.0)))
+
+    prim = stage.GetPrimAtPath("/cameras/shipped")
+    order = [camera_mod._LEGACY_OP, "xformOp:transform:Camera_deadbeef"]
+
+    # The edit target is the root layer, which holds no opinion on that op.
+    assert camera_mod._without_legacy_op(c, stage, prim, order) == order
+    assert prim.GetAttribute(camera_mod._LEGACY_OP).Get() is not None, "not ours to clear"
 
 
 def test_adopting_never_overwrites_a_real_edit() -> None:
@@ -760,8 +876,7 @@ def test_adopting_never_overwrites_a_real_edit() -> None:
 
     c.get_param("ty").value = 5.0
     path = c.get_param("primpath_location").value
-    UsdGeom.Xformable(stage.GetPrimAtPath(path)).MakeMatrixXform().Set(
-        Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0)))
+    _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
     camera_mod.execute(node)
 
     assert c.get_param("ty").value == pytest.approx(5.0)

@@ -1,8 +1,12 @@
 import os
 import json
 import http.client
-from pxr import Gf, UsdGeom
+from pxr import Gf, Sdf, UsdGeom
 from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_utils
+
+#: The shared op every chunk used to write, and what the freecam lock wrote until this chunk
+#: owned a named one. Still read, so a camera saved before the change keeps its placement.
+_LEGACY_OP = "xformOp:transform"
 
 
 def _download_camera_types_cache(camera_cache):
@@ -72,10 +76,57 @@ def _apply_freecam_transform(owner, notice, sender):
     prim = stage.GetPrimAtPath(prim_path)
     if not prim.IsValid():
         return
-    UsdGeom.Xformable(prim).MakeMatrixXform().Set(gf_cam.transform)
+    # Through this chunk's own op, not MakeMatrixXform(). That resets xformOpOrder to a lone
+    # `xformOp:transform`, which would wipe the named op the cook authors -- so unticking the
+    # lock left the camera holding a transform from one system and an order naming the other.
+    _author_matrix(_chunk, stage, prim, gf_cam.transform)
     if not prim.GetAttribute("focusDistance").Get():
         _chunk.get_param("focusDistance").value = gf_cam.focusDistance
     scene.set_viewport_camera(prim)
+
+
+def _author_matrix(node, stage, prim, matrix):
+    """Author `matrix` as this chunk's own named xformOp, replacing any it wrote before.
+
+    Same shape as transform.py, and for the same two reasons.
+
+    **A named op per chunk.** `xformOp:transform` is one attribute, so two chunks placing one
+    prim competed for it and USD kept only the strongest. Owning a distinct name each, they
+    compose -- so a Transform chunk on a camera now adds to it instead of annihilating it.
+
+    **Authored outright**, not through `AddTransformOp()` / `GetOrderedXformOps()`. Both trust
+    `xformOpOrder`, and that can name an op no layer defines with a type -- ordinary leftover
+    state after a chunk is deleted and re-added, since the order and the attribute live in
+    different layers and go away independently. Reproduced on a camera prim: 25.08 skips the
+    untyped op, hands back an empty list, and `AddTransformOp()` then raises because the name
+    *is* already in the order. 25.05 fails differently and also fails.
+    """
+    op_name = chunk_utils.xform_op_name(node)
+    order = _without_legacy_op(node, stage, prim, chunk_gizmo.xform_op_order(node, prim, op_name))
+
+    attr = prim.CreateAttribute(op_name, Sdf.ValueTypeNames.Matrix4d, custom=False)
+    attr.Set(matrix)
+    UsdGeom.Xformable(prim).CreateXformOpOrderAttr().Set(order)
+
+
+def _without_legacy_op(node, stage, prim, order):
+    """Drop the shared `xformOp:transform` this chunk wrote before it owned a named one.
+
+    A camera saved before the change carries one holding the same placement the params do, so
+    leaving it in the order would apply the camera's transform *twice* -- the doubling that
+    turned a scale of 100 into 10000 when transform.py had the same problem.
+
+    Only when the spec is in this chunk's own layer. A referenced camera that genuinely owns
+    an `xformOp:transform` of its own keeps it, and keeps its place at the front of the order.
+    """
+    layer = stage.GetEditTarget().GetLayer()
+    if layer is None or layer.GetAttributeAtPath(prim.GetPath().AppendProperty(_LEGACY_OP)) is None:
+        return order
+
+    legacy = prim.GetAttribute(_LEGACY_OP)
+    if legacy and legacy.IsValid():
+        legacy.Clear()
+    return [op for op in order if op != _LEGACY_OP]
 
 
 def _set_as_viewport_camera(owner, notice, sender):
@@ -147,9 +198,18 @@ def _adopt_existing_transform(node, prim):
     if any(node.get_param(n).value != node.get_param(n).default_value for n in _TRANSFORM_PARAMS):
         return
 
-    existing = {op.GetOpName(): op for op in UsdGeom.Xformable(prim).GetOrderedXformOps()}
-    op = existing.get("xformOp:transform")
-    matrix = op.Get() if op else None
+    # This chunk's own op first, then the shared one a camera saved before the named-op
+    # change carries. Read straight off the attribute rather than through
+    # GetOrderedXformOps(), which silently drops an op that xformOpOrder names but no layer
+    # types -- the state that made AddTransformOp() raise here in the first place.
+    matrix = None
+    for name in (chunk_utils.existing_xform_op_name(node), _LEGACY_OP):
+        if not name:
+            continue
+        attr = prim.GetAttribute(name)
+        if attr and attr.IsValid() and (value := attr.Get()) is not None:
+            matrix = value
+            break
     if matrix is None:
         return
 
@@ -190,10 +250,7 @@ def _author_camera_transform(node, stage):
         # Take on whatever is already there before overwriting it -- see the docstring.
         _adopt_existing_transform(node, prim)
 
-        xformable = UsdGeom.Xformable(stage.OverridePrim(target_path))
-        existing = {op.GetOpName(): op for op in xformable.GetOrderedXformOps()}
-        transform_op = existing.get("xformOp:transform") or xformable.AddTransformOp()
-        transform_op.Set(_camera_matrix(node))
+        _author_matrix(node, stage, stage.OverridePrim(target_path), _camera_matrix(node))
 
 
 def main():
