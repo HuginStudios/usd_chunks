@@ -810,3 +810,66 @@ def test_the_cached_tint_still_matches_a_full_rebuild() -> None:
 
     for a, b in zip(incremental, rebuilt):
         assert Gf.Vec3f(*a) == pytest.approx(Gf.Vec3f(*b), abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# painted points reaching the scatter
+# ---------------------------------------------------------------------------
+
+def test_the_brush_publishes_where_it_put_the_points() -> None:
+    """The other half of the wire. Without a path to carry, Points mode has no port."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+
+    _stroke(c, (5.0, 5.0, 0.0))
+
+    assert c.get_param("points_path").value == str(brush_mod._points_path(c))
+
+
+def test_each_placed_point_records_the_surface_facing() -> None:
+    """A scatter has the triangle it sampled and takes the facing from that. A placed point
+    has no triangle, so the brush records it -- the job Houdini's N does on a point."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+    tilted = Gf.Vec3f(0.0, 0.6, 0.8)
+
+    chunk_gizmo.apply_stroke(c, "paint", [(Gf.Vec3d(5, 5, 0), 1.0, tilted)])
+
+    _points_list, normals = brush_mod._current_points(c, stage)
+    assert normals[0] == pytest.approx(tilted, abs=1e-6)
+
+
+def test_scatter_places_one_instance_per_painted_point() -> None:
+    """The end of the slice: paint points, get an instance at each, at exactly those spots."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=3.0, strength=1.0)
+    for x in (2.0, 8.0, 14.0):
+        _stroke(c, (x, 5.0, 0.0))
+
+    placed, normals = scatter_mod._painted_points(stage, c.get_param("points_path").value)
+
+    assert len(placed) == 3
+    assert sorted(round(p[0], 3) for p in placed) == [2.0, 8.0, 14.0]
+    assert len(normals) == len(placed)
+
+
+def test_nothing_wired_means_no_placed_points() -> None:
+    """The common case, and it must cost nothing but a path lookup."""
+    stage = _stage_with_floor()
+
+    assert scatter_mod._painted_points(stage, "") == ([], [])
+    assert scatter_mod._painted_points(stage, "/nope/missing") == ([], [])
+
+
+def test_points_placed_before_normals_were_recorded_still_load() -> None:
+    """Migration: a scene painted an hour ago has points and no normals. They lie flat rather
+    than failing to place."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+    UsdGeom.Points(stage.GetPrimAtPath(brush_mod._points_path(c))).GetNormalsAttr().Clear()
+
+    placed, normals = scatter_mod._painted_points(stage, c.get_param("points_path").value)
+
+    assert len(placed) == 1
+    assert len(normals) == 1

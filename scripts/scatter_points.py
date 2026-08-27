@@ -146,6 +146,35 @@ DENSITY_PRIMVAR = "scatterDensity"
 _LOOKUP_DIVISIONS = 48
 
 
+def _painted_points(stage, points_path):
+    """Points a brush placed by hand, with the surface normal recorded at each.
+
+    Empty whenever nothing is wired, which is the common case and costs one path lookup.
+
+    The normals are why this returns a pair. A scatter has the triangle it sampled and can
+    take the facing from that; a placed point has no triangle, so the brush records the
+    surface's facing when the dab lands -- the same job Houdini's N does on a point.
+    """
+    if not points_path or stage is None:
+        return [], []
+    prim = stage.GetPrimAtPath(points_path)
+    if not prim or not prim.IsValid():
+        return [], []
+
+    cloud = UsdGeom.Points(prim)
+    points = cloud.GetPointsAttr().Get()
+    if not points:
+        return [], []
+    normals = cloud.GetNormalsAttr().Get()
+
+    up = Gf.Vec3f(0, 0, 1)
+    positions = [Gf.Vec3f(*p) for p in points]
+    facing = [Gf.Vec3f(*n) for n in normals] if normals else []
+    # Points placed before normals were recorded still work; they simply lie flat.
+    facing += [up] * (len(positions) - len(facing))
+    return positions, facing[:len(positions)]
+
+
 def _density_mask(prim, primvar_name=None):
     """A weight function over the painted surface, or None when nothing is painted.
 
@@ -584,7 +613,15 @@ def execute(node):
         # Centre-to-centre >= the largest instance's footprint -> no overlap.
         spacing = footprint * max(scale_max, 1e-6)
 
-    if scatter_mode == "Volume":
+    placed, placed_normals = _painted_points(
+        scratch_stage, node.get_param("points_prim").value
+    )
+    if placed:
+        # Hand-placed: the user said where. No sampling, no spacing, no slope filter -- those
+        # answer "where should these go", which is the question already settled by placing
+        # them. The density field is ignored for the same reason.
+        positions, normals = placed, placed_normals
+    elif scatter_mode == "Volume":
         positions, normals = _fill_in_volume(triangles, max_count, rng, spacing, mask=density)
         normals = [world_up] * len(positions)
     else:
@@ -644,9 +681,19 @@ def execute(node):
             instancer.GetPositionsAttr().Set(Vt.Vec3fArray(positions))
             instancer.GetProtoIndicesAttr().Set(Vt.IntArray([0] * len(positions)))
 
+            # Seeded per point when the points were placed by hand, so a point's look is tied
+            # to the point rather than to its position in the list.
+            #
+            # Appending alone would survive the sequential rng too -- consuming one more value
+            # leaves the earlier ones untouched, which is worth stating because it is easy to
+            # assume otherwise. What does not survive it is *editing*: delete a point from the
+            # middle, or reorder them, and every point after it silently changes scale and
+            # rotation. Painting is an editing workflow, so the look is pinned to the index.
             scale_rng = random.Random(seed + 13)
             scales = Vt.Vec3fArray(len(positions))
             for i in range(len(positions)):
+                if placed:
+                    scale_rng = random.Random(seed + 13 + i)
                 s = scale_rng.uniform(scale_min, scale_max)
                 scales[i] = Gf.Vec3f(s * proto_scale[0], s * proto_scale[1], s * proto_scale[2])
             instancer.GetScalesAttr().Set(scales)
@@ -654,6 +701,8 @@ def execute(node):
             orient_rng = random.Random(seed + 7)
             orientations = Vt.QuathArray(len(positions))
             for i, nrm in enumerate(normals):
+                if placed:
+                    orient_rng = random.Random(seed + 7 + i)
                 base = _compute_orientation(orient_mode, nrm, orient_rng)
                 orientations[i] = _apply_random_rotation(base, rand_axis, rand_amount, orient_rng)
             instancer.GetOrientationsAttr().Set(orientations)
@@ -679,6 +728,15 @@ def main():
             "Prototype Prim",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
             tooltip="Prim instanced at each scatter point. Empty = a default cube.",
+        )
+    )
+    chunk_api.add_param(
+        chunk.LineEdit(
+            "points_prim",
+            "Painted Points",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            tooltip="Place one instance at each point a Scatter Brush painted, instead of "
+            "scattering. Wire this from the brush's Painted Points output.",
         )
     )
     chunk_api.add_param(

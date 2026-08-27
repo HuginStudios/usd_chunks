@@ -331,7 +331,7 @@ def gizmo_stroke(node, gizmo, samples):
     if radius <= 0.0 or strength <= 0.0:
         return False
 
-    centres = [_unpack(sample) for sample in samples]
+    centres = [(pt, pressure) for pt, pressure, _n in map(_unpack, samples)]
     radius_sq = radius * radius
     touched = False
 
@@ -378,11 +378,11 @@ def _place_points(node, stage, samples):
     like the density field, travelling the same wire.
     """
     spacing = float(node.get_param("radius").value or 0.0)
-    existing = _current_points(node, stage)
+    existing, normals = _current_points(node, stage)
     added = False
 
     for sample in samples:
-        point, _pressure = _unpack(sample)
+        point, _pressure, normal = _unpack(sample)
         if point is None:
             continue
         if spacing > 0.0 and any(
@@ -390,11 +390,15 @@ def _place_points(node, stage, samples):
         ):
             continue
         existing.append(Gf.Vec3f(point[0], point[1], point[2]))
+        # The surface's facing where the dab landed. Recorded per point, the way Houdini
+        # carries N, so a downstream instance can be laid flat on what it was painted on --
+        # a scatter has the triangle to hand, a placed point does not.
+        normals.append(Gf.Vec3f(*normal) if normal is not None else Gf.Vec3f(0, 0, 1))
         added = True
 
     if not added:
         return False
-    _write_points(node, stage, existing)
+    _write_points(node, stage, existing, normals)
     return True
 
 
@@ -404,22 +408,37 @@ def _points_path(node):
 
 
 def _current_points(node, stage):
+    """The points placed so far, with the surface normal recorded at each."""
     path = _points_path(node)
-    if path is None:
-        return []
-    points = UsdGeom.Points(stage.GetPrimAtPath(path)).GetPointsAttr().Get() if stage.GetPrimAtPath(path) else None
-    return [Gf.Vec3f(*p) for p in points] if points else []
+    prim = stage.GetPrimAtPath(path) if path else None
+    if not prim or not prim.IsValid():
+        return [], []
+    cloud = UsdGeom.Points(prim)
+    points = cloud.GetPointsAttr().Get()
+    normals = cloud.GetNormalsAttr().Get()
+    points = [Gf.Vec3f(*p) for p in points] if points else []
+    normals = [Gf.Vec3f(*n) for n in normals] if normals else []
+    # Points placed before normals were recorded still load; they just lie flat.
+    while len(normals) < len(points):
+        normals.append(Gf.Vec3f(0, 0, 1))
+    return points, normals
 
 
-def _write_points(node, stage, points):
+def _write_points(node, stage, points, normals=None):
     path = _points_path(node)
     if path is None:
         return
+    published = node.get_param("points_path")
+    if published is not None and published.value != str(path):
+        published.value = str(path)
+
     layer = node.get_edit_context()
     context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
     with context:
         cloud = UsdGeom.Points.Define(stage, path)
         cloud.CreatePointsAttr().Set(Vt.Vec3fArray(points))
+        if normals is not None:
+            cloud.CreateNormalsAttr().Set(Vt.Vec3fArray(normals))
         # A visible radius, so placed points read as marks on the model rather than as
         # single pixels -- the same reason the density mode tints.
         width = max(float(node.get_param("radius").value or 1.0) * 0.25, 1e-4)
@@ -442,18 +461,25 @@ def _blend(mode, current, amount):
 
 
 def _unpack(sample):
-    """A sample is a point, or a (point, weight) pair. Both are ordinary for a host to send:
-    a plain raycast hit has no pressure, and a tablet does."""
+    """One sample as (point, pressure, normal).
+
+    Three shapes are ordinary for a host to send, and none should be a special case it has to
+    know about: a bare point (a plain raycast hit has no pressure), a (point, pressure) pair
+    (a tablet does), and a (point, pressure, normal) triple -- the surface's facing at the
+    hit, which Points mode records so an instance can be laid flat on what it was painted on.
+    """
+    if isinstance(sample, (tuple, list)):
+        if len(sample) == 3 and not isinstance(sample[0], (int, float)):
+            point, pressure, normal = sample
+            return Gf.Vec3d(point[0], point[1], point[2]), float(pressure), normal
+        if len(sample) == 2 and not isinstance(sample[0], (int, float)):
+            point, pressure = sample
+            return Gf.Vec3d(point[0], point[1], point[2]), float(pressure), None
     try:
-        point, pressure = sample
-        return Gf.Vec3d(point[0], point[1], point[2]), float(pressure)
-    except (TypeError, ValueError):
-        pass
-    try:
-        return Gf.Vec3d(sample[0], sample[1], sample[2]), 1.0
+        return Gf.Vec3d(sample[0], sample[1], sample[2]), 1.0, None
     except (TypeError, IndexError):
         logger.warning("Ignoring unreadable brush sample %r", sample)
-        return None, 0.0
+        return None, 0.0, None
 
 
 def _set_everywhere(node, value):
@@ -465,7 +491,7 @@ def _set_everywhere(node, value):
         # point cloud has no meaning -- there is no "everywhere" to place one at -- so only
         # clearing does anything.
         if value == 0.0:
-            _write_points(node, stage, [])
+            _write_points(node, stage, [], [])
         return
     if prim is None:
         return
@@ -521,6 +547,13 @@ def main():
         "surface_prim", "Surface Mesh",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
         tooltip="The mesh to paint on. Wire this chunk upstream of Scatter Points.",
+    ))
+
+    # The other half of the wire. Which output is live depends on the mode, so both ports
+    # exist and only one carries anything -- clearer than one socket whose meaning changes.
+    chunk_api.add_param(chunk.LineEdit(
+        "points_path", "Painted Points",
+        flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
     ))
 
     output = chunk.Menu(
