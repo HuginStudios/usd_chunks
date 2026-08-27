@@ -73,7 +73,7 @@ def _scatter_points(stage, path="/World/Floor", count=400, seed=3):
 
     prim = stage.GetPrimAtPath(path)
     triangles = scatter._collect_triangles(prim)
-    mask = scatter._density_mask(prim)
+    mask = scatter._density_mask(prim, scatter.DENSITY_PRIMVAR)
     positions, _ = scatter._scatter_on_triangles(
         triangles, count, random.Random(seed), 0, mask=mask
     )
@@ -95,14 +95,14 @@ def test_an_unpainted_surface_has_no_mask_at_all(stage) -> None:
     candidate, which outnumber instances by the rejection rate."""
     _grid_mesh(stage)
 
-    assert scatter._density_mask(stage.GetPrimAtPath("/World/Floor")) is None
+    assert scatter._density_mask(stage.GetPrimAtPath("/World/Floor"), scatter.DENSITY_PRIMVAR) is None
 
 
 def test_a_painted_surface_reports_the_weight_under_a_point(stage) -> None:
     mesh = _grid_mesh(stage)
     _paint(mesh, lambda p: 1.0 if p[0] < 5.0 else 0.0)
 
-    mask = scatter._density_mask(stage.GetPrimAtPath("/World/Floor"))
+    mask = scatter._density_mask(stage.GetPrimAtPath("/World/Floor"), scatter.DENSITY_PRIMVAR)
 
     assert mask(Gf.Vec3f(1.0, 5.0, 0.0), None) == pytest.approx(1.0)
     assert mask(Gf.Vec3f(9.0, 5.0, 0.0), None) == pytest.approx(0.0)
@@ -116,7 +116,7 @@ def test_the_weight_is_read_in_world_space(stage) -> None:
     _paint(mesh, lambda p: 1.0 if p[0] < 5.0 else 0.0)
     UsdGeom.Xformable(mesh).AddTranslateOp().Set(Gf.Vec3d(100.0, 0.0, 0.0))
 
-    mask = scatter._density_mask(stage.GetPrimAtPath("/World/Floor"))
+    mask = scatter._density_mask(stage.GetPrimAtPath("/World/Floor"), scatter.DENSITY_PRIMVAR)
 
     assert mask(Gf.Vec3f(101.0, 5.0, 0.0), None) == pytest.approx(1.0)
     assert mask(Gf.Vec3f(109.0, 5.0, 0.0), None) == pytest.approx(0.0)
@@ -131,7 +131,7 @@ def test_a_constant_primvar_dials_the_whole_surface(stage) -> None:
     )
     primvar.Set(Vt.FloatArray([0.25]))
 
-    mask = scatter._density_mask(stage.GetPrimAtPath("/World/Floor"))
+    mask = scatter._density_mask(stage.GetPrimAtPath("/World/Floor"), scatter.DENSITY_PRIMVAR)
 
     assert mask(Gf.Vec3f(1.0, 1.0, 0.0), None) == pytest.approx(0.25)
     assert mask(Gf.Vec3f(9.0, 9.0, 0.0), None) == pytest.approx(0.25)
@@ -143,7 +143,7 @@ def test_weights_are_clamped(stage) -> None:
     mesh = _grid_mesh(stage)
     _paint(mesh, lambda p: 5.0 if p[0] < 5.0 else -1.0)
 
-    mask = scatter._density_mask(stage.GetPrimAtPath("/World/Floor"))
+    mask = scatter._density_mask(stage.GetPrimAtPath("/World/Floor"), scatter.DENSITY_PRIMVAR)
 
     assert mask(Gf.Vec3f(1.0, 5.0, 0.0), None) == 1.0
     assert mask(Gf.Vec3f(9.0, 5.0, 0.0), None) == 0.0
@@ -156,7 +156,7 @@ def test_a_short_primvar_is_ignored_rather_than_indexed_off_the_end(stage) -> No
     )
     primvar.Set(Vt.FloatArray([1.0, 1.0, 1.0]))
 
-    assert scatter._density_mask(stage.GetPrimAtPath("/World/Floor")) is None
+    assert scatter._density_mask(stage.GetPrimAtPath("/World/Floor"), scatter.DENSITY_PRIMVAR) is None
 
 
 # ---------------------------------------------------------------------------
@@ -215,3 +215,49 @@ def test_the_same_seed_and_the_same_paint_give_the_same_points(stage) -> None:
     second = _scatter_points(stage)
 
     assert [tuple(p) for p in first] == [tuple(p) for p in second]
+
+
+# ---------------------------------------------------------------------------
+# the wire, not a convention
+# ---------------------------------------------------------------------------
+
+def test_an_unconnected_scatter_is_unaffected_by_paint(stage) -> None:
+    """The point of making this a port. Two chunks that merely named the same mesh agreed by
+    convention, invisibly -- so a brush anywhere in the graph silently governed every scatter
+    pointed at that surface, and nothing on screen said why.
+
+    With no field named, there is no mask, and a painted surface changes nothing.
+    """
+    mesh = _grid_mesh(stage)
+    _paint(mesh, lambda p: 1.0 if p[0] < 5.0 else 0.0)
+    prim = stage.GetPrimAtPath("/World/Floor")
+
+    assert scatter._density_mask(prim, "") is None
+    assert scatter._density_mask(prim, None) is None
+
+
+def test_the_wire_names_which_field_to_read(stage) -> None:
+    """Two brushes on one graph write two fields; a scatter reads the one it is wired to."""
+    mesh = _grid_mesh(stage)
+    _paint(mesh, lambda p: 1.0 if p[0] < 5.0 else 0.0)
+    other = UsdGeom.PrimvarsAPI(mesh.GetPrim()).CreatePrimvar(
+        "scatterDensityB", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+    )
+    other.Set(Vt.FloatArray([1.0 if p[0] > 5.0 else 0.0 for p in mesh.GetPointsAttr().Get()]))
+    prim = stage.GetPrimAtPath("/World/Floor")
+
+    left = scatter._density_mask(prim, scatter.DENSITY_PRIMVAR)
+    right = scatter._density_mask(prim, "scatterDensityB")
+
+    assert left(Gf.Vec3f(1, 5, 0), None) == pytest.approx(1.0)
+    assert right(Gf.Vec3f(1, 5, 0), None) == pytest.approx(0.0)
+    assert right(Gf.Vec3f(9, 5, 0), None) == pytest.approx(1.0)
+
+
+def test_a_field_that_does_not_exist_is_not_an_error(stage) -> None:
+    """A wire pointing at a brush that has not painted yet, or a typo in the field name. Both
+    mean "no field", not "no instances" -- silently placing nothing would be indistinguishable
+    from the chunk being broken."""
+    _grid_mesh(stage)
+
+    assert scatter._density_mask(stage.GetPrimAtPath("/World/Floor"), "nope") is None

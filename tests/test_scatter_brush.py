@@ -271,7 +271,7 @@ def test_what_the_brush_paints_is_what_scatter_reads() -> None:
         _stroke(c, (5.0, 5.0, 0.0))
 
     prim = stage.GetPrimAtPath("/World/Floor")
-    mask = scatter_mod._density_mask(prim)
+    mask = scatter_mod._density_mask(prim, brush_mod.DENSITY_PRIMVAR)
     assert mask is not None, "scatter could not see what the brush painted"
 
     assert mask(Gf.Vec3f(5.0, 5.0, 0.0), None) > 0.5
@@ -288,7 +288,7 @@ def test_painting_a_corner_puts_the_instances_in_that_corner() -> None:
     prim = stage.GetPrimAtPath("/World/Floor")
     positions, _ = scatter_mod._scatter_on_triangles(
         scatter_mod._collect_triangles(prim), 200, random.Random(5), 0,
-        mask=scatter_mod._density_mask(prim),
+        mask=scatter_mod._density_mask(prim, brush_mod.DENSITY_PRIMVAR),
     )
 
     assert positions, "the painted region should hold instances"
@@ -307,7 +307,7 @@ def test_an_unpainted_brush_places_nothing_rather_than_everything() -> None:
     prim = stage.GetPrimAtPath("/World/Floor")
     positions, _ = scatter_mod._scatter_on_triangles(
         scatter_mod._collect_triangles(prim), 100, random.Random(5), 0,
-        mask=scatter_mod._density_mask(prim),
+        mask=scatter_mod._density_mask(prim, brush_mod.DENSITY_PRIMVAR),
     )
     assert positions == []
 
@@ -443,7 +443,7 @@ def test_scatter_reads_a_hierarchy_the_brush_painted() -> None:
     for _ in range(3):
         _stroke(c, (5.0, 5.0, 0.0))
 
-    mask = scatter_mod._density_mask(stage.GetPrimAtPath("/Kitchen_set/KitchenTable_1"))
+    mask = scatter_mod._density_mask(stage.GetPrimAtPath("/Kitchen_set/KitchenTable_1"), brush_mod.DENSITY_PRIMVAR)
 
     assert mask is not None
     assert mask(Gf.Vec3f(5.0, 5.0, 0.0), None) > 0.5

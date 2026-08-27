@@ -146,8 +146,14 @@ DENSITY_PRIMVAR = "scatterDensity"
 _LOOKUP_DIVISIONS = 48
 
 
-def _density_mask(prim):
+def _density_mask(prim, primvar_name=None):
     """A weight function over the painted surface, or None when nothing is painted.
+
+    `primvar_name` is which painted field to read, and it comes off this chunk's Density Field
+    input -- normally wired from a Scatter Brush's output rather than typed. Empty means *no
+    field*, and an unconnected scatter therefore behaves exactly as it did before painting
+    existed. That is the point of the wire: the dependency is visible, and a scatter nobody
+    connected a brush to is not quietly governed by one.
 
     None rather than a function returning 1.0, deliberately: the sampler skips the hook
     entirely when there is no mask, so an unpainted scatter costs exactly what it did before
@@ -160,7 +166,8 @@ def _density_mask(prim):
     twelve-triangle floor and the edge of the painted region is blocky. Worth knowing before
     it is discovered.
     """
-    if not prim or not prim.IsValid():
+    primvar_name = primvar_name or ""
+    if not prim or not prim.IsValid() or not primvar_name:
         return None
 
     points, weights = [], []
@@ -169,7 +176,7 @@ def _density_mask(prim):
         mesh_points = mesh.GetPointsAttr().Get()
         if not mesh_points:
             continue
-        primvar = UsdGeom.PrimvarsAPI(p).GetPrimvar(DENSITY_PRIMVAR)
+        primvar = UsdGeom.PrimvarsAPI(p).GetPrimvar(primvar_name)
         if not primvar or not primvar.HasValue():
             continue
 
@@ -183,7 +190,7 @@ def _density_mask(prim):
         if len(values) < len(mesh_points):
             logger.warning(
                 "%s has %d %s values for %d points; ignoring it",
-                p.GetPath(), len(values), DENSITY_PRIMVAR, len(mesh_points),
+                p.GetPath(), len(values), primvar_name, len(mesh_points),
             )
             continue
 
@@ -567,7 +574,7 @@ def execute(node):
     triangles = _collect_triangles(surface_prim)
     # None whenever the surface carries no painted weight, so an unpainted scatter never pays
     # for the lookup -- see _density_mask.
-    density = _density_mask(surface_prim)
+    density = _density_mask(surface_prim, node.get_param("density_primvar").value)
     rng = random.Random(seed)
     up_idx = 1 if UsdGeom.GetStageUpAxis(stage).upper() == "Y" else 2
     world_up = Gf.Vec3f(0, 1, 0) if up_idx == 1 else Gf.Vec3f(0, 0, 1)
@@ -672,6 +679,15 @@ def main():
             "Prototype Prim",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
             tooltip="Prim instanced at each scatter point. Empty = a default cube.",
+        )
+    )
+    chunk_api.add_param(
+        chunk.LineEdit(
+            "density_primvar",
+            "Density Field",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            tooltip="Which painted field decides where instances may land. Wire this from a "
+            "Scatter Brush's Density Field output. Empty means no field — scatter everywhere.",
         )
     )
     chunk_api.add_param(

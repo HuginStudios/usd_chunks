@@ -287,6 +287,17 @@ def main():
         tooltip="The mesh to paint on. Wire this chunk upstream of Scatter Points.",
     ))
 
+    # Published so a Scatter Points can be *wired* to this brush rather than agreeing with it
+    # by convention. OUTPUT makes it a real outputs: port on the chunk prim, which is what the
+    # node graph draws as a connectable socket -- the same shape Scatter Points already uses to
+    # hand its instancer to the RBD Solver. Reported as the two feeling like a black box: they
+    # were only ever related by both naming the same mesh, and nothing on screen said so.
+    chunk_api.add_param(chunk.LineEdit(
+        "density_name", "Density Field",
+        default_value=DENSITY_PRIMVAR,
+        flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
+    ))
+
     grp = chunk.Group(
         "brush_grp", "Brush",
         flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
@@ -341,10 +352,11 @@ def config():
         Scatter Brush — paints a per-vertex weight on a mesh saying where
         Scatter Points may place instances.
 
-        Wire it upstream of a Scatter Points chunk pointed at the same mesh.
-        Painting writes primvars:scatterDensity, which scatter samples per
-        candidate point and keeps with that probability — so a weight of 0.5
-        gives roughly half as many instances, not a hard edge.
+        Wire this chunk's Density Field output into a Scatter Points chunk's
+        Density Field input, with both pointed at the same mesh. Painting writes
+        primvars:scatterDensity on the surface, and the wire is what tells that
+        scatter to read it — an unconnected scatter is unaffected. Weight is a
+        probability, so 0.5 gives roughly half as many instances, not a hard edge.
 
         Parameters:
           - Surface Mesh: the mesh to paint on.
