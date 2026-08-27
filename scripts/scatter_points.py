@@ -13,6 +13,7 @@ Requires: pxr (OpenUSD), usd_chunks.
 from __future__ import annotations
 
 import bisect
+import logging
 import math
 import random
 
@@ -20,6 +21,8 @@ from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
 from usd_chunks.plugins import chunk_usd
+
+logger = logging.getLogger(__name__)
 
 _ORIENT_MODES = ["Align to Normal", "Keep Original", "Up", "Random"]
 _RAND_AXES = ["Off", "X", "Y", "Z", "All"]
@@ -131,6 +134,114 @@ class _PoissonGrid:
 
     def add(self, pt):
         self._grid.setdefault(self._key(pt), []).append(pt)
+
+
+#: Per-vertex float, 0..1, saying how much scatter a part of the surface wants. Painted by
+#: the brush; ordinary USD, so a DCC's own paint tool or a bake can author it just as well.
+DENSITY_PRIMVAR = "scatterDensity"
+
+#: How finely the lookup grid divides the surface's bounds. The grid only has to be fine
+#: enough that a cell holds few vertices, since a query answers with the nearest one in it --
+#: past that it costs memory for nothing.
+_LOOKUP_DIVISIONS = 48
+
+
+def _density_mask(prim):
+    """A weight function over the painted surface, or None when nothing is painted.
+
+    None rather than a function returning 1.0, deliberately: the sampler skips the hook
+    entirely when there is no mask, so an unpainted scatter costs exactly what it did before
+    this existed. That matters -- the hook runs per candidate point, and candidates outnumber
+    instances by whatever the rejection rate happens to be.
+
+    Sampling is nearest-vertex. The weight is authored per vertex, and the sampler hands over
+    a point with no idea which triangle produced it, so there is nothing to interpolate
+    barycentrically against. Density resolution is therefore mesh resolution: paint a
+    twelve-triangle floor and the edge of the painted region is blocky. Worth knowing before
+    it is discovered.
+    """
+    if not prim or not prim.IsValid():
+        return None
+
+    points, weights = [], []
+    for p in Usd.PrimRange(prim):
+        mesh = UsdGeom.Mesh(p)
+        mesh_points = mesh.GetPointsAttr().Get()
+        if not mesh_points:
+            continue
+        primvar = UsdGeom.PrimvarsAPI(p).GetPrimvar(DENSITY_PRIMVAR)
+        if not primvar or not primvar.HasValue():
+            continue
+
+        values = primvar.ComputeFlattened()
+        if values is None:
+            continue
+        # Constant interpolation is one number for the whole mesh -- a legitimate way to dial
+        # a surface down without painting it, and it has no per-vertex values to index.
+        if len(values) == 1:
+            values = [values[0]] * len(mesh_points)
+        if len(values) < len(mesh_points):
+            logger.warning(
+                "%s has %d %s values for %d points; ignoring it",
+                p.GetPath(), len(values), DENSITY_PRIMVAR, len(mesh_points),
+            )
+            continue
+
+        world_xf = UsdGeom.XformCache().GetLocalToWorldTransform(p)
+        for i, pt in enumerate(mesh_points):
+            wp = world_xf.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
+            points.append(Gf.Vec3f(wp[0], wp[1], wp[2]))
+            weights.append(float(values[i]))
+
+    if not points:
+        return None
+    return _NearestWeight(points, weights).sample
+
+
+class _NearestWeight:
+    """Nearest-vertex weight lookup over a uniform grid.
+
+    Brute force over every vertex would be O(V) per candidate point, and the sampler makes up
+    to a hundred candidates per instance -- on a real mesh that is the whole cook. The grid
+    makes it O(1) at the cost of one pass at build time.
+    """
+
+    def __init__(self, points, weights):
+        self._weights = weights
+        lo = [min(p[i] for p in points) for i in range(3)]
+        hi = [max(p[i] for p in points) for i in range(3)]
+        span = max(max(hi[i] - lo[i] for i in range(3)), 1e-6)
+        self._origin = lo
+        self._cell = span / _LOOKUP_DIVISIONS
+
+        self._cells = {}
+        for index, pt in enumerate(points):
+            self._cells.setdefault(self._key(pt), []).append((pt, index))
+
+    def _key(self, pt):
+        return tuple(int((pt[i] - self._origin[i]) // self._cell) for i in range(3))
+
+    def sample(self, point, normal=None):
+        """The painted weight nearest `point`, in 0..1. `normal` is unused but is part of the
+        hook's signature -- a future falloff-by-facing would want it."""
+        key = self._key(point)
+        best, best_dist = None, None
+        # The point can land nearer a vertex in an adjacent cell than one in its own, and an
+        # empty cell is ordinary on a coarse mesh, so the neighbours are always searched.
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for candidate, index in self._cells.get(
+                        (key[0] + dx, key[1] + dy, key[2] + dz), ()
+                    ):
+                        offset = candidate - point
+                        dist = offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]
+                        if best_dist is None or dist < best_dist:
+                            best, best_dist = index, dist
+        if best is None:
+            # Nothing painted anywhere near: outside the painted region entirely.
+            return 0.0
+        return min(1.0, max(0.0, self._weights[best]))
 
 
 def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
@@ -454,6 +565,9 @@ def execute(node):
     proto_prim = scratch_stage.GetPrimAtPath(proto_paths[0]) if proto_paths else None
 
     triangles = _collect_triangles(surface_prim)
+    # None whenever the surface carries no painted weight, so an unpainted scatter never pays
+    # for the lookup -- see _density_mask.
+    density = _density_mask(surface_prim)
     rng = random.Random(seed)
     up_idx = 1 if UsdGeom.GetStageUpAxis(stage).upper() == "Y" else 2
     world_up = Gf.Vec3f(0, 1, 0) if up_idx == 1 else Gf.Vec3f(0, 0, 1)
@@ -464,7 +578,7 @@ def execute(node):
         spacing = footprint * max(scale_max, 1e-6)
 
     if scatter_mode == "Volume":
-        positions, normals = _fill_in_volume(triangles, max_count, rng, spacing)
+        positions, normals = _fill_in_volume(triangles, max_count, rng, spacing, mask=density)
         normals = [world_up] * len(positions)
     else:
         # Surface — slope pre-filters the triangle set (correct area weighting,
@@ -472,7 +586,7 @@ def execute(node):
         # passed as the `mask=` hook above.
         surf_tris = [t for t in triangles if _slope_ok(t[3], world_up, max_slope)]
         if surf_tris:
-            positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing)
+            positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=density)
         else:
             # No mesh / no qualifying faces — fall back to a jittered grid.
             sp = max(spacing, 2.0)
