@@ -377,8 +377,13 @@ def _place_points(node, stage, samples):
     Points accumulate on this chunk's own prim as an ordinary point cloud -- inspectable USD,
     like the density field, travelling the same wire.
     """
-    spacing = float(node.get_param("radius").value or 0.0)
+    radius = float(node.get_param("radius").value or 0.0)
     existing, normals = _current_points(node, stage)
+
+    if node.get_param("mode").value == "Subtract":
+        return _erase_points(node, stage, samples, existing, normals, radius)
+
+    spacing = radius
     added = False
 
     for sample in samples:
@@ -399,6 +404,33 @@ def _place_points(node, stage, samples):
     if not added:
         return False
     _write_points(node, stage, existing, normals)
+    return True
+
+
+def _erase_points(node, stage, samples, existing, normals, radius):
+    """Rub placed points out, the way Subtract takes density away.
+
+    The mode was ignored entirely in Points mode, so Subtract quietly went on adding -- and
+    the only way to remove anything was Clear, which removes everything.
+    """
+    if radius <= 0.0 or not existing:
+        return False
+
+    keep_points, keep_normals = [], []
+    for point, normal in zip(existing, normals):
+        under_brush = False
+        for sample in samples:
+            centre, _pressure, _n = _unpack(sample)
+            if centre is not None and (Gf.Vec3d(point) - centre).GetLength() <= radius:
+                under_brush = True
+                break
+        if not under_brush:
+            keep_points.append(point)
+            keep_normals.append(normal)
+
+    if len(keep_points) == len(existing):
+        return False
+    _write_points(node, stage, keep_points, keep_normals)
     return True
 
 
@@ -505,20 +537,22 @@ def _set_everywhere(node, value):
     """Author one weight across every mesh under the surface."""
     _drop_stroke_cache(node)
     prim, stage = _surface_prim(node)
-    # Fill and Clear are edits like any stroke, so the chain has to hear about them -- without
-    # this, clearing left every instance standing until something else was touched.
-    _bump_strokes(node, reset=(value == 0.0))
     if stage is not None and node.get_param("output").value == _OUTPUT_POINTS:
         # Points are the output in this mode, so Fill/Clear act on them instead. Filling a
         # point cloud has no meaning -- there is no "everywhere" to place one at -- so only
         # clearing does anything.
         if value == 0.0:
             _write_points(node, stage, [], [])
+        # After the change, not before. Bumping first recooked the chain while the points were
+        # still there, so the first Clear emptied the cloud and left every instance standing --
+        # reported as having to press Clear twice.
+        _bump_strokes(node, reset=(value == 0.0))
         return
     if prim is None:
         return
     for mesh_prim, points in _paint_targets(prim):
         _write_weights(node, stage, mesh_prim, [value] * len(points))
+    _bump_strokes(node, reset=(value == 0.0))
 
 
 def _show_paint_changed(owner, notice, sender):

@@ -959,3 +959,51 @@ def test_wiring_painted_points_hides_the_distribution_settings() -> None:
 
     sc.get_param("points_prim").value = ""
     assert not any(hidden(n) for n in scatter_points._SAMPLING_ONLY), "they must come back"
+
+
+def test_subtract_erases_placed_points() -> None:
+    """Reported: Subtract quietly went on adding in Points mode -- the mode was read only by
+    the density path -- so the only way to remove anything was Clear, which removes everything."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=3.0, strength=1.0)
+    for x in (2.0, 8.0, 14.0):
+        _stroke(c, (x, 5.0, 0.0))
+    assert len(_points(stage, c)) == 3
+
+    c.get_param("mode").value = "Subtract"
+    _stroke(c, (8.0, 5.0, 0.0))
+
+    remaining = [round(p[0], 3) for p in _points(stage, c)]
+    assert remaining == [2.0, 14.0], "the point under the brush should have gone"
+
+
+def test_subtract_leaves_points_outside_the_brush() -> None:
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=2.0, strength=1.0)
+    for x in (2.0, 12.0):
+        _stroke(c, (x, 5.0, 0.0))
+
+    c.get_param("mode").value = "Subtract"
+    assert _stroke(c, (30.0, 30.0, 0.0)) is False, "nothing was under the brush"
+    assert len(_points(stage, c)) == 2
+
+
+def test_clearing_points_recooks_after_they_are_gone() -> None:
+    """Reported as having to press Clear twice: the chain was told to recook *before* the
+    points were removed, so the first press emptied the cloud and left every instance
+    standing."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=3.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+    c.stop_gizmo()
+
+    seen = []
+    counter = c.get_param("stroke_count")
+    counter.add_callback(
+        lambda owner, notice, sender: seen.append(len(_points(stage, c))),
+        send_on_create=False,
+    )
+    brush_mod._clear_paint(c.get_param("clear_paint"), None, None)
+
+    assert seen, "clearing never told the chain anything"
+    assert seen[-1] == 0, "the chain was told to recook while the points were still there"
