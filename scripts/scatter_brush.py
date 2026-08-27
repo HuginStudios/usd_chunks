@@ -90,8 +90,37 @@ def _cached_targets(node, prim):
     if cache is not None and cache[0] == key:
         return cache[1]
     targets = _paint_targets(prim)
-    setattr(node, _STROKE_CACHE, (key, targets))
+    setattr(node, _STROKE_CACHE, (key, targets, {}))
     return targets
+
+
+def _stroke_state(node, mesh_prim, count):
+    """The weights and underlying colour for one mesh, held for the stroke.
+
+    Both were recomputed per tick, and both are fixed for the duration of a stroke: the
+    weights because we are the only writer, the colour because a surface does not repaint
+    itself while you drag on it.
+
+    Measured on a 14.6k-vertex floor, a tick cost 173ms -- six frames a second -- and 77% of
+    that was rebuilding the base colour: fourteen thousand Gf.Vec3f objects, per tick, off the
+    property stack.
+    """
+    cache = getattr(node, _STROKE_CACHE, None)
+    if cache is None:
+        return _current_weights(mesh_prim, count), []
+    states = cache[2]
+    key = str(mesh_prim.GetPath())
+    state = states.get(key)
+    if state is None:
+        attr = UsdGeom.Gprim(mesh_prim).GetDisplayColorAttr()
+        base = _base_colour(attr, node.get_edit_context())
+        weights = _current_weights(mesh_prim, count)
+        # The colours are held too, and mutated in place: only a few hundred vertices move
+        # under a brush, and rebuilding all of them each tick was the next cost down once the
+        # base colour stopped being recomputed.
+        state = [weights, base, _tint_colours(node, weights, base)]
+        states[key] = state
+    return state
 
 
 def _drop_stroke_cache(node):
@@ -115,14 +144,18 @@ def _stroke_finished(owner, notice, sender):
     """
     _drop_stroke_cache(owner)
     try:
-        node = owner.get_dag_node()
-        node.dirty = True
-        # Marking dirty only records that a recook is due -- something has to run it. A param
-        # write gets that for free from the write path; a stroke writes USD, so nothing else
-        # was ever going to. Reported as instances still not appearing until a slider moved,
-        # even once the release was being heard.
-        for _ in node.solve_outputs():
-            pass
+        # A param write, deliberately, rather than dirtying the node by hand.
+        #
+        # Two attempts at the direct route did not recook a connected Scatter Points: marking
+        # dirty only records that a recook is due, and solving the node's own outputs did not
+        # reach it either. Meanwhile the user's own workaround -- nudging any value on this
+        # chunk -- worked every time. So this does exactly that, and inherits whatever the
+        # write path does that hand-dirtying misses.
+        #
+        # `stroke_count` exists only to be written. It is what a stroke *is*, from the graph's
+        # point of view: the one thing about this chunk that changed.
+        counter = owner.get_param("stroke_count")
+        counter.value = int(counter.value or 0) + 1
     except Exception:  # noqa: BLE001 - a failed recook must not break the gesture
         logger.debug("Could not recook after a stroke on %s", owner.name, exc_info=True)
 
@@ -172,7 +205,7 @@ _DISPLAY_COLOR = "primvars:displayColor"
 _NEUTRAL = Gf.Vec3f(0.5, 0.5, 0.5)
 
 
-def _write_weights(node, stage, prim, weights):
+def _write_weights(node, stage, prim, weights, colours=None):
     """Author the field into this chunk's own layer, as an over on the surface."""
     layer = node.get_edit_context()
     context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
@@ -182,10 +215,10 @@ def _write_weights(node, stage, prim, weights):
             DENSITY_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
         )
         primvar.Set(Vt.FloatArray([float(w) for w in weights]))
-        _write_tint(node, stage, over, weights)
+        _write_tint(node, stage, over, weights, colours=colours)
 
 
-def _write_tint(node, stage, over, weights):
+def _write_tint(node, stage, over, weights, colours=None):
     """Colour the surface by weight, so a stroke is visible the moment it lands.
 
     Reported live: "the paint doesn't give away at all that I have hit it". The field was
@@ -207,17 +240,21 @@ def _write_tint(node, stage, over, weights):
         _remove_our_tint(node, over)
         return
 
-    paint = Gf.Vec3f(*(node.get_param("paint_color").value or (0.15, 0.55, 1.0)))
-    base = _base_colour(attr, node.get_edit_context())
+    if colours is None:
+        colours = _tint_colours(node, weights, _base_colour(attr, node.get_edit_context()))
     attr = UsdGeom.Gprim(over).CreateDisplayColorAttr()
     UsdGeom.Primvar(attr).SetInterpolation(UsdGeom.Tokens.vertex)
+    attr.Set(Vt.Vec3fArray(colours))
 
+
+def _tint_colours(node, weights, base):
+    """The whole tint, blended from whatever the surface already had."""
+    paint = Gf.Vec3f(*(node.get_param("paint_color").value or (0.15, 0.55, 1.0)))
     colours = []
     for index, weight in enumerate(weights):
         under = base[index] if index < len(base) else (base[-1] if base else _NEUTRAL)
-        t = max(0.0, min(1.0, float(weight)))
-        colours.append(under + (paint - under) * t)
-    attr.Set(Vt.Vec3fArray(colours))
+        colours.append(under + (paint - under) * max(0.0, min(1.0, float(weight))))
+    return colours
 
 
 def _remove_our_tint(node, over):
@@ -299,7 +336,8 @@ def gizmo_stroke(node, gizmo, samples):
     touched = False
 
     for mesh_prim, points in targets:
-        weights = _current_weights(mesh_prim, len(points))
+        weights, base, colours = _stroke_state(node, mesh_prim, len(points))
+        paint = Gf.Vec3f(*(node.get_param("paint_color").value or (0.15, 0.55, 1.0)))
         changed = False
         for centre, pressure in centres:
             if centre is None:
@@ -313,12 +351,17 @@ def gizmo_stroke(node, gizmo, samples):
                 if amount <= 0.0:
                     continue
                 weights[index] = _blend(mode, weights[index], amount)
+                if colours:
+                    # In place: only what moved under the brush is recoloured, rather than
+                    # every vertex on the surface being rebuilt on every tick.
+                    under = base[index] if index < len(base) else _NEUTRAL
+                    colours[index] = under + (paint - under) * weights[index]
                 changed = True
         # Written per mesh, and only the ones the stroke reached: a table is a dozen prims
         # and a brush touches one of them, so re-authoring all of them every tick would put
         # a full copy of every vertex array into the layer on each mouse-move.
         if changed:
-            _write_weights(node, stage, mesh_prim, weights)
+            _write_weights(node, stage, mesh_prim, weights, colours=colours)
             touched = True
 
     return touched
@@ -511,6 +554,14 @@ def main():
     grp.add_param(mode)
     chunk_api.add_param(grp)
 
+
+    # Written on every stroke end and nothing else. OUTPUT keeps it out of the UI -- it is
+    # bookkeeping, not a setting -- while still being a real param write, which is what makes
+    # the chain recook.
+    chunk_api.add_param(chunk.Slider(
+        "stroke_count", "Strokes", default_value=0, is_int=True,
+        flags=chunk.ChunkFlags.ParamFlags.OUTPUT,
+    ))
 
     output = chunk.Menu(
         "output", "Output", menu_items=_OUTPUTS, default_value=_OUTPUT_DENSITY,

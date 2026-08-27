@@ -660,10 +660,30 @@ def test_finishing_a_stroke_recooks_the_chain() -> None:
     c = _brush(stage, radius=5.0, strength=1.0)
     _stroke(c, (5.0, 5.0, 0.0))
 
-    # Routing, not the flag: finishing a stroke now *solves* as well as dirtying, and a solve
-    # clears the flag again -- so reading it afterwards reports False for the very case that
-    # works. Marking dirty alone was the earlier bug, and it looked identical from here.
-    assert "dirty" in _routing_of(c.stop_gizmo)
+    before = c.get_param("stroke_count").value
+
+    routes = _routing_of(c.stop_gizmo)
+
+    # A real param write, which is the only route observed to actually reach a connected
+    # Scatter Points. Dirtying the node by hand, and solving its outputs, both looked correct
+    # from inside and changed nothing in a live session.
+    assert c.get_param("stroke_count").value == before + 1
+    assert "dirty" in routes, "the write must recook readers, not be presentation-only"
+
+
+def test_only_finishing_a_stroke_bumps_the_counter() -> None:
+    """It is what a stroke *is* from the graph's point of view. Bumping it per tick would put
+    the recook back on every mouse-move, which is the sticky drag all over again."""
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=5.0, strength=1.0)
+    before = c.get_param("stroke_count").value
+
+    for _ in range(4):
+        _stroke(c, (5.0, 5.0, 0.0))
+
+    assert c.get_param("stroke_count").value == before
+    c.stop_gizmo()
+    assert c.get_param("stroke_count").value == before + 1
 
 
 # ---------------------------------------------------------------------------
@@ -753,3 +773,40 @@ def test_switching_back_to_density_paints_a_field_again() -> None:
     _stroke(c, (5.0, 5.0, 0.0))
 
     assert max(_weights(stage)) > 0.0
+
+
+def test_a_stroke_does_not_re_read_the_surface_every_tick() -> None:
+    """Measured, not assumed: a tick on a 14.6k-vertex floor cost 173ms -- six frames a
+    second -- and 77% of it was rebuilding the base colour from the property stack, fourteen
+    thousand Gf.Vec3f at a time. Nothing about the surface can change mid-stroke: we are the
+    only writer of the weights, and a mesh does not repaint itself while you drag on it."""
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=5.0, strength=0.4)
+
+    calls = []
+    real = brush_mod._base_colour
+    brush_mod._base_colour = lambda *a, **k: calls.append(1) or real(*a, **k)
+    try:
+        for i in range(6):
+            _stroke(c, (5.0 + i * 0.1, 5.0, 0.0))
+    finally:
+        brush_mod._base_colour = real
+
+    assert len(calls) <= 1, f"the surface colour was re-read {len(calls)} times in one stroke"
+
+
+def test_the_cached_tint_still_matches_a_full_rebuild() -> None:
+    """The colours are mutated in place during a stroke rather than rebuilt. That is only safe
+    if it lands on the same answer -- a drift here would show as the tint slowly disagreeing
+    with the weights."""
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=6.0, strength=0.35)
+    for i in range(4):
+        _stroke(c, (5.0, 5.0, 0.0))
+
+    incremental = _tint(stage)
+    weights = _weights(stage)
+    rebuilt = brush_mod._tint_colours(c, weights, brush_mod._base_colour(None, None))
+
+    for a, b in zip(incremental, rebuilt):
+        assert Gf.Vec3f(*a) == pytest.approx(Gf.Vec3f(*b), abs=1e-6)
