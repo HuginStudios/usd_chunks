@@ -39,6 +39,12 @@ class UsdviewScene(chunk_core.SceneSender):
 
         # Adds a delay to the set_viewport_camera as a workaround to remove thread racing
         self._camera_prim = None
+        # Initialised here as well as on first use: _on_view_settings_changed reads it to tell
+        # a free camera we caused to be rebuilt from one the user owns, and that runs on any
+        # view setting change, long before anything asks for a viewport camera.
+        self._snap_prim = None
+        #: The user's own free-camera field of view, held across usdview rebuilding it.
+        self._free_camera_fov = None
         self._camera_snap_timer = QtCore.QTimer()
         self._camera_snap_timer.setSingleShot(True)
         self._camera_snap_timer.timeout.connect(self._on_snap_timer)
@@ -144,8 +150,29 @@ class UsdviewScene(chunk_core.SceneSender):
         app._dataModel.viewSettings.cameraPrim = prim
 
     def set_viewport_camera(self, prim) -> None:
+        # Before pointing the viewport at a prim, while the free camera is still the user's
+        # own. From here on usdview rebuilds it from that prim on every navigation, so this is
+        # the last moment its lens means anything.
+        self._remember_free_camera_lens()
         self._snap_prim = prim
         self._camera_snap_timer.start(150)
+
+    def _remember_free_camera_lens(self) -> None:
+        """Snapshot the free camera's lens, but only while it is genuinely the user's.
+
+        Skipped whenever a camera prim is already in view, because the free camera is then a
+        copy of *that* camera and remembering it would bake the leak in permanently instead of
+        undoing it -- the lock re-asserts the prim after every move, so this is called
+        repeatedly while a chunk camera is up.
+        """
+        try:
+            if self.usdviewAPI.dataModel.viewSettings.cameraPrim is not None:
+                return
+            fov = getattr(self._get_free_camera(), "fov", None)
+        except Exception:  # noqa: BLE001 - a lens is never worth raising into the host over
+            return
+        if fov is not None:
+            self._free_camera_fov = fov
 
     def _on_view_settings_changed(self):
         current_cam = self._get_free_camera()
@@ -158,7 +185,37 @@ class UsdviewScene(chunk_core.SceneSender):
 
         if current_cam is not None:
             self._current_cam = current_cam
+            # Before connecting, deliberately: the fov setter emits signalFrustumChanged, and
+            # hearing our own correction come back as a camera move would write the prim and
+            # re-arm the snap, i.e. the very loop this is here to break.
+            self._reconcile_free_camera_lens(current_cam)
             self._current_cam.signalFrustumChanged.connect(self.activeCameraChangedCallback)
+
+    def _reconcile_free_camera_lens(self, free_cam) -> None:
+        """Keep the user's own free-camera lens across usdview rebuilding it.
+
+        usdview cannot tumble a camera prim, so any navigation while one is the viewport
+        camera calls `switchToFreeCamera()`, which builds a **new** FreeCamera with
+        `FreeCamera.FromGfCamera()` -- copying that prim's focal length and aperture. With
+        `lock_to_freecam` re-asserting the prim after every move, that happens on every
+        navigation, so the user's navigation lens is repainted with the chunk camera's each
+        time. Reported as the camera's settings "transferring to the free camera": a 50mm on a
+        13.3mm aperture turned the free camera into a 15-degree telephoto to fly around in.
+
+        Which way to go is decided by whether a prim of ours is being viewed. If none is, this
+        free camera is the user's and its lens is the thing worth remembering. If one is, the
+        rebuild is a consequence of our own snapping and is ours to undo.
+        """
+        if self._snap_prim is None:
+            self._free_camera_fov = getattr(free_cam, "fov", None)
+            return
+
+        if self._free_camera_fov is None:
+            return
+        # Compared rather than set unconditionally: the setter emits regardless, and an
+        # unnecessary emit here is an unnecessary cook downstream.
+        if abs(getattr(free_cam, "fov", self._free_camera_fov) - self._free_camera_fov) > 1e-6:
+            free_cam.fov = self._free_camera_fov
 
     def _on_snap_timer(self):
         if self._snap_prim is not None:
