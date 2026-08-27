@@ -65,7 +65,7 @@ def _make(scene, mod, module_name):
 
 
 def _render_network(scene):
-    """A var -> product -> settings chain, wired by Reference outputs and cooked."""
+    """A var -> product -> settings chain, wired by prim path and cooked."""
     var_mod = importlib.import_module("scripts.render_var")
     prod_mod = importlib.import_module("scripts.render_product")
     set_mod = importlib.import_module("scripts.render_settings")
@@ -74,11 +74,11 @@ def _render_network(scene):
     var.execute()
 
     product = _make(scene, prod_mod, "render_product")
-    product.get_param("ordered_vars").value = var.get_param("reference").value
+    product.get_param("ordered_vars").value = var.get_param("primpath_location").value
     product.execute()
 
     settings = _make(scene, set_mod, "render_settings")
-    settings.get_param("products").value = product.get_param("reference").value
+    settings.get_param("products").value = product.get_param("primpath_location").value
     settings.execute()
 
     return var, product, settings
@@ -89,7 +89,7 @@ class TestRenderVar:
         scene, stage = _setup_stage()
         var, _product, _settings = _render_network(scene)
 
-        prim = stage.GetPrimAtPath(var.get_param("reference").value)
+        prim = stage.GetPrimAtPath(var.get_param("primpath_location").value)
         assert prim, "Render Var should author a prim at its Reference path"
 
         render_var = UsdRender.Var(prim)
@@ -97,23 +97,16 @@ class TestRenderVar:
         assert render_var.GetSourceNameAttr().Get() == "Ci"
         assert render_var.GetSourceTypeAttr().Get() == "raw"
 
-    def test_reference_output_is_the_authored_path(self):
-        scene, stage = _setup_stage()
-        var, _product, _settings = _render_network(scene)
-
-        assert var.get_param("reference").value == var.get_param("primpath_location").value
-
-
 class TestRenderProduct:
     def test_ordered_vars_resolves_the_wired_var(self):
         scene, stage = _setup_stage()
         var, product, _settings = _render_network(scene)
 
-        prim = stage.GetPrimAtPath(product.get_param("reference").value)
+        prim = stage.GetPrimAtPath(product.get_param("primpath_location").value)
         assert prim
 
         targets = UsdRender.Product(prim).GetOrderedVarsRel().GetTargets()
-        assert [str(t) for t in targets] == [var.get_param("reference").value]
+        assert [str(t) for t in targets] == [var.get_param("primpath_location").value]
 
     def test_warns_when_usd_cannot_confirm_the_product(self, caplog):
         """USD checks for a written product by opening productName verbatim -- no frame
@@ -143,8 +136,25 @@ class TestRenderProduct:
         scene, stage = _setup_stage()
         _var, product, _settings = _render_network(scene)
 
-        usd_product = UsdRender.Product(stage.GetPrimAtPath(product.get_param("reference").value))
+        product.get_param("product_name").value = "render.exr"
+        product.execute()
+
+        usd_product = UsdRender.Product(stage.GetPrimAtPath(product.get_param("primpath_location").value))
         assert usd_product.GetProductNameAttr().Get() == "render.exr"
+        assert usd_product.GetProductTypeAttr().Get() == "raster"
+
+    def test_unnamed_product_authors_no_product_name(self):
+        """Output File is empty by default, and empty means silent.
+
+        A product that has not been told where to write must not claim a filename of
+        its own: the render would land in whichever directory it happened to run from,
+        under a name nobody chose.
+        """
+        scene, stage = _setup_stage()
+        _var, product, _settings = _render_network(scene)
+
+        usd_product = UsdRender.Product(stage.GetPrimAtPath(product.get_param("primpath_location").value))
+        assert not usd_product.GetProductNameAttr().HasAuthoredValue()
         assert usd_product.GetProductTypeAttr().Get() == "raster"
 
 
@@ -153,7 +163,7 @@ class TestRenderSettings:
         scene, stage = _setup_stage()
         _var, _product, settings = _render_network(scene)
 
-        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         assert tuple(usd_settings.GetResolutionAttr().Get()) == (1920, 1080)
         assert list(usd_settings.GetIncludedPurposesAttr().Get()) == ["default", "render"]
 
@@ -161,9 +171,9 @@ class TestRenderSettings:
         scene, stage = _setup_stage()
         _var, product, settings = _render_network(scene)
 
-        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         targets = usd_settings.GetProductsRel().GetTargets()
-        assert [str(t) for t in targets] == [product.get_param("reference").value]
+        assert [str(t) for t in targets] == [product.get_param("primpath_location").value]
 
     def test_data_window_and_effect_switches_are_authored(self):
         scene, stage = _setup_stage()
@@ -174,7 +184,7 @@ class TestRenderSettings:
         settings.get_param("disable_depth_of_field").value = True
         settings.execute()
 
-        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         assert tuple(usd_settings.GetDataWindowNDCAttr().Get()) == (0.25, 0.25, 0.75, 0.75)
         assert usd_settings.GetDisableMotionBlurAttr().Get() is True
         assert usd_settings.GetDisableDepthOfFieldAttr().Get() is True
@@ -187,7 +197,7 @@ class TestRenderSettings:
         settings.get_param("rendering_color_space").value = "acescg"
         settings.execute()
 
-        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         assert list(usd_settings.GetMaterialBindingPurposesAttr().Get()) == ["full", "preview"]
         assert usd_settings.GetRenderingColorSpaceAttr().Get() == "acescg"
 
@@ -197,7 +207,7 @@ class TestRenderSettings:
         scene, stage = _setup_stage()
         _var, _product, settings = _render_network(scene)
 
-        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        prim = stage.GetPrimAtPath(settings.get_param("primpath_location").value)
         assert not prim.GetAttribute("materialBindingPurposes").HasAuthoredValue()
         assert not prim.GetAttribute("renderingColorSpace").HasAuthoredValue()
 
@@ -229,7 +239,7 @@ class TestRenderSettings:
         settings.get_param("camera").value = "/cam_a,/cam_b"
         settings.execute()
 
-        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         assert [str(t) for t in usd_settings.GetCameraRel().GetTargets()] == ["/cam_a"]
 
     def test_blank_camera_authors_no_relationship(self):
@@ -239,7 +249,7 @@ class TestRenderSettings:
         settings.get_param("camera").value = "   "
         settings.execute()
 
-        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("reference").value))
+        usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         assert usd_settings.GetCameraRel().GetTargets() == []
 
     def test_stage_render_settings_metadata_is_set(self):
@@ -251,7 +261,7 @@ class TestRenderSettings:
 
         stage_settings = UsdRender.Settings.GetStageRenderSettings(stage)
         assert stage_settings, "renderSettingsPrimPath should be authored by default"
-        assert str(stage_settings.GetPath()) == settings.get_param("reference").value
+        assert str(stage_settings.GetPath()) == settings.get_param("primpath_location").value
 
     def test_metadata_not_written_when_the_checkbox_is_off(self):
         scene, stage = _setup_stage()
@@ -329,7 +339,7 @@ class TestDelegateSettings:
         _mod, settings = self._settings_chunk(scene)
         settings.execute()
 
-        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        prim = stage.GetPrimAtPath(settings.get_param("primpath_location").value)
         assert list(prim.GetAppliedSchemas()) == []
 
     @requires_renderer
@@ -410,7 +420,7 @@ class TestDelegateSettings:
         settings.get_param(target.name).value = True
         settings.execute()
 
-        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        prim = stage.GetPrimAtPath(settings.get_param("primpath_location").value)
         assert definition.schema_name in prim.GetAppliedSchemas()
 
     @requires_renderer
@@ -422,7 +432,7 @@ class TestDelegateSettings:
         # every renderer is lofted on creation; nothing to select
         settings.execute()
 
-        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        prim = stage.GetPrimAtPath(settings.get_param("primpath_location").value)
         authored = [
             a.GetName() for a in prim.GetAttributes()
             if a.GetName().startswith(definition.namespace + ":") and a.HasAuthoredValue()
@@ -441,7 +451,7 @@ class TestDelegateSettings:
         settings.get_param(target.name).value = True
         settings.execute()
 
-        prim = stage.GetPrimAtPath(settings.get_param("reference").value)
+        prim = stage.GetPrimAtPath(settings.get_param("primpath_location").value)
         attr = prim.GetAttribute(target.attr_name)
         assert attr.HasAuthoredValue()
         assert attr.Get() is True
@@ -656,7 +666,7 @@ class TestRenderPass:
     def _pass(self, scene, settings):
         mod = importlib.import_module("scripts.render_pass")
         rp = _make(scene, mod, "render_pass")
-        rp.get_param("render_source").value = settings.get_param("reference").value
+        rp.get_param("render_source").value = settings.get_param("primpath_location").value
         rp.execute()
         return rp
 
@@ -665,10 +675,10 @@ class TestRenderPass:
         _var, _product, settings = _render_network(scene)
         rp = self._pass(scene, settings)
 
-        prim = stage.GetPrimAtPath(rp.get_param("reference").value)
+        prim = stage.GetPrimAtPath(rp.get_param("primpath_location").value)
         assert prim
         targets = UsdRender.Pass(prim).GetRenderSourceRel().GetTargets()
-        assert [str(t) for t in targets] == [settings.get_param("reference").value]
+        assert [str(t) for t in targets] == [settings.get_param("primpath_location").value]
 
     def test_pass_type_and_input_passes(self):
         scene, stage = _setup_stage()
@@ -679,14 +689,14 @@ class TestRenderPass:
         second = _make(scene, mod, "render_pass")
         second.get_param("primpath_location").value = "/Render/Passes/comp"
         second.get_param("pass_type").value = "comp"
-        second.get_param("input_passes").value = first.get_param("reference").value
+        second.get_param("input_passes").value = first.get_param("primpath_location").value
         second.execute()
 
-        prim = stage.GetPrimAtPath(second.get_param("reference").value)
+        prim = stage.GetPrimAtPath(second.get_param("primpath_location").value)
         usd_pass = UsdRender.Pass(prim)
         assert usd_pass.GetPassTypeAttr().Get() == "comp"
         assert [str(t) for t in usd_pass.GetInputPassesRel().GetTargets()] == [
-            first.get_param("reference").value
+            first.get_param("primpath_location").value
         ]
 
     def test_only_one_render_source_is_kept(self):
@@ -699,7 +709,7 @@ class TestRenderPass:
         rp.get_param("render_source").value = "/Render/settings,/Render/Products/beauty"
         rp.execute()
 
-        targets = UsdRender.Pass(stage.GetPrimAtPath(rp.get_param("reference").value))
+        targets = UsdRender.Pass(stage.GetPrimAtPath(rp.get_param("primpath_location").value))
         assert len(targets.GetRenderSourceRel().GetTargets()) == 1
 
     def test_render_chunk_takes_settings_from_the_pass(self):
@@ -710,11 +720,11 @@ class TestRenderPass:
 
         mod = importlib.import_module("scripts.render")
         rop = _make(scene, mod, "render")
-        rop.get_param("pass_path").value = rp.get_param("reference").value
+        rop.get_param("pass_path").value = rp.get_param("primpath_location").value
         assert not rop.get_param("settings_path").value
 
-        assert mod._resolve_settings_path(rop, stage) == settings.get_param("reference").value
-        assert mod._resolve_pass_path(rop, stage) == rp.get_param("reference").value
+        assert mod._resolve_settings_path(rop, stage) == settings.get_param("primpath_location").value
+        assert mod._resolve_pass_path(rop, stage) == rp.get_param("primpath_location").value
 
     def test_an_explicit_settings_path_still_wins(self):
         scene, stage = _setup_stage()
@@ -723,7 +733,7 @@ class TestRenderPass:
 
         mod = importlib.import_module("scripts.render")
         rop = _make(scene, mod, "render")
-        rop.get_param("pass_path").value = rp.get_param("reference").value
+        rop.get_param("pass_path").value = rp.get_param("primpath_location").value
         rop.get_param("settings_path").value = "/Render/other"
 
         assert mod._resolve_settings_path(rop, stage) == "/Render/other"
@@ -748,7 +758,7 @@ class TestRenderPass:
         mod = importlib.import_module("scripts.render")
         rop = _make(scene, mod, "render")
         rop.get_param("mode").value = "Hydra"
-        rop.get_param("pass_path").value = rp.get_param("reference").value
+        rop.get_param("pass_path").value = rp.get_param("primpath_location").value
         rop.get_param("output_image").value = str(tmp_path / "beauty.exr")
 
         captured = {}
@@ -761,8 +771,8 @@ class TestRenderPass:
         monkeypatch.setattr(mod, "_make_recorder", _fake)
         mod.commit(rop)
 
-        assert captured["pass_"] == rp.get_param("reference").value
-        assert captured["settings"] == settings.get_param("reference").value
+        assert captured["pass_"] == rp.get_param("primpath_location").value
+        assert captured["settings"] == settings.get_param("primpath_location").value
 
 
 class _FakeRecorder:
@@ -896,7 +906,7 @@ class TestHydraMode:
         rop = _make(scene, mod, "render")
         rop.get_param("mode").value = "Hydra"
         rop.get_param("output_image").value = str(tmp_path / "beauty.png")
-        rop.get_param("settings_path").value = settings.get_param("reference").value
+        rop.get_param("settings_path").value = settings.get_param("primpath_location").value
 
         from pxr import UsdGeom
         UsdGeom.Camera.Define(stage, "/cameras/shotcam")
@@ -914,7 +924,7 @@ class TestHydraMode:
         monkeypatch.setattr(mod, "_make_recorder", _fake_make)
         mod.commit(rop)
 
-        assert captured["settings_path"] == settings.get_param("reference").value
+        assert captured["settings_path"] == settings.get_param("primpath_location").value
 
     def test_settings_prim_falls_back_to_the_stage_metadatum(self, monkeypatch, tmp_path):
         """A Render Settings chunk publishes renderSettingsPrimPath by default, so a
@@ -938,11 +948,16 @@ class TestHydraMode:
         )
         mod.commit(rop)
 
-        assert captured["p"] == settings.get_param("reference").value
+        assert captured["p"] == settings.get_param("primpath_location").value
 
-    def test_relative_paths_resolve_against_the_scene(self, tmp_path):
-        """Otherwise they resolve against whatever directory the host started in, which
-        for usdview is arbitrary and rarely where anyone wants renders."""
+    def test_relative_paths_resolve_against_the_working_directory(self, monkeypatch, tmp_path):
+        """The same base USD gives a relative RenderProduct productName.
+
+        Resolving against the scene file instead splits the two: the image lands beside
+        the .usda while the product it declared is looked for beside the shell, and
+        `usdchunks run scene.usda -o out.exr` writes somewhere the command line did not
+        ask for.
+        """
         import os
         mod = importlib.import_module("scripts.render")
 
@@ -951,11 +966,19 @@ class TestHydraMode:
         stage = Usd.Stage.CreateNew(str(scene_file))
         stage.Save()
 
-        assert mod._stage_relative(stage, "renders/b.exr") == os.path.normpath(
+        cwd = tmp_path / "elsewhere"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+
+        # Resolved against cwd, and specifically not against the directory holding the stage.
+        assert mod._cwd_relative("renders/b.exr") == os.path.normpath(
+            str(cwd / "renders" / "b.exr")
+        )
+        assert mod._cwd_relative("renders/b.exr") != os.path.normpath(
             str(tmp_path / "shot" / "renders" / "b.exr")
         )
         absolute = str(tmp_path / "abs.exr")
-        assert mod._stage_relative(stage, absolute) == absolute
+        assert mod._cwd_relative(absolute) == absolute
 
     def test_output_directory_is_created(self, monkeypatch, tmp_path):
         """No renderer creates it -- which is how a render that completed successfully

@@ -14,7 +14,11 @@ from pxr import Sdf, UsdRender
 
 from usd_chunks import chunk, chunk_notice, chunk_utils
 
-logger = logging.getLogger(__name__)
+# Parented under "usd_chunks" so this module's messages reach the package handler and
+# its INFO level; a chunk module imported under its own file name otherwise logs from
+# outside the package tree, where only WARNING and above escape, unformatted, through
+# logging's lastResort. See the note in render.py.
+logger = logging.getLogger(f"usd_chunks.{__name__}")
 
 #: Formats that hold one image, so a product written to one cannot carry several AOVs.
 #: EXR is the notable absence -- multi-part and multi-channel, which is why AOVs
@@ -113,17 +117,13 @@ def main():
             default_value=prim_path,
             flags=chunk.ChunkFlags.ParamFlags.LABELED,
         ),
-        chunk.LineEdit("product_name", "Output File", default_value="render.exr"),
+        chunk.LineEdit("product_name", "Output File"),
         chunk.Menu("product_type", "Product Type", menu_items=["raster"], default_value="raster"),
         chunk.LineEdit(
             "camera", "Camera",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
         ),
         chunk.LineEdit("ordered_vars", "Ordered Vars"),
-        chunk.LineEdit(
-            "reference", "Reference",
-            flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
-        ),
     ])
     return chunk_api
 
@@ -167,8 +167,6 @@ def execute(node):
         if not var_selections and authored != target_path:
             node.get_param("primpath_location").value = authored
 
-        node.get_param("reference").value = authored
-
 
 def config():
     return chunk.DefaulConfig(
@@ -184,6 +182,11 @@ def config():
           - Output File: the productName attribute — the file the renderer writes.
             Frame-numbering conventions (render.####.exr) are passed through
             untouched for the renderer to expand.
+
+            Empty by default, and empty authors no productName at all: a product
+            that has not been told where to write should say nothing rather than
+            quietly claim a filename in whichever directory the render happened to
+            run from. Name one before expecting this product to produce a file.
 
             One product is one file, so several Ordered Vars means several layers
             in one image. EXR holds them; PNG and the other single-image formats
@@ -205,10 +208,8 @@ def config():
             camera from the Render Settings that references this product.
           - Ordered Vars: the RenderVar prims making up this product's channels,
             as paths or glob patterns. Order is preserved and duplicates dropped,
-            because orderedVars is an ordered relationship. Wire Render Var
-            chunks' Reference outputs in here.
-          - Reference (output): the authored prim path, for wiring into a Render
-            Settings chunk's Products.
+            because orderedVars is an ordered relationship. Name the Render Var
+            chunks' prim paths in here.
 
         Everything authored is standard UsdRender scene description, readable by
         any renderer whether or not usd_chunks is installed.
