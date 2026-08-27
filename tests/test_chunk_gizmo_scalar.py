@@ -902,6 +902,48 @@ def test_unlocking_hands_back_the_flight_even_after_the_camera_was_moved() -> No
     camera_mod.execute(node)
     assert c.get_param("tx").value == pytest.approx(7.0)
 
+
+def test_the_freecam_lock_constrains_placement_but_not_scale() -> None:
+    """Reported live: scale the camera, tick Lock to Free Camera, and the scale vanishes from
+    the viewport while the sliders go on reading what you set.
+
+    The freecam is a viewpoint. It says where the camera is and which way it looks, and has no
+    scale worth having -- taking its matrix whole silently replaced the camera's scale with 1.
+    Worst of both: the object snapped back to unscaled AND the params disagreed with it.
+    """
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    c.get_param("primpath_location").value = "/cameras/cam1"
+    node = _CamNode(c, stage)
+    camera_mod.execute(node)
+    path = c.get_param("primpath_location").value
+
+    for name in ("sx", "sy", "sz"):
+        c.get_param(name).value = 5.0
+    camera_mod.execute(node)
+
+    c.get_param("lock_to_freecam").value = True
+    camera_mod._author_matrix(
+        c, stage, stage.GetPrimAtPath(path),
+        camera_mod._with_local_scale(c, Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0))),
+    )
+
+    placed = Gf.Transform(UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetLocalTransformation())
+    assert placed.GetTranslation() == Gf.Vec3d(100.0, 50.0, -200.0), "the freecam still places it"
+    assert placed.GetScale() == pytest.approx(Gf.Vec3d(5.0, 5.0, 5.0)), "and the scale is ours"
+
+    # And it survives the handover, rather than coming back as 1 through adopt.
+    c.get_param("lock_to_freecam").value = False
+    camera_mod.execute(node)
+    assert c.get_param("sx").value == pytest.approx(5.0)
+
+
+def test_an_unscaled_camera_takes_the_freecam_matrix_untouched() -> None:
+    """The common case must not go the long way round and pick up float noise."""
+    camera_mod, c, _stage = _camera_chunk_and_stage()
+    matrix = Gf.Matrix4d().SetTranslate(Gf.Vec3d(1.0, 2.0, 3.0))
+
+    assert camera_mod._with_local_scale(c, matrix) == matrix
+
 def test_adopting_never_overwrites_a_real_edit() -> None:
     """It only fires while every param is still at its default, so a user who has typed a
     position keeps it even if the prim carries something else."""

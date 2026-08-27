@@ -80,13 +80,40 @@ def _apply_freecam_transform(owner, notice, sender):
     prim = stage.GetPrimAtPath(prim_path)
     if not prim.IsValid():
         return
+    # Translate and rotate only -- the chunk keeps its own scale. The freecam is a viewpoint
+    # and has no scale of its own to give, so taking its matrix whole silently replaced the
+    # camera's scale with 1: the object visibly snapped back to unscaled while the sliders
+    # went on reading what the user set, which is the worst way for the two to disagree.
+    #
     # Through this chunk's own op, not MakeMatrixXform(). That resets xformOpOrder to a lone
     # `xformOp:transform`, which would wipe the named op the cook authors -- so unticking the
     # lock left the camera holding a transform from one system and an order naming the other.
-    _author_matrix(_chunk, stage, prim, gf_cam.transform)
+    _author_matrix(_chunk, stage, prim, _with_local_scale(_chunk, gf_cam.transform))
     if not prim.GetAttribute("focusDistance").Get():
         _chunk.get_param("focusDistance").value = gf_cam.focusDistance
     scene.set_viewport_camera(prim)
+
+
+def _with_local_scale(node, matrix):
+    """A placement from elsewhere, with this chunk's own scale kept.
+
+    The freecam constrains where the camera *is* and which way it looks. It is a viewpoint and
+    carries no scale worth having, so its matrix is taken for translate and rotate only and
+    the chunk's scale params are re-applied underneath -- pre-multiplied, so the scale happens
+    in the camera's own space and the placement is unaffected.
+    """
+    scale = _scale_of(node)
+    if scale == Gf.Vec3d(1, 1, 1):
+        return matrix
+    return Gf.Matrix4d().SetScale(scale) * matrix
+
+
+def _scale_of(node):
+    return Gf.Vec3d(
+        node.get_param("sx").value or 1.0,
+        node.get_param("sy").value or 1.0,
+        node.get_param("sz").value or 1.0,
+    )
 
 
 def _author_matrix(node, stage, prim, matrix):
@@ -177,11 +204,7 @@ def _camera_matrix(node):
         node.get_param("tz").value,
     ))
     xform.SetRotation(rotation)
-    xform.SetScale(Gf.Vec3d(
-        node.get_param("sx").value or 1.0,
-        node.get_param("sy").value or 1.0,
-        node.get_param("sz").value or 1.0,
-    ))
+    xform.SetScale(_scale_of(node))
     return xform.GetMatrix()
 
 
