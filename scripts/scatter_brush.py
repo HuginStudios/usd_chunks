@@ -18,6 +18,7 @@ Requires: pxr (OpenUSD), usd_chunks.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
@@ -56,6 +57,53 @@ def _surface_prim(node):
         return None, None
     prim = stage.GetPrimAtPath(targets[0])
     return (prim, stage) if prim.IsValid() else (None, None)
+
+
+#: Where a stroke's working state lives while the mouse is down.
+_STROKE_CACHE = "_stroke_cache"
+
+
+def _cached_targets(node, prim):
+    """`_paint_targets`, held for the duration of a stroke.
+
+    Recomputing it per tick means a local-to-world matrix and a transform of *every vertex on
+    the surface*, on every mouse-move -- which on a real asset is most of the frame and is why
+    painting felt sticky. The geometry cannot move mid-stroke (the brush writes a primvar, not
+    a transform), so once per stroke is enough.
+    """
+    cache = getattr(node, _STROKE_CACHE, None)
+    key = str(prim.GetPath())
+    if cache is not None and cache[0] == key:
+        return cache[1]
+    targets = _paint_targets(prim)
+    setattr(node, _STROKE_CACHE, (key, targets))
+    return targets
+
+
+def _drop_stroke_cache(node):
+    """Let the geometry be re-read. Called when a stroke ends, and whenever anything that
+    could move the surface changes."""
+    if hasattr(node, _STROKE_CACHE):
+        delattr(node, _STROKE_CACHE)
+
+
+def _stroke_started(owner, notice, sender):
+    _drop_stroke_cache(owner)
+
+
+def _stroke_finished(owner, notice, sender):
+    """Recook the chain once, when the brush comes up.
+
+    Painting writes USD rather than params, so nothing downstream ever noticed -- reported as
+    instances not updating until some unrelated slider was nudged. Dirtying per *tick* would
+    be the other extreme: a scatter recooking on every mouse-move is the sticky drag that was
+    also reported. Once, on release, is what a paint tool should do.
+    """
+    _drop_stroke_cache(owner)
+    try:
+        owner.get_dag_node().dirty = True
+    except Exception:  # noqa: BLE001 - a failed recook must not break the gesture
+        logger.debug("Could not dirty %s after a stroke", owner.name, exc_info=True)
 
 
 def _paint_targets(prim):
@@ -97,57 +145,104 @@ def _current_weights(prim, count):
     return [0.0] * count
 
 
-#: Unpainted, and fully painted. Ordinary displayColor, so any renderer shows it and no
-#: viewport code is needed to draw the field.
-_COLD = Gf.Vec3f(0.25, 0.25, 0.30)
-_HOT = Gf.Vec3f(0.95, 0.55, 0.10)
+_DISPLAY_COLOR = "primvars:displayColor"
+
+#: Used where the surface has no colour of its own to blend from.
+_NEUTRAL = Gf.Vec3f(0.5, 0.5, 0.5)
 
 
 def _write_weights(node, stage, prim, weights):
     """Author the field into this chunk's own layer, as an over on the surface."""
     layer = node.get_edit_context()
-    context = Usd.EditContext(stage, layer) if layer else _null_context()
+    context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
     with context:
         over = stage.OverridePrim(prim.GetPath())
         primvar = UsdGeom.PrimvarsAPI(over).CreatePrimvar(
             DENSITY_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
         )
         primvar.Set(Vt.FloatArray([float(w) for w in weights]))
-        _write_tint(node, over, weights)
+        _write_tint(node, stage, over, weights)
 
 
-def _write_tint(node, over, weights):
+def _write_tint(node, stage, over, weights):
     """Colour the surface by weight, so a stroke is visible the moment it lands.
 
     Reported live: "the paint doesn't give away at all that I have hit it". The field was
-    invisible until instances appeared downstream, which is a slow and indirect way to judge
-    a stroke -- and no way at all to judge one before wiring up a scatter.
+    invisible until instances appeared downstream, and invisible entirely before a scatter was
+    wired up.
 
-    Ordinary `displayColor`, authored into this chunk's own layer, rather than anything drawn
-    by the viewport. It needs no host support, shows the gradient rather than a silhouette --
-    which is the whole difference between a density and a mask -- and unticking Show Paint or
-    deleting the chunk takes it away again, because the opinion was only ever ours.
+    **Blended from the surface's own colour, not painted over it.** Authoring a flat colour on
+    every vertex -- which is what this did first -- greys out the whole model to show a stroke
+    in one corner of it, and reads as having lost the asset's look. Unpainted vertices now come
+    back exactly as they were, because the blend at weight zero *is* the original.
+
+    Ordinary `displayColor` in this chunk's own layer, rather than anything drawn by the
+    viewport: it needs no host support, it shows the gradient rather than a silhouette, and
+    unticking Show Paint removes our opinion and leaves whatever was underneath.
     """
     show = node.get_param("show_paint")
     attr = UsdGeom.Gprim(over).GetDisplayColorAttr()
     if not show or not show.value:
-        # Cleared rather than left behind: a tint that outlived the toggle would look like
-        # the asset had been recoloured.
+        _remove_our_tint(node, over)
+        return
+
+    paint = Gf.Vec3f(*(node.get_param("paint_color").value or (0.15, 0.55, 1.0)))
+    base = _base_colour(attr, node.get_edit_context())
+    attr = UsdGeom.Gprim(over).CreateDisplayColorAttr()
+    UsdGeom.Primvar(attr).SetInterpolation(UsdGeom.Tokens.vertex)
+
+    colours = []
+    for index, weight in enumerate(weights):
+        under = base[index] if index < len(base) else (base[-1] if base else _NEUTRAL)
+        t = max(0.0, min(1.0, float(weight)))
+        colours.append(under + (paint - under) * t)
+    attr.Set(Vt.Vec3fArray(colours))
+
+
+def _remove_our_tint(node, over):
+    """Take our colour opinion away and leave everything else standing.
+
+    `attr.Clear()` clears the current edit target -- which is only *our* layer when the chunk
+    has one. Without one it is whatever the stage is pointed at, so unticking Show Paint
+    deleted the surface's own displayColor instead of ours, and the original never came back.
+    Reported as not being able to get the original look back.
+
+    So the spec is removed from this chunk's layer by name, and a chunk with no layer of its
+    own does nothing at all: never having authored a tint, it has none to withdraw.
+    """
+    layer = node.get_edit_context()
+    if layer is None:
+        # No layer of our own, so the tint went to whatever the stage's edit target is and
+        # Clear() takes it from the same place. Symmetric, which is the only property that
+        # matters: authoring one way and withdrawing another is what left it stuck on.
+        attr = UsdGeom.Gprim(over).GetDisplayColorAttr()
         if attr and attr.IsValid():
             attr.Clear()
         return
-    attr = UsdGeom.Gprim(over).CreateDisplayColorAttr()
-    UsdGeom.Primvar(attr).SetInterpolation(UsdGeom.Tokens.vertex)
-    attr.Set(Vt.Vec3fArray([_COLD + (_HOT - _COLD) * max(0.0, min(1.0, float(w)))
-                            for w in weights]))
+    prim_spec = layer.GetPrimAtPath(over.GetPath())
+    if not prim_spec:
+        return
+    spec = prim_spec.properties.get(_DISPLAY_COLOR)
+    if spec is not None:
+        prim_spec.RemoveProperty(spec)
 
 
-class _null_context:
-    def __enter__(self):
-        return None
+def _base_colour(attr, our_layer):
+    """The surface's own displayColor, ignoring the opinion we authored on top of it.
 
-    def __exit__(self, *exc):
-        return False
+    Read off the property stack rather than off the attribute, because by the time this runs
+    ours is usually the winning opinion -- asking the composed value would blend our own tint
+    into itself and drift a little further from the asset on every stroke.
+    """
+    if not attr or not attr.IsValid():
+        return []
+    for spec in attr.GetPropertyStack(Usd.TimeCode.Default()):
+        if our_layer is not None and spec.layer == our_layer:
+            continue
+        value = spec.default
+        if value:
+            return [Gf.Vec3f(*c) for c in value]
+    return []
 
 
 def gizmo_stroke(node, gizmo, samples):
@@ -165,7 +260,7 @@ def gizmo_stroke(node, gizmo, samples):
     if prim is None:
         return False
 
-    targets = _paint_targets(prim)
+    targets = _cached_targets(node, prim)
     if not targets:
         return False
 
@@ -233,6 +328,7 @@ def _unpack(sample):
 
 def _set_everywhere(node, value):
     """Author one weight across every mesh under the surface."""
+    _drop_stroke_cache(node)
     prim, stage = _surface_prim(node)
     if prim is None:
         return
@@ -318,6 +414,14 @@ def main():
     ))
     chunk_api.add_param(grp)
 
+    colour = chunk.ColorPicker(
+        "paint_color", "Paint Color", default_value=(0.15, 0.55, 1.0),
+        tooltip="What painted areas are tinted toward. Blue by default because usdview "
+                "highlights selected prims in yellow, and you paint on selected prims.",
+    )
+    colour.add_callback(_show_paint_changed)
+    chunk_api.add_param(colour)
+
     show = chunk.Checkbox(
         "show_paint", "Show Paint", default_value=True,
         tooltip="Tint the surface by painted weight. Authored in this chunk's layer, so "
@@ -333,6 +437,11 @@ def main():
     clear = chunk.Button("clear_paint", "Clear", tooltip="Wipe the paint back to nothing.")
     clear.add_callback(_clear_paint)
     chunk_api.add_param(clear)
+
+    # The drag bracket the host already sends. GIZMO_START drops the geometry cache so a
+    # stroke reads the surface as it is now; GIZMO_STOP is the one moment a recook is wanted.
+    chunk_api.add_callback(_stroke_started, notice_alias=chunk.ChunkNoticeAlias.GIZMO_START)
+    chunk_api.add_callback(_stroke_finished, notice_alias=chunk.ChunkNoticeAlias.GIZMO_STOP)
 
     return chunk_api
 

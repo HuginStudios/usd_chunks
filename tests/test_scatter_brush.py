@@ -14,7 +14,7 @@ import importlib
 import random
 
 import pytest
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk_gizmo, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
@@ -481,10 +481,13 @@ def test_the_tint_follows_the_weight() -> None:
 
     weights = _weights(stage)
     colours = _tint(stage)
-    hottest = colours[weights.index(max(weights))]
-    coldest = colours[weights.index(min(weights))]
+    paint = Gf.Vec3f(*c.get_param("paint_color").value)
 
-    assert hottest[0] > coldest[0], "the painted end should read hotter"
+    def distance_to_paint(index):
+        return (Gf.Vec3f(*colours[index]) - paint).GetLength()
+
+    # Colour-agnostic: whatever the picker is set to, the painted end is nearer to it.
+    assert distance_to_paint(weights.index(max(weights))) <         distance_to_paint(weights.index(min(weights)))
 
 
 def test_unticking_show_paint_puts_the_colours_back() -> None:
@@ -512,3 +515,46 @@ def test_the_tint_never_disturbs_the_field() -> None:
     c.get_param("show_paint").value = True
 
     assert _weights(stage) == before
+
+
+def test_unpainted_vertices_keep_the_surface_colour() -> None:
+    """Reported live as not being able to get the original look back. Authoring a flat colour
+    on every vertex greys out the whole model to show a stroke in one corner of it -- so the
+    tint now blends *from* whatever the surface already had, and weight zero is the original
+    exactly."""
+    stage = _stage_with_floor()
+    mesh = stage.GetPrimAtPath("/World/Floor")
+    original = Gf.Vec3f(0.8, 0.1, 0.1)
+    points = UsdGeom.Mesh(mesh).GetPointsAttr().Get()
+    UsdGeom.Gprim(mesh).CreateDisplayColorAttr().Set(Vt.Vec3fArray([original] * len(points)))
+
+    c = _brush(stage, radius=4.0, strength=1.0)
+    _stroke(c, (2.0, 2.0, 0.0))
+
+    weights = _weights(stage)
+    colours = _tint(stage)
+    untouched = colours[weights.index(min(weights))]
+
+    assert min(weights) == pytest.approx(0.0), "the fixture needs an unpainted vertex"
+    assert Gf.Vec3f(*untouched) == pytest.approx(original, abs=1e-6)
+
+
+def test_the_tint_does_not_blend_into_itself_over_a_drag() -> None:
+    """The base colour is read off the property stack, skipping our own layer. Reading the
+    composed value instead would fold the previous tint back in and drift a little further
+    from the asset on every tick of a drag."""
+    stage = _stage_with_floor()
+    mesh = stage.GetPrimAtPath("/World/Floor")
+    original = Gf.Vec3f(0.8, 0.1, 0.1)
+    points = UsdGeom.Mesh(mesh).GetPointsAttr().Get()
+    UsdGeom.Gprim(mesh).CreateDisplayColorAttr().Set(Vt.Vec3fArray([original] * len(points)))
+
+    c = _brush(stage, radius=4.0, strength=0.2)
+    for _ in range(6):
+        _stroke(c, (2.0, 2.0, 0.0))
+
+    weights = _weights(stage)
+    colours = _tint(stage)
+    untouched = colours[weights.index(min(weights))]
+
+    assert Gf.Vec3f(*untouched) == pytest.approx(original, abs=1e-6), "the tint crept outward"
