@@ -640,13 +640,19 @@ def execute(node):
         # Centre-to-centre >= the largest instance's footprint -> no overlap.
         spacing = footprint * max(scale_max, 1e-6)
 
-    placed, placed_normals = _painted_points(
-        scratch_stage, node.get_param("points_prim").value
-    )
-    if placed:
+    points_input = node.get_param("points_prim").value
+    placed, placed_normals = _painted_points(scratch_stage, points_input)
+    # The *wire* decides, not whether the brush happens to have points yet. Falling back to
+    # sampling when the cloud was empty meant connecting a fresh brush covered the surface in
+    # instances -- the opposite of what connecting a painting tool should do, and the same
+    # empty-versus-absent distinction the density field already makes.
+    if points_input:
         # Hand-placed: the user said where. No sampling, no spacing, no slope filter -- those
         # answer "where should these go", which is the question already settled by placing
         # them. The density field is ignored for the same reason.
+        #
+        # Empty is an answer too: a brush wired up but not yet painted means "nowhere", not
+        # "anywhere".
         positions, normals = placed, placed_normals
     elif scatter_mode == "Volume":
         positions, normals = _fill_in_volume(triangles, max_count, rng, spacing, mask=density)

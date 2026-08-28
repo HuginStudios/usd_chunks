@@ -1056,3 +1056,22 @@ def test_erasing_keeps_the_remaining_points_their_own_size() -> None:
     _p, _n, after = brush_mod._current_points(c, stage)
     assert len(after) == 1
     assert after[0] == pytest.approx(before[1]), "the survivor changed size"
+
+
+def test_a_connected_brush_with_no_points_scatters_nothing() -> None:
+    """Reported: connecting a fresh Scatter Brush covered the surface in instances.
+
+    Falling back to sampling when the cloud was empty is the opposite of what connecting a
+    painting tool should do. Empty is an answer -- "nowhere" -- and it is the same
+    empty-versus-absent distinction the density field already makes.
+    """
+    stage = _stage_with_floor()
+    c = _points_brush(stage)
+    brush_mod.execute(c)
+
+    placed, _normals = scatter_mod._painted_points(stage, c.get_param("points_path").value)
+
+    assert placed == [], "a brush that has not painted has no points"
+    # And the cook takes the wire's word for it: see the `if points_input:` branch, which is
+    # entered on the connection rather than on the contents.
+    assert c.get_param("points_path").value, "the port still publishes where they would go"

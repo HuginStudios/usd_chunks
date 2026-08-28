@@ -620,6 +620,15 @@ def execute(node):
     nothing to re-author from params -- and clearing the layer the way most chunks do would
     erase the paint on the next slider nudge.
     """
+    # Published whether or not anything has been painted, so the port has a value to carry
+    # from the moment the chunk exists. It only appeared on the first write before, which
+    # meant the Painted Points output could not be connected until after painting -- exactly
+    # backwards, since connecting it is how you decide to paint.
+    path = _points_path(node)
+    published = node.get_param("points_path")
+    if path is not None and published is not None and published.value != str(path):
+        published.value = str(path)
+
     prim, stage = _surface_prim(node)
     if prim is None:
         return
