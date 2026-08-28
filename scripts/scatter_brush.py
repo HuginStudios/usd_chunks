@@ -76,6 +76,11 @@ def _surface_prim(node):
 #: Where a stroke's working state lives while the mouse is down.
 _STROKE_CACHE = "_stroke_cache"
 
+#: Whether anything in the current gesture actually changed the result. A swipe that painted
+#: nothing -- Subtract over bare surface, or a drag that never met geometry -- is not an edit,
+#: and recooking for it is a stall with nothing to show.
+_STROKE_TOUCHED = "_stroke_touched"
+
 
 def _cached_targets(node, prim):
     """`_paint_targets`, held for the duration of a stroke.
@@ -132,6 +137,7 @@ def _drop_stroke_cache(node):
 
 def _stroke_started(owner, notice, sender):
     _drop_stroke_cache(owner)
+    setattr(owner, _STROKE_TOUCHED, False)
 
 
 def _stroke_finished(owner, notice, sender):
@@ -143,6 +149,10 @@ def _stroke_finished(owner, notice, sender):
     also reported. Once, on release, is what a paint tool should do.
     """
     _drop_stroke_cache(owner)
+    if not getattr(owner, _STROKE_TOUCHED, True):
+        # Nothing moved, so there is nothing for anyone downstream to redo.
+        return
+    setattr(owner, _STROKE_TOUCHED, False)
     try:
         # A param write, deliberately, rather than dirtying the node by hand.
         #
@@ -152,7 +162,7 @@ def _stroke_finished(owner, notice, sender):
         # chunk -- worked every time. So this does exactly that, and inherits whatever the
         # write path does that hand-dirtying misses.
         #
-        # `stroke_count` exists only to be written. It is what a stroke *is*, from the graph's
+        # `stroke_count` exists only to be written. It is what an edit *is*, from the graph's
         # point of view: the one thing about this chunk that changed.
         counter = owner.get_param("stroke_count")
         counter.value = int(counter.value or 0) + 1
@@ -364,6 +374,8 @@ def gizmo_stroke(node, gizmo, samples):
             _write_weights(node, stage, mesh_prim, weights, colours=colours)
             touched = True
 
+    if touched:
+        setattr(node, _STROKE_TOUCHED, True)
     return touched
 
 
@@ -404,6 +416,7 @@ def _place_points(node, stage, samples):
 
     if not added:
         return False
+    setattr(node, _STROKE_TOUCHED, True)
     _write_points(node, stage, existing, normals, widths)
     return True
 
@@ -432,6 +445,7 @@ def _erase_points(node, stage, samples, existing, normals, widths, radius):
 
     if len(keep_points) == len(existing):
         return False
+    setattr(node, _STROKE_TOUCHED, True)
     _write_points(node, stage, keep_points, keep_normals, keep_widths)
     return True
 
@@ -535,9 +549,13 @@ def _unpack(sample):
 def _bump_strokes(node, reset=False):
     """Tell the chain something changed. See `_stroke_finished` for why it is a param write.
 
-    `reset` is for Clear, which does not merely change the paint -- it takes it all away, and
-    a count of strokes that survived having nothing left to count read as the button not
-    having worked.
+    Every edit counts, including Subtract: rubbing points out changes the result exactly as
+    much as painting them in, and the instances have to follow either way. The value is a
+    revision number rather than a count of strokes -- naming it the latter made it look wrong
+    going up while something was being removed.
+
+    `reset` is for Clear, which does not merely change the paint -- it takes it all away, and a
+    number that survived having nothing left to count read as the button not having worked.
     """
     try:
         counter = node.get_param("stroke_count")
@@ -676,11 +694,15 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
     ))
 
-    # Written on every stroke end and nothing else. OUTPUT keeps it out of the UI -- it is
-    # bookkeeping, not a setting -- while still being a real param write, which is what makes
-    # the chain recook.
+    # A revision number, not a tally of painting. It exists solely to be written: painting
+    # writes USD rather than params, so without a param change nothing downstream notices.
+    # Every edit bumps it -- adding, subtracting and filling alike, because all three change
+    # the result and all three have to recook -- and Clear puts it back to nothing.
+    #
+    # Named "Strokes" at first, which read as a count of painting and so looked wrong going up
+    # while you were rubbing points out. OUTPUT keeps it out of the UI either way.
     chunk_api.add_param(chunk.Slider(
-        "stroke_count", "Strokes", default_value=0, is_int=True,
+        "stroke_count", "Revision", default_value=0, is_int=True,
         flags=chunk.ChunkFlags.ParamFlags.OUTPUT,
     ))
 

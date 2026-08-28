@@ -1075,3 +1075,58 @@ def test_a_connected_brush_with_no_points_scatters_nothing() -> None:
     # And the cook takes the wire's word for it: see the `if points_input:` branch, which is
     # entered on the connection rather than on the contents.
     assert c.get_param("points_path").value, "the port still publishes where they would go"
+
+
+def test_subtracting_counts_as_an_edit() -> None:
+    """Asked directly: should the counter go up when points are being removed?
+
+    Yes. It is a revision number, not a tally of painting -- rubbing points out changes the
+    result exactly as much as painting them in, and the instances have to follow either way.
+    Naming it "Strokes" is what made it look wrong.
+    """
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=3.0, strength=1.0)
+    c.start_gizmo()
+    _stroke(c, (5.0, 5.0, 0.0))
+    c.stop_gizmo()
+    after_adding = c.get_param("stroke_count").value
+
+    c.get_param("mode").value = "Subtract"
+    c.start_gizmo()
+    _stroke(c, (5.0, 5.0, 0.0))
+    c.stop_gizmo()
+
+    assert c.get_param("stroke_count").value > after_adding
+
+
+def test_a_gesture_that_changed_nothing_does_not_recook() -> None:
+    """A Subtract swipe over bare surface, or a drag that never met geometry. Not an edit, and
+    recooking for it is a stall with nothing to show."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=3.0, strength=1.0)
+    c.start_gizmo()
+    _stroke(c, (5.0, 5.0, 0.0))
+    c.stop_gizmo()
+    before = c.get_param("stroke_count").value
+
+    c.get_param("mode").value = "Subtract"
+    c.start_gizmo()
+    _stroke(c, (60.0, 60.0, 0.0))       # nowhere near anything placed
+    c.stop_gizmo()
+
+    assert c.get_param("stroke_count").value == before
+
+
+def test_a_density_stroke_that_missed_does_not_recook() -> None:
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=4.0, strength=1.0)
+    c.start_gizmo()
+    _stroke(c, (5.0, 5.0, 0.0))
+    c.stop_gizmo()
+    before = c.get_param("stroke_count").value
+
+    c.start_gizmo()
+    _stroke(c, (500.0, 500.0, 0.0))     # off the surface entirely
+    c.stop_gizmo()
+
+    assert c.get_param("stroke_count").value == before
