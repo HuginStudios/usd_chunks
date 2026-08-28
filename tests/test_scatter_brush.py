@@ -835,7 +835,7 @@ def test_each_placed_point_records_the_surface_facing() -> None:
 
     chunk_gizmo.apply_stroke(c, "paint", [(Gf.Vec3d(5, 5, 0), 1.0, tilted)])
 
-    _points_list, normals = brush_mod._current_points(c, stage)
+    _points_list, normals, _widths = brush_mod._current_points(c, stage)
     assert normals[0] == pytest.approx(tilted, abs=1e-6)
 
 
@@ -927,7 +927,7 @@ def test_hiding_the_points_does_not_delete_them() -> None:
 
     c.get_param("show_paint").value = False
 
-    placed, _normals = brush_mod._current_points(c, stage)
+    placed, _normals, _widths = brush_mod._current_points(c, stage)
     assert len(placed) == 1
 
 
@@ -1007,3 +1007,52 @@ def test_clearing_points_recooks_after_they_are_gone() -> None:
 
     assert seen, "clearing never told the chain anything"
     assert seen[-1] == 0, "the chain was told to recook while the points were still there"
+
+
+def test_changing_the_radius_does_not_resize_points_already_placed() -> None:
+    """Reported: painting points, then dragging Radius, grew every point already down.
+
+    The width was derived from the current radius and applied to the whole array, so the
+    slider was silently editing history -- and rebuilding every point to do it, which is
+    also why the drag felt heavy.
+    """
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=4.0, strength=1.0)
+    _stroke(c, (2.0, 2.0, 0.0))
+    _points_list, _normals, before = brush_mod._current_points(c, stage)
+
+    c.get_param("radius").value = 40.0
+
+    _points_list, _normals, after = brush_mod._current_points(c, stage)
+    assert after == pytest.approx(before), "an existing point was resized by the slider"
+
+
+def test_each_point_keeps_the_size_it_was_painted_at() -> None:
+    """Which is also the feature: paint big somewhere, small somewhere else."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=4.0, strength=1.0)
+    _stroke(c, (2.0, 2.0, 0.0))
+
+    c.get_param("radius").value = 12.0
+    _stroke(c, (16.0, 16.0, 0.0))
+
+    _points_list, _normals, widths = brush_mod._current_points(c, stage)
+    assert len(widths) == 2
+    assert widths[1] > widths[0] * 2, "the second dab should be the bigger one"
+
+
+def test_erasing_keeps_the_remaining_points_their_own_size() -> None:
+    stage = _stage_with_floor()
+    c = _points_brush(stage, radius=3.0, strength=1.0)
+    _stroke(c, (2.0, 2.0, 0.0))
+    c.get_param("radius").value = 12.0
+    _stroke(c, (18.0, 18.0, 0.0))
+    _p, _n, before = brush_mod._current_points(c, stage)
+
+    c.get_param("mode").value = "Subtract"
+    c.get_param("radius").value = 3.0
+    _stroke(c, (2.0, 2.0, 0.0))
+
+    _p, _n, after = brush_mod._current_points(c, stage)
+    assert len(after) == 1
+    assert after[0] == pytest.approx(before[1]), "the survivor changed size"

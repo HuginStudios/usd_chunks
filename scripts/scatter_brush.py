@@ -378,10 +378,10 @@ def _place_points(node, stage, samples):
     like the density field, travelling the same wire.
     """
     radius = float(node.get_param("radius").value or 0.0)
-    existing, normals = _current_points(node, stage)
+    existing, normals, widths = _current_points(node, stage)
 
     if node.get_param("mode").value == "Subtract":
-        return _erase_points(node, stage, samples, existing, normals, radius)
+        return _erase_points(node, stage, samples, existing, normals, widths, radius)
 
     spacing = radius
     added = False
@@ -395,6 +395,7 @@ def _place_points(node, stage, samples):
         ):
             continue
         existing.append(Gf.Vec3f(point[0], point[1], point[2]))
+        widths.append(_dab_width(node))
         # The surface's facing where the dab landed. Recorded per point, the way Houdini
         # carries N, so a downstream instance can be laid flat on what it was painted on --
         # a scatter has the triangle to hand, a placed point does not.
@@ -403,11 +404,11 @@ def _place_points(node, stage, samples):
 
     if not added:
         return False
-    _write_points(node, stage, existing, normals)
+    _write_points(node, stage, existing, normals, widths)
     return True
 
 
-def _erase_points(node, stage, samples, existing, normals, radius):
+def _erase_points(node, stage, samples, existing, normals, widths, radius):
     """Rub placed points out, the way Subtract takes density away.
 
     The mode was ignored entirely in Points mode, so Subtract quietly went on adding -- and
@@ -416,8 +417,8 @@ def _erase_points(node, stage, samples, existing, normals, radius):
     if radius <= 0.0 or not existing:
         return False
 
-    keep_points, keep_normals = [], []
-    for point, normal in zip(existing, normals):
+    keep_points, keep_normals, keep_widths = [], [], []
+    for point, normal, width in zip(existing, normals, widths):
         under_brush = False
         for sample in samples:
             centre, _pressure, _n = _unpack(sample)
@@ -427,10 +428,11 @@ def _erase_points(node, stage, samples, existing, normals, radius):
         if not under_brush:
             keep_points.append(point)
             keep_normals.append(normal)
+            keep_widths.append(width)
 
     if len(keep_points) == len(existing):
         return False
-    _write_points(node, stage, keep_points, keep_normals)
+    _write_points(node, stage, keep_points, keep_normals, keep_widths)
     return True
 
 
@@ -440,23 +442,38 @@ def _points_path(node):
 
 
 def _current_points(node, stage):
-    """The points placed so far, with the surface normal recorded at each."""
+    """The points placed so far: position, surface normal and the size each was painted at."""
     path = _points_path(node)
     prim = stage.GetPrimAtPath(path) if path else None
     if not prim or not prim.IsValid():
-        return [], []
+        return [], [], []
     cloud = UsdGeom.Points(prim)
     points = cloud.GetPointsAttr().Get()
     normals = cloud.GetNormalsAttr().Get()
+    widths = cloud.GetWidthsAttr().Get()
     points = [Gf.Vec3f(*p) for p in points] if points else []
     normals = [Gf.Vec3f(*n) for n in normals] if normals else []
-    # Points placed before normals were recorded still load; they just lie flat.
+    widths = [float(w) for w in widths] if widths else []
+    # Points placed before these were recorded still load: they lie flat, at today's size.
     while len(normals) < len(points):
         normals.append(Gf.Vec3f(0, 0, 1))
-    return points, normals
+    while len(widths) < len(points):
+        widths.append(_dab_width(node))
+    return points, normals, widths
 
 
-def _write_points(node, stage, points, normals=None):
+def _dab_width(node):
+    """How big a point placed *now* should be drawn, from the radius at this moment.
+
+    Recorded per point rather than applied to all of them. Deriving every width from the
+    current radius meant changing it resized every point already placed -- reported as the
+    points growing when the slider moved -- and rebuilt the whole array to do it. Per point,
+    the slider only ever describes the next dab, and painting at several sizes is free.
+    """
+    return max(float(node.get_param("radius").value or 1.0) * 0.25, 1e-4)
+
+
+def _write_points(node, stage, points, normals=None, widths=None):
     path = _points_path(node)
     if path is None:
         return
@@ -471,10 +488,11 @@ def _write_points(node, stage, points, normals=None):
         cloud.CreatePointsAttr().Set(Vt.Vec3fArray(points))
         if normals is not None:
             cloud.CreateNormalsAttr().Set(Vt.Vec3fArray(normals))
-        # A visible radius, so placed points read as marks on the model rather than as
-        # single pixels -- the same reason the density mode tints.
-        width = max(float(node.get_param("radius").value or 1.0) * 0.25, 1e-4)
-        cloud.CreateWidthsAttr().Set(Vt.FloatArray([width] * len(points)))
+        # The size each point was painted at, kept with the point. Deriving it from the
+        # current radius resized everything already placed whenever the slider moved.
+        if widths is None:
+            widths = [_dab_width(node)] * len(points)
+        cloud.CreateWidthsAttr().Set(Vt.FloatArray([float(w) for w in widths]))
         UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
         cloud.GetDisplayColorAttr().Set(
             Vt.Vec3fArray([Gf.Vec3f(*(node.get_param("paint_color").value or (0.15, 0.55, 1.0)))])
@@ -542,7 +560,7 @@ def _set_everywhere(node, value):
         # point cloud has no meaning -- there is no "everywhere" to place one at -- so only
         # clearing does anything.
         if value == 0.0:
-            _write_points(node, stage, [], [])
+            _write_points(node, stage, [], [], [])
         # After the change, not before. Bumping first recooked the chain while the points were
         # still there, so the first Clear emptied the cloud and left every instance standing --
         # reported as having to press Clear twice.
