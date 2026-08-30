@@ -87,6 +87,33 @@ def _warn_if_format_cannot_hold(product_name, var_paths):
     )
 
 
+def _existing_vars(stage, var_paths):
+    """The var paths that hold a real UsdRenderVar, with the rest reported and dropped.
+
+    A disabled Render Var chunk never runs, so its prim is never authored -- but its
+    path stays in this chunk's Ordered Vars, and authoring it anyway leaves orderedVars
+    pointing at nothing. Renderers cope, each in its own way: V-Ray Standalone skips
+    each one with a "no suitable UsdRenderVar prim was found" runtime error, which
+    buries the real diagnostics under one message per dangling target. Dropping them
+    here keeps the authored relationship to vars that exist, and disabling a var chunk
+    then means what it looks like it means.
+
+    Reported at INFO rather than WARNING: a var is usually disabled on purpose, and
+    saying so once per cook at warning level would make the ordinary case look broken.
+    """
+    live = [path for path in var_paths if UsdRender.Var(stage.GetPrimAtPath(path))]
+    kept = set(live)
+    if dropped := [path for path in var_paths if path not in kept]:
+        logger.info(
+            "Render Product: %d of %d Ordered Vars have no RenderVar prim and were left "
+            "out of orderedVars (%s). A disabled Render Var chunk authors nothing.",
+            len(dropped),
+            len(var_paths),
+            ", ".join(p.name for p in dropped),
+        )
+    return live
+
+
 def _resolve_targets(stage, param):
     """Prim paths named by a path/glob param, in the order given.
 
@@ -159,7 +186,7 @@ def execute(node):
         if camera_targets := _resolve_targets(stage, node.get_param("camera"))[:1]:
             product.CreateCameraRel().SetTargets(camera_targets)
 
-        if var_paths := _resolve_targets(stage, node.get_param("ordered_vars")):
+        if var_paths := _existing_vars(stage, _resolve_targets(stage, node.get_param("ordered_vars"))):
             product.CreateOrderedVarsRel().SetTargets(var_paths)
             _warn_if_format_cannot_hold(node.get_param("product_name").value, var_paths)
 
@@ -209,7 +236,9 @@ def config():
           - Ordered Vars: the RenderVar prims making up this product's channels,
             as paths or glob patterns. Order is preserved and duplicates dropped,
             because orderedVars is an ordered relationship. Name the Render Var
-            chunks' prim paths in here.
+            chunks' prim paths in here. A path with no RenderVar prim behind it —
+            a disabled Render Var chunk authors none — is left out rather than
+            written as a dangling target.
 
         Everything authored is standard UsdRender scene description, readable by
         any renderer whether or not usd_chunks is installed.
