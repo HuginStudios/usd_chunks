@@ -97,6 +97,55 @@ class TestRenderVar:
         assert render_var.GetSourceNameAttr().Get() == "Ci"
         assert render_var.GetSourceTypeAttr().Get() == "raw"
 
+    def test_driver_params_author_namespaced_attrs(self):
+        from usd_chunks import chunk
+
+        scene, stage = _setup_stage()
+        var_mod = importlib.import_module("scripts.render_var")
+        var = _make(scene, var_mod, "render_var")
+
+        rows = var.get_param("driver_params", chunk.is_inst(chunk.ListGroup))
+        rows.size = 4
+        for i, (name, type_name, value) in enumerate([
+            ("name", "string", "zDepth"),
+            ("format", "token", "float"),
+            ("vray:zDepth:depth_white", "float", "1.0"),
+            ("driver:parameters:husk:multiSampled", "bool", "true"),
+        ]):
+            rows.get_indexed_param("dp_name", i).value = name
+            rows.get_indexed_param("dp_type", i).value = type_name
+            rows.get_indexed_param("dp_value", i).value = value
+        var.execute()
+
+        prim = stage.GetPrimAtPath(var.get_param("primpath_location").value)
+        assert prim.GetAttribute("driver:parameters:aov:name").Get() == "zDepth"
+        assert prim.GetAttribute("driver:parameters:aov:format").Get() == "float"
+        # A bare name gets the aov: scope; one already spelling out driver:parameters:
+        # is used verbatim, so it can sit outside that scope.
+        assert prim.GetAttribute("driver:parameters:aov:vray:zDepth:depth_white").Get() == 1.0
+        assert prim.GetAttribute("driver:parameters:husk:multiSampled").Get() is True
+
+    def test_driver_params_skip_unusable_rows(self):
+        from usd_chunks import chunk
+
+        scene, stage = _setup_stage()
+        var_mod = importlib.import_module("scripts.render_var")
+        var = _make(scene, var_mod, "render_var")
+
+        rows = var.get_param("driver_params", chunk.is_inst(chunk.ListGroup))
+        rows.size = 2
+        rows.get_indexed_param("dp_name", 0).value = ""
+        rows.get_indexed_param("dp_name", 1).value = "force_32_bit_output"
+        rows.get_indexed_param("dp_type", 1).value = "int"
+        rows.get_indexed_param("dp_value", 1).value = "not a number"
+        var.execute()
+
+        prim = stage.GetPrimAtPath(var.get_param("primpath_location").value)
+        authored = [a.GetName() for a in prim.GetAttributes()
+                    if a.GetName().startswith("driver:parameters:")]
+        assert authored == []
+
+
 class TestRenderProduct:
     def test_ordered_vars_resolves_the_wired_var(self):
         scene, stage = _setup_stage()
