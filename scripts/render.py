@@ -245,6 +245,48 @@ def _settings_product_names(stage, settings_path):
     return names
 
 
+def _settings_var_count(stage, settings_path):
+    """How many render vars the settings prim's products ask for, in total.
+
+    Only used to decide whether losing them is worth saying anything about, so
+    duplicates across products are not worth resolving.
+    """
+    if not settings_path:
+        return 0
+
+    prim = stage.GetPrimAtPath(Sdf.Path(settings_path))
+    if not prim or not prim.IsValid():
+        return 0
+
+    count = 0
+    for target in UsdRender.Settings(prim).GetProductsRel().GetForwardedTargets():
+        product_prim = stage.GetPrimAtPath(target)
+        if not product_prim or not product_prim.IsValid():
+            continue
+        count += len(UsdRender.Product(product_prim).GetOrderedVarsRel().GetForwardedTargets())
+    return count
+
+
+def _hydra_reads_render_products():
+    """Whether this USD build lets the render products decide a render's outputs.
+
+    Stock UsdAppUtils.FrameRecorder rejects an empty output path outright -- "Invalid
+    empty output image path" -- and binds no AOVs from a settings prim's render vars,
+    so both the products route and the AOVs need a build carrying the render-settings
+    work in UsdAppUtils.
+
+    SetExtraAovs is the marker for it. It arrives with the same change, and unlike the
+    two behaviours themselves it can be tested for without doing a render. Checked on
+    the class rather than an instance so the answer is available before a recorder --
+    and its render delegate -- has been built.
+    """
+    try:
+        from pxr import UsdAppUtils
+    except ImportError:
+        return False
+    return hasattr(UsdAppUtils.FrameRecorder, "SetExtraAovs")
+
+
 def _prepare_product_dirs(stage, settings_path):
     """Create the directories the settings' RenderProducts will write into.
 
@@ -664,6 +706,29 @@ def _render_hydra(node, output_image):
             "products to write instead. Set one or the other."
         )
         return
+
+    # Refused up front rather than left to fail inside Record(), which reports only
+    # "Invalid empty output image path" -- true, but no help at all in working out that
+    # the build is what is missing rather than the network.
+    if not output_image and not _hydra_reads_render_products():
+        logger.error(
+            "Render: this USD build cannot let the render products decide the outputs, "
+            "so Output Image is required here. Set one, or use Command mode to render "
+            "through an external tool that reads the products itself."
+        )
+        return
+
+    # AOVs go the same way and take no error with them: without the render vars bound,
+    # a network describing twenty channels renders one beauty frame and says nothing.
+    # Worth a word, since the result looks like a renderer that cannot do AOVs.
+    if (var_count := _settings_var_count(stage, settings_path)) and not _hydra_reads_render_products():
+        logger.warning(
+            "Render: this USD build does not bind a settings prim's render vars, so "
+            "the %d AOVs on <%s> will not be in the output — only the beauty. Command "
+            "mode, or a tool that reads the products, renders them.",
+            var_count,
+            settings_path,
+        )
 
     recorder = _make_recorder(node, settings_path, pass_path)
     if recorder is None:

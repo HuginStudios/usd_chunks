@@ -11,7 +11,7 @@ import importlib
 import types
 
 import pytest
-from pxr import Usd, UsdRender
+from pxr import Usd, UsdGeom, UsdRender
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
@@ -1387,3 +1387,69 @@ class TestCliRunRenders:
 
         assert calls, "run should have committed the Render chunk"
         assert calls[-1][-1] == override
+
+
+class TestUnpatchedUsdBuild:
+    """The Hydra path needs render-settings support in UsdAppUtils that stock USD does
+    not have. Both of its absences are silent-ish -- one fails deep inside Record() with
+    a message about an empty path, the other loses every AOV and says nothing -- so both
+    are caught here instead, where the message can name the real cause."""
+
+    def _hydra_render(self, monkeypatch, scene, stage, output_image):
+        mod = importlib.import_module("scripts.render")
+        # Any camera will do: with none set anywhere, _resolve_camera refuses before
+        # reaching the checks under test.
+        UsdGeom.Camera.Define(stage, "/cam")
+        _var, product, settings = _render_network(scene)
+        product.get_param("product_name").value = "beauty.exr"
+        product.execute()
+
+        monkeypatch.setattr(mod, "_hydra_reads_render_products", lambda: False)
+        # Nothing should reach a recorder; a build without the support cannot make one
+        # that behaves, and a test that built one would be testing the delegate.
+        monkeypatch.setattr(mod, "_make_recorder",
+                            lambda *a, **k: pytest.fail("should have refused first"))
+
+        node = _make(scene, mod, "render")
+        node.get_param("output_image").value = output_image
+        node.get_param("settings_path").value = settings.get_param("primpath_location").value
+        return mod, node
+
+    def test_refuses_product_driven_output(self, monkeypatch, caplog):
+        import logging
+
+        scene, stage = _setup_stage()
+        mod, node = self._hydra_render(monkeypatch, scene, stage, "")
+
+        with caplog.at_level(logging.ERROR, logger=mod.logger.name):
+            mod._render_hydra(node, "")
+
+        assert any("cannot let the render products decide" in r.message for r in caplog.records), \
+            "an empty Output Image on an unpatched build must be refused by name"
+
+    def test_warns_that_aovs_will_be_missing(self, monkeypatch, caplog):
+        import logging
+
+        scene, stage = _setup_stage()
+        mod, node = self._hydra_render(monkeypatch, scene, stage, "beauty.exr")
+        monkeypatch.setattr(mod, "_make_recorder", lambda *a, **k: None)
+
+        with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+            mod._render_hydra(node, "beauty.exr")
+
+        assert any("will not be in the output" in r.message for r in caplog.records), \
+            "losing the render vars must not be silent"
+
+    def test_says_nothing_on_a_build_that_supports_it(self, monkeypatch, caplog):
+        import logging
+
+        scene, stage = _setup_stage()
+        mod, node = self._hydra_render(monkeypatch, scene, stage, "beauty.exr")
+        monkeypatch.setattr(mod, "_hydra_reads_render_products", lambda: True)
+        monkeypatch.setattr(mod, "_make_recorder", lambda *a, **k: None)
+
+        with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+            mod._render_hydra(node, "beauty.exr")
+
+        assert not [r for r in caplog.records if "will not be in the output" in r.message], \
+            "a build with the support must not be warned about"
