@@ -218,7 +218,14 @@ def _settings_product_names(stage, settings_path):
     """The file each RenderProduct on this settings prim names, in order.
 
     Empty when nothing is wired, which is the signal that the render settings cannot
-    decide the outputs on their own and an Output Image is still required.
+    decide the outputs on their own and an Output Image is still required. A product
+    with no productName authored -- a Render Product chunk whose Output File is blank
+    -- contributes no name, because there is nothing to write it to.
+
+    Forwarded targets rather than direct ones, which is what UsdRender itself and
+    FrameRecorder both read: a products relationship may point at another relationship
+    rather than at the product prims, and taking the direct targets then finds prims
+    that are not products and misses the ones that are.
     """
     if not settings_path:
         return []
@@ -228,7 +235,7 @@ def _settings_product_names(stage, settings_path):
         return []
 
     names = []
-    for target in UsdRender.Settings(prim).GetProductsRel().GetTargets():
+    for target in UsdRender.Settings(prim).GetProductsRel().GetForwardedTargets():
         product_prim = stage.GetPrimAtPath(target)
         if not product_prim or not product_prim.IsValid():
             continue
