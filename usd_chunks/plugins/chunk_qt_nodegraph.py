@@ -33,9 +33,40 @@ _PORT_RADIUS = 5
 _NODE_WIDTH = 220
 _NODE_HEADER_H = 40
 
+# A node stops drawing its embedded ChunkWidget -- showing only the box and header that
+# ChunkNodeItem paints itself -- when either of these says so. The node keeps its size
+# either way, so layout, edges and framing are unaffected.
+#
+# Zoom alone decides this: below this scale a body's text is unreadable, so it is replaced
+# by the cheap flat form, and above it every body stays live no matter how many are on
+# screen. There is deliberately no cap on the number drawn.
+#
+# Culling by viewport position as well was tried and reverted. A body reports no height
+# until it has been through one visible layout cycle, and a node's height is what its ports,
+# edges, framing and auto-layout all measure from. Per-node culling hides bodies constantly
+# and early -- proxies are built in deferred batches while the view is still moving -- and a
+# body hidden before it was ever laid out freezes the node at its bare header height.
+# sizeHint(), adjustSize() and an explicit layout activate() all return 0 for such a widget,
+# so it cannot be measured ahead of time; making this work needs a real "has been laid out
+# at least once" gate on the node, not just careful ordering.
+_LOD_BODY_MIN_SCALE = 0.25
+
 # Quiet period before ports are re-placed after the node's geometry changes. Placement
 # re-measures every param widget, so it must not run per animation frame.
 _PORT_REBUILD_MS = 60
+# Quiet period with no height change ANYWHERE IN THE GRAPH before heights count as settled.
+#
+# A body is re-measured several times while it lays out, and an early pass can report a
+# fraction of the final height -- one node measured 64px of an eventual 885px -- so
+# "non-zero" and "taller than the header" are both useless as readiness tests. Only "it
+# stopped changing" works.
+#
+# And it has to be asked of the whole scene, not one node. Measurements are event-driven, so
+# a node that has simply not been re-measured yet is indistinguishable from one that has
+# finished; during a load, gaps between a node's own measurements routinely exceed this
+# window, and per-node settling duly marked nodes settled at partial heights. While any node
+# is still resizing, none of them can be trusted.
+_HEIGHT_SETTLE_MS = 250
 _DOT_R = 10  # dot node circle radius
 
 # Merge node slot ports: vertical gap between stacked exec inputs, and the y of the first
@@ -65,6 +96,29 @@ _COL_NODE_SELECTED = QtGui.QColor("#cab46a")  # matches ChunkWidget.SELECTED_COL
 _COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black — group/context nodes
 _COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber — locked (external-layer) nodes
 _COL_LOCKED_BG = QtGui.QColor("#2e2e28")
+_COL_CANVAS_BG = QtGui.QColor("#252525")  # ChunkGraphView's background brush
+_DIM_ALPHA = 0.35  # the opacity disabled nodes are drawn at when their body is showing
+_DIM_CACHE: dict[int, QtGui.QColor] = {}
+
+
+def _dimmed(color: QtGui.QColor) -> QtGui.QColor:
+    """`color` pre-blended toward the canvas, matching how it looks at _DIM_ALPHA opacity.
+
+    Painting a blended colour costs nothing; setting item opacity below 1.0 makes Qt render
+    the item *and all its children* to an offscreen buffer and composite it, which measured
+    at ~0.7ms per dimmed node per frame with 22 of them on screen.
+    """
+    key = color.rgba()
+    hit = _DIM_CACHE.get(key)
+    if hit is None:
+        keep = 1.0 - _DIM_ALPHA
+        hit = QtGui.QColor(
+            round(color.red() * _DIM_ALPHA + _COL_CANVAS_BG.red() * keep),
+            round(color.green() * _DIM_ALPHA + _COL_CANVAS_BG.green() * keep),
+            round(color.blue() * _DIM_ALPHA + _COL_CANVAS_BG.blue() * keep),
+        )
+        _DIM_CACHE[key] = hit
+    return hit
 _COL_VIEW_HEADER = QtGui.QColor("#c87830")   # pale orange — the ACTIVE view (driving execution)
 _COL_VIEW_INACTIVE = QtGui.QColor("#4a453e")  # dim grey-brown — an inactive view (not driving)
 _COL_VIEW_ACTIVE = QtGui.QColor("#5fd08a")   # green — active view border accent
@@ -675,6 +729,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._is_view = _chunk_type == "view"
         self._is_dot = _chunk_type == "dot"
         self._is_merge = _chunk_type == "merge"
+        self._chunk_type_label = str(_chunk_type or "")  # cached: paint must not read USD
+        self._disabled = chunk.has_state(ChunkFlags.State.DISABLED)
+        self._lod_simple = False  # see set_body_visible
+        # Height settling -- see _note_height_sample and is_height_settled.
+        self._last_height_sample = None
         self._drag_active = False
         self._drag_moved = False  # True once a drag actually moves — plain clicks stay False
         self._drag_start = QtCore.QPointF()
@@ -729,8 +788,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._apply_usd_pos(prim)
         # Reflect disabled state on (re)build — otherwise a rebuilt disabled node renders at
         # full opacity until the next state change (e.g. selecting it).
-        if chunk.has_state(ChunkFlags.State.DISABLED):
-            self.setOpacity(0.35)
+        self._apply_dim()
 
     def set_pinned(self, pinned: bool) -> None:
         """Update the cached pin badge state after a menu toggle and repaint just this node —
@@ -855,25 +913,35 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             return
         # Create as a child of the sink so the show() called during init (via
         # update_from_state → set_hidden(False)) doesn't flash a native OS window.
-        chunk_widget = ChunkWidget(self.chunk, parent=_get_proxy_sink())
+        # for_proxy: the body arrives unstyled, on purpose. Reparenting a styled tree costs
+        # ~22ms against ~2.5ms for an unstyled one, because the move re-resolves the style
+        # of every descendant -- more than is saved by applying the sheet early. So the
+        # sheet waits until the reparent below is done.
+        chunk_widget = ChunkWidget(self.chunk, parent=_get_proxy_sink(), for_proxy=True)
         # setWidget() requires a top-level widget.  Reparent to None first, but set
         # WA_DontShowOnScreen beforehand so the OS never calls ShowWindow during the
         # transition from child → top-level.
         chunk_widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
         chunk_widget.setParent(None)
-        # Normally a no-op: the widget styled itself during construction, when its subtree
-        # was still empty. Re-applying here walked the whole finished tree instead. Kept as
-        # a fallback for a widget that somehow arrives unstyled.
+        # Now, with the move paid for: this is the one application for this tree, and any
+        # later one (set_selected) finds the guard already set.
+        chunk_widget._defer_stylesheet = False
         apply_chunk_stylesheet(chunk_widget)
         chunk_widget.setFixedWidth(_NODE_WIDTH)
         self._chunk_widget = chunk_widget  # pin Python ref; PySide6 may GC despite Qt C++ ownership
         self._proxy = QtWidgets.QGraphicsProxyWidget(self)
         self._proxy.setWidget(chunk_widget)
         self._proxy.setPos(0, _NODE_HEADER_H)
-
+        # Proxies are built in deferred batches, so a node can arrive while the view is
+        # already zoomed past the LOD threshold. Without this it would come up showing a
+        # body every other node has dropped.
+        views = self.scene().views() if self.scene() is not None else []
+        if views and not getattr(views[0], "_lod_bodies_shown", True):
+            self._proxy.setVisible(False)
         self._full_height = _NODE_HEADER_H + chunk_widget.sizeHint().height()
         self._height = self._full_height
         self.prepareGeometryChange()
+
 
         self._port_rebuild_timer = QtCore.QTimer(chunk_widget)
         self._port_rebuild_timer.setSingleShot(True)
@@ -938,6 +1006,37 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # dirty automatically — without this the old pixels can linger on screen
         # until something unrelated (e.g. deselecting the node) forces a repaint.
         self.update()
+        # Both branches above have just written self._height; this is the one place every
+        # height update passes through, so it is where settling is tracked.
+        self._note_height_sample()
+
+    def is_height_settled(self) -> bool:
+        """True once the graph has finished laying out and this height can be trusted.
+
+        A node's height comes from measuring its body widget, and that measurement is only
+        meaningful after the body has been laid out -- which takes several event loop turns
+        and several *intermediate* measurements, each a legitimate-looking number. Anything
+        that shrinks or hides a body has to wait for this: a body hidden mid-layout never
+        finishes and freezes the node at whatever partial height it had reached, taking that
+        node's ports and edges with it.
+
+        Answered by the scene rather than the node -- see ChunkGraphScene.heights_settled for
+        why a node cannot tell on its own.
+        """
+        scene = self.scene()
+        return bool(scene.heights_settled()) if isinstance(scene, ChunkGraphScene) else False
+
+    def _note_height_sample(self) -> None:
+        """Report a height change to the scene, which owns the settle countdown."""
+        try:
+            if self._height == self._last_height_sample:
+                return
+            self._last_height_sample = self._height
+            scene = self.scene()
+            if isinstance(scene, ChunkGraphScene):
+                scene.note_height_change()
+        except RuntimeError:
+            return
 
     def _place_prim_output_ports(self, y_start: float, extend_height: bool = False):
         """Create output ports for every outputs:* attribute on the prim (excluding
@@ -1227,6 +1326,29 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 painter.drawEllipse(QtCore.QPointF(_DOT_R, _DOT_R), _DOT_R + 3, _DOT_R + 3)
             return
 
+        if self._lod_simple:
+            # Too far out for the title to be legible or the 4px corner radius to survive
+            # rounding: two flat rects per node, no text, no font construction, no prim
+            # reads. Disabled nodes dim through blended colours here -- see _apply_dim.
+            head = _COL_NODE_HEADER
+            if self._is_view:
+                head = _COL_VIEW_HEADER if self._is_active_view() else _COL_VIEW_INACTIVE
+            elif self._is_group:
+                head = _COL_GROUP_HEADER
+            elif self._locked:
+                head = _COL_LOCKED_HEADER
+            bg = _COL_LOCKED_BG if self._locked else _COL_NODE_BG
+            border = _COL_NODE_SELECTED if self._selected else _COL_NODE_BORDER
+            if self._disabled:
+                bg, head, border = _dimmed(bg), _dimmed(head), _dimmed(border)
+            painter.setBrush(bg)
+            painter.setPen(QtGui.QPen(border, 1.5))
+            painter.drawRect(QtCore.QRectF(0, 0, _NODE_WIDTH, self._height))
+            painter.setBrush(head)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawRect(QtCore.QRectF(0, 0, _NODE_WIDTH, _NODE_HEADER_H))
+            return
+
         bg_color = _COL_LOCKED_BG if self._locked else _COL_NODE_BG
         body = QtCore.QRectF(0, 0, _NODE_WIDTH, self._height)
         # The active view (the one currently driving execution) gets a green, thicker border
@@ -1281,7 +1403,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             label,
         )
 
-        chunk_type = self.prim.GetAttribute("info:chunkType").Get() or ""
+        chunk_type = self._chunk_type_label
         sub_color = _COL_TEXT_LOCKED if self._locked else _COL_TEXT_SECONDARY
         painter.setPen(QtGui.QPen(sub_color))
         painter.setFont(QtGui.QFont("Arial", 8))
@@ -1473,6 +1595,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # a plain click on the header must not splice the node into an overlapping wire.
             if self._drag_moved:
                 self._write_pos_to_usd()
+                # Moving a node changes what is stacked on what, in both directions: it can
+                # bury another node, or free itself from a pile.
+                for view in (self.scene().views() if self.scene() is not None else []):
+                    if hasattr(view, "_apply_lod"):
+                        view._apply_lod()
                 for companion in self._drag_companions:
                     try:
                         companion._write_pos_to_usd()
@@ -1585,7 +1712,62 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self.update()
             self._set_collapsed(self.chunk.has_state(ChunkFlags.State.COLLAPSED))
             disabled = self.chunk.has_state(ChunkFlags.State.DISABLED)
-            self.setOpacity(0.35 if disabled else 1.0)
+            if disabled != self._disabled:
+                self._disabled = disabled
+                self.update()
+            self._apply_dim()
+        except RuntimeError:
+            return
+
+    def set_body_visible(self, visible: bool) -> None:
+        """Switch the node between full detail and a cheap far-zoom representation.
+
+        Detail is dropped when `visible` is False, in descending order of what it cost to
+        paint: the embedded ChunkWidget, then the port dots (~33 per node here, and edges
+        position off their scenePos rather than their visibility, so wires stay put), then
+        the title/subtitle text and rounded corners in paint().
+
+        The node keeps its geometry throughout, so edges, auto-layout and framing all still
+        measure the same box.
+        """
+        proxy = self._proxy
+        try:
+            # Don't pull the rug out from under someone mid-edit: a focused body means a
+            # field is being typed into, which can only be true at a readable zoom anyway.
+            if proxy is not None and not visible and proxy.hasFocus():
+                return
+            if not visible and proxy is not None and not self.is_height_settled():
+                # Still laying out. Hiding it now would strand the node at a partial height
+                # -- see is_height_settled. _on_height_settled re-runs LOD once it is safe,
+                # so nothing is lost by declining here.
+                return
+            # Skip only when the flag AND the proxy agree. They can diverge: a body that
+            # declined an earlier hide, or one whose proxy was rebuilt under it, leaves the
+            # flag saying flat while the widget is still up, and trusting the flag alone
+            # then strands it visible forever (41 of 56 buried nodes, measured).
+            if self._lod_simple == (not visible) and (
+                proxy is None or proxy.isVisible() == visible
+            ):
+                return
+            self._lod_simple = not visible
+            if proxy is not None:
+                proxy.setVisible(visible)
+            for port in self._ports:
+                port.setVisible(visible)
+            self._apply_dim()
+            self.update()
+        except RuntimeError:
+            return
+
+    def _apply_dim(self) -> None:
+        """Dim a disabled node: through item opacity while its body shows, through blended
+        colours once it doesn't.
+
+        The body is a real widget, so nothing but opacity will fade it. Without one there is
+        only paint(), which can dim far more cheaply -- see _dimmed.
+        """
+        try:
+            self.setOpacity(0.35 if (self._disabled and not self._lod_simple) else 1.0)
         except RuntimeError:
             return
 
@@ -1728,6 +1910,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # returns freed memory and usdview crashes on the next click. NoIndex makes itemAt
         # linearly scan the live item list instead — fine for the small node counts here.
         self.setItemIndexMethod(QtWidgets.QGraphicsScene.ItemIndexMethod.NoIndex)
+        # Graph-wide height settling -- see heights_settled.
+        self._heights_settled = False
+        self._height_settle_timer = None
+        self._build_complete = False
         self._stage: Optional[Usd.Stage] = None
         self._scene_sender: Optional[core.SceneSender] = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
@@ -1981,6 +2167,40 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                       f"{type(e).__name__}: {e}")
         if rest:
             QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, gen))
+            return
+        # Every proxy exists, so heights can now start counting toward settled; the countdown
+        # runs from here and _on_heights_settled applies the body decision once it expires.
+        self._build_complete = True
+        self.note_height_change()
+
+    def heights_settled(self) -> bool:
+        """True once the graph is fully built AND no node has resized for _HEIGHT_SETTLE_MS.
+
+        Both halves are needed. Proxies are constructed in deferred batches, and constructing
+        one measures nothing -- so mid-build there are quiet gaps longer than the window, and
+        a quiet period alone reported "settled" while a third of the graph had not been laid
+        out yet.
+        """
+        return self._build_complete and self._heights_settled
+
+    def note_height_change(self) -> None:
+        """Called by a node whose height just changed; restarts the graph-wide countdown."""
+        self._heights_settled = False
+        timer = self._height_settle_timer
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(_HEIGHT_SETTLE_MS)
+            timer.timeout.connect(self._on_heights_settled)
+            self._height_settle_timer = timer
+        timer.start()
+
+    def _on_heights_settled(self) -> None:
+        self._heights_settled = True
+        # Whatever was held off waiting for real heights can now run.
+        for view in self.views():
+            if hasattr(view, "_apply_lod"):
+                view._apply_lod()
 
     def _request_build_edges(self):
         """Coalesce edge rebuilds onto one deferred pass.
@@ -2456,6 +2676,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     _SCENE_EXTENT = 50000
     _GRID_SPACING = 200  # scene units — fixed world-space, so it scales naturally with zoom
+    # ...but only down to a point. The dots are cosmetic (constant screen size), so as the
+    # view zooms out they crowd together into a speckle that reads as noise rather than a
+    # grid, and their count grows with the square of the zoom-out -- thousands of them at
+    # the far end. The spacing doubles instead, holding the on-screen gap between this and
+    # twice it at every zoom, which bounds the count. Deliberately below the 200px gap seen
+    # at scale 1.0: matching that reads as an empty canvas once zoomed out.
+    _GRID_MIN_SCREEN_SPACING = 55  # px
+    _GRID_MAX_DOUBLINGS = 12
     _GRID_DOT_COLOR = QtGui.QColor("#3d4250")  # muted grey-blue, subtle against #252525
     _GRID_DOT_WIDTH = 2
 
@@ -2464,6 +2692,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(ChunkGraphScene())
+        # Which side of _LOD_BODY_MIN_SCALE the view is currently on; see _apply_lod.
+        self._lod_bodies_shown = True
         self.setRenderHint(QtGui.QPainter.Antialiasing)
         self.setDragMode(QtWidgets.QGraphicsView.NoDrag)
         self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
@@ -2564,12 +2794,28 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             x += spacing
         return points
 
+    def _grid_spacing_for_view(self) -> int:
+        """Grid spacing in scene units, doubled until the dots are far enough apart on screen.
+
+        Kept separate from _grid_points_in_rect so that stays pure coverage math with no
+        view attached, and remains unit-testable on its own.
+        """
+        spacing = self._GRID_SPACING
+        scale = self.transform().m11()
+        if scale <= 0:
+            return spacing
+        for _ in range(self._GRID_MAX_DOUBLINGS):
+            if spacing * scale >= self._GRID_MIN_SCREEN_SPACING:
+                break
+            spacing *= 2
+        return spacing
+
     def drawBackground(self, painter: QtGui.QPainter, rect: QtCore.QRectF) -> None:
         # super() fills with setBackgroundBrush's flat color; dots paint on top of that.
         super().drawBackground(painter, rect)
         # Only the exposed rect is ever painted here (never the full 100k-unit scene extent —
         # Qt only calls drawBackground for the currently visible region).
-        points = self._grid_points_in_rect(rect, self._GRID_SPACING)
+        points = self._grid_points_in_rect(rect, self._grid_spacing_for_view())
         if not points:
             return
 
@@ -3057,6 +3303,70 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def wheelEvent(self, event: QtGui.QWheelEvent):
         factor = 1.08 if event.angleDelta().y() > 0 else 1 / 1.08
         self.scale(factor, factor)
+        self._apply_lod()
+
+    def _apply_lod(self) -> None:
+        """Swap node bodies for the flat far-zoom form below _LOD_BODY_MIN_SCALE.
+
+        Called after anything that changes the view transform, and only that -- panning and
+        resizing move nodes through the viewport but change nothing about how legible a body
+        is, so they cannot flip this. Qt already skips painting offscreen nodes on its own
+        (measured: 0 on screen repaints in 2.8ms against 66ms for 33), so there is nothing
+        to win by tracking position here either.
+
+        The per-node walk runs only when the decision actually flips, so a wheel spin inside
+        one band costs a single float comparison.
+        """
+        # Toggling item visibility schedules updates, which can re-enter here through Qt's
+        # own handling -- keep it strictly one deep.
+        if getattr(self, "_lod_busy", False):
+            return
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        nodes = list(graph_scene._nodes.values())
+        if not nodes:
+            return
+
+        show_bodies = self.transform().m11() >= _LOD_BODY_MIN_SCALE
+        # No early-out on an unchanged band: a node that declined the last pass (still
+        # settling) has to be revisited when it becomes ready, and _on_height_settled calls
+        # straight back in here. set_body_visible is a no-op for a node already in the
+        # requested state, so the repeat costs one attribute compare per node.
+        self._lod_bodies_shown = show_bodies
+        buried = self._buried_nodes(nodes) if show_bodies else frozenset()
+        self._lod_busy = True
+        try:
+            for node in nodes:
+                node.set_body_visible(show_bodies and node not in buried)
+        finally:
+            self._lod_busy = False
+
+    @staticmethod
+    def _buried_nodes(nodes: list) -> frozenset:
+        """Nodes sitting exactly under another node, whose bodies are therefore never seen.
+
+        Chunks created without an authored ui:nodegraph:node:pos all land on the same spot
+        (see ChunkNodeItem._apply_usd_pos), so a network built programmatically arrives as one
+        pile. Qt does no occlusion culling of its own, so it paints every body in that pile:
+        57 nodes stacked measured 141.6ms a frame against 15.2ms with only the top one live.
+
+        Deliberately exact overlaps only, keyed on position. Partial overlap would need real
+        occlusion tests, and getting one wrong blanks a node the user can actually see.
+        """
+        top: dict = {}
+        for node in nodes:
+            try:
+                key = (round(node.pos().x(), 1), round(node.pos().y(), 1))
+            except RuntimeError:
+                continue
+            current = top.get(key)
+            if current is None or node.zValue() >= current.zValue():
+                top[key] = node
+        if len(top) == len(nodes):
+            return frozenset()  # nothing stacked, the common case
+        keep = set(id(node) for node in top.values())
+        return frozenset(node for node in nodes if id(node) not in keep)
 
     # ------------------------------------------------------------------
     # Pan — middle mouse or Space + left drag
@@ -4096,6 +4406,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             rect = rect.united(node.sceneBoundingRect())
         rect.adjust(-60, -60, 60, 60)
         self.fitInView(rect, QtCore.Qt.KeepAspectRatio)
+        # Framing the whole graph is exactly the case that zooms far enough out to matter.
+        self._apply_lod()
 
     # ------------------------------------------------------------------
     # Auto-layout
