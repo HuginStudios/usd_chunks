@@ -285,7 +285,12 @@ _LOOKUP_DIVISIONS = 48
 
 #: What only means something when scatter is choosing the positions itself. Wire painted
 #: points in and every one of them is answering a question that has already been settled.
-_SAMPLING_ONLY = ("auto_spacing", "spacing", "max_count", "seed", "max_slope", "scatter_mode")
+#:
+#: Mode is deliberately NOT in here. It looks like it belongs -- with points wired, Surface and
+#: Volume do behave the same -- but Stack ignores the painted cloud on purpose, so Mode is the
+#: one control that still decides something. Hiding it stranded you: connect a brush and the
+#: only route to Stack disappeared, with no way back short of unwiring.
+_SAMPLING_ONLY = ("auto_spacing", "spacing", "max_count", "seed", "max_slope")
 
 
 def _update_sampling_params(owner) -> None:
@@ -1143,8 +1148,8 @@ def execute(node):
     # keeps its fallback because an empty path (user cleared the field) is invalid here.
     inst_path = node.get_param("inst_path", is_s).value or "/ScatterInstancer"
     scatter_mode = node.get_param("scatter_mode", is_s).value
-    max_count = max(1, node.get_param("max_count", is_i).value)
-    seed = node.get_param("seed", is_i).value
+    max_count = max(1, int(node.get_param("max_count", is_i).value))
+    seed = int(node.get_param("seed", is_i).value)
     auto_spacing = node.get_param("auto_spacing", is_b).value
     spacing = node.get_param("spacing", is_f).value
     max_slope = node.get_param("max_slope", is_f).value
@@ -1163,7 +1168,7 @@ def execute(node):
     pack_pattern = node.get_param("pack_pattern", is_s).value
     pack_padding = node.get_param("pack_padding", is_f).value
     pack_inset = node.get_param("pack_inset", is_f).value
-    pack_levels = max(1, node.get_param("pack_levels", is_i).value)
+    pack_levels = max(1, int(node.get_param("pack_levels", is_i).value))
     pack_level_gap = node.get_param("pack_level_gap", is_f).value
     pack_stagger = node.get_param("pack_stagger", is_b).value
     pack_conform = node.get_param("pack_conform", is_b).value
@@ -1796,9 +1801,36 @@ def main():
     )
     chunk_api.add_param(_collapsed(var_grp))
 
-    # --- Outputs (readable by other chunks as @Scatter Points.out_count@) ---
-    chunk_api.add_param(chunk.Slider("out_count", "Instances", is_int=True, flags=_PF.OUTPUT))
-    chunk_api.add_param(chunk.Slider("out_prototypes", "Prototypes", is_int=True, flags=_PF.OUTPUT))
+    # --- Outputs: readouts of the last cook, not settings ---
+    #
+    # They read as two unexplained numbers at the bottom of the node, and being sliders they
+    # look draggable, which invites you to set the instance count with one. They are results:
+    # dragging does nothing, the next cook overwrites them. Disabled so the UI says so, and
+    # named for the fact that they report rather than request.
+    out_count = chunk.Slider(
+        "out_count",
+        "Instances Made",
+        is_int=True,
+        flags=_PF.OUTPUT,
+        tooltip="Read-only. How many instances the last cook actually placed.\n"
+        "Usually lower than Max Count -- spacing, the slope filter, a density mask or the "
+        "size of the surface can all mean fewer fit than you asked for.\n"
+        "Other chunks can read it as @Scatter Points.out_count@.",
+    )
+    out_protos = chunk.Slider(
+        "out_prototypes",
+        "Prototypes Used",
+        is_int=True,
+        flags=_PF.OUTPUT,
+        tooltip="Read-only. How many prototypes the last cook resolved from the list.\n"
+        "Higher than the number of rows when a glob (/props/crayon_*) or a variant "
+        "wildcard ({color=*}) expanded one row into several; lower when a row's prim could "
+        "not be found.\n"
+        "Other chunks can read it as @Scatter Points.out_prototypes@.",
+    )
+    for _out in (out_count, out_protos):
+        _out.set_state(chunk.ChunkFlags.State.DISABLED)
+        chunk_api.add_param(_out)
 
     _update_sampling_params(chunk_api)
 
