@@ -419,6 +419,32 @@ def _author_hidden(prim: Usd.Prim, chunk: "core.ChunkBase", name: str) -> None:
         existing.Set(False)
 
 
+def _author_offset(prim: Usd.Prim, chunk: "core.ChunkBase", gizmo) -> None:
+    """Author (or clear) where one handle sits.
+
+    Only authored when there is one. An absent offset means "on the anchor, host's choice of
+    exactly where", which is usually the right answer -- a viewport puts a handle on the
+    geometry it can see, and only it knows where that is.
+    """
+    offset = gizmo_offset(chunk, gizmo.name, gizmo.offset)
+    attr_name = _attr_name(gizmo.name, "offset")
+    existing = prim.GetAttribute(attr_name)
+
+    if offset is None:
+        # Cleared rather than left stale, exactly like the hidden flag: a handle stuck at a
+        # pivot the user has since zeroed is worse than one that never moved.
+        if existing and existing.IsValid():
+            existing.Clear()
+        return
+
+    value = Gf.Vec3f(*offset)
+    if existing and existing.IsValid() and existing.Get() == value:
+        return
+    attr = prim.CreateAttribute(attr_name, Sdf.ValueTypeNames.Float3, custom=False)
+    attr.SetVariability(Sdf.VariabilityUniform)
+    attr.Set(value)
+
+
 def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase", gizmo) -> None:
     _uniform_token(prim, _attr_name(gizmo.name, "type")).Set(gizmo.type)
     _uniform_token(prim, _attr_name(gizmo.name, "label")).Set(gizmo.label or chunk.name)
@@ -431,13 +457,11 @@ def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase", gizmo
     if gizmo.space and gizmo.space != "local":
         _uniform_token(prim, _attr_name(gizmo.name, "space")).Set(gizmo.space)
 
+    _author_offset(prim, chunk, gizmo)
+
     # Only authored when set. An absent size means "host decides", which is usually the
     # right answer -- a viewport wants a screen-constant handle and only it knows the camera
     # distance, so authoring a default here would be us guessing at something we cannot see.
-    if gizmo.offset is not None:
-        attr = prim.CreateAttribute(_attr_name(gizmo.name, "offset"), Sdf.ValueTypeNames.Float3, custom=False)
-        attr.SetVariability(Sdf.VariabilityUniform)
-        attr.Set(Gf.Vec3f(*gizmo.offset))
     if gizmo.size is not None:
         attr = prim.CreateAttribute(_attr_name(gizmo.name, "size"), Sdf.ValueTypeNames.Float, custom=False)
         attr.SetVariability(Sdf.VariabilityUniform)
@@ -457,7 +481,7 @@ def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase", gizmo
 
 
 def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
-    """Re-resolve every gizmo's anchor rel, and its suppression flag, from current params.
+    """Re-resolve every gizmo's anchor rel, offset and suppression flag, from current params.
 
     Cheap no-op for the overwhelming majority of chunks, which declare no gizmos at all --
     that early return is why this can hang off the generic param-changed path.
@@ -473,6 +497,14 @@ def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBa
             _author_hidden(prim, chunk, gizmo.name)
         except Exception:
             logger.debug("Could not refresh hidden flag for %r", gizmo.name, exc_info=True)
+
+        # Same reasoning again, and more so: a pivot is dragged, so the handle has to follow
+        # it live rather than at the next re-author. _author_offset skips the write when the
+        # value has not moved, which is every param change that is not the pivot itself.
+        try:
+            _author_offset(prim, chunk, gizmo)
+        except Exception:
+            logger.debug("Could not refresh offset for %r", gizmo.name, exc_info=True)
 
         try:
             targets = _anchor_targets(chunk, gizmo, stage)
@@ -767,7 +799,7 @@ def _is_silenced(stage: Usd.Stage, chunk: "core.ChunkBase") -> bool:
 _GIMBAL_EPSILON = 1e-9
 
 
-def decompose(matrix: "Gf.Matrix4d") -> dict:
+def decompose(matrix: "Gf.Matrix4d", pivot: Optional[tuple] = None) -> dict:
     """Split a TRS matrix into one value per handle, in the convention transform.py composes in.
 
     Returns ``{"translate": Vec3d, "rotate": Vec3d, "scale": Vec3d}`` -- keyed by gizmo
@@ -775,6 +807,12 @@ def decompose(matrix: "Gf.Matrix4d") -> dict:
 
         for gizmo_type, value in decompose(matrix).items():
             apply_bindings(chunk, handles[gizmo_type], value)
+
+    `pivot` is the point the chunk rotates and scales about, in the same space the matrix is
+    expressed in. Rotation and scale come off the 3x3 and do not care where the pivot is;
+    only the translation does, so that is the sole correction made here. Left at None the
+    result is the plain origin-pivot decomposition, which is what every caller predating
+    pivots wants.
 
     **Offered to hosts, not required of them.** A native handle that already produces Euler
     angles ignores this entirely. Keeping it here means the Euler convention lives in exactly
@@ -815,10 +853,29 @@ def decompose(matrix: "Gf.Matrix4d") -> dict:
         angle_x = math.atan2(rotation[1][0] * (1.0 if sin_y > 0 else -1.0), rotation[1][1])
 
     return {
-        "translate": Gf.Vec3d(transform.GetTranslation()),
+        "translate": _translation_about(matrix, transform.GetTranslation(), pivot),
         "rotate": Gf.Vec3d(math.degrees(angle_x), math.degrees(angle_y), math.degrees(angle_z)),
         "scale": Gf.Vec3d(transform.GetScale()),
     }
+
+
+def _translation_about(matrix: "Gf.Matrix4d", translation, pivot: Optional[tuple]) -> "Gf.Vec3d":
+    """The translate a pivoted composition needs to land on the same matrix.
+
+    A chunk composing about a pivot builds ``T(-p) * S * R * T(p) * T(t)``, whose translation
+    row is ``-p*A + p + t`` for the linear part A. So the plain decomposition hands back
+    ``t - (p*A - p)`` and the difference has to be added back, or a pivoted chunk would
+    place the object short of where the handle put it -- by exactly the amount the pivot
+    swings under the rotation, which reads as the object lagging the mouse.
+    """
+    translate = Gf.Vec3d(translation)
+    if pivot is None:
+        return translate
+
+    point = Gf.Vec3d(*pivot)
+    linear = Gf.Matrix4d(matrix)
+    linear.SetTranslateOnly(Gf.Vec3d(0, 0, 0))
+    return translate + linear.Transform(point) - point
 
 
 # ---------------------------------------------------------------------------
@@ -890,6 +947,122 @@ def is_gizmo_hidden(chunk: "core.ChunkBase", name: str) -> bool:
         # is easier to diagnose than one that silently never appears.
         logger.exception("gizmo_hidden hook failed for gizmo %r on chunk %r", name, chunk.name)
         return False
+
+
+GIZMO_OFFSET_HOOK = "gizmo_offset"
+
+
+def gizmo_offset(chunk: "core.ChunkBase", name: str, declared: Optional[tuple] = None) -> Optional[tuple]:
+    """Where a chunk wants one of its handles right now, in the anchor's local space.
+
+    The declared `offset` on a Gizmo is static config, decided at load. A pivot is not: it is
+    a param the user moves, and the handle has to follow it within the same drag. A chunk
+    opts in with a module-level function::
+
+        def gizmo_offset(node, gizmo):
+            return pivot(node) if gizmo == "transform" else None
+
+    Returning None means "no opinion" and the declared value stands -- *not* "clear it". A
+    chunk with several handles would otherwise wipe the static offset on the ones its hook
+    does not answer for, which is the kind of bug that only shows on the second gizmo.
+
+    Chunk-side rather than a call into the host, for the same reason as `gizmo_hidden`: the
+    chunk is the only thing that knows its own params, and a host reading the authored
+    `ui:gizmo:*:offset` attribute needs to know none of this.
+    """
+    module = getattr(chunk, "_module", None)
+    hook = getattr(module, GIZMO_OFFSET_HOOK, None)
+    if not callable(hook):
+        return declared
+
+    try:
+        value = hook(chunk, name)
+    except Exception:
+        # A failing hook falls back to the declaration rather than dropping the offset: a
+        # handle in slightly the wrong place beats one that jumps somewhere unrelated.
+        logger.exception("gizmo_offset hook failed for gizmo %r on chunk %r", name, chunk.name)
+        return declared
+
+    if value is None:
+        return declared
+    return tuple(float(component) for component in value)
+
+
+GIZMO_OFFSET_CHANGED_HOOK = "gizmo_offset_changed"
+
+
+def _anchor_prim(chunk: "core.ChunkBase", gizmo) -> Optional[Usd.Prim]:
+    """The prim a handle's offset is measured against -- the first anchor that resolves.
+
+    First, not all of them: an offset is one point, so it can only be expressed in one prim's
+    space. Same choice the drag write-back already makes for its reference prim.
+    """
+    stage = chunk.get_stage()
+    if stage is None:
+        return None
+    for path in _anchor_targets(chunk, gizmo, stage):
+        prim = stage.GetPrimAtPath(path)
+        if prim and prim.IsValid():
+            return prim
+    return None
+
+
+def apply_offset(chunk: "core.ChunkBase", name: str, world_point: Any) -> bool:
+    """Move where a handle sits, from a point in **world space**. True if the chunk took it.
+
+    The write counterpart to the `gizmo_offset` hook, and the reason a host can offer
+    drag-the-pivot at all. A host has a world position under the mouse and nothing else --
+    it does not know that a Transform chunk keeps its pivot in the anchor's object space, and
+    should not have to. So the conversion happens here, exactly as `apply_bindings` takes an
+    absolute matrix and lets the chunk work out its own share.
+
+    A chunk opts in with a module-level function::
+
+        def gizmo_offset_changed(node, gizmo, value):
+            ...             # value is a Gf.Vec3d in the anchor's own space
+            return True     # and say so
+
+    Falsy -- including the common "not my gizmo" -- means nothing was written, and a host
+    that gets False back should leave the pivot alone rather than fall back to moving the
+    prim. There is no declarative path here on purpose: where a chunk keeps its pivot is not
+    something a driver list can express, since it also has to hold the object still.
+    """
+    if not isinstance(chunk, core.ChunkBase):
+        resolved = chunk_at_prim_path(chunk)
+        if resolved is None:
+            raise ValueError(f"No chunk at {chunk!r} to move {name!r} to")
+        chunk = resolved
+
+    gizmo = find_gizmo(chunk, name)
+    if gizmo is None:
+        raise ValueError(f"Chunk {chunk.name!r} declares no gizmo named {name!r}")
+
+    module = getattr(chunk, "_module", None)
+    hook = getattr(module, GIZMO_OFFSET_CHANGED_HOOK, None)
+    if not callable(hook):
+        return False
+
+    prim = _anchor_prim(chunk, gizmo)
+    if prim is None:
+        return False
+
+    # Into the anchor's own space, the same frame `gizmo_offset` reports back out in -- so a
+    # pivot dragged to a point on screen reads back as the handle sitting on that point.
+    to_world = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    point = to_world.GetInverse().Transform(Gf.Vec3d(*world_point))
+
+    try:
+        handled = bool(hook(chunk, name, point))
+    except Exception:
+        # Treated as handled, for the same reason as gizmo_changed: falling through after a
+        # half-finished write would combine two intents in one frame, and the next tick of
+        # the drag retries anyway.
+        logger.exception("gizmo_offset_changed hook failed for gizmo %r on chunk %r", name, chunk.name)
+        return True
+
+    if handled:
+        chunk.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_CHANGED, gizmo.name)
+    return handled
 
 
 GIZMO_CHANGED_HOOK = "gizmo_changed"
@@ -1084,20 +1257,18 @@ def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
     if not create:
         return None
 
-    # Read where the prim is BEFORE anything is created. Targeting the chunk at the prim is
-    # a param change, which cooks it, which authors an identity xformOp:transform from the
-    # chunk's own layer -- and that layer is stronger than wherever the prim was placed. Read
-    # it afterwards and the seed is always identity, i.e. the object snaps to the origin the
-    # instant you grab it.
-    placement = _local_transform(prim)
-
+    # Deliberately no seeding. A chunk used to REPLACE the prim's transform, so a new one
+    # had to be pre-loaded with the prim's current placement or the object jumped to the
+    # origin the moment you grabbed it -- and only this path did that, so the same node
+    # behaved differently depending on whether it was dragged into existence or added by
+    # hand. Now that a chunk owns its own xformOp and composes on top of what is already
+    # there, an untouched chunk contributes identity and moves nothing. The drag itself is
+    # converted from absolute to op-local by the module's gizmo_changed hook.
     chunk = _create_chunk_at_tail(AUTO_TRANSFORM_MODULE)
     if chunk is None:
         return None
 
     _target_prim(chunk, prim)
-    if placement is not None:
-        _seed(chunk, placement)
 
     # Re-resolve rather than synthesising: the desc a caller gets from here has to be the
     # same record it would have got had the chunk existed all along, anchor included.
@@ -1292,3 +1463,62 @@ def _seed(chunk: "core.ChunkBase", matrix: "Gf.Matrix4d") -> None:
             logger.debug("No %r handle to seed on %r", gizmo_type, chunk.name)
             continue
         apply_bindings(chunk, name, value)
+
+
+# ---------------------------------------------------------------------------
+# xformOpOrder, derived from the graph
+# ---------------------------------------------------------------------------
+
+def xform_op_order(node: "core.ChunkBase", prim: Usd.Prim, my_op: str) -> list:
+    """The full `xformOpOrder` for `prim`: its own ops, then every chunk's op upstream-first.
+
+    Derived from the exec chain rather than from whatever happens to be composed when a
+    chunk runs, and that is the whole point.
+
+    Each chunk authors its own copy of `xformOpOrder` into its own layer, and USD keeps one
+    copy -- the strongest. Building each copy from "what I can see right now" makes the
+    copies DIFFER, so which one survives decides the result: a chunk that cooked before its
+    neighbour existed holds a list naming only itself, and if that copy wins, the
+    neighbour's op sits on the prim, typed and valued, and is never read. The chunk silently
+    does nothing, which is worse than an odd order and is what blocked retiring
+    a Transform chunk further down the chain.
+
+    Building every copy from the graph instead makes them IDENTICAL, so it stops mattering
+    which one USD keeps. The contention is not resolved, it is made irrelevant -- which is
+    also why this needs no coordination between chunks and no cook-order guarantees.
+
+    The graph order and the op order are the same order, incidentally: the chain says A
+    feeds B, and the op list says A's op then B's op. One fact, written twice.
+    """
+    stage = prim.GetStage()
+    scene = getattr(ChunkRegistry(), "scene", None)
+    depths: dict = {}
+    for owner in (scene.get_chunks() if scene is not None else ()):
+        if owner is node:
+            continue
+        # Never mint here: asking whether some other chunk owns an op must not give it one.
+        op_name = chunk_utils.existing_xform_op_name(owner)
+        # Sourced from "who owns an op that is on this prim", NOT from who declares a gizmo.
+        # The RBD solver bakes an op and declares no handle at all, so a gizmo-based lookup
+        # left it out of everyone else's list -- and the moment another chunk's copy of the
+        # order won, the bake was excluded and the simulation vanished.
+        if not op_name or not prim.HasAttribute(op_name):
+            continue
+        owner_prim = _chunk_prim(stage, owner)
+        if owner_prim is None:
+            continue
+        depths[op_name] = _exec_depth(stage, owner_prim.GetPath())
+    depths[my_op] = _exec_depth(stage, _own_prim_path(stage, node))
+
+    # The prim's own ops keep their place at the front. Anything a chunk owns is dropped and
+    # re-added below, so an op does not appear twice when a chunk's position changes.
+    composed = [op for op in (UsdGeom.Xformable(prim).GetXformOpOrderAttr().Get() or [])]
+    base = [op for op in composed if op not in depths]
+    # Ties keep a stable order by name so two unconnected chunks do not swap places between
+    # cooks -- identical copies matter more here than any particular winner.
+    return base + sorted(depths, key=lambda name: (depths[name], name))
+
+
+def _own_prim_path(stage: Usd.Stage, node: "core.ChunkBase"):
+    prim = _chunk_prim(stage, node)
+    return prim.GetPath() if prim is not None else Sdf.Path("/")

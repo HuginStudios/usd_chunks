@@ -1,4 +1,5 @@
 import re
+import uuid
 from contextlib import contextmanager, ExitStack
 from pxr import Sdf, Usd
 
@@ -488,3 +489,153 @@ def show_attribute(prim, target_group, collapse_non_inputs=True):
 
         if param and tgt_grp:
             tgt_grp.add_param(param)
+
+
+# ---------------------------------------------------------------------------
+# stable xformOp identity
+# ---------------------------------------------------------------------------
+
+#: Where a chunk records the op suffix it owns, so op -> chunk is a lookup rather than a
+#: string match, and so the name survives a reload unchanged.
+XFORM_OP_ID_ATTR = "chunk:xformOpId"
+
+_XFORM_OP_PREFIX = "xformOp:transform:"
+_SANITISE_RE = re.compile(r"[^A-Za-z0-9_]")
+
+
+def existing_xform_op_name(node):
+    """This chunk's op name if it already has one, without minting one.
+
+    For asking "does this chunk own an op" while building someone else's order -- minting
+    on that question would give an op to every chunk that was merely looked at.
+    """
+    suffix = getattr(node, "_xform_op_suffix", None)
+    if suffix:
+        return _XFORM_OP_PREFIX + suffix
+    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    prim = _chunk_prim_of(stage, node) if stage is not None else None
+    if prim is None:
+        return None
+    attr = prim.GetAttribute(XFORM_OP_ID_ATTR)
+    if attr and attr.IsValid() and attr.Get():
+        return _XFORM_OP_PREFIX + attr.Get()
+    return None
+
+
+def xform_op_name(node) -> str:
+    """The xformOp suffix this chunk owns: readable, unique, and stable across renames.
+
+    Chunks used to author `xformOp:transform` -- the same attribute on every chunk -- so
+    two chunks placing one prim competed for one slot and USD discarded the loser. Owning a
+    distinctly named op each is what lets them compose instead.
+
+    The name carries two things because it has two jobs. The id is what identity rests on:
+    generated once, recorded on the chunk's prim, and never regenerated, so renaming a
+    chunk does not orphan the op it already authored. The readable prefix is there because
+    the point of all this is to select a prim, look at its ops, and see which chunk each one
+    belongs to -- `xformOp:transform:a3f2c1` answers nothing at a glance.
+
+        xformOp:transform:Transform1_a3f2c1
+
+    The prefix is taken from the chunk's name at first use and deliberately not kept in
+    sync afterwards. Renaming the op would be possible -- unlike before, a chunk owns its
+    attribute outright and nobody else writes it -- but it rewrites the file for a cosmetic
+    gain, and anything that needs the true mapping should read XFORM_OP_ID_ATTR.
+    """
+    return _XFORM_OP_PREFIX + _stable_suffix(node)
+
+
+def _readable(node) -> str:
+    name = _SANITISE_RE.sub("_", str(getattr(node, "name", "") or "Transform"))
+    return name or "Transform"
+
+
+def _stable_suffix(node) -> str:
+    """Read the chunk's op suffix, minting one on first use.
+
+    The WHOLE suffix is stored, readable part included, not just the id. Recomputing the
+    readable part from the chunk's current name on every call would change the op name on a
+    rename -- orphaning the op the chunk had already authored, which is precisely what the
+    stable id exists to prevent. The name is a snapshot from first use, by design.
+
+    Stored on the chunk's own prim rather than derived from anything, because everything it
+    could be derived from can change: the name is editable, the prim path moves between
+    contexts, and the in-memory hash does not survive a reload.
+    """
+    cached = getattr(node, "_xform_op_suffix", None)
+    if cached:
+        return cached
+
+    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    prim = _chunk_prim_of(stage, node) if stage is not None else None
+
+    suffix = None
+    if prim is not None:
+        attr = prim.GetAttribute(XFORM_OP_ID_ATTR)
+        if attr and attr.IsValid():
+            suffix = attr.Get()
+
+    if not suffix:
+        suffix = f"{_readable(node)}_{uuid.uuid4().hex[:8]}"
+        if prim is not None:
+            # Into the chunk's own bookkeeping layer, like every other bit of chunk
+            # bookkeeping -- not wherever the ambient edit target happens to point.
+            with Usd.EditContext(stage, get_bookkeeping_layer(stage, node)):
+                written = prim.CreateAttribute(
+                    XFORM_OP_ID_ATTR, Sdf.ValueTypeNames.String, custom=True
+                )
+                written.SetVariability(Sdf.VariabilityUniform)
+                written.Set(suffix)
+
+    object.__setattr__(node, "_xform_op_suffix", suffix)
+    return suffix
+
+
+def _chunk_prim_of(stage, node):
+    path = getattr(node, "_exec_prim_path", None) or getattr(node, "prim_path", None)
+    if not path:
+        return None
+    prim = stage.GetPrimAtPath(Sdf.Path(str(path)))
+    return prim if prim and prim.IsValid() else None
+
+
+
+# NOT used, and kept as a signpost rather than deleted: the obvious fix for the ordering
+# race is to give xformOpOrder a single writer in a layer shared by the graph, and it does
+# fix it -- the chair case below passes. It also breaks four things, because the order then
+# no longer mutes with its chunk: a muted or downstream chunk's op stays in the list, which
+# breaks upstream isolation (test_scatter_is_reactive_and_ignores_downstream_transform,
+# test_recook_for_view_reveals_upstream_incrementally,
+# test_get_upstream_stage_preserves_real_relative_order_among_included_chunks) and leaves a
+# deleted chunk's op named after it is gone (test_deleting_the_chunk_gives_the_asset_back).
+#
+# So the two placements each break something: per-chunk races, shared loses muting. A real
+# fix has to satisfy both -- most likely by re-cooking every chunk that touches a prim when
+# the participant set changes, so the per-chunk copies cannot go stale in the first place.
+def _xform_order_layer_unused(stage, node):
+
+    """The layer a chunk should author `xformOpOrder` into: shared, not its own.
+
+    The VALUES belong in each chunk's own layer -- that is what makes them compose and what
+    makes muting a chunk drop its contribution. The ORDER cannot work that way. It is a
+    single attribute, so per-chunk copies compete, and USD keeps whichever layer is
+    strongest rather than whichever is most recent. A chunk that cooked before its
+    neighbour existed holds a stale list, and if its layer happens to outrank the others,
+    that stale list wins and the neighbour's op is silently never read.
+
+    Building every copy from the same source does not fix that, which was the previous
+    attempt: identical copies only help if everyone re-cooks after every change, and they do
+    not. Reported twice from real graphs -- a second Transform contributing nothing, then a
+    baked simulation disappearing the moment its upstream Transform was nudged.
+
+    So there is one copy, in the layer shared by the chunks of a graph, and the most recent
+    cook wins. Each cook rebuilds the list from what is currently on the prim, so a stale
+    entry survives at most until the next one.
+    """
+    manager = chunk_registry.ChunkLayerManager()
+    own = node.get_edit_context() if hasattr(node, "get_edit_context") else None
+    if own is not None:
+        for parent in (getattr(manager, "graph_layers", None) or {}).values():
+            if own.identifier in parent.subLayerPaths:
+                return parent
+    return own

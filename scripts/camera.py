@@ -1,8 +1,16 @@
 import os
 import json
 import http.client
-from pxr import Gf, UsdGeom
+from pxr import Gf, Sdf, UsdGeom
 from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_utils
+
+#: The shared op every chunk used to write, and what the freecam lock wrote until this chunk
+#: owned a named one. Still read, so a camera saved before the change keeps its placement.
+_LEGACY_OP = "xformOp:transform"
+
+#: Set while `lock_to_freecam` owns the transform, so the first cook after it comes off knows
+#: to take the flown position back into the params instead of authoring stale ones over it.
+_FREECAM_OWNED = "_freecam_owned"
 
 
 def _download_camera_types_cache(camera_cache):
@@ -72,10 +80,84 @@ def _apply_freecam_transform(owner, notice, sender):
     prim = stage.GetPrimAtPath(prim_path)
     if not prim.IsValid():
         return
-    UsdGeom.Xformable(prim).MakeMatrixXform().Set(gf_cam.transform)
+    # Translate and rotate only -- the chunk keeps its own scale. The freecam is a viewpoint
+    # and has no scale of its own to give, so taking its matrix whole silently replaced the
+    # camera's scale with 1: the object visibly snapped back to unscaled while the sliders
+    # went on reading what the user set, which is the worst way for the two to disagree.
+    #
+    # Through this chunk's own op, not MakeMatrixXform(). That resets xformOpOrder to a lone
+    # `xformOp:transform`, which would wipe the named op the cook authors -- so unticking the
+    # lock left the camera holding a transform from one system and an order naming the other.
+    _author_matrix(_chunk, stage, prim, _with_local_scale(_chunk, gf_cam.transform))
     if not prim.GetAttribute("focusDistance").Get():
         _chunk.get_param("focusDistance").value = gf_cam.focusDistance
     scene.set_viewport_camera(prim)
+
+
+def _with_local_scale(node, matrix):
+    """A placement from elsewhere, with this chunk's own scale kept.
+
+    The freecam constrains where the camera *is* and which way it looks. It is a viewpoint and
+    carries no scale worth having, so its matrix is taken for translate and rotate only and
+    the chunk's scale params are re-applied underneath -- pre-multiplied, so the scale happens
+    in the camera's own space and the placement is unaffected.
+    """
+    scale = _scale_of(node)
+    if scale == Gf.Vec3d(1, 1, 1):
+        return matrix
+    return Gf.Matrix4d().SetScale(scale) * matrix
+
+
+def _scale_of(node):
+    return Gf.Vec3d(
+        node.get_param("sx").value or 1.0,
+        node.get_param("sy").value or 1.0,
+        node.get_param("sz").value or 1.0,
+    )
+
+
+def _author_matrix(node, stage, prim, matrix):
+    """Author `matrix` as this chunk's own named xformOp, replacing any it wrote before.
+
+    Same shape as transform.py, and for the same two reasons.
+
+    **A named op per chunk.** `xformOp:transform` is one attribute, so two chunks placing one
+    prim competed for it and USD kept only the strongest. Owning a distinct name each, they
+    compose -- so a Transform chunk on a camera now adds to it instead of annihilating it.
+
+    **Authored outright**, not through `AddTransformOp()` / `GetOrderedXformOps()`. Both trust
+    `xformOpOrder`, and that can name an op no layer defines with a type -- ordinary leftover
+    state after a chunk is deleted and re-added, since the order and the attribute live in
+    different layers and go away independently. Reproduced on a camera prim: 25.08 skips the
+    untyped op, hands back an empty list, and `AddTransformOp()` then raises because the name
+    *is* already in the order. 25.05 fails differently and also fails.
+    """
+    op_name = chunk_utils.xform_op_name(node)
+    order = _without_legacy_op(node, stage, prim, chunk_gizmo.xform_op_order(node, prim, op_name))
+
+    attr = prim.CreateAttribute(op_name, Sdf.ValueTypeNames.Matrix4d, custom=False)
+    attr.Set(matrix)
+    UsdGeom.Xformable(prim).CreateXformOpOrderAttr().Set(order)
+
+
+def _without_legacy_op(node, stage, prim, order):
+    """Drop the shared `xformOp:transform` this chunk wrote before it owned a named one.
+
+    A camera saved before the change carries one holding the same placement the params do, so
+    leaving it in the order would apply the camera's transform *twice* -- the doubling that
+    turned a scale of 100 into 10000 when transform.py had the same problem.
+
+    Only when the spec is in this chunk's own layer. A referenced camera that genuinely owns
+    an `xformOp:transform` of its own keeps it, and keeps its place at the front of the order.
+    """
+    layer = stage.GetEditTarget().GetLayer()
+    if layer is None or layer.GetAttributeAtPath(prim.GetPath().AppendProperty(_LEGACY_OP)) is None:
+        return order
+
+    legacy = prim.GetAttribute(_LEGACY_OP)
+    if legacy and legacy.IsValid():
+        legacy.Clear()
+    return [op for op in order if op != _LEGACY_OP]
 
 
 def _set_as_viewport_camera(owner, notice, sender):
@@ -122,34 +204,48 @@ def _camera_matrix(node):
         node.get_param("tz").value,
     ))
     xform.SetRotation(rotation)
-    xform.SetScale(Gf.Vec3d(
-        node.get_param("sx").value or 1.0,
-        node.get_param("sy").value or 1.0,
-        node.get_param("sz").value or 1.0,
-    ))
+    xform.SetScale(_scale_of(node))
     return xform.GetMatrix()
 
 
 _TRANSFORM_PARAMS = ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz")
 
 
-def _adopt_existing_transform(node, prim):
-    """Seed the transform params from the prim, if they are untouched and it already has one.
+def _adopt_existing_transform(node, prim, force=False):
+    """Seed the transform params from the prim, so a cook does not author over its placement.
 
-    Without this, unticking `lock_to_freecam` snaps the camera back to the origin: the
-    freecam placed the prim while the lock was on, our params are still at their defaults,
-    and the very next cook authors those defaults straight over it. Losing a camera position
-    you just flew to is a bad way to find out the two systems disagree.
+    Without this, unticking `lock_to_freecam` snaps the camera back: the freecam placed the
+    prim while the lock was on, our params still say something else, and the very next cook
+    authors those params straight over it. Losing a camera position you just flew to is a bad
+    way to find out the two systems disagree.
 
-    Only when *every* param is still at its default, so it never overwrites a real edit.
-    After seeding they are non-default, so this runs once and then gets out of the way.
+    Normally only when *every* param is still at its default, so it never overwrites a real
+    edit -- a user who typed a position keeps it even if the prim carries something else.
+
+    `force` is the exception, and it is the whole reason this takes an argument: while the
+    lock is on the freecam *is* the authority, so on the tick the lock comes off there is no
+    "real edit" to protect -- the params are stale by definition. Reported as: move the camera
+    with the gizmo, lock, fly somewhere, unlock, and the camera jumps back to where the gizmo
+    left it. The defaults-only guard was silently discarding the flight for any camera that
+    had ever been touched.
     """
-    if any(node.get_param(n).value != node.get_param(n).default_value for n in _TRANSFORM_PARAMS):
+    if not force and any(
+        node.get_param(n).value != node.get_param(n).default_value for n in _TRANSFORM_PARAMS
+    ):
         return
 
-    existing = {op.GetOpName(): op for op in UsdGeom.Xformable(prim).GetOrderedXformOps()}
-    op = existing.get("xformOp:transform")
-    matrix = op.Get() if op else None
+    # This chunk's own op first, then the shared one a camera saved before the named-op
+    # change carries. Read straight off the attribute rather than through
+    # GetOrderedXformOps(), which silently drops an op that xformOpOrder names but no layer
+    # types -- the state that made AddTransformOp() raise here in the first place.
+    matrix = None
+    for name in (chunk_utils.existing_xform_op_name(node), _LEGACY_OP):
+        if not name:
+            continue
+        attr = prim.GetAttribute(name)
+        if attr and attr.IsValid() and (value := attr.Get()) is not None:
+            matrix = value
+            break
     if matrix is None:
         return
 
@@ -177,7 +273,15 @@ def _author_camera_transform(node, stage):
         # The freecam owns the transform while the lock is on, and re-authors it on every
         # CAMERA_CHANGED. Writing params here would be silently overwritten a frame later,
         # which is worse than not writing them.
+        setattr(node, _FREECAM_OWNED, True)
         return
+
+    # Edge-triggered, not level-triggered: this is the first cook since the lock came off, so
+    # the params are stale by definition and adopting is not overwriting anything. Read and
+    # cleared here so it fires exactly once per lock, however many cooks follow.
+    handing_back = getattr(node, _FREECAM_OWNED, False)
+    if handing_back:
+        setattr(node, _FREECAM_OWNED, False)
 
     path = node.get_param("primpath_location").value
     if not path:
@@ -188,12 +292,9 @@ def _author_camera_transform(node, stage):
         if not prim.IsValid():
             return
         # Take on whatever is already there before overwriting it -- see the docstring.
-        _adopt_existing_transform(node, prim)
+        _adopt_existing_transform(node, prim, force=handing_back)
 
-        xformable = UsdGeom.Xformable(stage.OverridePrim(target_path))
-        existing = {op.GetOpName(): op for op in xformable.GetOrderedXformOps()}
-        transform_op = existing.get("xformOp:transform") or xformable.AddTransformOp()
-        transform_op.Set(_camera_matrix(node))
+        _author_matrix(node, stage, stage.OverridePrim(target_path), _camera_matrix(node))
 
 
 def main():

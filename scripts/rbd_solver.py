@@ -13,7 +13,7 @@ from collections.abc import Generator
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_gizmo, chunk_registry
+from usd_chunks import chunk, chunk_gizmo, chunk_registry, chunk_utils
 from usd_chunks.plugins import chunk_usd
 
 try:
@@ -408,12 +408,6 @@ def _sim_prim_gen_mj(
     ang_vel: list[float],
     start_frame: int,
     dt: float,
-    otx: float,
-    oty: float,
-    otz: float,
-    orx: float,
-    ory: float,
-    orz: float,
     up_idx: int,
     shape_type: str,
     collision_margin: float,
@@ -447,16 +441,6 @@ def _sim_prim_gen_mj(
         sz = rng.GetMax() - rng.GetMin()
         half_extents = [sz[0] / 2, sz[1] / 2, sz[2] / 2]
         z_offset = (rng.GetMin()[up_idx] + rng.GetMax()[up_idx]) / 2 - translate[up_idx]
-
-    # --- apply the initial rotation offset up front, so the hull, the body
-    # quaternion and the geom offset are all built in the same final frame ---
-    if orx != 0.0 or ory != 0.0 or orz != 0.0:
-        rot = (
-            rot
-            * Gf.Rotation(Gf.Vec3d(1, 0, 0), orx)
-            * Gf.Rotation(Gf.Vec3d(0, 1, 0), ory)
-            * Gf.Rotation(Gf.Vec3d(0, 0, 1), orz)
-        )
 
     # The body frame is placed at the prim's transform origin (not the bbox
     # centre), so the body rotates about exactly the same point as the USD
@@ -533,7 +517,7 @@ def _sim_prim_gen_mj(
 
     # --- initial position: body origin == prim transform origin (no z_offset;
     # the geometry offset is carried by the geom, see geom_offset) ---
-    init_pos = [translate[0] + otx, translate[1] + oty, translate[2] + otz]
+    init_pos = [translate[0], translate[1], translate[2]]
 
     lat = [j for j in range(3) if j != up_idx]
 
@@ -659,6 +643,48 @@ def _sim_prim_gen_mj(
     return all_mats
 
 
+def _bake_scale(prim: Usd.Prim, xform_cache) -> tuple:
+    """The scale the bake has to re-apply: the prim's WORLD scale, not its local one.
+
+    The bake converts a world-space result into local space with parent_world_inv, which
+    divides out every ancestor's scale -- and the simulation result is rotation and
+    translation only, so nothing puts that back. Reading the LOCAL scale compensates for the
+    wrong thing: a mesh under a parent scaled by 100 has a local scale of 1, so nothing was
+    re-applied and the baked op came out at 0.01, exactly the 1/100 the parent contributes.
+    Reported as the apple shrinking on Run Simulation.
+
+    It only ever worked because of where it was tested. A prim at the ROOT has the same
+    local and world scale, so the two coincide and the mistake is invisible -- which is
+    exactly why simulating /food_apple_01_4k was fine and simulating its mesh was not.
+    """
+    world = xform_cache.GetLocalToWorldTransform(prim)
+    return tuple(world.GetRow3(i).GetLength() for i in range(3))
+
+
+def _upstream_xform(prim: Usd.Prim, op_name: str) -> Gf.Matrix4d:
+    """Everything applying to `prim` before this chunk's own op.
+
+    Read as the composed local transform with this chunk's own contribution divided back
+    out, so it reflects what is actually in effect -- muting and layer strength included --
+    rather than a re-composition of the op list by hand.
+
+    Ordering, verified rather than assumed: for xformOpOrder [rot, translate] USD composes
+    T * R, so the last op multiplies on the left. An appended op therefore gives
+    local = mine * upstream, hence upstream = mine^-1 * local.
+    """
+    xformable = UsdGeom.Xformable(prim)
+    local = xformable.GetLocalTransformation(Usd.TimeCode.Default())
+    if isinstance(local, tuple):
+        local = local[0]
+    mine = Gf.Matrix4d(1.0)
+    attr = prim.GetAttribute(op_name)
+    if attr and attr.IsValid():
+        current = attr.Get()
+        if current is not None:
+            mine = Gf.Matrix4d(current)
+    return mine.GetInverse() * local
+
+
 def _write_prim_results(
     stage: Usd.Stage,
     prim: Usd.Prim,
@@ -667,6 +693,7 @@ def _write_prim_results(
     all_mats: list[Gf.Matrix4d],
     start_frame: int,
     scale_xyz: tuple[float, float, float] | None = None,
+    node=None,
 ) -> None:
     """Write single-prim simulation results to USD (main-thread only)."""
     if scale_xyz and any(abs(s - 1.0) > 1e-6 for s in scale_xyz):
@@ -683,17 +710,45 @@ def _write_prim_results(
         def _local(mat):
             return mat * parent_world_inv
 
+    # Bake into THIS chunk's own named op, and derive the order the same way every other
+    # transform-authoring chunk does.
+    #
+    # This used to author the plain xformOp:transform and hard-set the order to just that.
+    # Under the old scheme that was merely the usual strongest-layer-wins; under the current
+    # one it is worse, because the solver sits downstream and so its one-item list outranks
+    # everyone else's -- excluding an upstream Transform's op from the order entirely. The
+    # op stayed on the prim, typed and valued, and was never read, so placing a chair with a
+    # Transform stopped working the moment a simulation existed. Reported as the chair
+    # jumping the instant the Transform was nudged.
+    op_name = chunk_utils.xform_op_name(node) if node is not None else "xformOp:transform"
     with Usd.EditContext(stage, layer):
+        order = (
+            chunk_gizmo.xform_op_order(node, prim, op_name)
+            if node is not None
+            else [op_name]
+        )
         order_attr = prim.GetAttribute("xformOpOrder")
         if not order_attr:
             order_attr = prim.CreateAttribute("xformOpOrder", Sdf.ValueTypeNames.TokenArray)
-        order_attr.Set(["xformOp:transform"])
-        xf_attr = prim.GetAttribute("xformOp:transform")
+        order_attr.Set(order)
+        xf_attr = prim.GetAttribute(op_name)
         if not xf_attr:
-            xf_attr = prim.CreateAttribute("xformOp:transform", Sdf.ValueTypeNames.Matrix4d)
-        xf_attr.Set(_local(all_mats[0]))
+            xf_attr = prim.CreateAttribute(op_name, Sdf.ValueTypeNames.Matrix4d)
+        # Bake this chunk's SHARE, not the absolute placement.
+        #
+        # _local() gives where the body should end up in its parent's space. That used to be
+        # the whole answer, because the bake replaced the prim's op stack. It composes on top
+        # of the upstream ops now, so writing the absolute value in applies whatever placed
+        # the body a second time -- reported as the chair jumping away the moment Run
+        # Simulation was pressed, with a Transform upstream of the solver.
+        #
+        # Same conversion the gizmo write-back does, for the same reason: an absolute answer
+        # arriving at something that contributes a share has to have the share divided out.
+        upstream = _upstream_xform(prim, op_name)
+        inv_upstream = upstream.GetInverse()
+        xf_attr.Set(_local(all_mats[0]) * inv_upstream)
         for frame_idx, mat in enumerate(all_mats):
-            xf_attr.Set(_local(mat), Usd.TimeCode(start_frame + frame_idx))
+            xf_attr.Set(_local(mat) * inv_upstream, Usd.TimeCode(start_frame + frame_idx))
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         stage.SetStartTimeCode(start_frame)
         stage.SetEndTimeCode(start_frame + len(all_mats) - 1)
@@ -713,12 +768,6 @@ def simulate_mujoco(
     ang_vel: list[float],
     start_frame: int,
     parent_world_inv: Gf.Matrix4d,
-    otx: float,
-    oty: float,
-    otz: float,
-    orx: float,
-    ory: float,
-    orz: float,
     collision_prims: list[Usd.Prim] | None = None,
     friction: float = 0.5,
     restitution: float = 0.1,
@@ -735,8 +784,13 @@ def simulate_mujoco(
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
+    node=None,
 ) -> list[Gf.Matrix4d] | None:
-    """Run MuJoCo simulation."""
+    """Run MuJoCo simulation.
+
+    `node` is the chunk itself, needed only so the bake lands in this chunk's own named
+    xformOp rather than the shared one -- see _write_prim_results.
+    """
     if not _HAS_MUJOCO:
         print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
         return
@@ -767,12 +821,6 @@ def simulate_mujoco(
         ang_vel,
         start_frame,
         dt,
-        otx,
-        oty,
-        otz,
-        orx,
-        ory,
-        orz,
         up_idx,
         shape_type,
         collision_margin,
@@ -803,7 +851,7 @@ def simulate_mujoco(
         return
 
     # Write results using the proven writer
-    _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz)
+    _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz, node)
     print(f"[MuJoCoSolver] Baked {frame_count} frames on {prim.GetPath()}")
     return all_mats
 
@@ -853,12 +901,6 @@ def simulate_mujoco_instancer(
     init_vel: list[float],
     ang_vel: list[float],
     start_frame: int,
-    otx: float,
-    oty: float,
-    otz: float,
-    orx: float,
-    ory: float,
-    orz: float,
     friction: float = 0.5,
     restitution: float = 0.1,
     lin_damping: float = 0.0,
@@ -976,15 +1018,7 @@ def simulate_mujoco_instancer(
 
     dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
 
-    # Rotation offset applied to every instance's initial orientation (mirrors the
-    # single-prim path). Only meaningful physically for Box / Convex Hull colliders.
-    off_rot = None
-    if orx != 0.0 or ory != 0.0 or orz != 0.0:
-        off_rot = (
-            Gf.Rotation(Gf.Vec3d(1, 0, 0), orx)
-            * Gf.Rotation(Gf.Vec3d(0, 1, 0), ory)
-            * Gf.Rotation(Gf.Vec3d(0, 0, 1), orz)
-        )
+    off_rot = None  # no rotation offset on this chunk any more; see main()
 
     # Convex hull: extract the shared prototype geometry once, then build one mesh
     # asset per distinct instance scale (MuJoCo computes the hull per asset).
@@ -1022,9 +1056,9 @@ def simulate_mujoco_instancer(
     for i in range(num_instances):
         lp = positions[i]
         pos_world = world_xf.Transform(Gf.Vec3d(float(lp[0]), float(lp[1]), float(lp[2])))
-        px = float(pos_world[0]) + otx
-        py = float(pos_world[1]) + oty
-        pz = float(pos_world[2]) + otz
+        px = float(pos_world[0])
+        py = float(pos_world[1])
+        pz = float(pos_world[2])
 
         if orientations and i < len(orientations):
             q = orientations[i]
@@ -1309,8 +1343,6 @@ def _run(owner, notice, sender) -> None:
     lin_damping = _chunk.get_param("lin_damping", is_f).value
     ang_damping = _chunk.get_param("ang_damping", is_f).value
     shape_type = _chunk.get_param("shape_type", is_s).value
-    otx, oty, otz = _vec3(_chunk, "offset_translate")
-    orx, ory, orz = _vec3(_chunk, "offset_rotate")
     init_vel = _vec3(_chunk, "initial_velocity")
     ang_vel = _vec3(_chunk, "angular_velocity")
     floor_drop = _chunk.get_param("floor_drop", is_f).value
@@ -1358,12 +1390,6 @@ def _run(owner, notice, sender) -> None:
             init_vel,
             ang_vel,
             start_frame,
-            otx,
-            oty,
-            otz,
-            orx,
-            ory,
-            orz,
             friction=friction,
             restitution=restitution,
             lin_damping=lin_damping,
@@ -1382,16 +1408,7 @@ def _run(owner, notice, sender) -> None:
         if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
             parent_world_inv = xform_cache.GetLocalToWorldTransform(parent).GetInverse()
 
-        # Extract local scale so we can preserve it in the baked transform
-        local_xf = xform_cache.GetLocalTransformation(prim)[0]
-        _r0 = local_xf.GetRow3(0)
-        _r1 = local_xf.GetRow3(1)
-        _r2 = local_xf.GetRow3(2)
-        scale_xyz = (
-            (_r0[0] ** 2 + _r0[1] ** 2 + _r0[2] ** 2) ** 0.5,
-            (_r1[0] ** 2 + _r1[1] ** 2 + _r1[2] ** 2) ** 0.5,
-            (_r2[0] ** 2 + _r2[1] ** 2 + _r2[2] ** 2) ** 0.5,
-        )
+        scale_xyz = _bake_scale(prim, xform_cache)
 
         simulate_mujoco(
             stage,
@@ -1406,12 +1423,6 @@ def _run(owner, notice, sender) -> None:
             ang_vel,
             start_frame,
             parent_world_inv,
-            otx,
-            oty,
-            otz,
-            orx,
-            ory,
-            orz,
             collision_prims=collision_prims,
             friction=friction,
             restitution=restitution,
@@ -1423,6 +1434,7 @@ def _run(owner, notice, sender) -> None:
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
             floor_drop=floor_drop,
+            node=_chunk,
             **forces,
         )
 
@@ -1503,45 +1515,6 @@ def _schedule_auto_run(root_chunk) -> None:
         timer.timeout.connect(lambda: _run(root_chunk, None, None))
         root_chunk._auto_run_timer = timer
     timer.start(_AUTO_RUN_DELAY_MS)
-
-
-def gizmo_changed(node, gizmo, value):
-    """Turn a dragged absolute placement into an offset from where the body already is.
-
-    Same reasoning as offset_transform's hook, and the same bug if it is missing: the
-    handle emits an absolute local transform (correct, and what every transform handle
-    emits) while these params mean "shift the body's start by this much". Writing the raw
-    value in makes the offset the placement, so a body already at y=5 dragged to y=8 gets
-    an offset of 8 and starts at 13.
-
-    Invisible on a body at the origin, where absolute and relative coincide -- which is
-    exactly how it passed a live test earlier.
-    """
-    if gizmo not in ("offset_translate", "offset_rotate"):
-        return False
-    prims = node.get_param("prim_path").get_prims()
-    if not prims:
-        return False
-
-    base = _gizmo_base(prims[0])
-    part = "translate" if gizmo == "offset_translate" else "rotate"
-    delta = [float(v) - float(b) for v, b in zip(value, base[part])]
-    node.get_param(gizmo).value = tuple(delta)
-    return True
-
-
-def _gizmo_base(prim):
-    """Where the body sits before these offsets are applied.
-
-    The solver does not author its offsets onto the prim -- it bakes simulated animation --
-    so unlike offset_transform there is no output of its own to read back and no risk of
-    compounding. The prim's current placement IS the base.
-    """
-    matrix = UsdGeom.Xformable(prim).GetLocalTransformation(Usd.TimeCode.Default())
-    if isinstance(matrix, tuple):
-        matrix = matrix[0]
-    return chunk_gizmo.decompose(matrix)
-
 
 
 def main() -> chunk.Chunk:
@@ -1730,39 +1703,10 @@ def main() -> chunk.Chunk:
     # group (six loose spinboxes) and Velocity group (two text fields you had to type
     # space-separated numbers into).
     init_grp = _section("InitialState", "Initial State")
-    # gizmo= on the two offsets: these place the body before the sim runs, which is exactly
-    # the thing you want to do by dragging in the viewport rather than by typing numbers
-    # into a collapsed section. Deliberately two separate handles rather than a chunk-level
-    # gizmo="transform" -- that one absorbs translate/rotate/scale into a single manipulator
-    # and there is no scale offset here, so it would not resolve.
-    #
-    # No anchor= needed: prim_path is the only PRIM_SELECTION param on this chunk, which is
-    # what resolve_anchor_param falls back to. Adding a second such param would make that
-    # ambiguous, and it raises with the chunk's name rather than silently drawing nothing.
-    init_grp.add_param(
-        chunk.Vector(
-            "offset_translate",
-            "Position Offset",
-            param=chunk.Spinbox(),
-            length=3,
-            suffixes="XYZ",
-            default_value=(0.0, 0.0, 0.0),
-            gizmo="translate",
-            tooltip="Shift the body's start position before simulating, in scene units.",
-        )
-    )
-    init_grp.add_param(
-        chunk.Vector(
-            "offset_rotate",
-            "Rotation Offset",
-            param=chunk.Spinbox(),
-            length=3,
-            suffixes="XYZ",
-            default_value=(0.0, 0.0, 0.0),
-            gizmo="rotate",
-            tooltip="Pre-rotate the body before simulating, in degrees.",
-        )
-    )
+    # No position or rotation offset here any more, and no gizmo on this chunk. Transform
+    # chunks compose, so an upstream Transform does that job -- and having it in two places
+    # was actively harmful: with a chair wired Transform -> RBD Solver, going back to adjust
+    # the Transform while the solver held its own offset put the chair back at the origin.
     init_grp.add_param(
         chunk.Vector(
             "initial_velocity",

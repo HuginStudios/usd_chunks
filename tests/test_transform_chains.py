@@ -25,7 +25,6 @@ from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins import chunk_usd
 
 transform_mod = importlib.import_module("scripts.transform")
-offset_mod = importlib.import_module("scripts.offset_transform")
 
 
 class _Scene(SceneSender):
@@ -53,18 +52,16 @@ def scene():
     registry.initialize(sender, "pytest")
     chunk_registry.ChunkLayerManager().initialize(stage)
     chunk_usd.ChunkStageSync().initialize(stage, sender)
-    offset_mod._last_applied.clear()
     return stage, sender, scene_layer
 
 
 def _mk(sender, module, name):
     chunk = module.main()
-    is_transform = module is transform_mod
-    chunk._config = ChunkConfig(module="transform" if is_transform else "offset_transform")
+    chunk._config = ChunkConfig(module="transform")
     chunk._module = module
     chunk.name = name
     sender.add_chunk(chunk)
-    chunk.get_param("primpath_location" if is_transform else "prim_path").value = "/cube"
+    chunk.get_param("primpath_location").value = "/cube"
     return chunk
 
 
@@ -91,65 +88,14 @@ def _bake(stage, layer, translation):
 
 
 # ---------------------------------------------------------------------------
-# offset on top of a matrix placement
-# ---------------------------------------------------------------------------
-
-def test_an_offset_adds_to_a_matrix_placement(scene) -> None:
-    """The bug found while reviewing chains. Offset Transform built its base by reading
-    translate/rotate/scale ops, so a single `transform` matrix op -- what a Transform chunk
-    authors, and what a baked asset carries -- was invisible to it. The base read as
-    identity and the offset was applied to nothing instead of to the placement in effect.
-    """
-    stage, sender, scene_layer = scene
-    _bake(stage, scene_layer, (0.0, 5.0, 0.0))
-
-    offset = _mk(sender, offset_mod, "Off")
-    offset.get_param("ty").value = 2.0
-
-    assert _translation(stage) == Gf.Vec3d(0.0, 7.0, 0.0)
-
-
-def test_an_offset_on_separate_ops_still_works(scene) -> None:
-    """The spelling that always worked, kept so the matrix branch cannot break it."""
-    stage, sender, scene_layer = scene
-    with Usd.EditContext(stage, scene_layer):
-        UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).AddTranslateOp().Set(
-            Gf.Vec3d(0.0, 5.0, 0.0)
-        )
-
-    offset = _mk(sender, offset_mod, "Off")
-    offset.get_param("ty").value = 2.0
-
-    assert _translation(stage) == Gf.Vec3d(0.0, 7.0, 0.0)
-
-
-def test_an_offset_scales_from_the_matrix_base(scene) -> None:
-    stage, sender, scene_layer = scene
-    with Usd.EditContext(stage, scene_layer):
-        UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).AddTransformOp().Set(
-            Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(2.0, 2.0, 2.0))
-        )
-
-    offset = _mk(sender, offset_mod, "Off")
-    offset.get_param("sx").value = 3.0
-
-    matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetLocalTransformation(
-        Usd.TimeCode.Default()
-    )
-    matrix = matrix[0] if isinstance(matrix, tuple) else matrix
-    assert matrix.GetRow3(0).GetLength() == pytest.approx(6.0), "2 x 3, not 3 and not 2"
-
-
-# ---------------------------------------------------------------------------
 # two Transforms on one prim
 # ---------------------------------------------------------------------------
 
-def test_two_transforms_are_last_one_wins_not_additive(scene) -> None:
-    """Not a bug, and worth pinning so nobody "fixes" it into addition later.
+def test_two_transforms_compose(scene) -> None:
+    """The point of the whole change, and the exact inverse of what this asserted before.
 
-    Transform means "set the transform". Each one authors xformOpOrder, and USD resolves
-    that attribute as a whole -- the strongest opinion decides, there is no merging of op
-    lists across layers. Adding is what Offset Transform is for.
+    Each chunk used to author the same attribute, so USD picked the strongest layer and
+    discarded the other -- 5 or 3, never 8. Owning a named op each, they compose.
     """
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
@@ -160,17 +106,15 @@ def test_two_transforms_are_last_one_wins_not_additive(scene) -> None:
     first.execute()
     second.execute()
 
-    assert _translation(stage) in (Gf.Vec3d(0, 5, 0), Gf.Vec3d(0, 3, 0)), (
-        "one of them wins outright; 8 would mean they had started stacking"
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 8, 0)), (
+        "both contribute now; 5 or 3 alone would mean one had discarded the other"
     )
 
 
-def test_handles_come_back_strongest_first(scene) -> None:
-    """What makes a host with no chunk selected still do the right thing: it drives
-    handles[0], and that is the chunk whose result is actually on screen.
+def test_each_transform_owns_a_distinct_op(scene) -> None:
+    """What makes composing possible: they are no longer writing the same attribute."""
+    from usd_chunks import chunk_utils
 
-    chunks_for_prim walks GetPrimStack(), which USD returns strength-ordered.
-    """
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
     second = _mk(sender, transform_mod, "T2")
@@ -179,10 +123,42 @@ def test_handles_come_back_strongest_first(scene) -> None:
     first.execute()
     second.execute()
 
-    handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
-    winner = {Gf.Vec3d(0, 5, 0): "T1", Gf.Vec3d(0, 3, 0): "T2"}[_translation(stage)]
+    names = {chunk_utils.xform_op_name(first), chunk_utils.xform_op_name(second)}
+    order = list(UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetXformOpOrderAttr().Get())
 
-    assert str(handles[0].chunk_prim).rsplit("/", 1)[-1] == winner
+    assert len(names) == 2
+    assert names <= set(order)
+
+
+def test_a_chunks_op_id_survives_a_rename(scene) -> None:
+    """Identity rests on the id, not the name, so renaming does not orphan the op a chunk
+    has already authored."""
+    from usd_chunks import chunk_utils
+
+    stage, sender, scene_layer = scene
+    node = _mk(sender, transform_mod, "T1")
+    node.get_param("ty").value = 5.0
+    node.execute()
+    before = chunk_utils.xform_op_name(node)
+
+    node.name = "RenamedLater"
+
+    assert chunk_utils.xform_op_name(node) == before
+
+
+def test_both_chunks_offer_a_handle(scene) -> None:
+    """Neither is discarded any more, so both are draggable and both show up."""
+    stage, sender, scene_layer = scene
+    first = _mk(sender, transform_mod, "T1")
+    second = _mk(sender, transform_mod, "T2")
+    first.get_param("ty").value = 5.0
+    second.get_param("ty").value = 3.0
+    first.execute()
+    second.execute()
+
+    prims = {str(d.chunk_prim) for d in chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))}
+
+    assert prims == {"/chunks/T1", "/chunks/T2"}
 
 
 def test_dragging_moves_the_prim_by_what_was_dragged(scene) -> None:
@@ -208,128 +184,6 @@ def test_dragging_moves_the_prim_by_what_was_dragged(scene) -> None:
 
 
 # ---------------------------------------------------------------------------
-# mixed
-# ---------------------------------------------------------------------------
-
-def test_a_transform_and_an_offset_both_offer_handles(scene) -> None:
-    stage, sender, scene_layer = scene
-    _mk(sender, transform_mod, "T1")
-    _mk(sender, offset_mod, "Off")
-
-    handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
-
-    assert len(handles) == 2
-    assert {d.type for d in handles} == {"transform"}
-
-
-def test_neither_a_transform_nor_an_offset_triggers_auto_create(scene, monkeypatch) -> None:
-    """Both own the prim's placement, so neither may get a Transform stacked on it."""
-    stage, sender, scene_layer = scene
-    registry = chunk_registry.ChunkRegistry()
-
-    class _Stub:
-        loaded = True
-        creates = 0
-
-        def create(self):
-            _Stub.creates += 1
-            c = transform_mod.main()
-            c._config = ChunkConfig(module="transform")
-            c._module = transform_mod
-            return [c]
-
-        load = create
-
-    stub = _Stub()
-    monkeypatch.setitem(registry.registered_modules, "transform", stub)
-    monkeypatch.setattr(chunk_usd, "_create_node_pos", None, raising=False)
-
-    _mk(sender, offset_mod, "Off")
-    chunk_gizmo.ensure_transform_chunk(stage.GetPrimAtPath("/cube"))
-
-    assert stub.creates == 0
-
-
-# ---------------------------------------------------------------------------
-# dragging an Offset Transform: an offset is a delta, not a placement
-# ---------------------------------------------------------------------------
-
-def test_dragging_an_offset_writes_a_delta_not_the_absolute_value(scene) -> None:
-    """Reported live: a Transform chunk adopting an asset's scale of 100, an Offset
-    Transform added on the same prim, one drag, and the scale became 100 x 100.
-
-    The handle emits an absolute local transform -- correct, and the same thing every
-    transform handle emits. An offset is not a placement, so the chunk converts.
-    """
-    stage, sender, scene_layer = scene
-    _bake(stage, scene_layer, (0.0, 5.0, 0.0))
-    offset = _mk(sender, offset_mod, "Off")
-
-    # Drag it to where it already is: the offset must come out as nothing.
-    chunk_gizmo.apply_bindings(
-        Sdf.Path("/chunks/Off"), "transform",
-        Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 5.0, 0.0)),
-    )
-
-    assert [offset.get_param(n).value for n in ("tx", "ty", "tz")] == pytest.approx([0, 0, 0])
-    assert [offset.get_param(n).value for n in ("sx", "sy", "sz")] == pytest.approx([1, 1, 1])
-
-
-def test_dragging_an_offset_moves_the_prim_where_it_was_dragged(scene) -> None:
-    stage, sender, scene_layer = scene
-    _bake(stage, scene_layer, (0.0, 5.0, 0.0))
-    _mk(sender, offset_mod, "Off")
-
-    chunk_gizmo.apply_bindings(
-        Sdf.Path("/chunks/Off"), "transform",
-        Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 8.0, 0.0)),
-    )
-
-    assert _translation(stage) == pytest.approx(Gf.Vec3d(0.0, 8.0, 0.0)), (
-        "dragged to 8 from a base of 5, so the offset is 3 and the prim lands on 8"
-    )
-
-
-def test_a_scale_offset_is_a_ratio_not_a_copy(scene) -> None:
-    """The 100 x 100 case exactly. Scale composes by multiplication."""
-    stage, sender, scene_layer = scene
-    with Usd.EditContext(stage, scene_layer):
-        UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).AddTransformOp().Set(
-            Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(100.0, 100.0, 100.0))
-        )
-    offset = _mk(sender, offset_mod, "Off")
-
-    chunk_gizmo.apply_bindings(
-        Sdf.Path("/chunks/Off"), "transform",
-        Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(100.0, 100.0, 100.0)),
-    )
-
-    assert [offset.get_param(n).value for n in ("sx", "sy", "sz")] == pytest.approx([1, 1, 1])
-    matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetLocalTransformation(
-        Usd.TimeCode.Default()
-    )
-    matrix = matrix[0] if isinstance(matrix, tuple) else matrix
-    assert matrix.GetRow3(0).GetLength() == pytest.approx(100.0), "100, not 10000"
-
-
-def test_dragging_twice_does_not_compound(scene) -> None:
-    """Once the chunk has written, the prim's ops are its OWN output. Reading them back as
-    the base would fold the offset into it and grow on every drag."""
-    stage, sender, scene_layer = scene
-    _bake(stage, scene_layer, (0.0, 5.0, 0.0))
-    offset = _mk(sender, offset_mod, "Off")
-
-    for _ in range(3):
-        chunk_gizmo.apply_bindings(
-            Sdf.Path("/chunks/Off"), "transform",
-            Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 8.0, 0.0)),
-        )
-
-    assert offset.get_param("ty").value == pytest.approx(3.0)
-    assert _translation(stage) == pytest.approx(Gf.Vec3d(0.0, 8.0, 0.0))
-
-
-# ---------------------------------------------------------------------------
 # who owns the prim: nearest the view, authored or not
 # ---------------------------------------------------------------------------
 
@@ -345,17 +199,19 @@ def _wire(stage, downstream, upstream):
 
 
 def test_an_unauthored_downstream_chunk_still_owns_the_prim(scene) -> None:
-    """Reported live: adding an Offset Transform after a Transform and dragging kept
-    editing the Transform. Only after typing a value into the Offset by hand -- which made
-    it start authoring, and so join the prim's layer stack -- did it take over.
+    """Reported live against the Offset Transform node, since removed: adding it after a
+    Transform and dragging kept editing the Transform, until a value was typed in by hand,
+    which made it start authoring and so join the prim's layer stack.
 
-    Ownership must not depend on whether a number has been entered.
+    A downstream Transform that has not cooked yet stands in for it exactly -- the point was
+    never the node type, only that ownership must not depend on whether a number has been
+    entered.
     """
     stage, sender, scene_layer = scene
     transform = _mk(sender, transform_mod, "T1")
     transform.get_param("ty").value = 5.0
     transform.execute()
-    _mk(sender, offset_mod, "Off")
+    _mk(sender, transform_mod, "Off")
     _wire(stage, "Off", "T1")
 
     handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
@@ -371,7 +227,7 @@ def test_the_upstream_chunk_is_still_offered(scene) -> None:
     transform = _mk(sender, transform_mod, "T1")
     transform.get_param("ty").value = 5.0
     transform.execute()
-    _mk(sender, offset_mod, "Off")
+    _mk(sender, transform_mod, "Off")
     _wire(stage, "Off", "T1")
 
     prims = {str(d.chunk_prim) for d in chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))}
@@ -379,13 +235,13 @@ def test_the_upstream_chunk_is_still_offered(scene) -> None:
     assert prims == {"/chunks/T1", "/chunks/Off"}
 
 
-def test_ownership_does_not_flip_once_the_offset_authors(scene) -> None:
+def test_ownership_does_not_flip_once_the_downstream_chunk_authors(scene) -> None:
     """The other half of the report: it used to change hands the moment a value was typed."""
     stage, sender, scene_layer = scene
     transform = _mk(sender, transform_mod, "T1")
     transform.get_param("ty").value = 5.0
     transform.execute()
-    offset = _mk(sender, offset_mod, "Off")
+    offset = _mk(sender, transform_mod, "Off")
     _wire(stage, "Off", "T1")
     before = str(chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))[0].chunk_prim)
 
@@ -395,9 +251,86 @@ def test_ownership_does_not_flip_once_the_offset_authors(scene) -> None:
     assert before == after == "/chunks/Off"
 
 
-def test_an_unwired_chunk_does_not_jump_the_queue(scene) -> None:
-    """Depth 0 for everything unconnected, so the layer-stack order still decides -- the
-    chunk whose result is actually on screen stays first."""
+def test_dragging_the_downstream_chunk_lands_where_it_was_dragged(scene) -> None:
+    """The handle reports an absolute placement while a composing chunk contributes only its
+    own share, so the chunk has to divide the upstream contribution back out. Getting that
+    backwards conjugates the drag rather than merely offsetting it."""
+    stage, sender, scene_layer = scene
+    upstream = _mk(sender, transform_mod, "T1")
+    downstream = _mk(sender, transform_mod, "T2")
+    upstream.get_param("ty").value = 5.0
+    upstream.execute()
+    downstream.execute()
+    _wire(stage, "T2", "T1")
+
+    chunk_gizmo.apply_bindings(
+        Sdf.Path("/chunks/T2"), "transform",
+        Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 9.0, 0.0)),
+    )
+    upstream.execute()
+    downstream.execute()
+
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 9, 0))
+    assert upstream.get_param("ty").value == 5.0, "the upstream chunk must not be touched"
+    assert downstream.get_param("ty").value == pytest.approx(4.0), "9 total, 5 from upstream"
+
+
+# ---------------------------------------------------------------------------
+# a second Transform IS an offset
+# ---------------------------------------------------------------------------
+
+def test_a_second_transform_offsets_the_first(scene) -> None:
+    """The claim that makes offset_transform redundant.
+
+    "I want the apple here, and now nudge it up a bit for the sim without destroying that
+    placement" -- the case the Offset Transform node exists for. A second Transform now does
+    it, because the two compose instead of one discarding the other.
+    """
+    stage, sender, scene_layer = scene
+    placed = _mk(sender, transform_mod, "Placed")
+    placed.get_param("ty").value = 5.0
+    placed.execute()
+
+    nudge = _mk(sender, transform_mod, "Nudge")
+    nudge.get_param("ty").value = 2.0
+    # Wired, as a graph actually is. Two chunks with no connection between them have no
+    # order to derive -- see test_two_unconnected_chunks_have_no_defined_order.
+    nudge.add_dependency(placed)
+    nudge.execute()
+
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 7, 0))
+    assert placed.get_param("ty").value == 5.0, "the original placement is untouched"
+    # Note Placed was never re-cooked: the order each chunk writes is derived from the graph
+    # rather than from what it could see at the time, so the copies agree without anyone
+    # having to re-run.
+
+
+def test_removing_the_offset_leaves_the_placement(scene) -> None:
+    """The other half of non-destructive, and the thing replacing could never give."""
+    stage, sender, scene_layer = scene
+    placed = _mk(sender, transform_mod, "Placed")
+    placed.get_param("ty").value = 5.0
+    placed.execute()
+    nudge = _mk(sender, transform_mod, "Nudge")
+    nudge.get_param("ty").value = 2.0
+    nudge.add_dependency(placed)
+    nudge.execute()
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 7, 0)), "precondition"
+
+    nudge.request_delete()
+    placed.execute()
+
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 5, 0))
+
+
+def test_two_unconnected_chunks_have_no_defined_order(scene) -> None:
+    """The honest limit of deriving the order from the graph: with no connection between
+    them there is no graph relationship to derive, so which applies first is undefined.
+
+    Not a gap to fix. Asserting the undefined case has a particular answer would invent a
+    guarantee. What IS guaranteed is that both contribute -- neither silently vanishes,
+    which is the failure this whole change exists to remove.
+    """
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
     second = _mk(sender, transform_mod, "T2")
@@ -406,7 +339,23 @@ def test_an_unwired_chunk_does_not_jump_the_queue(scene) -> None:
     first.execute()
     second.execute()
 
-    handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
-    winner = {Gf.Vec3d(0, 5, 0): "T1", Gf.Vec3d(0, 3, 0): "T2"}[_translation(stage)]
+    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 8, 0))
 
-    assert str(handles[0].chunk_prim).rsplit("/", 1)[-1] == winner
+
+def test_a_scale_offset_multiplies(scene) -> None:
+    """Scale composes by multiplication, which the offset node had to special-case and a
+    composing Transform gets for free."""
+    stage, sender, scene_layer = scene
+    base = _mk(sender, transform_mod, "Base")
+    base.get_param("sx").value = 2.0
+    base.execute()
+    nudge = _mk(sender, transform_mod, "Nudge")
+    nudge.get_param("sx").value = 3.0
+    nudge.add_dependency(base)
+    nudge.execute()
+
+    matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetLocalTransformation(
+        Usd.TimeCode.Default()
+    )
+    matrix = matrix[0] if isinstance(matrix, tuple) else matrix
+    assert matrix.GetRow3(0).GetLength() == pytest.approx(6.0)
