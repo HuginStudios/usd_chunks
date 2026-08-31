@@ -569,3 +569,96 @@ def test_spacing_default_and_collapsed_groups() -> None:
     scatter.get_param("scatter_mode").value = "Stack"
     assert not scatter.get_param("Stacking").has_state(chunk.ChunkFlags.State.HIDDEN)
     assert scatter.get_param("Region").has_state(chunk.ChunkFlags.State.HIDDEN)
+
+
+def test_stack_with_no_target_packs_a_free_standing_block() -> None:
+    """Stack in mid-air, with nothing to pack against.
+
+    Wanted for "pencils into a cup", which nothing here does well: Volume fills a closed mesh's
+    *solid* -- a cup's is its ceramic, so pencils land in the wall -- and Stack needs a surface.
+    The route is to stack the block in mid-air, move it over the cup with a Transform and let
+    the RBD Solver drop it in. That used to need a throwaway plane to stack on.
+    """
+    stage, mod, scatter = _bootstrap()
+    UsdGeom.Cube.Define(stage, "/proto")
+    _set_proto(scatter, "/proto")
+    scatter.get_param("surface_prim").value = ""      # nothing to pack against
+    scatter.get_param("scatter_mode").value = "Stack"
+    scatter.get_param("max_count").value = 16
+    mod.module.execute(scatter)
+
+    inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer"))
+    positions = inst.GetPositionsAttr().Get() or []
+    assert len(positions) > 0, "an empty target still produced nothing"
+
+    # A block, not a line: it has to read as a stack you can pick up and move.
+    xs = {round(p[0], 3) for p in positions}
+    ys = {round(p[1], 3) for p in positions}
+    assert len(xs) > 1 and len(ys) > 1, f"not a 2D block: {len(xs)} x {len(ys)}"
+
+    #
+    # Centred on the origin so a Transform moves it predictably. Judged against the block's own
+    # size rather than to the millimetre: hex rows offset by half a pitch and lose whichever
+    # points fall off the edge, which leans the average slightly, and that is the pattern
+    # working rather than a misplaced block.
+    cx = sum(p[0] for p in positions) / len(positions)
+    cy = sum(p[1] for p in positions) / len(positions)
+    span_x = max(p[0] for p in positions) - min(p[0] for p in positions)
+    span_y = max(p[1] for p in positions) - min(p[1] for p in positions)
+    tol = max(span_x, span_y, 1.0) * 0.1
+    assert abs(cx) < tol and abs(cy) < tol, f"block is not centred: {cx}, {cy} (tol {tol})"
+
+
+def test_stack_still_prefers_a_real_surface_when_it_has_one() -> None:
+    """Free-standing is the fallback, not the new behaviour."""
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    UsdGeom.Cube.Define(stage, "/proto")
+    _set_proto(scatter, "/proto")
+    scatter.get_param("scatter_mode").value = "Stack"
+    mod.module.execute(scatter)
+
+    inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer"))
+    positions = inst.GetPositionsAttr().Get() or []
+    assert positions, "stacking on a real surface produced nothing"
+    # The plate sits above the origin, so a surface-driven pack cannot be the origin block.
+    assert max(p[2] for p in positions) > 0.01
+
+
+def test_row_padding_is_independent_of_along_row_padding() -> None:
+    """Reported live: crayons packed tight along X but left gaps along Y.
+
+    One Padding for both lateral axes cannot fix that -- an asset's bounding box is usually
+    only loose in one direction, so closing the gap with a single number ruins the axis that
+    was already right. Negative values are the escape hatch for a box roomier than the model.
+    """
+    stage, mod, scatter = _bootstrap()
+    UsdGeom.Cube.Define(stage, "/proto")
+    _set_proto(scatter, "/proto")
+    scatter.get_param("surface_prim").value = ""
+    scatter.get_param("scatter_mode").value = "Stack"
+    scatter.get_param("max_count").value = 16
+    scatter.get_param("pack_pattern").value = "Grid"
+
+    def spans():
+        mod.module.execute(scatter)
+        inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer"))
+        pts = inst.GetPositionsAttr().Get() or []
+        assert pts
+        return (
+            max(p[0] for p in pts) - min(p[0] for p in pts),
+            max(p[1] for p in pts) - min(p[1] for p in pts),
+        )
+
+    base_x, base_y = spans()
+
+    scatter.get_param("pack_row_padding").value = 5.0
+    wide_x, wide_y = spans()
+    assert wide_y > base_y + 1e-3, "Row Padding did not open the rows up"
+    assert abs(wide_x - base_x) < 1e-3, "Row Padding leaked into the along-row axis"
+
+    scatter.get_param("pack_row_padding").value = 0.0
+    scatter.get_param("pack_padding").value = 5.0
+    pad_x, pad_y = spans()
+    assert pad_x > base_x + 1e-3, "Padding did not open the row up"
+    assert abs(pad_y - base_y) < 1e-3, "Padding leaked into the row axis"

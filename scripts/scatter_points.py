@@ -969,9 +969,6 @@ def _stack_sites(triangles, up_idx, world_up, cfg, rng):
     rather than a lopsided tower.
     """
     bounds = _triangle_bounds(triangles)
-    if not bounds:
-        return []
-    bmin, bmax = bounds
     axis_a, axis_b = [i for i in range(3) if i != up_idx]
     pitch_a = max(cfg["pitch_a"], 1e-4)
     pitch_b = max(cfg["pitch_b"], 1e-4)
@@ -981,8 +978,25 @@ def _stack_sites(triangles, up_idx, world_up, cfg, rng):
     row_step = pitch_b * (0.8660254 if hexagonal else 1.0)
 
     inset = cfg["inset"]
-    lo_a, hi_a = bmin[axis_a] + inset, bmax[axis_a] - inset
-    lo_b, hi_b = bmin[axis_b] + inset, bmax[axis_b] - inset
+    if bounds:
+        bmin, bmax = bounds
+        lo_a, hi_a = bmin[axis_a] + inset, bmax[axis_a] - inset
+        lo_b, hi_b = bmin[axis_b] + inset, bmax[axis_b] - inset
+        top = bmax[up_idx]
+    else:
+        # Free-standing: no surface, so the block stands on its own at the origin.
+        #
+        # Wanted for "pencils into a cup", which nothing here does well: Volume fills a closed
+        # mesh's *solid* (a cup's is its ceramic, so pencils land in the wall) and Stack needs
+        # something to pack against. The answer is not a cleverer sampler -- it is to stack the
+        # block in mid-air, tilt it, move it over the cup with a Transform and let the RBD
+        # solver drop it in. This makes that possible without modelling a throwaway plane to
+        # stack on. An empty target used to yield nothing at all, so no scene loses behaviour.
+        per_level = max(1, -(-cfg["free_count"] // max(1, cfg["levels"])))
+        side = max(1, math.ceil(math.sqrt(per_level)))
+        lo_a, hi_a = -(side - 1) * pitch_a * 0.5, (side - 1) * pitch_a * 0.5
+        lo_b, hi_b = -(side - 1) * row_step * 0.5, (side - 1) * row_step * 0.5
+        top = 0.0
     if hi_a < lo_a or hi_b < lo_b:
         return []
 
@@ -994,8 +1008,8 @@ def _stack_sites(triangles, up_idx, world_up, cfg, rng):
     start_a = centre_a - (cols - 1) * pitch_a * 0.5
     start_b = centre_b - (rows - 1) * row_step * 0.5
 
-    grid = _SurfaceRayGrid(triangles, up_idx) if cfg["conform"] else None
-    top = bmax[up_idx]
+    # Nothing to conform to when free-standing, whatever the toggle says.
+    grid = _SurfaceRayGrid(triangles, up_idx) if (cfg["conform"] and triangles) else None
 
     # Jitter is clamped to the slack between pitch and footprint, so "natural" never means
     # "intersecting".
@@ -1167,6 +1181,7 @@ def execute(node):
     stack_row_axis = node.get_param("stack_row_axis", is_s).value
     pack_pattern = node.get_param("pack_pattern", is_s).value
     pack_padding = node.get_param("pack_padding", is_f).value
+    pack_row_padding = node.get_param("pack_row_padding", is_f).value
     pack_inset = node.get_param("pack_inset", is_f).value
     pack_levels = max(1, int(node.get_param("pack_levels", is_i).value))
     pack_level_gap = node.get_param("pack_level_gap", is_f).value
@@ -1280,7 +1295,7 @@ def execute(node):
         elif scatter_mode == "Stack":
             cfg = {
                 "pitch_a": foot_a + pack_padding,
-                "pitch_b": foot_b + pack_padding,
+                "pitch_b": foot_b + pack_row_padding,
                 "footprint_a": foot_a,
                 "footprint_b": foot_b,
                 "pattern": pack_pattern,
@@ -1289,6 +1304,7 @@ def execute(node):
                 "levels": pack_levels,
                 "stagger": pack_stagger,
                 "jitter": max(0.0, min(1.0, pack_jitter)),
+                "free_count": max_count,
             }
             sites = _stack_sites(triangles, up_idx, world_up, cfg, rng)[:max_count]
             positions = [s[0] for s in sites]
@@ -1558,9 +1574,14 @@ def main():
         menu_items=_SCATTER_MODES,
         default_value="Surface",
         tooltip="Surface: place on faces.\n"
-        "Volume: fill the interior of a closed mesh.\n"
+        "Volume: fill the SOLID interior of a closed mesh — the material it is made of. An "
+        "open container's cavity is not its interior, so filling a cup this way puts "
+        "instances inside the ceramic. To fill a cup or a bowl, stack above it and drop them "
+        "in with the RBD Solver.\n"
         "Stack: pack a regular lattice against the target, resting on it — tight but never "
-        "intersecting, and stackable in levels.",
+        "intersecting, and stackable in levels. With no Target Prim set it packs a "
+        "free-standing block at the origin, to move into place with a Transform and settle "
+        "with the RBD Solver.",
     )
     mode_param.add_callback(_on_mode_changed)
     dist_grp.add_param(mode_param)
@@ -1640,9 +1661,24 @@ def main():
             "pack_padding",
             "Padding",
             default_value=0.0,
-            tooltip="Extra gap between neighbours, in scene units. 0 packs them touching; the "
-            "pitch already comes from the prototype's own oriented bounds, so 0 does not "
-            "mean intersecting.",
+            tooltip="Extra gap between neighbours ALONG a row, in scene units. 0 packs them "
+            "touching; the pitch already comes from the prototype's own oriented bounds, so 0 "
+            "does not mean intersecting.\n"
+            "Negative pulls them closer than their bounds suggest — the escape hatch for an "
+            "asset whose bounding box is loose (a pencil modelled inside a roomy box, say), "
+            "where 0 already leaves a visible gap.",
+        )
+    )
+    stack_grp.add_param(
+        chunk.Spinbox(
+            "pack_row_padding",
+            "Row Padding",
+            default_value=0.0,
+            tooltip="The same, but BETWEEN rows rather than along them.\n"
+            "Separate because a loose bounding box is usually only loose in one direction: a "
+            "pack can sit tight along a row and leave a gap between rows, and one number for "
+            "both axes cannot fix that without ruining the axis that was already right. "
+            "Negative closes the rows up.",
         )
     )
     stack_grp.add_param(
