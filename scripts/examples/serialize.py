@@ -75,8 +75,7 @@ def main():
     sliderA.add_callback(sliderA_changed)
 
     sliderB = chunk.Slider("SliderB", is_int=True)
-    sliderB.add_dependency(sliderA)
-    sliderB.set_function("value", dep_changed)
+    sliderB.connect_value(sliderA)
     sliderB.add_callback(sliderB_changed)
 
     c.add_params([sliderA, sliderB])
