@@ -1499,9 +1499,48 @@ def _on_any_chunk_changed(owner, notice, sender) -> None:
         return
     if sender not in chunk_usd.get_exec_upstream_chunks(_chunk, stage, scene):
         return
+    if _only_presentation_changed(sender):
+        return
     _chunk.set_state(chunk.ChunkFlags.State.STALE)
     if _chunk.get_param("auto_sim", chunk.is_param_t(bool)).value:
         _schedule_auto_run(_chunk)
+
+
+def _only_presentation_changed(sender) -> bool:
+    """Whether an upstream chunk changed in a way nothing computes from.
+
+    The listener above is deliberately broad -- it exists because graph wiring never calls
+    add_dependency, so INPUT_CHANGED never fires between two chunks wired that way. The cost of
+    that breadth is that it also hears the changes `propagate_dirty` already decided were
+    presentation only, and re-bakes a simulation for each one.
+
+    Reported live: with Auto Simulate on and a Scatter Brush upstream, touching the brush re-ran
+    MuJoCo repeatedly. A watch on propagate_dirty showed *every* propagation routed as
+    presentation and not one as a data change -- so nothing was dirtying the chain at all, and
+    the solver was re-baking off this notice instead.
+
+    Asked of the framework rather than answered here, so the DISABLED carve-out keeps working:
+    disabling a chunk is a state change, but it decides whether that chunk cooks, and is
+    therefore a real simulation input.
+
+    Only meaningful *inside* the notice. `_changes` is cleared in a `finally` once the whole
+    solve finishes (chunk_scheduler.solve), and the notices fire during it -- so this reads a
+    populated record here and an empty one anywhere else. An earlier attempt was reverted for
+    exactly that reason: its test asked afterwards, saw nothing, and could not tell the fix
+    from its absence.
+    """
+    try:
+        changes = list(sender.get_dag_node().iter_changes())
+    except Exception:  # noqa: BLE001 - never let this stop a legitimate re-run
+        return False
+    if not changes:
+        # Nothing recorded: assume it mattered. A missed re-run is a wrong simulation; an
+        # extra one is only slow.
+        return False
+    return all(
+        getattr(prop, "is_presentation_change", lambda: False)()
+        for _alias, prop in changes
+    )
 
 
 def _schedule_auto_run(root_chunk) -> None:
