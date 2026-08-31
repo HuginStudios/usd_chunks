@@ -310,7 +310,14 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
     def value_changed(self, value: Optional[int | float] = None):
         if not self.param or value is None:
             return
-        super().value_changed(value / float(self._step))
+        result = value / float(self._step)
+        # The step division makes a float of everything, so an `is_int` param was handing back
+        # e.g. 3.0 -- fine until a chunk does range() or a list index with it. Reported as
+        # Scatter's Levels crashing with "'float' object cannot be interpreted as an integer"
+        # the moment the spinbox was touched; the param says it is an int, so it delivers one.
+        if getattr(self.param, "is_int", False):
+            result = int(result)
+        super().value_changed(result)
 
     def set_hidden(self, val: bool):
         self.setHidden(val)
@@ -467,7 +474,20 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         return super().handle_param_changed(notice, sender)
 
     def pin_prim(self):
-        self.param.set_prims(self.param.get_scene().get_selected_prims())
+        scene = self.param.get_scene()
+        if not scene:
+            return
+        prims = scene.get_selected_prims()
+        # Nothing selected is a misfire, not an instruction to erase. Pinning used to blank the
+        # field, which is a bad trade: the path you had was worth more than the empty selection.
+        if not prims:
+            return
+        # Assigned through the param rather than calling its set_prims(). Inside a ListGroup row
+        # `self.param` is a ProxyParam: attribute *assignment* is proxied to that row, but a
+        # method looked up on it comes back bound to the shared template, so set_prims() wrote
+        # the template's default and left the row alone. Reported as the pin icon doing nothing
+        # on a prototype row while typing into the same field worked.
+        self.param.value = ",".join(str(p.GetPath()) for p in prims)
 
     def get_value(self):
         return self.text.text()

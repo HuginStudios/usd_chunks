@@ -166,6 +166,21 @@ def _container_for(node, group):
     return None
 
 
+def _expanded_container(qapp, node, group):
+    """The group's ContainerWidget, expanded and settled.
+
+    scatter_points ships its param groups collapsed (it is a tall chunk), so a test about
+    *collapsing* one has to open it first — otherwise the click below is a no-op and the
+    params never get the ports the test is checking.
+    """
+    container = _container_for(node, group)
+    assert container is not None
+    if not container.minimize_button.isChecked():
+        container.minimize_button.setChecked(True)
+        _pump(qapp, 0.3)
+    return container
+
+
 def test_collapsing_an_inner_group_hides_its_unconnected_params_ports(graph) -> None:
     """The design half of the report: a param whose group just collapsed has nothing to
     point a port at and no wire that needs one, so it should not draw one at all --
@@ -180,8 +195,7 @@ def test_collapsing_an_inner_group_hides_its_unconnected_params_ports(graph) -> 
 
     var_group = chunk.get_param("Variation")
     assert var_group is not None, "scatter_points must still have a Variation group with 2+ params"
-    container = _container_for(node, var_group)
-    assert container is not None
+    container = _expanded_container(qapp, node, var_group)
 
     container.minimize_button.setChecked(False)  # the real click path: toggled -> set_expanded
     _pump(qapp, 0.3)
@@ -208,6 +222,9 @@ def test_collapsing_an_inner_group_updates_immediately_and_spaces_wired_ports(gr
 
     node_path = str(node.prim.GetPath())
     a_path = str(node_a.prim.GetPath())
+    var_group = chunk.get_param("Variation")
+    assert var_group is not None
+    container = _expanded_container(qapp, node, var_group)
     a_out = node_a.get_port(f"{a_path}.outputs:tx")
     scale_min_in = node.get_port(f"{node_path}.inputs:scale_min")
     scale_max_in = node.get_port(f"{node_path}.inputs:scale_max")
@@ -217,11 +234,6 @@ def test_collapsing_an_inner_group_updates_immediately_and_spaces_wired_ports(gr
     assert a_out2 is not None
     gv._author_connection(a_out2, scale_max_in)
     gv.scene()._build_edges()
-
-    var_group = chunk.get_param("Variation")
-    assert var_group is not None
-    container = _container_for(node, var_group)
-    assert container is not None
 
     height_before = node._height
     container.minimize_button.setChecked(False)

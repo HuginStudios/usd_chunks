@@ -957,6 +957,11 @@ def test_wiring_painted_points_hides_the_distribution_settings() -> None:
     sc.get_param("points_prim").value = "/chunks/ScatterBrush/PaintedPoints"
     assert all(hidden(n) for n in scatter_points._SAMPLING_ONLY)
 
+    # Mode stays. It looks like it belongs in the hidden set -- with points wired, Surface and
+    # Volume do behave identically -- but Stack ignores the painted cloud deliberately, so Mode
+    # still decides something. Hiding it stranded you with no route to Stack short of unwiring.
+    assert not hidden("scatter_mode"), "connecting a brush hid the only way to reach Stack"
+
     sc.get_param("points_prim").value = ""
     assert not any(hidden(n) for n in scatter_points._SAMPLING_ONLY), "they must come back"
 
