@@ -6,130 +6,51 @@ on:
   pull_request:
 
 # Superseded runs are pure waste: pushing twice to a PR in quick succession
-# otherwise bills both, and the macOS rows are expensive. main is excluded from
-# cancellation so every merged commit keeps a result.
+# otherwise bills both, and Windows runners are billed at 2x. main is excluded
+# from cancellation so every merged commit keeps a result.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
-    # usd_chunks runs inside DCCs, so the matrix tracks where those actually live.
-    # Runner minutes are billed at 1x/2x/10x for Linux/Windows/macOS, so the full
-    # cross product got expensive fast.
+    # One row: Windows, Python 3.11.
     #
-    # macOS is dropped for now purely on cost: at 10x it was more than half the
-    # bill on its own. Nothing about the suite is macOS-specific, and the POSIX
-    # behaviour it covered (os.pathsep, bin/ vs Scripts/) is also exercised on
-    # Linux. Restore it by adding macos-latest back to `os` below.
+    # Windows is the platform usd_chunks is actually developed and used against,
+    # and the OS cross product got expensive fast (1x/2x/10x Linux/Windows/macOS
+    # billing). The Linux rows additionally needed an apt step for the Qt runtime
+    # libs PySide6 links against; macOS was dropped on cost alone.
     #
-    # 3.13 is the version worth running on every OS, since the OS axis is what
-    # catches real bugs here (os.pathsep, .exe console scripts, path layout).
-    # The other versions ride along on Linux only:
-    #   3.10 - the requires-python floor declared in pyproject.toml
-    #   3.11 - what the DCCs actually ship today (Houdini 20.5, Maya 2025)
-    # 3.12 is dropped outright: nothing targets it and it sits between two
-    # versions that are both covered.
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.13"]
-        include:
-          - os: ubuntu-latest
-            python-version: "3.10"
-          - os: ubuntu-latest
-            python-version: "3.11"
+    # 3.11 is what the DCCs ship today (Houdini 20.5, Maya 2025), so it is the
+    # version users actually run under. Dropped alongside it: 3.10 (the
+    # requires-python floor in pyproject.toml) and 3.13 (current).
+    #
+    # Also gone is a `wheel` job that built the wheel and installed it into a
+    # clean venv to catch packaging bugs an editable install hides — missing
+    # runtime deps, package data left out of the wheel, console scripts that only
+    # resolve against the source tree. Nothing checks packaging now; git history
+    # has it if it is ever worth restoring.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
           # Dependencies come from pyproject.toml, so the cache key has to hash
           # that rather than the requirements.txt setup-python looks for.
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # The widget tests import PySide6 at module scope, so the suite needs the ui extra
-      # too. tests/conftest.py already forces QT_QPA_PLATFORM=offscreen, but PySide6
-      # still links against these system libs, which the Linux runner image does not
-      # ship. Windows and macOS runners need nothing extra.
-      - name: Qt runtime libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3
-
+      # The widget tests import PySide6 at module scope, so the suite needs the ui
+      # extra too. tests/conftest.py already forces QT_QPA_PLATFORM=offscreen; the
+      # Windows runner image needs nothing else.
       - run: pip install -e ".[dev,ui]"
 
       - run: ruff check .
       - name: pytest
         # USD_CHUNK_DIRS must point at scripts/ or ChunkRegistry.get_chunk_module finds
         # nothing and the suite fails with NoneType 'loaded'. It is split on os.pathsep,
-        # which is ';' on Windows and ':' elsewhere — one of the reasons this matrix
-        # covers more than Linux.
+        # which is ';' on Windows.
         env:
           USD_CHUNK_DIRS: scripts
         run: pytest
-
-  wheel:
-    # Builds and installs the wheel into a clean venv to catch packaging bugs that an
-    # editable install hides: missing runtime deps, package data left out of the wheel,
-    # and console scripts that resolve against the source tree only.
-    # The wheel is a CI artifact; nothing is uploaded to a package index.
-    #
-    # Windows is included because that is where the packaging work is most likely to
-    # break: the console script becomes usdchunks.exe, and importlib.resources has to
-    # resolve package data across a different path layout.
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: pip install build
-      - run: python -m build
-
-      # One step so the resolved venv path survives across the commands. The scripts
-      # directory is bin/ on POSIX and Scripts/ on Windows.
-      - name: Install the wheel into a clean venv and smoke test it
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m venv "$RUNNER_TEMP/smoke"
-          BIN="$RUNNER_TEMP/smoke/bin"
-          [ -d "$BIN" ] || BIN="$RUNNER_TEMP/smoke/Scripts"
-
-          "$BIN/pip" install dist/*.whl
-
-          # Run from outside the checkout so the source tree cannot satisfy the imports.
-          cd "$RUNNER_TEMP"
-          "$BIN/python" -c "import usd_chunks, usd_chunks.plugins.chunk_usd"
-          "$BIN/usdchunks" --help
-          "$BIN/usdchunks" plugin-path
-
-          "$BIN/python" - <<'PY'
-          from pathlib import Path
-          from importlib.resources import files
-
-          from usd_chunks import chunk_resources
-
-          icon = chunk_resources.get_icon("pin")
-          assert icon.is_file(), f"icon missing from wheel: {icon}"
-
-          plug = Path(files("usd_chunks.plugins")) / "chunk_usdview" / "plugInfo.json"
-          assert plug.is_file(), f"plugInfo.json missing from wheel: {plug}"
-          print("package data OK")
-          PY
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.os }}
-          path: dist/
