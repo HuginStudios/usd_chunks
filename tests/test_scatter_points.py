@@ -623,3 +623,42 @@ def test_stack_still_prefers_a_real_surface_when_it_has_one() -> None:
     assert positions, "stacking on a real surface produced nothing"
     # The plate sits above the origin, so a surface-driven pack cannot be the origin block.
     assert max(p[2] for p in positions) > 0.01
+
+
+def test_row_padding_is_independent_of_along_row_padding() -> None:
+    """Reported live: crayons packed tight along X but left gaps along Y.
+
+    One Padding for both lateral axes cannot fix that -- an asset's bounding box is usually
+    only loose in one direction, so closing the gap with a single number ruins the axis that
+    was already right. Negative values are the escape hatch for a box roomier than the model.
+    """
+    stage, mod, scatter = _bootstrap()
+    UsdGeom.Cube.Define(stage, "/proto")
+    _set_proto(scatter, "/proto")
+    scatter.get_param("surface_prim").value = ""
+    scatter.get_param("scatter_mode").value = "Stack"
+    scatter.get_param("max_count").value = 16
+    scatter.get_param("pack_pattern").value = "Grid"
+
+    def spans():
+        mod.module.execute(scatter)
+        inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer"))
+        pts = inst.GetPositionsAttr().Get() or []
+        assert pts
+        return (
+            max(p[0] for p in pts) - min(p[0] for p in pts),
+            max(p[1] for p in pts) - min(p[1] for p in pts),
+        )
+
+    base_x, base_y = spans()
+
+    scatter.get_param("pack_row_padding").value = 5.0
+    wide_x, wide_y = spans()
+    assert wide_y > base_y + 1e-3, "Row Padding did not open the rows up"
+    assert abs(wide_x - base_x) < 1e-3, "Row Padding leaked into the along-row axis"
+
+    scatter.get_param("pack_row_padding").value = 0.0
+    scatter.get_param("pack_padding").value = 5.0
+    pad_x, pad_y = spans()
+    assert pad_x > base_x + 1e-3, "Padding did not open the row up"
+    assert abs(pad_y - base_y) < 1e-3, "Padding leaked into the row axis"

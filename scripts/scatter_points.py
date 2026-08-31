@@ -1181,6 +1181,7 @@ def execute(node):
     stack_row_axis = node.get_param("stack_row_axis", is_s).value
     pack_pattern = node.get_param("pack_pattern", is_s).value
     pack_padding = node.get_param("pack_padding", is_f).value
+    pack_row_padding = node.get_param("pack_row_padding", is_f).value
     pack_inset = node.get_param("pack_inset", is_f).value
     pack_levels = max(1, int(node.get_param("pack_levels", is_i).value))
     pack_level_gap = node.get_param("pack_level_gap", is_f).value
@@ -1294,7 +1295,7 @@ def execute(node):
         elif scatter_mode == "Stack":
             cfg = {
                 "pitch_a": foot_a + pack_padding,
-                "pitch_b": foot_b + pack_padding,
+                "pitch_b": foot_b + pack_row_padding,
                 "footprint_a": foot_a,
                 "footprint_b": foot_b,
                 "pattern": pack_pattern,
@@ -1660,9 +1661,24 @@ def main():
             "pack_padding",
             "Padding",
             default_value=0.0,
-            tooltip="Extra gap between neighbours, in scene units. 0 packs them touching; the "
-            "pitch already comes from the prototype's own oriented bounds, so 0 does not "
-            "mean intersecting.",
+            tooltip="Extra gap between neighbours ALONG a row, in scene units. 0 packs them "
+            "touching; the pitch already comes from the prototype's own oriented bounds, so 0 "
+            "does not mean intersecting.\n"
+            "Negative pulls them closer than their bounds suggest — the escape hatch for an "
+            "asset whose bounding box is loose (a pencil modelled inside a roomy box, say), "
+            "where 0 already leaves a visible gap.",
+        )
+    )
+    stack_grp.add_param(
+        chunk.Spinbox(
+            "pack_row_padding",
+            "Row Padding",
+            default_value=0.0,
+            tooltip="The same, but BETWEEN rows rather than along them.\n"
+            "Separate because a loose bounding box is usually only loose in one direction: a "
+            "pack can sit tight along a row and leave a gap between rows, and one number for "
+            "both axes cannot fix that without ruining the axis that was already right. "
+            "Negative closes the rows up.",
         )
     )
     stack_grp.add_param(
