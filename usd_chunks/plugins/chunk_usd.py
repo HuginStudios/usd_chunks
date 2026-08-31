@@ -1013,6 +1013,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
+                    chunk_utils.store_expression_text(attr, raw)
                 else:
                     attr.Set(vector.value)
 
@@ -1114,8 +1115,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
-                    if sdf_type == Sdf.ValueTypeNames.String:
-                        attr.Set(raw)
+                    chunk_utils.store_expression_text(attr, raw)
                 else:
                     attr.Set(raw)
         param._connect_param_attr(attr)
@@ -1197,8 +1197,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                     if is_expr:
                         attr.SetConnections(self._expr_connections(prim, raw))
-                        if sdf_type == Sdf.ValueTypeNames.String:
-                            attr.Set(raw)
+                        chunk_utils.store_expression_text(attr, raw)
                     else:
                         attr.Set(raw)
 
@@ -1542,8 +1541,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
-                    if sdf_type == Sdf.ValueTypeNames.String:
-                        attr.Set(raw)
+                    chunk_utils.store_expression_text(attr, raw)
                 elif not attr.Get():
                     attr.Set(raw)
 
@@ -1584,13 +1582,22 @@ def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
     for prim in stage.TraverseAll():
         for attr in prim.GetAttributes():
             val = attr.Get()
-            if not (isinstance(val, str) and old in val):
+            # A non-String attr keeps its expression text in customData rather than as its
+            # value (chunk_utils.store_expression_text), so patch that too — otherwise
+            # renaming a chunk leaves every numeric param wired to it holding the old name.
+            text = attr.GetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY)
+            hit_val = isinstance(val, str) and old in val
+            hit_text = isinstance(text, str) and old in text
+            if not (hit_val or hit_text):
                 continue
             home = chunk_utils.get_attr_home_layer(attr)
             if not home:
                 continue
             with Usd.EditContext(stage, home):
-                attr.Set(val.replace(old, new))
+                if hit_val:
+                    attr.Set(val.replace(old, new))
+                if hit_text:
+                    attr.SetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY, text.replace(old, new))
 
 
 def _resolve_chunk_root(chunk: "core.ChunkBase") -> str:
@@ -3173,6 +3180,90 @@ def get_exec_head_chunks(
             if str(conn.GetPrimPath()) in candidate_paths:
                 has_non_view_input.add(get_chunk_prim_path(c))
     return [c for c in candidates if get_chunk_prim_path(c) not in has_non_view_input]
+
+
+def _connected_source_paths(prim: "Usd.Prim") -> "set[str]":
+    """Prim paths this chunk prim reads from: every exec slot plus every typed input.
+
+    Both kinds of wire count as a dependency for ordering. A param connection is authored
+    on the *destination* attr pointing at the source (see ChunkStageSync._expr_connections),
+    so reading this prim's own inputs: connections gives the chunks it depends on.
+    """
+    my_path = prim.GetPath()
+    sources = {str(conn.GetPrimPath()) for conn in exec_input_connections(prim)}
+    for attr in prim.GetAttributes():
+        name = attr.GetName()
+        if not name.startswith(_INPUTS_PREFIX) or is_exec_input_name(name):
+            continue
+        for conn in attr.GetConnections():
+            target = Sdf.Path(str(conn)).GetPrimPath()
+            if target == my_path:
+                continue
+            if my_path.HasPrefix(target):
+                # An ancestor target is a loft (this param promoted to its group's
+                # interface), not a sibling dependency — the group contains this chunk, so
+                # treating it as an input would invert the real order and can cycle.
+                continue
+            sources.add(str(target))
+    return sources
+
+
+def commit_order_from_stage(
+    chunks: "list[core.ChunkBase]", stage: "Usd.Stage | None"
+) -> "list[core.ChunkBase]":
+    """Order chunks for commit by what the stage says they read, not by DAG depth.
+
+    chunk_scheduler.commit_order sorts on DagNode depth, which only sees edges someone
+    created with add_dependency. That covers exec wiring (load_chunks mirrors inputs:chunk
+    into add_dependency) but NOT a param port: drag-to-connect authors an @Node.param@
+    expression, whose live link is a NoticeConnection rather than a DAG edge, so two
+    chunks joined only by a param wire both sit at depth 0 and commit in arbitrary order.
+
+    The stage has both kinds of wire, and is already the authority the rest of the wiring
+    code trusts (see _live_exec_dependencies), so order from it instead.
+
+    A cycle can't be topologically ordered and must not drop anyone: the first chunk still
+    waiting is emitted and the sort continues, so the result always contains every input
+    chunk exactly once.
+
+    Args:
+        chunks (list[core.ChunkBase]): The chunks to order
+        stage (Usd.Stage | None): The stage holding their chunk prims; None falls back to
+            the depth-based ordering
+
+    Returns:
+        list[core.ChunkBase]: The chunks, every chunk preceded by everything it reads from
+    """
+    ordered = list(chunks)
+    if stage is None:
+        return chunk_scheduler.commit_order(ordered)
+
+    by_path = {get_chunk_prim_path(c): c for c in ordered}
+    deps: "dict[int, set[int]]" = {}
+    for c in ordered:
+        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
+        if not (prim and prim.IsValid()):
+            deps[id(c)] = set()
+            continue
+        # Only chunks in this batch can be waited on — a connection to something outside it
+        # would otherwise never be satisfied and stall every dependant into the cycle path.
+        deps[id(c)] = {
+            id(src) for path in _connected_source_paths(prim)
+            if (src := by_path.get(path)) is not None and src is not c
+        }
+
+    result: "list[core.ChunkBase]" = []
+    done: "set[int]" = set()
+    waiting = ordered
+    while waiting:
+        ready = [c for c in waiting if deps[id(c)] <= done]
+        if not ready:
+            ready = [waiting[0]]  # cycle — break it at the first chunk still waiting
+        result.extend(ready)
+        done.update(id(c) for c in ready)
+        ready_ids = {id(c) for c in ready}
+        waiting = [c for c in waiting if id(c) not in ready_ids]
+    return result
 
 
 _chunk_clipboard: list[str] = []

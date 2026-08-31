@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pxr import Usd, UsdUtils
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
-from usd_chunks.plugins.chunk_usd import load_chunks, ChunkLayerManager
+from usd_chunks.plugins.chunk_usd import load_chunks, ChunkLayerManager, commit_order_from_stage
 
 
 # ANSI colors for CLI output
@@ -249,7 +249,13 @@ def cmd_run(args):
     # The solve has settled, so anything the network declared as an output on disk (an
     # Export USD chunk, ...) gets written now — before --export/--printout report on the
     # composed stage.
-    chunk_scheduler.commit_all(scene.get_chunks())
+    # Ordered from the stage's own connections, not DagNode depth: a param port wired in
+    # the node graph authors an expression rather than an add_dependency edge, so depth
+    # cannot tell that an exporter feeds the chunk that reads what it wrote.
+    chunk_scheduler.commit_all(
+        scene.get_chunks(),
+        order=lambda cs: commit_order_from_stage(cs, stage),
+    )
 
     if args.export:
         stage.Export(args.export)

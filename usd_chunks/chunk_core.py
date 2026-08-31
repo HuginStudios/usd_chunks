@@ -2709,10 +2709,12 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if isinstance(notice.data, Usd.Attribute) and not isinstance(self, ChunkVectorBase):
             raw = getattr(self, 'raw_value', None)
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            # Only String-typed attrs can hold the raw expression text itself (needed so
-            # _patch_expressions can rewrite it on rename); other types (Float, Float3,
-            # etc.) only ever store the resolved value — the expression is reconstructed
-            # from SetConnections on reload (see _expression_from_connections).
+            # Only String-typed attrs can hold the raw expression text as their value
+            # (needed so _patch_expressions can rewrite it on rename); other types (Float,
+            # Float3, etc.) store the resolved value and keep the text in customData
+            # instead (chunk_utils.store_expression_text) — rebuilding it from
+            # SetConnections cannot work, since the connections name only the refs and
+            # drop every operator between them.
             if is_expr and notice.data.GetTypeName() != Sdf.ValueTypeNames.String:
                 store_val = sender.value
             else:
@@ -2744,6 +2746,11 @@ class ChunkUsdAttributeSupport(AttributesBase):
                             Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
                             for node, attr_name in chunk_utils.parse_expression(raw)
                         ])
+                        # The connections carry the refs; only this carries the operators
+                        # and literals between them.
+                        chunk_utils.store_expression_text(notice.data, raw)
+                    else:
+                        chunk_utils.clear_expression_text(notice.data)
             finally:
                 chunk_notice._usd_write_active = False
 
@@ -2831,11 +2838,14 @@ class ChunkUsdAttributeSupport(AttributesBase):
             if not connections:
                 if val is not None:
                     self.value = val
-            elif isinstance(val, str) and chunk_utils.has_expression(val):
-                self.value = val
+            elif text := chunk_utils.read_expression_text(attr):
+                self.value = text
             else:
-                # Non-string (e.g. Float) expression attrs only ever store the connection, never
-                # the expression text, so reconstruct it here — but only from SIBLING refs. A loft
+                # Fallback for attrs authored before the text was kept in customData (and
+                # for any hand-written .usda that wires connections without it): rebuild a
+                # bare @a.x@@b.y@ expression from the connections. Lossy by nature — the
+                # operators were never in the topology — so it is only correct for the
+                # single-ref case. Only SIBLING refs are used here. A loft
                 # connection points UP to this param's own container (the group's interface attr);
                 # it's driven by the loft forwarding callback, not the expression system. Rebuilding
                 # @Container.attr@ from it makes an unresolvable sibling ref (the "Expression ref
@@ -2999,6 +3009,24 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         default=attrs.Factory(list), init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
     )
 
+    # Re-entrancy guards for expression cycles (a.p = "@b.p@" while b.p = "@a.p@").
+    # Two flags, not one: the notice path calls execute(), which legitimately reads
+    # self.value and so must be allowed through the read guard.
+    _resolving_ref: bool = attrs.field(
+        default=False,
+        init=False,
+        metadata=AttributeMetadata(
+            copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False
+        ),
+    )
+    _resolving_expr: bool = attrs.field(
+        default=False,
+        init=False,
+        metadata=AttributeMetadata(
+            copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False
+        ),
+    )
+
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "value":
             if val is None:
@@ -3076,11 +3104,71 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.PARAM_CHANGED
 
+    def _cross_chunk_ref(self, other: "ChunkCommon") -> "tuple[ChunkBase, ChunkBase] | None":
+        """Return (my chunk, other's chunk) when the two params live on different chunks.
+
+        None means "same chunk, or not resolvable yet" — a param still being constructed
+        has no owner to walk up to, and warning about an unresolved owner would fire on
+        every list-group template and every param built before it is added to anything.
+        """
+        mine, theirs = self.get_chunk(), other.get_chunk()
+        if mine is None or theirs is None or mine is theirs:
+            return None
+        return mine, theirs
+
+    def _expression_ref_to(self, other: "ChunkCommon", other_chunk: "ChunkBase") -> "str | None":
+        """The @Node.param@ text that would reference other, or None if it can't be named.
+
+        The grammar is @word.word@ (chunk_utils._EXPR_RE), so the reference carries a bare
+        param name — which _resolve_expression_ref then looks up with get_param. A nested
+        param is fine (get_param finds it by name), but a name shared by two params in the
+        same chunk resolves to whichever comes first, so check that the lookup actually
+        lands back on this param before promising an expression can address it.
+        """
+        if other_chunk.get_param(other.name) is not other:
+            return None
+        return f"@{other_chunk.name}.{other.name}@"
+
+    def add_dependency(self, input: "ChunkNoticePropagator") -> int:
+        """Add a DagNode input, warning if it crosses a chunk boundary.
+
+        A param-level dependency is in-memory only: ChunkStageSync._on_dependency_added
+        authors inputs:chunk for ChunkBase pairs and returns early for anything else, so
+        an edge between two params is never written to USD, draws no wire in the node
+        graph, and is gone after a reload. Within one chunk that is exactly right — this
+        is the dirty/ordering edge behind set_function, and it can drive attributes
+        (menu_items, a label, visibility) that no expression can reach. Across two chunks
+        it silently loses the connection the caller thought they made; an expression is
+        the mechanism that persists. See connect_value, which redirects rather than warns.
+        """
+        if isinstance(input, ChunkParamBase) and (pair := self._cross_chunk_ref(input)):
+            mine, theirs = pair
+            ref = self._expression_ref_to(input, theirs) or f"@{theirs.name}.<param>@"
+            logger.warning(
+                "Param dependency %s.%s <- %s.%s crosses chunks: it is not authored to USD "
+                "and will not survive a reload. Use an expression instead: %s.%s = \"%s\"",
+                mine.name, self.name, theirs.name, input.name, mine.name, self.name, ref,
+            )
+        return super().add_dependency(input)
+
     def connect_value(self, other: "ChunkParamBase[ValueT]"):
         my_t = self.evaluate_type()
         other_t = other.evaluate_type()
         if my_t not in other_t:
             raise ValueError(f"Can't connect {other_t.name} to parameter {my_t}")
+
+        # Across chunks, do what the caller asked for in the form that survives: an
+        # expression authors the USD connection, draws the wire, and is patched on rename,
+        # where the DagNode edge below would quietly vanish on the next load. The type
+        # check above still ran, which the raw expression path skips.
+        if pair := self._cross_chunk_ref(other):
+            if ref := self._expression_ref_to(other, pair[1]):
+                logger.debug(
+                    "connect_value across chunks (%s -> %s): authoring %s",
+                    pair[1].name, pair[0].name, ref,
+                )
+                self.value = ref
+                return
 
         idx = -1
         # If other already is connected to self, then we can use that index
@@ -3116,9 +3204,26 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         return super().value_changed(attrname, old_value, value)
 
     def _on_ref_changed(self, notice=None, sender=None):
-        attr_sender = self.get_attribute_sender("value")
-        attr_sender.old_value = self.__dict__.get("value")
-        attr_sender.execute()
+        if self._resolving_ref:
+            # An expression cycle. Each ref installs a NoticeConnection back to this
+            # method, so a.p = "@b.p@" with b.p = "@a.p@" bounces between the two senders
+            # until the interpreter runs out of stack. Stop at the second visit rather
+            # than raise: unlike the DagNode side (topo_order raises CircularDependency
+            # Error on a solve), this fires from notice dispatch during ordinary editing,
+            # where the useful outcome is a settled value plus a diagnosable warning.
+            logger.warning(
+                "Expression cycle at %s: %r refers back to itself through another param; "
+                "leaving it at its previous value",
+                self.name, self.__dict__.get("value"),
+            )
+            return
+        self._resolving_ref = True
+        try:
+            attr_sender = self.get_attribute_sender("value")
+            attr_sender.old_value = self.__dict__.get("value")
+            attr_sender.execute()
+        finally:
+            self._resolving_ref = False
 
     @property
     def raw_value(self) -> Any:
@@ -3134,6 +3239,20 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         return super().__getattribute__(name)
 
     def _resolve_expression_string(self, expr: str) -> Any:
+        if self._resolving_expr:
+            # Reading a cyclic expression re-enters through the ref's own .value
+            # (__getattribute__ resolves it), so break the loop with the default. Only
+            # debug: a value read happens on every widget paint, and a cycle would turn
+            # the warning in _on_ref_changed into a flood.
+            logger.debug("Expression cycle while resolving %s — falling back to default", self.name)
+            return self.__dict__.get("default_value")
+        self._resolving_expr = True
+        try:
+            return self._resolve_expression_string_uncached(expr)
+        finally:
+            self._resolving_expr = False
+
+    def _resolve_expression_string_uncached(self, expr: str) -> Any:
         tokens = chunk_utils.parse_expression(expr)
         if len(tokens) == 1 and expr.strip() == f"@{tokens[0][0]}.{tokens[0][1]}@":
             ref = self._resolve_expression_ref(*tokens[0])
@@ -3143,7 +3262,24 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             ref = self._resolve_expression_ref(node_name, param_name)
             val = str(ref.value) if ref is not None and ref.value is not None else ""
             result = result.replace(f"@{node_name}.{param_name}@", val)
+
+        # On a numeric param the substituted string is meant as a sum, not as text:
+        # "@a.x@ * @b.y@" becomes "20.0 * 3.0" above and has to come back as 60.0, or the
+        # param reads as a str and every consumer downstream (the USD attr write included)
+        # gets the wrong type. String params keep interpolation — that is what builds a
+        # path like "@A.primpath_location@/geo" — and eval_arithmetic returns None for
+        # anything that isn't pure arithmetic, so a numeric param holding something
+        # unevaluable still falls through to the substituted text rather than raising.
+        if self._expression_is_numeric():
+            if (number := chunk_utils.eval_arithmetic(result)) is not None:
+                types = ChunkFlags.ParamTypeToTypes(self.evaluate_type())
+                return int(number) if types and types[0] is int else float(number)
         return result
+
+    def _expression_is_numeric(self) -> bool:
+        """True if this param holds a number, so an expression on it should be computed."""
+        types = ChunkFlags.ParamTypeToTypes(self.evaluate_type())
+        return bool(types) and all(t in (int, float) for t in types)
 
 
 class ChunkContainerBase(ChunkCommon):
@@ -3903,6 +4039,24 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         default=attrs.Factory(list), init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
     )
 
+    # Re-entrancy guards for expression cycles (a.p = "@b.p@" while b.p = "@a.p@").
+    # Two flags, not one: the notice path calls execute(), which legitimately reads
+    # self.value and so must be allowed through the read guard.
+    _resolving_ref: bool = attrs.field(
+        default=False,
+        init=False,
+        metadata=AttributeMetadata(
+            copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False
+        ),
+    )
+    _resolving_expr: bool = attrs.field(
+        default=False,
+        init=False,
+        metadata=AttributeMetadata(
+            copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False
+        ),
+    )
+
     # Set by _set_children_blocked while assigning children one at a time, so
     # data_changed can skip writing a (still partial) tuple to the storage attr
     # without suppressing each child's own notify (which widgets rely on to refresh).
@@ -4103,9 +4257,30 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         self.get_attribute_sender("value").execute()
 
     def _on_ref_changed(self, notice=None, sender=None):
-        self._push_resolved_children()
+        if self._resolving_ref:
+            logger.warning(
+                "Expression cycle at %s: %r refers back to itself through another param; "
+                "leaving it at its previous value",
+                self.name, self._expr_value,
+            )
+            return
+        self._resolving_ref = True
+        try:
+            self._push_resolved_children()
+        finally:
+            self._resolving_ref = False
 
     def _resolve_expression_tuple(self, expr: str) -> tuple:
+        if self._resolving_expr:
+            logger.debug("Expression cycle while resolving %s — falling back to default", self.name)
+            return self.default_value
+        self._resolving_expr = True
+        try:
+            return self._resolve_expression_tuple_uncached(expr)
+        finally:
+            self._resolving_expr = False
+
+    def _resolve_expression_tuple_uncached(self, expr: str) -> tuple:
         tokens = chunk_utils.parse_expression(expr)
         if len(tokens) == 1 and expr.strip() == f"@{tokens[0][0]}.{tokens[0][1]}@":
             ref = self._resolve_expression_ref(*tokens[0])

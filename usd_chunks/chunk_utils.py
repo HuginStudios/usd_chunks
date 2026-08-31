@@ -1,3 +1,4 @@
+import ast
 import re
 import uuid
 from contextlib import contextmanager, ExitStack
@@ -196,6 +197,93 @@ def parse_expression(text: str) -> list[tuple[str, str]]:
 
 def has_expression(text: str) -> bool:
     return bool(_EXPR_RE.search(text))
+
+
+# Where the authored expression text is kept for an attr that cannot hold it as its own
+# value. Connections carry only the @refs@; the operators and literals between them live
+# nowhere else, so a Float attr storing just the resolved number loses "* 2" on reload.
+EXPR_TEXT_KEY = "chunk:expression"
+
+# Arithmetic only. Names, calls, attribute access, subscripts and comparisons are all
+# absent by construction, so a substituted expression can never reach anything but numbers
+# and operators -- this is why the evaluation below can use compile()/eval() safely.
+_ARITH_NODES = (
+    ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.UAdd, ast.USub,
+)
+
+# A literal exponent above this is refused rather than evaluated: 2**10**9 is a few
+# characters to type and would hang the UI thread computing a number nobody wants.
+_MAX_EXPONENT = 64
+
+
+def eval_arithmetic(text: str):
+    """Evaluate text as a pure arithmetic expression, or return None if it isn't one.
+
+    Used on an expression string whose @node.param@ refs have already been substituted for
+    their values, so "20.0 * 3.0" arrives here and 60.0 goes back. None means "not
+    arithmetic" -- a substituted prim path like "/world/geo/cube" or a label like
+    "cube_01" lands there and keeps its string form.
+
+    Args:
+        text (str): The substituted expression string
+
+    Returns:
+        int | float | None: The computed number, or None if text is not arithmetic
+    """
+    try:
+        tree = ast.parse(text, mode="eval")
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, _ARITH_NODES):
+            return None
+        if isinstance(node, ast.Constant) and not isinstance(node.value, (int, float)):
+            return None
+        # bool is an int subclass, so True/False would otherwise pass the check above.
+        if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+            return None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            exp = node.right
+            if not (isinstance(exp, ast.Constant) and abs(exp.value) <= _MAX_EXPONENT):
+                return None
+
+    try:
+        result = eval(compile(tree, "<chunk expression>", "eval"), {"__builtins__": {}}, {})
+    except (ArithmeticError, ValueError, TypeError):
+        return None  # division by zero, overflow -- keep the string rather than raise
+    return result if isinstance(result, (int, float)) and not isinstance(result, bool) else None
+
+
+def store_expression_text(attr: Usd.Attribute, raw: str) -> None:
+    """Keep the authored expression text with attr, wherever that type can hold it.
+
+    A String attr holds the text as its own value (which is what lets _patch_expressions
+    rewrite it on rename). Every other type stores the *resolved* value -- a Float input
+    must read back as a number for anything downstream in USD -- so the text goes to
+    customData under EXPR_TEXT_KEY instead.
+    """
+    if attr.GetTypeName() == Sdf.ValueTypeNames.String:
+        attr.Set(raw)
+    else:
+        attr.SetCustomDataByKey(EXPR_TEXT_KEY, raw)
+
+
+def read_expression_text(attr: Usd.Attribute) -> "str | None":
+    """Return the expression text authored on attr, from whichever place it was kept."""
+    if attr.GetTypeName() == Sdf.ValueTypeNames.String:
+        val = attr.Get(0)
+    else:
+        val = attr.GetCustomDataByKey(EXPR_TEXT_KEY)
+    return val if isinstance(val, str) and has_expression(val) else None
+
+
+def clear_expression_text(attr: Usd.Attribute) -> None:
+    """Drop any stored expression text -- the param no longer holds an expression."""
+    if attr.GetTypeName() != Sdf.ValueTypeNames.String and attr.HasCustomDataKey(EXPR_TEXT_KEY):
+        attr.ClearCustomDataByKey(EXPR_TEXT_KEY)
 
 
 def get_unique_path(stage, prim_path):
