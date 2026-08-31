@@ -1104,6 +1104,7 @@ def simulate_mujoco_instancer(
     hfield_res: int = 96,
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,
+    tri_budget: int = 20000,
     floor_drop: float = 0.0,
     wind: "tuple | list" = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
@@ -1218,6 +1219,7 @@ def simulate_mujoco_instancer(
         floor_drop,
         collider_mode,
         collider_thickness,
+        tri_budget,
     )
 
     dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
@@ -1620,6 +1622,9 @@ def _run(owner, notice, sender) -> None:
             collision_margin=_chunk.get_param("collision_margin", is_f).value,
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
+            collider_mode=_chunk.get_param("collider_mode", is_s).value,
+            collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
+            tri_budget=_chunk.get_param("tri_budget", is_i).value,
             floor_drop=floor_drop,
             **forces,
         )
@@ -1655,6 +1660,9 @@ def _run(owner, notice, sender) -> None:
             collision_margin=_chunk.get_param("collision_margin", is_f).value,
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
+            collider_mode=_chunk.get_param("collider_mode", is_s).value,
+            collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
+            tri_budget=_chunk.get_param("tri_budget", is_i).value,
             floor_drop=floor_drop,
             node=_chunk,
             **forces,
@@ -1857,6 +1865,41 @@ def main() -> chunk.Chunk:
     clear_col_btn = chunk.Button("clear_collision", "Clear", tooltip="Remove all collider prims.")
     clear_col_btn.add_callback(clear_collision)
     col_grp.add_param(clear_col_btn)
+    col_grp.add_param(
+        chunk.Menu(
+            "collider_mode",
+            "Collider Type",
+            menu_items=["Auto", "Mesh", "Heightfield", "Box"],
+            default_value="Auto",
+            tooltip="How collider prims are turned into collision geometry.\n"
+            "Mesh: the real surface, one thin convex slab per triangle — concave and "
+            "two-sided, so a body can go inside a cup, a bottle or a drawer.\n"
+            "Heightfield: a 2.5D elevation grid. Cheap for terrain and huge meshes, but it "
+            "holds one height per cell, so walls become cliffs bodies stick in.\n"
+            "Box: the collider's bounding box.\n"
+            "Auto uses Mesh while the collider fits the triangle budget, else Heightfield.",
+        )
+    )
+    col_grp.add_param(
+        chunk.Spinbox(
+            "collider_thickness",
+            "Collider Thickness",
+            default_value=0.0,
+            tooltip="For Mesh colliders: how deep the solid material behind each triangle is, "
+            "in scene units. 0 = auto (2% of the collider's size). Raise it if fast bodies "
+            "tunnel through; lower it if a thin-walled object's opposite faces fight each other.",
+        )
+    )
+    col_grp.add_param(
+        chunk.Spinbox(
+            "tri_budget",
+            "Triangle Budget",
+            default_value=20000,
+            is_int=True,
+            tooltip="Auto uses a Mesh collider while the collider is under this many "
+            "triangles, and falls back to a heightfield above it.",
+        )
+    )
     col_grp.add_param(
         chunk.Spinbox(
             "floor_drop",
