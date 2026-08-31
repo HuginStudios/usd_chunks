@@ -34,6 +34,7 @@ from typing import (
     Generic,
     Iterable,
     List,
+    Mapping,
     Optional,
     Protocol,
     Set,
@@ -3336,7 +3337,17 @@ class ChunkContainerBase(ChunkCommon):
         failed_msg += " Reason: {}"
 
         found_params: set[ChunkCommon] = set()
-        found_names: set[str] = set()
+
+        # Names are checked among siblings, not across the whole hierarchy: a param is
+        # addressed relative to its owner, so two groups may each hold a "General"
+        # without either becoming unreachable. Renderer settings are the case that
+        # proves it -- every installed renderer gets a group and every one of them ends
+        # up with a General for its leftovers.
+        #
+        # Keyed by id() rather than by the owner itself, so this never depends on how a
+        # param defines equality: two distinct groups that happen to compare equal must
+        # still be two scopes.
+        found_names: Dict[int, set[str]] = {}
 
         for p in self.get_params():
             if isinstance(p, ChunkBase):
@@ -3366,14 +3377,17 @@ class ChunkContainerBase(ChunkCommon):
                 raise NameError(failed_msg.format(f"{p.name} is duplicated in the hierarchy"))
             found_params.add(p)
 
-            # Vector children are scoped to their parent vector; skip global name uniqueness for them.
             direct_owner = p.get_owner()
             if isinstance(direct_owner, NameSyncedContainer):
                 direct_owner = direct_owner.get_owner()
-            if not isinstance(direct_owner, ChunkVectorBase):
-                if p.name in found_names:
-                    raise NameError(failed_msg.format(f"param name: {p.name} is not unique in the hierarchy"))
-                found_names.add(p.name)
+
+            siblings = found_names.setdefault(id(direct_owner), set())
+            if p.name in siblings:
+                owner_name = getattr(direct_owner, "name", "<no owner>")
+                raise NameError(
+                    failed_msg.format(f"param name: {p.name} is not unique under {owner_name}")
+                )
+            siblings.add(p.name)
 
     def print_hierarchy(self):
         """
@@ -4785,6 +4799,35 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def get_active_camera(self) -> Gf.Camera | None:
         """Return the current viewport camera as a Gf.Camera, or None if unsupported."""
         return None
+
+    @abstractmethod
+    def get_viewport_renderer(self) -> str:
+        """Hydra plugin id the viewport is drawing with, or "" when there is no viewport.
+
+        Used to decide which renderer's settings are worth sending: a delegate ignores a
+        namespace it does not own, so sending it another renderer's is only wasted work.
+        """
+        return ""
+
+    @abstractmethod
+    def set_viewport_renderer_settings(self, settings: Mapping[str, Any]) -> None:
+        """Send renderer settings straight to the viewport's render delegate.
+
+        Deliberately not scene description. Most delegates -- Cycles and RPR among them
+        -- never read a UsdRenderSettings prim, and take settings only through this
+        call, so a chunk that authors a prim and stops has no effect on what they draw.
+        Authoring stays the portable record; this is what makes the viewport agree with
+        it.
+
+        Every value is sent, so the caller is the one that must avoid re-sending what has
+        not changed: a delegate generally restarts its render on each setting it is
+        handed, whether or not the value is new.
+
+        Args:
+            settings (Mapping[str, Any]): Setting key to value, keys spelled the way the
+                delegate declares them rather than as USD attribute names -- the two
+                differ for a renderer whose keys are not valid USD identifiers.
+        """
 
     @abstractmethod
     def get_current_frame(self) -> float:
