@@ -1065,6 +1065,64 @@ def apply_offset(chunk: "core.ChunkBase", name: str, world_point: Any) -> bool:
     return handled
 
 
+GIZMO_STROKE_HOOK = "gizmo_stroke"
+
+
+def apply_stroke(chunk: "core.ChunkBase", name: str, samples: Any) -> bool:
+    """Hand a brush gesture to the chunk. True if it took it.
+
+    `samples` is a sequence of ``(Gf.Vec3d world_point, float weight)`` -- where the user
+    touched the surface this tick and how hard. **World space**, like `apply_offset`: a host
+    knows where its cursor hit geometry and nothing else about what a chunk means by it.
+
+    The only handle type whose payload is not a value. Every other one sends back a number, a
+    vector or a matrix, and a brush sends a gesture -- so there is no declarative driver path
+    here, and a chunk that wants one implements::
+
+        def gizmo_stroke(node, gizmo, samples):
+            ...             # accumulate into whatever the chunk owns
+            return True
+
+    **The host does not rasterise.** It sends the samples it has and this side resolves them
+    onto the surface, for the same reason `decompose()` lives here: otherwise every host
+    reimplements falloff slightly differently and two DCCs paint differently from the same
+    gesture.
+
+    **Nothing keeps a stroke.** The samples are accumulated and dropped; there is no stroke
+    list, no history, no replay. The host owns the gesture, the chunk owns the field. That is
+    what keeps a brush inside "usd_chunks records, the DCC interprets" rather than an
+    exception to it -- a stroke log would be a recording of host behaviour, replayable only by
+    something that agreed on what a stroke meant.
+    """
+    if not isinstance(chunk, core.ChunkBase):
+        resolved = chunk_at_prim_path(chunk)
+        if resolved is None:
+            raise ValueError(f"No chunk at {chunk!r} to stroke {name!r} on")
+        chunk = resolved
+
+    gizmo = find_gizmo(chunk, name)
+    if gizmo is None:
+        raise ValueError(f"Chunk {chunk.name!r} declares no gizmo named {name!r}")
+
+    module = getattr(chunk, "_module", None)
+    hook = getattr(module, GIZMO_STROKE_HOOK, None)
+    if not callable(hook):
+        return False
+
+    try:
+        handled = bool(hook(chunk, name, samples))
+    except Exception:
+        # Treated as handled, in the same family as gizmo_changed: a half-finished stroke
+        # followed by a second interpretation of the same gesture is worse than a dropped
+        # tick, and the next tick of the drag comes along anyway.
+        logger.exception("gizmo_stroke hook failed for gizmo %r on chunk %r", name, chunk.name)
+        return True
+
+    if handled:
+        chunk.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_CHANGED, gizmo.name)
+    return handled
+
+
 GIZMO_CHANGED_HOOK = "gizmo_changed"
 
 

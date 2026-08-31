@@ -1058,6 +1058,19 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             bool: True if only presentation bits moved
         """
         if self.alias is not chunk_notice.ChunkNoticeAlias.STATE_CHANGED:
+            # A param can declare that nothing downstream computes from its value. Rare, and
+            # it has to be earned: the value must genuinely not reach the chunk's cook.
+            #
+            # The Scatter Brush is the case that asked for it. Its radius, strength and mode
+            # steer a *stroke*, which happens outside any cook -- `execute` never reads them,
+            # and what downstream sees is the painted field, not the settings that produced
+            # it. Dirtying the chain for them made dragging Radius recook the scatter on every
+            # tick, reported as the brush being unusably sticky.
+            #
+            # The change still solves and still sends its notice, so callbacks and the UI are
+            # unaffected; only the dirtying of readers is skipped.
+            if self.name == "value" and getattr(self.get_owner(), "presentation_only", False):
+                return True
             return False
 
         old = ChunkFlags.State(self.old_value or ChunkFlags.State.NONE)
@@ -4135,7 +4148,15 @@ GIZMO_SHAPE_TYPES = frozenset({"cube", "sphere"})
 # because it is the chunk's handle rather than one group's.
 GIZMO_TRANSFORM_TYPE = "transform"
 GIZMO_TRANSFORM_ARITY = 9
-GIZMO_TYPES = GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES | {GIZMO_TRANSFORM_TYPE}
+# A surface tool rather than a manipulator: the user drags across geometry and what comes
+# back is *where they touched and how hard*, not a value. The only type whose payload is a
+# stream of samples, and the only one whose result is a field rather than a param -- see
+# apply_stroke. Its `driver` names the params holding the brush's own settings, so a host can
+# read the radius to draw the ring; it never writes them.
+GIZMO_BRUSH_TYPE = "brush"
+GIZMO_TYPES = (
+    GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES | {GIZMO_TRANSFORM_TYPE, GIZMO_BRUSH_TYPE}
+)
 # Signed, because direction is half the meaning. Focus distance runs along the camera's
 # *-Z*: an unsigned token would put the handle out the back of the camera, and nothing else
 # in the schema could correct it.

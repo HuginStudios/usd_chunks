@@ -37,8 +37,7 @@ class UsdviewScene(chunk_core.SceneSender):
 
         self._current_cam = None
 
-        # Adds a delay to the set_viewport_camera as a workaround to remove thread racing
-        self._camera_prim = None
+        # Adds a delay to the set_viewport_camera as a workaround to remove thread racing.
         # Initialised here as well as on first use: _on_view_settings_changed reads it to tell
         # a free camera we caused to be rebuilt from one the user owns, and that runs on any
         # view setting change, long before anything asks for a viewport camera.

@@ -13,6 +13,7 @@ Requires: pxr (OpenUSD), usd_chunks.
 from __future__ import annotations
 
 import bisect
+import logging
 import math
 import random
 
@@ -20,6 +21,8 @@ from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
 from usd_chunks.plugins import chunk_usd
+
+logger = logging.getLogger(__name__)
 
 _ORIENT_MODES = ["Align to Normal", "Keep Original", "Up", "Random"]
 _RAND_AXES = ["Off", "X", "Y", "Z", "All"]
@@ -131,6 +134,177 @@ class _PoissonGrid:
 
     def add(self, pt):
         self._grid.setdefault(self._key(pt), []).append(pt)
+
+
+#: Per-vertex float, 0..1, saying how much scatter a part of the surface wants. Painted by
+#: the brush; ordinary USD, so a DCC's own paint tool or a bake can author it just as well.
+DENSITY_PRIMVAR = "scatterDensity"
+
+#: How finely the lookup grid divides the surface's bounds. The grid only has to be fine
+#: enough that a cell holds few vertices, since a query answers with the nearest one in it --
+#: past that it costs memory for nothing.
+_LOOKUP_DIVISIONS = 48
+
+
+#: What only means something when scatter is choosing the positions itself. Wire painted
+#: points in and every one of them is answering a question that has already been settled.
+_SAMPLING_ONLY = ("auto_spacing", "spacing", "max_count", "seed", "max_slope", "scatter_mode")
+
+
+def _update_sampling_params(owner) -> None:
+    """Hide the distribution controls while the positions are being handed to us.
+
+    Reported live: with Painted Points connected, Auto Spacing, Spacing, Max Count and Seed
+    all still sat there doing nothing. A control that cannot affect the result is worse than
+    an absent one -- it invites you to reach for it when something looks wrong.
+    """
+    placed = bool(owner.get_param("points_prim") and owner.get_param("points_prim").value)
+    for name in _SAMPLING_ONLY:
+        param = owner.get_param(name)
+        if param is None:
+            continue
+        if placed:
+            param.set_state(chunk.ChunkFlags.State.HIDDEN)
+        else:
+            param.unset_state(chunk.ChunkFlags.State.HIDDEN)
+
+
+def _on_points_input_changed(owner, notice, sender) -> None:
+    _update_sampling_params(owner.get_chunk())
+
+
+def _painted_points(stage, points_path):
+    """Points a brush placed by hand, with the surface normal recorded at each.
+
+    Empty whenever nothing is wired, which is the common case and costs one path lookup.
+
+    The normals are why this returns a pair. A scatter has the triangle it sampled and can
+    take the facing from that; a placed point has no triangle, so the brush records the
+    surface's facing when the dab lands -- the same job Houdini's N does on a point.
+    """
+    if not points_path or stage is None:
+        return [], []
+    prim = stage.GetPrimAtPath(points_path)
+    if not prim or not prim.IsValid():
+        return [], []
+
+    cloud = UsdGeom.Points(prim)
+    points = cloud.GetPointsAttr().Get()
+    if not points:
+        return [], []
+    normals = cloud.GetNormalsAttr().Get()
+
+    up = Gf.Vec3f(0, 0, 1)
+    positions = [Gf.Vec3f(*p) for p in points]
+    facing = [Gf.Vec3f(*n) for n in normals] if normals else []
+    # Points placed before normals were recorded still work; they simply lie flat.
+    facing += [up] * (len(positions) - len(facing))
+    return positions, facing[:len(positions)]
+
+
+def _density_mask(prim, primvar_name=None):
+    """A weight function over the painted surface, or None when nothing is painted.
+
+    `primvar_name` is which painted field to read, and it comes off this chunk's Density Field
+    input -- normally wired from a Scatter Brush's output rather than typed. Empty means *no
+    field*, and an unconnected scatter therefore behaves exactly as it did before painting
+    existed. That is the point of the wire: the dependency is visible, and a scatter nobody
+    connected a brush to is not quietly governed by one.
+
+    None rather than a function returning 1.0, deliberately: the sampler skips the hook
+    entirely when there is no mask, so an unpainted scatter costs exactly what it did before
+    this existed. That matters -- the hook runs per candidate point, and candidates outnumber
+    instances by whatever the rejection rate happens to be.
+
+    Sampling is nearest-vertex. The weight is authored per vertex, and the sampler hands over
+    a point with no idea which triangle produced it, so there is nothing to interpolate
+    barycentrically against. Density resolution is therefore mesh resolution: paint a
+    twelve-triangle floor and the edge of the painted region is blocky. Worth knowing before
+    it is discovered.
+    """
+    primvar_name = primvar_name or ""
+    if not prim or not prim.IsValid() or not primvar_name:
+        return None
+
+    points, weights = [], []
+    for p in Usd.PrimRange(prim):
+        mesh = UsdGeom.Mesh(p)
+        mesh_points = mesh.GetPointsAttr().Get()
+        if not mesh_points:
+            continue
+        primvar = UsdGeom.PrimvarsAPI(p).GetPrimvar(primvar_name)
+        if not primvar or not primvar.HasValue():
+            continue
+
+        values = primvar.ComputeFlattened()
+        if values is None:
+            continue
+        # Constant interpolation is one number for the whole mesh -- a legitimate way to dial
+        # a surface down without painting it, and it has no per-vertex values to index.
+        if len(values) == 1:
+            values = [values[0]] * len(mesh_points)
+        if len(values) < len(mesh_points):
+            logger.warning(
+                "%s has %d %s values for %d points; ignoring it",
+                p.GetPath(), len(values), primvar_name, len(mesh_points),
+            )
+            continue
+
+        world_xf = UsdGeom.XformCache().GetLocalToWorldTransform(p)
+        for i, pt in enumerate(mesh_points):
+            wp = world_xf.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
+            points.append(Gf.Vec3f(wp[0], wp[1], wp[2]))
+            weights.append(float(values[i]))
+
+    if not points:
+        return None
+    return _NearestWeight(points, weights).sample
+
+
+class _NearestWeight:
+    """Nearest-vertex weight lookup over a uniform grid.
+
+    Brute force over every vertex would be O(V) per candidate point, and the sampler makes up
+    to a hundred candidates per instance -- on a real mesh that is the whole cook. The grid
+    makes it O(1) at the cost of one pass at build time.
+    """
+
+    def __init__(self, points, weights):
+        self._weights = weights
+        lo = [min(p[i] for p in points) for i in range(3)]
+        hi = [max(p[i] for p in points) for i in range(3)]
+        span = max(max(hi[i] - lo[i] for i in range(3)), 1e-6)
+        self._origin = lo
+        self._cell = span / _LOOKUP_DIVISIONS
+
+        self._cells = {}
+        for index, pt in enumerate(points):
+            self._cells.setdefault(self._key(pt), []).append((pt, index))
+
+    def _key(self, pt):
+        return tuple(int((pt[i] - self._origin[i]) // self._cell) for i in range(3))
+
+    def sample(self, point, normal=None):
+        """The painted weight nearest `point`, in 0..1. `normal` is unused but is part of the
+        hook's signature -- a future falloff-by-facing would want it."""
+        key = self._key(point)
+        best, best_dist = None, None
+        # The point can land nearer a vertex in an adjacent cell than one in its own, and an
+        # empty cell is ordinary on a coarse mesh, so the neighbours are always searched.
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for candidate, index in self._cells.get(
+                        (key[0] + dx, key[1] + dy, key[2] + dz), ()
+                    ):
+                        offset = candidate - point
+                        dist = offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]
+                        if best_dist is None or dist < best_dist:
+                            best, best_dist = index, dist
+        if best is None:
+            # Nothing painted anywhere near: outside the painted region entirely.
+            return 0.0
+        return min(1.0, max(0.0, self._weights[best]))
 
 
 def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
@@ -454,6 +628,9 @@ def execute(node):
     proto_prim = scratch_stage.GetPrimAtPath(proto_paths[0]) if proto_paths else None
 
     triangles = _collect_triangles(surface_prim)
+    # None whenever the surface carries no painted weight, so an unpainted scatter never pays
+    # for the lookup -- see _density_mask.
+    density = _density_mask(surface_prim, node.get_param("density_primvar").value)
     rng = random.Random(seed)
     up_idx = 1 if UsdGeom.GetStageUpAxis(stage).upper() == "Y" else 2
     world_up = Gf.Vec3f(0, 1, 0) if up_idx == 1 else Gf.Vec3f(0, 0, 1)
@@ -463,8 +640,22 @@ def execute(node):
         # Centre-to-centre >= the largest instance's footprint -> no overlap.
         spacing = footprint * max(scale_max, 1e-6)
 
-    if scatter_mode == "Volume":
-        positions, normals = _fill_in_volume(triangles, max_count, rng, spacing)
+    points_input = node.get_param("points_prim").value
+    placed, placed_normals = _painted_points(scratch_stage, points_input)
+    # The *wire* decides, not whether the brush happens to have points yet. Falling back to
+    # sampling when the cloud was empty meant connecting a fresh brush covered the surface in
+    # instances -- the opposite of what connecting a painting tool should do, and the same
+    # empty-versus-absent distinction the density field already makes.
+    if points_input:
+        # Hand-placed: the user said where. No sampling, no spacing, no slope filter -- those
+        # answer "where should these go", which is the question already settled by placing
+        # them. The density field is ignored for the same reason.
+        #
+        # Empty is an answer too: a brush wired up but not yet painted means "nowhere", not
+        # "anywhere".
+        positions, normals = placed, placed_normals
+    elif scatter_mode == "Volume":
+        positions, normals = _fill_in_volume(triangles, max_count, rng, spacing, mask=density)
         normals = [world_up] * len(positions)
     else:
         # Surface — slope pre-filters the triangle set (correct area weighting,
@@ -472,7 +663,7 @@ def execute(node):
         # passed as the `mask=` hook above.
         surf_tris = [t for t in triangles if _slope_ok(t[3], world_up, max_slope)]
         if surf_tris:
-            positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing)
+            positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=density)
         else:
             # No mesh / no qualifying faces — fall back to a jittered grid.
             sp = max(spacing, 2.0)
@@ -523,9 +714,19 @@ def execute(node):
             instancer.GetPositionsAttr().Set(Vt.Vec3fArray(positions))
             instancer.GetProtoIndicesAttr().Set(Vt.IntArray([0] * len(positions)))
 
+            # Seeded per point when the points were placed by hand, so a point's look is tied
+            # to the point rather than to its position in the list.
+            #
+            # Appending alone would survive the sequential rng too -- consuming one more value
+            # leaves the earlier ones untouched, which is worth stating because it is easy to
+            # assume otherwise. What does not survive it is *editing*: delete a point from the
+            # middle, or reorder them, and every point after it silently changes scale and
+            # rotation. Painting is an editing workflow, so the look is pinned to the index.
             scale_rng = random.Random(seed + 13)
             scales = Vt.Vec3fArray(len(positions))
             for i in range(len(positions)):
+                if placed:
+                    scale_rng = random.Random(seed + 13 + i)
                 s = scale_rng.uniform(scale_min, scale_max)
                 scales[i] = Gf.Vec3f(s * proto_scale[0], s * proto_scale[1], s * proto_scale[2])
             instancer.GetScalesAttr().Set(scales)
@@ -533,6 +734,8 @@ def execute(node):
             orient_rng = random.Random(seed + 7)
             orientations = Vt.QuathArray(len(positions))
             for i, nrm in enumerate(normals):
+                if placed:
+                    orient_rng = random.Random(seed + 7 + i)
                 base = _compute_orientation(orient_mode, nrm, orient_rng)
                 orientations[i] = _apply_random_rotation(base, rand_axis, rand_amount, orient_rng)
             instancer.GetOrientationsAttr().Set(orientations)
@@ -558,6 +761,25 @@ def main():
             "Prototype Prim",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
             tooltip="Prim instanced at each scatter point. Empty = a default cube.",
+        )
+    )
+    points_input = chunk.LineEdit(
+        "points_prim",
+        "Painted Points",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="Place one instance at each point a Scatter Brush painted, instead of "
+        "scattering. Wire this from the brush's Painted Points output. While it is "
+        "connected, the distribution settings below do nothing and are hidden.",
+    )
+    points_input.add_callback(_on_points_input_changed)
+    chunk_api.add_param(points_input)
+    chunk_api.add_param(
+        chunk.LineEdit(
+            "density_primvar",
+            "Density Field",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            tooltip="Which painted field decides where instances may land. Wire this from a "
+            "Scatter Brush's Density Field output. Empty means no field — scatter everywhere.",
         )
     )
     chunk_api.add_param(
@@ -694,6 +916,8 @@ def main():
         )
     )
     chunk_api.add_param(var_grp)
+
+    _update_sampling_params(chunk_api)
 
     return chunk_api
 
