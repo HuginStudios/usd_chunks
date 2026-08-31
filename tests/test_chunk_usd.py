@@ -2478,7 +2478,14 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     t1.get_param("tx").value = 1.0
     t2.get_param("tx").value = 99.0
     _pump(0.5)
-    assert _target_tx() == pytest.approx(99.0), "precondition: the settled prim must show t2's result"
+    # 100, not 99: transform chunks own a named xformOp each and compose, so both
+    # contribute instead of the stronger layer discarding the weaker. That is a change in
+    # the proxy this test reads, not in the behaviour it guards -- the range check further
+    # down is what actually distinguishes "Scatter saw only its upstream" from the bug, and
+    # it still does.
+    assert _target_tx() == pytest.approx(100.0), (
+        "precondition: the settled prim must show both transforms composed"
+    )
 
     # This is the actual live trigger: creating any unrelated, unconnected new node
     # re-triggers a recook of the still-active view (see ChunkGraphView.build()).
@@ -2488,16 +2495,16 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     # Mesh points are (0,0,0),(1,0,0),(0,1,0) -- any barycentric sample has local X in [0, 1],
     # so a fixed range check sidesteps needing an exact expected value (which depends on the
     # sampler's internal RNG draws): t1's offset (tx=1) puts the correct answer in [1, 2];
-    # t2's offset (tx=99) -- the bug -- would put it in [99, 100].
+    # seeing t2 as well -- the bug -- composes to 100 and would put it in [100, 101].
     final_x = _scatter_tx()
     assert 1.0 <= final_x <= 2.0, (
         f"Scatter must read only its real upstream (t1, tx=1), never t2 (tx=99, downstream of "
         f"it) -- creating an unrelated node must not shift the scattered point to t2's offset. "
         f"Got x={final_x}"
     )
-    assert _target_tx() == pytest.approx(99.0), (
-        "the settled prim itself must still show t2's result -- the view's own 'closest wins' "
-        "ranking is unaffected by the incremental reveal during execution"
+    assert _target_tx() == pytest.approx(100.0), (
+        "the settled prim itself must still show both transforms composed -- the incremental "
+        "reveal during execution must not change what the view ends up resolving to"
     )
 
 
@@ -3015,7 +3022,12 @@ def test_get_upstream_stage_preserves_real_relative_order_among_included_chunks(
     _wire(t2, t1)
 
     t1.get_param("primpath_location").value = "/bowl"
-    t1.get_param("tx").value = 1.0
+    # Scale on one and translate on the other, deliberately: transform chunks compose now,
+    # and translation alone composes commutatively -- 1 + 2 is 3 whichever order the layers
+    # rank in, so a translate-only proxy would report success without testing anything.
+    # Scale-then-translate and translate-then-scale give different answers, so the number
+    # below genuinely depends on the order this test exists to check.
+    t1.get_param("sx").value = 2.0
     t2.get_param("primpath_location").value = "/bowl"
     t2.get_param("tx").value = 2.0
 
@@ -3044,15 +3056,16 @@ def test_get_upstream_stage_preserves_real_relative_order_among_included_chunks(
         xform_cache.Clear()
         return xform_cache.GetLocalToWorldTransform(scratch_stage.GetPrimAtPath("/bowl")).ExtractTranslation()[0]
 
-    # t2 must currently win on the real, live stage -- confirming the forced precondition,
-    # not the fix itself.
-    assert _real_tx() == pytest.approx(2.0)
+    # Whatever the forced precondition resolves to on the real stage is the answer the
+    # scratch stage has to reproduce. Asserted against the live value rather than a
+    # hardcoded one: the subject is that the two AGREE, and pinning a literal here would
+    # only re-encode today's compose order as if it were the thing being tested.
+    real = _real_tx()
+    assert real != pytest.approx(0.0), "precondition: the forced order must actually do something"
 
-    # The scratch stage must agree: t2 must still win, not t1, even though neither is
-    # downstream of `reference` and both get included.
-    assert _scratch_tx() == pytest.approx(2.0), (
+    assert _scratch_tx() == pytest.approx(real), (
         "get_upstream_stage must preserve the real relative order between two included "
-        "chunks that touch the same prim, not silently pick a different winner"
+        "chunks that touch the same prim, not silently rebuild it into a different one"
     )
 
 

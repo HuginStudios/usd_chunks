@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import logging
+import math
 import re
 import weakref
 from pathlib import Path
@@ -18,6 +19,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
+from usd_chunks import chunk_gizmo
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
@@ -114,6 +116,41 @@ _pin_new_chunks: "bool | None" = None
 # right-click / wire-drop point). _define_prim reads it for the node pos instead of the far-away
 # index default. None → use the default. Cleared by the caller after the create.
 _create_node_pos: "tuple[float, float] | None" = None
+
+# Just above float32's ~1e-7 relative precision. A param holds a Python float (64-bit) but
+# is stored in USD as a 32-bit float, so a value that made the round trip comes back
+# differing in the 8th significant digit -- e.g. param -3.3492076146840537 vs USD
+# -3.349207639694214, seen live. Comparing those exactly makes them permanently unequal, so
+# every notice mentioning the attribute would write the param again; harmless per write, but
+# it dirties the chunk and cooks it, and resyncs are frequent enough for that to matter.
+_FLOAT_AGREEMENT = 1e-6
+
+
+def _values_agree(usd_value, param_value) -> bool:
+    """Whether a value read back from USD is the same as the param's, allowing for float32.
+
+    Falls back to plain equality for anything not a pair of numbers -- strings, tokens,
+    bools -- where exactness is the whole point.
+    """
+    # Strings first, and not merely for speed: a str is iterable, and iterating one yields
+    # 1-character strs that are iterable in turn, so falling through to the sequence branch
+    # below recurses until the stack runs out. Equal-length strings are the trigger --
+    # different lengths raise from strict=True and land on plain equality, which is why a
+    # test comparing "/World/Cube" with "/World/Sphere" passes while any prim path compared
+    # against another of the same length brings down whatever is holding the notice.
+    if isinstance(usd_value, (str, bytes)) or isinstance(param_value, (str, bytes)):
+        return usd_value == param_value
+    if isinstance(usd_value, bool) or isinstance(param_value, bool):
+        return usd_value == param_value
+    if isinstance(usd_value, (int, float)) and isinstance(param_value, (int, float)):
+        return math.isclose(usd_value, param_value, rel_tol=_FLOAT_AGREEMENT, abs_tol=_FLOAT_AGREEMENT)
+    # Vectors and other sequences: compare component-wise under the same rule.
+    try:
+        pairs = list(zip(usd_value, param_value, strict=True))
+    except (TypeError, ValueError):
+        return usd_value == param_value
+    return all(_values_agree(a, b) for a, b in pairs)
+
 
 _SDF_TYPE_MAP = {
     bool: Sdf.ValueTypeNames.Bool,
@@ -469,29 +506,55 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         changed = {str(p) for p in notice.GetChangedInfoOnlyPaths()}
         # Include resynced paths for editors (e.g. usdview) that author active via the layer
         all_changed = changed | {str(p) for p in notice.GetResyncedPaths()}
+        # NOT extended with paths from notices that the guard above suppressed, though the
+        # temptation is strong: a change arriving mid-write is genuinely lost, which is a
+        # candidate for "undo moved the prim every step but the sliders followed only about
+        # half the time". Replaying them is unsound. A suppressed notice means WE were
+        # writing, and a multi-component write leaves USD transiently holding partial
+        # values -- replaying such a path afterwards pushed a stale (1, 0, 0) over a param
+        # that already correctly held (1, 2, 3). That is precisely what the guard is for.
+        # Fixing the dropped-undo case needs the drain to happen where USD is known
+        # consistent (as the write block closes), not on the next unrelated notice.
+        param_paths = all_changed
         if not all_changed:
             return
         self._reconcile_changed_exec_inputs(all_changed)
         for chunk in self._scene.get_chunks():
-            if changed:
+            # all_changed, not just the info-only set. An ordinary edit -- typing in a field,
+            # a gizmo writing a param -- arrives as an info-only change, but undo restores
+            # layer content wholesale and USD reports THAT as a resync. Reading only the
+            # info-only set meant precisely the edits a user cannot make by hand (undo, redo,
+            # a layer reload) were the ones the mirror ignored: Ctrl+Z moved the prim back
+            # while the chunk's sliders kept the undone value, and only caught up when the
+            # gizmo was next touched. Confirmed live -- a real Ctrl+Z reports
+            # `<chunk>.inputs:translate_grp:tz` as resynced, with nothing in the info-only set.
+            if param_paths:
                 for _, param in _iter_chunk_params(chunk):
                     data_path = getattr(param, "_param_attr_path", None)
-                    if not data_path or data_path not in changed:
+                    if not data_path or data_path not in param_paths:
                         continue
                     attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
                         val = attr.Get(0)
                         raw = getattr(param, 'raw_value', None)
-                        if val is not None and val != param.value and not (isinstance(raw, str) and chunk_utils.has_expression(raw)):
+                        if (val is not None and not _values_agree(val, param.value)
+                                and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
                             param.value = val
                 for _, vector in _iter_chunk_vectors(chunk):
                     data_path = getattr(vector, "_param_attr_path", None)
-                    if not data_path or data_path not in changed:
+                    if not data_path or data_path not in param_paths:
                         continue
                     attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
                     if attr and attr.IsValid():
                         val = attr.Get(0)
-                        if val is not None:
+                        # Same expression guard the scalar branch above has always had.
+                        # Missing here, which went unnoticed while this only ran for
+                        # info-only paths: writing the resolved value over the expression
+                        # replaces a live link with a frozen number, and the vector stops
+                        # tracking whatever it was pointed at.
+                        raw = getattr(vector, 'raw_value', None)
+                        if (val is not None and not _values_agree(val, vector.value)
+                                and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
                             vector.value = val
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
             if not chunk_prim_path or chunk_prim_path not in all_changed:
@@ -626,6 +689,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
                         self._sync_param_input(chunk, owner)
+                        self._refresh_gizmo_anchors(chunk)
                 elif isinstance(owner, core.ChunkVectorBase):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
@@ -964,6 +1028,27 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     if chunk_layer and (cur := attr.Get()) is not None:
                         with Usd.EditContext(self._stage, chunk_layer):
                             old_attr.Set(cur)
+
+    def _refresh_gizmo_anchors(self, chunk: "core.ChunkBase") -> None:
+        """Keep every gizmo's anchor rel pointing at the prim the chunk currently targets.
+
+        Hangs off the generic param-changed path rather than watching the anchor param
+        specifically: which param is the anchor is per-gizmo and can be inferred, so there is
+        no single name to watch. Cheap enough to sit here because chunk_gizmo returns
+        immediately for a chunk that declares no gizmos, which is nearly all of them.
+        """
+        if not chunk_gizmo.get_gizmos(chunk):
+            return
+        prim_path = self._chunk_prim_paths.get(id(chunk))
+        if not prim_path:
+            return
+        prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
+        if not (prim and prim.IsValid()):
+            return
+        home = chunk_utils.get_bookkeeping_layer(self._stage, chunk)
+        ctx = Usd.EditContext(self._stage, home) if home else contextlib.nullcontext()
+        with ctx:
+            chunk_gizmo.refresh_gizmo_anchors(self._stage, prim, chunk)
 
     def _sync_param_input(self, chunk: "core.ChunkBase", param: "core.ChunkParamBase", force: bool = False) -> None:
         """Create and wire a single param's chunk-prim input attr on first non-default change.
@@ -1401,6 +1486,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
                     if out_type is not None:
                         prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
+
+            chunk_gizmo.author_gizmos(self._stage, prim, chunk)
 
             deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
             if not deps and prev_chunk:
@@ -4098,6 +4185,8 @@ def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.Ch
             out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
             if out_type is not None:
                 prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
+
+    chunk_gizmo.author_gizmos(stage, prim, chunk)
 
     deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
     if not deps:

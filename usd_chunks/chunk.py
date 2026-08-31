@@ -67,6 +67,9 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
     ChunkConfig as _cfg,
+    GizmoBase as _gizmo,
+    check_gizmo_sugar as _check_gizmo_sugar,
+    GIZMO_TRANSFORM_TYPE as _GIZMO_TRANSFORM,
     ChunkParamBase,
     ChunkGroupBase,
     ChunkVectorBase,
@@ -108,6 +111,29 @@ class DefaulConfig(_cfg):
     pass
 
 
+class Gizmo(_gizmo):
+    """A viewport handle driven by this chunk's params.
+
+    usd_chunks records; the DCC interprets. Declaring one authors ui:gizmo:* attributes on
+    the chunk prim -- what the handle is, which prim it hangs off, and which params it
+    writes. Drawing, picking and dragging live in the viewport layer.
+
+    ``` py
+    def config():
+        return chunk.DefaulConfig(
+            gizmos=[
+                chunk.Gizmo("body", type="transform", anchor="primpath_location",
+                            driver={"translate": ("tx", "ty", "tz")}),
+            ],
+        )
+    ```
+
+    Write-back goes through params, never through the prim: a chunk like transform.py
+    clears its own layer and re-authors on every cook, so a handle that wrote the prim
+    directly would be clobbered by the next execute.
+    """
+
+
 class StandardCategory(str, Enum):
     PROPERTIES = "Properties"
     MODELLING = "Modelling"
@@ -123,19 +149,51 @@ class StandardCategory(str, Enum):
 
 
 class Chunk(ChunkBase):
-    """Chunk is the top level container, holding params and groups which in turn make up the final, displayed chunk."""
+    """Chunk is the top level container, holding params and groups which in turn make up the final, displayed chunk.
+
+    `gizmo="transform"` declares a single whole-chunk manipulator -- in effect "host, run
+    your native transform handle and give me the result". It absorbs the `gizmo=` groups
+    below it into one handle instead of leaving three:
+
+    ``` py
+    chunk_api = chunk.Chunk("Transform", gizmo="transform")
+    ```
+    """
 
     # Override defaults
     flags: IntFlag = field(
         default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
+    gizmo: Optional[str] = field(default=None)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        if self.gizmo is not None and self.gizmo != _GIZMO_TRANSFORM:
+            raise ValueError(
+                f"Chunk {self.name!r}: only gizmo={_GIZMO_TRANSFORM!r} can be declared on a chunk. "
+                f"Put {self.gizmo!r} on the param or group it drives."
+            )
 
 
 class Group(ChunkGroupBase):
-    """Group is a container holding child ChunkParamBase and ChunkGroupBase instances"""
+    """Group is a container holding child ChunkParamBase and ChunkGroupBase instances
+
+    A group can carry a `gizmo=` type, which is usually the lightest way to declare a
+    handle: the group already *is* the params the handle drives, so nothing needs listing.
+
+    ``` py
+    grp = chunk.Group("translate_grp", "Translate", gizmo="translate")
+    ```
+    """
 
     # Override defaults
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+    gizmo: Optional[str] = field(default=None)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        if self.gizmo is not None:
+            _check_gizmo_sugar(self.name, self.gizmo, scalar=False)
 
 
 class ListGroup(ChunkListGroupBase):
@@ -152,6 +210,12 @@ class Vector(ChunkVectorBase):
 
     # Override defaults
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
+    gizmo: Optional[str] = field(default=None)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        if self.gizmo is not None:
+            _check_gizmo_sugar(self.name, self.gizmo, scalar=False)
 
 
 def _apply_usd_hard_limits(param, attr) -> None:
@@ -181,6 +245,12 @@ class Slider(ChunkParamBase[int | float]):
     max_value: Optional[float | int] = field(default=None)
     is_int: bool = field(default=False)
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+    gizmo: Optional[str] = field(default=None)
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        if self.gizmo is not None:
+            _check_gizmo_sugar(self.name, self.gizmo, scalar=True)
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
