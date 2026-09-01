@@ -4457,7 +4457,20 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if view_chunk is None:
             return False
         cook_set = set(chunk_usd.get_exec_upstream_chunks(view_chunk, stage, scene))
-        return any(c is view_chunk or c in cook_set for c in changed_chunks)
+        if any(c is view_chunk or c in cook_set for c in changed_chunks):
+            return True
+        # A chunk created INSIDE a reachable group is not itself reachable -- nothing in the
+        # outer graph points at it -- but it is part of that group's cooked content, and its
+        # layer still has to be ranked into the group's tier (recook_for_view's descendant
+        # promotion). AMDMaterialXLibrary builds its Reference and BindMaterial children from
+        # a button callback, so they arrive exactly this way; bailing out here left their
+        # layers appended weakest, below the Sublayer feeding the group, so the material they
+        # authored lost to the binding the referenced asset already carried and the assigned
+        # material never appeared. Prim-path nesting is the same test the ranking pass uses.
+        prefixes = tuple(str(chunk_usd.get_chunk_prim_path(c)) + "/" for c in cook_set)
+        if not prefixes:
+            return False
+        return any(str(chunk_usd.get_chunk_prim_path(c)).startswith(prefixes) for c in changed_chunks)
 
     @staticmethod
     def mark_pending_delete_relevance(chunks) -> None:
