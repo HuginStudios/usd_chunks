@@ -4,14 +4,15 @@ exported from the module will be executed if -e is set.
 
 F.e:
 ```
-python chunk_cli.py --module examples.dependencies A.A_param=2 B.B_param=3
+python chunk_cli.py --module examples.example "Hello World.slider=2"
 ```
 
-will run the examples.dependency module. This modules exports 4 chunks: A, B, C, D. Where C is dependant on A and B, and D is Dependant on A,B, and C.
-The arguments passed to chunk_cli will set the value A_param on chunk A to 2, the value of B_param in chunk B to 3. Since chunk C of the module is
-dependent on A and B, C will solve, then finally triggering D to solve.
+will run the examples.example module, which exports a single chunk named "Hello World", and set that chunk's
+`slider` param to 2. Arguments take the form `<chunk name>.<param name>=<value>`, so a chunk name containing
+a space needs quoting for the shell.
 
-In this case, the -e flag is unessesary as the chunk D is already solved after A,B,C are solved.
+Setting a param solves the chunk it belongs to, and anything downstream of it. The -e flag is only needed for a
+chunk that no argument touched -- pass `-e "*"` to execute every chunk the module exported.
 """
 
 from usd_chunks import chunk_registry, chunk_core, chunk
