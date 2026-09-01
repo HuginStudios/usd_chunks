@@ -37,7 +37,7 @@ once the numbers it is writing have stopped moving.
 
 import atexit
 import weakref
-from typing import TYPE_CHECKING, Dict, Generator, Iterable, List, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Generator, Iterable, List, Tuple
 
 # Imported as a module rather than by name: chunk_notice imports this module, so at the
 # time this line runs chunk_notice may still be halfway through its own import and have
@@ -473,11 +473,18 @@ def commit_order(chunks: Iterable["ChunkBase"]) -> List["ChunkBase"]:
     Order chunks so that every chunk comes after everything it depends on.
 
     Sorted by get_depth rather than run through topo_order, because a chunk can depend on
-    another without there being any edge between the two *chunks*: drag-to-connect on a
-    port wires param to param and never calls Chunk.add_dependency, so a subgraph induced
-    over chunk nodes alone would miss that edge entirely. Depth sees it, since ownership
-    costs nothing and therefore pulls a chunk at least as deep as its deepest param -- the
-    same reason it is already the key the layer manager sorts chunk sublayers by.
+    another without there being any edge between the two *chunks*: a param-level
+    add_dependency puts no edge on the chunk nodes, so a subgraph induced over those alone
+    would miss it entirely. Depth sees it, since ownership costs nothing and therefore
+    pulls a chunk at least as deep as its deepest param -- the same reason it is already
+    the key the layer manager sorts chunk sublayers by.
+
+    Depth only sees edges someone created with add_dependency, which is NOT how the node
+    graph wires a param port: drag-to-connect authors an @Node.param@ expression, whose
+    live link is a NoticeConnection rather than a DAG edge, so two chunks joined only by a
+    param wire both land at depth 0 here. Pass chunk_usd.commit_order_from_stage as the
+    `order` argument to commit_all to order from the stage's own connections instead --
+    which is what the CLI does.
 
     Depth is a valid topological order: an edge from u to v makes v strictly deeper than
     u, so sorting by it can never place a dependant first. Independent chunks tie, and the
@@ -492,7 +499,7 @@ def commit_order(chunks: Iterable["ChunkBase"]) -> List["ChunkBase"]:
     return sorted(chunks, key=lambda c: get_depth(c.get_dag_node()))
 
 
-def commit_all(chunks: Iterable["ChunkBase"]) -> List["ChunkBase"]:
+def commit_all(chunks: Iterable["ChunkBase"], order: "Callable[[List[ChunkBase]], List[ChunkBase]] | None" = None) -> List["ChunkBase"]:
     """
     Run the reserved `commit(node)` hook of every chunk module that defines one.
 
@@ -514,13 +521,16 @@ def commit_all(chunks: Iterable["ChunkBase"]) -> List["ChunkBase"]:
 
     Args:
         chunks (Iterable[ChunkBase]): The chunks to commit, in any order
+        order (Callable | None): How to order them. Defaults to commit_order (DagNode
+            depth); pass chunk_usd.commit_order_from_stage bound to a stage to order from
+            USD connections instead, which is the only way to see a param-port wire.
 
     Returns:
         List[ChunkBase]: The chunks whose commit hook actually ran, in the order it ran
     """
     committed: List["ChunkBase"] = []
 
-    for c in commit_order(chunks):
+    for c in (order or commit_order)(list(chunks)):
         if c.is_blocked():
             continue
 

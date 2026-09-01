@@ -16,7 +16,7 @@ import sys
 import types
 from pathlib import Path
 
-from pxr import Usd
+from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_scheduler
 from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
@@ -100,9 +100,13 @@ class TestCommitDispatch:
         assert calls == ["a", "b", "c"]
 
     def test_param_wired_chunks_still_ordered(self):
-        """Drag-to-connect wires param to param and never calls Chunk.add_dependency, so
-        there is no chunk-level edge to sort on — the ordering has to come from depth,
-        where ownership pulls a chunk at least as deep as its deepest param."""
+        """A param-level add_dependency leaves no chunk-level edge to sort on, so the
+        ordering has to come from depth, where ownership pulls a chunk at least as deep as
+        its deepest param.
+
+        Note this is the in-memory add_dependency API, NOT what the node graph does — a
+        dragged param port authors an expression and creates no DAG edge at all. That path
+        is covered by TestCommitOrderFromStage, which orders from the stage instead."""
         chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
         calls = []
         upstream = self._chunk("upstream", calls)
@@ -275,3 +279,112 @@ class TestCliRunCommits:
         assert [p for p in out_stage.Traverse() if p.GetTypeName() == "DiskLight"], (
             "the committed export should carry the network's driven content"
         )
+
+
+class TestCommitOrderFromStage:
+    """chunk_usd.commit_order_from_stage — ordering read from USD connections.
+
+    Depth cannot see a param port: drag-to-connect authors an @Node.param@ expression whose
+    live link is a NoticeConnection, not a DAG edge, so both chunks sit at depth 0. The
+    stage holds that wire, which is why the CLI orders commits from it.
+    """
+
+    def _chunk(self, scene, name, calls, with_commit=True):
+        c = chunk.Chunk(name)
+        c._config = ChunkConfig(module="prim")
+        if with_commit:
+            c._module = types.SimpleNamespace(commit=lambda node: calls.append(node.name))
+        else:
+            c._module = types.SimpleNamespace()
+        c.add_param(chunk.Slider("p", default_value=0.0))
+        scene.add_chunk(c)
+        return c
+
+    def test_expression_wired_chunks_are_ordered(self):
+        """The case depth gets wrong: the only wire between them is a param expression."""
+        scene, stage = _setup_stage()
+        calls = []
+        upstream = self._chunk(scene, "upstream", calls)
+        downstream = self._chunk(scene, "downstream", calls)
+        upstream.get_param("p").value = 2.0
+        downstream.get_param("p").value = "@upstream.p@"
+
+        assert chunk_scheduler.commit_order([downstream, upstream]) == [downstream, upstream], (
+            "precondition: depth cannot see this wire"
+        )
+
+        ordered = chunk_usd.commit_order_from_stage([downstream, upstream], stage)
+
+        assert ordered == [upstream, downstream]
+
+    def test_exec_wired_chunks_are_ordered(self):
+        scene, stage = _setup_stage()
+        calls = []
+        first = self._chunk(scene, "first", calls)
+        second = self._chunk(scene, "second", calls)
+        second.add_dependency(first)  # authors inputs:chunk on second
+
+        ordered = chunk_usd.commit_order_from_stage([second, first], stage)
+
+        assert ordered == [first, second]
+
+    def test_unrelated_chunks_keep_their_order(self):
+        scene, stage = _setup_stage()
+        calls = []
+        a = self._chunk(scene, "a", calls)
+        b = self._chunk(scene, "b", calls)
+
+        assert chunk_usd.commit_order_from_stage([b, a], stage) == [b, a]
+
+    def test_cycle_keeps_every_chunk_exactly_once(self):
+        """A cycle can't be ordered, but it must not drop or duplicate anyone.
+
+        The connections are authored directly rather than through two mutually-referencing
+        expression values: a live expression cycle sends the notice system into unbounded
+        recursion long before any of this is reached, which is a separate problem from
+        whether the ordering survives one.
+        """
+        scene, stage = _setup_stage()
+        calls = []
+        a = self._chunk(scene, "a", calls)
+        b = self._chunk(scene, "b", calls)
+        a.get_param("p").value = 1.0  # non-default, so the storage attrs exist
+        b.get_param("p").value = 2.0
+
+        for owner, other in ((a, b), (b, a)):
+            attr = stage.GetAttributeAtPath(
+                Sdf.Path(f"{chunk_usd.get_chunk_prim_path(owner)}.inputs:p")
+            )
+            attr.SetConnections(
+                [Sdf.Path(f"{chunk_usd.get_chunk_prim_path(other)}.inputs:p")]
+            )
+
+        ordered = chunk_usd.commit_order_from_stage([a, b], stage)
+
+        assert sorted(c.name for c in ordered) == ["a", "b"]
+        assert len(ordered) == 2
+
+    def test_no_stage_falls_back_to_depth(self):
+        chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
+        calls = []
+        a = chunk.Chunk("a")
+        b = chunk.Chunk("b")
+        b.add_dependency(a)
+
+        assert chunk_usd.commit_order_from_stage([b, a], None) == [a, b]
+
+    def test_commit_all_honours_the_order_hook(self):
+        """The CLI passes this hook; the dispatch must actually use it."""
+        scene, stage = _setup_stage()
+        calls = []
+        upstream = self._chunk(scene, "upstream", calls)
+        downstream = self._chunk(scene, "downstream", calls)
+        upstream.get_param("p").value = 2.0
+        downstream.get_param("p").value = "@upstream.p@"
+
+        chunk_scheduler.commit_all(
+            [downstream, upstream],
+            order=lambda cs: chunk_usd.commit_order_from_stage(cs, stage),
+        )
+
+        assert calls == ["upstream", "downstream"]
