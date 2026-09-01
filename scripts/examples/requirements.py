@@ -1,3 +1,12 @@
+"""Example: a chunk that depends on external pip packages.
+
+The packages named in config().requirements are installed on demand, the first time the
+chunk is loaded, if they are not already importable. That is what makes the top-level
+`import numpy` / `import cv2` below safe: the registry reads config() without executing
+this module body (see _ConfigTransformer), installs what is missing, and only then lets
+the body run.
+"""
+
 from usd_chunks import chunk
 
 import numpy as np
@@ -5,45 +14,41 @@ import cv2 as cv
 
 
 def show_plot(owner: chunk.Chunk, notice, sender):
-    a = owner.get_dependency(0, chunk.is_chunk)
-    b = owner.get_dependency(1, chunk.is_chunk)
-    c = owner.get_dependency(2, chunk.is_chunk)
+    """Draw a two-segment line from the chunk's own three sliders.
 
-    ap = a.get_param("A_param", chunk.is_param_t(float))
-    bp = b.get_param("B_param", chunk.is_param_t(float))
-    cp = c.get_param("C_param", chunk.is_param_t(float))
+    `owner` is the chunk the callback was added to, not the Button passed as `sender`.
+    """
 
-    apv = int((1 - ap.value / 10) * 511)
-    bpv = int((1 - bp.value / 10) * 511)
-    cpv = int((1 - cp.value / 10) * 511)
+    def height(name: str) -> int:
+        param = owner.get_param(name, chunk.is_param_t(float))
+        return int((1 - param.value / 10) * 511)
 
-    # Create a black image
+    a, b, cc = height("A_param"), height("B_param"), height("C_param")
+
     img = np.zeros((512, 512, 3), np.uint8)
+    cv.line(img, (0, a), (256, b), (255, 0, 0), 5)
+    cv.line(img, (256, b), (511, cc), (255, 0, 0), 5)
 
-    # Draw a diagonal blue line with thickness of 5 px
-    cv.line(img, (0, apv), (256, bpv), (255, 0, 0), 5)
-    cv.line(img, (256, bpv), (511, cpv), (255, 0, 0), 5)
-
-    cv.imshow("hello", img)
+    cv.imshow("requirements example", img)
 
 
 def main():
-    myChunk = chunk.Chunk("Req")
-    myChunk.add_callback(show_plot, notice_alias=chunk.ChunkNoticeAlias.INPUT_CHANGED)
+    my_chunk = chunk.Chunk("Req")
 
-    btn = chunk.Button("matplotlib")
-    myChunk.add_param(btn)
+    for name in ("A_param", "B_param", "C_param"):
+        my_chunk.add_param(chunk.Slider(name, flags=chunk.ChunkFlags.ParamFlags.LABELED))
 
-    for c in chunk.create_chunks("examples.dependencies"):
-        myChunk.add_dependency(c)
+    btn = chunk.Button("plot", "Plot")
+    my_chunk.add_param(btn)
+    my_chunk.add_callback(show_plot, sender=btn)
 
-    return myChunk
+    return my_chunk
 
 
 def config():
     return chunk.DefaulConfig(
         chunk.StandardCategory.EXAMPLES,
-        "Example showing shunk requirements on external packages. The requirements will be installed if not found in the "
-        "current environment",
+        "Example showing chunk requirements on external packages. The requirements are "
+        "installed if not found in the current environment.",
         requirements=["opencv-python", "numpy"],
     )
