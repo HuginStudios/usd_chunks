@@ -530,6 +530,22 @@ def _apply_param_values(chunk: core.ChunkCommon, values: list) -> None:
 # throwaway Usd.Stage instead of the live scene. Dropping a plain scene file instead spawns a
 # Sublayer chunk node with the path pre-filled (see ChunkGraphView._import_as_sublayer).
 
+def droppable_paths(event) -> "list[str]":
+    """The USD file paths a drag carries, if any.
+
+    Module-level because the tab panel needs the same answer before a graph view exists:
+    with no context there is no ChunkGraphView to accept the drop at all, so the panel
+    takes it, creates the context, and hands the files on.
+    """
+    if not event.mimeData().hasUrls():
+        return []
+    exts = (".usd", ".usda", ".usdc", ".usdz")
+    return [
+        url.toLocalFile() for url in event.mimeData().urls()
+        if url.isLocalFile() and os.path.splitext(url.toLocalFile())[1].lower() in exts
+    ]
+
+
 def _detect_dropped_usd_kind(path: str) -> "str | None":
     """Classification of a dropped file for ChunkGraphView.dropEvent: 'chunks' if it has any
     Chunk-typed prim ANYWHERE in it, 'scene' if it's a USD file with none, None if it isn't a
@@ -4614,13 +4630,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # Drag-and-drop file import
 
     def _droppable_paths(self, event) -> "list[str]":
-        if not event.mimeData().hasUrls():
-            return []
-        exts = (".usd", ".usda", ".usdc", ".usdz")
-        return [
-            url.toLocalFile() for url in event.mimeData().urls()
-            if url.isLocalFile() and os.path.splitext(url.toLocalFile())[1].lower() in exts
-        ]
+        return droppable_paths(event)
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
         if self._droppable_paths(event):
