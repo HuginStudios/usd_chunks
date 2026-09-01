@@ -936,14 +936,13 @@ class LabeledWidget(QtWidgets.QWidget):
         self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
-        self._value_tooltip = QtWidgets.QLabel(parent=self)
-        self._value_tooltip.setHidden(True)
-        self._value_tooltip.setWindowFlags(QtCore.Qt.WindowType.ToolTip)
-        self._tooltip_timer = QtCore.QTimer(self)
-        self._tooltip_timer.timeout.connect(self.hide_tooltip)
-        self._show_timer = QtCore.QTimer(self)
-        self._show_timer.setSingleShot(True)
-        self._show_timer.timeout.connect(self.show_tooltip)
+        # Built on first hover, not here. A Qt.ToolTip label is a top-level window, and
+        # asking for one costs ~0.2ms even offscreen -- trivial per row, but a graph of
+        # nodes builds one LabeledWidget per param, so a 49-node network paid for ~1300
+        # tooltip windows at load, nearly all of which are never hovered.
+        self._value_tooltip: Optional[QtWidgets.QLabel] = None
+        self._tooltip_timer: Optional[QtCore.QTimer] = None
+        self._show_timer: Optional[QtCore.QTimer] = None
 
         if isinstance(self.widget, ChunkParamWidgetBase):
             self._listener = chunk_notice.NoticeConnection(
@@ -972,8 +971,16 @@ class LabeledWidget(QtWidgets.QWidget):
         self.setMouseTracking(True)
 
     def _sync_hidden(self, notice=None, sender=None):
-        if self._model is not None:
-            self.setHidden(self._model.has_state(ChunkFlags.State.HIDDEN))
+        if self._model is None:
+            return
+        hidden = self._model.has_state(ChunkFlags.State.HIDDEN)
+        # QWidget::setVisible only early-returns once WA_WState_ExplicitShowHide is set,
+        # which it is not on a widget nobody has shown or hidden yet -- so the call this
+        # makes at construction does the full attribute-and-event work to arrive at the
+        # state the widget was already in. Every one of these rows starts visible, so on
+        # a load that was one wasted call per param.
+        if hidden != self.isHidden():
+            self.setHidden(hidden)
 
     def should_show_tooltip(self):
         if not isinstance(self.widget, ChunkParamWidgetBase):
@@ -994,10 +1001,11 @@ class LabeledWidget(QtWidgets.QWidget):
             if event.type() == QtCore.QEvent.Type.Enter:
                 self._label_hovered = True
                 if self._name_hint:
-                    self._show_timer.start(600)
+                    self._hover_timer().start(600)
             elif event.type() == QtCore.QEvent.Type.Leave:
                 self._label_hovered = False
-                self._show_timer.stop()
+                if self._show_timer is not None:
+                    self._show_timer.stop()
                 self.hide_tooltip()
         return False
 
@@ -1008,14 +1016,34 @@ class LabeledWidget(QtWidgets.QWidget):
             text = str(self.widget.param.value)
         else:
             return
+        self._ensure_tooltip()
         self._value_tooltip.setText(text)
         self._value_tooltip.adjustSize()
         self._value_tooltip.move(self.tooltip_pos())
         self._value_tooltip.setHidden(False)
         self._tooltip_timer.start(3000)
 
+    def _ensure_tooltip(self):
+        """Create the tooltip window and its hide timer, once, on first use."""
+        if self._value_tooltip is not None:
+            return
+        self._value_tooltip = QtWidgets.QLabel(parent=self)
+        self._value_tooltip.setHidden(True)
+        self._value_tooltip.setWindowFlags(QtCore.Qt.WindowType.ToolTip)
+        self._tooltip_timer = QtCore.QTimer(self)
+        self._tooltip_timer.timeout.connect(self.hide_tooltip)
+
+    def _hover_timer(self) -> QtCore.QTimer:
+        """The hover-delay timer, created on the first hover this row ever gets."""
+        if self._show_timer is None:
+            self._show_timer = QtCore.QTimer(self)
+            self._show_timer.setSingleShot(True)
+            self._show_timer.timeout.connect(self.show_tooltip)
+        return self._show_timer
+
     def hide_tooltip(self):
-        self._value_tooltip.hide()
+        if self._value_tooltip is not None:
+            self._value_tooltip.hide()
 
     def update_value(self, notice: chunk_notice.ChunkNotice, sender):
         name = notice.data.name
@@ -1035,12 +1063,13 @@ class LabeledWidget(QtWidgets.QWidget):
 
     def enterEvent(self, event: QtGui.QEnterEvent) -> None:
         if self.should_show_tooltip() and not self._label_hovered:
-            self._show_timer.start(600)
+            self._hover_timer().start(600)
             event.accept()
         return super().enterEvent(event)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:
-        self._show_timer.stop()
+        if self._show_timer is not None:
+            self._show_timer.stop()
         self.hide_tooltip()
         return super().leaveEvent(event)
 
@@ -1339,7 +1368,10 @@ class ContainerWidget(
         self.group.size += 1
 
     def set_hidden(self, val: bool):
-        self.setHidden(val)
+        # See LabeledWidget._sync_hidden: asking for the state it is already in is not free
+        # during construction, and update_from_state asks for it once per container.
+        if val != self.isHidden():
+            self.setHidden(val)
 
     def set_enabled(self, val: bool):
         self.content.setEnabled(val)
@@ -1699,14 +1731,21 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     # the type rather than the flag is what keeps a nine-page shader at one sheet, not ten.
     _chunk_styles_self = True
 
+    # Overridden per-instance in __init__; here so any path that reads it before
+    # construction finishes finds a value rather than an AttributeError.
+    _defer_stylesheet = False
+
     def __init__(
         self,
         group: chunk.ChunkBase,
         parent=None,
         is_tab_context: bool = False,
+        for_proxy: bool = False,
     ):
         # Must be set before super().__init__ so build_collapsable sees the correct role.
         self._is_tab_context_widget = is_tab_context
+        # Node bodies style themselves after their reparent, not during construction.
+        self._defer_stylesheet = for_proxy
         self._view_state: Optional[ViewSlotState] = None
         self._view_overlay: Optional[QtWidgets.QLabel] = None
         super().__init__(group, parent)
@@ -1865,6 +1904,17 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def build_collapsable(self):
         super().build_collapsable()
+
+        # Here rather than in set_selected, which runs from update_from_state at the end of
+        # the base __init__ -- by which point _build_param_widgets has filled the subtree
+        # that setStyleSheet then has to re-polish. At this point the tree is still empty.
+        #
+        # Skipped for a node body: that one is reparented to None on its way into a
+        # QGraphicsProxyWidget, and reparenting a *styled* tree costs ~22ms against ~2.5ms
+        # unstyled -- more than the full-tree sheet it was meant to save. create_proxy
+        # applies it once the reparent is done instead. Measured, both orderings.
+        if not self._defer_stylesheet:
+            apply_chunk_stylesheet(self)
 
         if not isinstance(self.group, chunk.ChunkBase):
             return
@@ -2154,9 +2204,13 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         # call — 112 of them, 1.7s, easily the most expensive thing in building a chunk.
         # Every nested group is its own ChunkWidget and each used to apply the entire
         # CHUNK_STYLESHEET. Qt stylesheets cascade, so only the outermost needs to, and
-        # the selection border rides a dynamic property resolved by that one sheet. This
-        # runs during construction, when the subtree to re-polish is still empty.
-        apply_chunk_stylesheet(self)
+        # the selection border rides a dynamic property resolved by that one sheet.
+        # build_collapsable now does this while the subtree is still empty, so this is
+        # normally its no-op guard path; it still matters for a widget reparented out from
+        # under whatever was covering it. Deferred for a proxy-bound body -- see
+        # build_collapsable.
+        if not self._defer_stylesheet:
+            apply_chunk_stylesheet(self)
 
         if self.property("chunkSelected") != selected:
             self.setProperty("chunkSelected", selected)

@@ -521,6 +521,11 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        # Chunks whose CHUNK_LOADED arrived during a file open, waiting on one shared
+        # graph rebuild -- see _loaded_module_callback.
+        self._pending_graph_rebuild: set = set()
+        self._graph_rebuild_scheduled = False
+
         self._chunk_loaded_listener = chunk_notice.NoticeConnection(
             self._loaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
         )
@@ -539,11 +544,36 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.create_chunk_widget(sender)
         self._invalidate_graph_views()
         if self._view_bar.currentIndex() == 1:
-            self._rebuild_graph(changed_chunks={sender})
+            if chunk_notice._loading_stage:
+                # One CHUNK_LOADED fires per chunk, and every rebuild reconciles the whole
+                # graph against every chunk prim -- so a file open costs one full rebuild
+                # per chunk in it (60 rebuilds for 57 chunks, measured). Only the last one
+                # describes the finished graph; collapse them into a single deferred pass.
+                # Deferring is safe here specifically because a rebuild already defers its
+                # own expensive half (proxy bodies are built in batches off a timer), so
+                # nothing downstream can have been assuming a fully built graph on return.
+                self._pending_graph_rebuild.add(sender)
+                if not self._graph_rebuild_scheduled:
+                    self._graph_rebuild_scheduled = True
+                    QtCore.QTimer.singleShot(0, self._flush_graph_rebuild)
+            else:
+                self._rebuild_graph(changed_chunks={sender})
         if chunk_usd.is_view_chunk(sender):
             self._reposition_view_chunk(sender)
         elif not chunk_notice._loading_stage:
             chunk_registry.ChunkRegistry().scene.set_selected_chunks([sender])
+
+    def _flush_graph_rebuild(self) -> None:
+        """Run the single rebuild that a finished load needs, for every chunk it brought in."""
+        self._graph_rebuild_scheduled = False
+        changed = self._pending_graph_rebuild
+        self._pending_graph_rebuild = set()
+        if not changed:
+            return
+        try:
+            self._rebuild_graph(changed_chunks=changed)
+        except RuntimeError:
+            return  # docker torn down between the load finishing and this firing
 
     def _reposition_view_chunk(self, view_chunk: chunk.ChunkBase) -> None:
         registry = chunk_registry.ChunkRegistry()
