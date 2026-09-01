@@ -228,15 +228,33 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
 
             if self.should_install_package(package):
                 packages.append(package)
-                n, v = self.package_info(package)
-                self._cache[n].add(v)
 
         if not packages:
             return
 
         args = [sys.executable, "-m", "pip", "install", "-t", self.package_dir]
         args.extend(packages)
-        subprocess.run(args, creationflags=_NO_WINDOW_FLAGS)
+        proc = subprocess.run(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=_NO_WINDOW_FLAGS
+        )
+
+        # Only cache what pip actually installed. These packages used to be added to the
+        # cache the moment the user approved the dialog, before pip ran and without ever
+        # checking its return code -- so a failed install (an embedded interpreter shipping
+        # no pip, no network, a bad package name) was remembered as a success. Every later
+        # run then short-circuited on package_in_cache: the install was never retried, the
+        # user was never prompted again, and the chunk errored on creation forever.
+        if proc.returncode != 0:
+            output = (proc.stdout or b"").decode(errors="replace").strip()
+            logger.error(
+                f"Failed to install chunk dependencies {packages} (pip exited {proc.returncode}). "
+                f"They will be retried the next time a chunk requires them.\n{output}"
+            )
+            return
+
+        for package in packages:
+            n, v = self.package_info(package)
+            self._cache[n].add(v)
 
         if (pip_dir := self.package_dir) and pip_dir in sys.path_importer_cache:
             sys.path_importer_cache.pop(pip_dir)
