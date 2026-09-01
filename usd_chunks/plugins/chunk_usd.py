@@ -1654,9 +1654,31 @@ def is_view_chunk(chunk: "core.ChunkBase") -> bool:
 
 
 def is_group_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is a chunkgroup (a CONTEXT chunk with a module — a subnet node)."""
+    """Return True if chunk owns child chunks — a CONTEXT chunk with a module.
+
+    This is about *containment*: whose children are hidden until entered, cook as a unit,
+    and share a layer. It is true of a chunkgroup, and equally true of a chunk-in-chunk
+    like AMDMaterialXLibrary, whose children are an implementation detail. For the
+    narrower "is this a subnet the user may navigate into", see is_chunkgroup.
+    """
     cfg = chunk.get_config()
     return bool(chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module)
+
+
+def is_chunkgroup(chunk: "core.ChunkBase") -> bool:
+    """Return True if chunk is a chunkgroup proper — the `chunkgroup` chunk type.
+
+    A chunkgroup is defined in USD and is a subnet you navigate into; a chunk is defined in
+    python, and one that owns children (AMDMaterialXLibrary creating `reference` and
+    `bind_material`) is reusing them as an implementation detail, not exposing a subnet to
+    edit. Both carry GroupFlags.CONTEXT, so CONTEXT cannot tell them apart — which is why
+    diving into the AMD node used to be offered at all.
+
+    Navigation, and the UI that advertises it, keys on this. Containment and cooking key on
+    is_group_chunk, so a chunk-in-chunk keeps hiding its children and running their code.
+    """
+    cfg = chunk.get_config()
+    return bool(cfg and cfg.module == "chunkgroup")
 
 
 def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
