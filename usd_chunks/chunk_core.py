@@ -4489,6 +4489,13 @@ class ChunkConfig(AttributesBase):
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
 
 
+# The chunk module backing every context. "context == chunkgroup": a CONTEXT chunk with no
+# module was only ever a stand-in from before this type existed. The /chunks prim itself is a
+# scope (plugins-layer _CHUNKS_ROOT), like /lights or /render -- nothing lives at it, and the
+# default chunkgroup sits under it at /chunks/<name>.
+CHUNKGROUP_MODULE = "chunkgroup"
+
+
 class SceneSender(chunk_notice.ChunkNoticePropagator):
     """
     Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
@@ -4678,6 +4685,32 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         c.request_delete()
         self._modified = True
 
+    def get_root_context(self) -> "ChunkBase | None":
+        """The scene's default container, created on demand. Find-or-create.
+
+        A chunkgroup carries a module config, so add_chunk restores _current_context after
+        adding it (the group must not swallow whatever is created next). That makes this
+        find-or-create rather than create: without the lookup every chunk added at the root
+        would mint a group of its own.
+        """
+        for c in self.chunks.get_my_params():
+            if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                return c
+
+        module = chunk_registry.ChunkRegistry().get_chunk_module(CHUNKGROUP_MODULE)
+        if module is not None:
+            created = module.create() if module.loaded else module.load()
+            if created:
+                return self.add_chunk(created[0])
+
+        # No registry or no chunkgroup module on the search path (a bare unit test, or a
+        # misconfigured USD_CHUNK_DIRS). Fall back to a plain context so a chunk still has
+        # somewhere to go rather than being dropped.
+        logger.warning(
+            f"chunk module {CHUNKGROUP_MODULE!r} unavailable; falling back to a plain context"
+        )
+        return self.add_context("Chunks")
+
     def add_context(self, name: str, prim_path: Optional[str] = None) -> ChunkBase | None:
         """
         Adds a context chunk to the scene. Concrete chunks can be added to the context using add_param and similar. The returned
@@ -4763,10 +4796,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         elif self._current_context and (ctx := self._current_context()):
             ctx.add_param(c, notify=notify)
-        # The default catch-all context must map to the global chunks root ("/chunks",
-        # i.e. _CHUNKS_ROOT in the plugins layer) so chunks with no tab land there. Without
-        # an explicit path, add_context would give it "/Chunks" and break _resolve_chunk_root.
-        elif ctx := self.add_context("Chunks", prim_path="/chunks"):
+        # Nowhere to put it yet: fall back to the scene's default chunkgroup, which
+        # _resolve_chunk_root places under the /chunks scope.
+        elif ctx := self.get_root_context():
             ctx.add_param(c, notify=notify)
         else:
             logger.error(f"Failed to add chunk {c}")
