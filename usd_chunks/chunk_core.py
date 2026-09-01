@@ -4862,22 +4862,29 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def get_chunks(self) -> Tuple[ChunkBase, ...]:
         seen: set = set()
         res: list = []
-        stack: list = list(self.chunks.get_my_params())
+        stack: list = [(c, 0) for c in self.chunks.get_my_params()]
         while stack:
-            i = stack.pop()
+            i, depth = stack.pop()
             if not isinstance(i, ChunkBase) or i in seen:
                 continue
             seen.add(i)
+            children = [(c, depth + 1) for c in i.get_my_params()]
             cfg = i.get_config()
             is_group_chunk = i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module
-            if i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and not is_group_chunk:
-                # Plain tab context: don't include it, but visit its children.
-                stack.extend(i.get_my_params())
+            # A context at the top level is the container you are inside, not a node in any
+            # graph: a chunkgroup is a node in its PARENT's graph, and the outermost one has
+            # no parent graph to be a node in. Dan: "default chunkgroupen ska inte vara en
+            # chunk i graphen, den ska vara en upp". A plain tab context is the same at any
+            # depth -- it predates the chunkgroup type and was never a node either.
+            if i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and (not is_group_chunk or depth == 0):
+                # Don't include it, but visit its children.
+                stack.extend(children)
             else:
                 res.append(i)
                 if is_group_chunk:
-                    # ChunkGroup: include it AND recurse so sub-chunks are reachable.
-                    stack.extend(i.get_my_params())
+                    # A nested ChunkGroup is a node in this graph AND a container: include
+                    # it and recurse so its sub-chunks stay reachable.
+                    stack.extend(children)
         return tuple(res)
 
     def clear_chunk_selection(self):
