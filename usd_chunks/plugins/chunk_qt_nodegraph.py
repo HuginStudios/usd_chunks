@@ -720,7 +720,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self.prim = prim
         self._locked = locked
         self._pinned = chunk_usd.is_chunk_pinned(chunk)
-        self._is_group = chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+        # Navigable subnet, not merely "owns children". A chunk-in-chunk such as
+        # AMDMaterialXLibrary also carries GroupFlags.CONTEXT, but its children are an
+        # implementation detail: it must not offer a dive, nor the group header and the
+        # `▶` marker that advertise one. Containment still keys on
+        # chunk_usd.is_group_chunk, so its children stay hidden and keep cooking.
+        self._is_chunkgroup = chunk_usd.is_chunkgroup(chunk)
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
@@ -1334,7 +1339,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             head = _COL_NODE_HEADER
             if self._is_view:
                 head = _COL_VIEW_HEADER if self._is_active_view() else _COL_VIEW_INACTIVE
-            elif self._is_group:
+            elif self._is_chunkgroup:
                 head = _COL_GROUP_HEADER
             elif self._locked:
                 head = _COL_LOCKED_HEADER
@@ -1370,7 +1375,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # Only the active view gets the warm orange header; inactive views go dim/grey
             # so it's obvious at a glance which one is driving execution.
             header_color = _COL_VIEW_HEADER if is_active_view else _COL_VIEW_INACTIVE
-        elif self._is_group:
+        elif self._is_chunkgroup:
             header_color = _COL_GROUP_HEADER
         elif self._locked:
             header_color = _COL_LOCKED_HEADER
@@ -1392,7 +1397,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             label = f"View [{slot}]" if slot is not None else "View"
             if is_active_view:
                 label = "● " + label  # ● marks the active view
-        elif self._is_group:
+        elif self._is_chunkgroup:
             label = f"{label}  ▶"
         elif self._locked:
             label = f"{label}  \U0001f512"
@@ -1469,7 +1474,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # net no-op, so the node looks permanently stuck. See _COLLAPSE_TOGGLE_DEBOUNCE.
             now = time.monotonic()
             debounced = now - self._last_collapse_toggle_time < _COLLAPSE_TOGGLE_DEBOUNCE
-            if self._is_group:
+            if self._is_chunkgroup:
                 # A collapsed group hides its whole embedded widget — including the minimize
                 # arrow — so the header double-click is the only way to expand it in the graph.
                 # Collapsed -> expand; expanded -> dive in.
