@@ -1310,7 +1310,7 @@ def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
     # the narrow one (who takes a whole matrix). A prim owned by separate translate/rotate
     # handles gets no chunk created AND no transform desc -- the caller drives those handles
     # individually via decompose(), which is what the host contract already tells it to do.
-    if existing := placement_gizmos(prim):
+    if placement_gizmos(prim):
         return transform_desc(prim)
     if not create:
         return None

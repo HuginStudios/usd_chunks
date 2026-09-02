@@ -13,7 +13,7 @@ import types
 import pytest
 from pxr import Usd, UsdRender
 
-from usd_chunks import chunk_registry, chunk_scheduler
+from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins import chunk_usd
 from usd_chunks.plugins.chunk_usd import export_chunks
@@ -129,7 +129,8 @@ class TestRenderProduct:
             assert caplog.records, f"{name} should warn"
 
     def test_an_absolute_unnumbered_product_is_not_warned_about(self, caplog):
-        import logging, os
+        import logging
+        import os
         mod = importlib.import_module("scripts.render_product")
 
         absolute = os.path.abspath("beauty.exr")
@@ -901,7 +902,6 @@ class TestHydraMode:
         UsdGeom.Camera.Define(stage, "/cameras/shotcam")
 
         captured = {}
-        real_make = mod._make_recorder
         monkeypatch.setattr(mod, "_hydra_available", lambda: True)
 
         def _fake_make(node, settings_path="", pass_path=""):

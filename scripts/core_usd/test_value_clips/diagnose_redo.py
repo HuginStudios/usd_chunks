@@ -252,7 +252,7 @@ def audit():
         return
 
     manager = chunk_registry.ChunkLayerManager()
-    in_stack = {l.identifier: l for l in stage.GetLayerStack(includeSessionLayers=True)}
+    in_stack = {layer.identifier: layer for layer in stage.GetLayerStack(includeSessionLayers=True)}
     known = dict(in_stack)
     for layer in (getattr(manager, "chunk_layers", None) or {}).values():
         if layer is not None:

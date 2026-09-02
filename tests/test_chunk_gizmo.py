@@ -12,7 +12,7 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_gizmo, chunk_registry
-from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, GizmoBase, SceneSender
+from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, GizmoBase, SceneSender
 from usd_chunks.plugins.chunk_usd import (
     _CHUNKS_ROOT,
     _author_prim,
