@@ -34,6 +34,10 @@ _INPUTS_PREFIX = "inputs:"
 _EXEC_OUTPUT = "outputs:chunk"
 _EXEC_INPUT = "inputs:chunk"
 _CHUNK_PRIM_TYPENAME = "Chunk"
+# /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
+# default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
+# scope look like a chunk prim to anything reading the stage back.
+_CHUNKS_ROOT_TYPENAME = "Scope"
 _CHUNKS_ROOT = "/chunks"
 
 # Merge chunks fan several exec branches into one node, so they need more than the single
@@ -1495,7 +1499,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return contextlib.nullcontext()
 
         with book_ctx():
-            self._stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
+            _define_chunk_parent(self._stage, chunk_root)
 
         root_prim = self._stage.GetPrimAtPath(Sdf.Path(chunk_root))
         index = sum(
@@ -1650,6 +1654,16 @@ def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
                     attr.Set(val.replace(old, new))
                 if hit_text:
                     attr.SetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY, text.replace(old, new))
+
+
+
+def _define_chunk_parent(stage: "Usd.Stage", path: str) -> "Usd.Prim":
+    """Define the parent prim a chunk hangs under, typed for what it actually is.
+
+    The /chunks root is a Scope; every other parent is a chunkgroup's own Chunk prim.
+    """
+    typename = _CHUNKS_ROOT_TYPENAME if str(path) == _CHUNKS_ROOT else _CHUNK_PRIM_TYPENAME
+    return stage.DefinePrim(Sdf.Path(path), typename)
 
 
 def _resolve_chunk_root(chunk: "core.ChunkBase") -> str:
@@ -4327,7 +4341,7 @@ def reconcile_exec_dependencies(chunk: "core.ChunkBase") -> bool:
 
 def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:
     chunk_root = _resolve_chunk_root(chunk)
-    stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
+    _define_chunk_parent(stage, chunk_root)
 
     prim = stage.DefinePrim(Sdf.Path(f"{chunk_root}/{chunk.name}"), _CHUNK_PRIM_TYPENAME)
 

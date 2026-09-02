@@ -166,3 +166,35 @@ def test_peeking_at_the_root_never_creates_one(scene):
     assert s.peek_root_context() is None
     assert s.get_chunks() == ()
     assert s.peek_root_context() is None, "reading the scene created a context"
+
+
+def test_the_chunks_root_is_a_scope_not_a_chunk(scene):
+    """/chunks is "bara ett scope" (Dan) -- like /lights or /render.
+
+    It was authored with the Chunk typename, the same as the chunks hanging under it, so
+    the scope looked like a chunk prim to anything reading the stage back.
+    """
+    qapp, reg, s = scene
+    _add_plain_chunk(reg, s)
+    qapp.processEvents()
+
+    stage = s.get_stage()
+    root = stage.GetPrimAtPath(CHUNKS_SCOPE)
+    assert root and root.IsValid()
+    assert root.GetTypeName() == "Scope", (
+        f"the /chunks scope must not be a Chunk prim, got {root.GetTypeName()!r}"
+    )
+
+
+def test_chunkgroups_and_chunks_under_the_scope_are_still_chunk_prims(scene):
+    """Only the scope changes type -- everything inside it is a real chunk prim."""
+    qapp, reg, s = scene
+    _add_plain_chunk(reg, s)
+    group = _add_plain_chunk(reg, s, "chunkgroup")
+    qapp.processEvents()
+
+    stage = s.get_stage()
+    for c in (s.peek_root_context(), group):
+        prim = stage.GetPrimAtPath(get_chunk_prim_path(c))
+        assert prim and prim.IsValid(), f"no prim for {c.name}"
+        assert prim.GetTypeName() == "Chunk", f"{c.name} should stay a Chunk prim"
