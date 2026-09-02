@@ -4253,7 +4253,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             sa = vp.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
             sa.SetVariability(Sdf.VariabilityUniform)
             sa.Set(slot)
-        QtCore.QTimer.singleShot(0, lambda s=slot: self._view_state.set_slot(s))
+        # `self` as the timer's context object, so Qt cancels the callback if this view is
+        # destroyed before it fires. Without it the lambda outlives the view: the queued
+        # timer is still in the application's event loop, _view_state is a child QObject
+        # that went with the view, and set_slot emitting on the deleted C++ object raises
+        # "Signal source has been deleted". Closing a graph tab within a frame of a slot
+        # change is the way to hit that in the app; a test whose event queue is drained by
+        # whatever runs next is how it actually showed up.
+        QtCore.QTimer.singleShot(0, self, lambda s=slot: self._view_state.set_slot(s))
 
     def _create_view_node_for_prim(self, target_prim_path: str) -> None:
         """Create a view node wired to target_prim_path using only USD stage data."""
@@ -4348,7 +4355,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 Gf.Vec2f(tx + _NODE_WIDTH + 40, ty - 80)
             )
 
-        QtCore.QTimer.singleShot(0, lambda: self._view_state.set_slot(slot))
+        # Context object, as above — the view can be gone before this fires.
+        QtCore.QTimer.singleShot(0, self, lambda: self._view_state.set_slot(slot))
 
     def set_view_state(self, vs: ViewSlotState) -> None:
         self._view_state.slot_changed.disconnect(self._on_view_slot_changed)
