@@ -579,6 +579,15 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._pending_graph_rebuild: set = set()
         self._graph_rebuild_scheduled = False
 
+        # Where you have been, so the mouse's back/forward buttons can retrace it. Weak
+        # refs: a context can be deleted while it is still in the history, and holding it
+        # alive to remember visiting it would leak every group the session ever entered.
+        # Entries are (weakref-or-None), None meaning the root graph.
+        self._nav_history: "list[weakref.ReferenceType | None]" = []
+        self._nav_index: int = -1
+        # Set while WE are the ones changing tab, so retracing does not itself get recorded.
+        self._nav_replaying = False
+
         self._chunk_loaded_listener = chunk_notice.NoticeConnection(
             self._loaded_module_callback, chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, globally=True
         )
@@ -745,6 +754,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
     def _on_tab_changed(self, _):
         registry = chunk_registry.ChunkRegistry()
+        self._record_nav(self._current_context())
         if registry.initialized:
             ctx = self._current_context()
             registry.scene._current_context = weakref.ref(ctx) if ctx is not None else None
@@ -755,6 +765,57 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         gv = self.tab_widget.get_current_graph_view()
         if gv is not None:
             QtCore.QTimer.singleShot(0, gv._recook_active_view)
+
+    _NAV_HISTORY_MAX = 50
+
+    def _record_nav(self, ctx) -> None:
+        """Remember that we are now looking at ctx.
+
+        Skipped while replaying, or retracing would append every step it took and you
+        could never walk back past where you started.
+        """
+        if self._nav_replaying:
+            return
+        current = self._nav_history[self._nav_index] if 0 <= self._nav_index < len(self._nav_history) else None
+        if (current() if current else None) is ctx:
+            return  # a rebuild or a re-select of the same tab, not a move
+
+        # Anything ahead of here is a branch we just left; going somewhere new discards it,
+        # the same as a browser.
+        del self._nav_history[self._nav_index + 1:]
+        self._nav_history.append(weakref.ref(ctx) if ctx is not None else None)
+        if len(self._nav_history) > self._NAV_HISTORY_MAX:
+            del self._nav_history[0]
+        self._nav_index = len(self._nav_history) - 1
+
+    def _nav_step(self, direction: int) -> bool:
+        """Move one live entry back (-1) or forward (+1). True if we went anywhere.
+
+        Entries whose context has since been deleted are stepped over rather than removed:
+        the history keeps its shape, so going back and forward again lands where you
+        expect instead of silently skipping a step in one direction only.
+        """
+        i = self._nav_index + direction
+        while 0 <= i < len(self._nav_history):
+            ref = self._nav_history[i]
+            ctx = ref() if ref else None
+            idx = 0 if ctx is None else self.tab_widget.get_chunk_context_index(ctx)
+            if ctx is None or idx is not None:
+                self._nav_index = i
+                self._nav_replaying = True
+                try:
+                    self.tab_widget.setCurrentIndex(idx if idx is not None else 0)
+                finally:
+                    self._nav_replaying = False
+                return True
+            i += direction
+        return False
+
+    def navigate_back(self) -> bool:
+        return self._nav_step(-1)
+
+    def navigate_forward(self) -> bool:
+        return self._nav_step(1)
 
     def _on_view_mode_changed(self, mode: int):
         self.tab_widget.set_view_mode(mode)

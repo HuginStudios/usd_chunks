@@ -3516,7 +3516,37 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._pan_active = False
         self.setCursor(QtCore.Qt.ArrowCursor)
 
+    def _owning_docker(self):
+        """The ChunkWidgetDocker this view lives in, or None.
+
+        Walked rather than stored: a graph view is reparented as tabs are built and torn
+        down, and a stale reference would navigate a panel that is no longer on screen.
+        """
+        w = self.parent()
+        while w is not None:
+            if type(w).__name__ == "ChunkWidgetDocker":
+                return w
+            w = w.parent()
+        return None
+
     def mousePressEvent(self, event: QtGui.QMouseEvent):
+        # The mouse's side buttons retrace where you have been, the way they do in a
+        # browser: dive into a group, press back, and you are out again. Handled here
+        # because this is the widget under the cursor -- the panel that owns the history
+        # never sees the press -- and delegated up rather than duplicated, so every graph
+        # view in the panel shares one history.
+        if event.button() in (QtCore.Qt.MouseButton.BackButton, QtCore.Qt.MouseButton.ForwardButton):
+            docker = self._owning_docker()
+            if docker is not None:
+                back = event.button() == QtCore.Qt.MouseButton.BackButton
+                if (docker.navigate_back() if back else docker.navigate_forward()):
+                    event.accept()
+                    return
+            # Nowhere to go: swallow it anyway. Letting it fall through hands a side button
+            # to whatever is underneath, which in usdview is the viewport.
+            event.accept()
+            return
+
         scene_pos = self.mapToScene(event.pos())
         hit = self.scene().itemAt(scene_pos, QtGui.QTransform())
 
