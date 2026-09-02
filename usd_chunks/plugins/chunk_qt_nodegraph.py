@@ -3357,8 +3357,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # The new nodes' ports (typed ones especially) don't exist yet -- their proxy
             # widgets are built in deferred batches (see ChunkGraphScene._create_proxies_batch).
             # Same deferred-wiring pattern _create_and_connect_from_menu already uses.
+            #
+            # Hold the generic auto-view off until that wiring lands. Until it does, every
+            # pasted chunk still looks like an unwired exec tail, and _ensure_default_view
+            # takes tails[0] -- the FIRST node of the chain rather than its end. Reported as
+            # the view landing on the first pasted node instead of the last, and "sometimes"
+            # because it is a race with an 80ms timer.
+            self._suppress_default_view = True
             QtCore.QTimer.singleShot(
-                80, lambda paths=new_path_by_index, edges=list(clip_edges): self._wire_pasted_edges(paths, edges)
+                80,
+                lambda paths=new_path_by_index, edges=list(clip_edges), created=list(new_chunks):
+                    self._wire_pasted_edges(paths, edges, created),
             )
         return new_chunks
 
@@ -3458,9 +3467,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         anchor = QtCore.QPointF(top_left.x() + 40, top_left.y() + 40)
         self._materialize_at(clip_nodes, clip_edges, anchor)
 
-    def _wire_pasted_edges(self, new_path_by_index: "dict[int, str]", edges: "list[_ClipboardEdge]") -> None:
+    def _wire_pasted_edges(
+        self,
+        new_path_by_index: "dict[int, str]",
+        edges: "list[_ClipboardEdge]",
+        pasted: "list[core.ChunkBase] | None" = None,
+    ) -> None:
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
+            # Still release the auto-view hold, or it stays off for this view all session.
+            if pasted:
+                self._ensure_view_for_imported(pasted)
             return
         changed_chunks: set = set()
         for edge in edges:
@@ -3481,6 +3498,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if changed_chunks:
             graph_scene._build_edges()
             self._recook_active_view(changed_chunks)
+        if pasted:
+            # Now that the chain is wired, "which of these is the tail" has a real answer.
+            # Scoped to just the pasted nodes for the same reason the drag-drop import is:
+            # an unrelated pre-existing tail elsewhere in the context is just as valid a
+            # tail, and the generic pass has no way to prefer the thing the user just made.
+            # Also releases the hold taken above, on every path out.
+            self._ensure_view_for_imported(pasted)
 
     def _ensure_default_view(self, context) -> None:
         # A drag-and-drop chunk import is picking its own, scoped-to-just-the-imported-nodes
