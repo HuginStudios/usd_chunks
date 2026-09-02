@@ -3694,8 +3694,35 @@ def load_chunks(
                                 # prim root from; without it the group falls back to the
                                 # /chunks scope, computes the same path as the default group
                                 # and loses the collision, which is the rename itself.
-                                c._parent_context = weakref.ref(ancestor_group)
-                                ancestor_group.add_param(c, notify=False)
+                                # _parent_context, then the SCENE container -- which is
+                                # where a nested group lives when one is made live, so a
+                                # reload rebuilds the same shape rather than a different one.
+                                #
+                                # Not ancestor_group.add_param: that applies the param naming
+                                # rules, and get_reserved_names() includes the group's OWN
+                                # name, so a group named the same as its parent came back
+                                # renamed with a "1" suffix. USD is perfectly happy with
+                                # /chunks/ChunkGroup/ChunkGroup, the file says that is where
+                                # it lives, and anything addressing it by name breaks when we
+                                # decide otherwise on load.
+                                # Enter the ancestor for the duration of the add, which is
+                                # exactly how a group nests when one is made live: add_chunk
+                                # reads _current_context and overwrites _parent_context from
+                                # it, so setting the latter directly is undone on the way in.
+                                #
+                                # Not ancestor_group.add_param either: that applies the param
+                                # naming rules, and get_reserved_names() includes the group's
+                                # OWN name, so a group named the same as its parent came back
+                                # renamed with a "1" suffix. USD is happy with
+                                # /chunks/ChunkGroup/ChunkGroup, the file says that is where it
+                                # lives, and anything addressing it by name breaks if we decide
+                                # otherwise on load.
+                                prev_ctx = scene._current_context
+                                scene._current_context = weakref.ref(ancestor_group)
+                                try:
+                                    scene.add_chunk(c)
+                                finally:
+                                    scene._current_context = prev_ctx
                             else:
                                 scene.add_chunk(c)
                             if c.get_config() and c.get_config().module:

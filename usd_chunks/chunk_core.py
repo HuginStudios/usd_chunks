@@ -4806,7 +4806,19 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
 
         names = self.chunks.get_my_names()
-        if c.name in names:
+        # The scene container is flat and keyed by name, but the model it holds is not: two
+        # chunkgroups at different prim paths may legitimately share a name, and a live scene
+        # already ends up that way (a group nested in another both default to "ChunkGroup").
+        # Restoring one from a file must therefore not rename it -- the file is authoritative
+        # about what it is called, its prim path already makes it unique, and the name is what
+        # expressions reference and what a saved file records. Renaming on load meant a scene
+        # came back with a group its own expressions no longer named.
+        restoring = (
+            chunk_notice._loading_stage is not None
+            and c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+            and getattr(c, "prim_path", None)
+        )
+        if c.name in names and not restoring:
             c.name = c.get_valid_child_name(c.name, set(names))
         try:
             c.check_hierarchy()
