@@ -83,54 +83,55 @@ def reopened(qapp, tmp_path):
     out = tmp_path / "nested.usda"
     save_scene(scene, out)
 
+    # Read the file NOW, before anything reopens it. Sdf caches layers by identifier, so a
+    # later Usd.Stage.Open returns the same layer object the reload has been authoring into
+    # -- inspecting it afterwards would report the reloaded scene, not what was written.
+    saved_stage = Usd.Stage.Open(str(out))   # held: a temporary is collected mid-traverse
+    saved_paths = [str(p.GetPath()) for p in saved_stage.TraverseAll()]
+
     stage2 = Usd.Stage.Open(str(out))
     scene2 = _scene_for(stage2)
     qapp.processEvents()
-    return live, scene2, stage2, out
+    return live, scene2, stage2, saved_paths
 
 
 def test_the_saved_file_holds_the_nesting(reopened):
     """The save side was never the problem -- pinned so a fix cannot drift there."""
-    _live, _scene2, _stage2, out = reopened
+    _live, _scene2, _stage2, saved_paths = reopened
 
-    stage = Usd.Stage.Open(str(out))
-    paths = [str(p.GetPath()) for p in stage.TraverseAll()]
-    assert any(p.count("/") == 4 for p in paths), (
-        f"expected a chunk nested two groups deep in the file, got {paths}"
+    assert any(p.count("/") == 4 for p in saved_paths), (
+        f"expected a chunk nested two groups deep in the file, got {saved_paths}"
     )
 
 
 def test_a_nested_group_comes_back_nested(reopened):
-    """The group stays inside its parent, and its contents stay inside it.
+    """Every chunk at the path it was saved at -- name included.
 
-    Asserted structurally rather than as exact path equality, because one thing is still
-    not right: a nested group whose name matches its parent's comes back with a
-    deduplicating "1" suffix. That is worth fixing on its own -- expressions address
-    chunks by name -- but it no longer moves anything, which is what broke cook order.
+    The paths were already right once nesting was restored; the names were not. A group
+    whose name matched its parent's came back suffixed, so a scene reopened with a group
+    its own expressions no longer named.
     """
-    live, scene2, _stage2, _out = reopened
+    live, scene2, _stage2, _saved = reopened
 
-    depth_by_name = {p.rsplit("/", 1)[-1]: p.count("/") for p in live}
-
-    for c in scene2.get_chunks():
-        path = get_chunk_prim_path(c)
-        assert path.startswith("/chunks/"), path
-
-    prim_chunk = next(c for c in scene2.get_chunks() if c.name == "Prim")
-    prim_path = get_chunk_prim_path(prim_chunk)
-    assert prim_path.count("/") == depth_by_name["Prim"], (
-        f"the chunk must come back at the depth it was saved at, not hoisted: {prim_path}"
+    reloaded = sorted(get_chunk_prim_path(c) for c in scene2.get_chunks())
+    assert reloaded == live, (
+        "a save/reload round-trip must be exact: same chunks, same names, same paths"
     )
 
-    group_path = prim_path.rsplit("/", 1)[0]
-    assert group_path.count("/") == 3, (
-        f"its group must still sit inside the default group, not beside it: {group_path}"
+
+def test_a_nested_group_keeps_the_name_the_file_gave_it(reopened):
+    """The specific regression: a suffix appearing on a name nothing renamed."""
+    _live, scene2, _stage2, _saved = reopened
+
+    names = [c.name for c in scene2.get_chunks()]
+    assert not any(n.endswith("1") for n in names), (
+        f"nothing renamed these; a '1' means the load did: {names}"
     )
 
 
 def test_the_reopened_scene_has_one_default_group(reopened):
     """A nested group restored at the root collides with the default and gets renamed."""
-    _live, scene2, _stage2, _out = reopened
+    _live, scene2, _stage2, _saved = reopened
 
     names = [c.name for c in _contexts(scene2)]
     assert not any(n.endswith("1") for n in names), (
