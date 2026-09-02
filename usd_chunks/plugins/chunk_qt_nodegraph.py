@@ -3457,6 +3457,103 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 continue
             _author_raw_connection(stage, dst_path, edge.dst_attr, dst_chunk, src_path, edge.src_attr)
 
+    def _group_selected(self) -> None:
+        """Ctrl+G: put the selected chunks in a new chunkgroup.
+
+        Exactly the sequence a user does by hand -- cut, make a group, dive in, paste --
+        composed out of the operations that already do those things, rather than a bespoke
+        move. Two things follow from that, both of them the point:
+
+        The chain heals around what left, because that is what Cut does. Grouping the
+        middle of a -> b -> c leaves a -> c, and the new group sits unwired for you to
+        place. It deliberately does NOT try to splice the group into the chain in the
+        selection's stead: a group is not a drop-in replacement for what it holds (which
+        of several chunks would its output be?), and the manual route does not do it
+        either.
+
+        And the paste lands inside the group by making it the current context for the
+        duration, which is what diving in does.
+        """
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return
+        stage = graph_scene._stage
+        if stage is None:
+            return
+        selected = [
+            node for node in graph_scene._nodes.values()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._is_view
+        ]
+        if not selected:
+            return
+
+        scene_sender = graph_scene._scene_sender
+        centre_x = sum(n.pos().x() for n in selected) / len(selected)
+        centre_y = sum(n.pos().y() for n in selected) / len(selected)
+
+        # Cut first, while the nodes are still here to be snapshotted and their wires
+        # still there to heal around.
+        self._cut_selected_to_clipboard()
+        if not _node_clipboard:
+            return
+
+        registry = chunk_registry.ChunkRegistry()
+        mod = registry.get_chunk_module("chunkgroup") if registry.initialized else None
+        if mod is None:
+            return
+        created = mod.create() if mod.loaded else mod.load()
+        if not created:
+            return
+        group = created[0]
+
+        context = self._graph_context()
+        prev_ctx = scene_sender._current_context
+        scene_sender._current_context = weakref.ref(context) if context is not None else None
+        try:
+            scene_sender.add_chunk(group)
+        finally:
+            scene_sender._current_context = prev_ctx
+
+        group_prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(group)))
+        if group_prim and group_prim.IsValid():
+            UsdUI.NodeGraphNodeAPI.Apply(group_prim).CreatePosAttr().Set(
+                Gf.Vec2f(float(centre_x), float(centre_y))
+            )
+
+        # Paste into the group, which is what diving into it before Ctrl+V amounts to.
+        # The paste takes its target from the graph's built context (_graph_context), not
+        # from the scene's current one -- diving in is what normally changes that -- so the
+        # group stands in as the built context for the duration.
+        edges = list(_edge_clipboard)
+        prev_built = graph_scene._built_context
+        prev_ctx = scene_sender._current_context
+        graph_scene._built_context = group
+        scene_sender._current_context = weakref.ref(group)
+        try:
+            pasted = self._paste_clipboard_at(QtCore.QPointF(centre_x, centre_y))
+        finally:
+            scene_sender._current_context = prev_ctx
+            graph_scene._built_context = prev_built
+
+        # Wire the pasted chunks to each other here rather than leaving it to the paste's
+        # own deferred pass. That pass wires through the graph's PORT items, and the chunks
+        # just pasted are inside a group the graph is not currently showing -- so they have
+        # no node, no ports, and nothing to wire. Going straight to the exec connection is
+        # the same thing the ports would have authored.
+        for edge in edges:
+            if edge.src_index >= len(pasted) or edge.dst_index >= len(pasted):
+                continue
+            if not (edge.src_attr.endswith(_EXEC_OUTPUT.split(":")[-1])
+                    and edge.dst_attr.endswith(_EXEC_INPUT.split(":")[-1])):
+                continue  # a typed param wire; those go through ports and are left alone
+            chunk_usd.connect_exec(
+                stage, scene_sender,
+                chunk_usd.get_chunk_prim_path(pasted[edge.src_index]),
+                chunk_usd.get_chunk_prim_path(pasted[edge.dst_index]),
+            )
+
+        scene_sender.set_selected_chunks([group])
+
     def _duplicate_selected(self) -> None:
         """Ctrl+D: copy+paste the current selection in one step, without touching the
         Ctrl+C/Ctrl+V clipboard (so it never clobbers whatever was last explicitly copied).
@@ -3794,6 +3891,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 self._paste_at_cursor()
             else:
                 self._create_view_node()
+            event.accept()
+            return
+        if event.key() == QtCore.Qt.Key.Key_G and (event.modifiers() & QtCore.Qt.ControlModifier):
+            self._group_selected()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_L:
