@@ -4685,6 +4685,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         c.request_delete()
         self._modified = True
 
+    # Guards the recursion in get_root_context: creating the root goes through add_chunk,
+    # which asks for a root to parent the new context to.
+    _creating_root_context = False
+
     def peek_root_context(self) -> "ChunkBase | None":
         """The scene's outermost container if it exists, without creating one.
 
@@ -4711,7 +4715,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         if module is not None:
             created = module.create() if module.loaded else module.load()
             if created:
-                return self.add_chunk(created[0])
+                # The root is itself added through add_chunk, whose CONTEXT branch asks for
+                # the root to parent to -- straight back into here. The flag is what stops
+                # that recursion: while the root is being made, there is nothing above it.
+                self._creating_root_context = True
+                try:
+                    return self.add_chunk(created[0])
+                finally:
+                    self._creating_root_context = False
 
         # No registry or no chunkgroup module on the search path (a bare unit test, or a
         # misconfigured USD_CHUNK_DIRS). Fall back to a plain context so a chunk still has
@@ -4798,8 +4809,21 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             # peek_root_context is None while the root itself is being created, which is what
             # keeps the root from trying to parent itself.
             parent = self._current_context
-            if parent is None and (root := self.peek_root_context()) is not None:
-                parent = weakref.ref(root)
+            # Only a real chunkgroup nests. add_context() makes plain module-less contexts
+            # -- the named tabs load_chunks recreates from a file -- and those ARE the
+            # container for what they hold; giving them a parent conjured a spurious
+            # default group around every tab on reload.
+            is_chunkgroup = bool(c.get_config() and c.get_config().module)
+            if parent is None and is_chunkgroup and not self._creating_root_context:
+                # Find-or-CREATE: a chunkgroup made when the scene is still empty must not
+                # become the container itself -- it is a node dropped into the default
+                # group, exactly like one made later ("droppar du ned en chunkgroup i
+                # graphen ska den neatly under parentchunkgroupen"). Without this the very
+                # first group silently became the root, so whether a group was a node or a
+                # container depended on how empty the scene happened to be.
+                root = self.get_root_context()
+                if root is not None and root is not c:
+                    parent = weakref.ref(root)
             c._parent_context = parent
             self._current_context = weakref.ref(c)
             # User-created group chunks (have a module config) need PARAM_ADDED to fire
