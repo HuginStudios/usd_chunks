@@ -1407,11 +1407,20 @@ def execute(node):
             sm = s * proto.scale_mult
             out_scales[i] = Gf.Vec3f(sm * proto.scale[0], sm * proto.scale[1], sm * proto.scale[2])
 
-        if count:
-            instancer.GetPositionsAttr().Set(out_positions)
-            instancer.GetProtoIndicesAttr().Set(out_indices)
-            instancer.GetScalesAttr().Set(out_scales)
-            instancer.GetOrientationsAttr().Set(out_orients)
+        # Authored even when nothing was placed. Skipping the write left an instancer that
+        # declares prototypes while carrying no protoIndices and no positions -- USD warns
+        # ("no prototype indices") and Hydra then draws prototypes it has no way to index
+        # into, which crashes usdview outright on a USD 26.05 build. 25.08 tolerates it,
+        # so it only showed up on the newer bundle.
+        #
+        # Nothing placed is a real and reachable state: wiring painted points in before a
+        # surface mesh is set puts the graph there on the way to a working setup, which is
+        # exactly how it was hit. An empty instancer is coherent -- zero instances of the
+        # prototypes it declares -- where a half-declared one is not.
+        instancer.GetPositionsAttr().Set(out_positions)
+        instancer.GetProtoIndicesAttr().Set(out_indices)
+        instancer.GetScalesAttr().Set(out_scales)
+        instancer.GetOrientationsAttr().Set(out_orients)
 
     _report(node, protos, quota, count, scatter_mode, pack_levels)
 
