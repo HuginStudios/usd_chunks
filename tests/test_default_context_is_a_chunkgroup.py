@@ -115,3 +115,54 @@ def test_the_default_chunkgroup_is_not_duplicated(scene):
     qapp.processEvents()
 
     assert len(_contexts(s)) == 1, "both chunks must land in the same default chunkgroup"
+
+
+# Chunkgroups stay visible
+
+
+def test_a_user_created_chunkgroup_is_still_a_chunk_in_the_graph(scene):
+    """Only the OUTERMOST container is not a node; every other chunkgroup is one.
+
+    Live-reported: no chunkgroup could be seen or created. Two causes, both from making
+    the default context a chunkgroup. get_chunks() excluded contexts by container depth,
+    but add_chunk puts every context straight into scene.chunks -- so a user-created
+    chunkgroup sits at the same depth as the root and the test hid all of them.
+    """
+    qapp, reg, s = scene
+    _add_plain_chunk(reg, s)          # forces the default chunkgroup into being
+    group = _add_plain_chunk(reg, s, "chunkgroup")
+    qapp.processEvents()
+
+    assert group in s.get_chunks(), "a user-created chunkgroup must remain a node"
+    assert s.peek_root_context() not in s.get_chunks(), (
+        "the outermost container is not a node in any graph"
+    )
+
+
+def test_a_new_chunkgroup_nests_inside_the_root_container(scene):
+    """The second cause: it was authored as a SIBLING of the root.
+
+    _resolve_chunk_root falls back to the /chunks scope for a context (get_context()
+    returns self for one), so a chunkgroup created with nothing dived into landed at
+    /chunks/Group -- next to /chunks/ChunkGroup rather than inside it. Being in no
+    container's graph, it was invisible however get_chunks() answered.
+    """
+    qapp, reg, s = scene
+    _add_plain_chunk(reg, s)
+    group = _add_plain_chunk(reg, s, "chunkgroup")
+    qapp.processEvents()
+
+    root = s.peek_root_context()
+    assert get_chunk_prim_path(group).startswith(get_chunk_prim_path(root) + "/")
+    assert chunk_usd.is_node_in_context(group, root), (
+        "it must be a node in the root's graph, which is what makes it visible"
+    )
+
+
+def test_peeking_at_the_root_never_creates_one(scene):
+    """get_chunks() is a read; it must not author a context just by being called."""
+    _qapp, _reg, s = scene
+
+    assert s.peek_root_context() is None
+    assert s.get_chunks() == ()
+    assert s.peek_root_context() is None, "reading the scene created a context"
