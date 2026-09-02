@@ -3672,7 +3672,31 @@ def load_chunks(
                             _load_wire_inputs(prim, c)
                             c.prim_path = str(prim.GetPath())
                             object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
-                            scene.add_chunk(c)
+                            if ancestor_group is not None:
+                                # A chunkgroup inside another chunkgroup. Every CONTEXT chunk
+                                # used to go to scene.add_chunk regardless, which is the scene
+                                # ROOT -- so a nested group came back as a SIBLING of the group
+                                # it was saved in, lost the name collision with it, and was
+                                # renamed, taking its contents to a different address and
+                                # leaving its parent empty.
+                                #
+                                # Cook order went with it: a group's inner chunks cook in
+                                # prim-path depth order, so an upstream Sublayer runs before a
+                                # BindMaterial nested deeper that reads what it brings onto the
+                                # stage. Flattened to siblings at one depth, the sort had
+                                # nothing left to order by and a reopened scene kept its
+                                # original material.
+                                #
+                                # The save side was never wrong -- the file holds the nesting.
+                                #
+                                # _parent_context is what _on_param_added derives a group's
+                                # prim root from; without it the group falls back to the
+                                # /chunks scope, computes the same path as the default group
+                                # and loses the collision, which is the rename itself.
+                                c._parent_context = weakref.ref(ancestor_group)
+                                ancestor_group.add_param(c, notify=False)
+                            else:
+                                scene.add_chunk(c)
                             if c.get_config() and c.get_config().module:
                                 group_chunk_by_path[str(prim.GetPath())] = c
                         elif ancestor_group is not None:
