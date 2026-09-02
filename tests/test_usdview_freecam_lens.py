@@ -21,7 +21,12 @@ from __future__ import annotations
 
 import pytest
 
-from usd_chunks.plugins.chunk_usdview import UsdviewScene
+# chunk_usdview imports pxr.Usdviewq, which ships with a full USD build but not with the
+# usd-core wheel CI installs. Without this the module errors at collection instead of
+# skipping, taking the whole run down with it.
+pytest.importorskip("pxr.Usdviewq", reason="usdview is not part of the usd-core wheel")
+
+from usd_chunks.plugins.chunk_usdview import UsdviewScene  # noqa: E402
 
 
 class _FreeCamera:
