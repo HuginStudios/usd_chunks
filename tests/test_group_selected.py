@@ -221,6 +221,38 @@ def test_grouping_nothing_does_nothing(graph):
     assert not _groups(scene), "an empty selection must not conjure a group"
 
 
+def test_ctrl_g_reaches_it_through_the_router(graph):
+    """The path the app actually takes.
+
+    ChunkGraphView.keyPressEvent needs the view to hold real native Qt focus, which
+    usdview's MainWindow routinely reclaims -- so Ctrl+C/V/D/X were long ago hardened by
+    routing them through the app-level _ProxyKeyRouter instead. Ctrl+G was not, and rode
+    that fragile path: bound, tested, and doing nothing at all in the real app.
+    """
+    qapp, reg, scene, d, stage = graph
+    a = _mk(reg, scene)
+    gv = _view(d, qapp)
+    qapp.processEvents()
+    scene.set_selected_chunks([a])
+
+    # Where the fallback is gated: the cursor has to be over the view.
+    QtGui.QCursor.setPos(gv.mapToGlobal(QtCore.QPoint(gv.width() // 2, gv.height() // 2)))
+    qapp.processEvents()
+    router = gv._proxy_key_router
+    router.set_view_active(True)
+
+    event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_G,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    handled = router.eventFilter(gv, event)
+    _settle(qapp)
+
+    assert handled is True, "the router must claim Ctrl+G rather than letting it fall through"
+    assert _groups(scene), "Ctrl+G should have made a group"
+
+
 def test_ctrl_g_reaches_it(graph):
     qapp, reg, scene, d, stage = graph
     a = _mk(reg, scene)

@@ -2726,9 +2726,16 @@ class _ProxyKeyRouter(QtCore.QObject):
         # pressing Ctrl+C routed the key to the "forward to active proxy" fallback below
         # instead -- a silent no-op -- while a bare click on the node chrome (proxy is
         # None) worked fine.
+        # Ctrl+G belongs here for the same reason as the rest: it is built out of Cut and
+        # Paste, so a graph it cannot reach is a graph where grouping silently does nothing
+        # -- which is exactly how it behaved before this, since the native keyPressEvent
+        # path needs a focus usdview rarely leaves with the view.
         ctrl_down = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
-        _CVDX_KEYS = (QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V, QtCore.Qt.Key.Key_D, QtCore.Qt.Key.Key_X)
-        if not typing_in_proxy and ctrl_down and event.key() in _CVDX_KEYS:
+        _EDIT_KEYS = (
+            QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V, QtCore.Qt.Key.Key_D,
+            QtCore.Qt.Key.Key_X, QtCore.Qt.Key.Key_G,
+        )
+        if not typing_in_proxy and ctrl_down and event.key() in _EDIT_KEYS:
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -2741,6 +2748,8 @@ class _ProxyKeyRouter(QtCore.QObject):
                         view._paste_at_cursor()
                     elif event.key() == QtCore.Qt.Key.Key_D:
                         view._duplicate_selected()
+                    elif event.key() == QtCore.Qt.Key.Key_G:
+                        view._group_selected()
                     else:
                         view._cut_selected_to_clipboard()
                     event.accept()
