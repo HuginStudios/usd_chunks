@@ -3880,26 +3880,34 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
         if not parent.isEmpty and parent != Sdf.Path.absoluteRootPath and not dst.GetPrimAtPath(parent):
             Sdf.CreatePrimInLayer(dst, parent)
         Sdf.CopySpec(flat, prim_path, dst, prim_path)
-        _carry_ancestor_typenames(flat, dst, prim_path)
+        _carry_ancestor_specs(flat, dst, prim_path)
 
     dst.Export(str(path))
 
 
-def _carry_ancestor_typenames(flat: "Sdf.Layer", dst: "Sdf.Layer", prim_path: "Sdf.Path") -> None:
-    """Give an exported chunk's ancestors the typename they have on the composed stage.
+def _carry_ancestor_specs(flat: "Sdf.Layer", dst: "Sdf.Layer", prim_path: "Sdf.Path") -> None:
+    """Give an exported chunk's ancestors the typename AND specifier they have on the stage.
 
     Only chunk prims are copied across; their ancestors are conjured by
-    Sdf.CreatePrimInLayer, which makes a bare over with no typename. That loses the
-    /chunks scope -- it reimported untyped instead of as a Scope, so a round-tripped file
-    disagreed with a live one about what its own root is.
+    Sdf.CreatePrimInLayer, which makes a bare `over` with no typename. The /chunks scope
+    used to survive anyway, by accident: it was itself typed Chunk, so it was in the copy
+    set and came across as a full def. Typing it Scope took it out of that set and left
+    only the over.
+
+    An over is not IsDefined(), and Usd.Stage.Traverse() prunes at an undefined prim --
+    taking the whole chunk subtree with it. So an exported file loaded back as an empty
+    scene: no scope, no chunks, nothing. Carry the specifier as well, and an ancestor
+    that is a real defined prim on the stage stays one in the export.
     """
     parent = prim_path.GetParentPath()
     while not parent.isEmpty and parent != Sdf.Path.absoluteRootPath:
         spec = dst.GetPrimAtPath(parent)
-        if spec is not None and not spec.typeName:
-            source = flat.GetPrimAtPath(parent)
-            if source is not None and source.typeName:
+        source = flat.GetPrimAtPath(parent)
+        if spec is not None and source is not None:
+            if not spec.typeName and source.typeName:
                 spec.typeName = source.typeName
+            if source.specifier == Sdf.SpecifierDef:
+                spec.specifier = Sdf.SpecifierDef
         parent = parent.GetParentPath()
 
 
