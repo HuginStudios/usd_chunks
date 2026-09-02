@@ -34,6 +34,11 @@ _INPUTS_PREFIX = "inputs:"
 _EXEC_OUTPUT = "outputs:chunk"
 _EXEC_INPUT = "inputs:chunk"
 _CHUNK_PRIM_TYPENAME = "Chunk"
+# Usd.Stage.Traverse()'s default predicate skips INACTIVE prims, and a disabled chunk is
+# authored as exactly that (see _on_state_changed). Loading a file through the default
+# predicate therefore never saw a disabled chunk at all -- it was in the file, with
+# active=false recording why, and simply vanished on reopen.
+_LOAD_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 # /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
 # default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
 # scope look like a chunk prim to anything reading the stage back.
@@ -3517,6 +3522,21 @@ def _iter_scoped_prims(
             yield prim
 
 
+def _restore_disabled_state(prim: "Usd.Prim", chunk: "core.ChunkBase") -> None:
+    """Carry a prim's authored deactivation back onto the chunk it belongs to.
+
+    Disabling a chunk authors active=false on its prim, so the file records the state
+    correctly -- but a freshly created chunk starts enabled, and nothing on the load path
+    reads it back. The chunk returned switched ON, quietly re-running work the scene was
+    saved with switched off.
+
+    Authored, not composed: a chunk inside a disabled group composes inactive without
+    anything being authored on it, and it is not itself disabled.
+    """
+    if prim.HasAuthoredActive() and prim.GetMetadata("active") is False:
+        chunk.set_state(ChunkFlags.State.DISABLED)
+
+
 def load_chunks(
     stage: Usd.Stage,
     scene: "core.SceneSender",
@@ -3538,7 +3558,7 @@ def load_chunks(
     # module-backed chunk. Nested ChunkGroups use a separate parent-context mechanism
     # (_parent_context) not covered by this reload path yet.
     context_prims = []
-    for prim in (stage.Traverse() if prims is None else prims):
+    for prim in (stage.Traverse(_LOAD_INCLUDE_INACTIVE) if prims is None else prims):
         # The /chunks scope is structural, not a chunk: it holds the graph but is not one.
         # It used to be typed Chunk and so came through this filter as a "context prim";
         # typing it Scope made the loader skip it, and with the saved container
@@ -3671,6 +3691,7 @@ def load_chunks(
                             # saved layer the whole time; only the read-back on load was
                             # missing).
                             _load_wire_inputs(prim, c)
+                            _restore_disabled_state(prim, c)
                             c.prim_path = str(prim.GetPath())
                             object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                             if ancestor_group is not None:
@@ -3731,6 +3752,7 @@ def load_chunks(
                             # Sub-chunk of a ChunkGroup: restore saved values before
                             # add_param so PARAM_ADDED widgets see the correct values.
                             _load_wire_inputs(prim, c)
+                            _restore_disabled_state(prim, c)
                             ancestor_group.add_param(c, notify=False)
                             object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                             deferred.append((prim, c))
@@ -3738,6 +3760,7 @@ def load_chunks(
                             # Restore saved param values before scene.add_chunk so the
                             # PARAM_ADDED widget sees the correct values on creation.
                             _load_wire_inputs(prim, c)
+                            _restore_disabled_state(prim, c)
                             if added := scene.add_chunk(c, notify=False):
                                 object.__setattr__(added, '_exec_prim_path', str(prim.GetPath()))
                                 deferred.append((prim, added))
