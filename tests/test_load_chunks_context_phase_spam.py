@@ -97,11 +97,19 @@ def test_reload_bounds_downstream_reexecution_across_the_full_chain(tmp_path) ->
     finally:
         mod_wrapper.module.execute = real_execute
 
-    # Legitimate sources still bounded: one root-driven solve, plus the migration
-    # reconcile_edit_targets does once after restore_edit_target_selections settles real
+    # Legitimate sources still bounded: one root-driven solve, plus the settling
+    # reconcile_edit_targets does once after restore_edit_target_selections resolves real
     # Edit Target values. Anything beyond that is the context-creation-phase cascade this
-    # test guards against.
-    assert call_count["n"] <= 5, (
+    # test guards against, which ran into the dozens before it was fixed -- the bound is
+    # there to catch that shape, not to hold the count to an exact number.
+    #
+    # Was 5, while a load still migrated bookkeeping OUT of the opened file's root layer.
+    # That move settled the chain in one fewer cook, but it settled it by deleting the spec
+    # from the layer it had just read: Sdf caches layers per process, so the next
+    # Usd.Stage.Open of the same path got an emptied layer and restored only the context
+    # (see test_double_load.py). Protecting the root layer costs this one extra cook, which
+    # is the right side of that trade.
+    assert call_count["n"] <= 6, (
         "reloading the full chain must not re-execute the last chunk in it repeatedly from "
         f"premature, pre-restore reactive cascades -- got {call_count['n']}"
     )
