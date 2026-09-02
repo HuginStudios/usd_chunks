@@ -275,15 +275,20 @@ def _param_port_type(param) -> str:
 # ChunkGraphView/tab/chunkgroup in the process, matching how a real clipboard behaves.
 
 class _ClipboardNode:
-    __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges")
+    __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges", "list_sizes")
 
     def __init__(
         self, module_name: str, values: list, rel_pos: QtCore.QPointF,
         children: "list[_ClipboardNode] | None" = None,
         child_edges: "list[_ClipboardEdge] | None" = None,
+        list_sizes: "list[tuple[str, int]] | None" = None,
     ):
         self.module_name = module_name
         self.values = values
+        # How many rows each of the chunk's list groups held. Values alone are not enough:
+        # a freshly created chunk starts with zero rows, so there is nothing for the
+        # positional zip to pair them against and every row is silently dropped.
+        self.list_sizes = list_sizes or []
         self.rel_pos = rel_pos  # position relative to the copied selection's top-left corner
         # Only non-empty for a ChunkGroup: its nested sub-chunks and the wiring between them,
         # so copying/duplicating/cutting a group recursively takes its whole contents along
@@ -391,7 +396,10 @@ def _snapshot_chunk_node(
     module_name = cfg.module if cfg else None
     if not module_name:
         return None
-    clip_node = _ClipboardNode(module_name, _snapshot_param_values(chunk), rel_pos)
+    clip_node = _ClipboardNode(
+        module_name, _snapshot_param_values(chunk), rel_pos,
+        list_sizes=_snapshot_list_sizes(chunk),
+    )
     if not chunk_usd.is_group_chunk(chunk):
         return clip_node
 
@@ -500,6 +508,43 @@ def _iter_copyable_params(chunk: core.ChunkCommon):
         if param.has_state(ChunkFlags.State.HIDDEN):
             continue
         yield param
+
+
+def _snapshot_list_sizes(chunk: core.ChunkCommon) -> "list[tuple[str, int]]":
+    """How many rows each list group on `chunk` holds, keyed by param path.
+
+    A list group's rows are created at runtime, so a pasted chunk has none of them and the
+    positional value snapshot has nothing to land on -- copying a Sublayer with a path set
+    produced one with an empty list and no path, and the same for every other chunk built
+    on a list group.
+    """
+    sizes: "list[tuple[str, int]]" = []
+    for path, param in _iter_chunk_param_paths(chunk):
+        if isinstance(param, core.ChunkListGroupBase):
+            sizes.append((path, param.size))
+    return sizes
+
+
+def _apply_list_sizes(chunk: core.ChunkCommon, sizes: "list[tuple[str, int]]") -> None:
+    """Grow each list group back before any value is applied, so the rows exist to take them."""
+    for path, size in sizes:
+        param = chunk.get_param(path)
+        if isinstance(param, core.ChunkListGroupBase) and param.size != size:
+            try:
+                param.size = size
+            except Exception:
+                # A list whose size cannot be set (driven by something else, or a module
+                # that has changed shape since the copy) should not abort the paste.
+                continue
+
+
+def _iter_chunk_param_paths(chunk: core.ChunkCommon, prefix: str = ""):
+    """(dotted path, param) for everything under `chunk`, groups included."""
+    for param in chunk.get_my_params():
+        path = f"{prefix}{param.name}"
+        yield path, param
+        if isinstance(param, core.ChunkGroupBase):
+            yield from _iter_chunk_param_paths(param, f"{path}.")
 
 
 def _snapshot_param_values(chunk: core.ChunkCommon) -> list:
@@ -3270,6 +3315,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # VALUE_CHANGED notice that would otherwise have corrected it, leaving the
                 # field looking permanently blank despite the underlying param value being
                 # correct.
+                # Rows first: a list group starts empty on a fresh chunk, so its values
+                # have nowhere to land until the rows it had are back.
+                _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
                 pos = (scene_pos.x() + item.rel_pos.x(), scene_pos.y() + item.rel_pos.y())
                 # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_usd in USD
@@ -3371,6 +3419,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # _materialize_at for why (a widget can be built synchronously as a side
                 # effect of add_chunk's own notice dispatch, and reads its initial value
                 # once, at construction).
+                # Rows first: a list group starts empty on a fresh chunk, so its values
+                # have nowhere to land until the rows it had are back.
+                _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
                 chunk_usd._create_node_pos = (item.rel_pos.x(), -item.rel_pos.y())
                 try:
