@@ -3977,7 +3977,16 @@ def _lofted_attr_name(context_prim: Usd.Prim, context, prefix: str, owner, param
     Rim:base_color would be read as a group named Rim.
 
     Suffixed if that is still taken, so lofting the same param twice cannot clobber what
-    is already published.
+    is already published. "Taken" means the attribute is DECLARED on the prim, not that it
+    holds a value -- so a name stays reserved for as long as its declaration survives, even
+    after the param that published it is gone. That is deliberate: an interface name is what
+    the CLI addresses and what saved files record, so handing it to a different param
+    because the first one was unlofted would silently repoint whatever still refers to it.
+
+    The qualifier is a snapshot of the owning chunk's name at loft time, and renaming that
+    chunk afterwards does not update it -- a param lofted from Rim stays Rim_base_color even
+    if Rim is later renamed Key. Stability wins here for the same reason: the group's
+    published interface must not change under anything addressing it by name.
     """
     base = param_name
     if owner is not None and owner is not context and getattr(owner, "name", None):
