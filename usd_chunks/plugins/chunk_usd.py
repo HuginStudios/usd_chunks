@@ -3880,8 +3880,27 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
         if not parent.isEmpty and parent != Sdf.Path.absoluteRootPath and not dst.GetPrimAtPath(parent):
             Sdf.CreatePrimInLayer(dst, parent)
         Sdf.CopySpec(flat, prim_path, dst, prim_path)
+        _carry_ancestor_typenames(flat, dst, prim_path)
 
     dst.Export(str(path))
+
+
+def _carry_ancestor_typenames(flat: "Sdf.Layer", dst: "Sdf.Layer", prim_path: "Sdf.Path") -> None:
+    """Give an exported chunk's ancestors the typename they have on the composed stage.
+
+    Only chunk prims are copied across; their ancestors are conjured by
+    Sdf.CreatePrimInLayer, which makes a bare over with no typename. That loses the
+    /chunks scope -- it reimported untyped instead of as a Scope, so a round-tripped file
+    disagreed with a live one about what its own root is.
+    """
+    parent = prim_path.GetParentPath()
+    while not parent.isEmpty and parent != Sdf.Path.absoluteRootPath:
+        spec = dst.GetPrimAtPath(parent)
+        if spec is not None and not spec.typeName:
+            source = flat.GetPrimAtPath(parent)
+            if source is not None and source.typeName:
+                spec.typeName = source.typeName
+        parent = parent.GetParentPath()
 
 
 def save_scene(scene: "core.SceneSender", chunkgroup_path: "str | Path") -> None:

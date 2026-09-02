@@ -198,3 +198,43 @@ def test_chunkgroups_and_chunks_under_the_scope_are_still_chunk_prims(scene):
         prim = stage.GetPrimAtPath(get_chunk_prim_path(c))
         assert prim and prim.IsValid(), f"no prim for {c.name}"
         assert prim.GetTypeName() == "Chunk", f"{c.name} should stay a Chunk prim"
+
+
+def test_the_scope_survives_an_export_round_trip(scene, tmp_path):
+    """Only chunk prims are copied on export; their ancestors are conjured as bare overs.
+
+    That lost the /chunks typename, so a round-tripped file reimported with an untyped
+    root and disagreed with a live scene about what its own root is.
+    """
+    qapp, reg, s = scene
+    _add_plain_chunk(reg, s)
+    _add_plain_chunk(reg, s, "chunkgroup")
+    qapp.processEvents()
+
+    out = tmp_path / "exported.usda"
+    chunk_usd.export_chunks(s, str(out))
+
+    reopened = Usd.Stage.Open(str(out))
+    root = reopened.GetPrimAtPath(CHUNKS_SCOPE)
+    assert root and root.IsValid(), "the exported file has no /chunks root"
+    assert root.GetTypeName() == "Scope", (
+        f"the scope must survive export, got {root.GetTypeName()!r}"
+    )
+
+
+def test_exported_chunks_keep_their_nesting(scene, tmp_path):
+    """Containment travels through prim paths, not through layer structure -- the export is
+    a single layer with no sublayers, and the hierarchy is intact regardless."""
+    qapp, reg, s = scene
+    _add_plain_chunk(reg, s)
+    group = _add_plain_chunk(reg, s, "chunkgroup")
+    qapp.processEvents()
+
+    out = tmp_path / "exported.usda"
+    chunk_usd.export_chunks(s, str(out))
+
+    reopened = Usd.Stage.Open(str(out))
+    assert not reopened.GetRootLayer().subLayerPaths, "export is one self-contained layer"
+    assert reopened.GetPrimAtPath(get_chunk_prim_path(group)), (
+        "a nested chunkgroup must come across at its own nested path"
+    )
