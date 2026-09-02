@@ -11,7 +11,8 @@ from pxr import Sdf, Usd, UsdShade
 from usd_chunks import chunk_registry, shader_defs
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins.chunk_usd import ChunkStageSync
+from usd_chunks.plugins.chunk_usd import ChunkStageSync, export_chunks
+from usd_chunks.plugins.usdchunks_cli import _all_chunks
 
 pytestmark = pytest.mark.skipif(
     "mtlx" not in shader_defs.available_source_types(),
@@ -256,3 +257,73 @@ def test_texture_wires_into_surface_base_color(env):
     base_color = shader.GetInput("base_color")
     assert base_color, "surface shader has no base_color input"
     assert base_color.GetAttr().GetConnections() == tex_shader_out
+
+
+def test_saved_shader_values_survive_a_reload(env, tmp_path):
+    """A saved network must come back with its authored inputs, not the nodedef defaults.
+
+    This chunk does not own its shader inputs -- it lofts them from the nodedef, in the
+    callback that fires when nodedef *changes*. A load restores nodedef as a value rather
+    than as a change, so nothing lofted them, and execute() (which skips any input it has
+    no param for) then cooked a bare shader at its definition defaults. Every authored
+    value was silently gone, in a file that still looked intact on disk.
+
+    The round trip is the point: the values were always present on the chunk prim as
+    inputs:<Page>:<name>, so anything short of reopening the file passes regardless.
+    """
+    stage, scene, _, _ = env
+    surf = _create(env, SURFACE)
+    surf.get_param("base_color").value = (0.42, 0.016, 0.02)
+    surf.get_param("metalness").value = 0.55
+    surf.get_param("coat").value = 1.0
+
+    path = str(tmp_path / "net.usda")
+    export_chunks(scene, path)
+
+    chunk_registry.ChunkLayerManager().reset()
+    reloaded_stage = Usd.Stage.Open(path)
+    reloaded_scene = _Scene(reloaded_stage)
+    chunk_registry.ChunkLayerManager().initialize(reloaded_stage)
+    chunk_registry.ChunkRegistry().initialize(reloaded_scene, "pytest")
+    ChunkStageSync().initialize(reloaded_stage, reloaded_scene)
+
+    shaders = [
+        c for c in _all_chunks(reloaded_scene.get_chunks())
+        if c.get_param("nodedef") is not None
+    ]
+    assert shaders, "the MaterialX Shader chunk should come back on load"
+    restored = shaders[0]
+
+    assert restored.get_param("base_color") is not None, (
+        "the lofted inputs must be rebuilt on load, or execute() authors none of them"
+    )
+    assert restored.get_param("base_color").value == pytest.approx((0.42, 0.016, 0.02))
+    assert restored.get_param("metalness").value == pytest.approx(0.55)
+    assert restored.get_param("coat").value == pytest.approx(1.0)
+
+
+def test_reload_keeps_the_name_the_file_gave_the_chunk(env, tmp_path):
+    """Rebuilding on load must not rename the chunk after its shader.
+
+    A full _rebuild would: it ends in _rename, which names a chunk for its nodedef. On
+    load that collapses every Standard Surface in a file onto one name plus uniquifying
+    suffixes, breaking anything that addresses a chunk by name -- `usdchunks run
+    net.usda CarPaint.base_color=...`, a lofted interface, a saved reference to it.
+    """
+    stage, scene, _, _ = env
+    surf = _create(env, SURFACE)
+    surf.name = "CarPaint"
+    surf.get_param("base_color").value = (0.9, 0.1, 0.1)
+
+    path = str(tmp_path / "named.usda")
+    export_chunks(scene, path)
+
+    chunk_registry.ChunkLayerManager().reset()
+    reloaded_stage = Usd.Stage.Open(path)
+    reloaded_scene = _Scene(reloaded_stage)
+    chunk_registry.ChunkLayerManager().initialize(reloaded_stage)
+    chunk_registry.ChunkRegistry().initialize(reloaded_scene, "pytest")
+    ChunkStageSync().initialize(reloaded_stage, reloaded_scene)
+
+    names = {c.name for c in _all_chunks(reloaded_scene.get_chunks())}
+    assert "CarPaint" in names, f"the saved name must survive the load, got {names}"
