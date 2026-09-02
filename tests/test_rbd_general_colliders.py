@@ -14,7 +14,6 @@ out of a production asset, which keeps its geometry in a shared model space).
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
@@ -22,6 +21,10 @@ import scripts.rbd_solver as rbd_mod
 
 if not rbd_mod._HAS_MUJOCO:
     pytest.skip("mujoco not installed", allow_module_level=True)
+
+# After the guard: a machine without mujoco has no reason to have numpy either,
+# and importing it above would error at collection rather than skip.
+import numpy as np  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
