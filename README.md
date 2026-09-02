@@ -214,6 +214,8 @@ build. Using the usdview integration needs a full USD build that provides
 
 **USD_CHUNK_DIRS** - Add your chunk directory to this envar. This can be a list of directories, separated by ; on windows, and : on unix systems. Nested directories are scanned for chunks as well. Chunks installed by a store are picked up automatically from **GLOBAL_USDCHUNKS** (default `~/.usdchunks/global`), which is appended after this.
 
+**USD_CHUNK_AUTO_INSTALL** - Off unless set. A chunk module may declare pip requirements, and with this set the packages are installed (after asking) into **USD_CHUNK_DEPENDENCY_DIR**. Left unset, nothing is installed and any missing package is named in a warning instead, so opening someone else's network can never add packages to your environment on its own.
+
 **PXR_PLUGINPATH_NAME** - Only needed for the usdview integration. Point it at the installed plugin directory, which `usdchunks` will print for you:
 
 ```

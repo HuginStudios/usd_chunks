@@ -121,6 +121,19 @@ USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", [], True)
 USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", "_installed_deps", True)
 USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
 
+# Installing a chunk's declared pip dependencies is OFF unless this is set. A chunk module
+# is ordinary Python that anyone can drop on USD_CHUNK_DIRS, so "load this network" must
+# never be able to put packages into the user's environment as a side effect -- not even
+# behind a prompt, because the prompt is the wrong question in the places it gets asked.
+# `usdchunks run` in CI has no one to answer it: chunk_cli's should_install_package calls
+# input(), which reads EOF and blocks or throws with no useful message.
+#
+# When it is off the missing packages are named in a warning instead, so the user can
+# install them deliberately. When it is on, the per-scene should_install_package prompt
+# still applies -- this switch decides whether asking is allowed at all, not what the
+# answer is.
+USD_CHUNK_AUTO_INSTALL = ChunkEnvVar[str | None]("USD_CHUNK_AUTO_INSTALL", None)
+
 # The marketplace install location (where `usdchunks install` deposits chunks).
 # It is appended to USD_CHUNK_DIRS during discovery -- last, so proprietary /
 # on-prem chunks on USD_CHUNK_DIRS win on a duplicate name. Default lives under
@@ -213,7 +226,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         if not self.initialized:
             return
 
-        packages = []
+        missing = []
         recache = True
 
         for package in requirements:
@@ -226,9 +239,23 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
                 if self.package_in_cache(package):
                     continue
 
-            if self.should_install_package(package):
-                packages.append(package)
+            missing.append(package)
 
+        if not missing:
+            return
+
+        if not _is_truthy(USD_CHUNK_AUTO_INSTALL()):
+            # Off by default -- see USD_CHUNK_AUTO_INSTALL. Say what is missing and how to
+            # get it, rather than either installing it or failing silently later when the
+            # chunk's import does.
+            logger.warning(
+                "Chunk dependencies not installed: %s. Install them yourself, or set "
+                "USD_CHUNK_AUTO_INSTALL=1 to be asked about installing them into %s.",
+                ", ".join(missing), self.package_dir,
+            )
+            return
+
+        packages = [p for p in missing if self.should_install_package(p)]
         if not packages:
             return
 
