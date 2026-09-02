@@ -14,7 +14,6 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk, chunk_registry, chunk_utils
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins.chunk_usd import (
-    _CHUNKS_ROOT,
     _INPUTS_PREFIX,
     _load_wire_inputs,
     _patch_expressions,

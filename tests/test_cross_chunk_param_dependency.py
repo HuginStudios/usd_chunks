@@ -16,7 +16,7 @@ from pxr import Usd
 
 from usd_chunks import chunk, chunk_core, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins.chunk_usd import _CHUNKS_ROOT, _INPUTS_PREFIX, ChunkStageSync
+from usd_chunks.plugins.chunk_usd import _INPUTS_PREFIX, ChunkStageSync
 
 
 def _chunk_path(name: str) -> str:

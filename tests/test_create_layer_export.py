@@ -17,7 +17,6 @@ from usd_chunks import chunk, chunk_registry
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 
 
 class _DummyScene(SceneSender):
