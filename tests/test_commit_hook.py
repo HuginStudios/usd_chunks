@@ -284,9 +284,14 @@ class TestCliRunCommits:
 class TestCommitOrderFromStage:
     """chunk_usd.commit_order_from_stage — ordering read from USD connections.
 
-    Depth cannot see a param port: drag-to-connect authors an @Node.param@ expression whose
-    live link is a NoticeConnection, not a DAG edge, so both chunks sit at depth 0. The
-    stage holds that wire, which is why the CLI orders commits from it.
+    Depth used to be blind to a param port: drag-to-connect authors an @Node.param@
+    expression whose live link is a NoticeConnection, not a DAG edge, so both chunks sat at
+    depth 0 and committed in arbitrary order. reconcile_exec_dependencies now mirrors param
+    wires into chunk-level DAG edges as well (see _live_chunk_dependencies), so depth sees
+    them too and the two orderings agree.
+
+    This function is still the one the CLI uses: it reads the stage directly, and
+    deliberately ignores connections to chunks outside the batch being committed.
     """
 
     def _chunk(self, scene, name, calls, with_commit=True):
@@ -301,7 +306,7 @@ class TestCommitOrderFromStage:
         return c
 
     def test_expression_wired_chunks_are_ordered(self):
-        """The case depth gets wrong: the only wire between them is a param expression."""
+        """The only wire between them is a param expression, and both orderings see it."""
         scene, stage = _setup_stage()
         calls = []
         upstream = self._chunk(scene, "upstream", calls)
@@ -309,13 +314,34 @@ class TestCommitOrderFromStage:
         upstream.get_param("p").value = 2.0
         downstream.get_param("p").value = "@upstream.p@"
 
-        assert chunk_scheduler.commit_order([downstream, upstream]) == [downstream, upstream], (
-            "precondition: depth cannot see this wire"
-        )
-
         ordered = chunk_usd.commit_order_from_stage([downstream, upstream], stage)
 
         assert ordered == [upstream, downstream]
+        assert chunk_scheduler.commit_order([downstream, upstream]) == [upstream, downstream], (
+            "depth used to be blind to a param wire; reconcile now mirrors it into the DAG"
+        )
+
+    def test_a_param_wire_is_not_authored_as_an_exec_edge(self):
+        """The DAG edge a param wire now creates must not become an inputs:chunk.
+
+        _author_prim falls back to the Python DAG when a chunk has no exec wiring of its
+        own, and that fallback would otherwise write out an exec edge the user never drew.
+        """
+        scene, stage = _setup_stage()
+        calls = []
+        upstream = self._chunk(scene, "upstream", calls)
+        downstream = self._chunk(scene, "downstream", calls)
+        upstream.get_param("p").value = 2.0
+        downstream.get_param("p").value = "@upstream.p@"
+
+        assert any(
+            dep is upstream for _, dep in downstream.get_dependencies()
+        ), "precondition: the param wire was reconciled into a DAG edge"
+
+        prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(downstream)))
+        assert not chunk_usd.exec_input_connections(prim), (
+            "a param wire must not surface as an exec connection"
+        )
 
     def test_exec_wired_chunks_are_ordered(self):
         scene, stage = _setup_stage()
