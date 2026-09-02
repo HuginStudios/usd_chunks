@@ -42,7 +42,7 @@ from usd_chunks.plugins.chunk_qt_widgets import (
     ContainerWidget,  # noqa: F401
     confirm_dial,  # noqa: F401
 )
-from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
+from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView, droppable_paths
 
 
 def save_chunkgroup_dialog(scene=None) -> None:
@@ -287,6 +287,12 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         self.tab_bar = EditableTabBar(self)
         self.setTabBar(self.tab_bar)
 
+        # Dropping a USD file needs a ChunkGraphView to land on, and there is none until a
+        # context exists -- so with an empty panel the drop was simply refused, and you had
+        # to know to make a context first. Accept it here instead and create one, the same
+        # gap _EmptyPanelTabRouter covers for the Tab key.
+        self.setAcceptDrops(True)
+
         self.tab_bar.request_delete.connect(self.delete_tab)
         self.tab_bar.request_toggle_disable.connect(self.toggle_disabled_tab)
         self.tab_bar.tab_name_changed.connect(self.update_context_name)
@@ -366,6 +372,48 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
     def update_context_name(self, name, idx):
         if tab := self.get_chunk_context(idx):
             tab.group.name = name
+
+    def _empty_panel_drop_paths(self, event) -> "list[str]":
+        """Droppable paths, but only while there is no graph view to handle them itself.
+
+        Once a context tab exists its ChunkGraphView accepts drops directly and must keep
+        doing so -- it knows the drop position, which is what places the node.
+        """
+        if self.get_current_graph_view() is not None:
+            return []
+        return droppable_paths(event)
+
+    def dragEnterEvent(self, event):
+        if self._empty_panel_drop_paths(event):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self._empty_panel_drop_paths(event):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        paths = self._empty_panel_drop_paths(event)
+        if not paths:
+            super().dropEvent(event)
+            return
+        event.acceptProposedAction()
+
+        self.add_new_tab()
+        gv = self.get_current_graph_view()
+        if gv is None:
+            return
+        # The panel has no scene coordinates of its own, so drop at the origin of the graph
+        # that was just made -- it is empty, so anywhere is as good, and the stagger keeps a
+        # multi-file drop from stacking every node on the same point.
+        global_pos = self.mapToGlobal(event.position().toPoint())
+        offset = QtCore.QPointF(0, 0)
+        for path in paths:
+            gv._handle_dropped_file(path, offset, global_pos)
+            offset += QtCore.QPointF(40, 40)
 
     def add_new_tab(self):
         """Create a context chunk and show it as the current tab.
