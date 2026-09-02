@@ -187,7 +187,7 @@ def test_a_relative_path_never_reaches_the_anchor() -> None:
 def test_write_back_sets_the_params_once_regardless_of_target_count() -> None:
     """The params belong to the chunk, not to each prim. The pivot only decides where the
     handle is drawn and what the delta is measured against."""
-    stage = _stage_with_cubes("/World/A", "/World/B", "/World/C")
+    _stage_with_cubes("/World/A", "/World/B", "/World/C")
     c = _transform_chunk("/World/A,/World/B,/World/C")
 
     chunk_gizmo.apply_bindings(c, "transform", _moved_by(4.0, 0.0, 0.0))

@@ -15,7 +15,7 @@ import math
 import types
 
 import pytest
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf
 
 from usd_chunks import chunk, chunk_gizmo, chunk_notice, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender

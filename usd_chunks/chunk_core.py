@@ -3129,7 +3129,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             return None
         return f"@{other_chunk.name}.{other.name}@"
 
-    def add_dependency(self, input: "ChunkNoticePropagator") -> int:
+    def add_dependency(self, input: "chunk_notice.ChunkNoticePropagator") -> int:
         """Add a DagNode input, warning if it crosses a chunk boundary.
 
         A param-level dependency is in-memory only: ChunkStageSync._on_dependency_added

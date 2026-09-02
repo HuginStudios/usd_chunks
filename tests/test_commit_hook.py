@@ -366,7 +366,6 @@ class TestCommitOrderFromStage:
 
     def test_no_stage_falls_back_to_depth(self):
         chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
-        calls = []
         a = chunk.Chunk("a")
         b = chunk.Chunk("b")
         b.add_dependency(a)
