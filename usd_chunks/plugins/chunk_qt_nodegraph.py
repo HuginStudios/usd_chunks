@@ -3144,6 +3144,27 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         return clip_nodes, clip_edges, QtCore.QPointF(min_x, min_y)
 
+    def selected_chunks(self, including: "core.ChunkBase | None" = None) -> "list[core.ChunkBase]":
+        """The chunks this graph has selected, with `including` first if it is one of them.
+
+        `including` is the chunk a menu was opened on. Right-clicking a node that is NOT in
+        the selection acts on that node alone -- the same as every other app: the click is
+        a new target, not an addition to an old one. Right-clicking one that IS selected
+        acts on the whole selection.
+        """
+        scene = self.scene()
+        if not isinstance(scene, ChunkGraphScene):
+            return [including] if including is not None else []
+        selected = [
+            node.chunk for node in scene._nodes.values()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED)
+        ]
+        if including is not None and including not in selected:
+            return [including]
+        if including is not None:
+            selected = [including] + [c for c in selected if c is not including]
+        return selected
+
     def _copy_selected_to_clipboard(self) -> None:
         """Ctrl+C: snapshot the selected chunks' type + param values + position, and the
         wires between them, into the module-level clipboard."""
