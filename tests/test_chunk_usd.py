@@ -1911,9 +1911,12 @@ def test_loft_default_valued_param_creates_attr() -> None:
     loft_param_to_context(p, prim_chunk.get_context())
 
     assert p._param_attr_path is not None  # attr force-created
+    # Qualified by the chunk it came from, so several chunks offering the same param name
+    # do not land on one attribute.
+    lofted_name = f"{prim_chunk.name}_{p.name}"
     grp_prim = stage.GetPrimAtPath(Sdf.Path(grp.prim_path))
-    assert grp_prim.GetAttribute(f"{_INPUTS_PREFIX}{p.name}").IsValid()
-    assert p.name in [x.name for x in grp.get_my_params()]  # promoted onto the group
+    assert grp_prim.GetAttribute(f"{_INPUTS_PREFIX}{lofted_name}").IsValid()
+    assert lofted_name in [x.name for x in grp.get_my_params()]  # promoted onto the group
 
 
 def test_loft_output_param_creates_outputs_attr() -> None:
@@ -1955,8 +1958,77 @@ def test_loft_output_param_creates_outputs_attr() -> None:
     loft_param_to_context(out_param, leaf.get_context())
 
     grp_prim = stage.GetPrimAtPath(Sdf.Path(grp.prim_path))
-    assert grp_prim.GetAttribute("outputs:myout").IsValid()
-    assert not grp_prim.GetAttribute(f"{_INPUTS_PREFIX}myout").IsValid()
+    lofted_name = f"{leaf.name}_myout"
+    assert grp_prim.GetAttribute(f"outputs:{lofted_name}").IsValid()
+    assert not grp_prim.GetAttribute(f"{_INPUTS_PREFIX}{lofted_name}").IsValid()
+
+
+def test_two_chunks_lofting_the_same_param_name_stay_separate() -> None:
+    """Several chunks in one group commonly offer a param of the same name -- six materials
+    all have base_color. Unqualified they all resolved to inputs:base_color on the group,
+    and the failure was silent and threefold: the second loft overwrote the first's value,
+    add_param uniquified the Python side to base_color1 while still binding it to the
+    first attribute (a control that looked real and drove nothing), and only one of the
+    two inner params was actually driven."""
+    import weakref
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    first, second = _mk(primmod), _mk(primmod)
+    scene._current_context = None
+    assert first.name != second.name, "the two chunks must be distinguishable by name"
+
+    for leaf, value in ((first, "/one"), (second, "/two")):
+        param = leaf.get_param("primpath_location")
+        param.value = value
+        loft_param_to_context(param, grp)
+
+    grp_prim = stage.GetPrimAtPath(Sdf.Path(grp.prim_path))
+    names = [f"{leaf.name}_primpath_location" for leaf in (first, second)]
+
+    # One attribute each, each holding its own chunk's value.
+    for leaf, name, value in zip((first, second), names, ("/one", "/two")):
+        attr = grp_prim.GetAttribute(f"{_INPUTS_PREFIX}{name}")
+        assert attr.IsValid(), f"{name} should be published on the group"
+        assert attr.Get() == value, "a later loft must not overwrite an earlier one's value"
+
+    # The group's params agree with the attributes they front.
+    lofted = {x.name for x in grp.get_my_params()}
+    assert set(names) <= lofted, f"expected {names} on the group, got {sorted(lofted)}"
+
+    # Each inner param points at its own interface attribute, not a shared one.
+    targets = set()
+    for leaf in (first, second):
+        inner = stage.GetAttributeAtPath(
+            Sdf.Path(leaf.get_param("primpath_location")._param_attr_path)
+        )
+        conns = [str(c) for c in inner.GetConnections()]
+        assert len(conns) == 1
+        targets.update(conns)
+    assert len(targets) == 2, f"each loft needs its own attribute, got {targets}"
 
 
 def test_loft_group_param_up_to_parent_group() -> None:
@@ -2003,7 +2075,7 @@ def test_loft_group_param_up_to_parent_group() -> None:
     p = inner.get_param("primpath_location")
     loft_param_to_context(p, grp2)  # first loft: inner -> grp2
 
-    lofted = next(x for x in grp2.get_my_params() if x.name == "primpath_location")
+    lofted = next(x for x in grp2.get_my_params() if x.name == f"{inner.name}_primpath_location")
     # The lofted param must report the group it now lives on, not the original inner chunk.
     assert lofted.get_chunk() is grp2
 
@@ -2015,8 +2087,10 @@ def test_loft_group_param_up_to_parent_group() -> None:
     assert context is grp1
 
     loft_param_to_context(lofted, context)  # second loft: grp2 -> grp1
+    # Qualified again at the next level up: two sub-groups can each expose a param that
+    # was already qualified by the same inner chunk name.
     grp1_prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(grp1)))
-    assert grp1_prim.GetAttribute(f"{_INPUTS_PREFIX}primpath_location").IsValid()
+    assert grp1_prim.GetAttribute(f"{_INPUTS_PREFIX}{grp2.name}_{lofted.name}").IsValid()
 
 
 def test_recook_recurses_into_group() -> None:

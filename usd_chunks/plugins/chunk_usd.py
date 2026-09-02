@@ -4093,12 +4093,58 @@ def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | No
             _load_wire_inputs(prim, chunk_obj)
 
 
+def _lofted_attr_name(context_prim: Usd.Prim, context, prefix: str, owner, param_name: str) -> str:
+    """The interface name a lofted param takes on the context prim.
+
+    Qualified by the chunk it came from -- Rim_base_color, not base_color -- because a
+    group's interface is flat while the params feeding it are not. Six materials in one
+    group all offer base_color, and unqualified they landed on a single attribute: the
+    second loft silently overwrote the first's value, and only one of them was actually
+    driven by it.
+
+    Always qualified, not only on a clash. Qualifying on demand would leave the first
+    loft bare and the second prefixed, so the interface would depend on the order someone
+    happened to loft in.
+
+    An underscore rather than a colon. A colon is USD's namespace separator and already
+    means something here -- inputs:Base:base_color is the param base_color inside the page
+    group Base -- and _load_wire_inputs turns that back into a "Base.base_color" lookup.
+    Rim:base_color would be read as a group named Rim.
+
+    Suffixed if that is still taken, so lofting the same param twice cannot clobber what
+    is already published. "Taken" means the attribute is DECLARED on the prim, not that it
+    holds a value -- so a name stays reserved for as long as its declaration survives, even
+    after the param that published it is gone. That is deliberate: an interface name is what
+    the CLI addresses and what saved files record, so handing it to a different param
+    because the first one was unlofted would silently repoint whatever still refers to it.
+
+    The qualifier is a snapshot of the owning chunk's name at loft time, and renaming that
+    chunk afterwards does not update it -- a param lofted from Rim stays Rim_base_color even
+    if Rim is later renamed Key. Stability wins here for the same reason: the group's
+    published interface must not change under anything addressing it by name.
+    """
+    base = param_name
+    if owner is not None and owner is not context and getattr(owner, "name", None):
+        base = f"{owner.name}_{param_name}"
+
+    candidate, index = base, 1
+    while context_prim.GetAttribute(f"{prefix}{candidate}"):
+        candidate = f"{base}{index}"
+        index += 1
+    return candidate
+
+
 def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase") -> None:
     """Loft a param up to the context prim's public interface.
 
-    Creates ``inputs:{param.name}`` on the context prim, connects the inner
+    Creates ``inputs:{owner}_{param.name}`` on the context prim, connects the inner
     storage attribute to it, and re-binds the Python param to track the context
     attribute — so reads and writes flow through the context prim interface.
+
+    The name is settled here, once, and then belongs to the group. It is deliberately not
+    re-derived from the owning chunk later: the interface is what the CLI addresses by
+    name, what expressions reference and what saved files record, so renaming an inner
+    chunk must not silently change the group's published interface.
     """
     sync = ChunkStageSync()
     if not sync.initialized or not sync._stage:
@@ -4124,9 +4170,7 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     # OUTPUT-flagged params loft to outputs:name so a group can expose computed results, not
     # just inputs (data-out ports); everything else is a data-in port (inputs:name).
     prefix = "outputs:" if param.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
-    attr_name = f"{prefix}{param.name}"
     context_prim_path = Sdf.Path(context.prim_path if context.prim_path else _CHUNKS_ROOT)
-    context_attr_path = context_prim_path.AppendProperty(attr_name)
 
     context_prim = stage.GetPrimAtPath(context_prim_path)
     if not (context_prim and context_prim.IsValid()):
@@ -4135,6 +4179,11 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     if not (context_prim and context_prim.IsValid()):
         logger.warning("loft_param_to_context: could not get/create context prim at %s", context.prim_path)
         return
+
+    # Resolved against the prim, so the name is unique among what is already published.
+    lofted_name = _lofted_attr_name(context_prim, context, prefix, param.get_chunk(), param.name)
+    attr_name = f"{prefix}{lofted_name}"
+    context_attr_path = context_prim_path.AppendProperty(attr_name)
 
     context_attr = context_prim.CreateAttribute(attr_name, inner_attr.GetTypeName(), custom=True)
     if (val := param.value) is not None:
@@ -4145,6 +4194,11 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     # _param_attr_path and _driven_attr_paths are NO_COPY so the clone starts unbound;
     # we immediately wire it to the context attr.
     context_param = param.clone()
+    # Named to match the attribute it fronts, before add_param -- which uniquifies names
+    # itself, and would otherwise hand back base_color1 for a param bound to
+    # inputs:Rim_base_color. That mismatch is what made the second loft a phantom control:
+    # a distinct param in the panel, wired to somebody else's attribute.
+    context_param.name = lofted_name
     context.add_param(context_param)
     # clone() carries over the source param's cached _chunk_parent (the inner chunk), and
     # add_param doesn't invalidate it — so get_chunk() would keep returning the inner chunk
@@ -4316,7 +4370,15 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             if not inner_param:
                 continue
 
+            # Named from the attribute, not from the inner param the clone came from.
+            # The interface name is the file's to decide -- it is qualified at loft time
+            # (Rim_base_color) and may have been renamed since -- whereas the clone would
+            # arrive calling itself base_color. Getting this wrong reverts the name on
+            # every reload, and also defeats the already-lofted guard above, which
+            # compares against the attribute's name: the param would never match, so a
+            # duplicate would be added each time the file was opened.
             context_param = inner_param.clone()
+            context_param.name = param_name
             context_param._connect_param_attr(context_attr)
             context.add_param(context_param)
 
