@@ -6,7 +6,6 @@ that have been current, and back/forward walk it.
 """
 from __future__ import annotations
 
-import weakref
 
 import pytest
 from pxr import Usd
