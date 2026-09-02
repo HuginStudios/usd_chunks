@@ -445,9 +445,17 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if parent and sdf_path.name in parent.nameChildren:
                     del parent.nameChildren[sdf_path.name]
 
+            # Tidy up the chunks root once its last chunk goes -- an empty /chunks prim is
+            # bookkeeping nobody wants left behind. ONLY that root, though: a chunk inside a
+            # chunkgroup has the GROUP as its root, so this used to delete the group's own
+            # prim as soon as its last child went. An empty group is still a group, and it
+            # vanishing took the wiring with it -- deleting a wired group deletes its
+            # contents first, and the last of those pulled the group's prim out from under
+            # heal_exec_chain_on_delete, which then bailed on its IsValid() guard and left a
+            # downstream view connected to a prim that no longer existed.
             root_sdf = Sdf.Path(chunk_root)
             root_prim = self._stage.GetPrimAtPath(root_sdf)
-            if root_prim.IsValid() and not any(
+            if chunk_root == _CHUNKS_ROOT and root_prim.IsValid() and not any(
                 child.GetTypeName() == _CHUNK_PRIM_TYPENAME for child in root_prim.GetChildren()
             ):
                 for layer in self._stage.GetLayerStack(includeSessionLayers=True):
@@ -469,12 +477,46 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not prim_path:
             chunk_root = _resolve_chunk_root(sender)
             prim_path = f"{chunk_root}/{sender.name}"
+        disabled = sender.has_state(ChunkFlags.State.DISABLED)
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
         if not prim.IsValid():
+            # A chunk under a deactivated ancestor is not in the composed scene at all, so
+            # there is no prim to ask -- and a group re-enables its children before its own
+            # prim comes back, so this is exactly when they are told to wake up. Returning
+            # here left their authored active=false in place, and the group came back with
+            # its contents still switched off. Clear it on the spec directly instead.
+            if not disabled:
+                prev_w = chunk_notice._usd_write_active
+                chunk_notice._usd_write_active = True
+                try:
+                    for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+                        spec = layer.GetPrimAtPath(Sdf.Path(prim_path))
+                        if spec is not None and spec.HasInfo("active"):
+                            spec.ClearInfo("active")
+                finally:
+                    chunk_notice._usd_write_active = prev_w
             return
-        disabled = sender.has_state(ChunkFlags.State.DISABLED)
-        if prim.IsActive() == disabled:
-            prim.SetActive(not disabled)
+        # Compare against what is authored ON THIS PRIM, not the composed value, and for the
+        # same reason the mirror does: a chunk inside a disabled group composes inactive
+        # without anything being authored on it. Reading the composed value here left an
+        # enabled chunk with a stale authored active=false -- the group came back but its
+        # contents stayed switched off, because IsActive() already agreed with the new state
+        # and the write was skipped.
+        authored_active = prim.GetMetadata("active") if prim.HasAuthoredActive() else True
+        if authored_active == disabled:
+            # Mark this as our own write. Without the guard the resulting ObjectsChanged is
+            # read back as if a user had deactivated the prim on the stage, and the mirror in
+            # _on_objects_changed answers by rewriting the chunk's state -- which is how
+            # disabling a chunkgroup ended up clearing the group's OWN disabled flag. With
+            # the flag gone, re-enabling was a no-op: the group never saw a DISABLED->enabled
+            # transition, so it never told its children to come back (live-reported: the
+            # chunks inside stayed dead until you dived in and selected them).
+            prev_w = chunk_notice._usd_write_active
+            chunk_notice._usd_write_active = True
+            try:
+                prim.SetActive(not disabled)
+            finally:
+                chunk_notice._usd_write_active = prev_w
 
     def _on_objects_changed(self, notice: Usd.Notice.ObjectsChanged, sender):
         # As in _on_contents_changed: this runs before the guards, since a prim appearing or
@@ -562,7 +604,17 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prim = stage.GetPrimAtPath(Sdf.Path(chunk_prim_path))
             if not prim.IsValid():
                 continue
-            is_active = prim.IsActive()
+            # This chunk's OWN activation, not the composed one. Deactivating a chunkgroup
+            # deactivates its descendants too, and that is inherited -- nothing is authored
+            # on the children. Reading prim.IsActive() here made every inner chunk latch a
+            # DISABLED state it never had, and re-enabling the group then reactivated only
+            # the group's prim: each inner chunk wrote its own active=false straight back
+            # from that latched state, so the contents stayed dead (live-reported).
+            #
+            # A chunk that really is disabled has active=false authored on its own prim --
+            # that is what _on_state_changed writes -- so this still sees a genuine deactivate,
+            # including one done externally on the stage.
+            is_active = prim.GetMetadata("active") if prim.HasAuthoredActive() else True
             is_disabled = chunk.has_state(ChunkFlags.State.DISABLED)
             if not is_active and not is_disabled:
                 chunk.set_state(ChunkFlags.State.DISABLED)
