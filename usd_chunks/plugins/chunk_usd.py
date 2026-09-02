@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 _CHUNK_TYPE_ATTR = "info:chunkType"
 _INPUTS_PREFIX = "inputs:"
+# The ObjectsChanged field name for a connection edit; a value write reports "default".
+_CONNECTION_PATHS_FIELD = "connectionPaths"
 _EXEC_OUTPUT = "outputs:chunk"
 _EXEC_INPUT = "inputs:chunk"
 _CHUNK_PRIM_TYPENAME = "Chunk"
@@ -518,7 +520,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         param_paths = all_changed
         if not all_changed:
             return
-        self._reconcile_changed_exec_inputs(all_changed)
+        self._reconcile_changed_exec_inputs(all_changed, notice)
         for chunk in self._scene.get_chunks():
             # all_changed, not just the info-only set. An ordinary edit -- typing in a field,
             # a gizmo writing a param -- arrives as an info-only change, but undo restores
@@ -569,7 +571,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             elif is_active and is_disabled:
                 chunk.unset_state(ChunkFlags.State.DISABLED)
 
-    def _reconcile_changed_exec_inputs(self, all_changed: "set[str]") -> None:
+    def _reconcile_changed_exec_inputs(self, all_changed: "set[str]", notice) -> None:
         """Mirror any changed inputs:chunk connection into the Python DAG.
 
         A connection edit is reported against the *attribute* path
@@ -594,12 +596,22 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # an edge and cooked in the right order while its Python DAG edge was never
             # created: no INPUT_CHANGED, so editing that branch never recooked the merge.
             prim_path, sep, attr_name = path.partition(".")
+            if not sep or not attr_name.startswith(_INPUTS_PREFIX):
+                continue
             # Any inputs: connection, not only the exec slots: a param wire is a real
             # chunk-level dependency for ordering too, and drag-to-connect authors it the
-            # same way. _live_chunk_dependencies decides what actually counts; this only
-            # has to be broad enough to notice.
-            if sep and attr_name.startswith(_INPUTS_PREFIX):
-                touched_prims.add(prim_path)
+            # same way. _live_chunk_dependencies decides what actually counts.
+            if not is_exec_input_name(attr_name):
+                # But only when the *connection* moved. A param's stored value lives under
+                # this same inputs: prefix, so without this every keystroke into any param
+                # would reconcile the whole scene -- a value write reports the "default"
+                # field, a wire reports "connectionPaths". No fields at all means the path
+                # arrived by resync, where the connection may genuinely have moved, so it
+                # is let through rather than guessed at.
+                fields = notice.GetChangedFields(Sdf.Path(path))
+                if fields and _CONNECTION_PATHS_FIELD not in fields:
+                    continue
+            touched_prims.add(prim_path)
         if not touched_prims:
             return
 
