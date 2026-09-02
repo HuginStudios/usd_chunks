@@ -14,7 +14,11 @@ from pxr import Sdf, UsdRender
 
 from usd_chunks import chunk, chunk_notice, chunk_utils
 
-logger = logging.getLogger(__name__)
+# Parented under "usd_chunks" so this module's messages reach the package handler and
+# its INFO level; a chunk module imported under its own file name otherwise logs from
+# outside the package tree, where only WARNING and above escape, unformatted, through
+# logging's lastResort. See the note in render.py.
+logger = logging.getLogger(f"usd_chunks.{__name__}")
 
 #: Formats that hold one image, so a product written to one cannot carry several AOVs.
 #: EXR is the notable absence -- multi-part and multi-channel, which is why AOVs
@@ -83,6 +87,33 @@ def _warn_if_format_cannot_hold(product_name, var_paths):
     )
 
 
+def _existing_vars(stage, var_paths):
+    """The var paths that hold a real UsdRenderVar, with the rest reported and dropped.
+
+    A disabled Render Var chunk never runs, so its prim is never authored -- but its
+    path stays in this chunk's Ordered Vars, and authoring it anyway leaves orderedVars
+    pointing at nothing. Renderers cope, each in its own way: V-Ray Standalone skips
+    each one with a "no suitable UsdRenderVar prim was found" runtime error, which
+    buries the real diagnostics under one message per dangling target. Dropping them
+    here keeps the authored relationship to vars that exist, and disabling a var chunk
+    then means what it looks like it means.
+
+    Reported at INFO rather than WARNING: a var is usually disabled on purpose, and
+    saying so once per cook at warning level would make the ordinary case look broken.
+    """
+    live = [path for path in var_paths if UsdRender.Var(stage.GetPrimAtPath(path))]
+    kept = set(live)
+    if dropped := [path for path in var_paths if path not in kept]:
+        logger.info(
+            "Render Product: %d of %d Ordered Vars have no RenderVar prim and were left "
+            "out of orderedVars (%s). A disabled Render Var chunk authors nothing.",
+            len(dropped),
+            len(var_paths),
+            ", ".join(p.name for p in dropped),
+        )
+    return live
+
+
 def _resolve_targets(stage, param):
     """Prim paths named by a path/glob param, in the order given.
 
@@ -113,17 +144,13 @@ def main():
             default_value=prim_path,
             flags=chunk.ChunkFlags.ParamFlags.LABELED,
         ),
-        chunk.LineEdit("product_name", "Output File", default_value="render.exr"),
+        chunk.LineEdit("product_name", "Output File"),
         chunk.Menu("product_type", "Product Type", menu_items=["raster"], default_value="raster"),
         chunk.LineEdit(
             "camera", "Camera",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
         ),
         chunk.LineEdit("ordered_vars", "Ordered Vars"),
-        chunk.LineEdit(
-            "reference", "Reference",
-            flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
-        ),
     ])
     return chunk_api
 
@@ -159,15 +186,13 @@ def execute(node):
         if camera_targets := _resolve_targets(stage, node.get_param("camera"))[:1]:
             product.CreateCameraRel().SetTargets(camera_targets)
 
-        if var_paths := _resolve_targets(stage, node.get_param("ordered_vars")):
+        if var_paths := _existing_vars(stage, _resolve_targets(stage, node.get_param("ordered_vars"))):
             product.CreateOrderedVarsRel().SetTargets(var_paths)
             _warn_if_format_cannot_hold(node.get_param("product_name").value, var_paths)
 
         authored = product.GetPrim().GetPath().pathString
         if not var_selections and authored != target_path:
             node.get_param("primpath_location").value = authored
-
-        node.get_param("reference").value = authored
 
 
 def config():
@@ -184,6 +209,11 @@ def config():
           - Output File: the productName attribute — the file the renderer writes.
             Frame-numbering conventions (render.####.exr) are passed through
             untouched for the renderer to expand.
+
+            Empty by default, and empty authors no productName at all: a product
+            that has not been told where to write should say nothing rather than
+            quietly claim a filename in whichever directory the render happened to
+            run from. Name one before expecting this product to produce a file.
 
             One product is one file, so several Ordered Vars means several layers
             in one image. EXR holds them; PNG and the other single-image formats
@@ -205,10 +235,10 @@ def config():
             camera from the Render Settings that references this product.
           - Ordered Vars: the RenderVar prims making up this product's channels,
             as paths or glob patterns. Order is preserved and duplicates dropped,
-            because orderedVars is an ordered relationship. Wire Render Var
-            chunks' Reference outputs in here.
-          - Reference (output): the authored prim path, for wiring into a Render
-            Settings chunk's Products.
+            because orderedVars is an ordered relationship. Name the Render Var
+            chunks' prim paths in here. A path with no RenderVar prim behind it —
+            a disabled Render Var chunk authors none — is left out rather than
+            written as a dangling target.
 
         Everything authored is standard UsdRender scene description, readable by
         any renderer whether or not usd_chunks is installed.

@@ -13,7 +13,11 @@ from pxr import Gf, Sdf, Usd, UsdRender
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils, render_defs
 from usd_chunks.plugins import chunk_usd
 
-logger = logging.getLogger(__name__)
+# Parented under "usd_chunks" so this module's messages reach the package handler and
+# its INFO level; a chunk module imported under its own file name otherwise logs from
+# outside the package tree, where only WARNING and above escape, unformatted, through
+# logging's lastResort. See the note in render.py.
+logger = logging.getLogger(f"usd_chunks.{__name__}")
 
 _CONFORM_POLICIES = [
     "expandAperture",
@@ -423,10 +427,6 @@ def main():
         chunk.Checkbox("disable_depth_of_field", "Disable Depth of Field", default_value=False),
         chunk.Checkbox("set_stage_settings", "Set as Stage Render Settings", default_value=True),
         chunk.Checkbox("apply_to_viewport", "Apply to Viewport", default_value=True),
-        chunk.LineEdit(
-            "reference", "Reference",
-            flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
-        ),
     ])
 
     _loft_delegate_params(chunk_api)
@@ -498,8 +498,6 @@ def execute(node):
         if not var_selections and authored != target_path:
             node.get_param("primpath_location").value = authored
 
-        node.get_param("reference").value = authored
-
         _author_delegate_settings(node, settings.GetPrim())
 
     # Renderers find the settings prim through this stage metadatum rather than by
@@ -531,7 +529,7 @@ def config():
             adjustApertureWidth, adjustApertureHeight, or adjustPixelAspectRatio.
           - Camera: the camera prim to render from. Products may override it.
           - Products: the RenderProduct prims this render writes, as paths or glob
-            patterns. Wire Render Product chunks' Reference outputs in here.
+            patterns, naming the Render Product chunks' prim paths.
           - Included Purposes: comma-separated purposes to include in the render,
             defaulting to "default,render". This is what excludes proxy and guide
             geometry from a final render.
@@ -569,8 +567,6 @@ def config():
             the same channel as usdview's own Hydra Settings menu, so the two
             overwrite each other, and that it touches no layer: nothing about it is
             saved, and it does not reach a batch render.
-          - Reference (output): the authored prim path, for wiring into a Render
-            chunk.
 
         Every installed renderer also gets a group of its own settings alongside the
         standard ones -- all of them at once, not one selected renderer. A RenderSettings

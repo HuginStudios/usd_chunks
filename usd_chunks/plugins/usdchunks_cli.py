@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pxr import Usd, UsdUtils
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
-from usd_chunks.plugins.chunk_usd import load_chunks, ChunkLayerManager, commit_order_from_stage
+from usd_chunks.plugins.chunk_usd import ChunkLayerManager, ChunkStageSync, commit_order_from_stage
 
 
 # ANSI colors for CLI output
@@ -49,8 +49,82 @@ def _re_execute_roots(chunks):
             c.execute()
 
 
-def _parse_param_overrides(chunks, overrides):
-    chunk_map = {c.name: c for c in _all_chunks(chunks)}
+def _coerce(param, raw):
+    """Read a command-line string as something the param can hold.
+
+    Returns (value, None) or (None, reason). Every path reports a reason rather than
+    passing quietly: an override that lands on nothing looks exactly like one that
+    worked, and the network cooks with its saved values either way.
+
+    ParamTypeToTypes reports tuple/list for a VECTOR, and calling that constructor on
+    the string is the trap -- tuple("0.1,0.6,0.9") is a tuple of eleven characters, not
+    a colour. Vectors are split into components first. bool is the other one: bool() of
+    any non-empty string is True, so "false" would switch a Checkbox on.
+    """
+    types = chunk.ChunkFlags.ParamTypeToTypes(param.evaluate_type())
+    if not types:
+        return None, f"{param.name!r} has no settable type"
+
+    first = types[0]
+    if first in (tuple, list):
+        parts = [p for p in raw.strip().strip("()[]").split(",") if p.strip()]
+        try:
+            return tuple(float(p) for p in parts), None
+        except ValueError:
+            return None, f"expected comma-separated numbers, got {raw!r}"
+
+    if first is bool:
+        return raw.strip().lower() in ("1", "true", "yes", "on"), None
+
+    try:
+        return first(raw), None
+    except (TypeError, ValueError):
+        return None, f"cannot read {raw!r} as {getattr(first, '__name__', first)}"
+
+
+def _flatten_without_chunks(stage):
+    """Flatten the stage to a layer carrying the result but none of the recipe.
+
+    A Chunk prim left in a delivered file is not inert: open it anywhere usd_chunks is
+    installed and the network reloads and re-cooks, overriding the very geometry the
+    file was exported to carry. Stripping them is what makes the output plain USD that
+    anyone can open with nothing installed.
+
+    FlattenLayerStack rather than Stage.Export, because it keeps references as
+    references where Export inlines the referenced asset outright -- which stops
+    mattering only while a network builds all its own geometry.
+
+    Shallowest path first, so removing a parent Chunk takes its children with it and
+    the later lookup for those children simply finds nothing.
+    """
+    flat = UsdUtils.FlattenLayerStack(stage)
+    tmp = Usd.Stage.Open(flat)
+    chunk_paths = sorted(
+        (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == "Chunk"),
+        key=lambda p: p.pathElementCount,
+    )
+    for path in chunk_paths:
+        spec = flat.GetPrimAtPath(path)
+        if not spec:
+            continue  # already removed as child of a shallower Chunk
+        parent = spec.nameParent
+        if parent:
+            del parent.nameChildren[spec.name]
+        else:
+            del flat.pseudoRoot.nameChildren[spec.name]
+    return flat
+
+
+def _parse_param_overrides(scene, overrides):
+    # Contexts first, in both lookups. get_chunks() omits plain tab contexts because they
+    # are not executable, but a tab is exactly where a network's lofted interface lives --
+    # so without them `Tab1.length=40` reports "chunk not found", and a bare `length=40`
+    # silently reaches past the promoted param into whichever implementation param happens
+    # to share its name. Interface before implementation is also the right precedence: a
+    # lofted param drives what it is connected to, so setting it does everything setting
+    # the inner param would, and means what the tool's author said it means.
+    searchable = list(scene.get_contexts()) + list(_all_chunks(scene.get_chunks()))
+    chunk_map = {c.name: c for c in reversed(searchable)}
     for override in overrides:
         try:
             name, value = override.split("=", 1)
@@ -62,7 +136,7 @@ def _parse_param_overrides(chunks, overrides):
         # This is the natural form for lofted group interface params.
         if "." not in name:
             param = None
-            for c in _all_chunks(chunks):
+            for c in searchable:
                 p = c.get_param(name, chunk.is_param)
                 if p:
                     param = p
@@ -81,9 +155,11 @@ def _parse_param_overrides(chunks, overrides):
                 print(f"Param not found: {param_path!r} on chunk {chunk_name!r}")
                 continue
 
-        types = chunk.ChunkFlags.ParamTypeToTypes(param.evaluate_type())
-        if types:
-            param.value = types[0](value)
+        coerced, why = _coerce(param, value)
+        if why:
+            print(f"Cannot set {name!r}: {why}")
+            continue
+        param.value = coerced
 
 
 def cmd_info(args):
@@ -240,10 +316,23 @@ def cmd_run(args):
     scene = HeadlessScene(stage)
     chunk_registry.ChunkRegistry().initialize(scene, "cli")
     ChunkLayerManager().initialize(stage)
-    load_chunks(stage, scene)
+    # This replaces a bare load_chunks: initialize loads the network itself and, unlike a
+    # bare call, leaves the sync listening while it does.
+    #
+    # Params a chunk creates during its own execute -- a Light chunk's attribute group,
+    # anything else built by show_attribute -- reach their real prim only through the
+    # driven-attr connection that _sync_param_input authors off this sync. Without it
+    # those params load carrying the right values and drive nothing: the light keeps its
+    # schema defaults (intensity 1, a 1x1 rectangle) while the chunk says otherwise, and
+    # the frame comes out lit by whatever fallback the delegate supplies.
+    #
+    # It also restores Edit Target selections, which a bare load_chunks skips -- so a
+    # network whose chunks write into named layers now lands its edits where the file
+    # says, rather than wherever the default target happened to be.
+    ChunkStageSync().initialize(stage, scene)
 
     if args.params:
-        _parse_param_overrides(scene.get_chunks(), args.params)
+        _parse_param_overrides(scene, args.params)
         _re_execute_roots(scene.get_chunks())
 
     # The solve has settled, so anything the network declared as an output on disk (an
@@ -258,26 +347,14 @@ def cmd_run(args):
     )
 
     if args.export:
-        stage.Export(args.export)
+        if args.procedural:
+            stage.Export(args.export)
+        else:
+            _flatten_without_chunks(stage).Export(args.export)
         print(f"Exported: {args.export}")
 
     if args.printout:
-        flat = UsdUtils.FlattenLayerStack(stage)
-        tmp = Usd.Stage.Open(flat)
-        chunk_paths = sorted(
-            (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == "Chunk"),
-            key=lambda p: p.pathElementCount,
-        )
-        for path in chunk_paths:
-            spec = flat.GetPrimAtPath(path)
-            if not spec:
-                continue  # already removed as child of a shallower Chunk
-            parent = spec.nameParent
-            if parent:
-                del parent.nameChildren[spec.name]
-            else:
-                del flat.pseudoRoot.nameChildren[spec.name]
-        print(flat.ExportToString())
+        print(_flatten_without_chunks(stage).ExportToString())
 
 
 def cmd_plugin_path(args):
@@ -331,8 +408,20 @@ def main():
     )
     run_parser.add_argument("usda", help="Path to the .usda chunk network file")
     run_parser.add_argument("params", nargs="*", help="Param overrides: ChunkName.param=value")
-    run_parser.add_argument("--export", "-o", metavar="FILE", help="Flatten and export the resulting stage to FILE")
-    run_parser.add_argument("--printout", "-p", action="store_true", help="Print the flattened stage to stdout")
+    run_parser.add_argument(
+        "--export",
+        "-o",
+        metavar="FILE",
+        help="Flatten and export the result to FILE, without the Chunk prims that built it",
+    )
+    run_parser.add_argument(
+        "--procedural",
+        action="store_true",
+        help="Keep the Chunk prims in --export, so the network reloads and re-cooks",
+    )
+    run_parser.add_argument(
+        "--printout", "-p", action="store_true", help="Print the flattened stage to stdout, Chunk prims stripped"
+    )
 
     info_parser = sub.add_parser(
         "info",

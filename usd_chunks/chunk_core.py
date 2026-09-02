@@ -772,7 +772,13 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
     def _add_param_widget(self, param: "ChunkParamBase", group: Optional["ChunkContainerBase"] = None, list_index=0):
         is_output = param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
         t = param.evaluate_type()
-        if t == ChunkFlags.ParamType.NONE:
+        # MATRIX joins NONE as a type that draws nothing: sixteen numbers have no obvious
+        # widget, and every use so far is data a chunk stores rather than something anyone
+        # edits by hand. Listed here rather than left to fall through the factory because
+        # the fallback there logs a missing-mapping warning, which would be wrong -- the
+        # mapping is absent on purpose. Drop it from this tuple the day a matrix widget
+        # exists and it will start drawing.
+        if t in (ChunkFlags.ParamType.NONE, ChunkFlags.ParamType.MATRIX):
             return
 
         widget: ChunkParamWidgetBase | None
@@ -3192,7 +3198,15 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
                 for node_name, param_name in chunk_utils.parse_expression(value):
                     ref = self._resolve_expression_ref(node_name, param_name)
                     if ref is None:
-                        logger.warning(f"Expression ref @{node_name}.{param_name}@ not found")
+                        # During a load this is the expected first outcome, not a fault:
+                        # values are restored before their chunk is registered, so a
+                        # sibling ref cannot resolve yet. load_chunks retries once the
+                        # batch is registered and reports whatever is still dangling
+                        # then, so warning here would only ever be a false alarm.
+                        if chunk_notice._loading_stage is not None:
+                            logger.debug(f"Expression ref @{node_name}.{param_name}@ not resolvable yet (loading)")
+                        else:
+                            logger.warning(f"Expression ref @{node_name}.{param_name}@ not found")
                         continue
                     conn = chunk_notice.NoticeConnection(
                         method=self._on_ref_changed,
@@ -4911,6 +4925,36 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 if getattr(c, "prim_path", None) == path:
                     return c
         return None
+
+    def get_contexts(self) -> Tuple[ChunkBase, ...]:
+        """Every container in the scene, including the ones get_chunks() leaves out.
+
+        A container owns lofted interface params, and those are the names a tool presents
+        to whoever drives it -- so anything resolving a param by owner rather than by
+        execution order has to see all of them.
+
+        get_chunks() answers a different question: what is a node in some graph. The
+        outermost container is a node in nothing (it has no parent graph to be one in),
+        and a plain module-less context never was one either. Both still hold interface
+        params, which is the gap this fills.
+
+        Stated as "every container" rather than "every CONTEXT chunk including plain
+        tabs", because a plain tab is the legacy shape -- context == chunkgroup now, and
+        a new scene's default container is a real chunkgroup under the /chunks scope. This
+        stays correct as those disappear.
+        """
+        seen: set = set()
+        res: list = []
+        stack: list = list(self.chunks.get_my_params())
+        while stack:
+            i = stack.pop()
+            if not isinstance(i, ChunkBase) or i in seen:
+                continue
+            seen.add(i)
+            if i.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                res.append(i)
+            stack.extend(i.get_my_params())
+        return tuple(res)
 
     def get_chunks(self) -> Tuple[ChunkBase, ...]:
         # The scene's outermost container is the one context that is not a node in any

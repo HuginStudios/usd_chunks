@@ -21,7 +21,11 @@ from pxr import Sdf, UsdRender
 
 from usd_chunks import chunk, chunk_notice, chunk_utils
 
-logger = logging.getLogger(__name__)
+# Parented under "usd_chunks" so this module's messages reach the package handler and
+# its INFO level; a chunk module imported under its own file name otherwise logs from
+# outside the package tree, where only WARNING and above escape, unformatted, through
+# logging's lastResort. See the note in render.py.
+logger = logging.getLogger(f"usd_chunks.{__name__}")
 
 
 def _resolve_targets(stage, param):
@@ -57,10 +61,6 @@ def main():
         chunk.LineEdit("input_passes", "Input Passes"),
         chunk.LineEdit("command", "Command"),
         chunk.LineEdit("file_name", "File Name"),
-        chunk.LineEdit(
-            "reference", "Reference",
-            flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
-        ),
     ])
     return chunk_api
 
@@ -108,8 +108,6 @@ def execute(node):
         if not var_selections and authored != target_path:
             node.get_param("primpath_location").value = authored
 
-        node.get_param("reference").value = authored
-
 
 def config():
     return chunk.DefaulConfig(
@@ -128,16 +126,13 @@ def config():
             unique /Render/Passes/beauty path.
           - Pass Type: what kind of pass this is, e.g. "render" for one a renderer
             executes. Free text, since the set is open and host-specific.
-          - Render Source: the RenderSettings prim this pass renders with. Wire a
-            Render Settings chunk's Reference output in here. One source only — a
-            pass renders one thing.
+          - Render Source: the RenderSettings prim this pass renders with, named
+            by prim path. One source only — a pass renders one thing.
           - Input Passes: passes that must run before this one, as paths or glob
             patterns. This is what orders a multi-pass render.
           - Command: the argv a host would run for this pass, split on whitespace.
             Only meaningful to a host that executes passes itself.
           - File Name: a layer this pass renders instead of the current stage.
-          - Reference (output): the authored prim path, for wiring into a Render
-            chunk's Render Pass field.
 
         Beyond describing the render, a pass can be the route that reaches the
         renderer at all: a delegate may implement render passes without

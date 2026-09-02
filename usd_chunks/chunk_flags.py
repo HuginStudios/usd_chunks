@@ -1,6 +1,6 @@
 from enum import IntFlag, IntEnum, auto
 from typing import List
-from pxr import Sdf
+from pxr import Gf, Sdf
 
 
 class _FlagRepr(IntFlag):
@@ -106,6 +106,7 @@ class ChunkFlags:
             STRING : The parameter can hold a string value
             INT : The parameter can hold a int value
             BOOL : The parameter can hold a bool value
+            MATRIX : The parameter can hold a Gf.Matrix4d, stored in USD as matrix4d
             CUSTOM : The parameter is custom, will use param.custom_widget when creating the widget
             SEPARATOR : The parameter is a separator
             BUTTON : The parameter is a button
@@ -127,6 +128,7 @@ class ChunkFlags:
         INT = auto()
         BOOL = auto()
         VECTOR = auto()
+        MATRIX = auto()
         CUSTOM = auto()  # use self.custom_widget as widget
 
         # Flags for standard widgets
@@ -181,4 +183,6 @@ class ChunkFlags:
         if ChunkFlags.ParamType.VECTOR in t:
             result.append(tuple)
             result.append(list)
+        if ChunkFlags.ParamType.MATRIX in t:
+            result.append(Gf.Matrix4d)
         return result

@@ -161,6 +161,7 @@ _SDF_TYPE_MAP = {
     int: Sdf.ValueTypeNames.Int,
     float: Sdf.ValueTypeNames.Float,
     str: Sdf.ValueTypeNames.String,
+    Gf.Matrix4d: Sdf.ValueTypeNames.Matrix4d,
 }
 
 _VECTOR_TYPE_MAP: dict = {
@@ -3715,23 +3716,6 @@ def load_chunks(
                                 deferred.append((prim, added))
                                 top_level_chunk_ids.add(id(added))
 
-                # _load_wire_inputs above (via _connect_param_attr) resolves @node.param@
-                # expressions to set up the live-update listener (_expression_connections),
-                # but the referenced chunk may not have been registered yet at that point
-                # in this same loop — resolution silently fails and no listener gets
-                # attached, so later edits to the referenced chunk never notify this
-                # param/widget even though a fresh .value read is correct. Now that every
-                # chunk in this batch is registered, retry once for anything still empty.
-                for _, c in deferred:
-                    for _, param in _iter_chunk_params(c):
-                        raw = getattr(param, 'raw_value', None)
-                        if (
-                            isinstance(raw, str)
-                            and chunk_utils.has_expression(raw)
-                            and not getattr(param, '_expression_connections', None)
-                        ):
-                            param.value = raw
-
                 # Restore DAG dependencies from inputs:chunk connections so execution
                 # order is driven by the explicit graph, not just prim appearance order.
                 # Resolve connection targets by prim path — names are scene-wide and can
@@ -3752,6 +3736,35 @@ def load_chunks(
                             chunks_with_dependencies.add(id(chunk))
 
                 _restore_lofted_params(stage, deferred)
+
+                # _load_wire_inputs (via _connect_param_attr) resolves @node.param@
+                # expressions to set up the live-update listener (_expression_connections),
+                # but the referenced chunk may not have been registered yet at that point
+                # in this same loop — resolution fails and no listener gets attached, so
+                # later edits to the referenced chunk never notify this param/widget even
+                # though a fresh .value read is correct. Now that every chunk in this batch
+                # is registered and every lofted value restored, retry once for anything
+                # still empty. This runs after _restore_lofted_params so a lofted param
+                # carrying an expression is covered by the same retry.
+                #
+                # Whatever is still unresolved after the retry is genuinely dangling, and
+                # this is the only place that knows that — which is why the warning lives
+                # here rather than at the failing resolve, where every load would trip it.
+                for _, c in deferred:
+                    for path, param in _iter_chunk_params(c):
+                        raw = getattr(param, 'raw_value', None)
+                        if (
+                            isinstance(raw, str)
+                            and chunk_utils.has_expression(raw)
+                            and not getattr(param, '_expression_connections', None)
+                        ):
+                            param.value = raw
+                            if not getattr(param, '_expression_connections', None):
+                                logger.warning(
+                                    "load_chunks: expression %r on %s.%s refers to a param "
+                                    "that does not exist; it will not update live",
+                                    raw, c.name, path,
+                                )
 
                 # Wire the context (ChunkGroup) as DagNode owner of its terminal sub-chunks.
                 # Terminal nodes have no outputs so DagNode.should_solve() returns False by
@@ -4273,10 +4286,14 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
     _load_wire_inputs runs before execute, so their chunk-prim storage attrs are skipped.
     After execute fires we scan those attrs again: if a param now exists but is still
     wired to a real-prim attr (not the chunk-prim storage), we set its value from the
-    saved attr.  The resulting PARAM_CHANGED triggers _sync_param_input / _sync_vector_input
-    which wires the param to chunk storage and authors the driven USD connection.
+    saved attr, and author that value onto the real attr as well -- the write-through the
+    param's own listener would normally do is damped while a load is running, and this
+    runs inside one.  The resulting PARAM_CHANGED triggers _sync_param_input /
+    _sync_vector_input which wires the param to chunk storage and authors the driven USD
+    connection.
     """
     prim_path = str(prim.GetPath())
+    stage = prim.GetStage()
     for attr in prim.GetAttributes():
         name = attr.GetName()
         if not name.startswith(_INPUTS_PREFIX):
@@ -4311,8 +4328,25 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
         if existing and existing.startswith(prim_path):
             continue  # already wired to chunk storage from first _load_wire_inputs
         val = attr.Get(0)
-        if val is not None:
-            param.value = val
+        if val is None:
+            continue
+        param.value = val
+
+        # Push the value to the real prim attribute by hand as well. Assigning the param
+        # normally writes through on the ATTRIBUTE_CHANGED listener, but that dispatch is
+        # damped for the duration of a load -- and this runs inside one. Without this the
+        # param ends up holding the saved value while the prim it drives keeps its schema
+        # default, which is a Light chunk reloading as intensity 1 on a 1x1 rectangle and
+        # a render lit by whatever fallback the delegate supplies.
+        #
+        # Authored through the chunk's own edit context so it lands in the chunk's layer,
+        # the same place its execute() would have put it, and is rebuilt with the rest on
+        # the next cook rather than lingering as an override nobody wrote.
+        if existing:
+            bound = stage.GetAttributeAtPath(Sdf.Path(existing))
+            if bound:
+                with Usd.EditContext(stage, param.get_edit_context()):
+                    bound.Set(val)
 
 
 def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
@@ -4394,6 +4428,18 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
                 send_on_create=False,
                 private=True,
             )
+
+            # Deliver the restored value down to the inner param once, by hand. The inner
+            # param's own _connect_param_attr deliberately leaves its value alone when it
+            # sees a loft connection, because a lofted value is meant to arrive through
+            # this callback rather than be read from USD twice. On load nothing ever sent
+            # it: _connect_param_attr above set the context param before the callback
+            # existed, and send_on_create=False means registering it sends nothing. The
+            # inner param was left holding its type default -- an empty file path on a
+            # Reference chunk, which cooks to no reference and renders an empty stage --
+            # while USD and the lofted UI both showed the saved value. Seeding here is
+            # before the execute pass, so the first cook already sees the real value.
+            _forward_to_inner(None, None)
 
 
 def _live_exec_dependencies(chunk: "core.ChunkBase") -> list:

@@ -29,7 +29,15 @@ from pxr import Sdf, Usd, UsdGeom, UsdRender, UsdUtils
 from usd_chunks import chunk
 
 
-logger = logging.getLogger(__name__)
+# Parented under "usd_chunks" rather than left at the bare module name. A chunk module
+# is imported via spec_from_file_location under its own file name, so getLogger(__name__)
+# lands outside the package tree -- where it inherits neither the handler nor the INFO
+# level set up in usd_chunks/__init__.py, and only WARNING and above escape, through
+# logging's lastResort handler. That silently hid every diagnostic this module logs at
+# INFO, including which camera the render chose and why, which is the one line that
+# explains a frame that came out looking nothing like the viewport. Also picks up
+# USD_CHUNK_LOG_LEVEL, so DEBUG here is reachable the same way it is everywhere else.
+logger = logging.getLogger(f"usd_chunks.{__name__}")
 
 _FALLBACK_RENDERERS = ["GL", "Embree", "Prman", "Arnold", "VRay", "Cycles"]
 
@@ -171,19 +179,23 @@ def _camera_at(stage, path):
     return camera or None
 
 
-def _stage_relative(stage, path):
-    """Resolve a relative output path against the stage rather than the process.
+def _cwd_relative(path):
+    """Resolve a relative output path against the working directory.
 
-    A relative path is otherwise interpreted against whatever directory the host
-    happened to start in, which for usdview is arbitrary and rarely where anyone wants
-    renders. Next to the scene is the predictable answer.
+    The same base USD uses for a RenderProduct's productName, which is the point: when
+    the two disagree, a render writes its image in one place while the product it
+    declared is looked for in another, and only one of them is where the person who ran
+    the command was looking.
+
+    This deliberately replaces resolving against the scene file. Next to the scene reads
+    like the tidier answer, and for usdview it often is -- but it makes `usdchunks run
+    scene.usda -o out.exr` write beside scene.usda rather than beside the shell, which is
+    not what a command line means by a relative path anywhere else.
     """
     if not path or os.path.isabs(path):
         return path
 
-    root_layer = stage.GetRootLayer()
-    base = os.path.dirname(root_layer.realPath) if root_layer and root_layer.realPath else os.getcwd()
-    return os.path.normpath(os.path.join(base, path))
+    return os.path.normpath(os.path.join(os.getcwd(), path))
 
 
 def _ensure_parent_dir(path):
@@ -202,32 +214,90 @@ def _ensure_parent_dir(path):
         logger.warning("Render: could not create %s (%s)", parent, exc)
 
 
+def _settings_product_names(stage, settings_path):
+    """The file each RenderProduct on this settings prim names, in order.
+
+    Empty when nothing is wired, which is the signal that the render settings cannot
+    decide the outputs on their own and an Output Image is still required. A product
+    with no productName authored -- a Render Product chunk whose Output File is blank
+    -- contributes no name, because there is nothing to write it to.
+
+    Forwarded targets rather than direct ones, which is what UsdRender itself and
+    FrameRecorder both read: a products relationship may point at another relationship
+    rather than at the product prims, and taking the direct targets then finds prims
+    that are not products and misses the ones that are.
+    """
+    if not settings_path:
+        return []
+
+    prim = stage.GetPrimAtPath(Sdf.Path(settings_path))
+    if not prim or not prim.IsValid():
+        return []
+
+    names = []
+    for target in UsdRender.Settings(prim).GetProductsRel().GetForwardedTargets():
+        product_prim = stage.GetPrimAtPath(target)
+        if not product_prim or not product_prim.IsValid():
+            continue
+        name = UsdRender.Product(product_prim).GetProductNameAttr().Get()
+        if name:
+            names.append(str(name))
+    return names
+
+
+def _settings_var_count(stage, settings_path):
+    """How many render vars the settings prim's products ask for, in total.
+
+    Only used to decide whether losing them is worth saying anything about, so
+    duplicates across products are not worth resolving.
+    """
+    if not settings_path:
+        return 0
+
+    prim = stage.GetPrimAtPath(Sdf.Path(settings_path))
+    if not prim or not prim.IsValid():
+        return 0
+
+    count = 0
+    for target in UsdRender.Settings(prim).GetProductsRel().GetForwardedTargets():
+        product_prim = stage.GetPrimAtPath(target)
+        if not product_prim or not product_prim.IsValid():
+            continue
+        count += len(UsdRender.Product(product_prim).GetOrderedVarsRel().GetForwardedTargets())
+    return count
+
+
+def _hydra_reads_render_products():
+    """Whether this USD build lets the render products decide a render's outputs.
+
+    Stock UsdAppUtils.FrameRecorder rejects an empty output path outright -- "Invalid
+    empty output image path" -- and binds no AOVs from a settings prim's render vars,
+    so both the products route and the AOVs need a build carrying the render-settings
+    work in UsdAppUtils.
+
+    SetExtraAovs is the marker for it. It arrives with the same change, and unlike the
+    two behaviours themselves it can be tested for without doing a render. Checked on
+    the class rather than an instance so the answer is available before a recorder --
+    and its render delegate -- has been built.
+    """
+    try:
+        from pxr import UsdAppUtils
+    except ImportError:
+        return False
+    return hasattr(UsdAppUtils.FrameRecorder, "SetExtraAovs")
+
+
 def _prepare_product_dirs(stage, settings_path):
     """Create the directories the settings' RenderProducts will write into.
 
     The delegate writes those files itself, so their paths never pass through here --
-    but they fail the same way, and the renderer will not make the folder either. Both
-    interpretations of a relative productName are prepared, since the delegate resolves
-    it against the process while everything here resolves against the stage.
+    but they fail the same way, and the renderer will not make the folder either. One
+    interpretation is enough now that output paths resolve against the working directory
+    too: it is the same base USD gives a relative productName, so the directory prepared
+    here is the directory the delegate writes into.
     """
-    if not settings_path:
-        return
-
-    prim = stage.GetPrimAtPath(Sdf.Path(settings_path))
-    if not prim or not prim.IsValid():
-        return
-
-    for target in UsdRender.Settings(prim).GetProductsRel().GetTargets():
-        product_prim = stage.GetPrimAtPath(target)
-        if not product_prim or not product_prim.IsValid():
-            continue
-
-        name = UsdRender.Product(product_prim).GetProductNameAttr().Get()
-        if not name:
-            continue
-
-        _ensure_parent_dir(str(name))
-        _ensure_parent_dir(_stage_relative(stage, str(name)))
+    for name in _settings_product_names(stage, settings_path):
+        _ensure_parent_dir(_cwd_relative(name))
 
 
 def _resolve_settings_path(node, stage):
@@ -344,6 +414,13 @@ def _make_recorder(node, settings_path="", pass_path=""):
         logger.warning("Render: no Hydra plugin named %r; using the default delegate.", renderer)
 
     use_gpu = bool(node.get_param("use_gpu").value)
+    if use_gpu and not _gl_context_possible():
+        logger.warning(
+            "Render: no OpenGL context is available here, so Use GPU is being ignored "
+            "and this render runs on the CPU. Delegates that only render on the GPU "
+            "(Storm) are unavailable in this process."
+        )
+        use_gpu = False
 
     # The plugin and the GPU switch go through the constructor when this USD offers it,
     # because whether the engine is GPU-backed is decided as it is built and cannot be
@@ -550,11 +627,36 @@ def _hydra_available():
     return True
 
 
+def _gl_context_possible():
+    """Whether this process could have an OpenGL context for HgiGL to attach to.
+
+    With Use GPU on, HgiGL requires a current GL context even for a delegate that
+    renders entirely on the CPU. When there is none it does not raise: it logs
+    "HgiGL minimum OpenGL requirements not met" and the process then dies inside the
+    delegate with an access violation, which reaches the caller as a bare exit code
+    and no Python traceback. That is what `usdchunks run` hits, where the same network
+    renders fine inside usdview.
+
+    Hgi has no Python binding in this build, so the context cannot be probed directly.
+    Qt is the only thing that creates one in any of these hosts, so the question this
+    answers is the conservative half of it -- whether a context could exist at all,
+    not whether one is current. A GUI host always answers yes and keeps the behaviour
+    it has today; only a process with no Qt application, which is to say the CLI, can
+    answer no. Guessing wrong in that direction costs a CPU render rather than a crash.
+    """
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return False
+    return QApplication.instance() is not None
+
+
 def _render(node):
-    output_image = node.get_param("output_image").value
-    if not output_image:
-        logger.error("Render: no output image path set.")
-        return
+    # Empty is meaningful in Hydra mode: it hands the choice of outputs to the render
+    # products, which is the only way FrameRecorder writes more than one AOV. Naming an
+    # image here is what turns that off, so the check belongs where the path is used
+    # rather than up front.
+    output_image = node.get_param("output_image").value or ""
 
     mode = node.get_param("mode").value
     if mode == "Hydra" and not _hydra_available():
@@ -565,6 +667,9 @@ def _render(node):
         mode = "Command"
 
     if mode == "Command":
+        if not output_image:
+            logger.error("Render: no output image path set.")
+            return
         _render_command(node, output_image)
     else:
         _render_hydra(node, output_image)
@@ -589,6 +694,42 @@ def _render_hydra(node, output_image):
         logger.error("Render: no camera to render from — set Camera, or point Render Settings at one.")
         return
 
+    # An empty Output Image means "the render products decide". FrameRecorder only
+    # takes that route when the path it is handed is empty -- given one, it writes that
+    # single image and never looks at the products, which is why a network with four
+    # RenderVars wired up still produced one beauty frame. Refuse the combination that
+    # cannot work rather than render into nothing.
+    products = _settings_product_names(stage, settings_path)
+    if not output_image and not products:
+        logger.error(
+            "Render: no Output Image, and no Render Settings prim naming render "
+            "products to write instead. Set one or the other."
+        )
+        return
+
+    # Refused up front rather than left to fail inside Record(), which reports only
+    # "Invalid empty output image path" -- true, but no help at all in working out that
+    # the build is what is missing rather than the network.
+    if not output_image and not _hydra_reads_render_products():
+        logger.error(
+            "Render: this USD build cannot let the render products decide the outputs, "
+            "so Output Image is required here. Set one, or use Command mode to render "
+            "through an external tool that reads the products itself."
+        )
+        return
+
+    # AOVs go the same way and take no error with them: without the render vars bound,
+    # a network describing twenty channels renders one beauty frame and says nothing.
+    # Worth a word, since the result looks like a renderer that cannot do AOVs.
+    if (var_count := _settings_var_count(stage, settings_path)) and not _hydra_reads_render_products():
+        logger.warning(
+            "Render: this USD build does not bind a settings prim's render vars, so "
+            "the %d AOVs on <%s> will not be in the output — only the beauty. Command "
+            "mode, or a tool that reads the products, renders them.",
+            var_count,
+            settings_path,
+        )
+
     recorder = _make_recorder(node, settings_path, pass_path)
     if recorder is None:
         return
@@ -603,13 +744,22 @@ def _render_hydra(node, output_image):
             # should never reach disk with the hashes still in it, and the single
             # render is frame 0 rather than EarliestTime's -inf.
             frame_number = time_code.GetValue() if frames else 0
-            path = _stage_relative(stage, format_output_path(output_image, frame_number))
-            _ensure_parent_dir(path)
+            path = ""
+            if output_image:
+                path = _cwd_relative(format_output_path(output_image, frame_number))
+                _ensure_parent_dir(path)
             if not recorder.Record(stage, camera, time_code, path):
-                logger.error("Render: failed writing %s", path)
+                logger.error("Render: failed writing %s", path or "the render products")
                 return
-            written.append(path)
-            logger.info("Render wrote %s", path)
+
+            # With no path of our own, what landed on disk is whatever the products
+            # named -- report those, so Output still says where the images went.
+            paths = [path] if path else [
+                _cwd_relative(format_output_path(name, frame_number)) for name in products
+            ]
+            written.extend(paths)
+            for wrote in paths:
+                logger.info("Render wrote %s", wrote)
     except Exception as exc:
         # A render delegate failing must report something actionable rather than
         # propagate: the Render button dispatches through the notice system, where an
@@ -736,11 +886,20 @@ def config():
             when Frames is set — both render.####.exr and render.{frame}.exr work,
             with hashes padded to their own width.
 
-            A relative path is resolved against the scene rather than against
-            whatever directory the host started in, and the directory is created
-            if it does not exist. The same is done for the directories the
-            settings' RenderProducts write into, since the delegate writes those
-            itself and no renderer creates the folder for you.
+            Leave it empty to let the Render Settings prim's products decide the
+            outputs instead. That is the only route that writes more than one AOV:
+            naming an image here makes FrameRecorder write that single file and
+            never consult the products, so a network with several Render Vars
+            wired up still produces one beauty frame. With it empty, each product
+            is written to the file its productName gives, carrying the AOVs its
+            Ordered Vars ask for — subject to the renderer actually producing
+            them, which not every delegate does.
+
+            A relative path is resolved against the working directory, the same
+            base USD gives a relative productName, and the directory is created if
+            it does not exist. The same is done for the directories the settings'
+            RenderProducts write into, since the delegate writes those itself and
+            no renderer creates the folder for you.
           - Frames: which frames to render, usdrecord-style — comma-separated
             entries, each a single frame, a start:end range, or a strided
             start:endxstride range. Empty renders one image at the stage's default
