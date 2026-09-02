@@ -4814,7 +4814,16 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             # container for what they hold; giving them a parent conjured a spurious
             # default group around every tab on reload.
             is_chunkgroup = bool(c.get_config() and c.get_config().module)
-            if parent is None and is_chunkgroup and not self._creating_root_context:
+            if (
+                parent is None
+                and is_chunkgroup
+                and not self._creating_root_context
+                # Never while loading: the file's own structure is authoritative. A saved
+                # chunkgroup arriving here would otherwise conjure a second, empty default
+                # to nest under, and then lose a name collision with it -- reopening a
+                # scene produced ChunkGroup (empty) plus ChunkGroup1 (the real one).
+                and chunk_notice._loading_stage is None
+            ):
                 # Find-or-CREATE: a chunkgroup made when the scene is still empty must not
                 # become the container itself -- it is a node dropped into the default
                 # group, exactly like one made later ("droppar du ned en chunkgroup i

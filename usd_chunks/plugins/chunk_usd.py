@@ -3538,7 +3538,17 @@ def load_chunks(
     # (_parent_context) not covered by this reload path yet.
     context_prims = []
     for prim in (stage.Traverse() if prims is None else prims):
-        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+        # The /chunks scope is structural, not a chunk: it holds the graph but is not one.
+        # It used to be typed Chunk and so came through this filter as a "context prim";
+        # typing it Scope made the loader skip it, and with the saved container
+        # unrecognised every chunk fell through to the root-layer branch and was rehomed
+        # under a fresh tab named after the file. Prim paths moved on every reload, so
+        # anything addressing a path -- a binding, a sublayer target -- stopped resolving.
+        is_chunks_scope = (
+            str(prim.GetPath()) == _CHUNKS_ROOT
+            and prim.GetTypeName() == _CHUNKS_ROOT_TYPENAME
+        )
+        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME and not is_chunks_scope:
             continue
         if loaded_prim_paths is not None and str(prim.GetPath()) in loaded_prim_paths:
             continue
@@ -3584,6 +3594,14 @@ def load_chunks(
             prim_path = str(prim.GetPath())
             if loaded_prim_paths is not None:
                 loaded_prim_paths.add(prim_path)
+            if prim_path == _CHUNKS_ROOT:
+                # A scope holds chunks without being a context itself ("/chunks det är
+                # bara ett scope"). Recording the path is still what routes its children
+                # to _EXISTING_CONTEXT, so they keep their saved home instead of being
+                # wrapped in a tab named after the file -- we just do not mint a context
+                # for the scope to be that home.
+                context_paths.add(prim_path)
+                continue
             ctx = scene.add_context(prim.GetName(), prim_path)
             if ctx is not None:
                 group_chunk_by_path[prim_path] = ctx
