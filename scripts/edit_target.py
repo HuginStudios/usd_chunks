@@ -14,8 +14,18 @@ def _find_upstream_create_layer(chunk_obj):
     """Return the nearest upstream chunk that owns a _new_layer_id param (i.e. a
     Create Layer chunk), found via the exec-chain dependency graph — the same
     connection that already sequences the two nodes — or None if there isn't one.
+
+    Exec edges only, which is why this asks chunk_usd.exec_dependencies rather than
+    chunk_obj.get_dependencies(): the Python DAG also mirrors param wires, and a param
+    wire means a value flows, not that one chunk precedes another. Following one here
+    would let a Create Layer wired for some unrelated param silently decide where every
+    downstream chunk authors — and get_dependencies() returns both kinds in no
+    particular order, so with both present it would be a coin toss which won.
+
+    A Create Layer whose Layer Name port *is* wired into this chunk needs no walk at
+    all: the param already holds the layer name, which is what _resolve_layer resolves.
     """
-    for _, dep in chunk_obj.get_dependencies():
+    for dep in chunk_usd.exec_dependencies(chunk_obj):
         if dep is not None and dep.get_param("_new_layer_id") is not None:
             return dep
     return None

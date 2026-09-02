@@ -4309,6 +4309,23 @@ def _would_cycle(chunk: "core.ChunkBase", dep: "core.ChunkBase") -> bool:
     return dep.get_dag_node() in chunk_scheduler.downstream_closure(chunk.get_dag_node())
 
 
+def exec_dependencies(chunk: "core.ChunkBase") -> list:
+    """The chunks feeding this one's *exec* slots, read from the live stage.
+
+    The public way for a chunk module to ask "what is immediately upstream of me on the
+    exec chain". chunk.get_dependencies() is not that question: the Python DAG also
+    mirrors param wires, which mean a value flows rather than that one chunk precedes
+    another.
+
+    Args:
+        chunk (core.ChunkBase): The chunk to read the exec inputs of
+
+    Returns:
+        list: The upstream chunks, one per connected exec slot
+    """
+    return _live_exec_dependencies(chunk)
+
+
 def reconcile_exec_dependencies(chunk: "core.ChunkBase") -> bool:
     """Make chunk's Python DAG dependencies match its live inputs:chunk connections.
 
