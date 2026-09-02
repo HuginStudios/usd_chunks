@@ -206,7 +206,7 @@ def _existing_node(registry, stage, name, x):
     c = chunk.Chunk(name)
     c._config = ChunkConfig(module="sublayer")
     registry.scene.add_chunk(c)
-    prim = stage.GetPrimAtPath(Sdf.Path(f"{chunk_usd._CHUNKS_ROOT}/{c.name}"))
+    prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(c)))
     # Through the bookkeeping layer, as the node graph does when you drag a node. A plain
     # Set() goes to the ambient edit target, which loses to the layer _define_prim already
     # authored the position into -- so the node silently stays where it was.

@@ -14,9 +14,9 @@ import importlib
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
+from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 
 
 class _DummyScene(SceneSender):
@@ -365,7 +365,7 @@ class TestCreateLayerNestingAndExport:
         shot_out = Sdf.Layer.FindOrOpen(str(tmp_path / "shot.usda"))
         assert shot_out is not None
 
-        light_spec = shot_out.GetPrimAtPath("/chunks/Light")
+        light_spec = shot_out.GetPrimAtPath(get_chunk_prim_path(light))
         assert light_spec is not None, "Light chunk's bookkeeping prim should be in the recipe export"
         assert light_spec.GetInfo("typeName") == "Chunk"
 
@@ -453,7 +453,7 @@ class TestCreateLayerNestingAndExport:
 
         shot_out = Sdf.Layer.FindOrOpen(str(tmp_path / "shot.usda"))
         assert shot_out is not None
-        assert shot_out.GetPrimAtPath("/chunks/Light") is None
+        assert shot_out.GetPrimAtPath(get_chunk_prim_path(light)) is None
         recipe_stage = Usd.Stage.Open(shot_out)
         assert [p for p in recipe_stage.Traverse() if p.GetTypeName() == "DiskLight"]
 
@@ -474,12 +474,12 @@ class TestCreateLayerNestingAndExport:
         export_chunk = _make(scene, self.export_mod, "export_usd")
         export_chunk.get_param("flatten").value = True
         export_chunk.get_param("output_file").value = str(tmp_path / "out.usda")
-        return scene, stage, export_chunk
+        return scene, stage, export_chunk, light
 
     def test_export_flatten_baked_strips_chunk_prims(self, tmp_path):
         """Flatten checked, Mode=Baked (default): one file with every chunk's real
         driven content merged in, but no chunk-graph bookkeeping prims at all."""
-        scene, stage, export_chunk = self._setup_light_in_shot(tmp_path)
+        scene, stage, export_chunk, light = self._setup_light_in_shot(tmp_path)
 
         export_param = export_chunk.get_param("export_all")
         self.export_mod.export_all(export_param, None, None)
@@ -498,7 +498,7 @@ class TestCreateLayerNestingAndExport:
         anon: identifier, which only resolves because it's still alive in this same
         test process; a real reload elsewhere would leave it dangling, per the
         Session Layer tooltip's "reloading re-runs execute()" design.)"""
-        scene, stage, export_chunk = self._setup_light_in_shot(tmp_path)
+        scene, stage, export_chunk, light = self._setup_light_in_shot(tmp_path)
         export_chunk.get_param("export_mode").value = "Procedural"
 
         export_param = export_chunk.get_param("export_all")
@@ -513,13 +513,16 @@ class TestCreateLayerNestingAndExport:
                 names |= _collect_type_names(child)
             return names
 
-        assert _collect_type_names(out.pseudoRoot) == {"Chunk"}
+        # Chunk bookkeeping and the /chunks Scope that holds it, and nothing else --
+        # no baked content. The scope is authored as a Scope now (it is "bara ett
+        # scope", not a chunk prim) and export carries that typename across.
+        assert _collect_type_names(out.pseudoRoot) == {"Chunk", "Scope"}
 
     def test_export_flatten_based_on_settings_adds_marked_recipes(self, tmp_path):
         """Flatten checked, Mode=Based on Settings: Baked content, plus the recipe of
         every chunk whose target layer is marked Procedural in Layers to Export —
         merged into the one output file rather than split by layer."""
-        scene, stage, export_chunk = self._setup_light_in_shot(tmp_path)
+        scene, stage, export_chunk, light = self._setup_light_in_shot(tmp_path)
 
         class _FakeOwner:
             def get_chunk(self):
@@ -544,7 +547,7 @@ class TestCreateLayerNestingAndExport:
         assert out is not None
         out_stage = Usd.Stage.Open(out)
         assert [p for p in out_stage.Traverse() if p.GetTypeName() == "DiskLight"]
-        assert out.GetPrimAtPath("/chunks/Light") is not None
+        assert out.GetPrimAtPath(get_chunk_prim_path(light)) is not None
 
     def test_export_chunkgroup_is_self_contained(self, tmp_path):
         """Export ChunkGroup rebuilds every chunk prim fresh into one brand-new layer —
@@ -581,4 +584,7 @@ class TestCreateLayerNestingAndExport:
                 names |= _collect_type_names(child)
             return names
 
-        assert _collect_type_names(out.pseudoRoot) == {"Chunk"}
+        # Chunk bookkeeping and the /chunks Scope that holds it, and nothing else --
+        # no baked content. The scope is authored as a Scope now (it is "bara ett
+        # scope", not a chunk prim) and export carries that typename across.
+        assert _collect_type_names(out.pseudoRoot) == {"Chunk", "Scope"}

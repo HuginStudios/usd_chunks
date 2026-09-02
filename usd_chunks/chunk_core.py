@@ -4489,6 +4489,13 @@ class ChunkConfig(AttributesBase):
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
 
 
+# The chunk module backing every context. "context == chunkgroup": a CONTEXT chunk with no
+# module was only ever a stand-in from before this type existed. The /chunks prim itself is a
+# scope (plugins-layer _CHUNKS_ROOT), like /lights or /render -- nothing lives at it, and the
+# default chunkgroup sits under it at /chunks/<name>.
+CHUNKGROUP_MODULE = "chunkgroup"
+
+
 class SceneSender(chunk_notice.ChunkNoticePropagator):
     """
     Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
@@ -4678,6 +4685,53 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         c.request_delete()
         self._modified = True
 
+    # Guards the recursion in get_root_context: creating the root goes through add_chunk,
+    # which asks for a root to parent the new context to.
+    _creating_root_context = False
+
+    def peek_root_context(self) -> "ChunkBase | None":
+        """The scene's outermost container if it exists, without creating one.
+
+        get_root_context is find-or-CREATE, so read paths (get_chunks, and anything built
+        on it) must not call it -- merely asking what the chunks are would author a context.
+        """
+        for c in self.chunks.get_my_params():
+            if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                return c
+        return None
+
+    def get_root_context(self) -> "ChunkBase | None":
+        """The scene's default container, created on demand. Find-or-create.
+
+        A chunkgroup carries a module config, so add_chunk restores _current_context after
+        adding it (the group must not swallow whatever is created next). That makes this
+        find-or-create rather than create: without the lookup every chunk added at the root
+        would mint a group of its own.
+        """
+        if (existing := self.peek_root_context()) is not None:
+            return existing
+
+        module = chunk_registry.ChunkRegistry().get_chunk_module(CHUNKGROUP_MODULE)
+        if module is not None:
+            created = module.create() if module.loaded else module.load()
+            if created:
+                # The root is itself added through add_chunk, whose CONTEXT branch asks for
+                # the root to parent to -- straight back into here. The flag is what stops
+                # that recursion: while the root is being made, there is nothing above it.
+                self._creating_root_context = True
+                try:
+                    return self.add_chunk(created[0])
+                finally:
+                    self._creating_root_context = False
+
+        # No registry or no chunkgroup module on the search path (a bare unit test, or a
+        # misconfigured USD_CHUNK_DIRS). Fall back to a plain context so a chunk still has
+        # somewhere to go rather than being dropped.
+        logger.warning(
+            f"chunk module {CHUNKGROUP_MODULE!r} unavailable; falling back to a plain context"
+        )
+        return self.add_context("Chunks")
+
     def add_context(self, name: str, prim_path: Optional[str] = None) -> ChunkBase | None:
         """
         Adds a context chunk to the scene. Concrete chunks can be added to the context using add_param and similar. The returned
@@ -4747,7 +4801,39 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             return
 
         if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-            c._parent_context = self._current_context
+            # A chunkgroup created with nothing dived into still belongs INSIDE the scene's
+            # outermost container, exactly like a plain chunk does -- it is a node in that
+            # container's graph. Without this it fell back to the /chunks scope and became a
+            # SIBLING of the root instead (/chunks/Group next to /chunks/ChunkGroup), so it
+            # was a node in no graph at all and simply never appeared (live-reported).
+            # peek_root_context is None while the root itself is being created, which is what
+            # keeps the root from trying to parent itself.
+            parent = self._current_context
+            # Only a real chunkgroup nests. add_context() makes plain module-less contexts
+            # -- the named tabs load_chunks recreates from a file -- and those ARE the
+            # container for what they hold; giving them a parent conjured a spurious
+            # default group around every tab on reload.
+            is_chunkgroup = bool(c.get_config() and c.get_config().module)
+            if (
+                parent is None
+                and is_chunkgroup
+                and not self._creating_root_context
+                # Never while loading: the file's own structure is authoritative. A saved
+                # chunkgroup arriving here would otherwise conjure a second, empty default
+                # to nest under, and then lose a name collision with it -- reopening a
+                # scene produced ChunkGroup (empty) plus ChunkGroup1 (the real one).
+                and chunk_notice._loading_stage is None
+            ):
+                # Find-or-CREATE: a chunkgroup made when the scene is still empty must not
+                # become the container itself -- it is a node dropped into the default
+                # group, exactly like one made later ("droppar du ned en chunkgroup i
+                # graphen ska den neatly under parentchunkgroupen"). Without this the very
+                # first group silently became the root, so whether a group was a node or a
+                # container depended on how empty the scene happened to be.
+                root = self.get_root_context()
+                if root is not None and root is not c:
+                    parent = weakref.ref(root)
+            c._parent_context = parent
             self._current_context = weakref.ref(c)
             # User-created group chunks (have a module config) need PARAM_ADDED to fire
             # so ChunkStageSync can create their USD prim. Tab contexts skip this.
@@ -4763,10 +4849,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         elif self._current_context and (ctx := self._current_context()):
             ctx.add_param(c, notify=notify)
-        # The default catch-all context must map to the global chunks root ("/chunks",
-        # i.e. _CHUNKS_ROOT in the plugins layer) so chunks with no tab land there. Without
-        # an explicit path, add_context would give it "/Chunks" and break _resolve_chunk_root.
-        elif ctx := self.add_context("Chunks", prim_path="/chunks"):
+        # Nowhere to put it yet: fall back to the scene's default chunkgroup, which
+        # _resolve_chunk_root places under the /chunks scope.
+        elif ctx := self.get_root_context():
             ctx.add_param(c, notify=notify)
         else:
             logger.error(f"Failed to add chunk {c}")
@@ -4828,6 +4913,16 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return None
 
     def get_chunks(self) -> Tuple[ChunkBase, ...]:
+        # The scene's outermost container is the one context that is not a node in any
+        # graph. Dan: "default chunkgroupen ska inte vara en chunk i graphen, den ska vara
+        # en upp" -- a chunkgroup is a node in its PARENT's graph, and this one has no
+        # parent graph to be a node in.
+        #
+        # Identity, not depth: add_chunk puts EVERY context straight into self.chunks, so a
+        # user-created chunkgroup sits at the same container depth as the root and a
+        # depth test hides all of them (live-reported: no chunkgroup visible in the graph,
+        # and none creatable).
+        root = self.peek_root_context()
         seen: set = set()
         res: list = []
         stack: list = list(self.chunks.get_my_params())
@@ -4838,13 +4933,16 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             seen.add(i)
             cfg = i.get_config()
             is_group_chunk = i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module
-            if i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and not is_group_chunk:
-                # Plain tab context: don't include it, but visit its children.
+            # A plain tab context is skipped for the same reason at any depth: it predates
+            # the chunkgroup type and was never a node either.
+            if i.has_flag(ChunkFlags.GroupFlags.CONTEXT) and (not is_group_chunk or i is root):
+                # Don't include it, but visit its children.
                 stack.extend(i.get_my_params())
             else:
                 res.append(i)
                 if is_group_chunk:
-                    # ChunkGroup: include it AND recurse so sub-chunks are reachable.
+                    # A nested ChunkGroup is a node in this graph AND a container: include
+                    # it and recurse so its sub-chunks stay reachable.
                     stack.extend(i.get_my_params())
         return tuple(res)
 

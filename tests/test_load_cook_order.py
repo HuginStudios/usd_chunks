@@ -36,7 +36,15 @@ class _RootContext:
     context", which makes recook treat a group's inner chunks as nodes of the ROOT graph
     and mute them -- see is_node_in_context."""
 
-    prim_path = _CHUNKS_ROOT
+    # The container the chunks in this test actually sit in. It used to stand in for the
+    # /chunks scope, which was where a context-less chunk landed; they now land inside the
+    # scene's default chunkgroup, and a context naming the scope instead matches nothing --
+    # is_node_in_context compares prim parents, so every chunk reads as "not in this
+    # context" and the cook quietly does nothing.
+    def __init__(self, scene=None):
+        ctx = scene.peek_root_context() if scene is not None else None
+        self.prim_path = get_chunk_prim_path(ctx) if ctx is not None else _CHUNKS_ROOT
+
     name = "Tab1"
 
     class _Cfg:
@@ -133,7 +141,7 @@ def test_group_inner_chunks_cook_after_their_upstream_on_load(qapp, tmp_path) ->
     _wire(outer_view, grp)
 
     # Cook once so the live scene is in the state the user saves from.
-    recook_focus(stage, scene, _RootContext(), outer_view)
+    recook_focus(stage, scene, _RootContext(scene), outer_view)
     assert _binding(stage) == "/NewMat", "test setup must be faithful -- it must bind live first"
 
     out = tmp_path / "scene.usda"

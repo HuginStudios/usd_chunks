@@ -34,6 +34,10 @@ _INPUTS_PREFIX = "inputs:"
 _EXEC_OUTPUT = "outputs:chunk"
 _EXEC_INPUT = "inputs:chunk"
 _CHUNK_PRIM_TYPENAME = "Chunk"
+# /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
+# default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
+# scope look like a chunk prim to anything reading the stage back.
+_CHUNKS_ROOT_TYPENAME = "Scope"
 _CHUNKS_ROOT = "/chunks"
 
 # Merge chunks fan several exec branches into one node, so they need more than the single
@@ -1495,7 +1499,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return contextlib.nullcontext()
 
         with book_ctx():
-            self._stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
+            _define_chunk_parent(self._stage, chunk_root)
 
         root_prim = self._stage.GetPrimAtPath(Sdf.Path(chunk_root))
         index = sum(
@@ -1650,6 +1654,16 @@ def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
                     attr.Set(val.replace(old, new))
                 if hit_text:
                     attr.SetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY, text.replace(old, new))
+
+
+
+def _define_chunk_parent(stage: "Usd.Stage", path: str) -> "Usd.Prim":
+    """Define the parent prim a chunk hangs under, typed for what it actually is.
+
+    The /chunks root is a Scope; every other parent is a chunkgroup's own Chunk prim.
+    """
+    typename = _CHUNKS_ROOT_TYPENAME if str(path) == _CHUNKS_ROOT else _CHUNK_PRIM_TYPENAME
+    return stage.DefinePrim(Sdf.Path(path), typename)
 
 
 def _resolve_chunk_root(chunk: "core.ChunkBase") -> str:
@@ -3524,7 +3538,17 @@ def load_chunks(
     # (_parent_context) not covered by this reload path yet.
     context_prims = []
     for prim in (stage.Traverse() if prims is None else prims):
-        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+        # The /chunks scope is structural, not a chunk: it holds the graph but is not one.
+        # It used to be typed Chunk and so came through this filter as a "context prim";
+        # typing it Scope made the loader skip it, and with the saved container
+        # unrecognised every chunk fell through to the root-layer branch and was rehomed
+        # under a fresh tab named after the file. Prim paths moved on every reload, so
+        # anything addressing a path -- a binding, a sublayer target -- stopped resolving.
+        is_chunks_scope = (
+            str(prim.GetPath()) == _CHUNKS_ROOT
+            and prim.GetTypeName() == _CHUNKS_ROOT_TYPENAME
+        )
+        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME and not is_chunks_scope:
             continue
         if loaded_prim_paths is not None and str(prim.GetPath()) in loaded_prim_paths:
             continue
@@ -3570,6 +3594,14 @@ def load_chunks(
             prim_path = str(prim.GetPath())
             if loaded_prim_paths is not None:
                 loaded_prim_paths.add(prim_path)
+            if prim_path == _CHUNKS_ROOT:
+                # A scope holds chunks without being a context itself ("/chunks det är
+                # bara ett scope"). Recording the path is still what routes its children
+                # to _EXISTING_CONTEXT, so they keep their saved home instead of being
+                # wrapped in a tab named after the file -- we just do not mint a context
+                # for the scope to be that home.
+                context_paths.add(prim_path)
+                continue
             ctx = scene.add_context(prim.GetName(), prim_path)
             if ctx is not None:
                 group_chunk_by_path[prim_path] = ctx
@@ -3866,8 +3898,35 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
         if not parent.isEmpty and parent != Sdf.Path.absoluteRootPath and not dst.GetPrimAtPath(parent):
             Sdf.CreatePrimInLayer(dst, parent)
         Sdf.CopySpec(flat, prim_path, dst, prim_path)
+        _carry_ancestor_specs(flat, dst, prim_path)
 
     dst.Export(str(path))
+
+
+def _carry_ancestor_specs(flat: "Sdf.Layer", dst: "Sdf.Layer", prim_path: "Sdf.Path") -> None:
+    """Give an exported chunk's ancestors the typename AND specifier they have on the stage.
+
+    Only chunk prims are copied across; their ancestors are conjured by
+    Sdf.CreatePrimInLayer, which makes a bare `over` with no typename. The /chunks scope
+    used to survive anyway, by accident: it was itself typed Chunk, so it was in the copy
+    set and came across as a full def. Typing it Scope took it out of that set and left
+    only the over.
+
+    An over is not IsDefined(), and Usd.Stage.Traverse() prunes at an undefined prim --
+    taking the whole chunk subtree with it. So an exported file loaded back as an empty
+    scene: no scope, no chunks, nothing. Carry the specifier as well, and an ancestor
+    that is a real defined prim on the stage stays one in the export.
+    """
+    parent = prim_path.GetParentPath()
+    while not parent.isEmpty and parent != Sdf.Path.absoluteRootPath:
+        spec = dst.GetPrimAtPath(parent)
+        source = flat.GetPrimAtPath(parent)
+        if spec is not None and source is not None:
+            if not spec.typeName and source.typeName:
+                spec.typeName = source.typeName
+            if source.specifier == Sdf.SpecifierDef:
+                spec.specifier = Sdf.SpecifierDef
+        parent = parent.GetParentPath()
 
 
 def save_scene(scene: "core.SceneSender", chunkgroup_path: "str | Path") -> None:
@@ -4327,7 +4386,7 @@ def reconcile_exec_dependencies(chunk: "core.ChunkBase") -> bool:
 
 def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:
     chunk_root = _resolve_chunk_root(chunk)
-    stage.DefinePrim(Sdf.Path(chunk_root), _CHUNK_PRIM_TYPENAME)
+    _define_chunk_parent(stage, chunk_root)
 
     prim = stage.DefinePrim(Sdf.Path(f"{chunk_root}/{chunk.name}"), _CHUNK_PRIM_TYPENAME)
 

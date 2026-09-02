@@ -16,7 +16,23 @@ from pxr import Usd
 
 from usd_chunks import chunk, chunk_core, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins.chunk_usd import _CHUNKS_ROOT, _INPUTS_PREFIX, ChunkStageSync
+from usd_chunks.plugins.chunk_usd import _INPUTS_PREFIX, ChunkStageSync
+
+
+def _chunk_path(name: str) -> str:
+    """Where a chunk added through the scene actually lands.
+
+    add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
+    parent is that group rather than the /chunks scope.
+    """
+    from usd_chunks import chunk_registry
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+
+    scene = chunk_registry.ChunkRegistry().scene
+    ctx = scene.peek_root_context() if scene is not None else None
+    root = get_chunk_prim_path(ctx) if ctx is not None else "/chunks"
+    return f"{root}/{name}"
+
 
 _LOGGER = chunk_core.logger.name
 
@@ -128,9 +144,9 @@ def test_connect_value_across_chunks_reaches_usd(scene) -> None:
 
     dst.get_param("q").connect_value(src.get_param("p"))
 
-    attr = scene.get_stage().GetPrimAtPath(f"{_CHUNKS_ROOT}/dst").GetAttribute(f"{_INPUTS_PREFIX}q")
+    attr = scene.get_stage().GetPrimAtPath(_chunk_path("dst")).GetAttribute(f"{_INPUTS_PREFIX}q")
     assert attr.IsValid()
-    assert [str(c) for c in attr.GetConnections()] == [f"{_CHUNKS_ROOT}/src.{_INPUTS_PREFIX}p"]
+    assert [str(c) for c in attr.GetConnections()] == [f'{_chunk_path("src")}.{_INPUTS_PREFIX}p']
 
 
 def test_connect_value_across_chunks_tracks_source(scene) -> None:

@@ -418,18 +418,33 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
     def add_new_tab(self):
         """Create a context chunk and show it as the current tab.
 
-        No longer a UI affordance -- tabs mirror the chunk hierarchy (the root context, and
-        a chunkgroup that has been dived into) rather than being authored by hand. This
+        No longer a UI affordance -- tabs mirror the chunk hierarchy (the default chunkgroup,
+        and any chunkgroup that has been dived into) rather than being authored by hand. This
         remains for the two paths that need a context to exist at all: a chunk created with
         no tab to receive it (add_chunk_to_tab), and the empty-panel Tab shortcut.
-        """
-        name = f"Tab {self.tabBar().count()}"
 
-        if scene := chunk.get_scene():
-            scene.add_context(name)
-        else:
-            c = chunk.Chunk(name, flags=ChunkFlags.GroupFlags.CONTEXT)
-            self.add_chunk_context(c)
+        It used to mint its own `Tab {count}` context at /Tab0. Running before anything else
+        needed a context, that beat chunk_core's default to it, so a scene's ground prim was
+        a tab rather than the default chunkgroup under /chunks. Defer to get_root_context so
+        there is one answer, and reuse the tab if the root already has one -- creating the
+        context publishes CHUNK_ADDED which builds a tab, but an existing root fires nothing.
+        """
+        scene = chunk.get_scene()
+        if scene is None:
+            self.add_chunk_context(
+                chunk.Chunk("Chunks", flags=ChunkFlags.GroupFlags.CONTEXT)
+            )
+            return
+
+        ctx = scene.get_root_context()
+        if ctx is None:
+            return
+        idx = self.get_chunk_context_index(ctx)
+        if idx is None:
+            self.add_chunk_context(ctx)
+            idx = self.get_chunk_context_index(ctx)
+        if idx is not None:
+            self.setCurrentIndex(idx)
 
     def update_tab_position(self):
         if self.height() > self.width():

@@ -224,6 +224,22 @@ class _FakeZipResponse:
     Sdf.FileFormat.FindByExtension("mtlx") is None,
     reason="requires a USD build with the MaterialX file format plugin (absent from the usd-core wheels)",
 )
+
+
+def _chunk_path(name: str) -> str:
+    """Where a chunk added through the scene actually lands.
+
+    add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
+    parent is that group rather than the /chunks scope.
+    """
+    from usd_chunks import chunk_registry
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+
+    scene = chunk_registry.ChunkRegistry().scene
+    ctx = scene.peek_root_context() if scene is not None else None
+    root = get_chunk_prim_path(ctx) if ctx is not None else "/chunks"
+    return f"{root}/{name}"
+
 class TestAMDMaterialXLibraryChildCreation:
     @pytest.fixture(autouse=True)
     def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
@@ -362,8 +378,8 @@ class TestAMDMaterialXLibraryChildCreation:
         # was present, so it never actually caught it.
         session_layer = stage.GetSessionLayer()
         amd_layer = c.get_edit_context()
-        ref_spec = session_layer.GetPrimAtPath(Sdf.Path("/chunks/AMDMaterialXLibrary/Reference"))
-        bind_spec = session_layer.GetPrimAtPath(Sdf.Path("/chunks/AMDMaterialXLibrary/BindMaterial"))
+        ref_spec = session_layer.GetPrimAtPath(Sdf.Path(f'{_chunk_path("AMDMaterialXLibrary")}/Reference'))
+        bind_spec = session_layer.GetPrimAtPath(Sdf.Path(f'{_chunk_path("AMDMaterialXLibrary")}/BindMaterial'))
 
         assert ref_spec is not None, (
             "Reference chunk prim must be authored in the user edit layer — "
@@ -373,7 +389,7 @@ class TestAMDMaterialXLibraryChildCreation:
             "BindMaterial chunk prim must be authored in the user edit layer — "
             "it was likely written to AMD's anonymous execute layer instead"
         )
-        assert amd_layer.GetPrimAtPath(Sdf.Path("/chunks/AMDMaterialXLibrary/Reference")) is None, (
+        assert amd_layer.GetPrimAtPath(Sdf.Path(f'{_chunk_path("AMDMaterialXLibrary")}/Reference')) is None, (
             "Reference chunk prim must NOT also exist in AMD's own anonymous execute "
             "layer -- that layer is Clear()ed on every execute() run"
         )

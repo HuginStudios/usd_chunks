@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom
 
+from usd_chunks.plugins.chunk_usd import get_chunk_prim_path as _get_chunk_prim_path
 from usd_chunks.plugins.chunk_usd import (
     _CHUNK_PRIM_TYPENAME,
     _CHUNK_TYPE_ATTR,
@@ -38,6 +39,17 @@ class _DummyScene(SceneSender):
 
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
+
+
+def _default_root(scene) -> str:
+    """The prim path a chunk lands under when added with no explicit context.
+
+    scene.add_chunk routes such a chunk into the scene's default chunkgroup, so that
+    group -- not the /chunks scope -- is its parent. Tests that author prims directly
+    with _author_prim bypass that routing entirely and still use _CHUNKS_ROOT.
+    """
+    ctx = scene.peek_root_context()
+    return _get_chunk_prim_path(ctx) if ctx is not None else _CHUNKS_ROOT
 
 
 def _chunk_with_module(name: str, module: str = "prim") -> chunk.Chunk:
@@ -346,7 +358,7 @@ def test_chunk_stage_sync_live_update() -> None:
     c.add_param(slider)
     scene.add_chunk(c)
 
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/live")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/live")
     assert prim.IsValid()
     assert not prim.GetAttribute(f"{_INPUTS_PREFIX}p").IsValid()  # default not yet authored
 
@@ -401,9 +413,13 @@ def test_export_load_roundtrip(tmp_path) -> None:
     chunk_registry.ChunkRegistry().initialize(scene_dst, "pytest")
     load_chunks(stage_dst, scene_dst)
 
+    # Two chunks come back, not one: the scene's default chunkgroup is a real chunkgroup
+    # now, so it is exported and reimported like any other. Assert on the chunk this test
+    # is actually about rather than on a count, which only ever encoded the old shape.
     loaded = scene_dst.get_chunks()
-    assert len(loaded) == 1
-    assert loaded[0].get_param("prim_type").value == "Scope"
+    restored = next((c for c in loaded if c.name == "testChunk"), None)
+    assert restored is not None, f"testChunk did not survive the roundtrip: {[c.name for c in loaded]}"
+    assert restored.get_param("prim_type").value == "Scope"
 
 
 def test_reload_for_stage_resets_on_same_path_fresh_stage(tmp_path) -> None:
@@ -616,13 +632,13 @@ def test_export_chunks_preserves_live_exec_order_not_scene_order(tmp_path) -> No
 
     # Wire a -> b -> c directly on the USD prims, exactly like the node-graph UI's
     # drag-to-connect — never calling add_dependency().
-    b_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/b")
-    c_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/c")
+    b_prim = stage.GetPrimAtPath(f"{_default_root(scene)}/b")
+    c_prim = stage.GetPrimAtPath(f"{_default_root(scene)}/c")
     b_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False).SetConnections(
-        [Sdf.Path(f"{_CHUNKS_ROOT}/a.{_EXEC_OUTPUT}")]
+        [Sdf.Path(f"{_default_root(scene)}/a.{_EXEC_OUTPUT}")]
     )
     c_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False).SetConnections(
-        [Sdf.Path(f"{_CHUNKS_ROOT}/b.{_EXEC_OUTPUT}")]
+        [Sdf.Path(f"{_default_root(scene)}/b.{_EXEC_OUTPUT}")]
     )
     # The Python DAG now mirrors the connection the moment it is authored — the stage is the
     # authority for chunk-level exec wiring, and ChunkStageSync reconciles off ObjectsChanged
@@ -636,9 +652,9 @@ def test_export_chunks_preserves_live_exec_order_not_scene_order(tmp_path) -> No
     export_chunks(scene, out)
 
     out_stage = Usd.Stage.Open(str(out))
-    b_conns = out_stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/b").GetAttribute(_EXEC_INPUT).GetConnections()
-    c_conns = out_stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/c").GetAttribute(_EXEC_INPUT).GetConnections()
-    a_attr = out_stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/a").GetAttribute(_EXEC_INPUT)
+    b_conns = out_stage.GetPrimAtPath(f"{_default_root(scene)}/b").GetAttribute(_EXEC_INPUT).GetConnections()
+    c_conns = out_stage.GetPrimAtPath(f"{_default_root(scene)}/c").GetAttribute(_EXEC_INPUT).GetConnections()
+    a_attr = out_stage.GetPrimAtPath(f"{_default_root(scene)}/a").GetAttribute(_EXEC_INPUT)
 
     assert any("a" in str(p) for p in b_conns), f"expected b -> a, got {b_conns}"
     assert any("b" in str(p) for p in c_conns), f"expected c -> b, got {c_conns}"
@@ -665,7 +681,7 @@ def test_second_mutation_propagates() -> None:
     c.add_param(slider)
     scene.add_chunk(c)
 
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/n")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/n")
 
     slider.value = 3.7  # first write — _sync_param_input creates attr + wires _connect_param_attr
     assert prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == pytest.approx(3.7)
@@ -686,12 +702,12 @@ def test_chunk_stage_sync_rename_chunk() -> None:
 
     c = _chunk_with_module("foo")
     scene.add_chunk(c)
-    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/foo").IsValid()
+    assert stage.GetPrimAtPath(f"{_default_root(scene)}/foo").IsValid()
 
     c.name = "bar"
 
-    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/foo").IsValid()
-    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/bar").IsValid()
+    assert not stage.GetPrimAtPath(f"{_default_root(scene)}/foo").IsValid()
+    assert stage.GetPrimAtPath(f"{_default_root(scene)}/bar").IsValid()
 
 
 def test_chunk_stage_sync_rename_no_duplicate() -> None:
@@ -719,8 +735,8 @@ def test_chunk_stage_sync_rename_no_duplicate() -> None:
     c.name = "bar"
 
     assert sum(1 for _ in scene.get_chunks()) == 1  # no duplicate chunk
-    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/bar").IsValid()
-    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/foo").IsValid()
+    assert stage.GetPrimAtPath(f"{_default_root(scene)}/bar").IsValid()
+    assert not stage.GetPrimAtPath(f"{_default_root(scene)}/foo").IsValid()
 
 
 def test_chunk_stage_sync_rename_anonymous_edit_target() -> None:
@@ -748,8 +764,8 @@ def test_chunk_stage_sync_rename_anonymous_edit_target() -> None:
 
     c.name = "bar"
 
-    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/bar").IsValid()
-    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/foo").IsValid()
+    assert stage.GetPrimAtPath(f"{_default_root(scene)}/bar").IsValid()
+    assert not stage.GetPrimAtPath(f"{_default_root(scene)}/foo").IsValid()
     assert sum(1 for _ in scene.get_chunks()) == 1
 
 
@@ -774,14 +790,14 @@ def test_chunk_stage_sync_rename_preserves_connections() -> None:
     scene.add_chunk(c)
 
     # A downstream Chunk prim wired to foo's exec output.
-    view = stage.DefinePrim(f"{_CHUNKS_ROOT}/View1", _CHUNK_PRIM_TYPENAME)
+    view = stage.DefinePrim(f"{_default_root(scene)}/View1", _CHUNK_PRIM_TYPENAME)
     vin = view.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-    vin.SetConnections([Sdf.Path(f"{_CHUNKS_ROOT}/foo.{_EXEC_OUTPUT}")])
+    vin.SetConnections([Sdf.Path(f"{_default_root(scene)}/foo.{_EXEC_OUTPUT}")])
 
     c.name = "bar"
 
-    conns = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/View1").GetAttribute(_EXEC_INPUT).GetConnections()
-    assert list(conns) == [Sdf.Path(f"{_CHUNKS_ROOT}/bar.{_EXEC_OUTPUT}")]
+    conns = stage.GetPrimAtPath(f"{_default_root(scene)}/View1").GetAttribute(_EXEC_INPUT).GetConnections()
+    assert list(conns) == [Sdf.Path(f"{_default_root(scene)}/bar.{_EXEC_OUTPUT}")]
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +816,7 @@ def test_chunk_stage_sync_rename_param() -> None:
     scene.add_chunk(c)
 
     slider.value = 5.0  # causes _sync_param_input to create inputs:old attr
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/n")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/n")
     assert prim.GetAttribute(f"{_INPUTS_PREFIX}old").IsValid()
 
     slider.name = "new"  # _handle_param_rename renames the attr
@@ -821,11 +837,11 @@ def test_chunk_stage_sync_delete_chunk() -> None:
 
     c = _chunk_with_module("del")
     scene.add_chunk(c)
-    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/del").IsValid()
+    assert stage.GetPrimAtPath(f"{_default_root(scene)}/del").IsValid()
 
     c.request_delete()
 
-    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/del").IsValid()
+    assert not stage.GetPrimAtPath(f"{_default_root(scene)}/del").IsValid()
 
 
 def test_delete_chunk_removes_anonymous_layer() -> None:
@@ -885,8 +901,15 @@ def test_delete_loaded_chunk_removes_prim() -> None:
     assert not stage.GetPrimAtPath(prim_path).IsValid()
 
 
-def test_delete_last_chunk_removes_chunks_root() -> None:
-    """Deleting the last chunk under /chunks removes the /chunks root prim too."""
+def test_delete_last_chunk_leaves_the_scope_and_its_default_group() -> None:
+    """Deleting the last chunk empties the default chunkgroup without removing it.
+
+    This used to assert that /chunks went away with the last chunk under it, which was
+    right when a chunk sat directly beneath the scope: nothing was left to hold. A chunk
+    now sits inside the scene's default chunkgroup, and that group is the tab you are
+    looking at -- an empty scene still has one, the same as a freshly opened one. So what
+    must survive is the scope and the group; what must go is the chunk.
+    """
     stage = Usd.Stage.CreateInMemory()
     scene = _DummyScene()
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
@@ -894,11 +917,17 @@ def test_delete_last_chunk_removes_chunks_root() -> None:
 
     c = _chunk_with_module("Solo")
     scene.add_chunk(c)
-    assert stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid()
+    chunk_path = Sdf.Path(_get_chunk_prim_path(c))
+    root_context = scene.peek_root_context()
+    assert stage.GetPrimAtPath(chunk_path).IsValid()
 
     c.request_delete()
 
-    assert not stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid()
+    assert not stage.GetPrimAtPath(chunk_path).IsValid(), "the chunk itself must go"
+    assert stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid(), "the scope stays"
+    assert stage.GetPrimAtPath(
+        Sdf.Path(_get_chunk_prim_path(root_context))
+    ).IsValid(), "and so does the default chunkgroup -- it is the tab, not content"
 
 
 def test_delete_one_of_two_chunks_keeps_chunks_root() -> None:
@@ -916,7 +945,7 @@ def test_delete_one_of_two_chunks_keeps_chunks_root() -> None:
     c1.request_delete()
 
     assert stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid()
-    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/B").IsValid()
+    assert stage.GetPrimAtPath(f"{_default_root(scene)}/B").IsValid()
 
 
 def test_delete_then_readd_same_type_recreates_prim() -> None:
@@ -934,14 +963,14 @@ def test_delete_then_readd_same_type_recreates_prim() -> None:
 
     c1 = _chunk_with_module("Prim")
     scene.add_chunk(c1)
-    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Prim").IsValid()
+    assert stage.GetPrimAtPath(f"{_default_root(scene)}/Prim").IsValid()
 
     c1.request_delete()
-    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Prim").IsValid()
+    assert not stage.GetPrimAtPath(f"{_default_root(scene)}/Prim").IsValid()
 
     c2 = _chunk_with_module("Prim")
     scene.add_chunk(c2)
-    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Prim").IsValid()
+    assert stage.GetPrimAtPath(f"{_default_root(scene)}/Prim").IsValid()
 
 
 def test_delete_context_with_children_does_not_reenter_load_chunks(monkeypatch) -> None:
@@ -1014,7 +1043,7 @@ def test_external_prim_deactivate_disables_chunk() -> None:
 
     c = _chunk_with_module("ext")
     scene.add_chunk(c)
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/ext")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/ext")
     assert prim.IsActive()
     assert not c.has_state(chunk.ChunkFlags.State.DISABLED)
 
@@ -1049,7 +1078,7 @@ def test_on_objects_changed_survives_a_none_sender() -> None:
 
     c = _chunk_with_module("none_sender")
     scene.add_chunk(c)
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/none_sender")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/none_sender")
 
     # A Usd.Notice wrapper is only valid for the duration of the dispatch that delivers
     # it -- storing one and calling methods on it later segfaults. So the None-sender
@@ -1081,14 +1110,14 @@ def test_chunk_stage_sync_disable_enable() -> None:
 
     c = _chunk_with_module("dis")
     scene.add_chunk(c)
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dis")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/dis")
     assert prim.IsActive()
 
     c.set_state(chunk.ChunkFlags.State.DISABLED)
-    assert not stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dis").IsActive()
+    assert not stage.GetPrimAtPath(f"{_default_root(scene)}/dis").IsActive()
 
     c.unset_state(chunk.ChunkFlags.State.DISABLED)
-    assert stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dis").IsActive()
+    assert stage.GetPrimAtPath(f"{_default_root(scene)}/dis").IsActive()
 
 
 def test_blocked_chunk_does_not_execute_on_creation() -> None:
@@ -1196,7 +1225,7 @@ def test_param_added_after_registration() -> None:
     c = _chunk_with_module("n")
     scene.add_chunk(c)  # registers chunk prim; no params yet
 
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/n")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/n")
     assert prim.IsValid()
     assert not prim.GetAttribute(f"{_INPUTS_PREFIX}val").IsValid()
 
@@ -1257,7 +1286,7 @@ def test_chunk_stage_sync_listgroup_live_sync() -> None:
     lg.get_indexed_param("val", 0).value = 1.0
     lg.get_indexed_param("val", 1).value = 2.0
 
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/n")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/n")
     attr = prim.GetAttribute(f"{_INPUTS_PREFIX}items:val")
     assert attr.IsValid()
     assert list(attr.Get()) == pytest.approx([1.0, 2.0])
@@ -1333,7 +1362,7 @@ def test_float_expression_load_reconstructs_raw_value() -> None:
     scene.add_chunk(src)
     src.get_param("p").value = "@dst.val@"  # live-authored, same as a UI-dragged connection
 
-    attr = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/src").GetAttribute(f"{_INPUTS_PREFIX}p")
+    attr = stage.GetPrimAtPath(f"{_default_root(scene)}/src").GetAttribute(f"{_INPUTS_PREFIX}p")
     assert attr.GetTypeName() == Sdf.ValueTypeNames.Float
     assert attr.Get() is None, "Float expression attrs must not store a string value"
     assert len(attr.GetConnections()) == 1
@@ -1342,7 +1371,7 @@ def test_float_expression_load_reconstructs_raw_value() -> None:
     reloaded_param = chunk.Slider("p", default_value=1.0)
     reloaded.add_param(reloaded_param)
 
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/src")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/src")
     _load_wire_inputs(prim, reloaded)
 
     assert reloaded_param.raw_value == "@dst.val@"
@@ -1526,7 +1555,7 @@ def test_float_expression_via_chunk_stage_sync() -> None:
     ref.add_param(a_param)
     scene.add_chunk(ref)
 
-    mult2_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/Mult2")
+    mult2_prim = stage.GetPrimAtPath(f"{_default_root(scene)}/Mult2")
     attr = mult2_prim.GetAttribute(f"{_INPUTS_PREFIX}a")
 
     assert attr.IsValid(), "inputs:a must exist on Mult2 prim"
@@ -1559,7 +1588,7 @@ def test_patch_expressions_on_chunk_rename() -> None:
     ref.add_param(expr_param)
     scene.add_chunk(ref)  # _wire_inputs → _sync_chunk_inputs creates inputs:p = "@src.val@"
 
-    ref_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/ref")
+    ref_prim = stage.GetPrimAtPath(f"{_default_root(scene)}/ref")
     assert ref_prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == "@src.val@"
 
     src.name = "src2"  # _handle_rename → _patch_expressions(stage, "@src.", "@src2.")
@@ -1589,7 +1618,7 @@ def test_patch_expressions_on_param_rename() -> None:
     ref.add_param(expr_param)
     scene.add_chunk(ref)  # _sync_chunk_inputs creates inputs:p = "@owner.foo@"
 
-    ref_prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/ref")
+    ref_prim = stage.GetPrimAtPath(f"{_default_root(scene)}/ref")
     assert ref_prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == "@owner.foo@"
 
     foo.name = "bar"  # _handle_param_rename → _patch_expressions(stage, ".foo@", ".bar@")
@@ -1621,7 +1650,7 @@ def test_vector_sync_input_creates_chunk_prim_attr() -> None:
     c.add_param(vec)
     scene.add_chunk(c)  # → _define_prim → _sync_chunk_inputs → _sync_vector_input
 
-    prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/n")
+    prim = stage.GetPrimAtPath(f"{_default_root(scene)}/n")
     attr = prim.GetAttribute(f"{_INPUTS_PREFIX}pos")
     assert attr.IsValid()
     assert attr.Get() == Gf.Vec3f(1.0, 2.0, 3.0)
@@ -2034,13 +2063,17 @@ def test_recook_recurses_into_group() -> None:
     tab_view = _mk(viewmod)
     _wire(tab_view, grp)
 
-    class _Root:
-        prim_path = _CHUNKS_ROOT
+    # The graph context these chunks actually live in. It used to be a stand-in for the
+    # /chunks scope, which was where a context-less chunk landed; they now land inside the
+    # scene's default chunkgroup, and a context pointing at the scope instead matches
+    # nothing -- is_node_in_context compares prim parents, so every chunk read as "not in
+    # this context" and the cook silently did nothing.
+    _Root = scene.peek_root_context()
 
-    recook_for_view(stage, scene, _Root(), tab_view)
+    recook_for_view(stage, scene, _Root, tab_view)
     assert not inner_node.is_blocked()  # group cooked → inner tree cooks
 
-    recook_for_view(stage, scene, _Root(), None)
+    recook_for_view(stage, scene, _Root, None)
     assert inner_node.is_blocked()  # group hidden → inner tree muted
 
 
@@ -2226,13 +2259,17 @@ def test_ranked_group_children_inherit_the_groups_own_rank() -> None:
     outer_view = _mk(viewmod)
     _wire(outer_view, grp)
 
-    class _Root:
-        prim_path = _CHUNKS_ROOT
+    # The graph context these chunks actually live in. It used to be a stand-in for the
+    # /chunks scope, which was where a context-less chunk landed; they now land inside the
+    # scene's default chunkgroup, and a context pointing at the scope instead matches
+    # nothing -- is_node_in_context compares prim parents, so every chunk read as "not in
+    # this context" and the cook silently did nothing.
+    _Root = scene.peek_root_context()
 
     # One recook to settle everyone into a single shared graph-aggregator layer (each
     # chunk has its own individual layer; those get sublayered under one graph layer per
     # (graph_id, target)).
-    recook_for_view(stage, scene, _Root(), outer_view)
+    recook_for_view(stage, scene, _Root, outer_view)
 
     lm = chunk_registry.ChunkLayerManager()
     idents = {
@@ -2260,7 +2297,7 @@ def test_ranked_group_children_inherit_the_groups_own_rank() -> None:
     scrambled += [idents["reference"], idents["bind_material"]]
     g_layer.subLayerPaths = scrambled  # type: ignore
 
-    recook_for_view(stage, scene, _Root(), outer_view)
+    recook_for_view(stage, scene, _Root, outer_view)
 
     order = list(g_layer.subLayerPaths)
     idx = {name: order.index(ident) for name, ident in idents.items()}
@@ -2337,10 +2374,14 @@ def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode
     view = _mk(viewmod)
     _wire(view, groups[2])       # group3 -> view
 
-    class _Root:
-        prim_path = _CHUNKS_ROOT
+    # The graph context these chunks actually live in. It used to be a stand-in for the
+    # /chunks scope, which was where a context-less chunk landed; they now land inside the
+    # scene's default chunkgroup, and a context pointing at the scope instead matches
+    # nothing -- is_node_in_context compares prim parents, so every chunk read as "not in
+    # this context" and the cook silently did nothing.
+    _Root = scene.peek_root_context()
 
-    recook_for_view(stage, scene, _Root(), view)
+    recook_for_view(stage, scene, _Root, view)
 
     session = stage.GetSessionLayer()
     ids = [cl.get_param("_new_layer_id").value for cl in layers]
@@ -2858,10 +2899,14 @@ def test_inner_view_cooks_when_group_hidden_at_parent() -> None:
     _wire(inner_view, inner)
     scene._current_context = None
 
-    class _Root:
-        prim_path = _CHUNKS_ROOT
+    # The graph context these chunks actually live in. It used to be a stand-in for the
+    # /chunks scope, which was where a context-less chunk landed; they now land inside the
+    # scene's default chunkgroup, and a context pointing at the scope instead matches
+    # nothing -- is_node_in_context compares prim parents, so every chunk read as "not in
+    # this context" and the cook silently did nothing.
+    _Root = scene.peek_root_context()
 
-    recook_for_view(stage, scene, _Root(), V)  # tab active view = V; group hidden
+    recook_for_view(stage, scene, _Root, V)  # tab active view = V; group hidden
     assert inner.is_blocked()  # group hidden at parent -> inner tree muted
 
     recook_for_view(stage, scene, grp, inner_view)  # dive in, inner view active

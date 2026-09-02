@@ -55,6 +55,19 @@ def scene():
     return stage, sender, scene_layer
 
 
+def _chunk_path(name: str) -> str:
+    """Where a chunk added through the scene actually lands.
+
+    add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
+    parent is that group rather than the /chunks scope. Resolved through the registry so
+    the helpers here can keep taking plain names.
+    """
+    scene = chunk_registry.ChunkRegistry().scene
+    ctx = scene.peek_root_context() if scene is not None else None
+    root = chunk_usd.get_chunk_prim_path(ctx) if ctx is not None else "/chunks"
+    return f"{root}/{name}"
+
+
 def _mk(sender, module, name):
     chunk = module.main()
     chunk._config = ChunkConfig(module="transform")
@@ -158,7 +171,7 @@ def test_both_chunks_offer_a_handle(scene) -> None:
 
     prims = {str(d.chunk_prim) for d in chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))}
 
-    assert prims == {"/chunks/T1", "/chunks/T2"}
+    assert prims == {_chunk_path("T1"), _chunk_path("T2")}
 
 
 def test_dragging_moves_the_prim_by_what_was_dragged(scene) -> None:
@@ -191,11 +204,11 @@ def _wire(stage, downstream, upstream):
     """downstream consumes upstream, the way the graph chains chunks."""
     from usd_chunks.plugins.chunk_usd import _EXEC_INPUT, _EXEC_OUTPUT
 
-    prim = stage.GetPrimAtPath(Sdf.Path(f"/chunks/{downstream}"))
+    prim = stage.GetPrimAtPath(Sdf.Path(_chunk_path(downstream)))
     attr = prim.GetAttribute(_EXEC_INPUT)
     if not attr.IsValid():
         attr = prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-    attr.SetConnections([Sdf.Path(f"/chunks/{upstream}.{_EXEC_OUTPUT}")])
+    attr.SetConnections([Sdf.Path(f"{_chunk_path(upstream)}.{_EXEC_OUTPUT}")])
 
 
 def test_an_unauthored_downstream_chunk_still_owns_the_prim(scene) -> None:
@@ -216,7 +229,7 @@ def test_an_unauthored_downstream_chunk_still_owns_the_prim(scene) -> None:
 
     handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
 
-    assert str(handles[0].chunk_prim) == "/chunks/Off", (
+    assert str(handles[0].chunk_prim) == _chunk_path("Off"), (
         "the chunk nearest the view has the final say, authored or not"
     )
 
@@ -232,7 +245,7 @@ def test_the_upstream_chunk_is_still_offered(scene) -> None:
 
     prims = {str(d.chunk_prim) for d in chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))}
 
-    assert prims == {"/chunks/T1", "/chunks/Off"}
+    assert prims == {_chunk_path("T1"), _chunk_path("Off")}
 
 
 def test_ownership_does_not_flip_once_the_downstream_chunk_authors(scene) -> None:
@@ -248,7 +261,7 @@ def test_ownership_does_not_flip_once_the_downstream_chunk_authors(scene) -> Non
     offset.get_param("tx").value = 1.0
 
     after = str(chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))[0].chunk_prim)
-    assert before == after == "/chunks/Off"
+    assert before == after == _chunk_path("Off")
 
 
 def test_dragging_the_downstream_chunk_lands_where_it_was_dragged(scene) -> None:
@@ -264,7 +277,7 @@ def test_dragging_the_downstream_chunk_lands_where_it_was_dragged(scene) -> None
     _wire(stage, "T2", "T1")
 
     chunk_gizmo.apply_bindings(
-        Sdf.Path("/chunks/T2"), "transform",
+        Sdf.Path(_chunk_path("T2")), "transform",
         Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 9.0, 0.0)),
     )
     upstream.execute()
