@@ -3473,12 +3473,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         composed out of the operations that already do those things, rather than a bespoke
         move. Two things follow from that, both of them the point:
 
-        The chain heals around what left, because that is what Cut does. Grouping the
-        middle of a -> b -> c leaves a -> c, and the new group sits unwired for you to
-        place. It deliberately does NOT try to splice the group into the chain in the
-        selection's stead: a group is not a drop-in replacement for what it holds (which
-        of several chunks would its output be?), and the manual route does not do it
-        either.
+        The group then takes the selection's place in the chain: whatever fed the
+        selection feeds the group, and whatever the selection fed is fed by it. Grouping
+        the middle of a -> b -> c leaves a -> group -> c, so the graph still reads as the
+        same flow with a box drawn round part of it.
+
+        The boundary is read BEFORE the cut, while both ends are still where the user left
+        them -- Cut heals the chain closed as it removes the nodes, and by the time it
+        returns there is nothing left to say what used to attach where.
 
         And the paste lands inside the group by making it the current context for the
         duration, which is what diving in does.
@@ -3500,8 +3502,24 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         centre_x = sum(n.pos().x() for n in selected) / len(selected)
         centre_y = sum(n.pos().y() for n in selected) / len(selected)
 
-        # Cut first, while the nodes are still here to be snapshotted and their wires
-        # still there to heal around.
+        # Read the boundary while it still exists. Cut heals the chain closed as it
+        # removes the nodes, so afterwards nothing records what used to attach where.
+        inside = {chunk_usd.get_chunk_prim_path(n.chunk) for n in selected}
+        feeds_selection: "list[str]" = []
+        fed_by_selection: "list[str]" = []
+        for prim in stage.TraverseAll():
+            if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+                continue
+            path = str(prim.GetPath())
+            for attr in chunk_usd.iter_exec_inputs(prim):
+                for conn in attr.GetConnections():
+                    source = str(conn.GetPrimPath())
+                    if path in inside and source not in inside and source not in feeds_selection:
+                        feeds_selection.append(source)
+                    elif source in inside and path not in inside and path not in fed_by_selection:
+                        fed_by_selection.append(path)
+
+        # Cut second, while the nodes are still here to be snapshotted.
         self._cut_selected_to_clipboard()
         if not _node_clipboard:
             return
@@ -3560,6 +3578,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 chunk_usd.get_chunk_prim_path(pasted[edge.src_index]),
                 chunk_usd.get_chunk_prim_path(pasted[edge.dst_index]),
             )
+
+        # Put the group where the selection was in the chain. These are fresh connections
+        # onto a prim that did not exist a moment ago, not edits to existing ones, which is
+        # why connect_exec is enough on its own here.
+        group_path = chunk_usd.get_chunk_prim_path(group)
+        for source in feeds_selection:
+            chunk_usd.connect_exec(stage, scene_sender, source, group_path)
+        for consumer in fed_by_selection:
+            chunk_usd.connect_exec(stage, scene_sender, group_path, consumer)
 
         scene_sender.set_selected_chunks([group])
 

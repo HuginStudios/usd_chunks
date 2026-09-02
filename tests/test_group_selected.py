@@ -159,13 +159,12 @@ def _settle(qapp):
     qapp.processEvents()
 
 
-def test_the_chain_heals_around_what_was_grouped(graph):
-    """up -> mid -> down, grouping mid, leaves up -> down.
+def test_the_group_takes_the_selection_s_place_in_the_chain(graph):
+    """up -> mid -> down, grouping mid, becomes up -> group -> down.
 
-    That is Cut's behaviour, and grouping is built on Cut. The group is NOT spliced into
-    the chain in mid's place: a group is not a drop-in replacement for what it holds --
-    which of several chunks would its output be? -- and doing it by hand does not do that
-    either.
+    The graph should still read as the same flow with a box drawn round part of it. Cut
+    heals the chain closed on its way through, so this is about putting the group back
+    into the gap that healing leaves.
     """
     qapp, reg, scene, d, stage = graph
     up, mid, down = _mk(reg, scene, "prim"), _mk(reg, scene), _mk(reg, scene, "prim")
@@ -179,8 +178,12 @@ def test_the_chain_heals_around_what_was_grouped(graph):
     gv._group_selected()
     _settle(qapp)
 
-    assert _inputs(stage, down) == [f"{get_chunk_prim_path(up)}.{_EXEC_OUTPUT}"], (
-        "the chain must close over the gap, not dangle at a chunk that moved"
+    group = _groups(scene)[0]
+    assert _inputs(stage, group) == [f"{get_chunk_prim_path(up)}.{_EXEC_OUTPUT}"], (
+        "what fed the selection must feed the group"
+    )
+    assert _inputs(stage, down) == [f"{get_chunk_prim_path(group)}.{_EXEC_OUTPUT}"], (
+        "and what the selection fed must be fed by the group"
     )
 
 
@@ -221,7 +224,7 @@ def test_grouping_nothing_does_nothing(graph):
     assert not _groups(scene), "an empty selection must not conjure a group"
 
 
-def test_ctrl_g_reaches_it_through_the_router(graph):
+def test_ctrl_g_reaches_it_through_the_router(graph, monkeypatch):
     """The path the app actually takes.
 
     ChunkGraphView.keyPressEvent needs the view to hold real native Qt focus, which
@@ -232,14 +235,20 @@ def test_ctrl_g_reaches_it_through_the_router(graph):
     qapp, reg, scene, d, stage = graph
     a = _mk(reg, scene)
     gv = _view(d, qapp)
-    qapp.processEvents()
-    scene.set_selected_chunks([a])
 
-    # Where the fallback is gated: the cursor has to be over the view.
-    QtGui.QCursor.setPos(gv.mapToGlobal(QtCore.QPoint(gv.width() // 2, gv.height() // 2)))
+    # The fallback is gated on the cursor being over the view. Reported rather than
+    # actually moved: a real setPos is at the mercy of whatever else has moved the mouse,
+    # which made this pass alone and fail in a full run.
+    centre = gv.mapToGlobal(QtCore.QPoint(gv.width() // 2, gv.height() // 2))
+    monkeypatch.setattr(QtGui.QCursor, "pos", staticmethod(lambda: centre))
     qapp.processEvents()
     router = gv._proxy_key_router
     router.set_view_active(True)
+
+    # Selected LAST, with nothing left queued: building the graph schedules an auto-created
+    # view node that selects itself when it lands, and a selection made before that runs is
+    # taken back -- leaving nothing for Ctrl+G to group.
+    scene.set_selected_chunks([a])
 
     event = QtGui.QKeyEvent(
         QtCore.QEvent.Type.KeyPress,
