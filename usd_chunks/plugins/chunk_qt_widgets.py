@@ -1548,6 +1548,45 @@ class ViewSlotState(QtCore.QObject):
         stub this plain instance method instead of driving a real modal popup."""
         return menu.exec(pos)
 
+    def _run_menu_action_on(self, conn, meth, targets) -> None:
+        """Run the menu action the user picked once per selected chunk.
+
+        Each chunk gets its OWN callback, looked up by name on that chunk -- `conn` belongs
+        to the one that was right-clicked, and firing it repeatedly would run that chunk's
+        action N times instead of each chunk's own.
+
+        Deletes are special twice over. Every chunk registers `remove` as a menu action, and
+        ChunkBase.remove calls request_delete() directly -- bypassing the Delete-key path
+        that normally captures recook relevance -- so relevance is captured for the whole
+        set BEFORE any of them goes, which is the only moment it can still be judged (see
+        mark_pending_delete_relevance). And deleting one chunk can take another with it: a
+        group deletes its contents, so a target selected alongside its own parent is already
+        gone by its turn. Skipped rather than reported, since that is the requested outcome.
+        """
+        name = getattr(meth, "__name__", None)
+        is_delete = name == "remove"
+        if is_delete:
+            from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
+            ChunkGraphView.mark_pending_delete_relevance(list(targets))
+
+        for target in targets:
+            if is_delete and getattr(target, "_deleting", False):
+                continue
+            own = next(
+                (
+                    c for c in target.find_callbacks(
+                        notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE
+                    )
+                    if getattr(c.get_method(), "__name__", None) == name
+                ),
+                None,
+            )
+            if own is None:
+                continue  # this chunk type does not offer the action; leave it alone
+            own.handle_callback(
+                chunk_notice.MenuActionNotice(target.get_notice_data()), target, False
+            )
+
     def show_chunk_menu(
         self,
         grp: "chunk.ChunkBase",
@@ -1567,17 +1606,29 @@ class ViewSlotState(QtCore.QObject):
         Copy/Cut/Duplicate, which operate on the graph's current (possibly multi-node)
         selection via graph_view, not just this one right-clicked chunk.
         """
+        # What this menu acts on. Right-clicking a node inside the selection acts on the
+        # whole selection; right-clicking one outside it acts on that node alone, the same
+        # as every other app -- see ChunkGraphView.selected_chunks.
+        targets = graph_view.selected_chunks(grp) if graph_view is not None else [grp]
+        many = len(targets) > 1
+        # Said out loud in the label. An action that is about to hit six chunks should not
+        # look identical to one that hits the one under the cursor.
+        def _label(text: str) -> str:
+            return f"{text} ({len(targets)} chunks)" if many else text
+
         menu = QtWidgets.QMenu()
         cb_actions: dict = {}
         for conn in grp.find_callbacks(notice_type=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE):
             meth = conn.get_method()
             if meth:
-                cb_actions[menu.addAction(meth.__name__)] = conn
+                cb_actions[menu.addAction(_label(meth.__name__))] = conn
 
+        # Inspect, Rename and Set View stay singular on purpose: one dialog, one name (six
+        # chunks cannot share it), and a view targets one chunk. Everything else scales.
         inspect_action = menu.addAction("Inspect Layer")
         rename_action = menu.addAction("Rename…")
         pin_action = menu.addAction(
-            "Unpin from Params" if chunk_usd.is_chunk_pinned(grp) else "Pin to Params"
+            _label("Unpin from Params" if chunk_usd.is_chunk_pinned(grp) else "Pin to Params")
         )
         copy_action = cut_action = duplicate_action = None
         if graph_view is not None:
@@ -1630,9 +1681,12 @@ class ViewSlotState(QtCore.QObject):
             if ok and new and new != old:
                 grp.name = new
         elif res == pin_action:
+            # The clicked chunk decides the direction, so a mixed selection ends up in one
+            # state rather than each chunk flipping to the opposite of whatever it was.
             new_pinned = not chunk_usd.is_chunk_pinned(grp)
-            chunk_usd.set_chunk_pinned(grp, new_pinned)
-            self.pin_changed.emit(grp, new_pinned)
+            for target in targets:
+                chunk_usd.set_chunk_pinned(target, new_pinned)
+                self.pin_changed.emit(target, new_pinned)
         elif view_action and res == view_action:
             if existing_view_slot is not None:
                 self.set_slot(existing_view_slot)
@@ -1646,6 +1700,9 @@ class ViewSlotState(QtCore.QObject):
             graph_view._duplicate_selected()
         elif conn := cb_actions.get(res):
             meth = conn.get_method()
+            if many:
+                self._run_menu_action_on(conn, meth, targets)
+                return
             if meth is not None and meth == getattr(grp, "remove", None):
                 # ChunkBase.remove (every chunk registers it as a default MENU_ACTION_NOTICE
                 # callback) calls request_delete() directly, bypassing
