@@ -129,20 +129,51 @@ def _sync_signature(owner, sdef) -> None:
 
 
 def _chunk_loaded(owner, _notice, _sender):
-    """Author the output ports once the chunk is in the scene.
+    """Author the output ports once the chunk is in the scene -- and, for a chunk that
+    came back from a saved network, loft its inputs back first.
 
-    _rebuild cannot do it: a variant's presets land before add_chunk (PARAM_ADDED builds
-    widgets that read values immediately), so at that point the chunk has no prim for the
-    attrs to hang off.
+    _rebuild cannot author the outputs: a variant's presets land before add_chunk
+    (PARAM_ADDED builds widgets that read values immediately), so at that point the chunk
+    has no prim for the attrs to hang off.
 
-    Only outputs need this. Input ports come from the param list -- _place_param_ports
+    Only outputs need that. Input ports come from the param list -- _place_param_ports
     builds an inputs:/outputs: pair for every connectable param whether or not an attr
     exists -- and the attr is authored lazily, when a value stops being default or when
     _author_connection wires the port. Forcing all of them cost ~114 USD writes per
     standard surface, each firing change notices the UI reacts to, and bought nothing.
+
+    The load case is the other half. This chunk does not own its inputs; it lofts them
+    from the nodedef, in the callback that fires when nodedef *changes*. Loading restores
+    nodedef as a value rather than as a change, so nothing ever lofts them and the chunk
+    arrives holding only _FIXED -- and execute(), which skips any input it has no param
+    for, then cooks a bare shader at its definition defaults. Every authored value is
+    silently gone, in a file that still looks intact on disk.
+
+    Lofting here is also all it takes to get the values back. load_chunks runs
+    _restore_dynamic_params immediately after this notice, for exactly this case: its
+    earlier restore pass walked the same inputs:<Page>:<name> attrs before these params
+    existed and had nowhere to put them, and the second pass finds them waiting.
+
+    Blocked for the reason _rebuild blocks: each of the 40-odd add_param calls would
+    otherwise re-cook the chunk on the spot.
     """
-    if sdef := _shader_def(owner):
-        _author_outputs(owner, sdef)
+    sdef = _shader_def(owner)
+    if sdef is None:
+        return
+
+    # Only _FIXED means nothing has lofted yet, which for a chunk being announced to the
+    # scene means it was loaded rather than created. A definition that genuinely has no
+    # inputs also lands here, and re-applying it is harmless.
+    if all(p.name in _FIXED for p in owner.get_my_params()):
+        was_blocked = getattr(owner, "_blocked", False)
+        owner.set_blocked(True)
+        try:
+            _apply_definition(owner, sdef)
+        finally:
+            owner.set_blocked(was_blocked)
+        return
+
+    _author_outputs(owner, sdef)
 
 
 def _signature_changed(owner, _notice, sender):
@@ -380,6 +411,33 @@ def _author_outputs(owner, sdef) -> None:
             prim.CreateAttribute(name, sdf_type, custom=False)
 
 
+def _apply_definition(owner, sdef) -> None:
+    """Shape the chunk to a shader definition: signature, inputs, outputs, bindability.
+
+    Everything here is derived purely from the definition, so it is what a chunk needs
+    whether it just changed nodedef or just came back from a saved network. Shared
+    between those two paths deliberately -- when the load path was missing pieces of it,
+    a reopened network cooked bare shaders at their defaults and quietly lost its look.
+
+    What is NOT here is the other half of a rebuild -- _ensure_prim_path and _rename --
+    which is about where the chunk sits rather than what it is. A load has both of those
+    restored from USD already, and re-deriving them would overwrite a saved path and
+    rename every Standard Surface in the file back onto one name.
+    """
+    _sync_signature(owner, sdef)
+    _loft_params(owner, sdef)
+    _author_outputs(owner, sdef)
+
+    # Binding only means anything for a terminal (a surface/displacement/volume); an
+    # intermediate node like ND_multiply_float is wired to other shaders, never bound.
+    bind = owner.get_param("bind_to")
+    if bind is not None:
+        if sdef.is_terminal:
+            bind.unset_state(ChunkFlags.State.HIDDEN)
+        else:
+            bind.set_state(ChunkFlags.State.HIDDEN)
+
+
 def _rebuild(owner):
     """Retarget the chunk at whatever nodedef is currently set.
 
@@ -398,23 +456,12 @@ def _rebuild(owner):
         if sdef is None:
             return
 
-        _sync_signature(owner, sdef)
-        _loft_params(owner, sdef)
-        _author_outputs(owner, sdef)
+        _apply_definition(owner, sdef)
         _ensure_prim_path(owner, sdef)
 
         # Name the node after the shader it authors, so a graph of these reads as the
         # network it builds rather than as a column of identical "MaterialX Shader" boxes.
         _rename(owner, sdef)
-
-        # Binding only means anything for a terminal (a surface/displacement/volume); an
-        # intermediate node like ND_multiply_float is wired to other shaders, never bound.
-        bind = owner.get_param("bind_to")
-        if bind is not None:
-            if sdef.is_terminal:
-                bind.unset_state(ChunkFlags.State.HIDDEN)
-            else:
-                bind.set_state(ChunkFlags.State.HIDDEN)
     finally:
         owner.set_blocked(was_blocked)
 
