@@ -67,14 +67,24 @@ def _view_mouse(view, etype, view_pos, modifiers=QtCore.Qt.KeyboardModifier.NoMo
 def graph(qapp):
     """One shared stage/registry/docker for the whole module.
 
-    ChunkStageSync/ChunkRegistry are process-wide singletons with no reset hook (see
-    CONTEXT.md's noted test-isolation trap) -- calling chunk_usd.initialize() once per test
-    function across many test functions leaks a growing pile of dead-stage global notice
-    listeners and was observed to crash an unrelated, later-running test module
-    (test_recook_debounce.py) when the full suite ran. One shared setup for this whole
-    module keeps that leak bounded to a single instance, matching how the rest of the
-    suite's node-graph tests (tests/test_incremental_node_rebuild.py) stay low-leak by using
-    very few chunk_usd.initialize() calls.
+    This used to say that chunk_usd.initialize() leaks a global notice listener per call.
+    It does not, and measurement is the reason to trust that over the story: calling it 20
+    times over fresh stages holds chunk_notice._global_dispatches at 11 subscribers total,
+    flat from the first call. _GlobalDispatch keeps subscribers in a WeakSet and
+    ChunkStageSync is a singleton, so each initialize() reassigns its listeners and the
+    previous NoticeConnections disconnect when collected.
+
+    The crash in a later module that originally motivated this scope was real, but the
+    cause was a deferred callback outliving its object -- QTimer.singleShot with no context
+    object, left queued in the shared QApplication and fired inside whatever test next
+    drained events. That is fixed at the source now.
+
+    What actually still needs module scope is narrower and lives in this file rather than
+    in the framework: test_duplicate_preserves_internal_wiring reads chunks that earlier
+    tests in the module put on the scene, and fails with a function-scoped fixture because
+    the scene starts empty. Verified: with these fixtures function-scoped the whole suite
+    passes except that one test. Making it build its own chunks is the small piece of work
+    that would let this go back to per-test isolation.
     """
     stage = Usd.Stage.CreateInMemory()
 

@@ -30,10 +30,14 @@ def _mk(mod, scene):
 
 @pytest.fixture(scope="module")
 def graph(qapp):
-    """See tests/test_multi_select.py's `graph` fixture docstring for why this is
-    module-scoped: chunk_usd.initialize() leaks a global notice listener per call with no
-    reset hook, so a handful of test functions each building their own fresh stage was
-    observed to destabilize an unrelated, later-running test module."""
+    """Module-scoped, but not for the reason this used to give.
+
+    There is no per-call notice-listener leak in chunk_usd.initialize() -- see
+    tests/test_multi_select.py's `graph` fixture for the measurement. The destabilised
+    later module was a deferred callback outliving its object, now fixed at the source.
+
+    The scope stays because test_duplicate_preserves_internal_wiring below reads chunks
+    that earlier tests in this module leave on the scene."""
     stage = Usd.Stage.CreateInMemory()
 
     class _StageScene(_DummyScene):
