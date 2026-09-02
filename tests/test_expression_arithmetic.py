@@ -22,6 +22,22 @@ from usd_chunks.plugins.chunk_usd import (
 )
 
 
+def _chunk_path(name: str) -> str:
+    """Where a chunk added through the scene actually lands.
+
+    add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
+    parent is that group rather than the /chunks scope.
+    """
+    from usd_chunks import chunk_registry
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+
+    scene = chunk_registry.ChunkRegistry().scene
+    ctx = scene.peek_root_context() if scene is not None else None
+    root = get_chunk_prim_path(ctx) if ctx is not None else "/chunks"
+    return f"{root}/{name}"
+
+
+
 class _Scene(SceneSender):
     def __init__(self, stage):
         super().__init__()
@@ -169,14 +185,14 @@ def test_operators_survive_reload(scene) -> None:
     p.value = "@chunkA.a@ * @chunkB.a@"
 
     stage = scene.get_stage()
-    attr = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dst").GetAttribute(f"{_INPUTS_PREFIX}multi")
+    attr = stage.GetPrimAtPath(_chunk_path("dst")).GetAttribute(f"{_INPUTS_PREFIX}multi")
     assert attr.GetTypeName() == Sdf.ValueTypeNames.Float
     assert len(attr.GetConnections()) == 2, "both refs still author real connections"
 
     reloaded = _mk("dst")
     reloaded_param = chunk.Slider("multi", default_value=0.0)
     reloaded.add_param(reloaded_param)
-    _load_wire_inputs(stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dst"), reloaded)
+    _load_wire_inputs(stage.GetPrimAtPath(_chunk_path("dst")), reloaded)
 
     assert reloaded_param.raw_value == "@chunkA.a@ * @chunkB.a@"
 
@@ -193,7 +209,7 @@ def test_rename_patches_stored_text(scene) -> None:
     stage = scene.get_stage()
     _patch_expressions(stage, "@chunkA.", "@renamedA.")
 
-    attr = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dst").GetAttribute(f"{_INPUTS_PREFIX}multi")
+    attr = stage.GetPrimAtPath(_chunk_path("dst")).GetAttribute(f"{_INPUTS_PREFIX}multi")
     assert chunk_utils.read_expression_text(attr) == "@renamedA.a@ * @chunkB.a@"
 
 
@@ -208,13 +224,13 @@ def test_legacy_connection_only_attr_still_loads(scene) -> None:
     p.value = "@chunkA.a@"
 
     stage = scene.get_stage()
-    attr = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dst").GetAttribute(f"{_INPUTS_PREFIX}one")
+    attr = stage.GetPrimAtPath(_chunk_path("dst")).GetAttribute(f"{_INPUTS_PREFIX}one")
     attr.ClearCustomDataByKey(chunk_utils.EXPR_TEXT_KEY)  # pretend it was authored before
 
     reloaded = _mk("dst")
     reloaded_param = chunk.Slider("one", default_value=0.0)
     reloaded.add_param(reloaded_param)
-    _load_wire_inputs(stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/dst"), reloaded)
+    _load_wire_inputs(stage.GetPrimAtPath(_chunk_path("dst")), reloaded)
 
     assert reloaded_param.raw_value == "@chunkA.a@"
 

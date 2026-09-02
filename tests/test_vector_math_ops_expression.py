@@ -13,6 +13,22 @@ from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
 
 
+def _chunk_path(name: str) -> str:
+    """Where a chunk added through the scene actually lands.
+
+    add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
+    parent is that group rather than the /chunks scope.
+    """
+    from usd_chunks import chunk_registry
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+
+    scene = chunk_registry.ChunkRegistry().scene
+    ctx = scene.peek_root_context() if scene is not None else None
+    root = get_chunk_prim_path(ctx) if ctx is not None else "/chunks"
+    return f"{root}/{name}"
+
+
+
 class _Scene(SceneSender):
     def __init__(self, stage):
         super().__init__()
@@ -83,11 +99,11 @@ class TestVectorMathOpsExpression:
         node2.get_param("a").value = "@Vec1.result@"
 
         stage = scene.get_stage()
-        attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Vec2.inputs:a"))
+        attr = stage.GetAttributeAtPath(Sdf.Path(f'{_chunk_path("Vec2")}.inputs:a'))
         assert attr.IsValid()
         assert attr.GetTypeName() == Sdf.ValueTypeNames.Float3
         assert len(attr.GetConnections()) == 1
-        assert str(attr.GetConnections()[0]) == "/chunks/Vec1.outputs:result"
+        assert str(attr.GetConnections()[0]) == f'{_chunk_path("Vec1")}.outputs:result'
 
         # Simulate a fresh process reopening the same stage: a brand new ChunkVectorBase
         # instance restored purely from the (connections-only, no string value) USD attr
@@ -118,7 +134,7 @@ class TestVectorMathOpsExpression:
         assert c2.raw_value == "@Vec1.result@"
 
         stage = scene.get_stage()
-        attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Vec2.inputs:c"))
+        attr = stage.GetAttributeAtPath(Sdf.Path(f'{_chunk_path("Vec2")}.inputs:c'))
         assert len(attr.GetConnections()) == 1
 
         # Add doesn't use C — switching to it must clear the connection, not just hide it.
@@ -150,7 +166,7 @@ class TestVectorMathOpsExpression:
         assert a2.raw_value == "@Vec1.result@"
 
         stage = scene.get_stage()
-        attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Vec2.inputs:a"))
+        attr = stage.GetAttributeAtPath(Sdf.Path(f'{_chunk_path("Vec2")}.inputs:a'))
         assert len(attr.GetConnections()) == 1
 
         # Driver switches to a float-output op — 'result' (vector) goes inactive.
