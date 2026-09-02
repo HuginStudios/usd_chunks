@@ -14,7 +14,6 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins import chunk_usd
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
 from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
