@@ -11,7 +11,6 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins import chunk_usd
 
 from usd_chunks.plugins.chunk_qt_widgets import (
-    ChunkArea,
     ChunkWidget,
     source_code_dial,
     FilterableChunkMenu,
@@ -90,13 +89,11 @@ class EditableTabBar(QtWidgets.QTabBar):
         self._editor.installEventFilter(self)
 
     def mousePressEvent(self, event):
-        if self.tabAt(event.pos()) == 0:
-            return
         super().mousePressEvent(event)
 
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         idx = self.tabAt(event.pos())
-        if idx == 0:
+        if idx < 0:
             return
 
         menu = QtWidgets.QMenu()
@@ -245,9 +242,8 @@ class _EmptyPanelTabRouter(QtCore.QObject):
 
     ChunkGraphView installs its own Tab-to-create router (_ProxyKeyRouter in
     chunk_qt_nodegraph) once it's built, but that requires a context tab to already
-    exist. Before the first tab is created, the panel only holds the "+" placeholder
-    (ChunkArea), which has no graph view and so nothing listening for Tab. This filter
-    covers exactly that gap.
+    exist. Before the first tab is created the panel holds no tab at all, so there is no
+    graph view and nothing listening for Tab. This filter covers exactly that gap.
     """
 
     def __init__(self, tab_widget: "ChunkTabWidget"):
@@ -297,13 +293,8 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
         self._view_mode: int = 0  # 0 = params, 1 = graph
 
-        self._btn = QtWidgets.QPushButton("+", self)
-        self._btn.clicked.connect(self.add_new_tab)
-
         self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
         self.setMinimumWidth(200)
-
-        self.add_tab_button()
 
         self._empty_panel_router = _EmptyPanelTabRouter(self)
         QtWidgets.QApplication.instance().installEventFilter(self._empty_panel_router)
@@ -377,7 +368,13 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             tab.group.name = name
 
     def add_new_tab(self):
-        # Create a new context chunk which will be displayed as the current tab
+        """Create a context chunk and show it as the current tab.
+
+        No longer a UI affordance -- tabs mirror the chunk hierarchy (the root context, and
+        a chunkgroup that has been dived into) rather than being authored by hand. This
+        remains for the two paths that need a context to exist at all: a chunk created with
+        no tab to receive it (add_chunk_to_tab), and the empty-panel Tab shortcut.
+        """
         name = f"Tab {self.tabBar().count()}"
 
         if scene := chunk.get_scene():
@@ -385,13 +382,6 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         else:
             c = chunk.Chunk(name, flags=ChunkFlags.GroupFlags.CONTEXT)
             self.add_chunk_context(c)
-
-    def add_tab_button(self):
-        w = ChunkArea(self)
-        idx = self.addTab(w, "")
-
-        self.tabBar().setTabButton(idx, QtWidgets.QTabBar.ButtonPosition.LeftSide, self._btn)
-        return idx
 
     def update_tab_position(self):
         if self.height() > self.width():
@@ -430,9 +420,9 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         w = self.widget(idx)
         if isinstance(w, ChunkTabContextStack):
             w = w.widget(0)
-        # Not every tab holds a context: index 0 is the "+" ChunkArea, and during
-        # async teardown (a ChunkTabContextStack removing itself on GC) the current
-        # widget can momentarily be something else. Return None rather than assert.
+        # Not every tab holds a context: during async teardown (a ChunkTabContextStack
+        # removing itself on GC) the current widget can momentarily be something else.
+        # Return None rather than assert.
         return w if isinstance(w, ChunkWidget) else None
 
     def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
@@ -499,10 +489,10 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
     def add_chunk_to_tab(self, param: chunk_core.ChunkBase, tabidx=None):
         if tabidx is None:
             tabidx = self.tabBar().currentIndex()
-        # No context tab to receive the chunk: index 0 is the "+" button, and -1 means
-        # every tab was deleted. Either way, spin up a fresh tab and target it (add_new_tab
-        # selects the new tab, so read the current index back).
-        if tabidx <= 0 or self.get_chunk_context(tabidx) is None:
+        # No context tab to receive the chunk -- -1 means there is no tab at all, either
+        # because none has been made yet or because every one was deleted. Spin up a fresh
+        # one and target it (add_new_tab selects the new tab, so read the current index back).
+        if tabidx < 0 or self.get_chunk_context(tabidx) is None:
             self.add_new_tab()
             tabidx = self.tabBar().currentIndex()
 
@@ -644,7 +634,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
     def _current_context(self):
         idx = self.tab_widget.currentIndex()
-        if idx == 0:
+        if idx < 0:
             return None
         w = self.tab_widget.get_chunk_context(idx)
         return w.group if w else None
