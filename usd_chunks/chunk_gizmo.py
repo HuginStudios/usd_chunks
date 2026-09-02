@@ -1421,7 +1421,16 @@ def _position_after_tail(scene) -> "tuple[float, float] | None":
     if stage is None:
         return None
     current = getattr(scene, "_current_context", None)
-    tail = sync._find_dag_tail(current() if current else None)
+    context = current() if current else None
+    if context is None:
+        # Nothing dived into means the new chunk is going into the scene's default
+        # chunkgroup, so that is where its tail is. Passing None looks under the /chunks
+        # scope, which holds no chunks of its own any more -- the lookup found nothing,
+        # read as "no tail", and the node landed on the default placement instead of after
+        # the chunk it was being chained onto.
+        peek = getattr(scene, "peek_root_context", None)
+        context = peek() if peek else None
+    tail = sync._find_dag_tail(context)
     if tail is None:
         return None
     pos = _node_pos(_chunk_prim(stage, tail))

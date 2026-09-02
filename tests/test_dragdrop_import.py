@@ -130,12 +130,20 @@ def _export_selected(scene, chunks, path) -> None:
     dst = Sdf.Layer.CreateAnonymous()
     for c in chunks:
         p = Sdf.Path(get_chunk_prim_path(c))
+        # Every missing ancestor, not just the immediate parent. A chunk sits inside the
+        # scene's default chunkgroup now, so copying its parent spec means writing at
+        # /chunks/<group> -- which Sdf refuses while /chunks itself has no spec to hold it.
+        ancestors = []
         parent = p.GetParentPath()
-        if not parent.isEmpty and parent != Sdf.Path.absoluteRootPath and not dst.GetPrimAtPath(parent):
-            if flat.GetPrimAtPath(parent):
-                Sdf.CopySpec(flat, parent, dst, parent)
-            else:
-                Sdf.CreatePrimInLayer(dst, parent)
+        while not parent.isEmpty and parent != Sdf.Path.absoluteRootPath:
+            ancestors.append(parent)
+            parent = parent.GetParentPath()
+        for ancestor in reversed(ancestors):
+            if dst.GetPrimAtPath(ancestor):
+                continue
+            Sdf.CreatePrimInLayer(dst, ancestor)
+            if flat.GetPrimAtPath(ancestor):
+                Sdf.CopySpec(flat, ancestor, dst, ancestor)
         Sdf.CopySpec(flat, p, dst, p)
     dst.Export(str(path))
 

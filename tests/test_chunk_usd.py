@@ -901,8 +901,15 @@ def test_delete_loaded_chunk_removes_prim() -> None:
     assert not stage.GetPrimAtPath(prim_path).IsValid()
 
 
-def test_delete_last_chunk_removes_chunks_root() -> None:
-    """Deleting the last chunk under /chunks removes the /chunks root prim too."""
+def test_delete_last_chunk_leaves_the_scope_and_its_default_group() -> None:
+    """Deleting the last chunk empties the default chunkgroup without removing it.
+
+    This used to assert that /chunks went away with the last chunk under it, which was
+    right when a chunk sat directly beneath the scope: nothing was left to hold. A chunk
+    now sits inside the scene's default chunkgroup, and that group is the tab you are
+    looking at -- an empty scene still has one, the same as a freshly opened one. So what
+    must survive is the scope and the group; what must go is the chunk.
+    """
     stage = Usd.Stage.CreateInMemory()
     scene = _DummyScene()
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
@@ -910,11 +917,17 @@ def test_delete_last_chunk_removes_chunks_root() -> None:
 
     c = _chunk_with_module("Solo")
     scene.add_chunk(c)
-    assert stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid()
+    chunk_path = Sdf.Path(_get_chunk_prim_path(c))
+    root_context = scene.peek_root_context()
+    assert stage.GetPrimAtPath(chunk_path).IsValid()
 
     c.request_delete()
 
-    assert not stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid()
+    assert not stage.GetPrimAtPath(chunk_path).IsValid(), "the chunk itself must go"
+    assert stage.GetPrimAtPath(_CHUNKS_ROOT).IsValid(), "the scope stays"
+    assert stage.GetPrimAtPath(
+        Sdf.Path(_get_chunk_prim_path(root_context))
+    ).IsValid(), "and so does the default chunkgroup -- it is the tab, not content"
 
 
 def test_delete_one_of_two_chunks_keeps_chunks_root() -> None:

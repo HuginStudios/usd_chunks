@@ -681,6 +681,20 @@ def _snapshot_layer_chunks(layer: "Sdf.Layer") -> "tuple[list[_ClipboardNode], l
         if prim.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get():
             candidates[str(prim.GetPath())] = prim
 
+    # A saved file's outermost chunkgroup -- the one sitting directly under the /chunks
+    # scope -- is the container the graph lived in, not a node someone dropped in. Left in
+    # candidates it becomes the file's ONLY top-level chunk, and everything actually in
+    # the file reads as its contents: dropping a two-chunk file imported one node.
+    # Dropping it from candidates lets its children be top-level, which is what they were.
+    # A group nested any deeper is real content and stays.
+    scope = Sdf.Path(chunk_usd._CHUNKS_ROOT)
+    for path in [
+        path for path, prim in candidates.items()
+        if prim.GetParent() and prim.GetParent().GetPath() == scope
+        and prim.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get() == "chunkgroup"
+    ]:
+        del candidates[path]
+
     def _is_top_level(prim: "Usd.Prim") -> bool:
         p = prim.GetParent()
         while p and not p.IsPseudoRoot():
