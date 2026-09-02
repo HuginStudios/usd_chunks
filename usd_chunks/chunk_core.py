@@ -4927,12 +4927,21 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return None
 
     def get_contexts(self) -> Tuple[ChunkBase, ...]:
-        """Every CONTEXT chunk, plain tab contexts included.
+        """Every container in the scene, including the ones get_chunks() leaves out.
 
-        get_chunks() deliberately omits a plain tab -- it is not an executable node --
-        but a tab still owns lofted interface params, and those are the names a tool
-        presents to whoever drives it. Anything resolving a param by owner rather than
-        by execution order needs to see them, which get_chunks() cannot provide.
+        A container owns lofted interface params, and those are the names a tool presents
+        to whoever drives it -- so anything resolving a param by owner rather than by
+        execution order has to see all of them.
+
+        get_chunks() answers a different question: what is a node in some graph. The
+        outermost container is a node in nothing (it has no parent graph to be one in),
+        and a plain module-less context never was one either. Both still hold interface
+        params, which is the gap this fills.
+
+        Stated as "every container" rather than "every CONTEXT chunk including plain
+        tabs", because a plain tab is the legacy shape -- context == chunkgroup now, and
+        a new scene's default container is a real chunkgroup under the /chunks scope. This
+        stays correct as those disappear.
         """
         seen: set = set()
         res: list = []
