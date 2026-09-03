@@ -2726,9 +2726,16 @@ class _ProxyKeyRouter(QtCore.QObject):
         # pressing Ctrl+C routed the key to the "forward to active proxy" fallback below
         # instead -- a silent no-op -- while a bare click on the node chrome (proxy is
         # None) worked fine.
+        # Ctrl+G belongs here for the same reason as the rest: it is built out of Cut and
+        # Paste, so a graph it cannot reach is a graph where grouping silently does nothing
+        # -- which is exactly how it behaved before this, since the native keyPressEvent
+        # path needs a focus usdview rarely leaves with the view.
         ctrl_down = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
-        _CVDX_KEYS = (QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V, QtCore.Qt.Key.Key_D, QtCore.Qt.Key.Key_X)
-        if not typing_in_proxy and ctrl_down and event.key() in _CVDX_KEYS:
+        _EDIT_KEYS = (
+            QtCore.Qt.Key.Key_C, QtCore.Qt.Key.Key_V, QtCore.Qt.Key.Key_D,
+            QtCore.Qt.Key.Key_X, QtCore.Qt.Key.Key_G,
+        )
+        if not typing_in_proxy and ctrl_down and event.key() in _EDIT_KEYS:
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -2741,6 +2748,8 @@ class _ProxyKeyRouter(QtCore.QObject):
                         view._paste_at_cursor()
                     elif event.key() == QtCore.Qt.Key.Key_D:
                         view._duplicate_selected()
+                    elif event.key() == QtCore.Qt.Key.Key_G:
+                        view._group_selected()
                     else:
                         view._cut_selected_to_clipboard()
                     event.accept()
@@ -3457,6 +3466,130 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 continue
             _author_raw_connection(stage, dst_path, edge.dst_attr, dst_chunk, src_path, edge.src_attr)
 
+    def _group_selected(self) -> None:
+        """Ctrl+G: put the selected chunks in a new chunkgroup.
+
+        Exactly the sequence a user does by hand -- cut, make a group, dive in, paste --
+        composed out of the operations that already do those things, rather than a bespoke
+        move. Two things follow from that, both of them the point:
+
+        The group then takes the selection's place in the chain: whatever fed the
+        selection feeds the group, and whatever the selection fed is fed by it. Grouping
+        the middle of a -> b -> c leaves a -> group -> c, so the graph still reads as the
+        same flow with a box drawn round part of it.
+
+        The boundary is read BEFORE the cut, while both ends are still where the user left
+        them -- Cut heals the chain closed as it removes the nodes, and by the time it
+        returns there is nothing left to say what used to attach where.
+
+        And the paste lands inside the group by making it the current context for the
+        duration, which is what diving in does.
+        """
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return
+        stage = graph_scene._stage
+        if stage is None:
+            return
+        selected = [
+            node for node in graph_scene._nodes.values()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._is_view
+        ]
+        if not selected:
+            return
+
+        scene_sender = graph_scene._scene_sender
+        centre_x = sum(n.pos().x() for n in selected) / len(selected)
+        centre_y = sum(n.pos().y() for n in selected) / len(selected)
+
+        # Read the boundary while it still exists. Cut heals the chain closed as it
+        # removes the nodes, so afterwards nothing records what used to attach where.
+        inside = {chunk_usd.get_chunk_prim_path(n.chunk) for n in selected}
+        feeds_selection: "list[str]" = []
+        fed_by_selection: "list[str]" = []
+        for prim in stage.TraverseAll():
+            if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+                continue
+            path = str(prim.GetPath())
+            for attr in chunk_usd.iter_exec_inputs(prim):
+                for conn in attr.GetConnections():
+                    source = str(conn.GetPrimPath())
+                    if path in inside and source not in inside and source not in feeds_selection:
+                        feeds_selection.append(source)
+                    elif source in inside and path not in inside and path not in fed_by_selection:
+                        fed_by_selection.append(path)
+
+        # Cut second, while the nodes are still here to be snapshotted.
+        self._cut_selected_to_clipboard()
+        if not _node_clipboard:
+            return
+
+        registry = chunk_registry.ChunkRegistry()
+        mod = registry.get_chunk_module("chunkgroup") if registry.initialized else None
+        if mod is None:
+            return
+        created = mod.create() if mod.loaded else mod.load()
+        if not created:
+            return
+        group = created[0]
+
+        context = self._graph_context()
+        prev_ctx = scene_sender._current_context
+        scene_sender._current_context = weakref.ref(context) if context is not None else None
+        try:
+            scene_sender.add_chunk(group)
+        finally:
+            scene_sender._current_context = prev_ctx
+
+        group_prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(group)))
+        if group_prim and group_prim.IsValid():
+            UsdUI.NodeGraphNodeAPI.Apply(group_prim).CreatePosAttr().Set(
+                Gf.Vec2f(float(centre_x), float(centre_y))
+            )
+
+        # Paste into the group, which is what diving into it before Ctrl+V amounts to.
+        # The paste takes its target from the graph's built context (_graph_context), not
+        # from the scene's current one -- diving in is what normally changes that -- so the
+        # group stands in as the built context for the duration.
+        edges = list(_edge_clipboard)
+        prev_built = graph_scene._built_context
+        prev_ctx = scene_sender._current_context
+        graph_scene._built_context = group
+        scene_sender._current_context = weakref.ref(group)
+        try:
+            pasted = self._paste_clipboard_at(QtCore.QPointF(centre_x, centre_y))
+        finally:
+            scene_sender._current_context = prev_ctx
+            graph_scene._built_context = prev_built
+
+        # Wire the pasted chunks to each other here rather than leaving it to the paste's
+        # own deferred pass. That pass wires through the graph's PORT items, and the chunks
+        # just pasted are inside a group the graph is not currently showing -- so they have
+        # no node, no ports, and nothing to wire. Going straight to the exec connection is
+        # the same thing the ports would have authored.
+        for edge in edges:
+            if edge.src_index >= len(pasted) or edge.dst_index >= len(pasted):
+                continue
+            if not (edge.src_attr.endswith(_EXEC_OUTPUT.split(":")[-1])
+                    and edge.dst_attr.endswith(_EXEC_INPUT.split(":")[-1])):
+                continue  # a typed param wire; those go through ports and are left alone
+            chunk_usd.connect_exec(
+                stage, scene_sender,
+                chunk_usd.get_chunk_prim_path(pasted[edge.src_index]),
+                chunk_usd.get_chunk_prim_path(pasted[edge.dst_index]),
+            )
+
+        # Put the group where the selection was in the chain. These are fresh connections
+        # onto a prim that did not exist a moment ago, not edits to existing ones, which is
+        # why connect_exec is enough on its own here.
+        group_path = chunk_usd.get_chunk_prim_path(group)
+        for source in feeds_selection:
+            chunk_usd.connect_exec(stage, scene_sender, source, group_path)
+        for consumer in fed_by_selection:
+            chunk_usd.connect_exec(stage, scene_sender, group_path, consumer)
+
+        scene_sender.set_selected_chunks([group])
+
     def _duplicate_selected(self) -> None:
         """Ctrl+D: copy+paste the current selection in one step, without touching the
         Ctrl+C/Ctrl+V clipboard (so it never clobbers whatever was last explicitly copied).
@@ -3794,6 +3927,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 self._paste_at_cursor()
             else:
                 self._create_view_node()
+            event.accept()
+            return
+        if event.key() == QtCore.Qt.Key.Key_G and (event.modifiers() & QtCore.Qt.ControlModifier):
+            self._group_selected()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_L:
