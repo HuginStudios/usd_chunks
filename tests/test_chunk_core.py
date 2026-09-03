@@ -340,51 +340,6 @@ def test_menu_invalid_value_reverts_to_first_item():
     assert menu.value == "hello0"
 
 
-def test_scene_sender_serialization_roundtrip_preserves_connections_and_values(tmp_path):
-    scene_src = _DummyScene()
-    registry = chunk_registry.ChunkRegistry()
-    registry.initialize(scene_src, "pytest")
-
-    chunk_a = chunk.Chunk("chunk_a")
-    source = chunk.Slider("source")
-    source.value = 7
-    chunk_a.add_param(source)
-
-    chunk_b = chunk.Chunk("chunk_b")
-    target = chunk.Slider("target")
-    target.add_dependency(source)
-    target.set_function("value", _double_first_dependency)
-    target.add_callback(_scene_callback, notice_alias=ChunkNoticeAlias.ATTRIBUTE_CHANGED)
-    chunk_b.add_param(target)
-
-    scene_src.add_chunks([chunk_a, chunk_b])
-    source.value = 8
-    assert target.value == 16
-
-    scene_file = tmp_path / "scene_roundtrip.chsc"
-    scene_src.export_scene(scene_file)
-
-    scene_dst = _DummyScene()
-    registry.initialize(scene_dst, "pytest")
-    scene_dst.open_scene(scene_file)
-
-    loaded_chunk_a = scene_dst.get_chunk("chunk_a")
-    loaded_chunk_b = scene_dst.get_chunk("chunk_b")
-    assert loaded_chunk_a is not None
-    assert loaded_chunk_b is not None
-
-    loaded_source = loaded_chunk_a.get_param("source", chunk.is_param)
-    loaded_target = loaded_chunk_b.get_param("target", chunk.is_param)
-
-    assert loaded_source.value == 8
-    assert loaded_target.value == 16
-
-    loaded_dep = loaded_target.get_dependency(0, chunk.is_param)
-    assert loaded_dep is loaded_source
-    assert len(loaded_target.find_callbacks(method=_scene_callback)) == 1
-
-    loaded_source.value = 11
-    assert loaded_target.value == 22
 
 
 class _AChunk(chunk.Chunk):
@@ -395,41 +350,8 @@ class _AChunk(chunk.Chunk):
         self.slider = grp.add_param(chunk.Slider("slider"))
 
 
-def test_serialize_custom_chunk_with_member(tmp_path):
-    scene_src = _DummyScene()
-    registry = chunk_registry.ChunkRegistry()
-    registry.initialize(scene_src, "pytest")
-    scene_src.add_chunk(_AChunk())
-
-    scene_file = tmp_path / "scene_member.chsc"
-    scene_src.export_scene(scene_file)
-
-    scene_dst = _DummyScene()
-    registry.initialize(scene_dst, "pytest")
-    scene_dst.open_scene(scene_file)
-
-    for c in scene_dst.get_chunks():
-        c.check_hierarchy()
 
 
-def test_serialize_example_chunk(tmp_path):
-    scene_src = _DummyScene()
-    registry = chunk_registry.ChunkRegistry()
-    registry.initialize(scene_src, "pytest")
-
-    mod = registry.get_chunk_module("examples.example")
-    assert mod
-
-    scene_src.add_chunks(mod.load())
-    scene_file = tmp_path / "scene_examples.chsc"
-    scene_src.export_scene(scene_file)
-
-    scene_dst = _DummyScene()
-    registry.initialize(scene_dst, "pytest")
-    scene_dst.open_scene(scene_file)
-
-    for c in scene_dst.get_chunks():
-        c.check_hierarchy()
 
 
 def test_get_param_by_path_with_duplicate_names():

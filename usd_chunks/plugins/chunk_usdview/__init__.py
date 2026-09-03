@@ -10,7 +10,7 @@ from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
-from usd_chunks import chunk_registry, chunk_core, chunk_serial
+from usd_chunks import chunk_registry, chunk_core
 from usd_chunks.plugins import chunk_qt, chunk_usd
 
 from typing import List
@@ -91,19 +91,6 @@ class UsdviewScene(chunk_core.SceneSender):
             self.usdviewAPI.dataModel.frameRangeBegin = frame
             appCtrl.realStartTimeCode = frame
         appCtrl._UpdateTimeSamples()
-
-    def request_save(self) -> bool:
-        reg = chunk_registry.ChunkRegistry().scene
-
-        if not chunk_qt.confirm_dial("Save chunk scene?"):
-            return True
-
-        flt = "*" + chunk_serial.FileExtensions.SCENE
-        if file := chunk_qt.file_dial(flt, create_new=True):
-            reg.export_scene(file)
-            return True
-
-        return False
 
     def should_install_package(self, package_name: str) -> bool:
         return chunk_qt.confirm_dial(f"Install package dependency {package_name}?")
@@ -310,12 +297,7 @@ class ChunksPluginContainer(PluginContainer):
     def importChunk(self, usdviewApi):
         reg = chunk_registry.ChunkRegistry()
 
-        exts = (
-            chunk_serial.FileExtensions.CHUNK_MODULE,
-            chunk_serial.FileExtensions.PY_MODULE,
-        )
-
-        flt = " ".join([f"*{x}" for x in exts])
+        flt = "*" + chunk_registry.PY_MODULE_EXT
         if file := chunk_qt.file_dial(flt, create_new=False):
             reg.import_chunk(file)
 
