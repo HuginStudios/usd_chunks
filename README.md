@@ -2,14 +2,72 @@
 
 ![image](docs/assets/chunks_view.png)
 
-## Intro
+**A framework for building procedural USD tools.**
 
-usd_chunks is a simple library for interfacing with USD. The aim is to lower the bar for users interested in working with USD. The target was primarily to extend [usdview](https://openusd.org/release/toolset.html#usdview) by providing UI elements in order to modify the stage interactively. This target has been extended to include USD as a whole, meaning one can use usd_chunks to interface with USD regardless of the application.
+A tool — a *Chunk* — is a short Python module that declares its parameters and what to do
+with them. usd_chunks turns that one definition into a node in a graph, a panel of widgets,
+and a command-line invocation. You write the operation. You do not write Qt, a plugin
+registration, a serialisation format, an undo stack or a CLI.
 
-When creating plugins for usdview natively:
-Each plugin need to define some boilerplate code as well as define a plugInfo.json in order to be recognized by usdview. The plugin author can write some Qt code for the UI. Although fairly simple, when creating and managing many plugins, this quickly becomes tedious. The plugin as well as the UI is also not application-agnostic, meaning the same code need to be rewritten for all supported applications. usd_chunks exists to solve this.
+## The graph is USD
 
-usd_chunks is a single plugin for USD that can load 'Chunks'. A Chunk is created using python and registered with the usd_chunks plugin, and optionally represented graphically. Without writing Qt and without registering the plugin with USD. The Chunk can in turn modify the stage however one likes, such as setting attributes, creating prims, import and export of files etc.
+There is no scene format of our own, and no runtime graph living beside the stage:
+
+- **A node is a prim.** Each chunk is a `Chunk`-typed prim; its params are `inputs:`
+  attributes on it, and its position is `UsdUINodeGraphNodeAPI`.
+- **An edge is a USD connection.** Execution order is `inputs:chunk` → `outputs:chunk`.
+  A value flowing from one chunk's param into another's is a connection plus an
+  expression.
+- **Each chunk authors into its own layer.** Composition *is* the dataflow.
+
+So saving the stage saves the graph, and what a chunk produces is ordinary USD that any
+consumer reads — no adapter, no export step, no intermediate format that only this project
+understands. Hand the result to a renderer, a simulator or another DCC and the chunks need
+not be installed at all.
+
+## The same definition runs interactively and headless
+
+A chunk is authored once and runs anywhere the framework does: as a panel, as a node on
+the canvas, or from the command line with no UI present at all.
+
+```
+usdchunks run layout.usda Transform.translate_x=5 -o result.usda
+usdchunks run layout.usda --procedural -o network.usda
+```
+
+The first flattens and exports the result with the Chunk prims stripped out; the second
+keeps them, so the network reloads and re-cooks.
+
+Procedural chunks regenerate their output on load, so a network is a recipe rather than a
+bake. Chunks that write to disk do so through a separate `commit` hook, once the values
+they are writing have stopped moving.
+
+## What comes with it
+
+[`scripts/`](/scripts/) holds the chunks this has been built against — transforms,
+references, payloads, sublayers, variants and variant authoring, collections, material
+binding, MaterialX shading, render settings, products, vars and passes, scattering, mesh
+and curve creation, and a MuJoCo rigid-body solver. They are also the worked examples:
+each is one module, and most are under a few hundred lines.
+
+Two of them show how far the declaration can be pushed. The MaterialX chunk builds its
+params from the shader definition in the registry, so choosing a `nodedef` reconfigures
+the node's own interface — the same self-description the UI is derived from, driven by
+data rather than written out. And `examples/AMDMaterialXLibrary` is a browser for AMD's
+GPUOpen material library, fetching and caching over the network, inside a chunk.
+
+The node graph, the parameter panels and the viewport gizmos are generated from the same
+declarations. That is the part that used to be the pitch, and it is really a consequence:
+a chunk describes itself well enough that a UI can be derived from it, which is also what
+lets a network be composed programmatically.
+
+## Where it came from
+
+The first target was [usdview](https://openusd.org/release/toolset.html#usdview), where
+every plugin needs boilerplate, a `plugInfo.json` and its own Qt code — tedious for one
+plugin and unmanageable for fifty, and none of it portable to another application. That
+problem is still solved, and it is no longer the point: a chunk is a description of an
+operation on a stage, and usdview is one of the places it can be run.
 
 ## Chunks
 A 'Chunk' is primarily a container of parameters, groups and attributes. All data encapsulated in a chunk can be modified freely. Chunks, parameters and groups are similar and can be used similarly. Parameters hold values and are ultimately the things we can interact with. Any data modified on a chunk object will send a relevant notice for users to listen for through callbacks. Callbacks are python functions, commonly for modifying the stage. Any changes to the stage through a callback will be encapsulated in a relevant UsdLayer, as to not clutter irrelevant layers. As chunks are dynamic, callbacks can also be used to modify the chunks at runtime by adding / removing params, or otherise change the behaviour of the Chunk.
