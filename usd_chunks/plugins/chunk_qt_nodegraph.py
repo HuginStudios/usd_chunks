@@ -1049,6 +1049,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         for nested in chunk_widget.findChildren(ContainerWidget):
             if nested.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
                 nested.toggle_anim.finished.connect(self._port_rebuild_timer.start)
+        # No context object here, unlike every other deferred call in this file:
+        # QGraphicsItem is not a QObject, so QTimer.singleShot has nothing to bind the
+        # cancellation to. _rebuild_typed_ports carries the guard instead -- it checks the
+        # prim, the proxy, and catches the RuntimeError from an already-destroyed C++
+        # proxy -- which is why this one is safe to schedule bare.
         QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
 
     def _rebuild_typed_ports(self):
@@ -1879,7 +1884,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         else:
             # Proxy not built yet -- create_proxy()'s own initial _rebuild_typed_ports()
             # call will pick up the change once it runs (_rebuild_typed_ports no-ops
-            # safely if the proxy still isn't there by then).
+            # safely if the proxy still isn't there by then). Bare singleShot for the same
+            # reason as above: a QGraphicsItem cannot be a timer context object, and the
+            # callee guards itself.
             QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
 
     def _on_param_added(self, notice, sender):
@@ -2040,7 +2047,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         if getattr(self, "_rebuild_pending", False):
             return
         self._rebuild_pending = True
-        QtCore.QTimer.singleShot(0, self._do_rebuild)
+        QtCore.QTimer.singleShot(0, self, self._do_rebuild)
 
     def _do_rebuild(self):
         self._rebuild_pending = False
@@ -2140,7 +2147,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             retries = getattr(self, "_rebuild_retries", 0)
             if retries < 20:
                 self._rebuild_retries = retries + 1
-                QtCore.QTimer.singleShot(0, self._do_rebuild)
+                QtCore.QTimer.singleShot(0, self, self._do_rebuild)
             return
         self._rebuild_retries = 0
 
@@ -2247,7 +2254,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 print(f"[PROXY] create_proxy FAILED for {getattr(node.chunk, 'name', '?')}: "
                       f"{type(e).__name__}: {e}")
         if rest:
-            QtCore.QTimer.singleShot(0, lambda: self._create_proxies_batch(rest, gen))
+            QtCore.QTimer.singleShot(0, self, lambda: self._create_proxies_batch(rest, gen))
             return
         # Every proxy exists, so heights can now start counting toward settled; the countdown
         # runs from here and _on_heights_settled applies the body decision once it expires.
@@ -2467,7 +2474,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 v._recook_force_full = True
             if not getattr(v, "_recook_pending", False):
                 v._recook_pending = True
-                QtCore.QTimer.singleShot(0, v._run_pending_recook)
+                QtCore.QTimer.singleShot(0, v, v._run_pending_recook)
 
     def _node_set_is_stale(self, root) -> bool:
         """Whether the nodes on screen still match the chunk prims under `root`.
@@ -3072,7 +3079,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # build's rebuild + proxy pass so view creation runs on a settled graph, not mid-build.
         # Cheap (just a membership scan) even when re-triggered by an unrelated create, so this
         # one stays unconditional.
-        QtCore.QTimer.singleShot(80, lambda ctx=context: self._ensure_default_view(ctx))
+        QtCore.QTimer.singleShot(80, self, lambda ctx=context: self._ensure_default_view(ctx))
         # Switching to this context must re-establish the viewport for ITS active view — the
         # viewport is one global stage, so a view activated in another context (e.g. an inner
         # group view) otherwise stays cooked and the wrong result shows. Deferred past the
@@ -3109,7 +3116,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 self._restore_view_changed_chunks |= set(changed_chunks)
         self._restore_view_token += 1
         token = self._restore_view_token
-        QtCore.QTimer.singleShot(100, lambda t=token: self._run_scheduled_restore_active_view(t))
+        QtCore.QTimer.singleShot(100, self, lambda t=token: self._run_scheduled_restore_active_view(t))
 
     def _run_scheduled_restore_active_view(self, token: int) -> None:
         if token != self._restore_view_token:
@@ -3374,7 +3381,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # because it is a race with an 80ms timer.
             self._suppress_default_view = True
             QtCore.QTimer.singleShot(
-                80,
+                80, self,
                 lambda paths=new_path_by_index, edges=list(clip_edges), created=list(new_chunks):
                     self._wire_pasted_edges(paths, edges, created),
             )
@@ -4140,7 +4147,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         new_prim = chunk_usd.get_chunk_prim_path(new_chunk)
         QtCore.QTimer.singleShot(
-            80, lambda: self._connect_ports_by_path(src_attr_path, src_is_input, new_prim)
+            80, self,
+            lambda: self._connect_ports_by_path(src_attr_path, src_is_input, new_prim),
         )
 
     def _connect_ports_by_path(self, src_attr_path: str, src_is_input: bool, new_prim_path: str) -> None:
@@ -4486,7 +4494,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             sa = vp.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
             sa.SetVariability(Sdf.VariabilityUniform)
             sa.Set(slot)
-        QtCore.QTimer.singleShot(0, lambda s=slot: self._view_state.set_slot(s))
+        # `self` as the timer's context object, so Qt cancels the callback if this view is
+        # destroyed before it fires. Without it the lambda outlives the view: the queued
+        # timer is still in the application's event loop, _view_state is a child QObject
+        # that went with the view, and set_slot emitting on the deleted C++ object raises
+        # "Signal source has been deleted". Closing a graph tab within a frame of a slot
+        # change is the way to hit that in the app; a test whose event queue is drained by
+        # whatever runs next is how it actually showed up.
+        QtCore.QTimer.singleShot(0, self, lambda s=slot: self._view_state.set_slot(s))
 
     def _create_view_node_for_prim(self, target_prim_path: str) -> None:
         """Create a view node wired to target_prim_path using only USD stage data."""
@@ -4581,7 +4596,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 Gf.Vec2f(tx + _NODE_WIDTH + 40, ty - 80)
             )
 
-        QtCore.QTimer.singleShot(0, lambda: self._view_state.set_slot(slot))
+        # Context object, as above — the view can be gone before this fires.
+        QtCore.QTimer.singleShot(0, self, lambda: self._view_state.set_slot(slot))
 
     def set_view_state(self, vs: ViewSlotState) -> None:
         self._view_state.slot_changed.disconnect(self._on_view_slot_changed)
@@ -4901,7 +4917,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._activate_menu_view(menu_view, context, scene.get_stage())
             return
 
-        QtCore.QTimer.singleShot(60, lambda ctx=context: self._ensure_default_view(ctx))
+        QtCore.QTimer.singleShot(60, self, lambda ctx=context: self._ensure_default_view(ctx))
 
     # ------------------------------------------------------------------
     # Drag-and-drop file import
@@ -4994,7 +5010,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         # Wait past _materialize_at's own deferred (80ms) wiring pass so the imported
         # chain's exec connections actually exist on the stage before tails are computed.
-        QtCore.QTimer.singleShot(150, lambda chunks=pasted: self._ensure_view_for_imported(chunks))
+        QtCore.QTimer.singleShot(150, self, lambda chunks=pasted: self._ensure_view_for_imported(chunks))
 
     def _ensure_view_for_imported(self, imported_chunks: "list[core.ChunkBase]") -> None:
         """Point a fresh default view at the tail of JUST the imported chunks -- not left to

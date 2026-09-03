@@ -617,7 +617,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                 self._pending_graph_rebuild.add(sender)
                 if not self._graph_rebuild_scheduled:
                     self._graph_rebuild_scheduled = True
-                    QtCore.QTimer.singleShot(0, self._flush_graph_rebuild)
+                    QtCore.QTimer.singleShot(0, self, self._flush_graph_rebuild)
             else:
                 self._rebuild_graph(changed_chunks={sender})
         if chunk_usd.is_view_chunk(sender):
@@ -764,7 +764,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         # build() when the graph is cached, so recook here too — covers the cached-tab switch.
         gv = self.tab_widget.get_current_graph_view()
         if gv is not None:
-            QtCore.QTimer.singleShot(0, gv._recook_active_view)
+            QtCore.QTimer.singleShot(0, gv, gv._recook_active_view)
 
     _NAV_HISTORY_MAX = 50
 

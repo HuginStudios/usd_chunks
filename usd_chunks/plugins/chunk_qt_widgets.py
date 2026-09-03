@@ -696,7 +696,7 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         # that are deep descendants of a QGraphicsProxyWidget (graphicsProxyWidget()
         # returns None for non-direct embeds).  Replace with a QMenu so the popup
         # always appears at the correct screen position.
-        QtCore.QTimer.singleShot(0, self._show_as_menu)
+        QtCore.QTimer.singleShot(0, self, self._show_as_menu)
 
     def _show_as_menu(self) -> None:
         menu = QtWidgets.QMenu(self)
@@ -2373,7 +2373,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             action.setFont(bold_font if matches else normal_font)
 
         self._filter_menus(self)
-        QtCore.QTimer.singleShot(0, self._open_first_submenu)
+        QtCore.QTimer.singleShot(0, self, self._open_first_submenu)
 
     def _open_first_submenu(self):
         for action in self.actions():
@@ -2394,7 +2394,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                                 QtCore.Qt.KeyboardModifier.NoModifier,
                             ),
                         )
-                    QtCore.QTimer.singleShot(0, lambda m=submenu: self._highlight_submenu_leaf(m))
+                    QtCore.QTimer.singleShot(0, self, lambda m=submenu: self._highlight_submenu_leaf(m))
                 break
 
     def _highlight_submenu_leaf(self, submenu: QtWidgets.QMenu):
