@@ -3,7 +3,7 @@ from typing import Any, Optional, Generic
 
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_serial, chunk_utils
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_utils
 import usd_chunks.chunk_flags
 from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
@@ -2501,12 +2501,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             return
 
         if exc.data() == "import":
-            ext = (
-                chunk_serial.FileExtensions.PY_MODULE,
-                chunk_serial.FileExtensions.CHUNK_MODULE,
-            )
-            flt = " ".join(f"*{x}" for x in ext)
-            if file := file_dial(flt):
+            if file := file_dial("*" + chunk_registry.PY_MODULE_EXT):
                 chunk_registry.ChunkRegistry().import_chunk(file)
             return
 

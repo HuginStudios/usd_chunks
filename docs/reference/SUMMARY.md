@@ -5,4 +5,3 @@
     * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk_notice](chunk_notice.md)
     * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk_registry](chunk_registry.md)
     * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk_resources](chunk_resources.md)
-    * [<code class="doc-symbol doc-symbol-nav doc-symbol-module"></code> chunk_serial](chunk_serial.md)

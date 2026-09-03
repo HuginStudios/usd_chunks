@@ -1,10 +1,11 @@
+import inspect
 import os
 import weakref
 
 from PySide6 import QtWidgets, QtCore, QtGui
 from pxr import Tf
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_serial
+from usd_chunks import chunk, chunk_notice, chunk_registry
 from usd_chunks import chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
 
@@ -903,15 +904,13 @@ class ChunkModuleLoader(QtWidgets.QDialog):
             return
 
         if res == export_action:
-            exts = (chunk_serial.FileExtensions.CHUNK_MODULE, chunk_serial.FileExtensions.PY_MODULE)
-            flt = " ".join([f"*{x}" for x in exts])
-            if file := file_dial(flt, True):
+            if file := file_dial("*" + chunk_registry.PY_MODULE_EXT, True):
                 mod.export(file)
         elif res == inspect_action and mod.module:
-            if isinstance(mod.module, chunk_serial.RuntimeModule):
-                src = mod.module._code
-            else:
-                src = chunk_serial.serialize_source(mod.module)
+            try:
+                src = inspect.getsource(mod.module)
+            except (OSError, TypeError):
+                src = f"# Could not read the source of {mod.module_name}"
             source_code_dial(src, chunk_core.PySyntaxHighlightMapping())
         elif res == create_action:
             if not mod.loaded:
