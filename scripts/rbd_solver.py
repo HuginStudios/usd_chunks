@@ -2159,4 +2159,13 @@ def config() -> chunk.DefaulConfig:
             "for objects to rest on or in (a heightfield is built for concave shapes like\n"
             "bowls). Requires the 'mujoco' package."
         ),
+        # Declared, not just described. Saying it in the description tells a person
+        # reading the chunk list; declaring it is what lets the framework act -- name
+        # the missing package when it is absent, and install it when the user has opted
+        # in. Without this the chunk reported "mujoco not installed" to the console and
+        # there was nothing for the host to offer.
+        #
+        # scipy is deliberately absent: a genuine optional, imported inside the functions
+        # that want it, with a documented fallback when it is missing.
+        requirements=["mujoco", "numpy"],
     )
