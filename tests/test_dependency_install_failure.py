@@ -50,6 +50,11 @@ def manager(monkeypatch):
     so a test that left entries behind would poison the developer's own environment in
     exactly the way this bug describes.
     """
+    # Every test here is about what install_packages does once it is allowed to install.
+    # That is opt-in now (USD_CHUNK_AUTO_INSTALL), and without this the manager returns
+    # before pip is ever reached -- which several of these tests would misread as a pass,
+    # since "nothing was cached" is trivially true when nothing was attempted.
+    monkeypatch.setenv("USD_CHUNK_AUTO_INSTALL", "1")
     chunk_registry.ChunkRegistry().initialize(_ApprovingScene(), "pytest")
     mgr = chunk_registry.ChunkDependencyManager()
     mgr.initialize()
