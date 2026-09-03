@@ -74,7 +74,7 @@ def main():
         "primpath_location",
         "Prim Path",
         default_value="/materials/surface/PrimvarReader",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_TARGET,
     )
     
     varname = chunk.LineEdit(

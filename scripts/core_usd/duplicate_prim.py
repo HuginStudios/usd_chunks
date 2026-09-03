@@ -210,7 +210,7 @@ def main():
         "dest_path",
         "Destination Path",
         default_value="",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_TARGET,
         tooltip="Where to place the copy. Auto-generated if empty (source_copy or source_copy1, etc.).",
     )
     dest_path.add_callback(_on_change)

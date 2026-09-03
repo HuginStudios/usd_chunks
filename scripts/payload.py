@@ -72,7 +72,7 @@ def main():
     PayloadChunk.add_param(import_primpath)
 
     # prim location
-    primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_TARGET)
     PayloadChunk.add_param(primpath)
 
     return PayloadChunk

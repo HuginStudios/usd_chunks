@@ -57,7 +57,7 @@ def main():
         "mat_path",
         "Material Path",
         default_value="/materials/surface",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_TARGET,
     )
     primpath_location = chunk.LineEdit(
         "primpath_location",

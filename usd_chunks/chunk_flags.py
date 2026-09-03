@@ -71,6 +71,11 @@ class ChunkFlags:
                     Its inputs: attr on the chunk prim is still available for @ChunkName.param@ expressions.
             FILE_EXISTING: For FILE type params, this rule hints to the file browser that we can not create new files
             DIRECTORY: For FILE type params. Allows selection of folders
+            PRIM_TARGET: The param names the path where this chunk CREATES its prim, as opposed to
+                    a path it reads from. Duplicating a chunk gives a flagged param a free path, so the
+                    copy makes its own prim instead of silently overriding the original's. Only ever set
+                    it on a write target: doing so on a path a chunk reads would send the copy at a prim
+                    that does not exist.
             PRIM_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdPrim selections
             PROP_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdProperty selections
         """
@@ -84,6 +89,7 @@ class ChunkFlags:
         DIRECTORY = auto()
 
         # LINEEDIT
+        PRIM_TARGET = auto()
         PRIM_SELECTION = auto()
         PROP_SELECTION = auto()
 

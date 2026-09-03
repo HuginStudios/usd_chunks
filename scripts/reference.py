@@ -73,7 +73,7 @@ def main():
     referenceChunk.add_param(import_primpath)
 
     # prim location
-    primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_TARGET)
     referenceChunk.add_param(primpath)
 
     prim_type = chunk.LineEdit("prim_type", "Prim Type", default_value="Xform", flags=chunk.ChunkFlags.ParamFlags.LABELED)

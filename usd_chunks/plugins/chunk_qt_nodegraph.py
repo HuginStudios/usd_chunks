@@ -444,6 +444,41 @@ def _snapshot_chunk_node(
     return clip_node
 
 
+def _unique_prim_targets(chunk: "core.ChunkCommon", stage) -> None:
+    """Give a pasted chunk its own prim path, so it makes a prim rather than overriding one.
+
+    A copy carries the original's param values verbatim, so without this both chunks author
+    at the same path and the copy silently overrides the original instead of producing a
+    second prim.
+
+    Only params flagged PRIM_TARGET are touched -- those name where a chunk CREATES its
+    prim. A path a chunk merely reads (a Transform's prim_path, Preview Surface's bind
+    target) has to keep pointing where it pointed: bumping one aims the copy at a prim that
+    does not exist, which is the failure this whole area has produced twice already. The
+    flag exists because the name cannot be trusted to tell them apart -- prim_path is a read
+    target in ~79 places and a write target in mtlx_shader, and preview_surface uses
+    primpath_location for the opposite of what the other twelve chunks use it for.
+
+    Paste is the one moment where this is knowable. A cook cannot tell its own past output
+    from a stranger's prim, which is why it no longer tries (see chunk_utils.get_unique_path).
+    """
+    if stage is None:
+        return
+    for _path, param in chunk_usd._iter_chunk_params(chunk):
+        if not param.has_flag(ChunkFlags.ParamFlags.PRIM_TARGET):
+            continue
+        current = param.raw_value
+        if not isinstance(current, str) or not current:
+            continue
+        # An expression derives its path from somewhere else; rewriting the text would
+        # break the reference, and the value it resolves to is not ours to bump.
+        if chunk_utils.has_expression(current):
+            continue
+        unique = chunk_utils.get_unique_path(stage, current)
+        if unique and unique != current:
+            param.value = unique
+
+
 def _author_raw_connection(
     stage: Usd.Stage,
     dst_prim_path: str, dst_attr_suffix: str, dst_chunk: core.ChunkBase,
@@ -3335,6 +3370,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # have nowhere to land until the rows it had are back.
                 _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
+                _unique_prim_targets(primary, scene.get_stage())
                 pos = (scene_pos.x() + item.rel_pos.x(), scene_pos.y() + item.rel_pos.y())
                 # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_usd in USD
                 # space (see chunk_usd._create_node_pos usage elsewhere in this file).
@@ -3448,6 +3484,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # have nowhere to land until the rows it had are back.
                 _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
+                _unique_prim_targets(primary, scene.get_stage())
                 chunk_usd._create_node_pos = (item.rel_pos.x(), -item.rel_pos.y())
                 try:
                     for c in chunks:

@@ -84,7 +84,7 @@ def main():
         "primpath_location",
         "Prim Path",
         default_value="/materials/surface/UvTexture",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_TARGET,
     )
     texture_file = chunk.FileBrowser(
         "file",

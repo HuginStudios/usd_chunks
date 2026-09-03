@@ -599,7 +599,7 @@ def main():
     prim_path = chunk.LineEdit(
         "prim_path",
         "Path",
-        flags=ChunkFlags.ParamFlags.LABELED,
+        flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.PRIM_TARGET,
     )
     bind_to = chunk.LineEdit(
         "bind_to",
