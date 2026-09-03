@@ -11,7 +11,7 @@ import random
 from collections.abc import Generator
 
 from PySide6 import QtCore
-from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 from usd_chunks import chunk, chunk_gizmo, chunk_registry, chunk_utils
 from usd_chunks.plugins import chunk_usd
@@ -1532,6 +1532,154 @@ def clear_collision(owner, notice, sender) -> None:
     print("[MuJoCoSolver] Cleared collision prims")
 
 
+# UsdPhysics collider approximation -> this chunk's Shape Type. Only the tokens with a
+# single-geom MuJoCo equivalent are here: convexDecomposition and sdf need several geoms or
+# a signed-distance field, so they keep whatever the param says rather than being silently
+# downgraded to something that simulates differently.
+_APPROXIMATION_TO_SHAPE = {
+    "convexHull": "Convex Hull",
+    "convexDecomposition": None,
+    "meshSimplification": "Convex Hull",
+    "boundingCube": "Box",
+    "boundingSphere": "Sphere",
+    "sdf": None,
+    "none": "Convex Hull",
+}
+
+
+def _physics_material(prim: Usd.Prim):
+    """The PhysicsMaterialAPI bound to prim through the 'physics' material purpose, or None.
+
+    Physics materials bind the way shading materials do, on their own purpose, so one prim
+    can carry both a look and a set of contact properties.
+    """
+    if not prim or not prim.IsValid():
+        return None
+    material, _rel = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial("physics")
+    if not material:
+        return None
+    mat_prim = material.GetPrim()
+    if not mat_prim or not mat_prim.HasAPI(UsdPhysics.MaterialAPI):
+        return None
+    return UsdPhysics.MaterialAPI(mat_prim)
+
+
+def _authored(attr):
+    """An attribute's value if it was actually authored, else None.
+
+    HasAuthoredValue is the point: every UsdPhysics attribute has a schema fallback, so
+    Get() always returns something. Trusting that would let a schema default silently
+    outrank the chunk's param, which inverts the precedence this is here to establish.
+    """
+    if attr and attr.HasAuthoredValue():
+        return attr.Get()
+    return None
+
+
+def _scene_gravity(stage: Usd.Stage, fallback: float):
+    """Gravity from a UsdPhysics.Scene on the stage, as the signed scalar this chunk uses.
+
+    The schema states a magnitude and a direction; the solver applies a signed scalar along
+    the stage up axis, so only the component along up survives the translation.
+    """
+    if not stage:
+        return fallback, None
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdPhysics.Scene):
+            continue
+        scene = UsdPhysics.Scene(prim)
+        magnitude = _authored(scene.GetGravityMagnitudeAttr())
+        if magnitude is None:
+            return fallback, None
+        direction = _authored(scene.GetGravityDirectionAttr())
+        up_index = {"X": 0, "Y": 1, "Z": 2}.get(UsdGeom.GetStageUpAxis(stage), 2)
+        sign = -1.0
+        if direction is not None and abs(direction[up_index]) > 1e-9:
+            sign = 1.0 if direction[up_index] > 0.0 else -1.0
+        return sign * abs(magnitude), str(prim.GetPath())
+    return fallback, None
+
+
+def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
+    """Physics for this run, preferring what the asset authors over the chunk's params.
+
+    A sim-ready asset already states its mass, contact properties and collider
+    approximation. Re-deriving those from a global slider throws away the part its author
+    was careful about, and is why the solver could not usefully consume a library asset.
+
+    Anything not authored falls through to *defaults*, so a scene carrying no UsdPhysics
+    simulates exactly as it did before.
+
+    Values are taken in stage units and used as-is, deliberately. The solver already feeds
+    USD geometry to MuJoCo unscaled, and the Gravity param exists to absorb the difference
+    (its tooltip suggests ~100 on a centimetre scene). Converting only mass to SI while
+    lengths stayed in stage units would make that worse, not better -- real unit handling
+    means scaling the geometry too, which is a change to the model build, not to reading.
+
+    Args:
+        stage (Usd.Stage): The stage being simulated
+        prim (Usd.Prim): The prim being simulated
+        defaults (dict): The chunk's param values, used wherever nothing is authored
+
+    Returns:
+        dict: gravity, mass, friction, restitution, shape_type, kinematic
+    """
+    out = dict(defaults)
+    out["kinematic"] = False
+    found = []
+
+    if prim and prim.IsValid():
+        if prim.HasAPI(UsdPhysics.MassAPI):
+            mass = _authored(UsdPhysics.MassAPI(prim).GetMassAttr())
+            if mass is not None and mass > 0.0:
+                out["mass"] = mass
+                found.append("mass=%g" % mass)
+
+        # A kinematic body is driven rather than solved. The solver already has that notion
+        # for animated colliders (mocap bodies), so honouring the flag keeps the asset's
+        # own intent instead of dropping a conveyor belt into free fall.
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            if _authored(UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr()):
+                out["kinematic"] = True
+                found.append("kinematic")
+
+        material = _physics_material(prim)
+        if material is not None:
+            friction = _authored(material.GetDynamicFrictionAttr())
+            if friction is None:
+                friction = _authored(material.GetStaticFrictionAttr())
+            if friction is not None:
+                out["friction"] = friction
+                found.append("friction=%g" % friction)
+            restitution = _authored(material.GetRestitutionAttr())
+            if restitution is not None:
+                out["restitution"] = restitution
+                found.append("restitution=%g" % restitution)
+
+        # The approximation is the asset author's decision about how this shape should be
+        # collided -- exactly what Shape Type otherwise has to guess.
+        if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
+            approximation = _authored(UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr())
+            shape = _APPROXIMATION_TO_SHAPE.get(approximation)
+            if shape:
+                out["shape_type"] = shape
+                found.append("shape=%s" % shape)
+            elif approximation:
+                print(
+                    "[RBDSolver] approximation '%s' has no single-geom MuJoCo equivalent -- "
+                    "keeping Shape Type '%s'" % (approximation, out["shape_type"])
+                )
+
+    gravity, scene_path = _scene_gravity(stage, out["gravity"])
+    if scene_path:
+        out["gravity"] = gravity
+        found.append("gravity=%g (%s)" % (gravity, scene_path))
+
+    if found:
+        print("[RBDSolver] using authored UsdPhysics: %s" % ", ".join(found))
+    return out
+
+
 def _run(owner, notice, sender) -> None:
     if not _HAS_MUJOCO:
         print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
@@ -1599,6 +1747,27 @@ def _run(owner, notice, sender) -> None:
         return
     scratch_stage = chunk_usd.get_upstream_stage(stage, owner.get_scene(), _chunk)
     collision_prims = _parse_collision_prims(collision_path_value, scratch_stage)
+
+    # A sim-ready asset states its own mass, contact properties and collider approximation.
+    # Prefer those; the params stay as the fallback for geometry that says nothing.
+    authored = _authored_physics(
+        stage,
+        prim,
+        dict(
+            gravity=gravity,
+            mass=mass,
+            friction=friction,
+            restitution=restitution,
+            shape_type=shape_type,
+        ),
+    )
+    gravity = authored["gravity"]
+    mass = authored["mass"]
+    friction = authored["friction"]
+    restitution = authored["restitution"]
+    shape_type = authored["shape_type"]
+    if authored["kinematic"]:
+        print("[RBDSolver] target prim is a kinematic rigid body -- driven, not solved")
 
     if UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
         simulate_mujoco_instancer(
