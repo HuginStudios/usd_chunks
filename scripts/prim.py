@@ -11,8 +11,12 @@ def execute(node):
     prim_type = node.get_param("prim_type").value
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
 
-    if not var_selections:
-        raw_path = chunk_utils.get_unique_path(stage, primpath_param)
+    # Authored at the path the parameter holds, exactly as given. Uniquing belongs to
+    # creation -- main() picks a free default so a new chunk does not land on an existing
+    # prim -- and a path that has been set since is an instruction, not a request for a
+    # free name. Re-uniquing it on every cook meant a path you typed could be silently
+    # replaced by one you did not, and a chunk targeting the same prim as another (a
+    # deliberate override, which is ordinary USD) was impossible to express.
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.DefinePrim(target_path, prim_type)
@@ -33,7 +37,7 @@ def main():
         "primpath_location",
         "Prim Path",
         default_value=prim_path,
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_TARGET,
     )
     chunk_api.add_param(primpath)
     prim_type = chunk.Menu(

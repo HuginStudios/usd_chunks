@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pxr import Sdf, UsdRender
 
-from usd_chunks import chunk, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_utils
 
 
 # color4f is what V-Ray asks for on every one of its render elements, whatever the
@@ -55,7 +55,7 @@ def main():
         chunk.LineEdit(
             "primpath_location", "Prim Path",
             default_value=prim_path,
-            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_TARGET,
         ),
         chunk.Menu("data_type", "Data Type", menu_items=_DATA_TYPES, default_value="color3f"),
         chunk.LineEdit("source_name", "Source Name", default_value="Ci"),
@@ -116,8 +116,13 @@ def execute(node):
         return
 
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
-    if not var_selections and not chunk_notice._loading_stage:
-        raw_path = chunk_utils.get_unique_path(stage, raw_path)
+
+    # Authored at the path the parameter holds, exactly as given. Uniquing belongs to
+    # creation -- main() picks a free default so a new chunk does not land on an existing
+    # prim -- and a path that has been set since is an instruction, not a request for a
+    # free name. Re-uniquing it on every cook meant a path you typed could be silently
+    # replaced by one you did not, and a chunk targeting the same prim as another (a
+    # deliberate override, which is ordinary USD) was impossible to express.
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         render_var = UsdRender.Var.Define(stage, Sdf.Path(target_path))

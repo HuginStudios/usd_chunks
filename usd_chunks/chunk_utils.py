@@ -319,6 +319,23 @@ def get_unique_path(stage, prim_path):
     if not stage:
         return prim_path
 
+    # Never re-unique while a saved scene is being restored. Saving bakes a chunk's
+    # authored prims into the file, so on reopen the chunk finds its own past output
+    # sitting at the path and has no way to tell it from a stranger's prim -- it bumps,
+    # and the path the scene was saved with is silently lost. Anything aimed at the old
+    # path (a Transform, a lofted parameter, a gizmo anchor) is left pointing at a prim
+    # that no longer exists, and every reopen shifts it again.
+    #
+    # A path arriving from a file is a decision that was already made. Uniqueness is for
+    # choosing a free name when a chunk is first created, which is what the calls in each
+    # chunk's main() do; there is nothing to choose when restoring one.
+    #
+    # camera.py already guarded its own call this way, for this reason. The rule belongs
+    # here so every caller gets it.
+    from usd_chunks import chunk_notice
+    if chunk_notice._loading_stage is not None:
+        return prim_path
+
     def _is_taken(path):
         prim = stage.GetPrimAtPath(path)
         return prim.IsValid() and bool(prim.GetTypeName())

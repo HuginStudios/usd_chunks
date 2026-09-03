@@ -2,7 +2,7 @@ import os
 import json
 import http.client
 from pxr import Gf, Sdf, UsdGeom
-from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_utils
 
 #: The shared op every chunk used to write, and what the freecam lock wrote until this chunk
 #: owned a named one. Still read, so a camera saved before the change keeps its placement.
@@ -310,7 +310,7 @@ def main():
         "primpath_location",
         "Prim Path",
         default_value=prim_path,
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_TARGET,
     )
     chunk_api.add_param(primpath)
     # add camera type
@@ -392,8 +392,13 @@ def execute(node):
     chunk_layer.Clear()
 
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
-    if not var_selections and not chunk_notice._loading_stage:
-        raw_path = chunk_utils.get_unique_path(stage, raw_path)
+
+    # Authored at the path the parameter holds, exactly as given. Uniquing belongs to
+    # creation -- main() picks a free default so a new chunk does not land on an existing
+    # prim -- and a path that has been set since is an instruction, not a request for a
+    # free name. Re-uniquing it on every cook meant a path you typed could be silently
+    # replaced by one you did not, and a chunk targeting the same prim as another (a
+    # deliberate override, which is ordinary USD) was impossible to express.
 
     node._last_camera_path = raw_path
 
