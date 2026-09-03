@@ -3200,9 +3200,27 @@ def recook_focus(
         # Muting the group's upstream was never the point of this pass anyway -- it
         # exists to stop the parent tab's active view and UNRELATED sibling branches
         # bleeding through, and the group's own upstream is neither.
-        upstream_keep = {
-            get_chunk_prim_path(u) for u in get_exec_upstream_chunks(context, stage, scene)
-        }
+        # Every ANCESTOR's upstream, not just the focused group's. A group nested inside
+        # another is fed by its parent's chain: focusing it, the parent's own upstream --
+        # the Sublayer bringing the scene onto the stage two levels up -- fell outside this
+        # set and was muted, so the inner chunks cooked against a stage their targets were
+        # not on and the viewport went empty. Reported as content coming and going
+        # depending on which level you were looking at; it reproduces with the nesting
+        # built by hand, so it is not about how the groups were made.
+        upstream_keep: set = set()
+        by_path = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+        node: "core.ChunkBase | None" = context
+        seen_ancestors: set = set()
+        while node is not None:
+            node_path = get_chunk_prim_path(node)
+            if node_path in seen_ancestors:
+                break  # a cycle would hang the focus; prim nesting should prevent it
+            seen_ancestors.add(node_path)
+            upstream_keep.update(
+                get_chunk_prim_path(u) for u in get_exec_upstream_chunks(node, stage, scene)
+            )
+            parent_path = str(Sdf.Path(node_path).GetParentPath())
+            node = by_path.get(parent_path)
         for c in scene.get_chunks():
             if is_view_chunk(c):
                 continue
