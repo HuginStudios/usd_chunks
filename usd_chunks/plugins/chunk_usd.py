@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 _CHUNK_TYPE_ATTR = "info:chunkType"
 _INPUTS_PREFIX = "inputs:"
+# The ObjectsChanged field name for a connection edit; a value write reports "default".
+_CONNECTION_PATHS_FIELD = "connectionPaths"
 _EXEC_OUTPUT = "outputs:chunk"
 _EXEC_INPUT = "inputs:chunk"
 _CHUNK_PRIM_TYPENAME = "Chunk"
@@ -571,7 +573,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         param_paths = all_changed
         if not all_changed:
             return
-        self._reconcile_changed_exec_inputs(all_changed)
+        self._reconcile_changed_exec_inputs(all_changed, notice)
         for chunk in self._scene.get_chunks():
             # all_changed, not just the info-only set. An ordinary edit -- typing in a field,
             # a gizmo writing a param -- arrives as an info-only change, but undo restores
@@ -632,7 +634,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             elif is_active and is_disabled:
                 chunk.unset_state(ChunkFlags.State.DISABLED)
 
-    def _reconcile_changed_exec_inputs(self, all_changed: "set[str]") -> None:
+    def _reconcile_changed_exec_inputs(self, all_changed: "set[str]", notice) -> None:
         """Mirror any changed inputs:chunk connection into the Python DAG.
 
         A connection edit is reported against the *attribute* path
@@ -657,8 +659,22 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # an edge and cooked in the right order while its Python DAG edge was never
             # created: no INPUT_CHANGED, so editing that branch never recooked the merge.
             prim_path, sep, attr_name = path.partition(".")
-            if sep and is_exec_input_name(attr_name):
-                touched_prims.add(prim_path)
+            if not sep or not attr_name.startswith(_INPUTS_PREFIX):
+                continue
+            # Any inputs: connection, not only the exec slots: a param wire is a real
+            # chunk-level dependency for ordering too, and drag-to-connect authors it the
+            # same way. _live_chunk_dependencies decides what actually counts.
+            if not is_exec_input_name(attr_name):
+                # But only when the *connection* moved. A param's stored value lives under
+                # this same inputs: prefix, so without this every keystroke into any param
+                # would reconcile the whole scene -- a value write reports the "default"
+                # field, a wire reports "connectionPaths". No fields at all means the path
+                # arrived by resync, where the connection may genuinely have moved, so it
+                # is let through rather than guessed at.
+                fields = notice.GetChangedFields(Sdf.Path(path))
+                if fields and _CONNECTION_PATHS_FIELD not in fields:
+                    continue
+            touched_prims.add(prim_path)
         if not touched_prims:
             return
 
@@ -4572,6 +4588,80 @@ def _live_exec_dependencies(chunk: "core.ChunkBase") -> list:
     return deps
 
 
+def _param_wire_source_paths(prim: "Usd.Prim") -> "set[str]":
+    """The prim paths this chunk reads through a *param* wire, exec slots excluded."""
+    exec_sources = {str(conn.GetPrimPath()) for conn in exec_input_connections(prim)}
+    return _connected_source_paths(prim) - exec_sources
+
+
+def _live_chunk_dependencies(chunk: "core.ChunkBase") -> list:
+    """Every chunk this one reads from on the live stage — exec slots *and* param wires.
+
+    _live_exec_dependencies answers the narrower question (which chunks feed my exec
+    slots) and stays that way: it is what authors inputs:chunk, and a param wire must
+    never be written out as an exec edge.
+
+    This is the wider one, for the Python DAG. A param wire already propagates change --
+    _on_ref_changed executes the destination param's own sender, which dirties its chunk
+    through the ownership chain -- but it carries no dependency edge, so two chunks joined
+    only that way both sit at depth 0: no INPUT_CHANGED between them, arbitrary commit
+    order (hence commit_order_from_stage), and no guarantee the downstream one solves after
+    the upstream one when a single propagation dirties both.
+
+    Source of truth is _connected_source_paths, the same reader commit_order_from_stage
+    orders by, so the two cannot drift — and its carve-outs (a self-reference, and an
+    ancestor target, which is a loft into a group's interface rather than a sibling
+    dependency) apply here unchanged.
+    """
+    stage = chunk.get_stage()
+    if not stage:
+        return []
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    if not prim.IsValid():
+        return []
+    sources = _connected_source_paths(prim)
+    if not sources:
+        return []
+    # Resolve by prim path, not chunk name — same rationale as _live_exec_dependencies.
+    chunk_by_path = {
+        get_chunk_prim_path(c): c for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+    }
+    return [dep for path in sources if (dep := chunk_by_path.get(path)) is not None]
+
+
+def _would_cycle(chunk: "core.ChunkBase", dep: "core.ChunkBase") -> bool:
+    """Whether making chunk depend on dep would close a loop.
+
+    Adding the edge means dep must solve before chunk, so it cycles exactly when dep is
+    already downstream of chunk.
+
+    Worth the check rather than letting topo_order raise: a param wire cycle currently
+    settles-and-warns (see _on_ref_changed, and _resolve_expression_string, both of which
+    run during widget paint where a raise is far worse than a stale value), and CONTEXT.md
+    records that tolerance as deliberate. Skipping the edge keeps cyclic wiring behaving
+    exactly as it does today while acyclic wiring — the overwhelming majority — gains the
+    ordering it was missing.
+    """
+    return dep.get_dag_node() in chunk_scheduler.downstream_closure(chunk.get_dag_node())
+
+
+def exec_dependencies(chunk: "core.ChunkBase") -> list:
+    """The chunks feeding this one's *exec* slots, read from the live stage.
+
+    The public way for a chunk module to ask "what is immediately upstream of me on the
+    exec chain". chunk.get_dependencies() is not that question: the Python DAG also
+    mirrors param wires, which mean a value flows rather than that one chunk precedes
+    another.
+
+    Args:
+        chunk (core.ChunkBase): The chunk to read the exec inputs of
+
+    Returns:
+        list: The upstream chunks, one per connected exec slot
+    """
+    return _live_exec_dependencies(chunk)
+
+
 def reconcile_exec_dependencies(chunk: "core.ChunkBase") -> bool:
     """Make chunk's Python DAG dependencies match its live inputs:chunk connections.
 
@@ -4592,7 +4682,7 @@ def reconcile_exec_dependencies(chunk: "core.ChunkBase") -> bool:
     Returns:
         bool: True if any dependency was added or removed
     """
-    live = _live_exec_dependencies(chunk)
+    live = _live_chunk_dependencies(chunk)
     current = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
 
     live_ids = {id(dep) for dep in live}
@@ -4603,9 +4693,16 @@ def reconcile_exec_dependencies(chunk: "core.ChunkBase") -> bool:
         if id(dep) not in live_ids:
             changed = chunk.remove_dependency(dep) or changed
     for dep in live:
-        if id(dep) not in current_ids:
-            chunk.add_dependency(dep)
-            changed = True
+        if id(dep) in current_ids:
+            continue
+        if _would_cycle(chunk, dep):
+            logger.debug(
+                "Skipping dependency %s -> %s: it would close a cycle, leaving the wire to "
+                "settle as it does today", dep.name, chunk.name,
+            )
+            continue
+        chunk.add_dependency(dep)
+        changed = True
     return changed
 
 
@@ -4637,9 +4734,17 @@ def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.Ch
 
     chunk_gizmo.author_gizmos(stage, prim, chunk)
 
-    deps = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
+    # The stage's exec wiring comes first, and the Python DAG is only the fallback for a
+    # chunk that has none yet. The DAG now also holds edges reconciled from *param* wires
+    # (see _live_chunk_dependencies), and authoring one of those as inputs:chunk would
+    # invent an exec edge the user never drew -- so the fallback filters them back out.
+    deps = _live_exec_dependencies(chunk)
     if not deps:
-        deps = _live_exec_dependencies(chunk)
+        wired = _param_wire_source_paths(prim)
+        deps = [
+            dep for _, dep in chunk.get_dependencies()
+            if isinstance(dep, core.ChunkBase) and get_chunk_prim_path(dep) not in wired
+        ]
     if not deps and prev_chunk:
         deps = [prev_chunk]
     if deps:

@@ -19,7 +19,7 @@ import importlib
 
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd, get_chunk_prim_path
 import usd_chunks.plugins.chunk_usd as chunk_usd
@@ -339,3 +339,67 @@ class TestEditTargetMigration:
 
         assert stage.GetSessionLayer().GetPrimAtPath(cpath) is not None
         assert layer_a.GetPrimAtPath(cpath) is None
+
+
+class TestFollowUpstreamUsesExecEdgesOnly:
+    """Which Create Layer "Follow Upstream" means is decided by the exec chain alone.
+
+    reconcile_exec_dependencies mirrors param wires into the Python DAG as well, so
+    chunk.get_dependencies() no longer answers "what precedes me". A param wire means a
+    value flows; letting one pick the Create Layer would silently change where every
+    downstream chunk authors, on a signal the user never meant as ordering.
+    """
+
+    def setup_method(self):
+        self.edit_mod = importlib.import_module("scripts.edit_target")
+        self._scenes = []
+
+    def teardown_method(self):
+        self._scenes.clear()
+        gc.collect()
+
+    def _setup(self):
+        scene = _DummyScene()
+        chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        stage = Usd.Stage.CreateInMemory()
+        scene._stage = stage
+        init_chunk_usd(stage, scene)
+        self._scenes.append(scene)
+        return scene, stage
+
+    def _pair(self, scene):
+        """A Create Layer stand-in and an Edit Target stand-in, deliberately NOT chained.
+
+        Bare chunks rather than the real modules: this pins the topology question, and a
+        stand-in keeps unrelated notices from re-running module code.
+        """
+        cl = chunk.Chunk("cl")
+        cl._config = ChunkConfig(module="cl_standin")
+        cl.add_param(chunk.LineEdit("_new_layer_id", default_value=""))
+        cl.add_param(chunk.LineEdit("layer_name", default_value="L"))
+        scene.add_chunk(cl)
+
+        et = chunk.Chunk("et")
+        et._config = ChunkConfig(module="et_standin")
+        et.add_param(chunk.LineEdit("probe", default_value=""))
+        scene.add_chunk(et)
+        return cl, et
+
+    def test_a_param_wired_create_layer_is_not_followed(self):
+        scene, _stage = self._setup()
+        cl, et = self._pair(scene)
+
+        et.get_param("probe").value = "@cl.layer_name@"
+
+        assert any(d is cl for _, d in et.get_dependencies()), (
+            "precondition: the param wire was reconciled into a DAG edge"
+        )
+        assert self.edit_mod._find_upstream_create_layer(et) is None
+
+    def test_an_exec_wired_create_layer_is_followed(self):
+        scene, _stage = self._setup()
+        cl, et = self._pair(scene)
+
+        et.add_dependency(cl)  # authors inputs:chunk
+
+        assert self.edit_mod._find_upstream_create_layer(et) is cl
