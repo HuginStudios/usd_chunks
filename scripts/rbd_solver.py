@@ -1071,6 +1071,15 @@ def simulate_mujoco_articulated(
     floor_drop: float = 0.0,
     free_root: bool = True,
     settle_only: bool = False,
+    lin_damping: float = 0.0,
+    ang_damping: float = 0.05,
+    collision_margin: float = 0.0,
+    node=None,
+    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    turbulence: float = 0.0,
+    turb_scale: float = 100.0,
+    turb_speed: float = 1.0,
+    turb_seed: int = 0,
 ) -> "dict | None":
     """Run an articulated MuJoCo simulation and bake a transform per link.
 
@@ -1103,6 +1112,14 @@ def simulate_mujoco_articulated(
         free_root=free_root,
         init_vel=init_vel,
         ang_vel=ang_vel,
+        lin_damping=lin_damping,
+        ang_damping=ang_damping,
+        collision_margin=collision_margin,
+        wind=wind,
+        turbulence=turbulence,
+        turb_scale=turb_scale,
+        turb_speed=turb_speed,
+        turb_seed=turb_seed,
     )
 
     results = None
@@ -1116,7 +1133,7 @@ def simulate_mujoco_articulated(
         print("[MuJoCoSolver] Articulated simulation produced no results")
         return None
 
-    _write_articulated_results(stage, roots, layer, results, start_frame, settle_only)
+    _write_articulated_results(stage, roots, layer, results, start_frame, settle_only, node)
     print(f"[MuJoCoSolver] Baked {frame_count} frames across {len(results)} links")
     return results
 
@@ -2008,7 +2025,8 @@ def _collider_shape(prim, to_link):
     return None
 
 
-def _add_link_geoms(spec, body, link_prim, link_world_inv, friction, contact_tc, restitution):
+def _add_link_geoms(spec, body, link_prim, link_world_inv, friction, contact_tc,
+                    restitution, collision_margin=0.0):
     """Attach a link's authored collision prims to its MuJoCo body.
 
     Sim-ready assets ship purpose-built collision proxies under a Collisions scope --
@@ -2052,7 +2070,7 @@ def _add_link_geoms(spec, body, link_prim, link_world_inv, friction, contact_tc,
         geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
         geom.condim = 3
         geom.type = geom_type
-        geom.size = size
+        geom.size = [v + collision_margin if v > 0.0 else v for v in size]
         geom.pos = pos
         geom.quat = quat
         count += 1
@@ -2081,6 +2099,12 @@ def _sim_articulated_gen_mj(
     free_root: bool = True,
     init_vel: "list | None" = None,
     ang_vel: "list | None" = None,
+    collision_margin: float = 0.0,
+    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    turbulence: float = 0.0,
+    turb_scale: float = 100.0,
+    turb_speed: float = 1.0,
+    turb_seed: int = 0,
 ) -> Generator[int, None, "dict | None"]:
     """Simulate an articulated asset, yielding frame index and returning per-link matrices.
 
@@ -2094,7 +2118,7 @@ def _sim_articulated_gen_mj(
     built = build_articulated_spec(
         roots, gravity, friction, restitution, mass, substeps, dt, up_idx,
         solver_iters, collision_prims, hfield_res, collider_mode, collider_thickness,
-        floor_drop, free_root,
+        floor_drop, free_root, collision_margin,
     )
     if built is None:
         return None
@@ -2117,6 +2141,23 @@ def _sim_articulated_gen_mj(
         if bid >= 0:
             ids[link.name] = bid
 
+    # Linear/angular damping on each free root's DOFs, as the rigid path does.
+    root_bids = []
+    for root in roots:
+        jid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_JOINT, f"{root.name}_free")
+        if jid < 0:
+            continue
+        dof0 = model.jnt_dofadr[jid]
+        model.dof_damping[dof0:dof0 + 3] = lin_damping
+        model.dof_damping[dof0 + 3:dof0 + 6] = ang_damping
+        bid = ids.get(root.name)
+        if bid is not None:
+            root_bids.append(bid)
+
+    phases = _force_phases(turb_seed)
+    sim_t = 0.0
+    sub_dt = dt / substeps
+
     results = {name: [] for name in ids}
     for frame in range(frame_count):
         for name, bid in ids.items():
@@ -2127,7 +2168,14 @@ def _sim_articulated_gen_mj(
             mat.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
             results[name].append(mat)
         for _ in range(substeps):
+            # Wind pushes the free roots. A link inside a mechanism inherits the motion
+            # through its joint rather than being blown independently, which is both
+            # cheaper and what a hinged door on a tumbling appliance actually does.
+            if root_bids:
+                _apply_wind(model, data, tuple(root_bids), wind, turbulence,
+                            turb_scale, turb_speed, phases, sim_t)
             _mj.mj_step(model, data)
+            sim_t += sub_dt
         yield frame
 
     return results
@@ -2149,6 +2197,7 @@ def build_articulated_spec(
     collider_thickness: float = 0.0,
     floor_drop: float = 0.0,
     free_root: bool = True,
+    collision_margin: float = 0.0,
 ):
     """Compile an articulated asset into a MuJoCo model.
 
@@ -2244,7 +2293,8 @@ def build_articulated_spec(
                     jnt.frictionloss = max(float(j.friction), 0.0)
 
         link_mass = _authored(UsdPhysics.MassAPI(link.prim).GetMassAttr()) if link.prim.HasAPI(UsdPhysics.MassAPI) else None
-        n = _add_link_geoms(spec, body, link.prim, world.GetInverse(), friction, contact_tc, restitution)
+        n = _add_link_geoms(spec, body, link.prim, world.GetInverse(), friction,
+                            contact_tc, restitution, collision_margin)
         if n and link_mass:
             for g in body.geoms:
                 g.mass = float(link_mass) / n
@@ -2265,15 +2315,28 @@ def build_articulated_spec(
     return model, data, ordered
 
 
-def _write_articulated_results(stage, roots, layer, results, start_frame, settle_only=False):
+def _write_articulated_results(stage, roots, layer, results, start_frame,
+                               settle_only=False, node=None):
     """Author each link's simulated transform back onto its own prim.
 
-    settle_only writes the resting pose as the attribute's default rather than as time
-    samples: a prim carrying PhysicsRigidBodyAPI *and* animated transforms is
-    contradictory, and a downstream simulator would fight the animation.
+    Follows _write_prim_results rather than authoring a plain transform op, for the two
+    reasons recorded there:
+
+    * The bake goes into THIS chunk's own named op, and the op order is derived the same
+      way every other transform-authoring chunk derives it. Clearing the order and writing
+      a bare xformOp:transform excludes an upstream Transform's op entirely -- the op stays
+      on the prim, typed and valued, and is never read.
+    * What is written is this chunk's *share*, not the absolute placement. The simulated
+      matrix says where the link should end up in world space; composing that on top of the
+      ops that already placed it would apply them twice.
+
+    settle_only writes the resting pose as the attribute's default with no time samples: a
+    prim carrying PhysicsRigidBodyAPI *and* animated transforms is contradictory, and a
+    downstream simulator would fight the animation.
     """
     if not results:
         return
+
     # Match the target layer's timeCodesPerSecond to the stage's before authoring samples.
     # USD maps sample times through a layer offset built from the ratio between them, so
     # writing frame 1..40 into a 24-TCPS layer over a 60-TCPS stage silently lands them at
@@ -2282,24 +2345,52 @@ def _write_articulated_results(stage, roots, layer, results, start_frame, settle
     stage_tcps = stage.GetTimeCodesPerSecond()
     if stage_tcps and layer.timeCodesPerSecond != stage_tcps:
         layer.timeCodesPerSecond = stage_tcps
+
+    op_name = chunk_utils.xform_op_name(node) if node is not None else "xformOp:transform"
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    written = 0
+
     with Usd.EditContext(stage, layer):
         for link in (l for root in roots for l in _iter_links(root)):
             mats = results.get(link.name)
             if not mats:
                 continue
-            xformable = UsdGeom.Xformable(link.prim)
-            if not xformable:
-                continue
-            xformable.ClearXformOpOrder()
-            op = xformable.AddTransformOp()
+            prim = link.prim
+
+            parent = prim.GetParent()
+            parent_world_inv = Gf.Matrix4d(1.0)
+            if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
+                parent_world_inv = xform_cache.GetLocalToWorldTransform(parent).GetInverse()
+
+            order = (
+                chunk_gizmo.xform_op_order(node, prim, op_name)
+                if node is not None
+                else [op_name]
+            )
+            order_attr = prim.GetAttribute("xformOpOrder")
+            if not order_attr:
+                order_attr = prim.CreateAttribute("xformOpOrder", Sdf.ValueTypeNames.TokenArray)
+            order_attr.Set(order)
+
+            xf_attr = prim.GetAttribute(op_name)
+            if not xf_attr:
+                xf_attr = prim.CreateAttribute(op_name, Sdf.ValueTypeNames.Matrix4d)
+
+            inv_upstream = _upstream_xform(prim, op_name).GetInverse()
             if settle_only:
-                op.Set(mats[-1])
+                xf_attr.Set(mats[-1] * parent_world_inv * inv_upstream)
             else:
+                xf_attr.Set(mats[0] * parent_world_inv * inv_upstream)
                 for i, mat in enumerate(mats):
-                    op.Set(mat, Usd.TimeCode(start_frame + i))
-        if not settle_only:
+                    xf_attr.Set(mat * parent_world_inv * inv_upstream,
+                                Usd.TimeCode(start_frame + i))
+            written += 1
+
+    if not settle_only and written:
+        frames = len(next(iter(results.values())))
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.SetStartTimeCode(start_frame)
-            stage.SetEndTimeCode(start_frame + len(next(iter(results.values()))) - 1)
+            stage.SetEndTimeCode(start_frame + frames - 1)
 
 
 def _run(owner, notice, sender) -> None:
@@ -2416,6 +2507,12 @@ def _run(owner, notice, sender) -> None:
             collider_mode=_chunk.get_param("collider_mode", is_s).value,
             collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
             floor_drop=floor_drop,
+            lin_damping=lin_damping,
+            ang_damping=ang_damping,
+            collision_margin=_chunk.get_param("collision_margin", is_f).value,
+            settle_only=bool(_chunk.get_param("settle_to_rest", chunk.is_param_t(bool)).value),
+            node=_chunk,
+            **forces,
         )
     elif UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
         simulate_mujoco_instancer(
@@ -2641,6 +2738,20 @@ def main() -> chunk.Chunk:
     )
     auto_sim.add_callback(_on_auto_sim_toggled)
     chunk_api.add_param(auto_sim)
+
+    chunk_api.add_param(
+        chunk.Checkbox(
+            "settle_to_rest",
+            "Settle To Rest",
+            default_value=False,
+            tooltip="Bake only the final resting pose, as the transform's default value, "
+            "instead of the whole frame range. Use it to drop props into a plausible "
+            "arrangement rather than to keep the animation of them falling. "
+            "Matters for a sim-ready asset: a prim carrying PhysicsRigidBodyAPI *and* "
+            "animated transforms is contradictory, and a downstream simulator ends up "
+            "fighting the keyframes. Articulated assets only.",
+        )
+    )
 
     _GF = (
         chunk.ChunkFlags.GroupFlags.COLLAPSABLE
