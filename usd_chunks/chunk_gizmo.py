@@ -293,7 +293,7 @@ def _anchor_targets(chunk: "core.ChunkBase", gizmo, stage: Usd.Stage) -> list:
 
 
 def _iter_params(obj, prefix: str = ""):
-    """(path, param) for every scalar param under obj.
+    """(path, param) for every scalar param under obj, not crossing into a nested chunk.
 
     A near-copy of chunk_usd._iter_chunk_params, duplicated deliberately: that module lives
     under plugins/ and this one must stay importable by a non-Qt, non-plugin host. Eight
@@ -303,21 +303,27 @@ def _iter_params(obj, prefix: str = ""):
         path = f"{prefix}.{param.name}" if prefix else param.name
         if isinstance(param, core.ChunkParamBase):
             yield path, param
-        elif isinstance(param, (core.ChunkListGroupBase, core.ChunkVectorBase)):
+        elif isinstance(param, (core.ChunkListGroupBase, core.ChunkVectorBase, core.ChunkBase)):
             continue
         else:
             yield from _iter_params(param, path)
 
 
 def _iter_groups(obj, prefix: str = ""):
-    """(path, group) for every plain container under obj.
+    """(path, group) for every plain container under obj, not crossing into a nested chunk.
 
     Vectors and list groups are excluded: a Vector is one attribute rather than a bag of
     params, and a list group's contents change size at runtime, so neither can stand in for
-    "these are the params my handle drives".
+    "these are the params my handle drives". A nested ChunkBase is excluded too -- despite
+    being a ChunkGroupBase itself, it is a distinct chunk with its own gizmos resolved via
+    its own get_gizmos() call, so treating it as a plain group here would let its top-level
+    `gizmo=` sugar (e.g. a Transform chunk's `gizmo="transform"`) get misread against only
+    its direct scalar params instead of the whole chunk it actually belongs to. This is the
+    boundary a container's gizmo scan must stop at -- get_gizmos() is called on one chunk
+    at a time, never invoked to aggregate a container's descendants.
     """
     for param in obj.get_my_params():
-        if isinstance(param, (core.ChunkParamBase, core.ChunkVectorBase, core.ChunkListGroupBase)):
+        if isinstance(param, (core.ChunkParamBase, core.ChunkVectorBase, core.ChunkListGroupBase, core.ChunkBase)):
             continue
         path = f"{prefix}.{param.name}" if prefix else param.name
         yield path, param
@@ -325,13 +331,13 @@ def _iter_groups(obj, prefix: str = ""):
 
 
 def _iter_vectors(obj, prefix: str = ""):
-    """(path, vector) for every ChunkVectorBase under obj. Vectors are skipped by
-    _iter_params, which walks scalars only."""
+    """(path, vector) for every ChunkVectorBase under obj, not crossing into a nested chunk.
+    Vectors are skipped by _iter_params, which walks scalars only."""
     for param in obj.get_my_params():
         path = f"{prefix}.{param.name}" if prefix else param.name
         if isinstance(param, core.ChunkVectorBase):
             yield path, param
-        elif not isinstance(param, (core.ChunkParamBase, core.ChunkListGroupBase)):
+        elif not isinstance(param, (core.ChunkParamBase, core.ChunkListGroupBase, core.ChunkBase)):
             yield from _iter_vectors(param, path)
 
 
