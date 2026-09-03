@@ -286,7 +286,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self.initialized = True
         if stage:
             restore_edit_target_selections(stage, scene, saved_targets)
-            reconcile_edit_targets(stage, scene)
+            # Same reason as the in-load pass above: opening a file must not rewrite it.
+            reconcile_edit_targets(stage, scene, protect_root_layer=True)
 
     def _chunk_prim_edit_context(self, owner: "core.ChunkBase | None" = None):
         """Return an EditContext for authoring a *new* chunk-prim bookkeeping attr spec
@@ -2655,6 +2656,7 @@ def reconcile_edit_targets(
     scene: "core.SceneSender",
     roots: "list[core.ChunkBase] | None" = None,
     cook: bool = True,
+    protect_root_layer: bool = False,
 ) -> None:
     """Make every chunk's bookkeeping consistent with the Edit Target resolved for its
     exec-chain position.
@@ -2692,6 +2694,17 @@ def reconcile_edit_targets(
     try:
         affected = _chunks_downstream_of(roots) if roots is not None else None
         migratable = _migratable_layers(stage)
+        if protect_root_layer:
+            # Opening a file must not rewrite it. _migrate_chunk_bookkeeping moves a spec by
+            # DELETING the original, and on a freshly opened file the original lives in that
+            # file's own root layer -- so a load re-homing anything gutted the layer it had
+            # just read. Sdf caches layers per process, so the emptied layer is what the next
+            # Usd.Stage.Open of the same path gets: loading a network twice in one process
+            # restored only the context the second time, while the file on disk stayed
+            # correct. Excluding just the root layer keeps re-homing between the session and
+            # anon layers, which is what settles the graph during a load.
+            root = stage.GetRootLayer()
+            migratable = [layer for layer in migratable if layer != root]
         for chunk in scene.get_chunks():
             if affected is not None and id(chunk) not in affected:
                 continue
@@ -2719,6 +2732,8 @@ def reconcile_edit_targets(
                 # A cook can create and sublayer this chunk's procedural layer, so the
                 # migratable set is stale from here on.
                 migratable = _migratable_layers(stage)
+                if protect_root_layer:
+                    migratable = [layer for layer in migratable if layer != stage.GetRootLayer()]
     finally:
         _reconciling = False
 
@@ -3903,7 +3918,17 @@ def load_chunks(
                 # quadratic: each chunk that moves is re-run, and by then a re-run cascades a
                 # solve over the entire graph below it. Done here, cook=False, the cook loop
                 # immediately below is the one and only pass over the graph.
-                reconcile_edit_targets(stage, scene, cook=False)
+                # protect_root_layer: the file already records which layer holds each chunk's
+                # bookkeeping, so on open the file IS the answer and there is nothing to
+                # re-home. Migrating here does active harm -- _migrate_chunk_bookkeeping
+                # moves a spec by deleting the original, and on a freshly opened file the
+                # original lives in that file's own root layer. Sdf caches layers per
+                # process, so the emptied layer is what the NEXT Usd.Stage.Open of the same
+                # path receives: loading a network twice in one process restored only the
+                # context the second time, while the file on disk stayed perfectly correct.
+                # Re-homing still happens on every later topology change, which is what the
+                # reconcile is actually for.
+                reconcile_edit_targets(stage, scene, cook=False, protect_root_layer=True)
 
                 # Cook exec roots OUTERMOST-FIRST. Only roots are run here; everything with
                 # a dependency cooks by cascade from one. But a chunkgroup's inner chunks
