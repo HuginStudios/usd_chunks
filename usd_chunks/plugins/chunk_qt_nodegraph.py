@@ -338,10 +338,17 @@ def _iter_prim_connections(prim: Usd.Prim):
                 # Exec connections point straight at the source's outputs:chunk already.
                 src_attr_suffix = conn_path.name
             else:
-                # Typed connections point at the source's OWN inputs:param (see
-                # ChunkGraphView._author_connection) -- normalize back to the
-                # ChunkPortItem-suffix "outputs:param" form used on both ends elsewhere.
-                src_attr_suffix = "outputs:" + conn_path.name[len("inputs:"):]
+                # Typed connections normally point at the source's OWN inputs:param (see
+                # ChunkGraphView._author_connection), but an expression referencing an
+                # OUTPUT-flagged param authors the target as outputs:param directly (see
+                # ChunkBase.data_changed's use_out branch in chunk_core). Normalize BOTH to
+                # the ChunkPortItem-suffix "outputs:param" form used on both ends elsewhere
+                # -- strip whichever namespace prefix is actually present rather than
+                # assuming inputs: (blindly slicing len("inputs:") off an already-outputs:
+                # target left a stray leading colon -> "outputs::param" -> a malformed
+                # Sdf.Path that resolved to <>, crashing SetConnections on paste).
+                bare = conn_path.name.split(":", 1)[-1]
+                src_attr_suffix = "outputs:" + bare
             yield attr_name, src_prim_path, src_attr_suffix
 
 
@@ -462,7 +469,22 @@ def _author_raw_connection(
         prim = stage.GetPrimAtPath(Sdf.Path(dst_prim_path))
         if not prim.IsValid():
             return
-        sdf_type = Sdf.ValueTypeNames.Token if is_exec else Sdf.ValueTypeNames.String
+        if is_exec:
+            sdf_type = Sdf.ValueTypeNames.Token
+        else:
+            # Type the new attribute from the destination PARAM, not from the fact that a
+            # wire is arriving at it. Every non-exec attribute used to be created as String
+            # here, so duplicating a group holding a Transform whose tx had never been
+            # authored gave it an inputs:tx of type String -- and an attribute's type is
+            # fixed once created, so every later numeric write raised "expected 'string',
+            # got 'double'" for the life of the scene.
+            param_path = dst_attr_suffix
+            if param_path.startswith(chunk_usd._INPUTS_PREFIX):
+                param_path = param_path[len(chunk_usd._INPUTS_PREFIX):]
+            param = dst_chunk.get_param(param_path.replace(":", ".")) if dst_chunk else None
+            # String remains the fallback for a param we cannot resolve or map: it is what
+            # this always did, and it is the one type that never loses information.
+            sdf_type = chunk_usd.sdf_type_for_param(param) or Sdf.ValueTypeNames.String
         dst_attr = prim.CreateAttribute(dst_attr_suffix, sdf_type, custom=False)
         if not dst_attr.IsValid():
             return
@@ -472,6 +494,11 @@ def _author_raw_connection(
         # src_attr_suffix is "outputs:param" (ChunkPortItem-suffix form) -- the raw
         # connection target is the source's own inputs:param, per _author_connection.
         src_conn_path = Sdf.Path(f"{src_prim_path}.inputs:{src_attr_suffix[len('outputs:'):]}")
+    # A malformed suffix makes Sdf.Path() an empty path, which stringifies to <> and, if
+    # handed to SetConnections, raises "Cannot map <> ... via stage's EditTarget" -- drop
+    # the wire instead of crashing the whole paste.
+    if src_conn_path.isEmpty:
+        return
     home = chunk_utils.get_attr_home_layer(dst_attr)
     target = home or chunk_utils.get_bookkeeping_layer(stage, dst_chunk)
     with Usd.EditContext(stage, target):
