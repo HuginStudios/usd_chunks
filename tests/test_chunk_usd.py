@@ -2093,6 +2093,68 @@ def test_loft_group_param_up_to_parent_group() -> None:
     assert grp1_prim.GetAttribute(f"{_INPUTS_PREFIX}{grp2.name}_{lofted.name}").IsValid()
 
 
+def test_loft_translate_from_whole_chunk_transform_does_not_break_gizmos() -> None:
+    """Lofting one axis of a Transform chunk's translate up to its group must not crash
+    resolving gizmos on the group.
+
+    The lofted param's clone lives directly on the group (a ChunkBase), so get_chunk() on
+    it resolves to the group itself, not the inner Transform chunk. Refreshing the group's
+    own gizmos then walked into the nested Transform chunk as if it were a plain Group
+    (ChunkBase is a ChunkGroupBase), read its chunk-level gizmo="transform" sugar, and
+    counted only its one direct scalar param (primpath_location) as the driver instead of
+    routing through the whole-chunk-transform's real 9-param collection -- raising
+    "a transform handle drives 9 params ... got 1" from inside a context-menu callback.
+    """
+    import weakref
+    from usd_chunks import chunk_gizmo
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    xformmod = reg.get_chunk_module("transform")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    xform = _mk(xformmod)
+    scene._current_context = None
+
+    # Sanity: the chunk's own whole-chunk transform gizmo is intact before lofting.
+    gizmos = chunk_gizmo.get_gizmos(xform)
+    assert len(gizmos) == 1 and len(gizmos[0].driver) == 9
+
+    tx = xform.get_param("translate_grp.tx")
+    loft_param_to_context(tx, grp)  # must not raise
+    assert tx.get_chunk() is xform  # inner param untouched, still owned by the inner chunk
+
+    lofted = next(x for x in grp.get_my_params() if x.name == f"{xform.name}_tx")
+    assert lofted.get_chunk() is grp  # the clone now lives on the group, not the chunk
+
+    # The group's own gizmo scan must not reach into the nested chunk.
+    assert chunk_gizmo.get_gizmos(grp) == []
+
+    # The inner chunk's whole-chunk transform gizmo is still correctly 9 params.
+    gizmos = chunk_gizmo.get_gizmos(xform)
+    assert len(gizmos) == 1 and len(gizmos[0].driver) == 9
+
+
 def test_recook_recurses_into_group() -> None:
     """A group has no execute() of its own — cooking a group (in the parent view's tree) must
     cook its inner active view's tree; a hidden group mutes its whole inner tree."""
