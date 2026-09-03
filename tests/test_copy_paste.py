@@ -28,16 +28,15 @@ def _mk(mod, scene):
     return cs[0]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def graph(qapp):
-    """Module-scoped, but not for the reason this used to give.
+    """A stage/registry/docker per test -- see tests/test_multi_select.py's `graph` fixture
+    for why this no longer has to be shared across the module.
 
-    There is no per-call notice-listener leak in chunk_usd.initialize() -- see
-    tests/test_multi_select.py's `graph` fixture for the measurement. The destabilised
-    later module was a deferred callback outliving its object, now fixed at the source.
-
-    The scope stays because test_duplicate_preserves_internal_wiring below reads chunks
-    that earlier tests in this module leave on the scene."""
+    One test needed adjusting to survive the change: test_duplicate_preserves_internal_wiring
+    below assumed a view already existed, which was only ever true because an earlier test in
+    the file had made one.
+    """
     stage = Usd.Stage.CreateInMemory()
 
     class _StageScene(_DummyScene):
@@ -59,7 +58,7 @@ def graph(qapp):
     return qapp, reg, scene, docker
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def menu_graph(qapp):
     """A second, separate module-scoped stage just for the context-menu tests below.
 
@@ -458,6 +457,13 @@ def test_duplicate_preserves_internal_wiring(graph) -> None:
     b_in, b_out = _exec_ports(b)
     gv._author_connection(a_out, b_in)
     gv.scene()._build_edges()
+
+    # Let the deferred auto-view settle BEFORE duplicating. _ensure_default_view runs on an
+    # 80ms timer when a context has no view yet, and it selects the view it creates -- which
+    # lands in the middle of this test and takes the selection the duplicates should hold.
+    # Previously masked by module-scoped fixtures: an earlier test in the file had already
+    # caused a view to exist, so the timer never fired here.
+    _pump(qapp, 0.3)
 
     scene.set_selected_chunks([a.chunk, b.chunk])
     gv._duplicate_selected()
