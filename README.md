@@ -222,6 +222,24 @@ usdchunks plugin-path
 
 **PYTHONPATH** - Only needed when running from a clone rather than an install; add this repo's location so usdview can find the python modules.
 
+## What opening a network can run
+
+A `.usda` written by usd_chunks carries param values and wiring, not code. Opening one runs
+**your** chunk modules — the `.py` files already on your `USD_CHUNK_DIRS` — selected by the
+`info:chunkType` recorded on each chunk prim. A network from an untrusted source can name a
+chunk you have and set its params; it cannot introduce a module you do not.
+
+That still means a network decides what your chunks do, and some of them write files (Export
+USD, the render chunks). Treat an unfamiliar network the way you would an unfamiliar project
+file: open it, look at it, then run it.
+
+Two things that would otherwise be surprising:
+
+- **The Script Runner chunk executes the Python in its `code` param only when you press its
+  Run button.** It has no `execute()`, so loading or cooking a network never runs it.
+- **Chunk dependencies are never installed silently.** A chunk module may declare pip
+  requirements, and nothing reaches your environment without an explicit confirmation.
+
 ## Build documentation
 
 The reference pages are generated from the source, so usd_chunks has to be importable —
