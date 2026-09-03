@@ -2166,6 +2166,14 @@ def _write_articulated_results(stage, root_link, layer, results, start_frame, se
     """
     if not results:
         return
+    # Match the target layer's timeCodesPerSecond to the stage's before authoring samples.
+    # USD maps sample times through a layer offset built from the ratio between them, so
+    # writing frame 1..40 into a 24-TCPS layer over a 60-TCPS stage silently lands them at
+    # 2.5..100. The values are right and the timing is wrong, which surfaces as an
+    # animation that plays at the wrong speed rather than as any kind of error.
+    stage_tcps = stage.GetTimeCodesPerSecond()
+    if stage_tcps and layer.timeCodesPerSecond != stage_tcps:
+        layer.timeCodesPerSecond = stage_tcps
     with Usd.EditContext(stage, layer):
         for link in _iter_links(root_link):
             mats = results.get(link.name)
