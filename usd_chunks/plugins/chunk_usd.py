@@ -1971,6 +1971,11 @@ def set_search_scope(context: "core.ChunkBase", scope: str) -> None:
         chunk_notice._usd_write_active = prev_w
 
 
+# How many characters a typo may cost. Two covers a doubled letter, a swap and a slip;
+# past that the difference is a different name, not a misspelling of this one.
+_TYPO_SLACK = 2
+
+
 def fuzzy_matches(term: str, candidate: str, threshold: float = 0.6) -> bool:
     """True if term matches candidate — an exact case-insensitive substring always matches
     (the common case: the user typed the name/type correctly, or a meaningful fragment of it);
@@ -1981,6 +1986,14 @@ def fuzzy_matches(term: str, candidate: str, threshold: float = 0.6) -> bool:
     candidate = candidate.lower()
     if term in candidate:
         return True
+    # SequenceMatcher's ratio is normalised by combined length, so two short names sharing
+    # a prefix score on the overlap alone: "haha" comes out 0.73 similar to "haha222" and
+    # was being returned by a search for "haha222". Length is what separates the two cases
+    # -- a typo is a character or two out of place, never a name three characters shorter.
+    # Deliberate fragments ("trans" for "transform_scale") never reach this line; they have
+    # already matched as a substring above.
+    if abs(len(term) - len(candidate)) > _TYPO_SLACK:
+        return False
     return difflib.SequenceMatcher(None, term, candidate).ratio() >= threshold
 
 
