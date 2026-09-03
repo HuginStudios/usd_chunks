@@ -50,16 +50,6 @@ def initialize_modules(module_names, usdFile=None):
 
     return scene.get_chunks()
 
-def initialize_scene(scene_path, usdFile=None):
-    scene = HeadlessScene(usdFile)
-
-    creg = chunk_registry.ChunkRegistry()
-    creg.initialize(scene, "cli", scene_path)
-
-    chunk_registry.ChunkLayerManager().initialize(scene.get_stage())
-    return scene.get_chunks()
-
-
 def parse_params(chunks, args):
     cs = {x.name: x for x in chunks}
 
@@ -102,19 +92,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--file", required=False, help="A path to a usd file. Supported formats: (.usda, .usd, .usdc, .usdz)"
     )
-    parser.add_argument("--scene", help="Load a scene")
     parser.add_argument("--modules", nargs="+", help="The chunk modules to load")
     parser.add_argument("--args", nargs="+", help="Arguments to the chunk loaded from the module")
     parser.add_argument("--execute", "-e", nargs="+", help="Should the last loaded chunk from the module call execute")
 
     args = parser.parse_args()
 
-    if args.scene:
-        chunks = initialize_scene(args.scene, args.file)
-    elif args.modules:
+    if args.modules:
         chunks = initialize_modules(args.modules, args.file)
     else:
-        raise ArgumentError(None, "Missing scene or module argument")
+        raise ArgumentError(None, "Missing module argument")
 
     try:
         parse_params(chunks, args.args)

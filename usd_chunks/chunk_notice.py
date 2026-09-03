@@ -47,7 +47,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self
-from usd_chunks import chunk_scheduler, chunk_serial
+from usd_chunks import chunk_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -942,7 +942,7 @@ class DagNode:
         yield from chunk_scheduler.solve(self)
 
 
-class CallbackContainer(chunk_serial.Serializeable):
+class CallbackContainer:
     """
     A container for managing callbacks on the ChunkNoticePropagator. Some callbacks can be tagged private, or should be executed when a chunk is
     loaded. This is handled here rather than directly on the NoticeConnection objects as to not pollute that class.
@@ -959,18 +959,7 @@ class CallbackContainer(chunk_serial.Serializeable):
         super().__init__()
         self.callbacks: List[Dict[Literal["conn", "on_create", "private"], Any]] = []
 
-    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
-        # We serialize only non-private callbacks
-        if name == "callbacks":
-            return True, [
-                {"conn": x.get("conn"), "on_create": x.get("on_create")} for x in self.callbacks if not x.get("private")
-            ]
-        return False, None
 
-    def post_serial_setattr(self, name, value):
-        if name == "on_create_callbacks":
-            return super().post_serial_setattr(name, weakref.WeakSet(value))
-        super().post_serial_setattr(name, value)
 
     def add(self, conn: "NoticeConnection", trigger_on_create=True, private=False):
         self.callbacks.append({"conn": conn, "on_create": trigger_on_create, "private": private})
@@ -992,7 +981,7 @@ class CallbackContainer(chunk_serial.Serializeable):
         self.callbacks.clear()
 
 
-class ChunkNoticePropagator(chunk_serial.Serializeable):
+class ChunkNoticePropagator:
     """
     A base class that implements the connectability of chunk objects. Chunk objects may be connected to eachother through
     'physical' connections, and to callbacks through 'non-physical' connections. These two connection methods differ in how
@@ -1034,40 +1023,8 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         self._blocked = False
         super().__init__(*args, **kwargs)
 
-    def serialize(self, glb):
-        if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
-            res.attributes["dependencies"] = [node for _, node in self.get_dependencies()]
 
-            if self.get_dag_node()._part_of_graph and (owner := self.get_owner()):
-                # The owner should always be serialized as a reference. This ensures no circular dependencies
-                res.attributes["owner"] = chunk_serial.SerializedReference(hash(owner)).as_dict()
-        return res
 
-    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
-        if name == "_callbacks":
-            return True, value
-        if name.startswith("_"):
-            return False, value
-        return super().should_serialize_attribute(name, value)
-
-    def post_serial_setattr(self, name, value):
-        self.set_blocked(True)
-        if name == "dependencies":
-            # Since the _dependencies is an attribute of the DagNode, calling setattr(self, '_dependencies', value)
-            # would set the _dependencies on the AttributesBase instance. So instead we make sure the dependencies goes to the
-            # DagNode. The dependencies are serialized to the AttributesBase
-            for dep in value:
-                self.add_dependency(dep)
-        elif name == "_callbacks":
-            # Instead of overriding the callbacks, we extend it in order to keep callbacks created prior to post_serial_setattr() is called, i.e. from __init__.
-            # An example of this is the ChunkBase class that creates some callbacks in __init__, but as they are private, they are not serialized, therefore
-            # if we were to do self._callbacks = value, those initial callbacks would be deleted
-            self._callbacks.extend(value)
-        elif name == "owner":
-            self.set_owner(value)
-        else:
-            super().post_serial_setattr(name, value)
-        self.set_blocked(False)
 
     @abstractmethod
     def request_delete(self):
@@ -1632,7 +1589,7 @@ def _register_global(alias: "ChunkNoticeAlias", notice_type, connection: "Notice
     return _SharedGlobalListener(dispatch, connection)
 
 
-class NoticeConnection(chunk_serial.Serializeable):
+class NoticeConnection:
     """
     A storage for a TfListener object. This class provides a simple client-facing interface for
     creating callbacks for the TfNotice system, with some additional functionality. This exists also
@@ -1730,22 +1687,7 @@ class NoticeConnection(chunk_serial.Serializeable):
     def sender(self, obj):
         self._sender = None if obj is None else weakref.ref(obj, self._connection_broke)
 
-    def serialize_kwarg(self, name: str, default: Any) -> Any:
-        if name == "method":
-            return self.get_method()
-        if name == "alias":
-            return self.alias
-        if name == "sender":
-            return self.sender
-        if name == "globally":
-            return self.globally
-        if name == "owner":
-            return self.owner
-        return super().serialize_kwarg(name, default)
 
-    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
-        # No attributes should be serialized as the attributes are serialized by kwargs
-        return False, None
 
     def trigger(self):
         """
