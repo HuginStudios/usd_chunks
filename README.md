@@ -50,6 +50,12 @@ binding, MaterialX shading, render settings, products, vars and passes, scatteri
 and curve creation, and a MuJoCo rigid-body solver. They are also the worked examples:
 each is one module, and most are under a few hundred lines.
 
+Two of them show how far the declaration can be pushed. The MaterialX chunk builds its
+params from the shader definition in the registry, so choosing a `nodedef` reconfigures
+the node's own interface — the same self-description the UI is derived from, driven by
+data rather than written out. And `examples/AMDMaterialXLibrary` is a browser for AMD's
+GPUOpen material library, fetching and caching over the network, inside a chunk.
+
 The node graph, the parameter panels and the viewport gizmos are generated from the same
 declarations. That is the part that used to be the pitch, and it is really a consequence:
 a chunk describes itself well enough that a UI can be derived from it, which is also what
