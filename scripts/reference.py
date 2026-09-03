@@ -56,7 +56,17 @@ def execute(node):
     prim_type = node.get_param("prim_type").value or "Xform"
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.GetPrimAtPath(target_path)
-        if not prim.IsValid():
+        # IsDefined, not IsValid -- and the emptiness check first, because IsDefined
+        # raises on a null prim while IsValid is safe on one.
+        #
+        # A prim that only ever appears as an `over` -- which is
+        # what every other chunk authoring to this path leaves behind -- is perfectly
+        # valid: it exists in the namespace. It is not *defined*, and USD does not compose
+        # children onto an undefined prim, so the reference resolves, lands in the prim
+        # stack, and contributes nothing. Guarding on IsValid skips the DefinePrim that
+        # would have made it real, and the failure is silent: a referenced asset that is
+        # simply, inexplicably empty.
+        if not prim or not prim.IsDefined():
             prim = stage.DefinePrim(target_path, prim_type)
         prim.GetReferences().AddReference(ref)
 
