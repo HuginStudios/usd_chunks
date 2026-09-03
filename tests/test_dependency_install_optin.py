@@ -17,15 +17,49 @@ import pytest
 from usd_chunks import chunk_registry
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _singleton_left_clean():
+    """This file must not leave anything on the dependency-manager singleton.
+
+    Every leak found here took the same shape: a patch applied to the instance, undone by
+    writing the found value back onto the instance, where it outlives the test. The value
+    written back is whatever was current at teardown -- which, once a fixture patches the
+    class, is the fixture's own stub. It then answers for the rest of the session, and the
+    file that trips over it is some other file that looks entirely unrelated.
+    """
+    mgr = chunk_registry.ChunkDependencyManager()
+    before = set(mgr.__dict__)
+    yield
+    leaked = set(mgr.__dict__) - before
+    assert not leaked, (
+        f"left on the ChunkDependencyManager singleton: {sorted(leaked)}. Patch the class, "
+        "not the instance -- monkeypatch's undo cannot remove what it did not add."
+    )
+
+
 @pytest.fixture()
 def deps(monkeypatch):
-    """A dependency manager that believes nothing is installed and can never shell out."""
+    """A dependency manager that believes nothing is installed and can never shell out.
+
+    Patched on the class, not on the instance. ChunkDependencyManager is a process-wide
+    singleton, and monkeypatch undoes an instance patch by writing the value it found back
+    with setattr -- which lands on the *instance* even when it was only ever a class
+    attribute. The singleton then carries a real, unpatchable bound method for the rest of
+    the session, shadowing any later class-level patch. test_dependency_install_failure
+    patches this same update_cache on the class to keep pip off the network; run it after
+    this file and its no-op was silently overridden, so `pip list` ran for real and turned
+    up as the first recorded subprocess call instead of the install being asserted on.
+    """
     mgr = chunk_registry.ChunkDependencyManager()
+    # Restored below rather than monkeypatched: package_dir does not exist at all until
+    # initialize() runs, so there is no original value for monkeypatch to put back.
+    had = {k: mgr.__dict__[k] for k in ("initialized", "package_dir") if k in mgr.__dict__}
     mgr.initialized = True
     mgr.package_dir = "/tmp/chunk-deps"
 
-    monkeypatch.setattr(mgr, "package_in_cache", lambda package: False)
-    monkeypatch.setattr(mgr, "update_cache", lambda: None)
+    cls = chunk_registry.ChunkDependencyManager
+    monkeypatch.setattr(cls, "package_in_cache", lambda self, package: False)
+    monkeypatch.setattr(cls, "update_cache", lambda self: None)
 
     ran = []
     monkeypatch.setattr(
@@ -34,8 +68,14 @@ def deps(monkeypatch):
     )
 
     asked = []
-    monkeypatch.setattr(mgr, "should_install_package", lambda p: asked.append(p) or False)
-    return mgr, asked
+    monkeypatch.setattr(
+        cls, "should_install_package", lambda self, p: asked.append(p) or False
+    )
+    yield mgr, asked
+
+    for key in ("initialized", "package_dir"):
+        mgr.__dict__.pop(key, None)
+    mgr.__dict__.update(had)
 
 
 def test_off_by_default(deps, monkeypatch, caplog):
@@ -76,7 +116,12 @@ def test_enabling_reaches_the_prompt(deps, monkeypatch, value):
 def test_nothing_missing_asks_nothing(deps, monkeypatch):
     mgr, asked = deps
     monkeypatch.setenv("USD_CHUNK_AUTO_INSTALL", "1")
-    monkeypatch.setattr(mgr, "package_in_cache", lambda package: True)
+    # On the class, for the same reason the fixture does: an instance patch here is undone
+    # by writing back whatever it found -- the fixture's own lambda -- onto the singleton,
+    # where it outlives this file and answers False to every later cache check.
+    monkeypatch.setattr(
+        chunk_registry.ChunkDependencyManager, "package_in_cache", lambda self, package: True
+    )
 
     mgr.install_packages(["requests"])
 
