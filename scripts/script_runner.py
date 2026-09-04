@@ -65,6 +65,22 @@ def _get_usdview_api():
     return None
 
 
+# The empty value each output falls back to. A float output blanks to 0.0, not 0: the
+# node graph reads a port's colour off the param's CURRENT value
+# (chunk_qt_nodegraph._param_port_type), so an int here paints the float port with the int
+# colour until someone assigns a real float to it.
+_EMPTY = {
+    "result": "",
+    "result_int": 0,
+    "result_float": 0.0,
+    "result_bool": False,
+}
+
+
+def _empty_for(name):
+    return _EMPTY.get(name, "")
+
+
 def _clear_outputs(chunk_obj, keep=None):
     """Blank every output param except `keep`.
 
@@ -77,7 +93,7 @@ def _clear_outputs(chunk_obj, keep=None):
         param = chunk_obj.get_param(name)
         if param is None:
             continue
-        param.value = "" if name == "result" else (False if name == "result_bool" else 0)
+        param.value = _empty_for(name)
 
 
 def _show_only_selected_output(chunk_obj):
@@ -125,9 +141,7 @@ def _run_script(chunk_obj):
     if not code.strip():
         _clear_outputs(chunk_obj)
         if result_param:
-            result_param.value = "" if out_name == "result" else (
-                False if out_name == "result_bool" else 0
-            )
+            result_param.value = _empty_for(out_name)
         return
 
     prim = None
@@ -157,9 +171,7 @@ def _run_script(chunk_obj):
         # wire never reads a value left over from a previous type choice.
         _clear_outputs(chunk_obj, keep=out_name)
         if value is None:
-            result_param.value = "" if out_name == "result" else (
-                False if out_name == "result_bool" else 0
-            )
+            result_param.value = _empty_for(out_name)
         else:
             try:
                 result_param.value = coerce(value)
@@ -168,9 +180,7 @@ def _run_script(chunk_obj):
                 # "int" selected but result is "abc"). Leave the output empty and say so,
                 # rather than raising and aborting the whole cook.
                 print(f"[Python] result {value!r} is not a valid {out_type}")
-                result_param.value = "" if out_name == "result" else (
-                    False if out_name == "result_bool" else 0
-                )
+                result_param.value = _empty_for(out_name)
 
 
 def execute(node):

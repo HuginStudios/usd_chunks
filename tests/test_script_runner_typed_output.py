@@ -171,3 +171,36 @@ class TestOnlySelectedOutputShows:
         node.get_param("output_type").value = "string"
         self.mod._show_only_selected_output(node)
         assert not node.get_param("result").has_state(ChunkFlags.State.HIDDEN)
+
+
+class TestBlankOutputsKeepTheirType:
+    """A float output blanks to 0.0, not 0.
+
+    The node graph reads a port's colour off the param's CURRENT value
+    (chunk_qt_nodegraph._param_port_type), so an int in a float param paints the float port
+    with the int colour -- visible as int and float ports looking identical until a real
+    float is assigned, which is what made it look fine as soon as a script set `result`.
+    """
+
+    def setup_method(self):
+        self.mod = importlib.import_module("scripts.script_runner")
+
+    def test_clearing_leaves_a_float_holding_a_float(self, scene):
+        node = _make(self.mod, "Python")
+        self.mod._clear_outputs(node, keep="result_int")
+
+        value = node.get_param("result_float").value
+        assert isinstance(value, float), (
+            f"result_float was blanked to {value!r} ({type(value).__name__}); its port will "
+            "be drawn in the int colour"
+        )
+
+    def test_each_output_blanks_to_its_own_type(self, scene):
+        node = _make(self.mod, "Python")
+        self.mod._clear_outputs(node)
+
+        assert isinstance(node.get_param("result").value, str)
+        assert isinstance(node.get_param("result_bool").value, bool)
+        assert isinstance(node.get_param("result_float").value, float)
+        int_value = node.get_param("result_int").value
+        assert isinstance(int_value, int) and not isinstance(int_value, bool)
