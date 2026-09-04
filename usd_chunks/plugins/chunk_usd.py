@@ -222,6 +222,31 @@ def _sdf_type_and_value(val):
     return sdf_type, val
 
 
+def sdf_type_for_param(param) -> "Sdf.ValueTypeName | None":
+    """The USD type an attribute backing this param should have, or None if unmappable.
+
+    Typed from the param's DEFAULT rather than whatever it currently holds. A live value
+    can be an unresolved expression string, or something that arrived over a wire, and an
+    attribute's type is fixed for good once it is created -- so typing from the value in
+    hand risks pinning a float param to String and failing every numeric write afterwards.
+    The default is the one value that always reflects what the param actually is.
+    """
+    if param is None:
+        return None
+    try:
+        if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
+            # A ColorPicker holds an (r, g, b) tuple; _SDF_TYPE_MAP is keyed by Python type
+            # and has no tuple entry, so it needs saying explicitly.
+            return Sdf.ValueTypeNames.Color3f
+    except Exception:
+        pass
+    type_source = getattr(param, "default_value", None)
+    if type_source is None:
+        type_source = getattr(param, "raw_value", None)
+    sdf_type, _ = _sdf_type_and_value(type_source)
+    return sdf_type
+
+
 class ChunkStageSync(metaclass=RegistrySingleton):
     """
     Singleton that authors a Chunk prim on the stage whenever a Python chunk
