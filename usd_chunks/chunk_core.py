@@ -55,7 +55,7 @@ from pxr import Sdf, Usd, UsdGeom, Gf
 from typing_extensions import Self, dataclass_transform, Required
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_serial, chunk_utils
+from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 
 
@@ -1588,11 +1588,6 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             self.add_callback(self._ref_child_added, param, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_ADDED)
             self.add_callback(self._ref_child_removed, param, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_REMOVED)
 
-    def serialize(self, glb):
-        if (ref := super().serialize(glb)) and isinstance(ref, chunk_serial.SerializedClass):
-            ref.kwargs["param"] = self._param_ref
-            ref.attributes["value"] = self._value
-        return ref
 
     def _ref_child_added(self, notice, sender):
         if isinstance(notice.data, ChunkParamBase):
@@ -1829,29 +1824,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     def empty(self):
         return not bool(self._params)
 
-    def serialize(self, glb):
-        if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
-            # Serialize params as a temp 'params' attribute. This will be de-serialized in post_serial_setattr
-            res.attributes["params"] = list(self.get_my_params())
 
-        return res
-
-    def post_serial_setattr(self, name, value):
-        if name == "params":
-            # Add the params to this container by calling add. Previously we created the params in place and passed them to
-            # the NameSyncedContainer constructor. The reason for the change is to be able to modify the container before
-            # adding the parameters; Owner is set on the params in add(), but this sets the graph_id as well, which is wrong
-            # on the scene 'chunks' container. The graph_id should ideally be smarter, but for now this solves the issue.
-            # TODO: Rework graph_id
-            for i in value:
-                if self.get_param(i):
-                    continue
-
-                self.add(i)
-                if isinstance(i, ChunkContainerBase):
-                    self.add_nested(i.children)  # type: ignore
-            return
-        return super().post_serial_setattr(name, value)
 
     def get_notice_data(self) -> Self:
         return self
@@ -3809,11 +3782,6 @@ class ChunkListGroupBase(ChunkGroupBase):
 
         raise ValueError(f"Predicate {predicate} failed for get_indexed_param with index {index}")
 
-    def post_serial_setattr(self, name, value):
-        if name == "proxy_params":
-            for p in value:
-                p.set_owner(self)
-        return super().post_serial_setattr(name, value)
 
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         if old_value is None or attrname != "size":
@@ -4540,153 +4508,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         for cb in self._stage_replaced_listeners:
             cb(stage)
 
-    def serialize(self, glb):
-        # Ensure that the scene is not serialized. For now, we only serialize the chunks NameSyncedContainer
-        return None
-
-    def export_scene(self, path: str | Path):
-        """
-        Export the current scene. The result will be written to path, if path is a chunk_serial.FileExtensions.SCENE file path.
-        The file will contain information about all the loaded chunks and modules, and when loaded
-        should recrete the scene 1:1
-
-        Args:
-            path (str | Path): A target file path which to write to
-        """
-        p = Path(path)
-        if p.suffix != chunk_serial.FileExtensions.SCENE:
-            return
-
-        self.set_scene_file(path)
-
-        layers = {}
-        layer_data = []
-        lreg = chunk_registry.ChunkLayerManager()
-
-        if lreg.initialized:
-            for c in self.get_chunks():
-                if layer := lreg.get_layer(c):
-                    lname = lreg.get_layer_file_name(layer)
-                    layers[lname] = c.get_hash()
-                    layer_data.append((lname, lreg.get_layer_usda(layer)))
-
-        data = chunk_serial.Scene(
-            modules=chunk_registry.ChunkRegistry().get_chunk_modules(True), chunks=self.chunks, layers=layers
-        )
-        chunk_serial.save_scene(path, data, layer_data)
-
-    def save_scene(self):
-        """
-        Calls export_scene with the current scene file as target, meaning this will override the currently loaded scene.
-        If no scene is set, this will print a warning and do nothing.
-        """
-        if not (f := self.get_scene_file()):
-            logger.warning("No scene file set")
-            return
-
-        self.export_scene(f)
-        self._modified = False
-
-    def get_scene_file(self):
-        if self._scene_file == Path():
-            return None
-        return self._scene_file
-
-    def set_scene_file(self, path: str | Path):
-        """
-        Set the current scene file. The file extension of path should be chunk_serial.FileExtensions.SCENE. This will not
-        load the content of the file. To load the content of the file, use open_scene() instead.
-
-        Args:
-            path (str | Path): A path to a scene file.
-        """
-        if (p := Path(path)) and p.suffix != chunk_serial.FileExtensions.SCENE:
-            logger.warning(f"Unsupported scene file extension: {path}")
-            return
-
-        self._scene_file = Path(path)
-
-    def open_scene(self, path: str | Path):
-        """
-        Open a scene file (.chsc) and import its content. The chunks member will be replaced with the chunks
-        imported from the file. All layers will be replaced.
-
-        Args:
-            path (str | Path): _description_
-        """
-        p = Path(path)
-        if not p.exists() or p.suffix != chunk_serial.FileExtensions.SCENE:
-            return
-
-        if self.is_modified():
-            if not self.request_save():
-                return
-
-        # Clear the current scene
-        self.clear()
-
-        # Deserialize json files
-        serial = chunk_serial.load_file(path)
-        if not serial or not (data := chunk_serial.deserialize_scene(serial)):
-            return
-
-        self.set_scene_file(p)
-
-        # Construct the modules
-        for mod_cnstr in data.get("modules", []):
-            mod = mod_cnstr.construct(False)
-
-            if not isinstance(mod, chunk_registry.ChunkModule):
-                logger.error(f"Return value from serial is not a ChunkModule: {mod}")
-                continue
-
-            if not mod._pre_load():
-                logger.error(f"Failed to preload: {mod}")
-                continue
-
-            mod = mod_cnstr.post_constuct()
-            chunk_registry.ChunkRegistry().register_module(mod)
-
-        # Construct the chunks
-        if chunks := data.get("chunks"):
-            if nsc := chunks.construct(False):
-                nsc: NameSyncedContainer
-                nsc.get_dag_node()._part_of_graph = False
-                chunks.post_constuct()
-
-                self.set_chunks(nsc)
-
-        self._modified = False
-
-        # Construct the layers
-        lreg = chunk_registry.ChunkLayerManager()
-        if not lreg.initialized:
-            return
-
-        for layer_name, cref in data.get("layers", {}).items():
-            c = cref.construct()
-
-            if not isinstance(c, ChunkCommon):
-                logger.warning(f"Could not load layer {layer_name}. The referenced chunk was not found")
-                continue
-
-            try:
-                layer_str = chunk_serial.load_scene_data(p, layer_name)
-            except Exception:
-                continue
-
-            if not layer_str:
-                logger.warning(f"Could not load layer {layer_name}")
-                continue
-
-            layer = Sdf.Layer.CreateAnonymous()
-            layer.ImportFromString(layer_str.decode())
-
-            c_layer = lreg.get_or_create_layer(c)
-            if not c_layer:
-                logger.warning(f"Could not load layer for chunk {c.name}")
-                continue
-            lreg.stitch_layers(c_layer, layer)
 
     def remove_chunk(self, chunk: str | ChunkHash):
         """
@@ -5083,16 +4904,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             bool: If the package can be installed
         """
         return False
-
-    @abstractmethod
-    def request_save(self):
-        """
-        Request a save of the scene. Should be implemented by a plugin
-
-        Raises:
-            NotImplementedError: If not implemented by a plugin
-        """
-        raise NotImplementedError
 
     @abstractmethod
     def get_stage(self) -> Usd.Stage | None:

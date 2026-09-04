@@ -38,7 +38,7 @@ from enum import Enum
 
 from pxr import Sdf, Usd, UsdUtils
 
-from usd_chunks import chunk_serial
+from usd_chunks import chunk_cache
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 
@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
 import atexit
 import ast
+import inspect
 import importlib.abc
 import logging
 import subprocess
@@ -118,6 +119,9 @@ class ChunkEnvVar(Generic[_T]):
 
 
 USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", [], True)
+# A chunk module is a Python file. This is the only file extension the framework loads.
+PY_MODULE_EXT = ".py"
+
 USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", "_installed_deps", True)
 USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
 
@@ -181,16 +185,11 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
                 atexit.register(self._write_cache)
 
     def _env_cache_file(self):
-        checksum = chunk_serial.compute_checksum(sys.executable)
+        checksum = chunk_cache.compute_checksum(sys.executable)
         return os.path.join(self.package_dir, f"{checksum}_chunk_package_cache.json")
 
     def _write_cache(self):
         # Writes the cache to disk
-        serial = chunk_serial.serialize_json(dict(self._cache))
-        path = self._env_cache_file()
-        if not os.path.exists(os.path.dirname(path)):
-            os.makedirs(os.path.dirname(path))
-
         # Silence logging for the duration of the write. This runs from atexit, by which
         # point pytest -- or any host that redirects output -- has already closed the stream
         # our handlers write to. logging then reports its own failure to stderr, printing a
@@ -199,19 +198,14 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         previously_disabled = logging.root.manager.disable
         logging.disable(logging.CRITICAL)
         try:
-            chunk_serial.save_json(self._env_cache_file(), serial)
+            chunk_cache.write_package_cache(self._env_cache_file(), dict(self._cache))
         finally:
             logging.disable(previously_disabled)
 
     def _load_cache(self):
-        # Loads the cache from disk
-        path = self._env_cache_file()
-        if not os.path.exists(path):
-            return
-
-        if not (serial := chunk_serial.load_file(path)):
-            return
-        self._cache = defaultdict(set, chunk_serial.deserialize_json(serial))
+        # Loads the cache from disk. An unreadable or old-format file reads as empty and
+        # update_cache rebuilds from `pip list` -- see chunk_cache.read_package_cache.
+        self._cache = defaultdict(set, chunk_cache.read_package_cache(self._env_cache_file()))
 
     @staticmethod
     def package_info(package):
@@ -396,7 +390,7 @@ class _ConfigTransformer(ast.NodeTransformer):
         if node.name == "main":
             self._module._has_main = True
             if src := self._get_node_source(node):
-                self._module._checksum = chunk_serial.compute_checksum("".join(src.split()))
+                self._module._checksum = chunk_cache.compute_checksum("".join(src.split()))
         return node
 
     def visit_Import(self, node: ast.Import) -> Any:
@@ -448,7 +442,7 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         self._loader.exec_module(module)
 
 
-class ChunkModule(chunk_serial.Serializeable):
+class ChunkModule:
     """
     A class used by ChunkRegistry for managing chunk modules. Modules are loaded at runtime using the
     ChunkLazyConfigLoader
@@ -490,45 +484,23 @@ class ChunkModule(chunk_serial.Serializeable):
     @staticmethod
     def from_chunk_definition(file: str | Path, name: Optional[str] = None) -> List["ChunkModule"]:
         """
-        Create a ChunkModule from a file and module name. The method for creating the module varies based on the file extension
+        Create a ChunkModule from a chunk module file (.py).
 
         Returns:
-            List[ChunkModule]: A list of modules that was created. For .chum files, this list may contain multiple ChunkModules
+            List[ChunkModule]: A list holding the created module, or empty for anything
+            that is not a .py file.
         """
         p = Path(file)
 
         if name is None:
             name = p.stem
 
-        if p.suffix == chunk_serial.FileExtensions.PY_MODULE:
-            # When importing .py files, we don't need to deserialize, as the loading of the module
-            # can be managed by the ChunkModule
-            return [ChunkModule(module_name=name, module_file=file)]
+        if p.suffix != PY_MODULE_EXT:
+            logger.warning(f"Cannot import {p.name}: a chunk module is a .py file")
+            return []
 
-        serial = chunk_serial.load_file(p)
-
-        res = []
-        if not serial:
-            return res
-
-        if not (data := chunk_serial.deserialize_scene(serial)):
-            return res
-
-        if p.suffix == chunk_serial.FileExtensions.CHUNK_MODULE:
-            for mod_cnstr in data.get("modules", []):
-                mod_cnstr.serial.kwargs["module_name"] = name
-
-                mod = mod_cnstr.construct()
-                if not isinstance(mod, ChunkModule):
-                    logger.error(f"Failed to construct module {mod_cnstr.serial.kwargs.get('module_name')}")
-                    return []
-
-                res.append(mod)
-
-        elif p.suffix == chunk_serial.FileExtensions.CHUNK:
-            pass
-
-        return res
+        # No deserialising to do -- loading the module is ChunkModule's own job.
+        return [ChunkModule(module_name=name, module_file=file)]
 
     def __repr__(self) -> str:
         return f"ChunkModule(module_name='{self.module_name}', module_file='{self.module_file.as_posix()}')"
@@ -566,48 +538,12 @@ class ChunkModule(chunk_serial.Serializeable):
         """
         return os.pathsep.join(self.get_menu_path())
 
-    def serialize_kwarg(self, name: str, default: Any) -> Any:
-        # Override to pass current values to kwargs
-        if name == "module_name":
-            return self.module_name
-        if name == "module_file":
-            return self.module_file.as_posix()
-        if name == "module":
-            return self.module
-        return super().serialize_kwarg(name, default)
-
-    def post_serial_setattr(self, name: str, value: Any) -> None:
-        if name == "_checksum" and value != self._checksum:
-            logger.warning(
-                f"main() funcion of {self.module_name} has changed since serializing. This may lead to unexpected behaviour"
-            )
-            return
-
-        return super().post_serial_setattr(name, value)
-
-    def should_serialize_attribute(self, name: str, value: Any) -> chunk_serial.Tuple[bool, Any]:
-        if name == "_checksum":
-            return (True, value)
-
-        return (False, None)
-
     def _exec_module(self):
-        if type(self.module) is chunk_serial.RuntimeModule:
-            if not self.loaded:
-                # Instead of using the ChunkLazyConfigLoader, we can parse the runtime module directly
-                # using the _pre_load_module. This will set self.config and self._checksum
-                _pre_load_module(self.module._code, self.module.__dict__, self)
-                if not self.has_main():
-                    return False
-
-            self.module.__dict__["__file__"] = self.module_file.as_posix()
-            sys.modules[self.module_name] = self.module
-
-        elif not self.module_file.exists():
+        if not self.module_file.exists():
             logger.error(f"Could not load module from file {self.module_file}")
             return False
 
-        elif self.module_file.suffix == chunk_serial.FileExtensions.PY_MODULE:
+        elif self.module_file.suffix == PY_MODULE_EXT:
             spec = util.spec_from_file_location(self.module_name, self.module_file)
             if not spec or not spec.loader:
                 logger.warning(f"Module spec or loader failed for module {self.module_name}. Skipping")
@@ -634,12 +570,6 @@ class ChunkModule(chunk_serial.Serializeable):
             self.module = module
             sys.modules[self.module_name] = module
 
-        elif self.module_file.suffix == chunk_serial.FileExtensions.CHUNK_MODULE:
-            if _m := ChunkModule.from_chunk_definition(self.module_file):
-                self.module = _m[0].module
-                if self.module:
-                    sys.modules[self.module.__name__] = self.module
-
         if not self.module:
             return False
 
@@ -662,8 +592,6 @@ class ChunkModule(chunk_serial.Serializeable):
 
         self._install_deps()
 
-        if type(self.module) is chunk_serial.RuntimeModule:
-            self.module.compile()
         try:
             self.func = getattr(self.module, "main")
         except Exception:
@@ -775,34 +703,28 @@ class ChunkModule(chunk_serial.Serializeable):
 
     def export(self, path: str | Path):
         """
-        Export this ChunkModule as a .py or .chum file. Any other extension will print a warning and fail
+        Export this ChunkModule's source as a .py file. Any other extension warns and fails.
 
         Args:
-            path (str | Path): The path to export. Should be either .py or .chum
+            path (str | Path): The path to export to. Should be .py
         """
         p = Path(path)
 
         if not self.module:
             return
 
-        if p.suffix == chunk_serial.FileExtensions.PY_MODULE:
-            data = chunk_serial.PyModule(module=self.module)
-            chunk_serial.save_py_module(path, data)
-        elif p.suffix == chunk_serial.FileExtensions.CHUNK:
-            old_path = self.module_file
-            old_name = self.module_name
-
-            self.module_file = p
-            self.module_name = p.stem
-
-            data = chunk_serial.Module(modules=[self])
-            chunk_serial.save_module(path, data)
-
-            self.module_file = old_path
-            self.module_name = old_name
-        else:
+        if p.suffix != PY_MODULE_EXT:
             logger.warning(f"wrong file extension {path}")
             return
+
+        try:
+            source = inspect.getsource(self.module)
+        except (OSError, TypeError):
+            logger.exception(f"Could not read the source of {self.module_name}")
+            return
+
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(source)
 
 
 # Mirrors the ChunkConfig.description default, so an undocumented chunk shows no tooltip
@@ -909,14 +831,13 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     initialized: bool = False
 
-    def initialize(self, scene_sender: core.SceneSender, plugin: str, scene_file: Optional[Path] = None) -> None:
+    def initialize(self, scene_sender: core.SceneSender, plugin: str) -> None:
         """Initialize the FileReader with the working directory.
 
         Args:
             scene_sender (SceneSender): A SceneSender instance for access to the scene.
                 We hold a reference to it here in order to keep it alive
             plugin (str): A string identifying the currently used plugin
-            scene_file (Optional[Path]): A path to a chunk scene file to load. Defaults to None
         """
 
         self.scene = scene_sender
@@ -936,9 +857,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         logger.info(f"Found {len(self.registered_modules)} chunks. Loaded {c}")
         self._report_shadows()
         self.initialized = True
-
-        if scene_file:
-            self.scene.open_scene(scene_file)
 
     def register_chunk_environ_directories(self) -> list[Path]:
         """Register USD_CHUNK_DIRS, then append the GLOBAL_USDCHUNKS directory.
@@ -983,35 +901,20 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         self.registered_directories.add(p)
 
     def register_chunk_modules(self, paths: Iterable[Path]):
-        """Recursively register chunk module files (.py, .chum) from paths. Paths should be a sequence of
+        """Recursively register chunk module files (.py) from paths. Paths should be a sequence of
         directory paths that contain ChunkModule files
 
         Args:
             paths (Iterable[Path]): The directories containing the chunk modules to register.
         """
-        chum_mods = []
-
         for working_dir in paths:
             # Loop over all directories of the working_dirs directory
-            extensions = (chunk_serial.FileExtensions.CHUNK_MODULE, chunk_serial.FileExtensions.PY_MODULE)
-
-            for module_path in filter(lambda x: x.suffix in extensions, Path(working_dir).glob("**/*")):
+            for module_path in Path(working_dir).glob("**/*" + PY_MODULE_EXT):
                 rel = (module_path.parent / module_path.stem).relative_to(working_dir)
                 module_name = str(rel).replace(os.path.sep, ".")
 
-                if module_path.suffix != chunk_serial.FileExtensions.PY_MODULE:
-                    # .py modules should be loaded first
-                    chum_mods.append((module_path, module_name))
-                    continue
-
                 for mod in ChunkModule.from_chunk_definition(module_path, module_name):
                     self.register_module(mod)
-
-        # Loop over the .chum modules and add them after all .py modules has been added. This is because python modules should
-        # be prioritized if duplicate module names are found
-        for module_path, module_name in chum_mods:
-            for mod in ChunkModule.from_chunk_definition(module_path, module_name):
-                self.register_module(mod)
 
     def register_module(self, module: ChunkModule) -> ChunkModule | None:
         """
@@ -1169,13 +1072,13 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     def import_chunk(self, path: str | Path):
         """
-        Import a chunk module from path. The file extension of path should be either .py or .chum.
+        Import a chunk module from path. The file extension of path should be .py.
 
         Args:
             path (str | Path): The path to the chunk module
         """
         p = Path(path)
-        if p.suffix in (chunk_serial.FileExtensions.CHUNK_MODULE, chunk_serial.FileExtensions.PY_MODULE):
+        if p.suffix == PY_MODULE_EXT:
             for mod in ChunkModule.from_chunk_definition(p):
                 if mod.module_name not in self.registered_modules:
                     self.register_module(mod)
