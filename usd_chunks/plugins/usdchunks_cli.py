@@ -309,6 +309,27 @@ def cmd_pin(args):
     print()
     print(f"{GREEN}Pinned {len(result.materialized)} chunk(s){RESET} -> {result.pin_dir}")
     print(f"Lock recorded in {result.lock_location} ({result.lock_mode})")
+    if result.hashes:
+        print(f"Content hashes recorded for {len(result.hashes)} chunk(s) -- a re-pin "
+              f"verifies the bytes, which a version alone cannot")
+    if result.packages:
+        print(f"Package versions recorded: "
+              f"{', '.join(f'{n}=={v}' for n, v in sorted(result.packages.items()))}")
+
+    if args.venv:
+        python, installed, problems = pinmod.provision_venv(result.packages, args.venv)
+        for problem in problems:
+            print(f"{RED}{problem}{RESET}", file=sys.stderr)
+        if problems:
+            sys.exit(1)
+        if python is None:
+            print("No packages to install -- no venv created.")
+        else:
+            print()
+            print(f"{GREEN}Environment ready{RESET} -> {python}")
+            print(f"Installed: {', '.join(installed)}")
+            print("Run against it with:")
+            print(f"  {python} -m usd_chunks.plugins.usdchunks_cli run {args.usda}")
     print(f"Prepend to USD_CHUNK_DIRS:  {result.pin_dir}")
 
 
@@ -667,6 +688,12 @@ def main():
     pin_parser.add_argument("--pin-dir", metavar="DIR", default=None, help="Where to materialize impls (default ./pin)")
     pin_parser.add_argument("--copy", action="store_true", help="Copy impls instead of symlinking (portable/sealed)")
     pin_parser.add_argument("--wrapper", action="store_true", help="Always write the lock to a wrapper layer, never in place")
+    pin_parser.add_argument(
+        "--venv", metavar="DIR", default=None,
+        help="Create a venv at DIR and install the locked package versions into it. "
+             "System site packages stay visible, so the host's OpenUSD and Qt still "
+             "import -- only pip's share is pinned",
+    )
 
     sweep_parser = sub.add_parser(
         "sweep",
