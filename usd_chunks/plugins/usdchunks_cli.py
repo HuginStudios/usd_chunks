@@ -6,8 +6,13 @@ Usage:
     usdchunks info my_setup.usda
 """
 
+import filecmp
+import os
+import subprocess
 import sys
+import tempfile
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
+from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
 
@@ -357,6 +362,151 @@ def cmd_run(args):
         print(_flatten_without_chunks(stage).ExportToString())
 
 
+WEDGE_CHUNK_TYPE = "wedge"
+
+
+def _find_wedge(stage):
+    """The network's wedge prim, read straight off the stage.
+
+    Deliberately not a chunk load: the parent only needs the wedge's name and count to plan
+    the sweep, and loading the network here would pay the whole startup cost twice -- once
+    to plan, once in the child that actually cooks.
+    """
+    for prim in stage.TraverseAll():
+        if prim.GetTypeName() != "Chunk":
+            continue
+        attr = prim.GetAttribute("info:chunkType")
+        if attr and attr.Get() == WEDGE_CHUNK_TYPE:
+            return prim
+    return None
+
+
+def _variant_dir(out, index):
+    return os.path.join(out, "variant_%05d" % index)
+
+
+def _run_variant(usda, wedge_name, index, out, procedural):
+    """One variant, in its own process.
+
+    A process per variant rather than a loop: the registry and stage-sync singletons hold
+    the stage a network was loaded into, so a second load in one process returns the
+    chunkgroup and none of its children -- variant 2 would silently re-export variant 1.
+    It also stops one bad variant taking the batch down.
+    """
+    directory = _variant_dir(out, index)
+    os.makedirs(directory, exist_ok=True)
+    cmd = [
+        sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", usda,
+        "%s.current_index=%d" % (wedge_name, index),
+        "--export", os.path.join(directory, "variant.usda"),
+    ]
+    if procedural:
+        cmd.append("--procedural")
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return index, proc.returncode, proc.stdout.decode(errors="replace")
+
+
+def cmd_sweep(args):
+    stage = Usd.Stage.Open(args.usda)
+    if not stage:
+        print("Failed to open: %s" % args.usda)
+        sys.exit(1)
+
+    wedge = _find_wedge(stage)
+    if wedge is None:
+        print("%sNo wedge chunk in %s%s" % (RED, args.usda, RESET), file=sys.stderr)
+        print("A sweep needs a Wedge chunk -- it is what says which params vary and how.")
+        sys.exit(1)
+
+    name = wedge.GetName()
+    count_attr = wedge.GetAttribute("inputs:count")
+    count = args.count or (int(count_attr.Get()) if count_attr and count_attr.Get() else 0)
+
+    if args.only:
+        indices = [int(i) for i in args.only.split(",") if i.strip() != ""]
+    else:
+        if count <= 0:
+            print("%sNothing to sweep: no --count and no count on %s%s" % (RED, name, RESET), file=sys.stderr)
+            sys.exit(1)
+        indices = list(range(count))
+
+    if args.verify:
+        return _verify(args, name, indices)
+
+    os.makedirs(args.out, exist_ok=True)
+    print("Sweeping %d variant(s) of %s -> %s" % (len(indices), name, args.out))
+
+    def one(i):
+        return _run_variant(args.usda, name, i, args.out, args.procedural)
+
+    failed = []
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        for index, code, output in pool.map(one, indices):
+            if code == 0:
+                print("  variant_%05d" % index)
+            else:
+                failed.append(index)
+                print("%s  variant_%05d FAILED%s" % (RED, index, RESET))
+                print("\n".join(output.strip().splitlines()[-8:]))
+
+    if failed:
+        print("\n%s%d of %d failed%s: %s" % (RED, len(failed), len(indices), RESET, failed[:10]))
+        sys.exit(1)
+    print("\n%s%d variant(s)%s -> %s" % (GREEN, len(indices), RESET, args.out))
+
+
+def _verify(args, name, indices):
+    """Regenerate variants in a scratch directory and diff them against what is on disk.
+
+    Not a test -- the artifact. "Ship the recipe, not the dataset" is a claim a customer
+    will check, and this is the report that answers it.
+
+    Each variant regenerates in a *fresh process*, which is the only version worth running:
+    re-cooking in one interpreter reuses the first run's state, and a value seeded off the
+    built-in hash would agree with itself all day because PYTHONHASHSEED is fixed for the
+    life of a process.
+    """
+    missing = [
+        i for i in indices
+        if not os.path.exists(os.path.join(_variant_dir(args.out, i), "variant.usda"))
+    ]
+    if missing:
+        print("%sNot swept yet%s: %s" % (RED, RESET, missing[:10]))
+        sys.exit(1)
+
+    print("Verifying %d variant(s) of %s against %s" % (len(indices), name, args.out))
+    with tempfile.TemporaryDirectory(prefix="usdchunks-verify-") as scratch:
+        def one(i):
+            return _run_variant(args.usda, name, i, scratch, args.procedural)
+
+        identical, differing, errored = [], [], []
+        with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+            for index, code, output in pool.map(one, indices):
+                if code != 0:
+                    errored.append(index)
+                    print("%s  variant_%05d ERRORED%s" % (RED, index, RESET))
+                    print("\n".join(output.strip().splitlines()[-8:]))
+                    continue
+                a = os.path.join(_variant_dir(args.out, index), "variant.usda")
+                b = os.path.join(_variant_dir(scratch, index), "variant.usda")
+                # shallow=False: matching size and mtime is exactly what two runs of a
+                # deterministic pipeline produce, so a shallow compare would pass having
+                # read no content at all.
+                if filecmp.cmp(a, b, shallow=False):
+                    identical.append(index)
+                else:
+                    differing.append(index)
+                    print("%s  variant_%05d DIFFERS%s" % (RED, index, RESET))
+
+    print("\nidentical : %d/%d" % (len(identical), len(indices)))
+    if errored:
+        print("errored   : %d %s" % (len(errored), errored[:10]))
+    if differing or errored:
+        print("\n%sRESULT: not reproducible%s" % (RED, RESET))
+        sys.exit(1)
+    print("\n%sRESULT: every variant regenerated byte-identical in a fresh process.%s" % (GREEN, RESET))
+
+
 def cmd_plugin_path(args):
     """Print the directory to put on PXR_PLUGINPATH_NAME for a given host.
 
@@ -470,6 +620,45 @@ def main():
     pin_parser.add_argument("--copy", action="store_true", help="Copy impls instead of symlinking (portable/sealed)")
     pin_parser.add_argument("--wrapper", action="store_true", help="Always write the lock to a wrapper layer, never in place")
 
+    sweep_parser = sub.add_parser(
+        "sweep",
+        help="Run every variant of a network's wedge",
+        description=(
+            "Cook a network once per wedge index and export each result.\n\n"
+            "Every value a wedge produces is a pure function of (seed, index, range name),\n"
+            "so variants are independent: --only regenerates one without producing the ones\n"
+            "before it, --jobs runs them concurrently, and --verify proves a rerun matches."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  usdchunks sweep drop.usda --out ./data\n"
+            "  usdchunks sweep drop.usda --out ./data --count 500 --jobs 4\n"
+            "  usdchunks sweep drop.usda --out ./data --only 42,1337\n"
+            "  usdchunks sweep drop.usda --out ./data --verify --only 0,7,19\n"
+        ),
+        formatter_class=RawDescriptionHelpFormatter,
+    )
+    sweep_parser.add_argument("usda", help="Path to the .usda chunk network file")
+    sweep_parser.add_argument(
+        "--out", required=True, metavar="DIR", help="Where variant_NNNNN/ directories are written"
+    )
+    sweep_parser.add_argument(
+        "--count", type=int, default=0, help="How many variants (default: the wedge's own count)"
+    )
+    sweep_parser.add_argument("--only", metavar="I,J,K", help="Sweep just these indices")
+    sweep_parser.add_argument(
+        "--jobs", type=int, default=1,
+        help="Variants to run concurrently. Independent by construction, but the ceiling is "
+             "usually the renderer rather than the cores -- measure before raising it",
+    )
+    sweep_parser.add_argument(
+        "--procedural", action="store_true", help="Keep Chunk prims in each export"
+    )
+    sweep_parser.add_argument(
+        "--verify", action="store_true",
+        help="Regenerate the variants in fresh processes and diff them against --out",
+    )
+
     plugin_path_parser = sub.add_parser(
         "plugin-path",
         help="Print the directory to add to PXR_PLUGINPATH_NAME",
@@ -499,6 +688,8 @@ def main():
         cmd_validate(args)
     elif args.command == "pin":
         cmd_pin(args)
+    elif args.command == "sweep":
+        cmd_sweep(args)
     elif args.command == "plugin-path":
         cmd_plugin_path(args)
     else:

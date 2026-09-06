@@ -31,13 +31,13 @@ from __future__ import annotations
 import colorsys
 import hashlib
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_notice
 
 #: Params the wedge always has. Everything else on it is a lofted range.
 _FIXED = frozenset({
     "seed", "current_index", "count",
     "new_name", "new_min", "new_max", "add_range",
-    "new_color_name", "add_color",
+    "new_color_name", "add_color", "ranges",
     "hue_min", "hue_max", "sat_min", "sat_max", "val_min", "val_max",
 })
 
@@ -88,6 +88,81 @@ def _hsv_bands(node):
         return (hi, lo) if lo > hi else (lo, hi)
 
     return band("hue_min", "hue_max", 0.0, 1.0), band("sat_min", "sat_max", 0.0, 1.0), band("val_min", "val_max", 0.0, 1.0)
+
+
+def _parse_spec(text):
+    """The ranges the chunk carries, as (name, kind, low, high) rows.
+
+    One range per line -- `name low high`, or `name color` -- because the spec has to
+    survive a save, and a string param does while runtime-lofted params do not. Making the
+    text authoritative is also what the PRD asked for: the ranges are data in the .usda,
+    the lofted params are a view of it, and the file stays readable and diffable.
+    """
+    rows = []
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if not parts or parts[0].startswith("#"):
+            continue
+        name = parts[0]
+        if len(parts) >= 2 and parts[1].lower() == "color":
+            rows.append((name, "color", 0.0, 1.0))
+        elif len(parts) >= 3:
+            try:
+                low, high = float(parts[1]), float(parts[2])
+            except ValueError:
+                print(f"[Wedge] cannot read range {line!r}")
+                continue
+            rows.append((name, "float", min(low, high), max(low, high)))
+        else:
+            print(f"[Wedge] cannot read range {line!r}")
+    return rows
+
+
+def _sync_ranges(node):
+    """Rebuild the lofted OUTPUT params so they match the spec.
+
+    Called on load as well as on edit. A chunk does not own params it lofted at runtime --
+    they are gone by the time the file is reopened, so a wedge restored from disk arrives
+    with only _FIXED and drives nothing, and every variant of a sweep comes out identical
+    to variant 0. Same failure mtlx_shader's _chunk_loaded exists to prevent, and the same
+    cure: loft from the thing that did survive.
+    """
+    wanted = {name: (kind, low, high) for name, kind, low, high in _parse_spec(
+        node.get_param("ranges").value if node.get_param("ranges") else ""
+    )}
+    have = {p.name: p for p in _ranges(node)}
+
+    for name, param in have.items():
+        if name not in wanted:
+            node.remove_param_or_group(param)
+
+    flags = chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED
+    for name, (kind, low, high) in wanted.items():
+        if name in have:
+            continue
+        if kind == "color":
+            node.add_param(chunk.ColorPicker(name, name, default_value=(0.5, 0.5, 0.5), flags=flags,
+                                             tooltip="Varies across the wedge's HSV bands."))
+        else:
+            node.add_param(chunk.Slider(name, name, default_value=low, min_value=low,
+                                        max_value=high, flags=flags,
+                                        tooltip=f"Varies between {low:g} and {high:g}."))
+
+
+def _spec_changed(owner, _notice, _sender):
+    node = owner.get_chunk()
+    _sync_ranges(node)
+    execute(node)
+
+
+def _chunk_loaded(owner, _notice, _sender):
+    """Loft the ranges back after a load.
+
+    The spec restores as a plain string value; the params it describes do not restore at
+    all. Without this the wedge reopens holding only its controls, and a sweep produces N
+    copies of one variant -- silently, from a file that looks intact.
+    """
+    _sync_ranges(owner)
 
 
 def _ranges(node):
@@ -147,6 +222,12 @@ def execute(node):
         node.get_param(name).value = value
 
 
+def _append_spec(node, line):
+    """Add a row to the spec. Assigning it fires _spec_changed, which lofts the param."""
+    existing = (node.get_param("ranges").value or "").rstrip()
+    node.get_param("ranges").value = f"{existing}\n{line}" if existing else line
+
+
 def add_range(owner, notice, sender) -> None:
     """Loft one more range param from the staging fields.
 
@@ -169,19 +250,8 @@ def add_range(owner, notice, sender) -> None:
     if low > high:
         low, high = high, low
 
-    node.add_param(
-        chunk.Slider(
-            name,
-            name,
-            default_value=low,
-            min_value=low,
-            max_value=high,
-            flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
-            tooltip=f"Varies between {low:g} and {high:g}. Wire it to the param to drive.",
-        )
-    )
+    _append_spec(node, f"{name} {low:g} {high:g}")
     node.get_param("new_name").value = ""
-    execute(node)
 
 
 def add_color(owner, notice, sender) -> None:
@@ -195,17 +265,8 @@ def add_color(owner, notice, sender) -> None:
         print(f"[Wedge] {name!r} is already taken")
         return
 
-    node.add_param(
-        chunk.ColorPicker(
-            name,
-            name,
-            default_value=(0.5, 0.5, 0.5),
-            flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
-            tooltip="Varies across the wedge's HSV bands. Wire it to the colour to drive.",
-        )
-    )
+    _append_spec(node, f"{name} color")
     node.get_param("new_color_name").value = ""
-    execute(node)
 
 
 def main():
@@ -238,6 +299,17 @@ def main():
             tooltip="How many variants a sweep produces unless --count overrides it.",
         ),
     ])
+
+    chunk_api.add_param(
+        chunk.TextEdit(
+            "ranges",
+            "Ranges",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            tooltip="One range per line: `name min max`, or `name color`.\n"
+            "This is what the file stores -- the sliders below are a view of it, and are "
+            "rebuilt from it every time the network loads.",
+        )
+    )
 
     add_grp = chunk.Group(
         "add",
@@ -286,6 +358,11 @@ def main():
     col_btn.add_callback(add_color)
     col_grp.add_param(col_btn)
     chunk_api.add_param(col_grp)
+
+    chunk_api.add_callback(_spec_changed, sender=chunk_api.get_param("ranges"))
+    # Runtime-lofted params do not survive a save; the spec does. Without this the wedge
+    # reloads holding only its controls and a sweep yields N copies of variant 0.
+    chunk_api.add_callback(_chunk_loaded, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
 
     return chunk_api
 
