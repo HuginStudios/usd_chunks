@@ -100,6 +100,7 @@ def _parse_spec(text):
         height 1 9                          a number, sampled in the interval
         CarPaint color                      a colour, sampled in the wedge's HSV bands
         Paint variants /World/car color     one of a variantSet's variants, read off the stage
+        Paint variants /World/car color 3,1,1   ...with the first picked three times as often
 
     Text rather than params because the spec has to survive a save, and a string param does
     while runtime-lofted params do not. Making the
@@ -117,7 +118,13 @@ def _parse_spec(text):
         if kind == "color":
             rows.append({"name": name, "kind": "color"})
         elif kind == "variants" and len(rest) >= 3:
-            rows.append({"name": name, "kind": "variants", "prim": rest[1], "set": rest[2]})
+            row = {"name": name, "kind": "variants", "prim": rest[1], "set": rest[2]}
+            if len(rest) >= 4:
+                try:
+                    row["weights"] = [float(w) for w in rest[3].split(",")]
+                except ValueError:
+                    print(f"[Wedge] cannot read weights {rest[3]!r}, using uniform")
+            rows.append(row)
         elif len(rest) >= 2:
             try:
                 low, high = float(rest[0]), float(rest[1])
@@ -159,8 +166,9 @@ def _sync_ranges(node):
         elif row["kind"] == "variants":
             node.add_param(chunk.LineEdit(
                 name, name, flags=flags,
-                tooltip=f"One variant of {row['set']!r} on {row['prim']}. "
-                        "Wire it to a Set Variant chunk's Variant Selection.",
+                tooltip=f"One variant of {row['set']!r} on {row['prim']}"
+                        + (" (weighted)" if row.get("weights") else "")
+                        + ". Wire it to a Set Variant chunk's Variant Selection.",
             ))
         else:
             node.add_param(chunk.Slider(name, name, default_value=row["low"], min_value=row["low"],
@@ -230,6 +238,29 @@ def _ranges(node):
         and hasattr(p, "has_flag")
         and p.has_flag(chunk.ChunkFlags.ParamFlags.OUTPUT)
     ]
+
+
+def _weighted_pick(unit: float, weights) -> int:
+    """Index chosen by weight rather than uniformly, from the same [0, 1) draw.
+
+    Weights live on the wedge and not on the asset on purpose. What options exist is a fact
+    about the product and belongs with it; how often to pick each one is a property of the
+    job. A configurator wants the sales mix, a training set built from the same asset often
+    wants the opposite -- rare configurations oversampled, precisely so a model does not fail
+    on the ones it would otherwise almost never see. Same asset, opposite distributions, both
+    correct, so the opinion belongs to whoever is generating rather than baked into shared
+    data everyone inherits.
+    """
+    total = sum(weights)
+    if total <= 0:
+        return 0
+    threshold = unit * total
+    accumulated = 0.0
+    for i, weight in enumerate(weights):
+        accumulated += weight
+        if threshold < accumulated:
+            return i
+    return len(weights) - 1
 
 
 def _variant_names(node, prim_path, set_name):
@@ -326,9 +357,19 @@ def sample(node, index: int) -> dict:
                 values[param.name] = ""
                 continue
             if param.name in positions:
+                # Enumerate visits every combination exactly once, so a weight has nothing
+                # to act on -- honouring one would mean repeating some, which is a
+                # different operation. Ignored here rather than silently in the decode.
                 pick = _enumerated_pick(index, positions[param.name], discrete)
             else:
-                pick = int(_unit(seed, index, param.name) * len(names)) % len(names)
+                unit = _unit(seed, index, param.name)
+                weights = row.get("weights")
+                if weights and len(weights) != len(names):
+                    print(f"[Wedge] {param.name}: {len(weights)} weights for "
+                          f"{len(names)} variants, using uniform")
+                    weights = None
+                pick = (_weighted_pick(unit, weights) if weights
+                        else int(unit * len(names)) % len(names))
             values[param.name] = names[pick]
             continue
         if isinstance(param, chunk.ColorPicker):
@@ -456,6 +497,7 @@ def main():
             "  height 1 9\n"
             "  CarPaint color\n"
             "  Paint variants /World/car color\n"
+            "  Paint variants /World/car color 3,1,1   (weights; default uniform)\n"
             "This is what the file stores -- the sliders below are a view of it, and are "
             "rebuilt from it every time the network loads.",
         )

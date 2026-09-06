@@ -177,3 +177,44 @@ def test_the_values_are_identical_in_a_separate_process():
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == str([round(wedge._unit(7, i, "tz"), 12) for i in range(5)])
+
+
+class TestWeights:
+    def test_a_heavier_option_is_picked_more_often(self):
+        """3,1,1 should land on the first option about three times in five."""
+        counts = [0, 0, 0]
+        for i in range(3000):
+            counts[wedge._weighted_pick(wedge._unit(1, i, "Paint"), [3.0, 1.0, 1.0])] += 1
+        share = counts[0] / sum(counts)
+        assert 0.55 < share < 0.65, counts
+        assert all(c > 0 for c in counts), counts
+
+    def test_uniform_weights_match_uniform_selection(self):
+        counts = [0, 0, 0]
+        for i in range(3000):
+            counts[wedge._weighted_pick(wedge._unit(2, i, "Paint"), [1.0, 1.0, 1.0])] += 1
+        assert all(0.28 < c / sum(counts) < 0.39 for c in counts), counts
+
+    def test_a_zero_weight_is_never_picked(self):
+        picks = {wedge._weighted_pick(wedge._unit(3, i, "P"), [1.0, 0.0, 1.0]) for i in range(500)}
+        assert 1 not in picks
+
+    def test_it_stays_in_range_at_the_boundaries(self):
+        assert wedge._weighted_pick(0.0, [1.0, 1.0]) == 0
+        assert wedge._weighted_pick(0.999999, [1.0, 1.0]) == 1
+        # Degenerate rather than a crash: nothing to choose between.
+        assert wedge._weighted_pick(0.5, [0.0, 0.0]) == 0
+
+    def test_weights_are_read_off_the_spec(self):
+        row = wedge._parse_spec("Paint variants /World/car color 3,1,1")[0]
+        assert row["weights"] == [3.0, 1.0, 1.0]
+
+    def test_a_spec_without_weights_carries_none(self):
+        """Absent means uniform, so nothing downstream has to special-case a default."""
+        row = wedge._parse_spec("Paint variants /World/car color")[0]
+        assert "weights" not in row
+
+    def test_unreadable_weights_fall_back_rather_than_fail(self):
+        row = wedge._parse_spec("Paint variants /World/car color 3,oops,1")[0]
+        assert "weights" not in row
+        assert row["kind"] == "variants"
