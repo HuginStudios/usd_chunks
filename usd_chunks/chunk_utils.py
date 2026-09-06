@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import re
 import uuid
 from contextlib import contextmanager, ExitStack
@@ -646,9 +647,12 @@ def _stable_suffix(node) -> str:
     rename -- orphaning the op the chunk had already authored, which is precisely what the
     stable id exists to prevent. The name is a snapshot from first use, by design.
 
-    Stored on the chunk's own prim rather than derived from anything, because everything it
-    could be derived from can change: the name is editable, the prim path moves between
-    contexts, and the in-memory hash does not survive a reload.
+    Stored on the chunk's own prim, because everything it could be resolved from later can
+    change: the name is editable, the prim path moves between contexts, and the in-memory
+    hash does not survive a reload. Recording it is what makes it survive all three.
+
+    Minting is a separate question from resolving, and the seed only has to be right at the
+    single moment a chunk first needs an op -- see _mint_suffix.
     """
     cached = getattr(node, "_xform_op_suffix", None)
     if cached:
@@ -664,7 +668,7 @@ def _stable_suffix(node) -> str:
             suffix = attr.Get()
 
     if not suffix:
-        suffix = f"{_readable(node)}_{uuid.uuid4().hex[:8]}"
+        suffix = _mint_suffix(node, prim, stage)
         if prim is not None:
             # Into the chunk's own bookkeeping layer, like every other bit of chunk
             # bookkeeping -- not wherever the ambient edit target happens to point.
@@ -677,6 +681,56 @@ def _stable_suffix(node) -> str:
 
     object.__setattr__(node, "_xform_op_suffix", suffix)
     return suffix
+
+
+def _mint_suffix(node, prim, stage) -> str:
+    """Mint a suffix from what the chunk *is*, not from when it happened to run.
+
+    This used to be uuid4: unique, but arbitrary. Building the same network twice minted two
+    different ids, so a pipeline that regenerates its scene authored differently-named ops
+    on every run -- `xformOp:transform:SimDrop_3ab48045` one time and `SimDrop_1b9f959b` the
+    next, over identical transforms. Nothing downstream can hold an opinion on an attribute
+    whose name is re-rolled each run, which is exactly what a re-runnable pipeline needs to
+    be able to do.
+
+    The chunk's prim path is what identifies it at the one moment a suffix is minted, so
+    hashing that makes a whole network reproducible: same graph in, same op names out, on
+    any machine. Stability under later change is unaffected, because this is only ever
+    consulted to mint and never to resolve -- a chunk renamed or moved afterwards keeps the
+    id it already recorded, which is what _stable_suffix's docstring is about.
+
+    A derived id can hit one collision a random one cannot: a chunk created at a path an
+    earlier chunk has since vacated. Rename T1 and make a new T1 and the second one seeds
+    off the same path, while the first is still holding the suffix it recorded -- putting
+    two chunks back on one op, the precise failure this naming exists to prevent. So salt
+    until the suffix is free.
+    """
+    readable = _readable(node)
+    seed = str(prim.GetPath()) if prim is not None else readable
+    taken = _recorded_suffixes(stage, prim)
+    for salt in range(1000):
+        digest = hashlib.sha1(f"{seed}#{salt}".encode("utf-8")).hexdigest()[:8]
+        candidate = f"{readable}_{digest}"
+        if candidate not in taken:
+            return candidate
+    # Unreachable short of a thousand chunks sharing one name and path; a random id is a
+    # better answer here than knowingly handing back a colliding one.
+    return f"{readable}_{uuid.uuid4().hex[:8]}"
+
+
+def _recorded_suffixes(stage, prim) -> set:
+    """Every op suffix already recorded on a chunk prim in this stage, bar this chunk's."""
+    if stage is None:
+        return set()
+    suffixes = set()
+    for other in stage.TraverseAll():
+        if other == prim or other.GetTypeName() != "Chunk":
+            continue
+        attr = other.GetAttribute(XFORM_OP_ID_ATTR)
+        value = attr.Get() if attr and attr.IsValid() else None
+        if value:
+            suffixes.add(value)
+    return suffixes
 
 
 def _chunk_prim_of(stage, node):

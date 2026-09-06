@@ -159,6 +159,67 @@ def test_a_chunks_op_id_survives_a_rename(scene) -> None:
     assert chunk_utils.xform_op_name(node) == before
 
 
+def test_the_same_network_mints_the_same_op_name_twice(scene) -> None:
+    """Build the same graph again and the ops come back with the same names.
+
+    The suffix used to be uuid4, so a pipeline that regenerates its scene authored
+    `SimDrop_3ab48045` one run and `SimDrop_1b9f959b` the next over identical transforms --
+    nothing downstream could hold an opinion on an attribute whose name is re-rolled every
+    time. Seeding off the chunk's prim path instead makes a whole network reproducible,
+    which is the property that lets a recipe be shipped in place of its output.
+
+    Two scenes built the same way stand in for two runs; with a random id this fails.
+    """
+    from usd_chunks import chunk_utils
+
+    stage, sender, scene_layer = scene
+    first = _mk(sender, transform_mod, "T1")
+    first.get_param("ty").value = 5.0
+    first.execute()
+    once = chunk_utils.xform_op_name(first)
+
+    rebuilt_stage = Usd.Stage.CreateInMemory()
+    rebuilt_layer = Sdf.Layer.CreateAnonymous("scene")
+    rebuilt_stage.GetRootLayer().subLayerPaths.append(rebuilt_layer.identifier)
+    with Usd.EditContext(rebuilt_stage, rebuilt_layer):
+        UsdGeom.Cube.Define(rebuilt_stage, "/cube")
+    rebuilt_sender = _Scene(rebuilt_stage)
+    chunk_registry.ChunkRegistry().initialize(rebuilt_sender, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(rebuilt_stage)
+    chunk_usd.ChunkStageSync().initialize(rebuilt_stage, rebuilt_sender)
+
+    second = _mk(rebuilt_sender, transform_mod, "T1")
+    second.get_param("ty").value = 5.0
+    second.execute()
+
+    assert chunk_utils.xform_op_name(second) == once
+
+
+def test_a_vacated_path_does_not_hand_its_op_to_a_newcomer(scene) -> None:
+    """The one collision a derived id can hit that a random one cannot.
+
+    Rename T1 and it keeps the suffix it recorded, but its old path is now free -- so a new
+    chunk called T1 seeds off exactly the same path. Without the salt they would share an
+    op, which is the failure distinct op names exist to prevent in the first place.
+    """
+    from usd_chunks import chunk_utils
+
+    stage, sender, scene_layer = scene
+    original = _mk(sender, transform_mod, "T1")
+    original.get_param("ty").value = 5.0
+    original.execute()
+    kept = chunk_utils.xform_op_name(original)
+
+    original.name = "RenamedLater"
+
+    newcomer = _mk(sender, transform_mod, "T1")
+    newcomer.get_param("ty").value = 3.0
+    newcomer.execute()
+
+    assert chunk_utils.xform_op_name(original) == kept
+    assert chunk_utils.xform_op_name(newcomer) != kept
+
+
 def test_both_chunks_offer_a_handle(scene) -> None:
     """Neither is discarded any more, so both are draggable and both show up."""
     stage, sender, scene_layer = scene
