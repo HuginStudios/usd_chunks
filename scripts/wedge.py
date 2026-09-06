@@ -31,6 +31,8 @@ from __future__ import annotations
 import colorsys
 import hashlib
 
+from pxr import Sdf
+
 from usd_chunks import chunk, chunk_notice
 
 #: Params the wedge always has. Everything else on it is a lofted range.
@@ -93,8 +95,14 @@ def _hsv_bands(node):
 def _parse_spec(text):
     """The ranges the chunk carries, as (name, kind, low, high) rows.
 
-    One range per line -- `name low high`, or `name color` -- because the spec has to
-    survive a save, and a string param does while runtime-lofted params do not. Making the
+    One range per line:
+
+        height 1 9                          a number, sampled in the interval
+        CarPaint color                      a colour, sampled in the wedge's HSV bands
+        Paint variants /World/car color     one of a variantSet's variants, read off the stage
+
+    Text rather than params because the spec has to survive a save, and a string param does
+    while runtime-lofted params do not. Making the
     text authoritative is also what the PRD asked for: the ranges are data in the .usda,
     the lofted params are a view of it, and the file stays readable and diffable.
     """
@@ -103,16 +111,21 @@ def _parse_spec(text):
         parts = line.split()
         if not parts or parts[0].startswith("#"):
             continue
-        name = parts[0]
-        if len(parts) >= 2 and parts[1].lower() == "color":
-            rows.append((name, "color", 0.0, 1.0))
-        elif len(parts) >= 3:
+        name, rest = parts[0], parts[1:]
+        kind = rest[0].lower() if rest else ""
+
+        if kind == "color":
+            rows.append({"name": name, "kind": "color"})
+        elif kind == "variants" and len(rest) >= 3:
+            rows.append({"name": name, "kind": "variants", "prim": rest[1], "set": rest[2]})
+        elif len(rest) >= 2:
             try:
-                low, high = float(parts[1]), float(parts[2])
+                low, high = float(rest[0]), float(rest[1])
             except ValueError:
                 print(f"[Wedge] cannot read range {line!r}")
                 continue
-            rows.append((name, "float", min(low, high), max(low, high)))
+            rows.append({"name": name, "kind": "float",
+                         "low": min(low, high), "high": max(low, high)})
         else:
             print(f"[Wedge] cannot read range {line!r}")
     return rows
@@ -127,7 +140,7 @@ def _sync_ranges(node):
     to variant 0. Same failure mtlx_shader's _chunk_loaded exists to prevent, and the same
     cure: loft from the thing that did survive.
     """
-    wanted = {name: (kind, low, high) for name, kind, low, high in _parse_spec(
+    wanted = {row["name"]: row for row in _parse_spec(
         node.get_param("ranges").value if node.get_param("ranges") else ""
     )}
     have = {p.name: p for p in _ranges(node)}
@@ -137,16 +150,22 @@ def _sync_ranges(node):
             node.remove_param_or_group(param)
 
     flags = chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED
-    for name, (kind, low, high) in wanted.items():
+    for name, row in wanted.items():
         if name in have:
             continue
-        if kind == "color":
+        if row["kind"] == "color":
             node.add_param(chunk.ColorPicker(name, name, default_value=(0.5, 0.5, 0.5), flags=flags,
                                              tooltip="Varies across the wedge's HSV bands."))
+        elif row["kind"] == "variants":
+            node.add_param(chunk.LineEdit(
+                name, name, flags=flags,
+                tooltip=f"One variant of {row['set']!r} on {row['prim']}. "
+                        "Wire it to a Set Variant chunk's Variant Selection.",
+            ))
         else:
-            node.add_param(chunk.Slider(name, name, default_value=low, min_value=low,
-                                        max_value=high, flags=flags,
-                                        tooltip=f"Varies between {low:g} and {high:g}."))
+            node.add_param(chunk.Slider(name, name, default_value=row["low"], min_value=row["low"],
+                                        max_value=row["high"], flags=flags,
+                                        tooltip=f"Varies between {row['low']:g} and {row['high']:g}."))
 
 
 def _spec_changed(owner, _notice, _sender):
@@ -187,6 +206,29 @@ def _ranges(node):
     ]
 
 
+def _variant_names(node, prim_path, set_name):
+    """The variants a variantSet offers, read off the stage.
+
+    The options are not authored on the wedge on purpose. They belong to the asset --
+    whoever built it decided what paints and body styles exist, and they are versioned and
+    composed with it. Restating them here would mean maintaining a copy that drifts, and
+    would lose everything a variant can carry beyond a value: a different material binding,
+    a different mesh, a different referenced sub-asset, and the physics that goes with it.
+    """
+    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    if stage is None:
+        return []
+    prim = stage.GetPrimAtPath(Sdf.Path(prim_path))
+    if not prim or not prim.IsValid():
+        print(f"[Wedge] no prim at {prim_path}")
+        return []
+    vset = prim.GetVariantSets().GetVariantSet(set_name)
+    if not vset:
+        print(f"[Wedge] {prim_path} has no variantSet {set_name!r}")
+        return []
+    return list(vset.GetVariantNames())
+
+
 def sample(node, index: int) -> dict:
     """Every range's value at `index`, as {param name: value}.
 
@@ -195,8 +237,19 @@ def sample(node, index: int) -> dict:
     """
     seed = int(node.get_param("seed").value or 0)
     hue, sat, val = _hsv_bands(node)
+    spec = {row["name"]: row for row in _parse_spec(
+        node.get_param("ranges").value if node.get_param("ranges") else ""
+    )}
     values = {}
     for param in _ranges(node):
+        row = spec.get(param.name, {})
+        if row.get("kind") == "variants":
+            names = _variant_names(node, row["prim"], row["set"])
+            if not names:
+                values[param.name] = ""
+                continue
+            values[param.name] = names[int(_unit(seed, index, param.name) * len(names)) % len(names)]
+            continue
         if isinstance(param, chunk.ColorPicker):
             # Three independent draws, each keyed by a different name, so hue does not
             # correlate with saturation across variants.
@@ -305,7 +358,10 @@ def main():
             "ranges",
             "Ranges",
             flags=chunk.ChunkFlags.ParamFlags.LABELED,
-            tooltip="One range per line: `name min max`, or `name color`.\n"
+            tooltip="One range per line:\n"
+            "  height 1 9\n"
+            "  CarPaint color\n"
+            "  Paint variants /World/car color\n"
             "This is what the file stores -- the sliders below are a view of it, and are "
             "rebuilt from it every time the network loads.",
         )
