@@ -246,3 +246,120 @@ def test_selecting_a_variant_is_reproducible(variant_network, tmp_path):
     result = _sweep(variant_network, out, "--verify")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "identical : 8/8" in result.stdout
+
+
+
+def _author_asset(stage):
+    """A cube with two orthogonal variantSets: 3 colours, 2 bodies."""
+    thing = UsdGeom.Cube.Define(stage, "/World/thing")
+    prim = thing.GetPrim()
+    colours = prim.GetVariantSets().AddVariantSet("color")
+    for name, rgb in (("red", (1, 0, 0)), ("green", (0, 1, 0)), ("blue", (0, 0, 1))):
+        colours.AddVariant(name)
+        colours.SetVariantSelection(name)
+        with colours.GetVariantEditContext():
+            thing.CreateDisplayColorAttr([Gf.Vec3f(*rgb)])
+    colours.ClearVariantSelection()
+
+    bodies = prim.GetVariantSets().AddVariantSet("body")
+    for name, size in (("coupe", 1.0), ("wagon", 2.0)):
+        bodies.AddVariant(name)
+        bodies.SetVariantSelection(name)
+        with bodies.GetVariantEditContext():
+            thing.CreateSizeAttr(size)
+    bodies.ClearVariantSelection()
+    return thing
+
+
+@pytest.fixture
+def two_set_network(tmp_path):
+    """An asset with two orthogonal variantSets -- 3 colours x 2 bodies -- and a wedge in
+    Enumerate mode. Two sets rather than one because the whole point of enumerate is the
+    cross product, and one set cannot show a stride bug."""
+    out = tmp_path / "enum.usda"
+    stage = Usd.Stage.CreateInMemory()
+
+    # The asset first, chunks second: the wedge counts combinations by reading the
+    # variantSets off the stage, so a wedge created before them enumerates nothing.
+    _author_asset(stage)
+
+    scene = _Scene(stage)
+    registry = chunk_registry.ChunkRegistry()
+    registry.initialize(scene, "pytest")
+    init_chunk_usd(stage, scene)
+
+    def make(module_name, node_name):
+        mod = registry.get_chunk_module(module_name)
+        chunks = mod.create() if mod.loaded else mod.load()
+        node = chunks[0]
+        node.name = node_name
+        for c in chunks:
+            scene.add_chunk(c)
+        return node
+
+    wedge = make("wedge", "Wedge")
+    wedge.get_param("seed").value = 5
+    wedge.get_param("mode").value = "Enumerate"
+    wedge.get_param("ranges").value = (
+        "Paint variants /World/thing color\n"
+        "Body variants /World/thing body"
+    )
+
+    previous = wedge
+    for node_name, set_name in (("SetPaint", "color"), ("SetBody", "body")):
+        setter = make("set_variant", node_name)
+        setter.get_param("primpath_location").value = "/World/thing"
+        setter.get_param("variant_set").value = set_name
+        setter.get_param("variant_selection").value = (
+            "@Wedge.Paint@" if set_name == "color" else "@Wedge.Body@"
+        )
+        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(setter)))
+        attr = prim.GetAttribute(_EXEC_INPUT) or prim.CreateAttribute(
+            _EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False
+        )
+        attr.SetConnections([Sdf.Path(f"{get_chunk_prim_path(previous)}.{_EXEC_OUTPUT}")])
+        previous = setter
+
+    export_chunks(scene, str(out))
+
+    # export_chunks writes the network, not the scene, so the asset has to be authored into
+    # the exported file too or the reloaded network cooks against nothing.
+    exported = Usd.Stage.Open(str(out))
+    _author_asset(exported)
+    exported.GetRootLayer().Save()
+    return out
+
+
+def _config(variant_usda):
+    """(colour, size) of the composed asset -- which combination this variant selected."""
+    stage = Usd.Stage.Open(str(variant_usda))
+    cube = UsdGeom.Cube(stage.GetPrimAtPath("/World/thing"))
+    colour = cube.GetDisplayColorAttr().Get()
+    return (tuple(colour[0]) if colour else None, cube.GetSizeAttr().Get())
+
+
+def test_enumerate_covers_every_combination_exactly_once(two_set_network, tmp_path):
+    """3 colours x 2 bodies is 6 configurations, and enumerate should produce each once.
+
+    A stride bug shows up here and nowhere else: get it wrong and you sweep six variants
+    that cover three combinations twice.
+    """
+    out = tmp_path / "data"
+    result = _sweep(two_set_network, out)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    seen = [_config(out / f"variant_{i:05d}" / "variant.usda") for i in range(6)]
+    assert len(set(seen)) == 6, f"combinations repeated: {sorted(seen)}"
+    assert {c for c, _ in seen} == {(1, 0, 0), (0, 1, 0), (0, 0, 1)}
+    assert {s for _, s in seen} == {1.0, 2.0}
+
+
+def test_enumerate_writes_the_derived_count_into_the_file(two_set_network):
+    """`usdchunks sweep` reads inputs:count off the prim without loading the network, so
+    the product has to be in the file rather than computed by the CLI."""
+    stage = Usd.Stage.Open(str(two_set_network))
+    wedge = next(p for p in stage.TraverseAll()
+                 if p.GetTypeName() == "Chunk"
+                 and p.GetAttribute("info:chunkType")
+                 and p.GetAttribute("info:chunkType").Get() == "wedge")
+    assert wedge.GetAttribute("inputs:count").Get() == 6

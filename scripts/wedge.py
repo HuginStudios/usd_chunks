@@ -39,7 +39,7 @@ from usd_chunks import chunk, chunk_notice
 _FIXED = frozenset({
     "seed", "current_index", "count",
     "new_name", "new_min", "new_max", "add_range",
-    "new_color_name", "add_color", "ranges",
+    "new_color_name", "add_color", "ranges", "mode",
     "hue_min", "hue_max", "sat_min", "sat_max", "val_min", "val_max",
 })
 
@@ -168,9 +168,34 @@ def _sync_ranges(node):
                                         tooltip=f"Varies between {row['low']:g} and {row['high']:g}."))
 
 
+def _refresh_count(node):
+    """In Enumerate mode the count is derived, so write it where everything already looks.
+
+    `usdchunks sweep` reads `inputs:count` straight off the prim without loading the
+    network -- deliberately, so planning a sweep does not pay the startup cost twice. That
+    only works if the number is in the file, so the wedge computes it here rather than
+    making the CLI reimplement the decode.
+    """
+    mode_param = node.get_param("mode")
+    if not mode_param or mode_param.value != ENUMERATE:
+        return
+    total = _combinations(node)
+    if total <= 1:
+        print("[Wedge] Enumerate needs at least one variants range with options")
+    if node.get_param("count").value != total:
+        node.get_param("count").value = total
+
+
 def _spec_changed(owner, _notice, _sender):
     node = owner.get_chunk()
     _sync_ranges(node)
+    _refresh_count(node)
+    execute(node)
+
+
+def _mode_changed(owner, _notice, _sender):
+    node = owner.get_chunk()
+    _refresh_count(node)
     execute(node)
 
 
@@ -182,6 +207,7 @@ def _chunk_loaded(owner, _notice, _sender):
     copies of one variant -- silently, from a file that looks intact.
     """
     _sync_ranges(owner)
+    _refresh_count(owner)
 
 
 def _ranges(node):
@@ -229,6 +255,52 @@ def _variant_names(node, prim_path, set_name):
     return list(vset.GetVariantNames())
 
 
+ENUMERATE = "Enumerate"
+
+
+def _discrete(node):
+    """The entries that have a finite option list, in spec order, as (name, options).
+
+    Order is the spec's author order and must stay that way: it decides each entry's stride
+    in the decode below, so reordering the spec renumbers every variant. Worth knowing
+    before editing a spec that someone has already generated a dataset from.
+
+    Only variantSets are discrete. A float or colour range has no option list to enumerate,
+    so those keep being sampled even in Enumerate mode -- you get every configuration the
+    asset offers, each with its own draw of the continuous parameters.
+    """
+    out = []
+    for row in _parse_spec(node.get_param("ranges").value if node.get_param("ranges") else ""):
+        if row["kind"] != "variants":
+            continue
+        names = _variant_names(node, row["prim"], row["set"])
+        if names:
+            out.append((row["name"], names))
+    return out
+
+
+def _combinations(node) -> int:
+    """How many variants Enumerate mode produces: the product of the option counts."""
+    total = 1
+    for _, options in _discrete(node):
+        total *= len(options)
+    return total
+
+
+def _enumerated_pick(index: int, position: int, discrete) -> int:
+    """Which option entry `position` takes at `index` -- a mixed-radix digit.
+
+    Arithmetic on the index, never a walk, so enumeration keeps every property sampling
+    has: variant 5,432 decodes on its own, in any order, in parallel, and --only and
+    --verify work unchanged. Enumerating by iterating and counting would produce the same
+    full sweep and break all three.
+    """
+    stride = 1
+    for _, options in discrete[:position]:
+        stride *= len(options)
+    return (index // stride) % len(discrete[position][1])
+
+
 def sample(node, index: int) -> dict:
     """Every range's value at `index`, as {param name: value}.
 
@@ -240,6 +312,11 @@ def sample(node, index: int) -> dict:
     spec = {row["name"]: row for row in _parse_spec(
         node.get_param("ranges").value if node.get_param("ranges") else ""
     )}
+    mode_param = node.get_param("mode")
+    enumerating = bool(mode_param) and mode_param.value == ENUMERATE
+    discrete = _discrete(node) if enumerating else []
+    positions = {name: i for i, (name, _) in enumerate(discrete)}
+
     values = {}
     for param in _ranges(node):
         row = spec.get(param.name, {})
@@ -248,7 +325,11 @@ def sample(node, index: int) -> dict:
             if not names:
                 values[param.name] = ""
                 continue
-            values[param.name] = names[int(_unit(seed, index, param.name) * len(names)) % len(names)]
+            if param.name in positions:
+                pick = _enumerated_pick(index, positions[param.name], discrete)
+            else:
+                pick = int(_unit(seed, index, param.name) * len(names)) % len(names)
+            values[param.name] = names[pick]
             continue
         if isinstance(param, chunk.ColorPicker):
             # Three independent draws, each keyed by a different name, so hue does not
@@ -349,7 +430,20 @@ def main():
             default_value=100,
             is_int=True,
             flags=chunk.ChunkFlags.ParamFlags.LABELED,
-            tooltip="How many variants a sweep produces unless --count overrides it.",
+            tooltip="How many variants a sweep produces unless --count overrides it.\n"
+            "In Enumerate mode this is derived -- the product of the option counts -- and "
+            "rewritten whenever the ranges change.",
+        ),
+        chunk.Menu(
+            "mode",
+            "Mode",
+            menu_items=["Sample", ENUMERATE],
+            default_value="Sample",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            tooltip="Sample: every range drawn from (Seed, Index). Good for datasets.\n"
+            "Enumerate: walk the full cross product of the variantSets -- which is what a "
+            "configurator is. Float and colour ranges have no option list, so they keep "
+            "being sampled.",
         ),
     ])
 
@@ -416,6 +510,7 @@ def main():
     chunk_api.add_param(col_grp)
 
     chunk_api.add_callback(_spec_changed, sender=chunk_api.get_param("ranges"))
+    chunk_api.add_callback(_mode_changed, sender=chunk_api.get_param("mode"))
     # Runtime-lofted params do not survive a save; the spec does. Without this the wedge
     # reloads holding only its controls and a sweep yields N copies of variant 0.
     chunk_api.add_callback(_chunk_loaded, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
