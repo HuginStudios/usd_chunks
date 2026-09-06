@@ -1055,7 +1055,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             entries.append(MenuEntry(module=mod, namespace=tuple(namespace), tooltip=tooltip))
 
             parent = tuple(namespace[:-1])
-            for label, presets in mod.config.variants:
+            # get_variants, not .variants: a module may declare them as a callable so the
+            # cost lands here, when a menu is actually being drawn, rather than at discovery
+            # in every headless process.
+            for label, presets in mod.config.get_variants():
                 sub = tuple(p for p in str(label).split("/") if p)
                 if not sub:
                     continue
