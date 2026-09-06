@@ -127,12 +127,13 @@ class TestUnpinnedRequirements:
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="needs sys.stdlib_module_names")
 def test_the_real_chunk_library_has_no_undeclared_imports(tmp_path):
-    """Regression guard on scripts/ itself.
+    """Regression guard on scripts/ itself: every chunk declares what it imports.
 
-    One known exception: rigs.turntabler does `from scripts.modelling import add_mesh`,
-    which only resolves while the repo root happens to be importable as a `scripts`
-    package -- it is not, for anyone whose chunks live elsewhere. Listed rather than
-    silenced, so fixing it makes this test stricter rather than failing it.
+    The one offender this check found was rigs.turntabler, doing `from scripts.modelling
+    import add_mesh` -- which resolves only while the repo root happens to be importable as
+    a `scripts` package, and does not for anyone whose chunks live elsewhere. That module
+    was outdated and has been removed, so the expected set is now empty and any new entry
+    is a regression.
     """
     registry = chunk_registry.ChunkRegistry()
     registry.initialize(_NoScene(), "pytest")
@@ -141,9 +142,31 @@ def test_the_real_chunk_library_has_no_undeclared_imports(tmp_path):
         pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at scripts/")
     siblings = {m.module_name.split(".")[-1] for m in modules}
 
-    known = {"rigs.turntabler"}
     offenders = {
         m.module_name for m in modules
         if chunk_registry.undeclared_imports(m, siblings)
     }
-    assert offenders <= known, f"new undeclared imports: {sorted(offenders - known)}"
+    assert not offenders, f"undeclared imports: {sorted(offenders)}"
+
+
+def test_every_chunk_pins_its_requirements():
+    """A declared dependency without a version pins nothing.
+
+    Two runs a month apart can then use different solvers from an identical recipe with an
+    identical manifest, and the diff has no explanation in it. `mujoco` was the case that
+    mattered -- a solver change moves physics silently, and nothing recorded would say so.
+
+    Enforced rather than reported: `usdchunks deps --strict` gates CI, and this gates the
+    library itself.
+    """
+    registry = chunk_registry.ChunkRegistry()
+    registry.initialize(_NoScene(), "pytest")
+    modules = registry.get_chunk_modules()
+    if not modules:
+        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at scripts/")
+
+    unpinned = {
+        m.module_name: reqs for m in modules
+        if (reqs := chunk_registry.unpinned_requirements(m))
+    }
+    assert not unpinned, f"requirements declared without a version: {unpinned}"

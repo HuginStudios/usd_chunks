@@ -665,6 +665,19 @@ class ChunkModule:
         if not self.config.requirements:
             return
 
+        # A requirement without a version pins nothing, so two runs a month apart can use
+        # different libraries from an identical recipe and an identical manifest, and the
+        # diff has nothing in it that explains itself. Warned rather than refused: a chunk
+        # from outside this repo may deliberately float a dependency, and breaking its load
+        # over a reproducibility opinion is not ours to make. `usdchunks deps --strict`
+        # gates CI for anyone who wants it enforced.
+        if unpinned := unpinned_requirements(self):
+            logger.warning(
+                "%s declares %s without a version; a recipe using this chunk cannot pin "
+                "what it left open. Use name==version.",
+                self.module_name, ", ".join(unpinned),
+            )
+
         dep_reg = ChunkDependencyManager()
         if not dep_reg.initialized:
             dep_reg.initialize()

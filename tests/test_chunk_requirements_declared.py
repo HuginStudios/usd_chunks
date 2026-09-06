@@ -172,7 +172,7 @@ def test_a_declared_requirement_reaches_the_installer(monkeypatch):
 
     This is the whole path the RBD Solver was missing. What happens next -- a warning
     naming the package, or an actual install -- is USD_CHUNK_AUTO_INSTALL's business and
-    is covered in test_dependency_install_optin; all that matters here is that "mujoco"
+    is covered in test_dependency_install_optin; all that matters here is that mujoco
     arrives somewhere the user can be told about it.
     """
     path = REPO / "scripts/rbd_solver.py"
@@ -190,4 +190,8 @@ def test_a_declared_requirement_reaches_the_installer(monkeypatch):
 
     module._install_deps()
 
-    assert "mujoco" in asked_for
+    # By package name, not by the literal string: the requirement is pinned
+    # ("mujoco==3.12.0") and repinning it must not break this, which is about the path
+    # existing rather than about which version is on it.
+    names = {chunk_registry.ChunkDependencyManager.package_info(r)[0] for r in asked_for}
+    assert "mujoco" in names, asked_for

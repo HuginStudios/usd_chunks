@@ -515,5 +515,5 @@ def config():
     # numpy is imported at module scope, so without it the registry skips this chunk
     # entirely -- declaring it turns that silence into a named package.
     return chunk.DefaulConfig(
-        category=chunk.StandardCategory.MODELLING, requirements=["numpy"]
+        category=chunk.StandardCategory.MODELLING, requirements=["numpy==2.4.2"]
     )
