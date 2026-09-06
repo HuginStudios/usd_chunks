@@ -116,6 +116,14 @@ class TestRanges:
 
 
 class TestColour:
+    def test_colours_are_returned_linear_not_srgb(self):
+        """base_color is linear. Handing sRGB values over as linear lifts every dark
+        channel and the paint goes pastel -- a wrong-looking render rather than a failure,
+        so nothing catches it but a test."""
+        assert wedge._srgb_to_linear(0.5) == pytest.approx(0.2140, abs=1e-3)
+        assert wedge._srgb_to_linear(0.0) == 0.0
+        assert wedge._srgb_to_linear(1.0) == pytest.approx(1.0)
+
     def test_a_colour_is_three_channels_in_range(self):
         node = _wedge(colours=["CarPaint"])
         rgb = wedge.sample(node, 11)["CarPaint"]
@@ -139,11 +147,13 @@ class TestColour:
             node.get_param("sat_max").value = 0.0
         finally:
             node.set_blocked(False)
-        # Zero saturation makes r == g == b == value, so the band is directly checkable.
+        # Zero saturation makes r == g == b, so the band is directly checkable -- against
+        # the *linearised* ceiling, because base_color is linear and sample() converts.
+        ceiling = wedge._srgb_to_linear(0.25)
         for i in range(50):
             r, g, b = wedge.sample(node, i)["CarPaint"]
             assert r == pytest.approx(g) == pytest.approx(b)
-            assert r <= 0.25 + 1e-6
+            assert r <= ceiling + 1e-6
 
 
 def test_execute_writes_the_sample_onto_the_range_params():

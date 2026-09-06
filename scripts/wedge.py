@@ -59,6 +59,21 @@ def _unit(seed: int, index: int, name: str) -> float:
     return int.from_bytes(digest[:8], "big") / float(1 << 64)
 
 
+def _srgb_to_linear(c: float) -> float:
+    """sRGB channel -> linear, the standard piecewise transfer.
+
+    colorsys works in sRGB-shaped values, but a MaterialX standard_surface's base_color is
+    *linear* -- porsche_configurator/variants.py authors Guards Red as (0.55, 0.010, 0.010),
+    the linear form of sRGB (204, 27, 27). Note how far the dark channels fall.
+
+    Handing sRGB numbers over as linear lifts every dark channel far above where it belongs
+    and the saturation collapses: a sheet of pastel cars that reads as a taste decision
+    rather than a transfer-function error, and that no amount of raising the saturation band
+    can fix.
+    """
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
 def _hsv_bands(node):
     """The shared HSV bands every colour range samples inside.
 
@@ -113,7 +128,9 @@ def sample(node, index: int) -> dict:
             h = hue[0] + _unit(seed, index, param.name + ":h") * (hue[1] - hue[0])
             s_ = sat[0] + _unit(seed, index, param.name + ":s") * (sat[1] - sat[0])
             v = val[0] + _unit(seed, index, param.name + ":v") * (val[1] - val[0])
-            values[param.name] = colorsys.hsv_to_rgb(h % 1.0, s_, v)
+            values[param.name] = tuple(
+                _srgb_to_linear(c) for c in colorsys.hsv_to_rgb(h % 1.0, s_, v)
+            )
             continue
         low = param.min_value if param.min_value is not None else 0.0
         high = param.max_value if param.max_value is not None else 1.0
