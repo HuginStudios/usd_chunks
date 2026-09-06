@@ -497,8 +497,11 @@ def undeclared_imports(module: "ChunkModule", sibling_modules=()) -> list:
     sibling_modules are the other chunk modules' import names, which resolve locally and are
     not dependencies to declare.
     """
+    # split_requirement, not package_info: the latter only understands "==", so a
+    # requirement declared as a range would come back with the whole string as its name
+    # and every import it covers would read as undeclared.
     declared = {
-        _normalise_package(ChunkDependencyManager.package_info(r)[0])
+        _normalise_package(split_requirement(r)[0])
         for r in (module.config.requirements or [])
     }
     declared.update(_normalise_package(m) for m in (module.config.required_modules or []))
@@ -515,17 +518,102 @@ def undeclared_imports(module: "ChunkModule", sibling_modules=()) -> list:
     return undeclared
 
 
-def unpinned_requirements(module: "ChunkModule") -> list:
-    """Requirements declared without a version.
+#: PEP 440 comparison operators, longest first so ">=" is not read as ">".
+_SPECIFIER_OPS = ("===", "==", "!=", "<=", ">=", "~=", "<", ">")
 
-    A bare "mujoco" pins nothing, so two runs a month apart can use different solvers with
-    an identical recipe and an identical manifest. Recording the resolved version at run
-    time is what makes a diff diagnosable; declaring one is what makes it reproducible.
+
+def split_requirement(requirement: str) -> tuple:
+    """A requirement string as (name, specifier), specifier "" when unconstrained.
+
+    Separate from ChunkDependencyManager.package_info, which answers a narrower question --
+    the exact version to cache an install under -- and only understands "==".
     """
-    return [
-        r for r in (module.config.requirements or [])
-        if ChunkDependencyManager.package_info(r)[1] is None
-    ]
+    text = str(requirement).strip()
+    for op in _SPECIFIER_OPS:
+        if op in text:
+            head, _, _ = text.partition(op)
+            return head.strip(), text[len(head):].strip()
+    return text, ""
+
+
+def unconstrained_requirements(module: "ChunkModule") -> list:
+    """Requirements declared with no version constraint at all.
+
+    A bare "mujoco" says nothing, so two runs a month apart can use different solvers from
+    an identical recipe and nothing recorded explains the difference.
+
+    A *range* is what a chunk should declare -- what it is compatible with -- rather than an
+    exact pin. Exact pins do not compose: two chunks pinning numpy==2 and numpy==3 have no
+    solution, there is one sys.modules['numpy'], and resolving it would mean editing someone
+    else's chunk. Ranges intersect, and the exact version belongs in the recipe that runs
+    them, recorded as what was actually imported.
+    """
+    return [r for r in (module.config.requirements or []) if not split_requirement(r)[1]]
+
+
+#: Back-compat alias: this used to mean "declared without an exact ==version".
+unpinned_requirements = unconstrained_requirements
+
+
+def conflicting_requirements(modules) -> dict:
+    """Packages whose installed version fails some chunk's declared range.
+
+    Reported against the version actually installed rather than by intersecting ranges in
+    the abstract, because that is the question that has an answer: two chunks disagreeing
+    matters exactly when what is on the machine cannot satisfy both. It also catches the
+    single-chunk case, where the one declared range is not what is installed.
+
+    Returns {package: [(module_name, specifier, installed), ...]} for the failures only.
+    """
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import InvalidVersion, Version
+    except ImportError:  # pragma: no cover - packaging ships with pip
+        return {}
+
+    wanted: dict = defaultdict(list)
+    for module in modules:
+        for requirement in module.config.requirements or []:
+            name, specifier = split_requirement(requirement)
+            if specifier:
+                wanted[_normalise_package(name)].append((module.module_name, specifier))
+
+    failures: dict = {}
+    for package, claims in wanted.items():
+        installed = installed_version(package)
+        if installed is None:
+            continue
+        try:
+            version = Version(installed)
+        except InvalidVersion:
+            continue
+        bad = [
+            (name, specifier, installed)
+            for name, specifier in claims
+            if version not in SpecifierSet(specifier)
+        ]
+        if bad:
+            failures[package] = bad
+    return failures
+
+
+def installed_version(package: str):
+    """The version actually importable right now, or None.
+
+    The only number that is true. What a chunk declared is a claim; this is what ran, and it
+    is what a recipe's manifest has to record -- otherwise a conflict resolved by whichever
+    install landed last is invisible after the fact.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:  # pragma: no cover
+        return None
+    for candidate in (package, package.replace("-", "_"), package.replace("_", "-")):
+        try:
+            return version(candidate)
+        except PackageNotFoundError:
+            continue
+    return None
 
 
 class ChunkModule:
@@ -665,17 +753,20 @@ class ChunkModule:
         if not self.config.requirements:
             return
 
-        # A requirement without a version pins nothing, so two runs a month apart can use
-        # different libraries from an identical recipe and an identical manifest, and the
-        # diff has nothing in it that explains itself. Warned rather than refused: a chunk
-        # from outside this repo may deliberately float a dependency, and breaking its load
-        # over a reproducibility opinion is not ours to make. `usdchunks deps --strict`
-        # gates CI for anyone who wants it enforced.
-        if unpinned := unpinned_requirements(self):
+        # A requirement with no constraint says nothing, so two runs a month apart can use
+        # different libraries from an identical recipe and nothing recorded explains the
+        # difference. A range rather than an exact pin: exact pins do not compose, and two
+        # chunks pinning different versions of one package would otherwise be resolved by
+        # editing somebody else's chunk.
+        #
+        # Warned rather than refused: a chunk from outside this repo may float a dependency
+        # deliberately, and breaking its load over our reproducibility opinion is not ours
+        # to make. `usdchunks deps --strict` gates CI for anyone who wants it enforced.
+        if unconstrained := unconstrained_requirements(self):
             logger.warning(
-                "%s declares %s without a version; a recipe using this chunk cannot pin "
-                "what it left open. Use name==version.",
-                self.module_name, ", ".join(unpinned),
+                "%s declares %s with no version constraint; a recipe using this chunk "
+                "cannot record what it left open. Use a range, e.g. name>=2,<3.",
+                self.module_name, ", ".join(unconstrained),
             )
 
         dep_reg = ChunkDependencyManager()

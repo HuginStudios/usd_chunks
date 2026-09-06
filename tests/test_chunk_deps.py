@@ -112,17 +112,87 @@ class TestUndeclaredImports:
         assert chunk_registry.undeclared_imports(mod) == ["cv2"]
 
 
-class TestUnpinnedRequirements:
+class TestSplitRequirement:
+    @pytest.mark.parametrize(
+        "requirement,expected",
+        [
+            ("numpy", ("numpy", "")),
+            ("numpy==2.4.2", ("numpy", "==2.4.2")),
+            ("numpy>=2,<3", ("numpy", ">=2,<3")),
+            ("numpy>2", ("numpy", ">2")),
+            ("numpy~=2.4", ("numpy", "~=2.4")),
+            ("opencv-python>=4,<5", ("opencv-python", ">=4,<5")),
+            ("  numpy >= 2  ", ("numpy", ">= 2")),
+        ],
+    )
+    def test_it_splits_name_from_specifier(self, requirement, expected):
+        assert chunk_registry.split_requirement(requirement) == expected
+
+    def test_longer_operators_win(self):
+        """">=" must not be read as ">", leaving "=2" as the version."""
+        assert chunk_registry.split_requirement("numpy>=2")[1] == ">=2"
+
+
+class TestUnconstrainedRequirements:
     def test_a_bare_requirement_is_reported(self, tmp_path):
         mod = _module(tmp_path, "", requirements=["mujoco", "numpy"])
-        assert chunk_registry.unpinned_requirements(mod) == ["mujoco", "numpy"]
+        assert chunk_registry.unconstrained_requirements(mod) == ["mujoco", "numpy"]
 
-    def test_a_pinned_one_is_not(self, tmp_path):
+    def test_a_range_satisfies_it(self, tmp_path):
+        """A range is what a chunk should declare -- exact pins do not compose."""
+        mod = _module(tmp_path, "", requirements=["mujoco>=3.1,<4"])
+        assert chunk_registry.unconstrained_requirements(mod) == []
+
+    def test_an_exact_pin_also_counts_as_constrained(self, tmp_path):
         mod = _module(tmp_path, "", requirements=["mujoco==3.2.0"])
-        assert chunk_registry.unpinned_requirements(mod) == []
+        assert chunk_registry.unconstrained_requirements(mod) == []
 
     def test_a_chunk_with_no_requirements_is_clean(self, tmp_path):
-        assert chunk_registry.unpinned_requirements(_module(tmp_path, "")) == []
+        assert chunk_registry.unconstrained_requirements(_module(tmp_path, "")) == []
+
+
+class TestConflictingRequirements:
+    """Two chunks cannot have two versions of one package: there is one sys.modules entry.
+
+    Checked against what is installed rather than by intersecting ranges in the abstract,
+    because that is the question with an answer -- a disagreement matters exactly when the
+    machine cannot satisfy both.
+    """
+
+    def test_a_range_the_installed_version_fails_is_reported(self, tmp_path):
+        installed = chunk_registry.installed_version("numpy")
+        assert installed, "numpy must be installed for this test to mean anything"
+        mod = _module(tmp_path, "", requirements=["numpy>=99"])
+        conflicts = chunk_registry.conflicting_requirements([mod])
+        assert "numpy" in conflicts
+        assert conflicts["numpy"][0][1] == ">=99"
+        assert conflicts["numpy"][0][2] == installed
+
+    def test_a_range_it_satisfies_is_not(self, tmp_path):
+        mod = _module(tmp_path, "", requirements=["numpy>=1,<99"])
+        assert chunk_registry.conflicting_requirements([mod]) == {}
+
+    def test_two_chunks_disagreeing_reports_only_the_one_that_loses(self, tmp_path):
+        # One tmp_path for both: this check reads config.requirements and never opens the
+        # file, so two modules can share a path without interfering.
+        good = _module(tmp_path, "", requirements=["numpy>=1,<99"])
+        bad = _module(tmp_path, "", requirements=["numpy>=99"])
+        good.module_name, bad.module_name = "good", "bad"
+        conflicts = chunk_registry.conflicting_requirements([good, bad])
+        assert [c[0] for c in conflicts["numpy"]] == ["bad"]
+
+    def test_a_package_that_is_not_installed_is_not_a_conflict(self, tmp_path):
+        """Absent is an install problem, not a version disagreement."""
+        mod = _module(tmp_path, "", requirements=["definitely-not-installed-xyz>=99"])
+        assert chunk_registry.conflicting_requirements([mod]) == {}
+
+
+class TestInstalledVersion:
+    def test_it_reports_something_installed(self):
+        assert chunk_registry.installed_version("numpy")
+
+    def test_it_reports_none_for_something_absent(self):
+        assert chunk_registry.installed_version("definitely-not-installed-xyz") is None
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="needs sys.stdlib_module_names")
@@ -149,15 +219,19 @@ def test_the_real_chunk_library_has_no_undeclared_imports(tmp_path):
     assert not offenders, f"undeclared imports: {sorted(offenders)}"
 
 
-def test_every_chunk_pins_its_requirements():
-    """A declared dependency without a version pins nothing.
+def test_every_chunk_constrains_its_requirements():
+    """A declared dependency with no constraint says nothing.
 
-    Two runs a month apart can then use different solvers from an identical recipe with an
-    identical manifest, and the diff has no explanation in it. `mujoco` was the case that
-    mattered -- a solver change moves physics silently, and nothing recorded would say so.
+    Two runs a month apart can then use different solvers from an identical recipe, and the
+    diff carries no explanation. `mujoco` is the case that matters -- a solver change moves
+    physics silently and nothing recorded would say so.
 
-    Enforced rather than reported: `usdchunks deps --strict` gates CI, and this gates the
-    library itself.
+    A range rather than an exact pin, because exact pins do not compose: two chunks pinning
+    numpy==2 and numpy==3 have no solution and resolving them would mean editing somebody
+    else's chunk. The exact version belongs in the recipe, as what actually ran.
+
+    Enforced rather than reported: `usdchunks deps --strict` gates CI, this gates the
+    library.
     """
     registry = chunk_registry.ChunkRegistry()
     registry.initialize(_NoScene(), "pytest")
@@ -165,8 +239,11 @@ def test_every_chunk_pins_its_requirements():
     if not modules:
         pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at scripts/")
 
-    unpinned = {
+    unconstrained = {
         m.module_name: reqs for m in modules
-        if (reqs := chunk_registry.unpinned_requirements(m))
+        if (reqs := chunk_registry.unconstrained_requirements(m))
     }
-    assert not unpinned, f"requirements declared without a version: {unpinned}"
+    assert not unconstrained, f"requirements with no version constraint: {unconstrained}"
+
+    conflicts = chunk_registry.conflicting_requirements(modules)
+    assert not conflicts, f"installed versions do not satisfy: {conflicts}"

@@ -190,8 +190,9 @@ def test_a_declared_requirement_reaches_the_installer(monkeypatch):
 
     module._install_deps()
 
-    # By package name, not by the literal string: the requirement is pinned
-    # ("mujoco==3.12.0") and repinning it must not break this, which is about the path
-    # existing rather than about which version is on it.
-    names = {chunk_registry.ChunkDependencyManager.package_info(r)[0] for r in asked_for}
+    # By package name, not by the literal string: the requirement carries a range
+    # ("mujoco>=3.1,<4") and changing that range must not break this test, which is about
+    # the path existing rather than which versions are on it. split_requirement rather than
+    # package_info, because the latter only understands "==".
+    names = {chunk_registry.split_requirement(r)[0] for r in asked_for}
     assert "mujoco" in names, asked_for

@@ -523,8 +523,9 @@ def cmd_deps(args):
 
     undeclared = [(m.module_name, u) for m in modules
                   if (u := chunk_registry.undeclared_imports(m, siblings))]
-    unpinned = [(m.module_name, r) for m in modules
-                if (r := chunk_registry.unpinned_requirements(m))]
+    unconstrained = [(m.module_name, r) for m in modules
+                     if (r := chunk_registry.unconstrained_requirements(m))]
+    conflicts = chunk_registry.conflicting_requirements(modules)
 
     print(f"Checked {len(modules)} chunk module(s)")
     print()
@@ -533,13 +534,22 @@ def cmd_deps(args):
         for name, imports in sorted(undeclared):
             print(f"  {name:42s} {', '.join(imports)}")
         print()
-    if unpinned:
-        print(f"{RED}Requirements without a version{RESET} -- a recipe cannot pin what a chunk left open:")
-        for name, reqs in sorted(unpinned):
+    if unconstrained:
+        print(f"{RED}Requirements with no version constraint{RESET} -- a recipe cannot record "
+              f"what a chunk left open:")
+        for name, reqs in sorted(unconstrained):
             print(f"  {name:42s} {', '.join(reqs)}")
         print()
-    if not undeclared and not unpinned:
-        print(f"{GREEN}Every chunk declares and pins its dependencies.{RESET}")
+    if conflicts:
+        print(f"{RED}Installed version does not satisfy what a chunk asked for{RESET} -- "
+              f"there is only one of each package in a process:")
+        for package, claims in sorted(conflicts.items()):
+            for module_name, specifier, installed in sorted(claims):
+                print(f"  {module_name:42s} wants {package}{specifier}, installed {installed}")
+        print()
+    if not undeclared and not unconstrained and not conflicts:
+        print(f"{GREEN}Every chunk declares a version range, and the installed versions "
+              f"satisfy them.{RESET}")
         return
     if args.strict:
         sys.exit(1)
@@ -702,11 +712,16 @@ def main():
         help="Report chunks with undeclared or unpinned dependencies",
         description=(
             "Scan every registered chunk module for third-party imports it does not\n"
-            "declare in config().requirements, and for requirements declared without a\n"
-            "version.\n\n"
-            "Both break a recipe's manifest rather than an install: an undeclared\n"
-            "dependency's version is never recorded, and an unpinned one can move under an\n"
-            "unchanged recipe -- so two runs disagree while every recorded fact matches.\n\n"
+            "declare in config().requirements, for requirements declared with no version\n"
+            "constraint, and for installed versions that do not satisfy what a chunk asked\n"
+            "for.\n\n"
+            "These break a recipe's manifest rather than an install: an undeclared\n"
+            "dependency's version is never recorded, an unconstrained one can move under an\n"
+            "unchanged recipe, and a conflict between two chunks is settled today by\n"
+            "whichever install landed last -- silently.\n\n"
+            "Chunks declare ranges, not exact pins. Exact pins do not compose, and\n"
+            "resolving two of them would mean editing somebody else's chunk; the exact\n"
+            "version belongs in the recipe, recorded as what actually ran.\n\n"
             "Imports are read statically, which is complete here only because chunks import\n"
             "at module top level and never inside a function body."
         ),
