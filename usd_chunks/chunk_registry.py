@@ -442,6 +442,92 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         self._loader.exec_module(module)
 
 
+#: Import name -> distribution name, for the handful where they differ. A chunk declaring
+#: "opencv-python" imports "cv2", and nothing in the import statement says so.
+IMPORT_TO_PACKAGE = {
+    "cv2": "opencv-python",
+    "PIL": "pillow",
+    "yaml": "pyyaml",
+    "skimage": "scikit-image",
+    "sklearn": "scikit-learn",
+    "usd": "usd-core",
+    "pxr": "usd-core",
+}
+
+#: Import roots every chunk may use without declaring: the host's own USD build, its Qt,
+#: the framework, and anything the interpreter ships. PySide6 belongs here for the same
+#: reason pxr does -- a chunk drawing a custom widget draws it into the host's toolkit and
+#: cannot bring its own.
+_ASSUMED_IMPORTS = {"pxr", "usd_chunks", "PySide6"}
+
+
+def _normalise_package(name: str) -> str:
+    return name.lower().replace("_", "-").strip()
+
+
+def top_level_imports(module_file) -> set:
+    """The root names a chunk module imports, read without executing it.
+
+    Static because executing is the thing being avoided -- and complete because of the
+    house rule that imports go at module top level, never inside a function body. A
+    codebase with lazy imports could only ever do this best-effort.
+    """
+    try:
+        tree = ast.parse(Path(module_file).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return set()
+
+    roots = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            roots.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".")[0])
+    return roots
+
+
+def undeclared_imports(module: "ChunkModule", sibling_modules=()) -> list:
+    """Third-party imports a chunk makes without declaring them in config().
+
+    An undeclared dependency is not only an install that breaks on a clean machine -- it is
+    a version that never reaches a run's manifest. A chunk importing numpy without saying so
+    means a numpy upgrade can change its results while the manifest still reads clean, which
+    is worse than having no manifest, because it looks authoritative.
+
+    sibling_modules are the other chunk modules' import names, which resolve locally and are
+    not dependencies to declare.
+    """
+    declared = {
+        _normalise_package(ChunkDependencyManager.package_info(r)[0])
+        for r in (module.config.requirements or [])
+    }
+    declared.update(_normalise_package(m) for m in (module.config.required_modules or []))
+
+    undeclared = []
+    for root in sorted(top_level_imports(module.module_file)):
+        if root in _ASSUMED_IMPORTS or root in sys.stdlib_module_names:
+            continue
+        if root in sibling_modules:
+            continue
+        package = _normalise_package(IMPORT_TO_PACKAGE.get(root, root))
+        if package not in declared and _normalise_package(root) not in declared:
+            undeclared.append(root)
+    return undeclared
+
+
+def unpinned_requirements(module: "ChunkModule") -> list:
+    """Requirements declared without a version.
+
+    A bare "mujoco" pins nothing, so two runs a month apart can use different solvers with
+    an identical recipe and an identical manifest. Recording the resolved version at run
+    time is what makes a diff diagnosable; declaring one is what makes it reproducible.
+    """
+    return [
+        r for r in (module.config.requirements or [])
+        if ChunkDependencyManager.package_info(r)[1] is None
+    ]
+
+
 class ChunkModule:
     """
     A class used by ChunkRegistry for managing chunk modules. Modules are loaded at runtime using the
