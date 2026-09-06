@@ -363,3 +363,48 @@ def test_enumerate_writes_the_derived_count_into_the_file(two_set_network):
                  and p.GetAttribute("info:chunkType")
                  and p.GetAttribute("info:chunkType").Get() == "wedge")
     assert wedge.GetAttribute("inputs:count").Get() == 6
+
+
+def test_an_expression_onto_a_lofted_param_updates_live(network):
+    """The listener has to survive load, not just the value.
+
+    A param lofted in a CHUNK_LOADED callback -- the wedge's ranges, mtlx_shader's shader
+    inputs -- does not exist during the first expression pass, so resolution silently
+    attached no listener. Reads stayed correct, which is why sweeps and exports were right
+    the whole time and only the UI never updated when the referenced param changed.
+
+    In a subprocess for the reason every other test here forks: the registry and stage-sync
+    singletons hold the stage a network was loaded into, so a second load_chunks in one
+    interpreter returns the chunkgroup and none of its children.
+    """
+    script = (
+        "import sys;"
+        "from pxr import Usd;"
+        "from usd_chunks import chunk_registry;"
+        "from usd_chunks.chunk_core import SceneSender;"
+        "from usd_chunks.chunk_registry import ChunkLayerManager;"
+        "from usd_chunks.plugins.chunk_usd import load_chunks;"
+        "from usd_chunks.plugins.usdchunks_cli import _all_chunks;"
+        "stage = Usd.Stage.Open(sys.argv[1]);"
+        "S = type('S', (SceneSender,), {"
+        "  'get_stage': lambda self: stage,"
+        "  'get_selected_prims': lambda self: []});"
+        "scene = S();"
+        "chunk_registry.ChunkRegistry().initialize(scene, 'cli');"
+        "ChunkLayerManager().initialize(stage);"
+        "load_chunks(stage, scene);"
+        "cs = {c.name: c for c in _all_chunks(scene.get_chunks())};"
+        "tz = cs['Place'].get_param('tz');"
+        "print('LOFTED', cs['Wedge'].get_param('height') is not None);"
+        "print('RAW', tz.raw_value);"
+        "print('LISTENER', bool(getattr(tz, '_expression_connections', None)))"
+    )
+    out = subprocess.run([sys.executable, "-c", script, str(network)],
+                         capture_output=True, text=True, cwd=str(REPO))
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "LOFTED True" in out.stdout, "the wedge did not loft on load"
+    assert "RAW @Wedge.height@" in out.stdout
+    assert "LISTENER True" in out.stdout, (
+        "no live-update listener: the expression resolved to nothing because the wedge had "
+        "not lofted its ranges yet when it was tried"
+    )
