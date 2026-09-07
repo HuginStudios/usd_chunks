@@ -122,6 +122,11 @@ USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", [], True)
 # A chunk module is a Python file. This is the only file extension the framework loads.
 PY_MODULE_EXT = ".py"
 
+#: Discovery cache for ChunkRegistry._discover_module: (file, module name) -> (mtime, modules).
+#: Process-wide, like registered_modules itself, so a re-initialize() does not re-parse the
+#: whole chunk directory to rebuild objects the registry already holds.
+_DISCOVERED_MODULES: "Dict[Tuple[str, str], Tuple[int, List[ChunkModule]]]" = {}
+
 USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", "_installed_deps", True)
 USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
 
@@ -913,8 +918,36 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 rel = (module_path.parent / module_path.stem).relative_to(working_dir)
                 module_name = str(rel).replace(os.path.sep, ".")
 
-                for mod in ChunkModule.from_chunk_definition(module_path, module_name):
+                for mod in self._discover_module(module_path, module_name):
                     self.register_module(mod)
+
+    @staticmethod
+    def _discover_module(module_path: Path, module_name: str) -> "List[ChunkModule]":
+        """ChunkModule.from_chunk_definition, memoised on (file, mtime).
+
+        Constructing a ChunkModule is not bookkeeping: it reads the file, AST-parses it and
+        executes its config() plus its usd_chunks imports (see _ChunkLazyConfigLoader), which
+        is essentially all of what a scan costs. A second initialize() -- a re-init in the
+        host app, and every test that stands a scene up -- paid that for the whole chunk
+        directory again and then threw the result away, because registered_modules is a class
+        attribute that outlives it and the already-registered module keeps the name.
+
+        Keyed on modification time, so a chunk edited on disk is still re-read: the point is
+        to stop re-parsing files that have not changed, not to freeze discovery.
+        """
+        try:
+            stamp = module_path.stat().st_mtime_ns
+        except OSError:
+            # Unreadable/vanished between the glob and here -- let the real constructor
+            # produce its usual diagnostics rather than caching a guess.
+            return ChunkModule.from_chunk_definition(module_path, module_name)
+        key = (str(module_path), module_name)
+        cached = _DISCOVERED_MODULES.get(key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        mods = ChunkModule.from_chunk_definition(module_path, module_name)
+        _DISCOVERED_MODULES[key] = (stamp, mods)
+        return mods
 
     def register_module(self, module: ChunkModule) -> ChunkModule | None:
         """
@@ -946,6 +979,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         if name in self.registered_modules:
             winner = self.registered_modules[name]
+            if Path(winner.module_file) == Path(module.module_file):
+                # The same file rediscovered, not two files claiming one name -- what a
+                # re-initialize() does to every chunk it already holds. Reporting those as
+                # shadows drowned the genuinely ambiguous ones (a second initialize logged
+                # "69 shadowed chunk name(s)", i.e. all of them).
+                return winner
             self.shadowed_modules.append(
                 (name, Path(winner.module_file), Path(module.module_file))
             )
