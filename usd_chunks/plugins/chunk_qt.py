@@ -489,6 +489,24 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         # Return None rather than assert.
         return w if isinstance(w, ChunkWidget) else None
 
+    def mark_ancestors(self, ctx) -> None:
+        """Mark the open tabs that the current context is nested inside.
+
+        The breadcrumb says where you are; this says which of the tabs already in front of
+        you are on that path -- the one thing arranging the tab row by hierarchy was meant
+        to convey, without moving anything. Colour only: a tab that is an ancestor is still
+        an ordinary tab, and its position never changes.
+        """
+        ancestry = {id(node) for node in context_ancestry(ctx)}
+        palette = self.palette()
+        plain = palette.color(QtGui.QPalette.ColorRole.WindowText)
+        marked = palette.color(QtGui.QPalette.ColorRole.Link)
+        for i in range(self.count()):
+            page = self.widget(i)
+            tab_ctx = page.ctx() if isinstance(page, ChunkTabContextStack) else None
+            on_path = tab_ctx is not None and id(tab_ctx) in ancestry and tab_ctx is not ctx
+            self.tabBar().setTabTextColor(i, marked if on_path else plain)
+
     def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
         for i in range(self.count()):
             w = self.widget(i)
@@ -569,6 +587,87 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
                 param._parent_context = weakref.ref(t.group)
 
             t.group.add_param(param)
+
+
+class ChunkContextBreadcrumb(QtWidgets.QWidget):
+    """The path from the scene's root group down to the one being looked at.
+
+    Tabs here are the groups you have OPENED, in the order you opened them -- browser tabs,
+    not a tree. That is what makes them fast to hit and also what makes them silent about
+    hierarchy: dive straight into a nested group from the graph and its parent may not be
+    open at all, so no amount of arranging the tab row can show where you are. A path can,
+    because it is not a set: it has direction, it is as long as the nesting is deep rather
+    than as long as the session, and it leaves the tabs where muscle memory left them.
+
+    Every entry is clickable, including one whose group has no tab open -- clicking it dives
+    there and opens one. A path you can only partly click is the thing that makes context
+    navigation irritating elsewhere.
+    """
+
+    #: Emitted with the context chunk the user clicked.
+    navigate = QtCore.Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._layout = QtWidgets.QHBoxLayout(self)
+        self._layout.setContentsMargins(6, 1, 6, 1)
+        self._layout.setSpacing(3)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.Fixed
+        )
+
+    def set_context(self, ctx) -> None:
+        """Rebuild the row for ctx, root first."""
+        while (item := self._layout.takeAt(0)) is not None:
+            if (w := item.widget()) is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+        for i, node in enumerate(context_ancestry(ctx)):
+            if i:
+                sep = QtWidgets.QLabel("›", self)  # a single ›, not a > that reads as markup
+                sep.setEnabled(False)
+                self._layout.addWidget(sep)
+            self._layout.addWidget(self._entry(node, is_current=node is ctx))
+        self._layout.addStretch(1)
+
+    def _entry(self, node, is_current: bool) -> QtWidgets.QWidget:
+        button = QtWidgets.QToolButton(self)
+        button.setText(node.name)
+        button.setAutoRaise(True)
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        font = button.font()
+        font.setPointSizeF(max(6.0, font.pointSizeF() - 1))
+        # The one you are in is stated, not offered: bold and inert, so the row reads as a
+        # position rather than as four things to press.
+        font.setBold(is_current)
+        button.setFont(font)
+        if is_current:
+            button.setEnabled(False)
+        else:
+            button.clicked.connect(lambda _=False, n=node: self.navigate.emit(n))
+        return button
+
+
+def context_ancestry(ctx) -> list:
+    """ctx and everything it is nested inside, outermost first.
+
+    Walks _parent_context, which is what actually records the nesting -- get_context()
+    returns self for a context chunk and so says nothing about where it sits. Guarded
+    against a cycle: prim nesting should prevent one, but a path widget is a poor place to
+    discover otherwise.
+    """
+    chain: list = []
+    seen: set = set()
+    node = ctx
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        chain.append(node)
+        parent_ref = getattr(node, "_parent_context", None)
+        node = parent_ref() if parent_ref else None
+    chain.reverse()
+    return chain
 
 
 class ChunkWidgetDocker(QtWidgets.QWidget):
@@ -705,6 +804,24 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             if idx is not None:
                 self.tab_widget.add_chunk_to_tab(loaded_chunk, idx)
 
+    def _refresh_context_path(self) -> None:
+        """Point the breadcrumb, and the ancestor marking on the tabs, at the current tab."""
+        ctx = self._current_context()
+        breadcrumb = getattr(self, "_breadcrumb", None)
+        if breadcrumb is not None:
+            breadcrumb.set_context(ctx)
+        self.tab_widget.mark_ancestors(ctx)
+
+    def _on_breadcrumb_navigate(self, ctx) -> None:
+        """Go to a group named in the path -- opening a tab for it if it has none.
+
+        _on_dive_into already does exactly this (select the tab, or add one first), which is
+        the point: clicking the path lands you somewhere the same way diving does, rather
+        than being a second kind of navigation with its own rules.
+        """
+        if ctx is not None:
+            self._on_dive_into(ctx)
+
     def _current_context(self):
         idx = self.tab_widget.currentIndex()
         if idx < 0:
@@ -755,6 +872,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
     def _on_tab_changed(self, _):
         registry = chunk_registry.ChunkRegistry()
+        self._refresh_context_path()
         self._record_nav(self._current_context())
         if registry.initialized:
             ctx = self._current_context()
@@ -854,10 +972,18 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             for c in registry.scene.get_chunks():
                 self.create_chunk_widget(c)
 
+        self._breadcrumb = ChunkContextBreadcrumb(self)
+        self._breadcrumb.navigate.connect(self._on_breadcrumb_navigate)
+
         self.main_layout = QtWidgets.QVBoxLayout()
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
         self.main_layout.addWidget(self._view_bar)
+        # Above the group tabs rather than below them, which is where it belongs by rights:
+        # a QTabWidget owns the space between its bar and its page, and putting a row there
+        # means wrapping every tab page in a container -- and every `widget(i)` in this file
+        # expects that page to BE the context stack.
+        self.main_layout.addWidget(self._breadcrumb)
         self.main_layout.addWidget(self.tab_widget)
 
         self.setLayout(self.main_layout)
