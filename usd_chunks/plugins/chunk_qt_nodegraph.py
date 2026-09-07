@@ -2954,6 +2954,35 @@ class _ProxyKeyRouter(QtCore.QObject):
 # ---------------------------------------------------------------------------
 # View
 
+def _set_param_visibly(chunk_obj, param, value) -> None:
+    """Set a param's value so its widget hears about it, even on a blocked chunk.
+
+    A chunk created by dropping a wire into empty space is blocked the moment it is made
+    (view-driven execution: nothing is wired to it yet), and a blocked chunk suppresses its
+    own param notices -- which is how the deferred connect could author the expression, have
+    it resolve correctly, and still leave the field on the node showing nothing at all.
+    Live-reported as "the wire works but the Prim Path param is empty".
+
+    Unblocking for the write is what makes the widget update, and `_executing` is what keeps
+    that from running the module: set_blocked suppresses per-param VALUE_CHANGED notices as
+    well as execution, while _executing suppresses only chunk_notice's reserved
+    module.execute() dispatch. Same pair _materialize_children uses when restoring pasted
+    values for exactly this reason.
+    """
+    was_blocked = chunk_obj.is_blocked()
+    if not was_blocked:
+        param.value = value
+        return
+    prev_executing = getattr(chunk_obj, "_executing", False)
+    chunk_obj._executing = True
+    chunk_obj.set_blocked(False)
+    try:
+        param.value = value
+    finally:
+        chunk_obj.set_blocked(True)
+        chunk_obj._executing = prev_executing
+
+
 class ChunkGraphView(QtWidgets.QGraphicsView):
     """QGraphicsView with zoom, pan (middle mouse or Space+drag), and F to frame."""
 
@@ -4390,7 +4419,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if dst_node:
                 param = dst_node.chunk.get_param(dst_param_name)
                 if param is not None:
-                    param.value = f"@{src_node_name}.{src_param_name}@"
+                    _set_param_visibly(
+                        dst_node.chunk, param, f"@{src_node_name}.{src_param_name}@"
+                    )
 
         # Wiring a new exec edge can put the node (and everything downstream) under a
         # different Edit Target — re-home them to honor the target at their new position.
