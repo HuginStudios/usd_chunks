@@ -224,10 +224,10 @@ usdchunks plugin-path
 
 ## What opening a network can run
 
-A `.usda` written by usd_chunks carries param values and wiring, not code. Opening one runs
-**your** chunk modules — the `.py` files already on your `USD_CHUNK_DIRS` — selected by the
-`info:chunkType` recorded on each chunk prim. A network from an untrusted source can name a
-chunk you have and set its params; it cannot introduce a module you do not.
+A `.usda` written by usd_chunks carries param values and wiring, not chunk modules. Opening
+one runs **your** modules — the `.py` files already on your `USD_CHUNK_DIRS` — selected by
+the `info:chunkType` recorded on each chunk prim. A network from an untrusted source can
+name a chunk you have and set its params; it cannot introduce a module you do not.
 
 That still means a network decides what your chunks do, and some of them write files (Export
 USD, the render chunks). Treat an unfamiliar network the way you would an unfamiliar project
@@ -235,8 +235,10 @@ file: open it, look at it, then run it.
 
 Two things that would otherwise be surprising:
 
-- **The Script Runner chunk executes the Python in its `code` param only when you press its
-  Run button.** It has no `execute()`, so loading or cooking a network never runs it.
+- **A param value can be code.** The Script Runner chunk's `code` param is Python, and it
+  runs when the chunk cooks — not only when you press its Run button. So a network
+  containing one is a script: opening it and letting it cook runs that code with the
+  privileges of the process you opened it in.
 - **Chunk dependencies are never installed silently.** A chunk module may declare pip
   requirements, and nothing reaches your environment without an explicit confirmation.
 
