@@ -3092,5 +3092,5 @@ def config() -> chunk.DefaulConfig:
         #
         # scipy is deliberately absent: a genuine optional, imported inside the functions
         # that want it, with a documented fallback when it is missing.
-        requirements=["mujoco", "numpy"],
+        requirements=["mujoco>=3.1,<4", "numpy>=2,<3"],
     )
