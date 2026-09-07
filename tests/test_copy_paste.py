@@ -28,49 +28,14 @@ def _mk(mod, scene):
     return cs[0]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def graph(qapp):
-    """Module-scoped, but not for the reason this used to give.
+    """A stage/registry/docker per test -- see tests/test_multi_select.py's `graph` fixture
+    for why this no longer has to be shared across the module.
 
-    There is no per-call notice-listener leak in chunk_usd.initialize() -- see
-    tests/test_multi_select.py's `graph` fixture for the measurement. The destabilised
-    later module was a deferred callback outliving its object, now fixed at the source.
-
-    The scope stays because test_duplicate_preserves_internal_wiring below reads chunks
-    that earlier tests in this module leave on the scene."""
-    stage = Usd.Stage.CreateInMemory()
-
-    class _StageScene(_DummyScene):
-        def get_stage(self):
-            return stage
-
-    scene = _StageScene()
-    reg = chunk_registry.ChunkRegistry()
-    reg.initialize(scene, "pytest")
-    lm = chunk_registry.ChunkLayerManager()
-    lm.initialize(stage)
-    _chunk_usd_init(stage, scene)
-
-    docker = ChunkWidgetDocker()
-    docker.resize(500, 600)
-    docker.show()
-    qapp.processEvents()
-
-    return qapp, reg, scene, docker
-
-
-@pytest.fixture(scope="module")
-def menu_graph(qapp):
-    """A second, separate module-scoped stage just for the context-menu tests below.
-
-    Sharing the main `graph` fixture (used by ~20 other tests in this file by the time these
-    run) was observed to produce nondeterministic selection-set mismatches -- almost
-    certainly the same class of leftover-async-timer interference documented throughout this
-    file, just surfacing differently once enough prior tests' deferred callbacks have piled
-    up. A dedicated, low-noise stage sidesteps it; a whole separate *file* was tried first and
-    made things worse (reliably hung the next file's first test -- see git history), so this
-    stays in-file, one more bounded chunk_usd.initialize() instance rather than a new one at
-    the top of the suite's file-ordering.
+    One test needed adjusting to survive the change: test_duplicate_preserves_internal_wiring
+    below assumed a view already existed, which was only ever true because an earlier test in
+    the file had made one.
     """
     stage = Usd.Stage.CreateInMemory()
 
@@ -459,6 +424,13 @@ def test_duplicate_preserves_internal_wiring(graph) -> None:
     gv._author_connection(a_out, b_in)
     gv.scene()._build_edges()
 
+    # Let the deferred auto-view settle BEFORE duplicating. _ensure_default_view runs on an
+    # 80ms timer when a context has no view yet, and it selects the view it creates -- which
+    # lands in the middle of this test and takes the selection the duplicates should hold.
+    # Previously masked by module-scoped fixtures: an earlier test in the file had already
+    # caused a view to exist, so the timer never fired here.
+    _pump(qapp, 0.3)
+
     scene.set_selected_chunks([a.chunk, b.chunk])
     gv._duplicate_selected()
     _pump(qapp, 0.3)
@@ -598,8 +570,8 @@ def test_ctrl_x_triggers_cut(graph, monkeypatch) -> None:
     assert cut_calls == [True]
 
 
-def test_node_menu_copy_acts_on_the_whole_existing_selection(menu_graph, monkeypatch) -> None:
-    scene, gv, chunks, nodes = _make_nodes(menu_graph, n=2)
+def test_node_menu_copy_acts_on_the_whole_existing_selection(graph, monkeypatch) -> None:
+    scene, gv, chunks, nodes = _make_nodes(graph, n=2)
     scene.clear_chunk_selection()
     a, b = nodes
     scene.set_selected_chunks([a.chunk, b.chunk])
@@ -612,8 +584,8 @@ def test_node_menu_copy_acts_on_the_whole_existing_selection(menu_graph, monkeyp
     assert set(scene.get_selected_chunks()) == {a.chunk, b.chunk}
 
 
-def test_node_menu_on_an_unselected_node_selects_it_first(menu_graph, monkeypatch) -> None:
-    scene, gv, chunks, nodes = _make_nodes(menu_graph, n=2)
+def test_node_menu_on_an_unselected_node_selects_it_first(graph, monkeypatch) -> None:
+    scene, gv, chunks, nodes = _make_nodes(graph, n=2)
     scene.clear_chunk_selection()
     a, b = nodes
     scene.set_selected_chunks([a.chunk])  # b is NOT selected
@@ -627,9 +599,9 @@ def test_node_menu_on_an_unselected_node_selects_it_first(menu_graph, monkeypatc
     assert dup_selection[0] is not a.chunk and dup_selection[0] is not b.chunk
 
 
-def test_node_menu_cut_removes_the_selection(menu_graph, monkeypatch) -> None:
-    qapp, reg, scene, docker = menu_graph
-    _scene, gv, chunks, nodes = _make_nodes(menu_graph, n=1)
+def test_node_menu_cut_removes_the_selection(graph, monkeypatch) -> None:
+    qapp, reg, scene, docker = graph
+    _scene, gv, chunks, nodes = _make_nodes(graph, n=1)
     scene.clear_chunk_selection()
     (a,) = nodes
     a_path = get_chunk_prim_path(a.chunk)
@@ -645,8 +617,8 @@ def test_node_menu_cut_removes_the_selection(menu_graph, monkeypatch) -> None:
     assert a_path not in gv.scene()._nodes
 
 
-def test_canvas_menu_paste_only_offered_when_clipboard_has_content(menu_graph, monkeypatch) -> None:
-    _scene, gv, chunks, nodes = _make_nodes(menu_graph, n=1)
+def test_canvas_menu_paste_only_offered_when_clipboard_has_content(graph, monkeypatch) -> None:
+    _scene, gv, chunks, nodes = _make_nodes(graph, n=1)
     _scene.clear_chunk_selection()
 
     # Empty clipboard: the quick menu must not appear at all -- straight to the fuzzy
@@ -662,8 +634,8 @@ def test_canvas_menu_paste_only_offered_when_clipboard_has_content(menu_graph, m
     assert called == [True]
 
 
-def test_canvas_menu_new_chunk_option_falls_through_to_fuzzy_search(menu_graph, monkeypatch) -> None:
-    scene, gv, chunks, nodes = _make_nodes(menu_graph, n=1)
+def test_canvas_menu_new_chunk_option_falls_through_to_fuzzy_search(graph, monkeypatch) -> None:
+    scene, gv, chunks, nodes = _make_nodes(graph, n=1)
     scene.clear_chunk_selection()
     (a,) = nodes
     scene.set_selected_chunks([a.chunk])

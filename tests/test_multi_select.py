@@ -63,28 +63,21 @@ def _view_mouse(view, etype, view_pos, modifiers=QtCore.Qt.KeyboardModifier.NoMo
         view.mouseReleaseEvent(ev)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def graph(qapp):
-    """One shared stage/registry/docker for the whole module.
+    """A stage/registry/docker per test.
 
-    This used to say that chunk_usd.initialize() leaks a global notice listener per call.
-    It does not, and measurement is the reason to trust that over the story: calling it 20
-    times over fresh stages holds chunk_notice._global_dispatches at 11 subscribers total,
-    flat from the first call. _GlobalDispatch keeps subscribers in a WeakSet and
-    ChunkStageSync is a singleton, so each initialize() reassigns its listeners and the
-    previous NoticeConnections disconnect when collected.
+    This was module-scoped, on the stated grounds that chunk_usd.initialize() leaks a global
+    notice listener per call. It does not: calling it 20 times over fresh stages holds
+    chunk_notice._global_dispatches at 11 subscribers total, flat from the first call.
+    _GlobalDispatch keeps subscribers in a WeakSet and ChunkStageSync is a singleton, so each
+    initialize() reassigns its listeners and the previous NoticeConnections disconnect when
+    collected.
 
-    The crash in a later module that originally motivated this scope was real, but the
-    cause was a deferred callback outliving its object -- QTimer.singleShot with no context
-    object, left queued in the shared QApplication and fired inside whatever test next
-    drained events. That is fixed at the source now.
-
-    What actually still needs module scope is narrower and lives in this file rather than
-    in the framework: test_duplicate_preserves_internal_wiring reads chunks that earlier
-    tests in the module put on the scene, and fails with a function-scoped fixture because
-    the scene starts empty. Verified: with these fixtures function-scoped the whole suite
-    passes except that one test. Making it build its own chunks is the small piece of work
-    that would let this go back to per-test isolation.
+    The crash in a later module that motivated the shared scope was real, but its cause was a
+    deferred callback outliving its object -- QTimer.singleShot with no context object, left
+    queued in the shared QApplication and fired inside whatever test next drained events.
+    Fixed at the source, so these can go back to per-test isolation.
     """
     stage = Usd.Stage.CreateInMemory()
 

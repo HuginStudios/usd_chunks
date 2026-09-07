@@ -3230,6 +3230,21 @@ def recook_for_view(
             if c in cook_set:
                 inner_view = find_group_active_view(c, stage, scene)
                 synthetic = False
+                if inner_view is not None and not get_exec_upstream_chunks(inner_view, stage, scene):
+                    # A view wired to NOTHING is not an answer to "what does this group
+                    # output" -- it is a default view that never got pointed at anything,
+                    # or one left dangling when the chunk it watched was deleted (an exec
+                    # heal clears the connection when the deleted node had no predecessor
+                    # to inherit). Taken literally it means the group cooks nothing at all:
+                    # its contents go blocked and muted, it stops feeding everything
+                    # downstream of it, and there is no sign of why. Live-reported as a
+                    # chunkgroup's Duplicate Prim being invisible from the group wired after
+                    # it, with the copy simply absent from the stage.
+                    #
+                    # Fall through to the exec-tail fallback below, which is the same
+                    # question ("what is the end of this group's chain") asked of a group
+                    # whose view is missing rather than empty.
+                    inner_view = None
                 if inner_view is None:
                     # No real inner view chunk -- the common case for a group whose
                     # contents were never explicitly given one (view chunks are
@@ -3420,6 +3435,15 @@ def recook_focus(
             )
             parent_path = str(Sdf.Path(node_path).GetParentPath())
             node = by_path.get(parent_path)
+        # An upstream GROUP authors nothing of its own -- all of its content lives in its
+        # children's layers -- so keeping only the group's own (empty) layer keeps nothing at
+        # all. Live-reported: wire chunkgroup A -> chunkgroup B, dive into B, and A's prims
+        # are gone from the stage, so B's inner chunks cook against a stage their input isn't
+        # on. It looked like a group could only reach another group's stage through a data
+        # wire, because lofting/connecting the group's Description authors a connection from
+        # the group prim DOWN to an inner chunk -- which is exactly what put those inner
+        # chunks into get_exec_upstream_chunks' node-level answer in the first place.
+        keep_prefixes = tuple(u + "/" for u in upstream_keep)
         for c in scene.get_chunks():
             if is_view_chunk(c):
                 continue
@@ -3427,7 +3451,10 @@ def recook_focus(
             # Keep the focused group itself and its descendants — recook_for_view handles those.
             if cp == group_path or cp.startswith(inside_prefix):
                 continue
-            if cp in upstream_keep:
+            if cp in upstream_keep or (keep_prefixes and cp.startswith(keep_prefixes)):
+                # Leave an upstream group's internals exactly as the parent context's cook
+                # left them: whichever of its children that cook muted (outside the group's
+                # own active view) stay muted, and the ones driving its output stay composed.
                 continue
             # NEVER block a context/container (a tab or group). is_blocked() climbs the owner
             # chain, so blocking the focused group's ANCESTOR would propagate down and block the
@@ -4014,24 +4041,12 @@ def load_chunks(
                 # still empty. This runs after _restore_lofted_params so a lofted param
                 # carrying an expression is covered by the same retry.
                 #
-                # Whatever is still unresolved after the retry is genuinely dangling, and
-                # this is the only place that knows that — which is why the warning lives
-                # here rather than at the failing resolve, where every load would trip it.
-                for _, c in deferred:
-                    for path, param in _iter_chunk_params(c):
-                        raw = getattr(param, 'raw_value', None)
-                        if (
-                            isinstance(raw, str)
-                            and chunk_utils.has_expression(raw)
-                            and not getattr(param, '_expression_connections', None)
-                        ):
-                            param.value = raw
-                            if not getattr(param, '_expression_connections', None):
-                                logger.warning(
-                                    "load_chunks: expression %r on %s.%s refers to a param "
-                                    "that does not exist; it will not update live",
-                                    raw, c.name, path,
-                                )
+                # This is the first of two passes. A param lofted inside a CHUNK_LOADED
+                # callback does not exist yet here -- that notice fires much further down --
+                # so an expression referring to one still resolves to nothing. The second
+                # pass runs after those notices and carries the warning; nothing is reported
+                # dangling until both have had a go.
+                _resolve_pending_expressions(deferred, warn=False)
 
                 # Wire the context (ChunkGroup) as DagNode owner of its terminal sub-chunks.
                 # Terminal nodes have no outputs so DagNode.should_solve() returns False by
@@ -4145,6 +4160,15 @@ def load_chunks(
                         chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
                     )
                     _restore_dynamic_params(prim, added)
+
+                # Second and last expression pass. Chunks that loft their params in the
+                # CHUNK_LOADED callback above -- mtlx_shader from its nodedef, wedge from
+                # its ranges -- have only just created them, so an expression pointing at
+                # one could not resolve in the earlier pass and got no live-update
+                # listener. A `.value` read stayed correct, which is why sweeps and exports
+                # were right while the UI never updated: the value was fine and only the
+                # notification was missing.
+                _resolve_pending_expressions(deferred, warn=True)
             finally:
                 chunk_notice._loading_stage = old_loading_stage
 
@@ -4554,6 +4578,39 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
 
         if param := chunk.get_param(param_path):
             param._connect_param_attr(attr)
+
+
+def _resolve_pending_expressions(deferred, warn: bool) -> None:
+    """Re-assign every @node.param@ expression that still has no live-update listener.
+
+    `_load_wire_inputs` (via `_connect_param_attr`) resolves expressions as each chunk
+    loads, but the chunk being referred to may not be registered yet at that point, and a
+    param lofted in a CHUNK_LOADED callback does not exist until much later still. Either
+    way resolution fails silently and no listener is attached -- a fresh `.value` read is
+    correct, so the result looks right and only stops updating when the referenced param
+    changes.
+
+    Re-assigning `raw_value` re-runs resolution; anything that already has a listener is
+    skipped, so this is idempotent and cheap to run more than once.
+
+    warn only on the last pass. Reporting from an earlier one would flag every expression
+    that is merely waiting for a chunk further down the file.
+    """
+    for _, c in deferred:
+        for path, param in _iter_chunk_params(c):
+            raw = getattr(param, "raw_value", None)
+            if (
+                isinstance(raw, str)
+                and chunk_utils.has_expression(raw)
+                and not getattr(param, "_expression_connections", None)
+            ):
+                param.value = raw
+                if warn and not getattr(param, "_expression_connections", None):
+                    logger.warning(
+                        "load_chunks: expression %r on %s.%s refers to a param "
+                        "that does not exist; it will not update live",
+                        raw, c.name, path,
+                    )
 
 
 def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
