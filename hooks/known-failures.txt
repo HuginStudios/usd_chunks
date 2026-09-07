@@ -22,11 +22,12 @@ tests/test_rbd_general_colliders.py::test_a_box_collider_cannot_be_entered_but_a
 # CLI run does not write the network's driven content.
 tests/test_commit_hook.py::TestCliRunCommits::test_run_writes_the_networks_driven_content
 
-# Order-dependent, and exposed by running the suite in parallel: it passes on its own and
-# in a single process. Listed because it is not a reliable signal either way, not because
-# the behaviour is accepted. The cure is tearing the chunk singletons down between test
-# files -- see the notes on PR #182.
-tests/test_dragdrop_import.py::test_import_as_reference_creates_prefilled_node
+# A flaky test belongs in NEITHER list: listed, it reports itself "fixed" on most runs and
+# nags you to delete it; unlisted, it blocks a push now and then. Put it in your local list
+# if that trade is worth it to you. Known flake today, order-dependent and exposed by
+# running the suite in parallel:
+#   tests/test_dragdrop_import.py::test_import_as_reference_creates_prefilled_node
+# The cure is tearing the chunk singletons down between test files -- see PR #182.
 
 # Anything that fails only on YOUR machine -- a scratch chunk in scripts/ that trips
 # test_chunk_deps, or tests/test_pin.py's pip/venv tests without a network -- goes in
