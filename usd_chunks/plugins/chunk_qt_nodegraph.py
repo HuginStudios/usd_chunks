@@ -275,13 +275,16 @@ def _param_port_type(param) -> str:
 # ChunkGraphView/tab/chunkgroup in the process, matching how a real clipboard behaves.
 
 class _ClipboardNode:
-    __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges", "list_sizes")
+    __slots__ = (
+        "module_name", "values", "rel_pos", "children", "child_edges", "list_sizes", "lofts",
+    )
 
     def __init__(
         self, module_name: str, values: list, rel_pos: QtCore.QPointF,
         children: "list[_ClipboardNode] | None" = None,
         child_edges: "list[_ClipboardEdge] | None" = None,
         list_sizes: "list[tuple[str, int]] | None" = None,
+        lofts: "list[tuple[int, str]] | None" = None,
     ):
         self.module_name = module_name
         self.values = values
@@ -296,6 +299,12 @@ class _ClipboardNode:
         # own children's* top-left, not the top-level selection's.
         self.children: list[_ClipboardNode] = children or []
         self.child_edges: list[_ClipboardEdge] = child_edges or []
+        # Params this group publishes on its own interface, as (child index, the inner
+        # attribute lofted). A loft is not a wire between two children, so it is not a
+        # _ClipboardEdge: it points UP from a child to the group itself, and the copy has
+        # to re-loft rather than re-connect -- the pasted group has no such param until
+        # something lofts one.
+        self.lofts: list[tuple[int, str]] = lofts or []
 
 
 class _ClipboardEdge:
@@ -443,6 +452,12 @@ def _snapshot_chunk_node(
         if dst_index is None or prim is None:
             continue
         for dst_attr, src_prim_path, src_attr in _iter_prim_connections(prim):
+            if src_prim_path == chunk.prim_path:
+                # A LOFT, not a wire to a sibling: the inner attr points up at the group's
+                # own interface. Dropping it as "outside the copied children" is what left a
+                # duplicated group with none of the params it published.
+                clip_node.lofts.append((dst_index, dst_attr))
+                continue
             src_index = kept_index.get(src_prim_path)
             if src_index is None:
                 continue  # source outside this group's copied children -- wire dropped
@@ -3411,7 +3426,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 new_chunks.append(primary)
                 new_path_by_index[index] = chunk_usd.get_chunk_prim_path(primary)
                 if item.children:
-                    self._materialize_children(primary, item.children, item.child_edges)
+                    self._materialize_children(
+                        primary, item.children, item.child_edges, getattr(item, "lofts", []),
+                    )
         finally:
             if nested:
                 scene._current_context = prev_ctx
@@ -3438,6 +3455,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _materialize_children(
         self, parent_chunk: core.ChunkBase,
         clip_children: "list[_ClipboardNode]", clip_child_edges: "list[_ClipboardEdge]",
+        clip_lofts: "list[tuple[int, str]] | None" = None,
     ) -> None:
         """Recreate a ChunkGroup's copied children nested inside the newly created
         parent_chunk (recursing further for a nested sub-group), wiring their internal
@@ -3509,7 +3527,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 child_path_by_index[index] = path
                 child_chunk_by_index[index] = primary
                 if item.children:
-                    self._materialize_children(primary, item.children, item.child_edges)
+                    self._materialize_children(
+                        primary, item.children, item.child_edges, getattr(item, "lofts", []),
+                    )
         finally:
             if nested:
                 scene._current_context = prev_ctx
@@ -3520,6 +3540,22 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if not src_path or not dst_path or dst_chunk is None:
                 continue
             _author_raw_connection(stage, dst_path, edge.dst_attr, dst_chunk, src_path, edge.src_attr)
+
+        # Re-loft, rather than re-connect: a loft creates a param on the group that the
+        # pasted one does not have yet, so there is nothing for a connection to point at
+        # until loft_param_to_context has made it. Last, so the children and their values
+        # are fully in place -- lofting reads the inner param's current value onto the
+        # interface, and forces its USD attr into existence if it has none.
+        for child_index, inner_attr in clip_lofts or []:
+            child = child_chunk_by_index.get(child_index)
+            if child is None:
+                continue
+            # inputs:foo -> foo, and inputs:group:param -> group.param, which is the
+            # dotted form get_param already understands.
+            name = inner_attr.split(":", 1)[-1].replace(":", ".")
+            param = child.get_param(name)
+            if param is not None:
+                chunk_usd.loft_param_to_context(param, parent_chunk)
 
     def _group_selected(self) -> None:
         """Ctrl+G: put the selected chunks in a new chunkgroup.
