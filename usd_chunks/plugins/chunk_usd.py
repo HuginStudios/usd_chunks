@@ -247,6 +247,26 @@ def sdf_type_for_param(param) -> "Sdf.ValueTypeName | None":
     return sdf_type
 
 
+def _author_stage_expression(attr: "Usd.Attribute", raw: str, param) -> None:
+    """Store a ${VAR} stage expression on attr, keeping both the text and a usable value.
+
+    store_expression_text already splits by attr type: a String attr holds the text as its
+    own value (so the field reloads showing ${SHOT}, which is what the user typed), and
+    every other type keeps it in customData. Only the latter needs the resolved value
+    written alongside -- a Float attr reading back as the literal "${COUNT}" is not a
+    number to anything downstream, and param.value is where the substitution has already
+    happened.
+
+    Unlike a @Node.param@ wire there are no connections to author: a stage variable is a
+    value on the stage, not another param, so there is nothing on the graph to point at.
+    """
+    chunk_utils.store_expression_text(attr, raw)
+    if attr.GetTypeName() != Sdf.ValueTypeNames.String:
+        resolved = getattr(param, "value", None)
+        if resolved is not None and not isinstance(resolved, str):
+            attr.Set(resolved)
+
+
 class ChunkStageSync(metaclass=RegistrySingleton):
     """
     Singleton that authors a Chunk prim on the stage whenever a Python chunk
@@ -1174,7 +1194,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if raw is None:
             return
         is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-        type_source = getattr(param, 'default_value', None) if is_expr else raw
+        # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
+        is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
+        type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
         sdf_type = _SDF_TYPE_MAP.get(type(type_source))
         # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
         # type — there is no tuple entry, so without this a colour param resolves to no
@@ -1185,7 +1207,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if sdf_type is None:
             return
         default = getattr(param, 'default_value', None)
-        if not force and not is_expr and raw == default:
+        if not force and not is_expr and not is_stage_expr and raw == default:
             return  # still at default — don't create attr
 
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
@@ -1220,6 +1242,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
+                elif is_stage_expr:
+                    _author_stage_expression(attr, raw, param)
                 else:
                     attr.Set(raw)
         param._connect_param_attr(attr)
@@ -1265,7 +1289,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if raw is None:
                 continue
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            type_source = getattr(param, 'default_value', None) if is_expr else raw
+            # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
+            is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
+            type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
             sdf_type = _SDF_TYPE_MAP.get(type(type_source))
             if sdf_type is None:
                 continue
@@ -1287,7 +1313,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 attr = saved
             else:
                 backing_path = getattr(param, '_param_attr_path', None)
-                if not is_expr:
+                if not is_expr and not is_stage_expr:
                     if backing_path:
                         # param_from_attr: only store if the real USD attr has been authored
                         backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
@@ -1302,6 +1328,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     if is_expr:
                         attr.SetConnections(self._expr_connections(prim, raw))
                         chunk_utils.store_expression_text(attr, raw)
+                    elif is_stage_expr:
+                        _author_stage_expression(attr, raw, param)
                     else:
                         attr.Set(raw)
 
@@ -1626,12 +1654,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if raw is None:
                     continue
                 is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-                type_source = getattr(param, 'default_value', None) if is_expr else raw
+                # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
+                is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
+                type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
                 sdf_type = _SDF_TYPE_MAP.get(type(type_source))
                 if sdf_type is None:
                     continue
                 backing_path = getattr(param, '_param_attr_path', None)
-                if not is_expr:
+                if not is_expr and not is_stage_expr:
                     if backing_path:
                         backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
                         if not (backing and backing.HasAuthoredValue()):
@@ -1646,6 +1676,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
+                elif is_stage_expr:
+                    _author_stage_expression(attr, raw, param)
                 elif not attr.Get():
                     attr.Set(raw)
 

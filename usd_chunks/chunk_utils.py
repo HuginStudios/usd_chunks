@@ -1,4 +1,5 @@
 import ast
+import logging
 import re
 import uuid
 from contextlib import contextmanager, ExitStack
@@ -6,6 +7,8 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
+
+logger = logging.getLogger(__name__)
 
 _EXPR_RE = re.compile(r'@(\w+)\.(\w+)@')
 
@@ -272,18 +275,155 @@ def store_expression_text(attr: Usd.Attribute, raw: str) -> None:
 
 
 def read_expression_text(attr: Usd.Attribute) -> "str | None":
-    """Return the expression text authored on attr, from whichever place it was kept."""
+    """Return the expression text authored on attr, from whichever place it was kept.
+
+    Accepts either form. A @Node.param@ wire always comes with connections on the attr;
+    a ${VAR} stage expression never does, since there is no other param to point at. So
+    the two never arrive together and one reader serves both call sites.
+    """
     if attr.GetTypeName() == Sdf.ValueTypeNames.String:
         val = attr.Get(0)
     else:
         val = attr.GetCustomDataByKey(EXPR_TEXT_KEY)
-    return val if isinstance(val, str) and has_expression(val) else None
+    return val if isinstance(val, str) and is_expression_text(val) else None
+
+
+def is_expression_text(value) -> bool:
+    """True if value is text that must be preserved verbatim rather than stored as a
+    typed value -- either a @Node.param@ wire or a ${VAR} stage expression.
+
+    The question this answers is about *storage*, not about wiring: it is what decides
+    whether a param's USD attr takes its type from the raw string (no) or from the param's
+    default (yes). Sites that need to know specifically whether a param wire is involved --
+    the ones authoring connections -- ask has_expression instead, and must keep doing so.
+    """
+    return isinstance(value, str) and (has_expression(value) or has_stage_expression(value))
 
 
 def clear_expression_text(attr: Usd.Attribute) -> None:
     """Drop any stored expression text -- the param no longer holds an expression."""
     if attr.GetTypeName() != Sdf.ValueTypeNames.String and attr.HasCustomDataKey(EXPR_TEXT_KEY):
         attr.ClearCustomDataByKey(EXPR_TEXT_KEY)
+
+
+# --------------------------------------------------------------------------------------
+# Stage expression variables
+#
+# USD's own variable mechanism, not the @Node.param@ one above. A layer carries an
+# `expressionVariables` dict and composition substitutes `${NAME}` from it -- but *only*
+# in asset paths and variant selections, and only from the root layer stack (a sublayer's
+# dict is ignored entirely). Chunk layers are sublayers, so a chunk authoring its own
+# expressionVariables would have no effect at all.
+#
+# Two consequences shape everything below:
+#
+# 1. The variables are read from the composed stage (root layer + session layer, session
+#    winning), so variables a studio already authored in the file they opened are visible
+#    and usable exactly as they are. usd_chunks adds to that set rather than owning it.
+# 2. Prim paths are not one of the fields USD substitutes into, so ${NAME} in a chunk's
+#    Prim Path param has to be expanded here, at param-read time, alongside @Node.param@.
+#    That is what makes "use it in a LineEdit like a prim path" work at all.
+
+#: A bare ${NAME} reference anywhere inside a string. USD proper only accepts a `${NAME}`
+#: expression as the *whole* field, delimited by backticks; this looser form is what makes
+#: a prim path like "/World/${SHOT}/geo" -- a field USD never substitutes into -- usable.
+#: Both are supported: resolve_stage_expression dispatches on which one it is looking at.
+_STAGE_VAR_RE = re.compile(r"\$\{(\w+)\}")
+
+#: Layer metadata key holding the variable dict. Named by USD, not by us.
+EXPRESSION_VARIABLES = "expressionVariables"
+
+
+def stage_expression_variables(stage: Usd.Stage) -> dict:
+    """The expression variables in effect on stage, session layer winning over root.
+
+    Read off the stage's composed metadata rather than by merging the two layers by hand,
+    so the precedence matches what Pcp actually applies during composition -- verified
+    equal, including a session opinion overriding a root one of the same name.
+
+    Args:
+        stage (Usd.Stage): The stage to read from
+
+    Returns:
+        dict: variable name -> value, empty when nothing is authored anywhere
+    """
+    if stage is None:
+        return {}
+    value = stage.GetMetadata(EXPRESSION_VARIABLES)
+    return dict(value) if value else {}
+
+
+def has_stage_expression(text) -> bool:
+    """True if text carries a ${NAME} reference in either accepted form."""
+    if not isinstance(text, str):
+        return False
+    return bool(_STAGE_VAR_RE.search(text)) or Sdf.VariableExpression.IsExpression(text)
+
+
+def resolve_stage_expression(text, stage: Usd.Stage):
+    """Substitute stage expression variables into text.
+
+    A fully-delimited USD expression (`${SHOT}` or `"./${ASSET}.usda"` in backticks) goes
+    through Sdf.VariableExpression, so the studio syntax already in their files evaluates
+    by USD's own rules -- including the typed and function forms this module makes no
+    attempt to reimplement. Anything else is treated as text with bare ${NAME} references
+    substituted into it, which is the form a prim path needs.
+
+    An unknown variable is left as written rather than blanked. A path that silently
+    became "/World//geo" would author into the wrong place and look like a typo in the
+    field; leaving ${SHOT} visible in the value says which variable is missing.
+
+    Args:
+        text (str): The value to resolve
+        stage (Usd.Stage): The stage whose variables apply
+
+    Returns:
+        The evaluated value -- typed for a full USD expression, a string otherwise
+    """
+    if not isinstance(text, str):
+        return text
+    variables = stage_expression_variables(stage)
+
+    if Sdf.VariableExpression.IsExpression(text):
+        result = Sdf.VariableExpression(text).Evaluate(variables)
+        if result.errors:
+            logger.warning("Stage expression %r: %s", text, "; ".join(result.errors))
+            return text
+        return text if result.value is None else result.value
+
+    def sub(match):
+        return str(variables.get(match.group(1), match.group(0)))
+
+    return _STAGE_VAR_RE.sub(sub, text)
+
+
+def set_stage_expression_variables(stage: Usd.Stage, variables: dict) -> None:
+    """Author variables into the stage's session layer, replacing what is there.
+
+    The session layer rather than the root layer, and that choice is load-bearing in both
+    directions. It is where usd_chunks already keeps its own bookkeeping, so a chunk
+    setting a variable does not dirty the file the user opened -- and composition takes
+    the session opinion over the root layer's, so a variable set here overrides a
+    studio-authored default of the same name instead of fighting it.
+
+    **Changing** a variable recomposes the stage live. **Introducing** one that did not
+    exist when the stage was opened does not: an arc whose ${NAME} failed to resolve
+    records no dependency on NAME, so defining it later leaves that arc unresolved until
+    the stage is reopened (true of the root layer too -- it is a property of Pcp's
+    dependency tracking, not of the layer chosen here). Params resolved through
+    resolve_stage_expression are unaffected; they read the dict on every access.
+
+    Args:
+        stage (Usd.Stage): The stage to author on
+        variables (dict): The complete set this call is responsible for
+    """
+    if stage is None:
+        return
+    session = stage.GetSessionLayer()
+    if variables:
+        session.expressionVariables = dict(variables)
+    elif session.HasExpressionVariables():
+        session.ClearExpressionVariables()
 
 
 def get_unique_path(stage, prim_path):
