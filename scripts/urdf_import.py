@@ -472,8 +472,17 @@ def execute(node):
             # left behind while its parent moved -- the SO-101's gripper frame drifting
             # 0.098 to 0.234 away from the gripper it is welded to. Nesting *is* the weld,
             # and nothing simulated writes to it, so nothing compounds.
+            # The discriminator is not "is the joint fixed" -- it is "will the solver
+            # simulate this link", and that follows the collision geometry. A fixed link
+            # WITH colliders is still a body the solver bakes, so it must be flat or its
+            # parent's transform lands on it twice (the Panda's eight _sc self-collision
+            # links are exactly this). A link with no colliders at all is never simulated,
+            # so flat it would simply be left behind -- the SO-101's gripper frame, a pure
+            # coordinate frame welded to the gripper. Nesting is the weld for those.
             fixed = joint is not None and joint.get("type", "fixed") == "fixed"
-            path = (parent_prim_path if fixed else root.GetPath()).AppendChild(link_name)
+            simulated = bool(link.findall("collision"))
+            nest = fixed and not simulated
+            path = (parent_prim_path if nest else root.GetPath()).AppendChild(link_name)
             prim = UsdGeom.Xform.Define(stage, path).GetPrim()
             counts["links"] += 1
 
@@ -489,7 +498,7 @@ def execute(node):
                 world = local * world
                 # A nested (fixed) link is placed relative to its parent; a flat one carries
                 # the accumulated pose, since nothing above it supplies one.
-                placement = local if fixed else world
+                placement = local if nest else world
                 xform = UsdGeom.Xformable(prim)
                 xform.AddTranslateOp().Set(placement.ExtractTranslation())
                 xform.AddOrientOp().Set(
