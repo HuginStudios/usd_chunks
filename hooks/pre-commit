@@ -29,6 +29,16 @@ else
     say "pre-commit: ruff not installed, skipping lint (pip install -e '.[dev]')"
 fi
 
+# A merge commit is not code you just wrote, and "any test file the commit touches" means
+# the whole merged range for one -- bringing `main` into a feature branch stages every test
+# file that changed in between, which turned a three-second hook into a multi-minute one and
+# straight into --no-verify. The lint above still runs: a botched conflict resolution is
+# exactly the kind of thing it catches, and it costs a second even on a big merge.
+if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+    say "pre-commit: merge commit -- linted, tests left to pre-push"
+    exit 0
+fi
+
 CORE="tests/test_chunk_core.py tests/test_chunk_utils.py tests/test_callback_arity.py tests/test_new_chunks.py"
 
 # TestAMDMaterialXCaching is intermittently flaky (~1 in 6) when test_new_chunks runs
