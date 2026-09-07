@@ -8,23 +8,37 @@ the others are suppressed.
     Branch B ──┼── Switch (index 1) ──▶   only B reaches downstream
     Branch C ──┘
 
-Like Merge, this authors nothing of its own. What it does is mute the branches it did not
-pick, by putting their chunks into the DISABLED state -- which is already what mutes a
-chunk's layer, so the suppressed branches simply stop contributing opinions to the composed
-stage. They also grey out in the node graph, which is the feedback you want: you can see
-which branch is live.
+Like Merge, this authors nothing of its own.
+
+Suppression is a *mute*, not a disconnect. A branch contributes because its layers are in
+the stage, not because it is wired -- wiring decides ordering and graph membership, which
+is why Merge authors nothing either. Cutting the connection would leave the branch's prims
+composed exactly as before and switch nothing.
+
+The mute is a **block**, the same mechanism the view system uses to hide non-viewed
+branches, rather than the DISABLED state. DISABLED belongs to the user: they set it by hand
+and expect it to stay. A Switch reaching in to set and clear it on chunks it does not own
+means every index flip risks undoing them, and needing bookkeeping to avoid that is a sign
+the wrong lever was pulled. Blocking is the engine's own lever, and ChunkLayerManager
+already guards the two against each other so a blocked layer is never un-muted by the
+disable path.
+
+**Known limit:** a layer is muted stage-wide, so a branch that also feeds a consumer
+*outside* this Switch is suppressed for that consumer too. Inherent to layer muting -- the
+view system has the same property -- and worth knowing before wiring a shared branch
+through one.
 
 Requires: usd_chunks.
 """
 
 from __future__ import annotations
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins import chunk_usd
 
-#: Where the switch records what it muted, so it never re-enables a chunk the user
-#: disabled by hand. Hidden because it is bookkeeping, not a control.
+#: Where the switch records what it muted, so a branch that stops being upstream is still
+#: un-muted rather than left blocked forever. Hidden: bookkeeping, not a control.
 _MUTED_PARAM = "muted"
 
 
@@ -45,6 +59,32 @@ def _upstream(node, seen=None) -> set:
     for dep in chunk_usd.exec_dependencies(node):
         _upstream(dep, seen)
     return seen
+
+
+def _set_muted(node, target, muted: bool) -> bool:
+    """Block or unblock one chunk and mute or unmute its layer.
+
+    Never a context (a tab or group): is_blocked() climbs the owner chain, so blocking a
+    container would propagate down and block its whole subtree, including the branch that
+    was selected. Containers author nothing of their own -- their leaves are handled
+    individually by the caller's loop, exactly as recook_for_view does it.
+    """
+    if target.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+        return False
+
+    target.set_blocked(muted)
+    stage = node.get_stage()
+    layer = chunk_registry.ChunkLayerManager().get_layer(target)
+    if stage is None or layer is None:
+        return True
+    # stage.Mute/UnmuteLayer, not layer.SetMuted: SetMuted recomposes lazily and expires
+    # prims, which is the "chunk layers disappear" bug the rest of the codebase avoids the
+    # same way.
+    if muted:
+        stage.MuteLayer(layer.identifier)
+    else:
+        stage.UnmuteLayer(layer.identifier)
+    return True
 
 
 def _record(node, chunks) -> None:
@@ -75,7 +115,6 @@ def execute(node):
     # the ones it feeds is the chosen one, so `keep` wins over every suppression below.
     keep = _upstream(inputs[index])
 
-    previously = _recorded(node)
     muted = set()
     for slot, dep in enumerate(inputs):
         if slot == index:
@@ -83,15 +122,21 @@ def execute(node):
         for c in _upstream(dep):
             if c in keep:
                 continue
-            c.set_state(ChunkFlags.State.DISABLED)
-            muted.add(c)
+            if _set_muted(node, c, True):
+                muted.add(c)
 
-    # Only un-mute what this switch muted. Without the record, flipping the index would
-    # clear a DISABLED a user had set by hand on a chunk that happens to sit in the branch
-    # being selected -- silently undoing their intent.
+    # Un-mute the chosen branch. Blocking is this Switch's own lever rather than the user's
+    # DISABLED, so there is nothing of theirs to clobber -- but only chunks still reachable
+    # are un-muted, and the record below catches a branch that has since been unwired.
     for c in keep:
-        if c.name in previously and c.name not in {m.name for m in muted}:
-            c.unset_state(ChunkFlags.State.DISABLED)
+        _set_muted(node, c, False)
+
+    for name in _recorded(node) - {c.name for c in muted} - {c.name for c in keep}:
+        # Muted by an earlier index and no longer upstream of this Switch at all: leaving it
+        # blocked would strand a branch the user has already disconnected.
+        for c in inputs:
+            if c.name == name:
+                _set_muted(node, c, False)
 
     _record(node, muted)
     print(f"[Switch] input {index} of {len(inputs)} live"
@@ -115,8 +160,8 @@ def main():
     muted = chunk.TextEdit(
         _MUTED_PARAM,
         "Muted",
-        tooltip="Bookkeeping: the chunks this Switch muted, so flipping the input never "
-        "re-enables one you disabled yourself.",
+        tooltip="Bookkeeping: the chunks this Switch has muted, so one that stops being "
+        "upstream is un-muted rather than left blocked.",
     )
     muted.set_state(ChunkFlags.State.HIDDEN)
     chunk_api.add_param(muted)
@@ -130,6 +175,8 @@ def config():
         "it, a Switch passes the one in the selected slot and mutes the rest -- the whole "
         "branch, not just the chunk in the slot. A chunk feeding both the chosen branch and "
         "a muted one stays live.\n"
+        "Muting is stage-wide, so a branch that also feeds something outside this Switch is "
+        "suppressed for that consumer too.\n"
         "Wire it to a Wedge's output to sweep configurations that differ in structure "
         "rather than in value.",
     )

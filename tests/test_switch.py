@@ -2,8 +2,15 @@
 
 Merge is fan-in -- every branch contributes and slot order decides who wins. Switch is the
 choice instead of the sum. It authors nothing itself; it suppresses the branches it did not
-pick by putting their chunks into DISABLED, which is already what mutes a chunk's layer, so
-their opinions simply stop reaching the composed stage.
+pick by blocking them and muting their layers, so their opinions stop reaching the composed
+stage.
+
+A block rather than DISABLED, which belongs to the user. The two are independent levers, so
+selecting a branch can never clear a disable someone set by hand -- pinned below, because
+the first version used DISABLED and needed bookkeeping to avoid exactly that.
+
+The assertions check composed values, not just chunk state: a branch that is "muted" but
+whose transform still reaches the stage would pass a state-only check and be wrong.
 """
 
 from __future__ import annotations
@@ -102,8 +109,8 @@ def test_only_the_selected_branch_reaches_the_stage(scene):
 
     assert _height(stage, "/a") == pytest.approx(5.0)
     assert _height(stage, "/b") == pytest.approx(0.0), "branch B should be muted"
-    assert branch_b.has_state(ChunkFlags.State.DISABLED)
-    assert not branch_a.has_state(ChunkFlags.State.DISABLED)
+    assert branch_b.is_blocked()
+    assert not branch_a.is_blocked()
 
 
 def test_flipping_the_index_swaps_which_branch_is_live(scene):
@@ -120,8 +127,8 @@ def test_flipping_the_index_swaps_which_branch_is_live(scene):
 
     assert _height(stage, "/b") == pytest.approx(7.0)
     assert _height(stage, "/a") == pytest.approx(0.0)
-    assert branch_a.has_state(ChunkFlags.State.DISABLED)
-    assert not branch_b.has_state(ChunkFlags.State.DISABLED)
+    assert branch_a.is_blocked()
+    assert not branch_b.is_blocked()
 
 
 def test_it_mutes_the_whole_branch_not_just_the_slot(scene):
@@ -142,8 +149,8 @@ def test_it_mutes_the_whole_branch_not_just_the_slot(scene):
     sw.get_param("index").value = 0
     sw.execute()
 
-    assert upstream.has_state(ChunkFlags.State.DISABLED), "the branch's interior stayed live"
-    assert tail.has_state(ChunkFlags.State.DISABLED)
+    assert upstream.is_blocked(), "the branch's interior stayed live"
+    assert tail.is_blocked()
 
 
 def test_a_chunk_feeding_both_branches_stays_live(scene):
@@ -168,14 +175,15 @@ def test_a_chunk_feeding_both_branches_stays_live(scene):
     sw.get_param("index").value = 0
     sw.execute()
 
-    assert not shared.has_state(ChunkFlags.State.DISABLED)
-    assert dropped.has_state(ChunkFlags.State.DISABLED)
+    assert not shared.is_blocked()
+    assert dropped.is_blocked()
     assert _height(stage, "/a") == pytest.approx(5.0)
 
 
-def test_a_hand_disabled_chunk_is_not_re_enabled(scene):
-    """The switch only un-mutes what it muted. Flipping the index must not silently undo a
-    DISABLED the user set themselves."""
+def test_a_hand_disabled_chunk_keeps_its_disable(scene):
+    """DISABLED belongs to the user. The Switch suppresses with a block instead, so
+    selecting a branch never clears a disable someone set by hand -- the two levers are
+    independent, which is why no bookkeeping is needed to keep them apart."""
     stage, sender = scene
     branch_a = _place(sender, "A", "/a", 5.0)
     branch_b = _place(sender, "B", "/b", 7.0)
@@ -183,7 +191,7 @@ def test_a_hand_disabled_chunk_is_not_re_enabled(scene):
 
     sw = _mk(sender, switch_mod, "Switch", "switch")
     _wire(stage, sw, branch_a, branch_b)
-    sw.get_param("index").value = 0
+    sw.get_param("index").value = 0   # select the branch the user disabled
     sw.execute()
 
     assert branch_a.has_state(ChunkFlags.State.DISABLED), "the user's own disable was cleared"
@@ -200,8 +208,8 @@ def test_an_index_past_the_last_slot_clamps(scene):
     sw.get_param("index").value = 99
     sw.execute()
 
-    assert not branch_b.has_state(ChunkFlags.State.DISABLED)
-    assert branch_a.has_state(ChunkFlags.State.DISABLED)
+    assert not branch_b.is_blocked()
+    assert branch_a.is_blocked()
 
 
 def test_a_switch_with_nothing_wired_does_nothing(scene):
