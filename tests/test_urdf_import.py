@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib
 import math
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -123,25 +124,55 @@ class TestParse:
         assert [child for _, child in robot["children"]["base"]] == ["upper"]
 
 
-class TestOrigin:
-    def test_rpy_composes_z_then_y_then_x(self):
-        """URDF rpy is fixed-axis roll-pitch-yaw, which composes as Rz*Ry*Rx. Backwards
-        gives a robot whose links are all in plausible-looking wrong places."""
-        element = Sdf.Layer  # placeholder, replaced below
-        import xml.etree.ElementTree as ET
+def _reference_rpy(roll, pitch, yaw, vector):
+    """Rz . Ry . Rx applied to a vector, written out longhand.
 
-        node = ET.fromstring('<j><origin xyz="1 2 3" rpy="0 0 1.5707963"/></j>')
-        position, rotation = urdf_import._origin(node)
+    Deliberately independent of USD: the point is to have something to check `_origin`
+    against that cannot share a mistake with it.
+    """
+    cx, sx = math.cos(roll), math.sin(roll)
+    cy, sy = math.cos(pitch), math.sin(pitch)
+    cz, sz = math.cos(yaw), math.sin(yaw)
+    x, y, z = vector
+    # Rx
+    x1, y1, z1 = x, cx * y - sx * z, sx * y + cx * z
+    # Ry
+    x2, y2, z2 = cy * x1 + sy * z1, y1, -sy * x1 + cy * z1
+    # Rz
+    return (cz * x2 - sz * y2, sz * x2 + cz * y2, z2)
+
+
+class TestOrigin:
+    @pytest.mark.parametrize(
+        "rpy",
+        [
+            (0.0, 0.0, 1.5707963),
+            (math.pi, math.pi / 2, 0.0),
+            (-math.pi / 2, 0.0, math.pi / 2),
+            (0.3, -0.7, 1.1),
+        ],
+    )
+    def test_rpy_is_fixed_axis_x_then_y_then_z(self, rpy):
+        """A single-axis rpy composes the same in either order, so it proves nothing.
+
+        The importer originally multiplied the three rotations the way the matrix form
+        reads, Rz * Ry * Rx, which is backwards for Gf.Rotation -- and a test that only
+        turned about yaw passed anyway. Two robots were validated before a URDF with
+        two-axis origins put every leg link in a plausible-looking wrong place.
+        """
+        element = ET.fromstring(
+            f'<j><origin xyz="1 2 3" rpy="{rpy[0]} {rpy[1]} {rpy[2]}"/></j>'
+        )
+        position, rotation = urdf_import._origin(element)
         assert tuple(position) == (1.0, 2.0, 3.0)
-        # A 90 degree yaw takes +X to +Y.
-        turned = rotation.TransformDir(Gf.Vec3d(1, 0, 0))
-        assert turned[0] == pytest.approx(0.0, abs=1e-6)
-        assert turned[1] == pytest.approx(1.0, abs=1e-6)
-        assert element is Sdf.Layer  # keep the import honest
+
+        probe = Gf.Vec3d(0.074, -0.02, 0.035)
+        expected = _reference_rpy(*rpy, probe)
+        turned = rotation.TransformDir(probe)
+        for got, want in zip(turned, expected):
+            assert got == pytest.approx(want, abs=1e-7)
 
     def test_a_missing_origin_is_identity(self):
-        import xml.etree.ElementTree as ET
-
         position, rotation = urdf_import._origin(ET.fromstring("<j/>"))
         assert tuple(position) == (0.0, 0.0, 0.0)
         assert rotation.GetAngle() == pytest.approx(0.0)
@@ -155,6 +186,63 @@ class TestAxisFrame:
 
     def test_a_zero_axis_is_identity_rather_than_a_crash(self):
         assert urdf_import._axis_frame([0, 0, 0]).GetAngle() == pytest.approx(0.0)
+
+
+TWISTED = """<robot name="twisted">
+  <link name="base"/>
+  <link name="middle"/>
+  <link name="tip"/>
+  <joint name="first" type="revolute">
+    <parent link="base"/>
+    <child link="middle"/>
+    <origin xyz="0.019 0 -0.046" rpy="-1.5707963 0 1.5707963"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.5" upper="0.5"/>
+  </joint>
+  <joint name="second" type="revolute">
+    <parent link="middle"/>
+    <child link="tip"/>
+    <origin xyz="0.074 0 0.035" rpy="3.1415927 1.5707963 0"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-0.5" upper="0.5"/>
+  </joint>
+</robot>
+"""
+
+
+class TestJointFrames:
+    """Both bodies of a joint have to agree on where the joint is.
+
+    Every other test here reads one side: link placement, or the axis and limits the solver
+    parses back. A `physics:localRot0` composed in the wrong order passes all of them and
+    still describes a joint whose two halves sit in different places -- which is what shipped
+    until a robot with two-axis origins was measured against MuJoCo.
+    """
+
+    def _frame(self, stage, joint, index):
+        body = joint.GetRelationship(f"physics:body{index}").GetTargets()[0]
+        world = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(
+            stage.GetPrimAtPath(body)
+        )
+        local = Gf.Matrix4d(1.0)
+        local.SetRotateOnly(
+            Gf.Rotation(Gf.Quatd(joint.GetAttribute(f"physics:localRot{index}").Get()))
+        )
+        local.SetTranslateOnly(Gf.Vec3d(*joint.GetAttribute(f"physics:localPos{index}").Get()))
+        return local * world
+
+    @pytest.mark.parametrize("joint_path", ["middle/joint_first", "tip/joint_second"])
+    def test_both_bodies_place_the_joint_in_the_same_frame(self, scene, tmp_path, joint_path):
+        stage, _ = scene
+        _import(scene, TWISTED, tmp_path)
+        joint = stage.GetPrimAtPath(f"/World/robot/{joint_path}")
+        assert joint.IsValid()
+
+        in_parent = self._frame(stage, joint, 0)
+        in_child = self._frame(stage, joint, 1)
+        for row_a, row_b in zip(in_parent, in_child):
+            for a, b in zip(row_a, row_b):
+                assert a == pytest.approx(b, abs=1e-6)
 
 
 class TestAuthoring:

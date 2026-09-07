@@ -53,19 +53,22 @@ def _floats(text, count, default=0.0):
 def _origin(element):
     """A URDF <origin xyz rpy> as a USD transform.
 
-    rpy is fixed-axis roll-pitch-yaw in radians, applied X then Y then Z -- which composes
-    as Rz * Ry * Rx, not the other way round. Getting that order backwards produces a robot
-    whose links are all in plausible-looking wrong places, which is the worst kind of wrong.
+    rpy is fixed-axis roll-pitch-yaw in radians, applied X then Y then Z -- which USD already
+    has a name for, RotationOrderXYZ, so ask USD for the matrix rather than multiplying three
+    rotations here and hoping the order is right. It was not: composing them the way the
+    matrix form reads, Rz * Ry * Rx, is backwards for Gf.Rotation, which composes left to
+    right. That put every link in a plausible-looking wrong place and survived two robots
+    undetected, since a single-axis rpy composes the same either way and only the duck had
+    origins rotating about two axes at once.
     """
     origin = element.find("origin") if element is not None else None
     xyz = _floats(origin.get("xyz") if origin is not None else None, 3)
     rpy = _floats(origin.get("rpy") if origin is not None else None, 3)
 
-    rotation = (
-        Gf.Rotation(Gf.Vec3d(0, 0, 1), math.degrees(rpy[2]))
-        * Gf.Rotation(Gf.Vec3d(0, 1, 0), math.degrees(rpy[1]))
-        * Gf.Rotation(Gf.Vec3d(1, 0, 0), math.degrees(rpy[0]))
-    )
+    rotation = UsdGeom.XformCommonAPI.GetRotationTransform(
+        Gf.Vec3f(*[math.degrees(angle) for angle in rpy]),
+        UsdGeom.XformCommonAPI.RotationOrderXYZ,
+    ).ExtractRotation()
     return Gf.Vec3d(*xyz), rotation
 
 
@@ -286,17 +289,28 @@ def _resolve_mesh(filename, mesh_root):
     `package://pkg/meshes/x.stl` is ROS's own scheme and means nothing outside a ROS
     workspace, so it is resolved against the Mesh Root the user gives -- which is the
     directory the meshes actually sit in, and usually beside the .urdf.
+
+    The package segment is tried both dropped and kept, because Mesh Root is whichever of
+    the two the download happened to leave behind: the package directory itself (drop it,
+    the ROS reading) or the workspace holding it (keep it, so `franka_description/` is part
+    of the path). Guessing one and reporting the other as missing sends the user hunting for
+    a file that is sitting right there.
     """
     if not filename:
         return ""
     path = filename
+    candidates = [path]
     if path.startswith("package://"):
         path = path[len("package://"):]
-        path = path.split("/", 1)[1] if "/" in path else path
-    if os.path.isabs(path) and os.path.exists(path):
-        return path
-    candidate = os.path.join(mesh_root, path) if mesh_root else path
-    return candidate if os.path.exists(candidate) else ""
+        candidates = ([path.split("/", 1)[1], path] if "/" in path else [path])
+    for candidate in candidates:
+        if os.path.isabs(candidate) and os.path.exists(candidate):
+            return candidate
+    for candidate in candidates:
+        resolved = os.path.join(mesh_root, candidate) if mesh_root else candidate
+        if os.path.exists(resolved):
+            return resolved
+    return ""
 
 
 def _author_inertial(prim, link, scale):
@@ -347,8 +361,10 @@ def _author_joint(stage, joint, parent_path, child_path, scale):
     prim.CreateAttribute("physics:localPos0", Sdf.ValueTypeNames.Point3f).Set(
         Gf.Vec3f(*[float(v) for v in position * scale])
     )
+    # The joint frame expressed in the parent: the axis frame within the child, then the
+    # child within the parent. Left-to-right again, so the axis frame comes first.
     prim.CreateAttribute("physics:localRot0", Sdf.ValueTypeNames.Quatf).Set(
-        _to_quat(rotation * axis_rotation)
+        _to_quat(axis_rotation * rotation)
     )
     prim.CreateAttribute("physics:localPos1", Sdf.ValueTypeNames.Point3f).Set(Gf.Vec3f(0, 0, 0))
     prim.CreateAttribute("physics:localRot1", Sdf.ValueTypeNames.Quatf).Set(_to_quat(axis_rotation))
