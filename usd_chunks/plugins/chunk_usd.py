@@ -4562,14 +4562,55 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     # stores plain functions as weakrefs, so without a strong reference the callback is
     # garbage-collected immediately after this function returns. Pinning it onto
     # context_param ensures the lifetime is tied to the param itself.
+    # Shared by both directions below. Two params that write to each other are a loop, and
+    # the value check alone does not close it: a float round-trips through the USD attr as
+    # float32, so the value coming back is not always equal to the one sent, and a drag
+    # could ping-pong instead of settling. The flag makes each user-facing write produce
+    # exactly one write on the other side, whichever end it started from.
+    syncing: list = []
+
     def _forward_to_inner(_owner, _notice, _sender=None):
-        val = context_param.value
-        if val is not None and param.value != val:
-            param.value = val
+        if syncing:
+            return
+        syncing.append(True)
+        try:
+            val = context_param.value
+            if val is not None and param.value != val:
+                param.value = val
+        finally:
+            syncing.clear()
+
+    def _forward_to_context(_owner, _notice, _sender=None):
+        """The mirror: what anything else writes to the inner param shows on the interface.
+
+        Without it the loft only ever pushed downward, so a group published a param that
+        showed a stale value the moment the inner chunk was driven by anything else -- a
+        gizmo drag being the way it was noticed (chunk_gizmo writes `param.value`, exactly
+        like a user would), but a script or another chunk writing that param left the
+        group's interface just as wrong, and a saved file recorded the stale number.
+        """
+        if syncing or getattr(context_param, "_deleting", False):
+            return
+        syncing.append(True)
+        try:
+            val = param.value
+            if val is not None and context_param.value != val:
+                context_param.value = val
+        finally:
+            syncing.clear()
 
     context_param._loft_fwd = _forward_to_inner  # strong-ref pin
     context_param.add_callback(
         _forward_to_inner,
+        notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
+        send_on_create=False,
+        private=True,
+    )
+    # Pinned on the INNER param, whose lifetime this direction follows -- same reason the
+    # forward closure is pinned on the context param.
+    param._loft_back = _forward_to_context
+    param.add_callback(
+        _forward_to_context,
         notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
         send_on_create=False,
         private=True,
