@@ -154,8 +154,7 @@ def main():
             min_value=0,
             flags=ChunkFlags.ParamFlags.LABELED,
             tooltip="Which input slot reaches the output. Out-of-range clamps to the last "
-            "connected slot rather than muting everything.
-"
+            "connected slot rather than muting everything.\n"
             "Drivable by expression -- @Wedge.branch@ picks the branch per variant, so a "
             "sweep can vary structure rather than only values. The value truncates, and a "
             "wedge range is half-open, so use [0, number-of-slots): 0 2 for two inputs, "
