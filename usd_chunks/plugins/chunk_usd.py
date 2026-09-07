@@ -3075,6 +3075,21 @@ def recook_for_view(
             if c in cook_set:
                 inner_view = find_group_active_view(c, stage, scene)
                 synthetic = False
+                if inner_view is not None and not get_exec_upstream_chunks(inner_view, stage, scene):
+                    # A view wired to NOTHING is not an answer to "what does this group
+                    # output" -- it is a default view that never got pointed at anything,
+                    # or one left dangling when the chunk it watched was deleted (an exec
+                    # heal clears the connection when the deleted node had no predecessor
+                    # to inherit). Taken literally it means the group cooks nothing at all:
+                    # its contents go blocked and muted, it stops feeding everything
+                    # downstream of it, and there is no sign of why. Live-reported as a
+                    # chunkgroup's Duplicate Prim being invisible from the group wired after
+                    # it, with the copy simply absent from the stage.
+                    #
+                    # Fall through to the exec-tail fallback below, which is the same
+                    # question ("what is the end of this group's chain") asked of a group
+                    # whose view is missing rather than empty.
+                    inner_view = None
                 if inner_view is None:
                     # No real inner view chunk -- the common case for a group whose
                     # contents were never explicitly given one (view chunks are
