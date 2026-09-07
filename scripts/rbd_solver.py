@@ -2684,10 +2684,25 @@ def _only_presentation_changed(sender) -> bool:
         return False
 
 
+def _is_headless() -> bool:
+    """No UI, so no event loop and nobody to press a button."""
+    return chunk_registry.ChunkRegistry().plugin in (None, "", "cli")
+
+
 def _schedule_auto_run(root_chunk) -> None:
     """Debounce auto-runs: a sim bake is comparatively expensive, so wait for input changes to
     settle for _AUTO_RUN_DELAY_MS before re-running, rather than baking on every keystroke/drag
-    tick while a param is being edited."""
+    tick while a param is being edited.
+
+    Headless there is nothing to debounce -- no keystrokes, no drag ticks -- and worse, no Qt
+    event loop, so a QTimer never fires at all. Scheduling there means the bake silently never
+    happens and the network cooks to a motionless scene that looks entirely plausible. Run it
+    synchronously instead.
+    """
+    if _is_headless():
+        _run(root_chunk, None, None)
+        return
+
     timer = getattr(root_chunk, "_auto_run_timer", None)
     if timer is None:
         timer = QtCore.QTimer()
@@ -2725,13 +2740,22 @@ def main() -> chunk.Chunk:
     reset_btn.add_callback(reset)
     chunk_api.add_param(reset_btn)
 
+    # On by default headless, off in a UI. The reason it is off interactively is that a bake
+    # is expensive and the user can see the orange "needs simulation" border and press the
+    # button. Neither is true in `usdchunks run` or a sweep: nobody is watching a border and
+    # nobody can press anything, so cooking the network produced a chunk that quietly baked
+    # nothing and a scene that rendered a motionless, entirely plausible-looking result.
+    interactive = not _is_headless()
     auto_sim = chunk.Checkbox(
         "auto_sim",
         "Auto Simulate",
-        default_value=False,
-        tooltip="Automatically re-run the simulation shortly after any input changes. Off by "
-        "default since a bake is comparatively expensive -- watch the node's orange border "
-        "(needs simulation) and press Run Simulation manually for heavy scenes.",
+        default_value=not interactive,
+        tooltip="Automatically re-run the simulation shortly after any input changes.\n"
+        "Off by default in a UI since a bake is comparatively expensive -- watch the "
+        "node's orange border (needs simulation) and press Run Simulation manually for "
+        "heavy scenes.\n"
+        "On by default headless, where there is no border to watch and no button to "
+        "press, so a cook that did not simulate would silently bake nothing.",
     )
     auto_sim.add_callback(_on_auto_sim_toggled)
     chunk_api.add_param(auto_sim)
