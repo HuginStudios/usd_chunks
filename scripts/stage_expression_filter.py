@@ -32,7 +32,7 @@ from __future__ import annotations
 import fnmatch
 import re
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins import chunk_usd
 
@@ -71,9 +71,11 @@ def _matches(value: str, pattern: str, mode: str) -> bool:
 
 
 def _record(node, chunks) -> None:
+    """Record what was muted, by PRIM PATH -- a name is unique only within one context, so
+    two chunks in different chunkgroups may legitimately share one."""
     param = node.get_param(_MUTED_PARAM)
     if param is not None:
-        param.value = "\n".join(sorted(c.name for c in chunks))
+        param.value = "\n".join(sorted(chunk_usd.get_chunk_prim_path(c) for c in chunks))
 
 
 def _recorded(node) -> set:
@@ -127,10 +129,22 @@ def execute(node):
 
     # Muted by an earlier evaluation and no longer upstream of this filter at all: leaving
     # it blocked would strand a branch the user has already disconnected.
-    live_names = {c.name for c in muted} | {c.name for c in keep}
-    for name in _recorded(node) - live_names:
-        for c in inputs:
-            if c.name == name:
+    # Resolved against the whole scene, by prim path. The record is transitive -- muting a
+    # branch means the whole branch -- so most of what it holds was never a direct input of
+    # this filter, and searching only `inputs` found nothing beyond a one-chunk branch:
+    # everything deeper stayed blocked and muted for the rest of the session with no way
+    # back, which is the exact case this record exists to prevent. By path rather than
+    # name, since a name is unique only within one context.
+    stranded = _recorded(node) - {
+        chunk_usd.get_chunk_prim_path(c) for c in muted | keep
+    }
+    if stranded:
+        by_path = {
+            chunk_usd.get_chunk_prim_path(c): c
+            for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+        }
+        for path in stranded:
+            if (c := by_path.get(path)) is not None:
                 chunk_usd.set_chunk_muted(stage, c, False)
 
     _record(node, muted)

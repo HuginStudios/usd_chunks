@@ -330,3 +330,36 @@ def test_add_dependency_fills_the_slots_in_order(scene):
     assert len(slot0) == 1 and len(slot1) == 1
     assert chunk_usd.get_chunk_prim_path(stream) in str(slot0[0])
     assert chunk_usd.get_chunk_prim_path(gated) in str(slot1[0])
+
+
+def test_an_unwired_branch_is_released_even_when_it_is_more_than_one_chunk_deep(scene):
+    """The `muted` record exists so a branch that stops being gated is un-muted.
+
+    It records the whole branch, since muting one means muting all of it -- but the release
+    only ever searched the filter's DIRECT inputs, so anything further up a branch was
+    never found and stayed blocked and muted for the rest of the session, with no way back.
+    Only a one-chunk branch was ever released, which is why the other tests do not see it.
+    """
+    stage, sender = scene
+    stream = _place(sender, "stream", "/a", 1.0)
+    # The gated branch is two deep: inner feeds slot_chunk, which is what the filter sees.
+    inner = _place(sender, "inner", "/b", 5.0)
+    slot_chunk = _place(sender, "slot", "/b", 7.0)
+    _wire(stage, slot_chunk, inner)
+
+    node = _mk(sender, filter_mod, "filter", "stage_expression_filter")
+    node.get_param("value").value = "sh010"
+    node.get_param("pattern").value = "sh99*"  # a miss: the gated branch is muted
+    _wire(stage, node, stream, slot_chunk)
+    node.execute()
+    assert inner.is_blocked(), "the gate is shut, so the whole gated branch is muted"
+
+    # The user unwires the gated branch from the filter entirely. _wire only rewrites the
+    # slots it is given, so slot 1 has to be cleared rather than left pointing at it.
+    prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(node)))
+    prim.GetAttribute(chunk_usd.exec_input_name(1)).SetConnections([])
+    node.execute()
+
+    assert not inner.is_blocked(), (
+        "nothing is gating inner any more -- it is not upstream of the filter at all"
+    )
