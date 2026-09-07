@@ -2351,7 +2351,7 @@ def _write_articulated_results(stage, roots, layer, results, start_frame,
     written = 0
 
     with Usd.EditContext(stage, layer):
-        for link in (l for root in roots for l in _iter_links(root)):
+        for link in (found for root in roots for found in _iter_links(root)):
             mats = results.get(link.name)
             if not mats:
                 continue
