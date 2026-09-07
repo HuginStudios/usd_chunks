@@ -3265,6 +3265,15 @@ def recook_focus(
             )
             parent_path = str(Sdf.Path(node_path).GetParentPath())
             node = by_path.get(parent_path)
+        # An upstream GROUP authors nothing of its own -- all of its content lives in its
+        # children's layers -- so keeping only the group's own (empty) layer keeps nothing at
+        # all. Live-reported: wire chunkgroup A -> chunkgroup B, dive into B, and A's prims
+        # are gone from the stage, so B's inner chunks cook against a stage their input isn't
+        # on. It looked like a group could only reach another group's stage through a data
+        # wire, because lofting/connecting the group's Description authors a connection from
+        # the group prim DOWN to an inner chunk -- which is exactly what put those inner
+        # chunks into get_exec_upstream_chunks' node-level answer in the first place.
+        keep_prefixes = tuple(u + "/" for u in upstream_keep)
         for c in scene.get_chunks():
             if is_view_chunk(c):
                 continue
@@ -3272,7 +3281,10 @@ def recook_focus(
             # Keep the focused group itself and its descendants — recook_for_view handles those.
             if cp == group_path or cp.startswith(inside_prefix):
                 continue
-            if cp in upstream_keep:
+            if cp in upstream_keep or (keep_prefixes and cp.startswith(keep_prefixes)):
+                # Leave an upstream group's internals exactly as the parent context's cook
+                # left them: whichever of its children that cook muted (outside the group's
+                # own active view) stay muted, and the ones driving its output stay composed.
                 continue
             # NEVER block a context/container (a tab or group). is_blocked() climbs the owner
             # chain, so blocking the focused group's ANCESTOR would propagate down and block the
