@@ -88,9 +88,15 @@ def _set_muted(node, target, muted: bool) -> bool:
 
 
 def _record(node, chunks) -> None:
+    """Record what was muted, by PRIM PATH.
+
+    Not by name: a name is only unique within one context, so two chunks in different
+    chunkgroups may legitimately share one, and releasing "the chunk called b" would pick
+    whichever of them came first.
+    """
     param = node.get_param(_MUTED_PARAM)
     if param is not None:
-        param.value = "\n".join(sorted(c.name for c in chunks))
+        param.value = "\n".join(sorted(chunk_usd.get_chunk_prim_path(c) for c in chunks))
 
 
 def _recorded(node) -> set:
@@ -131,11 +137,22 @@ def execute(node):
     for c in keep:
         _set_muted(node, c, False)
 
-    for name in _recorded(node) - {c.name for c in muted} - {c.name for c in keep}:
-        # Muted by an earlier index and no longer upstream of this Switch at all: leaving it
-        # blocked would strand a branch the user has already disconnected.
-        for c in inputs:
-            if c.name == name:
+    # Muted by an earlier index and no longer upstream of this Switch at all: leaving it
+    # blocked would strand a branch the user has already disconnected.
+    #
+    # Resolved against the whole scene, not against `inputs`. The record is transitive --
+    # that is the point of it -- so most of what it holds was never a direct input of this
+    # Switch, and searching only the slots found nothing beyond a one-chunk branch.
+    # Everything deeper stayed blocked and muted for the rest of the session with no way
+    # back, which is the exact case this record exists to prevent.
+    stranded = _recorded(node) - {chunk_usd.get_chunk_prim_path(c) for c in muted | keep}
+    if stranded:
+        by_path = {
+            chunk_usd.get_chunk_prim_path(c): c
+            for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+        }
+        for path in stranded:
+            if (c := by_path.get(path)) is not None:
                 _set_muted(node, c, False)
 
     _record(node, muted)

@@ -250,3 +250,34 @@ def test_the_index_can_be_driven_by_an_expression(scene):
     assert seen == {0, 1}, (
         f"the wedge never flipped the switch: only branch {seen} was ever selected"
     )
+
+
+def test_an_unwired_branch_is_released_even_when_it_is_more_than_one_chunk_deep(scene):
+    """The `muted` record exists so a branch that stops being upstream is un-muted.
+
+    It records the whole branch, since the walk is transitive -- that is the point of it --
+    but the release only ever searched the Switch's DIRECT inputs, so anything further up a
+    branch was never found and stayed blocked and muted for the rest of the session, with
+    no way back. Only a one-chunk branch was ever released.
+    """
+    stage, sender = scene
+    a = _place(sender, "a_move", "/a", 1.0)
+    # Branch B is two deep: b_inner feeds b_slot, and b_slot is what the Switch sees.
+    b_inner = _place(sender, "b_inner", "/b", 5.0)
+    b_slot = _place(sender, "b_slot", "/b", 7.0)
+    _wire(stage, b_slot, b_inner)
+
+    sw = _mk(sender, switch_mod, "switch", "switch")
+    _wire(stage, sw, a, b_slot)
+    sw.get_param("index").value = 0
+    sw.execute()
+    assert b_inner.is_blocked(), "branch B is not selected, so the whole branch is muted"
+
+    # The user unwires branch B from the Switch entirely.
+    _wire(stage, sw, a)
+    sw.execute()
+
+    assert not b_inner.is_blocked(), (
+        "nothing is suppressing b_inner any more -- it is not upstream of the Switch at all"
+    )
+    assert _height(stage, "/b") == 7.0 + 5.0, "and its edit composes again"
