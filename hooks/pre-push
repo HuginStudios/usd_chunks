@@ -1,0 +1,70 @@
+#!/bin/sh
+# The real gate: the same two commands CI runs, before the push that would have run them
+# there -- `ruff check .` then the full suite.
+#
+# The suite is not green today, and pretending otherwise would make this hook cry wolf on
+# its first run -- after which everyone reaches for --no-verify and it protects nothing.
+# So a failure only blocks if it is NOT in hooks/known-failures.txt. That file is a debt
+# list: it should only ever shrink, and the hook tells you when an entry starts passing so
+# you can delete it.
+#
+# Escape hatch: git push --no-verify, or USD_CHUNKS_SKIP_PREPUSH=1.
+. "$(git rev-parse --show-toplevel)/hooks/_common.sh"
+run_local_hook pre-push "$@"
+
+[ -n "$USD_CHUNKS_SKIP_PREPUSH" ] && exit 0
+
+root="$(git rev-parse --show-toplevel)"
+baseline="$root/hooks/known-failures.txt"
+out="$(mktemp)"
+got="$(mktemp)"
+want="$(mktemp)"
+trap 'rm -f "$out" "$got" "$want"' EXIT
+
+if command -v ruff > /dev/null 2>&1; then
+    say "pre-push: ruff check ."
+    ruff check "$root" || {
+        say "pre-push: ruff failed. Fix, or push with --no-verify."
+        exit 1
+    }
+fi
+
+say "pre-push: pytest (full suite, a few minutes -- Ctrl-C, or push with --no-verify, to skip)"
+python -m pytest "$root/tests" -q -rf > "$out" 2>&1
+status=$?
+
+# pytest exit codes: 0 all passed, 1 tests failed. Anything else -- a collection error, an
+# interrupt, an internal error -- is not a result this hook can reason about, so show it
+# rather than quietly deciding the baseline covers it.
+if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+    tail -30 "$out" >&2
+    say "pre-push: pytest exited $status (not a test failure). Blocking."
+    exit 1
+fi
+
+grep '^FAILED ' "$out" | sed 's/^FAILED //; s/ - .*//' | sort -u > "$got"
+if [ -f "$baseline" ]; then
+    grep -v '^[[:space:]]*#' "$baseline" | sed '/^[[:space:]]*$/d' | sort -u > "$want"
+else
+    : > "$want"
+fi
+
+new=$(comm -23 "$got" "$want")
+fixed=$(comm -13 "$got" "$want")
+
+if [ -n "$fixed" ]; then
+    say ""
+    say "pre-push: these are in hooks/known-failures.txt but PASSED -- please delete them from it:"
+    printf '  %s\n' $fixed >&2
+fi
+
+if [ -n "$new" ]; then
+    say ""
+    say "pre-push: failures that are not in hooks/known-failures.txt:"
+    printf '  %s\n' $new >&2
+    say ""
+    say "Fix them, or push with --no-verify if you know better."
+    exit 1
+fi
+
+say "pre-push: ok (known failures only)"
