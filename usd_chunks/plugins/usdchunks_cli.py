@@ -18,7 +18,14 @@ from pathlib import Path
 
 from pxr import Usd, UsdUtils
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
-from usd_chunks.plugins.chunk_usd import ChunkLayerManager, ChunkStageSync, commit_order_from_stage
+from usd_chunks.plugins.chunk_usd import (
+    ChunkLayerManager,
+    ChunkStageSync,
+    commit_order_from_stage,
+    find_group_active_view,
+    is_view_chunk,
+    recook_focus,
+)
 
 
 # ANSI colors for CLI output
@@ -333,6 +340,41 @@ def cmd_pin(args):
     print(f"Prepend to USD_CHUNK_DIRS:  {result.pin_dir}")
 
 
+def _active_view(stage, scene):
+    """The view chunk that drives the stage, or None if the file has none.
+
+    A network is only worth cooking if something looks at it. The UI has always worked this
+    way -- recook_focus establishes the active view and mutes everything the view cannot
+    reach -- while headless ran every root and composed the lot, so `run` produced a
+    superset of what the graph showed. A file with two experiments in it exported both.
+
+    Views are found by walking every chunk, not by asking the top-level ones for theirs: a
+    view can sit beside its branch at the top level rather than inside a group, and
+    find_group_active_view only looks *within* the context it is given.
+
+    A context that names an active view wins, since that is the slot the user last drove the
+    graph from. Otherwise the first view found is as good an answer as any -- with one view
+    in the file there is no choice to make.
+
+    None means the file predates views or never set one, and the caller falls back to
+    cooking everything, because silently producing nothing for every existing recipe would
+    be worse than the inconsistency this fixes.
+    """
+    everything = list(_all_chunks(scene.get_chunks()))
+    views = [c for c in everything if is_view_chunk(c)]
+    if not views:
+        return None
+
+    for c in everything:
+        if is_view_chunk(c):
+            continue
+        if not c.has_flag(chunk.ChunkFlags.GroupFlags.CONTEXT):
+            continue
+        if (named := find_group_active_view(c, stage, scene)) is not None:
+            return named
+    return views[0]
+
+
 def cmd_run(args):
     stage = Usd.Stage.Open(args.usda)
     if not stage:
@@ -360,6 +402,17 @@ def cmd_run(args):
     if args.params:
         _parse_param_overrides(scene, args.params)
         _re_execute_roots(scene.get_chunks())
+
+    # Establish the active view, exactly as the UI does on focus. load_chunks has already
+    # executed every dependency-free chunk by this point -- in the UI the view recook then
+    # mutes whatever the view cannot reach, and headless simply never ran that step. Two
+    # execution models for one file is the actual bug; this is the one line that ends it.
+    #
+    # After the overrides, so a sweep's `Wedge.current_index=i` is in effect before the cook
+    # set runs.
+    view = None if getattr(args, "all", False) else _active_view(stage, scene)
+    if view is not None:
+        recook_focus(stage, scene, None, view)
 
     # The solve has settled, so anything the network declared as an output on disk (an
     # Export USD chunk, ...) gets written now — before --export/--printout report on the
@@ -406,7 +459,7 @@ def _variant_dir(out, index):
     return os.path.join(out, "variant_%05d" % index)
 
 
-def _run_variant(usda, wedge_name, index, out, procedural):
+def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False):
     """One variant, in its own process.
 
     A process per variant rather than a loop: the registry and stage-sync singletons hold
@@ -423,6 +476,8 @@ def _run_variant(usda, wedge_name, index, out, procedural):
     ]
     if procedural:
         cmd.append("--procedural")
+    if cook_all:
+        cmd.append("--all")
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return index, proc.returncode, proc.stdout.decode(errors="replace")
 
@@ -458,7 +513,7 @@ def cmd_sweep(args):
     print("Sweeping %d variant(s) of %s -> %s" % (len(indices), name, args.out))
 
     def one(i):
-        return _run_variant(args.usda, name, i, args.out, args.procedural)
+        return _run_variant(args.usda, name, i, args.out, args.procedural, args.all)
 
     failed = []
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
@@ -498,7 +553,7 @@ def _verify(args, name, indices):
     print("Verifying %d variant(s) of %s against %s" % (len(indices), name, args.out))
     with tempfile.TemporaryDirectory(prefix="usdchunks-verify-") as scratch:
         def one(i):
-            return _run_variant(args.usda, name, i, scratch, args.procedural)
+            return _run_variant(args.usda, name, i, scratch, args.procedural, args.all)
 
         identical, differing, errored = [], [], []
         with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
@@ -614,7 +669,10 @@ def main():
         description=(
             "Load and execute a USD chunk network. Each chunk's execute() is called in\n"
             "topological order (DAG solve). Param overrides are applied after load.\n"
-            "Use --export or --printout to inspect the composed result."
+            "Use --export or --printout to inspect the composed result.\n\n"
+            "Only the network the file's active view reaches is cooked -- the same rule the\n"
+            "UI applies on focus, so `run` produces what the graph shows rather than a\n"
+            "superset of it. A file with no view cooks everything, and --all forces that."
         ),
         epilog=(
             "Examples:\n"
@@ -640,6 +698,12 @@ def main():
     )
     run_parser.add_argument(
         "--printout", "-p", action="store_true", help="Print the flattened stage to stdout, Chunk prims stripped"
+    )
+    run_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Cook every network in the file, not just the one the active view reaches. "
+             "The old behaviour, for a file whose side branches are meant to run",
     )
 
     info_parser = sub.add_parser(
@@ -728,6 +792,10 @@ def main():
     )
     sweep_parser.add_argument(
         "--procedural", action="store_true", help="Keep Chunk prims in each export"
+    )
+    sweep_parser.add_argument(
+        "--all", action="store_true",
+        help="Cook every network per variant, not just what the active view reaches",
     )
     sweep_parser.add_argument(
         "--verify", action="store_true",
