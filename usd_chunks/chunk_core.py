@@ -4501,6 +4501,13 @@ class ChunkConfig(AttributesBase):
     module: str = attrs.field(default="")
     interactive: bool = attrs.field(default=False)
     terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
+    # How many exec input slots the chunk has. 1 is the ordinary case: one inputs:chunk
+    # port, which may still carry several wires stacked on it. Above 1 the slots are
+    # POSITIONAL and each gets its own port -- Stage Expression Filter's slot 0 is the
+    # stream it always forwards and slot 1 the branch it gates, so which wire landed where
+    # is the whole meaning. A Merge is neither: its slot count grows with what is wired
+    # into it, which is is_merge_chunk's business, not this field's.
+    exec_inputs: int = attrs.field(default=1)
     outputs: list[tuple[str, str]] = attrs.field(factory=list)  # extra typed output ports: [(name, SdfTypeName), ...]
     variants: list[tuple[str, dict]] = attrs.field(factory=list)  # extra menu entries: [(label, {param: value}), ...]
     gizmos: list[GizmoBase] = attrs.field(factory=list)  # viewport handles: authored as ui:gizmo:* on the chunk prim

@@ -1042,17 +1042,28 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         existing_conns = exec_input_connections(dep_prim)
         if src_path in existing_conns:
             return
-        if is_merge_prim(dep_prim):
+        slots = exec_input_slots_for_prim(dep_prim)
+        if is_merge_prim(dep_prim) or slots > 1:
             # A merge holds exactly one connection per slot. Stacking a second target onto
             # slot 0 (what the branch below does) would collapse two branches into a single
             # port and destroy the ordering the slots exist to express, so author into the
             # first free slot instead — appending the new branch as the weakest. Density is
             # guaranteed by normalize_merge_slots, so the free slot is just the count.
+            #
+            # A fixed-slot chunk (config.exec_inputs > 1) wants the same placement for a
+            # different reason: its slots are positional, so add_dependency filling slot 0
+            # twice would silently make the second branch mean what the first does. Past the
+            # last slot the wire stacks onto slot 0 rather than inventing a port the chunk
+            # does not have -- add_dependency has no port to have been dropped on, so
+            # refusing outright would lose the edge with nothing to show for it.
+            index = len(existing_conns)
+            if not is_merge_prim(dep_prim) and index >= slots:
+                index = 0
             with self._chunk_prim_edit_context(dependent):
                 exec_in = dep_prim.CreateAttribute(
-                    exec_input_name(len(existing_conns)), Sdf.ValueTypeNames.Token, custom=False
+                    exec_input_name(index), Sdf.ValueTypeNames.Token, custom=False
                 )
-                exec_in.SetConnections([src_path])
+                exec_in.SetConnections(list(exec_in.GetConnections()) + [src_path])
         else:
             with self._chunk_prim_edit_context(dependent):
                 exec_in = dep_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
@@ -1832,6 +1843,93 @@ def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
     takes more than one exec input."""
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "merge")
+
+
+def exec_input_slots(chunk: "core.ChunkBase") -> int:
+    """How many positional exec input ports this chunk has.
+
+    1 for almost everything -- one inputs:chunk that several wires may stack on. Above 1
+    the slots mean different things and each gets its own port, which is what a Stage
+    Expression Filter needs: forwarding slot 0 and gating slot 1 is not a property a merge
+    ordering can express.
+
+    A Merge answers 1 here and is handled by is_merge_chunk instead: its slots are dense
+    and grow with what is wired in, so a fixed count is the wrong question for it.
+    """
+    cfg = chunk.get_config()
+    return max(1, int(getattr(cfg, "exec_inputs", 1) or 1)) if cfg else 1
+
+
+def exec_input_slots_for_prim(prim: "Usd.Prim") -> int:
+    """exec_input_slots for a bare prim -- used by the node graph, which builds ports from
+    the stage and may have no live chunk object to ask.
+
+    Read off the registry's discovery-time config rather than by importing the module: the
+    config is parsed when chunks are found, so this costs a dict lookup and never triggers
+    a module load while a scene is being built.
+    """
+    if not (prim and prim.IsValid()):
+        return 1
+    attr = prim.GetAttribute(_CHUNK_TYPE_ATTR)
+    module_name = attr.Get() if attr and attr.IsValid() else None
+    if not module_name:
+        return 1
+    module = chunk_registry.ChunkRegistry().get_chunk_module(str(module_name))
+    cfg = getattr(module, "config", None) if module else None
+    return max(1, int(getattr(cfg, "exec_inputs", 1) or 1)) if cfg else 1
+
+
+def upstream_chunks(chunk: "core.ChunkBase", seen: "set | None" = None) -> set:
+    """`chunk` and everything upstream of it on the exec chain.
+
+    Transitive, because suppressing a branch has to suppress the whole branch and not
+    merely the chunk plugged into the slot -- the rest of it would carry on authoring into
+    the composed stage.
+
+    Guarded against revisiting: a diamond (two branches sharing a source) would otherwise
+    walk the shared part once per path, and a cycle would not terminate at all.
+    """
+    seen = set() if seen is None else seen
+    if any(c is chunk for c in seen):
+        return seen
+    seen.add(chunk)
+    for dep in exec_dependencies(chunk):
+        upstream_chunks(dep, seen)
+    return seen
+
+
+def set_chunk_muted(stage: "Usd.Stage", target: "core.ChunkBase", muted: bool) -> bool:
+    """Block or unblock one chunk and mute or unmute its layer.
+
+    Blocking is the engine's own lever, deliberately not the DISABLED state: DISABLED
+    belongs to the user, who sets it by hand and expects it to stay. A chunk reaching in to
+    set and clear it on chunks it does not own means every flip risks undoing theirs.
+    ChunkLayerManager already guards the two against each other, so a blocked layer is never
+    un-muted by the disable path.
+
+    Never a context (a tab or group): is_blocked() climbs the owner chain, so blocking a
+    container would propagate down and block its whole subtree, including branches the
+    caller meant to keep. Containers author nothing of their own -- their leaves are handled
+    individually by the caller's loop, exactly as recook_for_view does it.
+
+    Returns:
+        bool: True if target was a chunk this can act on (i.e. not a context)
+    """
+    if target.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+        return False
+
+    target.set_blocked(muted)
+    layer = chunk_registry.ChunkLayerManager().get_layer(target)
+    if stage is None or layer is None:
+        return True
+    # stage.Mute/UnmuteLayer, not layer.SetMuted: SetMuted recomposes lazily and expires
+    # prims, which is the "chunk layers disappear" bug the rest of the codebase avoids the
+    # same way.
+    if muted:
+        stage.MuteLayer(layer.identifier)
+    else:
+        stage.UnmuteLayer(layer.identifier)
+    return True
 
 
 def is_merge_prim(prim: "Usd.Prim") -> bool:

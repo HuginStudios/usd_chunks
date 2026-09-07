@@ -837,6 +837,15 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._is_view = _chunk_type == "view"
         self._is_dot = _chunk_type == "dot"
         self._is_merge = _chunk_type == "merge"
+        # Positional exec input slots (config.exec_inputs). >1 gives the node one port per
+        # slot on a node that still has a body -- unlike a merge, which has no body at all
+        # and grows its slots from what is wired in.
+        self._exec_slots = chunk_usd.exec_input_slots_for_prim(prim)
+        # Every exec input port, in slot order. _exec_in_port stays the primary (slot 0),
+        # which is what splice-on-drop and wire-drop targeting mean by "this node's input";
+        # this list is what port rebuilds have to restore, and losing it is how a second
+        # slot's port silently disappears the first time the body relayouts.
+        self._exec_in_ports: list[ChunkPortItem] = []
         self._chunk_type_label = str(_chunk_type or "")  # cached: paint must not read USD
         self._disabled = chunk.has_state(ChunkFlags.State.DISABLED)
         self._lod_simple = False  # see set_body_visible
@@ -921,6 +930,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             )
             self._exec_in_port.setPos(0, _DOT_R)
             self._ports.append(self._exec_in_port)
+            self._exec_in_ports = [self._exec_in_port]
             self._exec_out_port = ChunkPortItem(
                 f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
             )
@@ -947,6 +957,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # Everything that asks a node for "its" exec input (splice-on-drop, wire-drop
             # targeting) should get the primary one, which is slot 0 — the strongest.
             self._exec_in_port = self._ports[0]
+            self._exec_in_ports = list(self._ports)
             self._height = max(
                 _NODE_HEADER_H, _MERGE_PORT_TOP * 2 + (slots - 1) * _MERGE_PORT_SPACING
             )
@@ -960,11 +971,18 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         # Exec ports only — lightweight, no widget creation.
         # Proxy (ChunkWidget) is created later via create_proxy() to allow batched deferred loading.
-        self._exec_in_port = ChunkPortItem(
-            f"{prim.GetPath()}.inputs:chunk", _PORT_EXEC, parent=self
-        )
-        self._exec_in_port.setPos(0, _NODE_HEADER_H // 2)
-        self._ports.append(self._exec_in_port)
+        # Spread across the header band rather than down the left edge: the slots stay
+        # clear of the body below, so a node keeps its measured height and nothing has to
+        # wait for the body to settle before the ports are placeable.
+        self._exec_in_ports = []
+        for i in range(self._exec_slots):
+            port = ChunkPortItem(
+                f"{prim.GetPath()}.{chunk_usd.exec_input_name(i)}", _PORT_EXEC, parent=self
+            )
+            port.setPos(0, _NODE_HEADER_H * (i + 1) / (self._exec_slots + 1))
+            self._ports.append(port)
+            self._exec_in_ports.append(port)
+        self._exec_in_port = self._exec_in_ports[0]
 
         if prim.HasAttribute("outputs:chunk"):
             self._exec_out_port = ChunkPortItem(
@@ -1104,7 +1122,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if scene:
                 scene.removeItem(port)
         self._typed_ports.clear()
-        self._ports = [p for p in [self._exec_in_port, self._exec_out_port] if p is not None]
+        # Every exec input, not just self._exec_in_port: a fixed-slot node has a body (so it
+        # reaches this rebuild, unlike a merge) and rebuilding from the primary alone would
+        # drop its other slots' ports on the first body relayout.
+        self._ports = [p for p in (*self._exec_in_ports, self._exec_out_port) if p is not None]
         if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
             # Proxy is hidden — place ports at header centre using param list alone.
             self._place_param_ports_collapsed()
