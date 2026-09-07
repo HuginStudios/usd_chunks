@@ -214,9 +214,19 @@ def iter_shader_defs(source_type: str = "") -> Iterator[ShaderDef]:
     Yields:
         ShaderDef: One per parseable shader.
     """
-    reg = Sdr.Registry()
+    try:
+        reg = Sdr.Registry()
+        names = _first_attr(reg, _REGISTRY_METHODS["names"]) or ()
+    except Exception as e:  # noqa: BLE001 - discovery is best-effort, like the parse below
+        # Building the registry at all can fail, not just parsing one definition: it walks
+        # every installed plugin's advertised shaders, and one bad entry takes the lot.
+        # Seen on a USD 26.05 build -- "Invalid version 0.0: both components must be
+        # non-negative and at least one non-zero" -- where nothing usd_chunks owns is
+        # involved and there is nothing for a caller to do but carry on with no shaders.
+        logger.warning("Shader registry unavailable, no shader definitions: %s", e)
+        return
 
-    for name in _first_attr(reg, _REGISTRY_METHODS["names"]) or ():
+    for name in names:
         node = None
         if source_type:
             node = _first_attr(reg, _REGISTRY_METHODS["by_name_type"], str(name), source_type)
