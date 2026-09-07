@@ -1,12 +1,12 @@
 #!/bin/sh
 # The real gate: the same two commands CI runs, before the push that would have run them
-# there -- `ruff check .` then the full suite.
+# there -- `ruff check` then the full suite.
 #
 # The suite is not green today, and pretending otherwise would make this hook cry wolf on
 # its first run -- after which everyone reaches for --no-verify and it protects nothing.
-# So a failure only blocks if it is NOT in hooks/known-failures.txt. That file is a debt
-# list: it should only ever shrink, and the hook tells you when an entry starts passing so
-# you can delete it.
+# So a failure only blocks if it is in neither baseline file (see below). They are debt
+# lists: they should only ever shrink, and the hook tells you when an entry starts passing
+# so you can delete it.
 #
 # Escape hatch: git push --no-verify, or USD_CHUNKS_SKIP_PREPUSH=1.
 . "$(git rev-parse --show-toplevel)/hooks/_common.sh"
@@ -15,7 +15,6 @@ run_local_hook pre-push "$@"
 [ -n "$USD_CHUNKS_SKIP_PREPUSH" ] && exit 0
 
 root="$(git rev-parse --show-toplevel)"
-baseline="$root/hooks/known-failures.txt"
 out="$(mktemp)"
 got="$(mktemp)"
 want="$(mktemp)"
@@ -37,7 +36,7 @@ fi
 say "pre-push: pytest (full suite, a few minutes -- Ctrl-C, or push with --no-verify, to skip)"
 # --color=no matters: pytest colours its output even when it is redirected to a file (it
 # does so here), and the escape codes sit in front of the word FAILED, so the summary parse
-# below silently matched nothing and every run looked green.
+# below silently matched nothing and the whole run read as green.
 python -m pytest "$root/tests" -q -rf --color=no > "$out" 2>&1
 status=$?
 
@@ -50,17 +49,11 @@ if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
     exit 1
 fi
 
-grep '^FAILED ' "$out" | sed 's/
-$//; s/^FAILED //; s/ - .*//' | sort -u > "$got"
+# tr -d, not a sed escape: everything here is written and read on Windows, so both pytest's
+# output and a checked-out baseline carry CRLF, and a stray carriage return on the end of a
+# node id makes it match nothing on either side.
+tr -d '\r' < "$out" | grep '^FAILED ' | sed 's/^FAILED //; s/ - .*//' | sort -u > "$got"
 
-# pytest said something failed but nothing could be read out of its summary: the parse is
-# broken, not the suite. Block -- a gate that cannot see failures must not report success.
-if [ "$status" -eq 1 ] && [ ! -s "$got" ]; then
-    tail -30 "$out" >&2
-    say "pre-push: pytest reported failures, but none could be parsed from its output."
-    say "pre-push: refusing to call that a pass. Push with --no-verify if you must."
-    exit 1
-fi
 # Two lists, both optional. known-failures.txt is shared and is about the code -- what
 # fails on main for everyone. known-failures.local.txt is yours, gitignored, and is for
 # what only fails on YOUR machine: a scratch chunk in scripts/ that trips test_chunk_deps,
@@ -68,24 +61,33 @@ fi
 # matters in both directions -- they would mask a real regression for everyone else, and
 # the "this passed, delete it" report would nag whoever does not share your environment.
 : > "$want"
-for f in "$baseline" "$root/hooks/known-failures.local.txt"; do
+for f in "$root/hooks/known-failures.txt" "$root/hooks/known-failures.local.txt"; do
     [ -f "$f" ] || continue
-    grep -v '^[[:space:]]*#' "$f" | sed '/^[[:space:]]*$/d' >> "$want"
+    tr -d '\r' < "$f" | grep -v '^[[:space:]]*#' | sed '/^[[:space:]]*$/d' >> "$want"
 done
 sort -u -o "$want" "$want"
+
+# A gate that cannot see failures must never report success: if pytest says something
+# failed and nothing could be read out of its summary, the parse is broken, not the suite.
+if [ "$status" -eq 1 ] && [ ! -s "$got" ]; then
+    tail -30 "$out" >&2
+    say "pre-push: pytest reported failures, but none could be parsed from its output."
+    say "pre-push: refusing to call that a pass. Push with --no-verify if you must."
+    exit 1
+fi
 
 new=$(comm -23 "$got" "$want")
 fixed=$(comm -13 "$got" "$want")
 
 if [ -n "$fixed" ]; then
     say ""
-    say "pre-push: these are in hooks/known-failures.txt but PASSED -- please delete them from it:"
+    say "pre-push: these are in a known-failures list but PASSED -- please delete them:"
     printf '  %s\n' $fixed >&2
 fi
 
 if [ -n "$new" ]; then
     say ""
-    say "pre-push: failures that are not in hooks/known-failures.txt:"
+    say "pre-push: failures that are in neither known-failures list:"
     printf '  %s\n' $new >&2
     say ""
     say "Fix them, or push with --no-verify if you know better."
