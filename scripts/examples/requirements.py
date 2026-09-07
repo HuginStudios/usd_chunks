@@ -50,5 +50,5 @@ def config():
         chunk.StandardCategory.EXAMPLES,
         "Example showing chunk requirements on external packages. The requirements are "
         "installed if not found in the current environment.",
-        requirements=["opencv-python", "numpy"],
+        requirements=["opencv-python>=4,<5", "numpy>=2,<3"],
     )

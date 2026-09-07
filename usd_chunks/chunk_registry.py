@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import weakref
 import os
+import functools
+import re
 import sys
 from pathlib import Path
 from importlib import util
@@ -121,6 +123,11 @@ class ChunkEnvVar(Generic[_T]):
 USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", [], True)
 # A chunk module is a Python file. This is the only file extension the framework loads.
 PY_MODULE_EXT = ".py"
+
+#: Discovery cache for ChunkRegistry._discover_module: (file, module name) -> (mtime, modules).
+#: Process-wide, like registered_modules itself, so a re-initialize() does not re-parse the
+#: whole chunk directory to rebuild objects the registry already holds.
+_DISCOVERED_MODULES: "Dict[Tuple[str, str], Tuple[int, List[ChunkModule]]]" = {}
 
 USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", "_installed_deps", True)
 USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
@@ -442,6 +449,233 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         self._loader.exec_module(module)
 
 
+#: Import name -> distribution name, for the handful where they differ. A chunk declaring
+#: "opencv-python" imports "cv2", and nothing in the import statement says so.
+IMPORT_TO_PACKAGE = {
+    "cv2": "opencv-python",
+    "PIL": "pillow",
+    "yaml": "pyyaml",
+    "skimage": "scikit-image",
+    "sklearn": "scikit-learn",
+    "usd": "usd-core",
+    "pxr": "usd-core",
+}
+
+#: Import roots every chunk may use without declaring: the host's own USD build, its Qt,
+#: the framework, and anything the interpreter ships. PySide6 belongs here for the same
+#: reason pxr does -- a chunk drawing a custom widget draws it into the host's toolkit and
+#: cannot bring its own.
+_ASSUMED_IMPORTS = {"pxr", "usd_chunks", "PySide6"}
+
+
+def _normalise_package(name: str) -> str:
+    """PEP 503 name, with any version specifier or extra dropped."""
+    for sep in ("[", "<", ">", "=", "!", "~", ";", " "):
+        name = name.split(sep)[0]
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+@functools.lru_cache(maxsize=1)
+def _packages_distributions() -> dict:
+    try:
+        from importlib.metadata import packages_distributions
+    except ImportError:  # pragma: no cover - 3.10+
+        return {}
+    return packages_distributions()
+
+
+def candidate_distributions(imported: str) -> set:
+    """Every pip name that could plausibly supply this import.
+
+    Several distributions can provide one module -- opencv-python and
+    opencv-python-headless both give you cv2 -- so there is no single right answer to check
+    against. The static map covers the well-known renames without needing anything
+    installed; the environment is consulted as well, which catches the variants the map
+    does not know, but is never the only source or a chunk would pass or fail on which
+    variant this particular machine happens to have.
+    """
+    candidates = {imported, IMPORT_TO_PACKAGE.get(imported, imported)}
+    candidates.update(_packages_distributions().get(imported, ()))
+    return {_normalise_package(name) for name in candidates}
+
+
+#: Descending into one of these would leave module scope. Everything else -- try, if, with
+#: -- is still module scope and can hold an import.
+_NOT_MODULE_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def top_level_imports(module_file) -> set:
+    """The root names a chunk module imports at module scope, read without executing it.
+
+    Walks into try/except, if and with rather than only `tree.body`. An earlier version
+    read the top level literally and so never saw a guarded import -- and rbd_solver is
+    exactly that case:
+
+        try:
+            import mujoco as _mj
+            import numpy as _np
+            _HAS_MUJOCO = True
+        except ImportError:
+            _HAS_MUJOCO = False
+
+    It reported nothing for that file. Removing its requirements would still have read as
+    clean, in the one chunk where a version silently changing the answer matters most --
+    try-guarding a heavy optional is the normal pattern for precisely the chunks that carry
+    a simulator.
+
+    Function and class bodies are still skipped, which is the actual house rule: imports go
+    at module top level, never inside a function. A try-guarded import obeys that rule
+    lexically; it just is not an ast.Import node in tree.body, which is a different thing.
+    """
+    try:
+        tree = ast.parse(Path(module_file).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return set()
+
+    roots = set()
+
+    def walk(nodes):
+        for node in nodes:
+            if isinstance(node, ast.Import):
+                roots.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                roots.add(node.module.split(".")[0])
+            elif not isinstance(node, _NOT_MODULE_SCOPE):
+                walk(ast.iter_child_nodes(node))
+
+    walk(tree.body)
+    return roots
+
+
+def undeclared_imports(module: "ChunkModule", sibling_modules=()) -> list:
+    """Third-party imports a chunk makes without declaring them in config().
+
+    An undeclared dependency is not only an install that breaks on a clean machine -- it is
+    a version that never reaches a run's manifest. A chunk importing numpy without saying so
+    means a numpy upgrade can change its results while the manifest still reads clean, which
+    is worse than having no manifest, because it looks authoritative.
+
+    sibling_modules are the other chunk modules' import names, which resolve locally and are
+    not dependencies to declare.
+    """
+    # split_requirement, not package_info: the latter only understands "==", so a
+    # requirement declared as a range would come back with the whole string as its name
+    # and every import it covers would read as undeclared.
+    declared = {
+        _normalise_package(split_requirement(r)[0])
+        for r in (module.config.requirements or [])
+    }
+    declared.update(_normalise_package(m) for m in (module.config.required_modules or []))
+
+    undeclared = []
+    for root in sorted(top_level_imports(module.module_file)):
+        if root in _ASSUMED_IMPORTS or root in sys.stdlib_module_names:
+            continue
+        if root in sibling_modules:
+            continue
+        if not candidate_distributions(root) & declared:
+            undeclared.append(root)
+    return undeclared
+
+
+#: PEP 440 comparison operators, longest first so ">=" is not read as ">".
+_SPECIFIER_OPS = ("===", "==", "!=", "<=", ">=", "~=", "<", ">")
+
+
+def split_requirement(requirement: str) -> tuple:
+    """A requirement string as (name, specifier), specifier "" when unconstrained.
+
+    Separate from ChunkDependencyManager.package_info, which answers a narrower question --
+    the exact version to cache an install under -- and only understands "==".
+    """
+    text = str(requirement).strip()
+    for op in _SPECIFIER_OPS:
+        if op in text:
+            head, _, _ = text.partition(op)
+            return head.strip(), text[len(head):].strip()
+    return text, ""
+
+
+def unconstrained_requirements(module: "ChunkModule") -> list:
+    """Requirements declared with no version constraint at all.
+
+    A bare "mujoco" says nothing, so two runs a month apart can use different solvers from
+    an identical recipe and nothing recorded explains the difference.
+
+    A *range* is what a chunk should declare -- what it is compatible with -- rather than an
+    exact pin. Exact pins do not compose: two chunks pinning numpy==2 and numpy==3 have no
+    solution, there is one sys.modules['numpy'], and resolving it would mean editing someone
+    else's chunk. Ranges intersect, and the exact version belongs in the recipe that runs
+    them, recorded as what was actually imported.
+    """
+    return [r for r in (module.config.requirements or []) if not split_requirement(r)[1]]
+
+
+#: Back-compat alias: this used to mean "declared without an exact ==version".
+unpinned_requirements = unconstrained_requirements
+
+
+def conflicting_requirements(modules) -> dict:
+    """Packages whose installed version fails some chunk's declared range.
+
+    Reported against the version actually installed rather than by intersecting ranges in
+    the abstract, because that is the question that has an answer: two chunks disagreeing
+    matters exactly when what is on the machine cannot satisfy both. It also catches the
+    single-chunk case, where the one declared range is not what is installed.
+
+    Returns {package: [(module_name, specifier, installed), ...]} for the failures only.
+    """
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import InvalidVersion, Version
+    except ImportError:  # pragma: no cover - packaging ships with pip
+        return {}
+
+    wanted: dict = defaultdict(list)
+    for module in modules:
+        for requirement in module.config.requirements or []:
+            name, specifier = split_requirement(requirement)
+            if specifier:
+                wanted[_normalise_package(name)].append((module.module_name, specifier))
+
+    failures: dict = {}
+    for package, claims in wanted.items():
+        installed = installed_version(package)
+        if installed is None:
+            continue
+        try:
+            version = Version(installed)
+        except InvalidVersion:
+            continue
+        bad = [
+            (name, specifier, installed)
+            for name, specifier in claims
+            if version not in SpecifierSet(specifier)
+        ]
+        if bad:
+            failures[package] = bad
+    return failures
+
+
+def installed_version(package: str):
+    """The version actually importable right now, or None.
+
+    The only number that is true. What a chunk declared is a claim; this is what ran, and it
+    is what a recipe's manifest has to record -- otherwise a conflict resolved by whichever
+    install landed last is invisible after the fact.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:  # pragma: no cover
+        return None
+    for candidate in (package, package.replace("-", "_"), package.replace("_", "-")):
+        try:
+            return version(candidate)
+        except PackageNotFoundError:
+            continue
+    return None
+
+
 class ChunkModule:
     """
     A class used by ChunkRegistry for managing chunk modules. Modules are loaded at runtime using the
@@ -578,6 +812,22 @@ class ChunkModule:
     def _install_deps(self):
         if not self.config.requirements:
             return
+
+        # A requirement with no constraint says nothing, so two runs a month apart can use
+        # different libraries from an identical recipe and nothing recorded explains the
+        # difference. A range rather than an exact pin: exact pins do not compose, and two
+        # chunks pinning different versions of one package would otherwise be resolved by
+        # editing somebody else's chunk.
+        #
+        # Warned rather than refused: a chunk from outside this repo may float a dependency
+        # deliberately, and breaking its load over our reproducibility opinion is not ours
+        # to make. `usdchunks deps --strict` gates CI for anyone who wants it enforced.
+        if unconstrained := unconstrained_requirements(self):
+            logger.warning(
+                "%s declares %s with no version constraint; a recipe using this chunk "
+                "cannot record what it left open. Use a range, e.g. name>=2,<3.",
+                self.module_name, ", ".join(unconstrained),
+            )
 
         dep_reg = ChunkDependencyManager()
         if not dep_reg.initialized:
@@ -913,8 +1163,36 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 rel = (module_path.parent / module_path.stem).relative_to(working_dir)
                 module_name = str(rel).replace(os.path.sep, ".")
 
-                for mod in ChunkModule.from_chunk_definition(module_path, module_name):
+                for mod in self._discover_module(module_path, module_name):
                     self.register_module(mod)
+
+    @staticmethod
+    def _discover_module(module_path: Path, module_name: str) -> "List[ChunkModule]":
+        """ChunkModule.from_chunk_definition, memoised on (file, mtime).
+
+        Constructing a ChunkModule is not bookkeeping: it reads the file, AST-parses it and
+        executes its config() plus its usd_chunks imports (see _ChunkLazyConfigLoader), which
+        is essentially all of what a scan costs. A second initialize() -- a re-init in the
+        host app, and every test that stands a scene up -- paid that for the whole chunk
+        directory again and then threw the result away, because registered_modules is a class
+        attribute that outlives it and the already-registered module keeps the name.
+
+        Keyed on modification time, so a chunk edited on disk is still re-read: the point is
+        to stop re-parsing files that have not changed, not to freeze discovery.
+        """
+        try:
+            stamp = module_path.stat().st_mtime_ns
+        except OSError:
+            # Unreadable/vanished between the glob and here -- let the real constructor
+            # produce its usual diagnostics rather than caching a guess.
+            return ChunkModule.from_chunk_definition(module_path, module_name)
+        key = (str(module_path), module_name)
+        cached = _DISCOVERED_MODULES.get(key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        mods = ChunkModule.from_chunk_definition(module_path, module_name)
+        _DISCOVERED_MODULES[key] = (stamp, mods)
+        return mods
 
     def register_module(self, module: ChunkModule) -> ChunkModule | None:
         """
@@ -946,6 +1224,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
         if name in self.registered_modules:
             winner = self.registered_modules[name]
+            if Path(winner.module_file) == Path(module.module_file):
+                # The same file rediscovered, not two files claiming one name -- what a
+                # re-initialize() does to every chunk it already holds. Reporting those as
+                # shadows drowned the genuinely ambiguous ones (a second initialize logged
+                # "69 shadowed chunk name(s)", i.e. all of them).
+                return winner
             self.shadowed_modules.append(
                 (name, Path(winner.module_file), Path(module.module_file))
             )
@@ -1055,7 +1339,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             entries.append(MenuEntry(module=mod, namespace=tuple(namespace), tooltip=tooltip))
 
             parent = tuple(namespace[:-1])
-            for label, presets in mod.config.variants:
+            # get_variants, not .variants: a module may declare them as a callable so the
+            # cost lands here, when a menu is actually being drawn, rather than at discovery
+            # in every headless process.
+            for label, presets in mod.config.get_variants():
                 sub = tuple(p for p in str(label).split("/") if p)
                 if not sub:
                     continue

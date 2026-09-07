@@ -222,6 +222,31 @@ def _sdf_type_and_value(val):
     return sdf_type, val
 
 
+def sdf_type_for_param(param) -> "Sdf.ValueTypeName | None":
+    """The USD type an attribute backing this param should have, or None if unmappable.
+
+    Typed from the param's DEFAULT rather than whatever it currently holds. A live value
+    can be an unresolved expression string, or something that arrived over a wire, and an
+    attribute's type is fixed for good once it is created -- so typing from the value in
+    hand risks pinning a float param to String and failing every numeric write afterwards.
+    The default is the one value that always reflects what the param actually is.
+    """
+    if param is None:
+        return None
+    try:
+        if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
+            # A ColorPicker holds an (r, g, b) tuple; _SDF_TYPE_MAP is keyed by Python type
+            # and has no tuple entry, so it needs saying explicitly.
+            return Sdf.ValueTypeNames.Color3f
+    except Exception:
+        pass
+    type_source = getattr(param, "default_value", None)
+    if type_source is None:
+        type_source = getattr(param, "raw_value", None)
+    sdf_type, _ = _sdf_type_and_value(type_source)
+    return sdf_type
+
+
 class ChunkStageSync(metaclass=RegistrySingleton):
     """
     Singleton that authors a Chunk prim on the stage whenever a Python chunk
@@ -3886,24 +3911,12 @@ def load_chunks(
                 # still empty. This runs after _restore_lofted_params so a lofted param
                 # carrying an expression is covered by the same retry.
                 #
-                # Whatever is still unresolved after the retry is genuinely dangling, and
-                # this is the only place that knows that — which is why the warning lives
-                # here rather than at the failing resolve, where every load would trip it.
-                for _, c in deferred:
-                    for path, param in _iter_chunk_params(c):
-                        raw = getattr(param, 'raw_value', None)
-                        if (
-                            isinstance(raw, str)
-                            and chunk_utils.has_expression(raw)
-                            and not getattr(param, '_expression_connections', None)
-                        ):
-                            param.value = raw
-                            if not getattr(param, '_expression_connections', None):
-                                logger.warning(
-                                    "load_chunks: expression %r on %s.%s refers to a param "
-                                    "that does not exist; it will not update live",
-                                    raw, c.name, path,
-                                )
+                # This is the first of two passes. A param lofted inside a CHUNK_LOADED
+                # callback does not exist yet here -- that notice fires much further down --
+                # so an expression referring to one still resolves to nothing. The second
+                # pass runs after those notices and carries the warning; nothing is reported
+                # dangling until both have had a go.
+                _resolve_pending_expressions(deferred, warn=False)
 
                 # Wire the context (ChunkGroup) as DagNode owner of its terminal sub-chunks.
                 # Terminal nodes have no outputs so DagNode.should_solve() returns False by
@@ -4017,6 +4030,15 @@ def load_chunks(
                         chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
                     )
                     _restore_dynamic_params(prim, added)
+
+                # Second and last expression pass. Chunks that loft their params in the
+                # CHUNK_LOADED callback above -- mtlx_shader from its nodedef, wedge from
+                # its ranges -- have only just created them, so an expression pointing at
+                # one could not resolve in the earlier pass and got no live-update
+                # listener. A `.value` read stayed correct, which is why sweeps and exports
+                # were right while the UI never updated: the value was fine and only the
+                # notification was missing.
+                _resolve_pending_expressions(deferred, warn=True)
             finally:
                 chunk_notice._loading_stage = old_loading_stage
 
@@ -4426,6 +4448,39 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
 
         if param := chunk.get_param(param_path):
             param._connect_param_attr(attr)
+
+
+def _resolve_pending_expressions(deferred, warn: bool) -> None:
+    """Re-assign every @node.param@ expression that still has no live-update listener.
+
+    `_load_wire_inputs` (via `_connect_param_attr`) resolves expressions as each chunk
+    loads, but the chunk being referred to may not be registered yet at that point, and a
+    param lofted in a CHUNK_LOADED callback does not exist until much later still. Either
+    way resolution fails silently and no listener is attached -- a fresh `.value` read is
+    correct, so the result looks right and only stops updating when the referenced param
+    changes.
+
+    Re-assigning `raw_value` re-runs resolution; anything that already has a listener is
+    skipped, so this is idempotent and cheap to run more than once.
+
+    warn only on the last pass. Reporting from an earlier one would flag every expression
+    that is merely waiting for a chunk further down the file.
+    """
+    for _, c in deferred:
+        for path, param in _iter_chunk_params(c):
+            raw = getattr(param, "raw_value", None)
+            if (
+                isinstance(raw, str)
+                and chunk_utils.has_expression(raw)
+                and not getattr(param, "_expression_connections", None)
+            ):
+                param.value = raw
+                if warn and not getattr(param, "_expression_connections", None):
+                    logger.warning(
+                        "load_chunks: expression %r on %s.%s refers to a param "
+                        "that does not exist; it will not update live",
+                        raw, c.name, path,
+                    )
 
 
 def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:

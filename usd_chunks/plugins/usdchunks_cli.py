@@ -6,14 +6,26 @@ Usage:
     usdchunks info my_setup.usda
 """
 
+import filecmp
+import os
+import subprocess
 import sys
+import tempfile
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
+from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
 
 from pxr import Usd, UsdUtils
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
-from usd_chunks.plugins.chunk_usd import ChunkLayerManager, ChunkStageSync, commit_order_from_stage
+from usd_chunks.plugins.chunk_usd import (
+    ChunkLayerManager,
+    ChunkStageSync,
+    commit_order_from_stage,
+    find_group_active_view,
+    is_view_chunk,
+    recook_focus,
+)
 
 
 # ANSI colors for CLI output
@@ -304,7 +316,63 @@ def cmd_pin(args):
     print()
     print(f"{GREEN}Pinned {len(result.materialized)} chunk(s){RESET} -> {result.pin_dir}")
     print(f"Lock recorded in {result.lock_location} ({result.lock_mode})")
+    if result.hashes:
+        print(f"Content hashes recorded for {len(result.hashes)} chunk(s) -- a re-pin "
+              f"verifies the bytes, which a version alone cannot")
+    if result.packages:
+        print(f"Package versions recorded: "
+              f"{', '.join(f'{n}=={v}' for n, v in sorted(result.packages.items()))}")
+
+    if args.venv:
+        python, installed, problems = pinmod.provision_venv(result.packages, args.venv)
+        for problem in problems:
+            print(f"{RED}{problem}{RESET}", file=sys.stderr)
+        if problems:
+            sys.exit(1)
+        if python is None:
+            print("No packages to install -- no venv created.")
+        else:
+            print()
+            print(f"{GREEN}Environment ready{RESET} -> {python}")
+            print(f"Installed: {', '.join(installed)}")
+            print("Run against it with:")
+            print(f"  {python} -m usd_chunks.plugins.usdchunks_cli run {args.usda}")
     print(f"Prepend to USD_CHUNK_DIRS:  {result.pin_dir}")
+
+
+def _active_view(stage, scene):
+    """The view chunk that drives the stage, or None if the file has none.
+
+    A network is only worth cooking if something looks at it. The UI has always worked this
+    way -- recook_focus establishes the active view and mutes everything the view cannot
+    reach -- while headless ran every root and composed the lot, so `run` produced a
+    superset of what the graph showed. A file with two experiments in it exported both.
+
+    Views are found by walking every chunk, not by asking the top-level ones for theirs: a
+    view can sit beside its branch at the top level rather than inside a group, and
+    find_group_active_view only looks *within* the context it is given.
+
+    A context that names an active view wins, since that is the slot the user last drove the
+    graph from. Otherwise the first view found is as good an answer as any -- with one view
+    in the file there is no choice to make.
+
+    None means the file predates views or never set one, and the caller falls back to
+    cooking everything, because silently producing nothing for every existing recipe would
+    be worse than the inconsistency this fixes.
+    """
+    everything = list(_all_chunks(scene.get_chunks()))
+    views = [c for c in everything if is_view_chunk(c)]
+    if not views:
+        return None
+
+    for c in everything:
+        if is_view_chunk(c):
+            continue
+        if not c.has_flag(chunk.ChunkFlags.GroupFlags.CONTEXT):
+            continue
+        if (named := find_group_active_view(c, stage, scene)) is not None:
+            return named
+    return views[0]
 
 
 def cmd_run(args):
@@ -335,6 +403,17 @@ def cmd_run(args):
         _parse_param_overrides(scene, args.params)
         _re_execute_roots(scene.get_chunks())
 
+    # Establish the active view, exactly as the UI does on focus. load_chunks has already
+    # executed every dependency-free chunk by this point -- in the UI the view recook then
+    # mutes whatever the view cannot reach, and headless simply never ran that step. Two
+    # execution models for one file is the actual bug; this is the one line that ends it.
+    #
+    # After the overrides, so a sweep's `Wedge.current_index=i` is in effect before the cook
+    # set runs.
+    view = None if getattr(args, "all", False) else _active_view(stage, scene)
+    if view is not None:
+        recook_focus(stage, scene, None, view)
+
     # The solve has settled, so anything the network declared as an output on disk (an
     # Export USD chunk, ...) gets written now — before --export/--printout report on the
     # composed stage.
@@ -355,6 +434,201 @@ def cmd_run(args):
 
     if args.printout:
         print(_flatten_without_chunks(stage).ExportToString())
+
+
+WEDGE_CHUNK_TYPE = "wedge"
+
+
+def _find_wedge(stage):
+    """The network's wedge prim, read straight off the stage.
+
+    Deliberately not a chunk load: the parent only needs the wedge's name and count to plan
+    the sweep, and loading the network here would pay the whole startup cost twice -- once
+    to plan, once in the child that actually cooks.
+    """
+    for prim in stage.TraverseAll():
+        if prim.GetTypeName() != "Chunk":
+            continue
+        attr = prim.GetAttribute("info:chunkType")
+        if attr and attr.Get() == WEDGE_CHUNK_TYPE:
+            return prim
+    return None
+
+
+def _variant_dir(out, index):
+    return os.path.join(out, "variant_%05d" % index)
+
+
+def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False):
+    """One variant, in its own process.
+
+    A process per variant rather than a loop: the registry and stage-sync singletons hold
+    the stage a network was loaded into, so a second load in one process returns the
+    chunkgroup and none of its children -- variant 2 would silently re-export variant 1.
+    It also stops one bad variant taking the batch down.
+    """
+    directory = _variant_dir(out, index)
+    os.makedirs(directory, exist_ok=True)
+    cmd = [
+        sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", usda,
+        "%s.current_index=%d" % (wedge_name, index),
+        "--export", os.path.join(directory, "variant.usda"),
+    ]
+    if procedural:
+        cmd.append("--procedural")
+    if cook_all:
+        cmd.append("--all")
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return index, proc.returncode, proc.stdout.decode(errors="replace")
+
+
+def cmd_sweep(args):
+    stage = Usd.Stage.Open(args.usda)
+    if not stage:
+        print("Failed to open: %s" % args.usda)
+        sys.exit(1)
+
+    wedge = _find_wedge(stage)
+    if wedge is None:
+        print("%sNo wedge chunk in %s%s" % (RED, args.usda, RESET), file=sys.stderr)
+        print("A sweep needs a Wedge chunk -- it is what says which params vary and how.")
+        sys.exit(1)
+
+    name = wedge.GetName()
+    count_attr = wedge.GetAttribute("inputs:count")
+    count = args.count or (int(count_attr.Get()) if count_attr and count_attr.Get() else 0)
+
+    if args.only:
+        indices = [int(i) for i in args.only.split(",") if i.strip() != ""]
+    else:
+        if count <= 0:
+            print("%sNothing to sweep: no --count and no count on %s%s" % (RED, name, RESET), file=sys.stderr)
+            sys.exit(1)
+        indices = list(range(count))
+
+    if args.verify:
+        return _verify(args, name, indices)
+
+    os.makedirs(args.out, exist_ok=True)
+    print("Sweeping %d variant(s) of %s -> %s" % (len(indices), name, args.out))
+
+    def one(i):
+        return _run_variant(args.usda, name, i, args.out, args.procedural, args.all)
+
+    failed = []
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        for index, code, output in pool.map(one, indices):
+            if code == 0:
+                print("  variant_%05d" % index)
+            else:
+                failed.append(index)
+                print("%s  variant_%05d FAILED%s" % (RED, index, RESET))
+                print("\n".join(output.strip().splitlines()[-8:]))
+
+    if failed:
+        print("\n%s%d of %d failed%s: %s" % (RED, len(failed), len(indices), RESET, failed[:10]))
+        sys.exit(1)
+    print("\n%s%d variant(s)%s -> %s" % (GREEN, len(indices), RESET, args.out))
+
+
+def _verify(args, name, indices):
+    """Regenerate variants in a scratch directory and diff them against what is on disk.
+
+    Not a test -- the artifact. "Ship the recipe, not the dataset" is a claim a customer
+    will check, and this is the report that answers it.
+
+    Each variant regenerates in a *fresh process*, which is the only version worth running:
+    re-cooking in one interpreter reuses the first run's state, and a value seeded off the
+    built-in hash would agree with itself all day because PYTHONHASHSEED is fixed for the
+    life of a process.
+    """
+    missing = [
+        i for i in indices
+        if not os.path.exists(os.path.join(_variant_dir(args.out, i), "variant.usda"))
+    ]
+    if missing:
+        print("%sNot swept yet%s: %s" % (RED, RESET, missing[:10]))
+        sys.exit(1)
+
+    print("Verifying %d variant(s) of %s against %s" % (len(indices), name, args.out))
+    with tempfile.TemporaryDirectory(prefix="usdchunks-verify-") as scratch:
+        def one(i):
+            return _run_variant(args.usda, name, i, scratch, args.procedural, args.all)
+
+        identical, differing, errored = [], [], []
+        with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+            for index, code, output in pool.map(one, indices):
+                if code != 0:
+                    errored.append(index)
+                    print("%s  variant_%05d ERRORED%s" % (RED, index, RESET))
+                    print("\n".join(output.strip().splitlines()[-8:]))
+                    continue
+                a = os.path.join(_variant_dir(args.out, index), "variant.usda")
+                b = os.path.join(_variant_dir(scratch, index), "variant.usda")
+                # shallow=False: matching size and mtime is exactly what two runs of a
+                # deterministic pipeline produce, so a shallow compare would pass having
+                # read no content at all.
+                if filecmp.cmp(a, b, shallow=False):
+                    identical.append(index)
+                else:
+                    differing.append(index)
+                    print("%s  variant_%05d DIFFERS%s" % (RED, index, RESET))
+
+    print("\nidentical : %d/%d" % (len(identical), len(indices)))
+    if errored:
+        print("errored   : %d %s" % (len(errored), errored[:10]))
+    if differing or errored:
+        print("\n%sRESULT: not reproducible%s" % (RED, RESET))
+        sys.exit(1)
+    print("\n%sRESULT: every variant regenerated byte-identical in a fresh process.%s" % (GREEN, RESET))
+
+
+def cmd_deps(args):
+    """Report chunks whose dependencies are undeclared or unpinned.
+
+    Both matter for the same reason, and it is not really about installing. A recipe claims
+    that regenerating it reproduces the dataset; a dependency that is undeclared never
+    reaches the run's manifest, and one that is unpinned can move underneath an unchanged
+    recipe. Either way two runs can disagree while every recorded fact matches -- which is
+    worse than recording nothing, because it reads as authoritative.
+    """
+    registry = chunk_registry.ChunkRegistry()
+    registry.initialize(HeadlessScene(None), "cli")
+    modules = registry.get_chunk_modules()
+    siblings = {m.module_name.split(".")[-1] for m in modules}
+
+    undeclared = [(m.module_name, u) for m in modules
+                  if (u := chunk_registry.undeclared_imports(m, siblings))]
+    unconstrained = [(m.module_name, r) for m in modules
+                     if (r := chunk_registry.unconstrained_requirements(m))]
+    conflicts = chunk_registry.conflicting_requirements(modules)
+
+    print(f"Checked {len(modules)} chunk module(s)")
+    print()
+    if undeclared:
+        print(f"{RED}Undeclared third-party imports{RESET} -- imported but not in config().requirements:")
+        for name, imports in sorted(undeclared):
+            print(f"  {name:42s} {', '.join(imports)}")
+        print()
+    if unconstrained:
+        print(f"{RED}Requirements with no version constraint{RESET} -- a recipe cannot record "
+              f"what a chunk left open:")
+        for name, reqs in sorted(unconstrained):
+            print(f"  {name:42s} {', '.join(reqs)}")
+        print()
+    if conflicts:
+        print(f"{RED}Installed version does not satisfy what a chunk asked for{RESET} -- "
+              f"there is only one of each package in a process:")
+        for package, claims in sorted(conflicts.items()):
+            for module_name, specifier, installed in sorted(claims):
+                print(f"  {module_name:42s} wants {package}{specifier}, installed {installed}")
+        print()
+    if not undeclared and not unconstrained and not conflicts:
+        print(f"{GREEN}Every chunk declares a version range, and the installed versions "
+              f"satisfy them.{RESET}")
+        return
+    if args.strict:
+        sys.exit(1)
 
 
 def cmd_plugin_path(args):
@@ -395,7 +669,10 @@ def main():
         description=(
             "Load and execute a USD chunk network. Each chunk's execute() is called in\n"
             "topological order (DAG solve). Param overrides are applied after load.\n"
-            "Use --export or --printout to inspect the composed result."
+            "Use --export or --printout to inspect the composed result.\n\n"
+            "Only the network the file's active view reaches is cooked -- the same rule the\n"
+            "UI applies on focus, so `run` produces what the graph shows rather than a\n"
+            "superset of it. A file with no view cooks everything, and --all forces that."
         ),
         epilog=(
             "Examples:\n"
@@ -421,6 +698,12 @@ def main():
     )
     run_parser.add_argument(
         "--printout", "-p", action="store_true", help="Print the flattened stage to stdout, Chunk prims stripped"
+    )
+    run_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Cook every network in the file, not just the one the active view reaches. "
+             "The old behaviour, for a file whose side branches are meant to run",
     )
 
     info_parser = sub.add_parser(
@@ -469,6 +752,80 @@ def main():
     pin_parser.add_argument("--pin-dir", metavar="DIR", default=None, help="Where to materialize impls (default ./pin)")
     pin_parser.add_argument("--copy", action="store_true", help="Copy impls instead of symlinking (portable/sealed)")
     pin_parser.add_argument("--wrapper", action="store_true", help="Always write the lock to a wrapper layer, never in place")
+    pin_parser.add_argument(
+        "--venv", metavar="DIR", default=None,
+        help="Create a venv at DIR and install the locked package versions into it. "
+             "System site packages stay visible, so the host's OpenUSD and Qt still "
+             "import -- only pip's share is pinned",
+    )
+
+    sweep_parser = sub.add_parser(
+        "sweep",
+        help="Run every variant of a network's wedge",
+        description=(
+            "Cook a network once per wedge index and export each result.\n\n"
+            "Every value a wedge produces is a pure function of (seed, index, range name),\n"
+            "so variants are independent: --only regenerates one without producing the ones\n"
+            "before it, --jobs runs them concurrently, and --verify proves a rerun matches."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  usdchunks sweep drop.usda --out ./data\n"
+            "  usdchunks sweep drop.usda --out ./data --count 500 --jobs 4\n"
+            "  usdchunks sweep drop.usda --out ./data --only 42,1337\n"
+            "  usdchunks sweep drop.usda --out ./data --verify --only 0,7,19\n"
+        ),
+        formatter_class=RawDescriptionHelpFormatter,
+    )
+    sweep_parser.add_argument("usda", help="Path to the .usda chunk network file")
+    sweep_parser.add_argument(
+        "--out", required=True, metavar="DIR", help="Where variant_NNNNN/ directories are written"
+    )
+    sweep_parser.add_argument(
+        "--count", type=int, default=0, help="How many variants (default: the wedge's own count)"
+    )
+    sweep_parser.add_argument("--only", metavar="I,J,K", help="Sweep just these indices")
+    sweep_parser.add_argument(
+        "--jobs", type=int, default=1,
+        help="Variants to run concurrently. Independent by construction, but the ceiling is "
+             "usually the renderer rather than the cores -- measure before raising it",
+    )
+    sweep_parser.add_argument(
+        "--procedural", action="store_true", help="Keep Chunk prims in each export"
+    )
+    sweep_parser.add_argument(
+        "--all", action="store_true",
+        help="Cook every network per variant, not just what the active view reaches",
+    )
+    sweep_parser.add_argument(
+        "--verify", action="store_true",
+        help="Regenerate the variants in fresh processes and diff them against --out",
+    )
+
+    deps_parser = sub.add_parser(
+        "deps",
+        help="Report chunks with undeclared or unpinned dependencies",
+        description=(
+            "Scan every registered chunk module for third-party imports it does not\n"
+            "declare in config().requirements, for requirements declared with no version\n"
+            "constraint, and for installed versions that do not satisfy what a chunk asked\n"
+            "for.\n\n"
+            "These break a recipe's manifest rather than an install: an undeclared\n"
+            "dependency's version is never recorded, an unconstrained one can move under an\n"
+            "unchanged recipe, and a conflict between two chunks is settled today by\n"
+            "whichever install landed last -- silently.\n\n"
+            "Chunks declare ranges, not exact pins. Exact pins do not compose, and\n"
+            "resolving two of them would mean editing somebody else's chunk; the exact\n"
+            "version belongs in the recipe, recorded as what actually ran.\n\n"
+            "Imports are read statically, which is complete here only because chunks import\n"
+            "at module top level and never inside a function body."
+        ),
+        epilog="Examples:\n  usdchunks deps\n  usdchunks deps --strict\n",
+        formatter_class=RawDescriptionHelpFormatter,
+    )
+    deps_parser.add_argument(
+        "--strict", action="store_true", help="Exit non-zero if anything is reported (for CI)"
+    )
 
     plugin_path_parser = sub.add_parser(
         "plugin-path",
@@ -499,6 +856,10 @@ def main():
         cmd_validate(args)
     elif args.command == "pin":
         cmd_pin(args)
+    elif args.command == "sweep":
+        cmd_sweep(args)
+    elif args.command == "deps":
+        cmd_deps(args)
     elif args.command == "plugin-path":
         cmd_plugin_path(args)
     else:
