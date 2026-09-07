@@ -12,6 +12,15 @@
 . "$(git rev-parse --show-toplevel)/hooks/_common.sh"
 run_local_hook pre-push "$@"
 
+# OFF unless you ask for it. The full suite takes about seven minutes, and a push that
+# stalls for seven minutes is a hook people uninstall -- along with the fast pre-commit one
+# that was earning its keep. Turn it on per clone with:
+#
+#     git config usdchunks.prepush true
+#
+# or `sh hooks/install.sh --with-prepush`.
+[ "$(git config --bool usdchunks.prepush 2>/dev/null)" = "true" ] || exit 0
+
 [ -n "$USD_CHUNKS_SKIP_PREPUSH" ] && exit 0
 
 root="$(git rev-parse --show-toplevel)"

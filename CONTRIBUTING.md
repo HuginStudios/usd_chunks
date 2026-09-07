@@ -59,18 +59,25 @@ Optional, per clone, and worth it — especially while CI is unavailable:
 sh hooks/install.sh
 ```
 
-That sets `core.hooksPath` to the tracked `hooks/` directory. Nothing is copied, so the
-hooks stay reviewable in git and update when you pull. Undo with
-`git config --unset core.hooksPath`.
+Each clone runs that once; a repository cannot install hooks on your behalf, since
+`core.hooksPath` is local config by design. Nothing is copied — the hooks stay reviewable
+in git and update when you pull. Undo with `git config --unset core.hooksPath`.
+
+These are plain git hooks, not the `pre-commit` framework: there is nothing extra to
+install beyond `ruff` and `pytest`, which the `dev` extra already brings.
 
 What you get is CI's two commands, split by what each one costs:
 
-| | runs | takes |
-|---|---|---|
-| `pre-commit` | ruff on the staged Python, a core smoke set, and any test file the commit touches | ~3s |
-| `pre-push` | `ruff` on tracked Python, then the full suite | ~7min |
+| | runs | takes | default |
+|---|---|---|---|
+| `pre-commit` | ruff on the staged Python, a core smoke set, and any test file the commit touches | ~3s | **on** |
+| `pre-push` | `ruff` on tracked Python, then the full suite | ~7min | off |
 
-Skip either with `--no-verify`; `USD_CHUNKS_SKIP_PREPUSH=1` also skips the slow one.
+The full-suite check is off unless you ask for it — `sh hooks/install.sh --with-prepush`,
+or `git config usdchunks.prepush true` later. Seven minutes on every push is how a hook
+gets uninstalled, taking the fast checks with it.
+
+Skip any hook once with `--no-verify`; `USD_CHUNKS_SKIP_PREPUSH=1` also skips the slow one.
 
 The suite is not green today, so `pre-push` blocks only on failures that are *not* in
 `hooks/known-failures.txt`. That file is a debt list with a note on why each entry fails;
