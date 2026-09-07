@@ -216,3 +216,37 @@ def test_a_switch_with_nothing_wired_does_nothing(scene):
     stage, sender = scene
     sw = _mk(sender, switch_mod, "Switch", "switch")
     sw.execute()  # must not raise
+
+
+def test_the_index_can_be_driven_by_an_expression(scene):
+    """A Wedge picking the branch, not just the values inside one.
+
+    This is the pairing that makes a sweep vary *structure*: different geometry, different
+    lighting rigs, different asset variants per index, rather than the same network with
+    different numbers in it.
+    """
+    stage, sender = scene
+    branch_a = _place(sender, "A", "/a", 5.0)
+    branch_b = _place(sender, "B", "/b", 7.0)
+
+    wedge = _mk(sender, importlib.import_module("wedge"), "Wedge", "wedge")
+    wedge.get_param("seed").value = 4
+    # 0..2, not 0..1: a range samples the half-open interval and the index truncates, so
+    # "branch 0 1" would floor every draw to slot 0. Driving an index from a wedge means
+    # [0, number-of-slots).
+    wedge.get_param("ranges").value = "branch 0 2"
+
+    sw = _mk(sender, switch_mod, "Switch", "switch")
+    _wire(stage, sw, branch_a, branch_b)
+    sw.get_param("index").value = "@Wedge.branch@"
+
+    seen = set()
+    for i in range(12):
+        wedge.get_param("current_index").value = i
+        wedge.execute()
+        sw.execute()
+        seen.add(0 if branch_b.is_blocked() else 1)
+
+    assert seen == {0, 1}, (
+        f"the wedge never flipped the switch: only branch {seen} was ever selected"
+    )

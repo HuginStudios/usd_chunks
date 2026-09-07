@@ -154,7 +154,12 @@ def main():
             min_value=0,
             flags=ChunkFlags.ParamFlags.LABELED,
             tooltip="Which input slot reaches the output. Out-of-range clamps to the last "
-            "connected slot rather than muting everything.",
+            "connected slot rather than muting everything.
+"
+            "Drivable by expression -- @Wedge.branch@ picks the branch per variant, so a "
+            "sweep can vary structure rather than only values. The value truncates, and a "
+            "wedge range is half-open, so use [0, number-of-slots): 0 2 for two inputs, "
+            "since 0 1 would floor every draw to slot 0.",
         )
     )
     muted = chunk.TextEdit(
@@ -177,6 +182,7 @@ def config():
         "a muted one stays live.\n"
         "Muting is stage-wide, so a branch that also feeds something outside this Switch is "
         "suppressed for that consumer too.\n"
-        "Wire it to a Wedge's output to sweep configurations that differ in structure "
-        "rather than in value.",
+        "Wire the Input to a Wedge range to sweep configurations that differ in structure "
+        "rather than in value. Use [0, number-of-slots) -- the index truncates and a wedge "
+        "range is half-open.",
     )
