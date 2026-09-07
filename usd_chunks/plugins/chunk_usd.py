@@ -1252,7 +1252,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if sdf_type is None:
             return
         default = getattr(param, 'default_value', None)
-        if not force and not is_expr and not is_stage_expr and raw == default:
+        # A chunk with a module gets its params back by running main(), so an attribute for
+        # one still at its default is redundant. A chunk built in the interpreter has no
+        # main(): the attribute IS the only record that the param exists, so leaving it out
+        # means the param is gone on reload -- not merely reset. Author it.
+        cfg = chunk.get_config()
+        module_less = not (cfg and cfg.module)
+        if not force and not module_less and not is_expr and not is_stage_expr and raw == default:
             return  # still at default — don't create attr
 
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
@@ -1366,7 +1372,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                             continue
                     else:
                         default = getattr(param, 'default_value', None)
-                        if raw == default:
+                        # A chunk with a module rebuilds its params by running main(), so an
+                        # attribute for one still at its default says nothing the code does
+                        # not. A chunk built in the interpreter has no main(): the attribute
+                        # IS the only record that the param exists, so skipping it means the
+                        # param does not come back reset -- it comes back missing.
+                        cfg = chunk.get_config()
+                        if raw == default and (cfg and cfg.module):
                             continue  # pure-Python param at its default — skip
                 with self._chunk_prim_edit_context(chunk):
                     attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
@@ -4200,7 +4212,6 @@ def load_chunks(
                 # Fire CHUNK_LOADED for all loaded chunks (UI notification) and restore
                 # params that were created dynamically inside execute (e.g. show_attribute).
                 for prim, added in deferred:
-                    _rebuild_runtime_params(prim, added)
                     chunk_notice.send_notice(
                         chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
                     )
@@ -4631,6 +4642,12 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
 
 
 def _load_wire_inputs(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
+    # A runtime chunk has no module to have built its params, so they have to come from the
+    # prim before there is anything for the loop below to restore values into. Here rather
+    # than at one of load_chunks' three call sites: this is the one place every path to a
+    # loaded chunk goes through, and getting only some of them back is how a chunk wired
+    # into an exec chain came back without its params at all.
+    _rebuild_runtime_params(prim, chunk)
     for attr in prim.GetAttributes():
         name = attr.GetName()
         if not name.startswith(_INPUTS_PREFIX):
@@ -4723,6 +4740,13 @@ def _rebuild_runtime_params(prim: "Usd.Prim", chunk: "core.ChunkBase") -> None:
     for attr in prim.GetAttributes():
         name = attr.GetName()
         if not name.startswith(_INPUTS_PREFIX):
+            continue
+        # inputs:chunk is the EXEC input, not a param. Rebuilding it as one gave the
+        # reloaded chunk a stray "chunk" dropdown, and -- worse -- turned its exec wire into
+        # a param connection, so the graph drew the chain into it as an expression edge.
+        # Live-reported after a save/reopen: the wire was still there and still worked, but
+        # came back marked Exp.
+        if is_exec_input_name(name):
             continue
         param_name = name[len(_INPUTS_PREFIX):]
         # A nested param (inputs:group:param) needs a group that the flat attribute list

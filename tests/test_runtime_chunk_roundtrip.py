@@ -160,3 +160,83 @@ def test_a_module_less_context_is_not_given_the_runtime_type(qapp):
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(context)))
     if prim and prim.IsValid():
         assert prim.GetAttribute("info:chunkType").Get() != "runtime"
+
+
+def test_the_exec_input_does_not_come_back_as_a_param(qapp):
+    """inputs:chunk is the exec wire, not a param.
+
+    Live-reported after a save/reopen: the reloaded chunk carried a stray "chunk" dropdown,
+    and the exec wire feeding it was drawn as an expression edge (marked Exp) -- because
+    rebuilding every inputs:* attribute as a param had turned the exec input into one.
+    """
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    mod = reg.get_chunk_module("prim")
+    upstream = (mod.create() if mod.loaded else mod.load())[0]
+    scene.add_chunk(upstream)
+    made = chunk.Chunk("hello")
+    scene.add_chunk(made)
+    made.add_param(chunk.Slider("slider"))
+    qapp.processEvents()
+    made.get_param("slider").value = 18.96
+    qapp.processEvents()
+    # Wired after the Prim chunk, exactly as the report describes.
+    chunk_usd.connect_exec(stage, scene, get_chunk_prim_path(upstream), get_chunk_prim_path(made))
+    qapp.processEvents()
+
+    reloaded_scene = _StageScene()
+    reg.initialize(reloaded_scene, "pytest")
+    chunk_usd.load_chunks(stage, reloaded_scene, set())
+    qapp.processEvents()
+
+    restored = next((c for c in reloaded_scene.get_chunks() if c.name == "hello"), None)
+    assert restored is not None
+    assert restored.get_param("slider") is not None, "the real param still comes back"
+    assert restored.get_param("chunk") is None, (
+        "the exec input must not be rebuilt as a param"
+    )
+
+
+def test_a_param_left_at_its_default_still_survives(qapp):
+    """A param nobody touched is still part of the chunk.
+
+    An attribute is normally not authored for a param still at its default -- a module
+    rebuilds it by running main(), so the file need not say so. A runtime chunk has no
+    main(): the attribute is the only record that the param exists at all, so without it
+    the param does not come back reset, it comes back missing.
+    """
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    made = chunk.Chunk("hello")
+    scene.add_chunk(made)
+    made.add_param(chunk.Slider("untouched"))
+    qapp.processEvents()
+
+    reloaded_scene = _StageScene()
+    reg.initialize(reloaded_scene, "pytest")
+    chunk_usd.load_chunks(stage, reloaded_scene, set())
+    qapp.processEvents()
+
+    restored = next((c for c in reloaded_scene.get_chunks() if c.name == "hello"), None)
+    assert restored is not None
+    assert restored.get_param("untouched") is not None
