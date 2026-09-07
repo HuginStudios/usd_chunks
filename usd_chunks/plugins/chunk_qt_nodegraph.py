@@ -1769,7 +1769,20 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         super().mouseReleaseEvent(event)
 
     def _try_insert_on_edge(self) -> None:
-        """If this node was dropped on top of a wire A->B, splice it in as A->self->B."""
+        """If this node was dropped on top of an EXEC wire A->B, splice it in as A->self->B.
+
+        Exec only. A data wire means "this param takes its value from that one", and a node
+        dropped across one has no business rewriting it -- but the splice used to take
+        whichever wire it happened to overlap, so moving a node anywhere near a param
+        connection silently re-pointed it at the newcomer. On a busy graph, where exec and
+        data wires run through the same space, that made dropping a node onto the exec
+        chain a coin toss.
+
+        Splicing a data wire is not merely riskier, it is a different operation: A -> B
+        carries A's value to B, and A -> self -> B only reproduces that if self forwards it
+        untouched, which nothing here can know. The exec chain has no such problem -- that
+        is exactly what a chunk in the middle of it means.
+        """
         scene = self.scene()
         if not isinstance(scene, ChunkGraphScene) or not scene.views():
             return
@@ -1786,11 +1799,21 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if not on_wire:
                 continue
             a_out, b_in = edge.src_port, edge.dst_port  # wire is A.output -> B.input
+            if a_out.port_type != _PORT_EXEC or b_in.port_type != _PORT_EXEC:
+                continue
             my_in = next(
-                (p for p in self._ports if p.is_input and view._can_connect(a_out, p)), None
+                (
+                    p for p in self._ports
+                    if p.is_input and p.port_type == _PORT_EXEC and view._can_connect(a_out, p)
+                ),
+                None,
             )
             my_out = next(
-                (p for p in self._ports if not p.is_input and view._can_connect(p, b_in)), None
+                (
+                    p for p in self._ports
+                    if not p.is_input and p.port_type == _PORT_EXEC and view._can_connect(p, b_in)
+                ),
+                None,
             )
             if my_in is None or my_out is None:
                 continue
