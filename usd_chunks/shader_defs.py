@@ -200,6 +200,10 @@ def available_source_types() -> List[str]:
     return [str(s) for s in (_first_attr(Sdr.Registry(), _REGISTRY_METHODS["source_types"]) or ())]
 
 
+#: Whether the "registry unavailable" warning has been said once this process.
+_registry_warned = False
+
+
 def iter_shader_defs(source_type: str = "") -> Iterator[ShaderDef]:
     """Yield every shader definition the registry can parse.
 
@@ -214,9 +218,28 @@ def iter_shader_defs(source_type: str = "") -> Iterator[ShaderDef]:
     Yields:
         ShaderDef: One per parseable shader.
     """
-    reg = Sdr.Registry()
+    try:
+        reg = Sdr.Registry()
+        names = _first_attr(reg, _REGISTRY_METHODS["names"]) or ()
+    except Exception as e:  # noqa: BLE001 - discovery is best-effort, like the parse below
+        # Building the registry at all can fail, not just parsing one definition: it walks
+        # every installed plugin's advertised shaders, and one bad entry takes the lot.
+        # Seen on a USD 26.05 build -- "Invalid version 0.0: both components must be
+        # non-negative and at least one non-zero" -- where nothing usd_chunks owns is
+        # involved and there is nothing for a caller to do but carry on with no shaders.
+        # Once per process, not once per menu: the failure is retried every time a menu is
+        # drawn (see ChunkConfig.get_variants -- a registry that needs its renderer
+        # initialised can start working later), and saying so on every right-click buries
+        # everything else in the log. The retry still happens; only the telling is deduped.
+        global _registry_warned
+        if not _registry_warned:
+            _registry_warned = True
+            logger.warning("Shader registry unavailable, no shader definitions: %s", e)
+        else:
+            logger.debug("Shader registry still unavailable: %s", e)
+        return
 
-    for name in _first_attr(reg, _REGISTRY_METHODS["names"]) or ():
+    for name in names:
         node = None
         if source_type:
             node = _first_attr(reg, _REGISTRY_METHODS["by_name_type"], str(name), source_type)

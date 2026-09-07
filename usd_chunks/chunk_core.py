@@ -4502,7 +4502,17 @@ class ChunkConfig(AttributesBase):
         """
         variants = self.variants
         if callable(variants):
-            variants = list(variants())
+            try:
+                variants = list(variants())
+            except Exception as e:  # noqa: BLE001 - a menu must still open
+                # Variants are an optional extra on one entry, and this runs while a menu is
+                # being drawn for EVERY chunk -- so one module that cannot build its list
+                # took the whole chunk menu with it. Live-reported on a USD 26.05 build
+                # where Sdr.Registry() raises because some installed plugin advertises an
+                # invalid version: right-clicking the node graph produced a traceback and no
+                # menu at all, for every chunk in it.
+                logger.warning("Could not build menu variants for %r: %s", self.module, e)
+                return []
             object.__setattr__(self, "variants", variants)
         return variants
 
