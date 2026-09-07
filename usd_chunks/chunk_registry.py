@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import weakref
 import os
+import functools
+import re
 import sys
 from pathlib import Path
 from importlib import util
@@ -462,15 +464,63 @@ _ASSUMED_IMPORTS = {"pxr", "usd_chunks", "PySide6"}
 
 
 def _normalise_package(name: str) -> str:
-    return name.lower().replace("_", "-").strip()
+    """PEP 503 name, with any version specifier or extra dropped."""
+    for sep in ("[", "<", ">", "=", "!", "~", ";", " "):
+        name = name.split(sep)[0]
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+@functools.lru_cache(maxsize=1)
+def _packages_distributions() -> dict:
+    try:
+        from importlib.metadata import packages_distributions
+    except ImportError:  # pragma: no cover - 3.10+
+        return {}
+    return packages_distributions()
+
+
+def candidate_distributions(imported: str) -> set:
+    """Every pip name that could plausibly supply this import.
+
+    Several distributions can provide one module -- opencv-python and
+    opencv-python-headless both give you cv2 -- so there is no single right answer to check
+    against. The static map covers the well-known renames without needing anything
+    installed; the environment is consulted as well, which catches the variants the map
+    does not know, but is never the only source or a chunk would pass or fail on which
+    variant this particular machine happens to have.
+    """
+    candidates = {imported, IMPORT_TO_PACKAGE.get(imported, imported)}
+    candidates.update(_packages_distributions().get(imported, ()))
+    return {_normalise_package(name) for name in candidates}
+
+
+#: Descending into one of these would leave module scope. Everything else -- try, if, with
+#: -- is still module scope and can hold an import.
+_NOT_MODULE_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
 
 def top_level_imports(module_file) -> set:
-    """The root names a chunk module imports, read without executing it.
+    """The root names a chunk module imports at module scope, read without executing it.
 
-    Static because executing is the thing being avoided -- and complete because of the
-    house rule that imports go at module top level, never inside a function body. A
-    codebase with lazy imports could only ever do this best-effort.
+    Walks into try/except, if and with rather than only `tree.body`. An earlier version
+    read the top level literally and so never saw a guarded import -- and rbd_solver is
+    exactly that case:
+
+        try:
+            import mujoco as _mj
+            import numpy as _np
+            _HAS_MUJOCO = True
+        except ImportError:
+            _HAS_MUJOCO = False
+
+    It reported nothing for that file. Removing its requirements would still have read as
+    clean, in the one chunk where a version silently changing the answer matters most --
+    try-guarding a heavy optional is the normal pattern for precisely the chunks that carry
+    a simulator.
+
+    Function and class bodies are still skipped, which is the actual house rule: imports go
+    at module top level, never inside a function. A try-guarded import obeys that rule
+    lexically; it just is not an ast.Import node in tree.body, which is a different thing.
     """
     try:
         tree = ast.parse(Path(module_file).read_text(encoding="utf-8"))
@@ -478,11 +528,17 @@ def top_level_imports(module_file) -> set:
         return set()
 
     roots = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            roots.update(a.name.split(".")[0] for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            roots.add(node.module.split(".")[0])
+
+    def walk(nodes):
+        for node in nodes:
+            if isinstance(node, ast.Import):
+                roots.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                roots.add(node.module.split(".")[0])
+            elif not isinstance(node, _NOT_MODULE_SCOPE):
+                walk(ast.iter_child_nodes(node))
+
+    walk(tree.body)
     return roots
 
 
@@ -512,8 +568,7 @@ def undeclared_imports(module: "ChunkModule", sibling_modules=()) -> list:
             continue
         if root in sibling_modules:
             continue
-        package = _normalise_package(IMPORT_TO_PACKAGE.get(root, root))
-        if package not in declared and _normalise_package(root) not in declared:
+        if not candidate_distributions(root) & declared:
             undeclared.append(root)
     return undeclared
 
