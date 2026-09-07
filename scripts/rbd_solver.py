@@ -2308,11 +2308,62 @@ def build_articulated_spec(
         print(f"[RBDSolver/MuJoCo] Articulated scene compile failed: {exc}")
         return None
 
+    excluded = _exclude_initial_overlaps(spec, model)
+    if excluded:
+        try:
+            model = spec.compile()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[RBDSolver/MuJoCo] Recompile after exclusions failed: {exc}")
+            return None
+
     data = _mj.MjData(model)
     _mj.mj_forward(model, data)
     print(f"[RBDSolver/MuJoCo] Compiled articulation — {model.nbody} bodies, "
-          f"{model.njnt} joints, {model.ngeom} geoms")
+          f"{model.njnt} joints, {model.ngeom} geoms"
+          + (f", {excluded} contact pair(s) excluded" if excluded else ""))
     return model, data, ordered
+
+
+def _exclude_initial_overlaps(spec, model) -> int:
+    """Exclude body pairs that are already interpenetrating at frame 0.
+
+    MuJoCo filters contacts between a body and its own parent, which covers adjacent links.
+    It does not filter grandparent or sibling pairs -- and a real mechanism is full of those
+    that overlap by construction. The SO-101's rest pose is folded, so its base plate sits
+    inside links several joints away; MuJoCo resolves that penetration with a separating
+    impulse and the arm detonates in three frames. The appliances failed the same way when
+    they started interpenetrated.
+
+    Excluding *every* pair within an articulation would be the easy fix and the wrong one: a
+    door swinging into its frame is a link-against-link contact that the whole simulation is
+    about. What is never meaningful is a pair that starts inside itself, because no contact
+    force can separate them without launching the mechanism.
+
+    So: compile, look at the contacts that exist before anything has moved, and exclude only
+    those. Pairs that meet later still collide.
+    """
+    data = _mj.MjData(model)
+    _mj.mj_forward(model, data)
+
+    pairs = set()
+    for i in range(data.ncon):
+        contact = data.contact[i]
+        if contact.dist >= 0.0:
+            continue  # touching, not interpenetrating
+        b1 = model.geom_bodyid[contact.geom1]
+        b2 = model.geom_bodyid[contact.geom2]
+        if b1 == b2 or 0 in (b1, b2):
+            continue  # same body, or against the world: both are meaningful
+        n1 = model.body(b1).name
+        n2 = model.body(b2).name
+        if n1 and n2:
+            pairs.add(tuple(sorted((n1, n2))))
+
+    for first, second in sorted(pairs):
+        exclude = spec.add_exclude()
+        exclude.bodyname1 = first
+        exclude.bodyname2 = second
+    return len(pairs)
 
 
 def _write_articulated_results(stage, roots, layer, results, start_frame,

@@ -163,8 +163,8 @@ class TestAuthoring:
         _import(scene, TWO_LINK, tmp_path)
 
         base = stage.GetPrimAtPath("/World/robot/base")
-        upper = stage.GetPrimAtPath("/World/robot/base/upper")
-        assert base.IsValid() and upper.IsValid(), "the joint tree should nest the links"
+        upper = stage.GetPrimAtPath("/World/robot/upper")
+        assert base.IsValid() and upper.IsValid(), "both links should be authored"
         assert base.HasAPI(UsdPhysics.RigidBodyAPI)
         assert upper.HasAPI(UsdPhysics.RigidBodyAPI)
 
@@ -199,13 +199,13 @@ class TestAuthoring:
     def test_the_joint_is_typed_and_wired_to_both_bodies(self, scene, tmp_path):
         stage, _ = scene
         _import(scene, TWO_LINK, tmp_path)
-        joint = stage.GetPrimAtPath("/World/robot/base/upper/joint_shoulder")
+        joint = stage.GetPrimAtPath("/World/robot/upper/joint_shoulder")
         assert joint.GetTypeName() == "PhysicsRevoluteJoint"
         assert [str(t) for t in joint.GetRelationship("physics:body0").GetTargets()] == [
             "/World/robot/base"
         ]
         assert [str(t) for t in joint.GetRelationship("physics:body1").GetTargets()] == [
-            "/World/robot/base/upper"
+            "/World/robot/upper"
         ]
 
     def test_scale_is_applied_to_lengths(self, scene, tmp_path):
@@ -213,7 +213,7 @@ class TestAuthoring:
         a plausible robot of the wrong size."""
         stage, _ = scene
         _import(scene, TWO_LINK, tmp_path, scale=100.0)
-        upper = stage.GetPrimAtPath("/World/robot/base/upper")
+        upper = stage.GetPrimAtPath("/World/robot/upper")
         translate = UsdGeom.Xformable(upper).GetOrderedXformOps()[0].Get()
         assert translate[2] == pytest.approx(15.0)
 

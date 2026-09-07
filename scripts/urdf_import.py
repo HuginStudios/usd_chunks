@@ -79,7 +79,10 @@ def _axis_frame(axis):
     """
     direction = Gf.Vec3d(*axis)
     if direction.GetLength() < 1e-9:
-        return Gf.Rotation()
+        # An explicit identity, not Gf.Rotation(): the default constructor leaves the angle
+        # uninitialised and it reads back as nan, which propagates into a quaternion and out
+        # into every transform downstream without ever raising.
+        return Gf.Rotation(_CANONICAL_AXIS, 0.0)
     return Gf.Rotation(_CANONICAL_AXIS, direction.GetNormalized())
 
 
@@ -451,21 +454,47 @@ def execute(node):
         materials = robot["materials"]
         counts = {"links": 0, "joints": 0}
 
-        def author_link(link_name, parent_prim_path, joint):
+        def author_link(link_name, parent_prim_path, joint, parent_world=None):
             link = robot["links"].get(link_name)
             if link is None:
                 return
-            path = parent_prim_path.AppendChild(link_name)
+            # A moving link is authored FLAT; a fixed one is nested under its parent.
+            #
+            # Flat, because the solver writes each simulated link's *world* placement back
+            # as its own share -- so a nested child inherits its parent's simulated
+            # transform too and the two compound. Measured: adjacent links drifting from
+            # 0.07 to 0.24 apart over 48 frames, an arm visibly coming to pieces while every
+            # joint, axis and limit was correct. Sim-ready assets are flat for this reason,
+            # and USD joints reference bodies by relationship rather than hierarchy.
+            #
+            # Nested when the joint is fixed, because such a link is not a degree of freedom
+            # and the solver leaves it out of the articulation entirely. Flat, it would be
+            # left behind while its parent moved -- the SO-101's gripper frame drifting
+            # 0.098 to 0.234 away from the gripper it is welded to. Nesting *is* the weld,
+            # and nothing simulated writes to it, so nothing compounds.
+            fixed = joint is not None and joint.get("type", "fixed") == "fixed"
+            path = (parent_prim_path if fixed else root.GetPath()).AppendChild(link_name)
             prim = UsdGeom.Xform.Define(stage, path).GetPrim()
             counts["links"] += 1
 
-            # The link's rest pose is its joint's origin: a URDF link has no pose of its
-            # own, only a position relative to its parent through the joint between them.
+            # A URDF link has no pose of its own, only a position relative to its parent
+            # through the joint between them -- so the rest pose has to be accumulated down
+            # the chain rather than read off the link.
+            world = Gf.Matrix4d(1.0) if parent_world is None else Gf.Matrix4d(parent_world)
             if joint is not None:
                 position, rotation = _origin(joint)
+                local = Gf.Matrix4d(1.0)
+                local.SetRotateOnly(rotation)
+                local.SetTranslateOnly(position * scale)
+                world = local * world
+                # A nested (fixed) link is placed relative to its parent; a flat one carries
+                # the accumulated pose, since nothing above it supplies one.
+                placement = local if fixed else world
                 xform = UsdGeom.Xformable(prim)
-                xform.AddTranslateOp().Set(position * scale)
-                xform.AddOrientOp().Set(_to_quat(rotation))
+                xform.AddTranslateOp().Set(placement.ExtractTranslation())
+                xform.AddOrientOp().Set(
+                    _to_quat(Gf.Rotation(placement.ExtractRotationQuat()))
+                )
 
             UsdPhysics.RigidBodyAPI.Apply(prim)
             _author_inertial(prim, link, scale)
@@ -486,18 +515,14 @@ def execute(node):
                     UsdGeom.Imageable(geom).CreatePurposeAttr(UsdGeom.Tokens.guide)
 
             if joint is not None:
-                # parent_prim_path is already the parent link's prim -- author_link is
-                # called with it. Appending the parent's name again addressed
-                # /World/robot/base/base, a prim that does not exist, so body0 pointed at
-                # nothing and the solver saw no articulation.
                 _author_joint(stage, joint, parent_prim_path, path, scale)
                 counts["joints"] += 1
 
             for child_joint, child_name in robot["children"].get(link_name, []):
-                author_link(child_name, path, child_joint)
+                author_link(child_name, path, child_joint, world)
 
         for root_link in robot["roots"]:
-            author_link(root_link, root.GetPath(), None)
+            author_link(root_link, root.GetPath(), None, None)
             base = stage.GetPrimAtPath(root.GetPath().AppendChild(root_link))
             if base and base.IsValid():
                 UsdPhysics.ArticulationRootAPI.Apply(base)
@@ -561,6 +586,15 @@ def config():
 
         The output is exactly what the RBD Solver reads: the same attribute names, the same
         conventions. A robot imported here simulates without another step.
+
+        A moving link is authored flat under the target rather than nested as the URDF
+        tree: the solver writes each link's world placement back onto its own prim, so a
+        nested child would inherit its parent's simulated transform too and the mechanism
+        would come apart. Joints reference bodies by relationship, so the tree survives.
+
+        A link joined by a fixed joint is nested instead. It is not a degree of freedom, the
+        solver leaves it out of the articulation, and nesting is what keeps it attached to
+        the parent it is welded to.
 
         STL meshes are converted to UsdGeom.Mesh -- USD cannot open an STL, so referencing
         one composes to nothing. Meshes USD can read are referenced rather than inlined, so
