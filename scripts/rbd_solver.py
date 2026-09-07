@@ -1920,7 +1920,10 @@ def _only_presentation_changed(sender) -> bool:
 
     Asked of the framework rather than answered here, so the DISABLED carve-out keeps working:
     disabling a chunk is a state change, but it decides whether that chunk cooks, and is
-    therefore a real simulation input.
+    therefore a real simulation input. DagNode.only_presentation_changed reads back the
+    verdict chunk_scheduler recorded when the change was propagated; this used to re-ask each
+    sender's is_presentation_change(), which re-reads an old_value/value pair that has since
+    moved on.
 
     Only meaningful *inside* the notice. `_changes` is cleared in a `finally` once the whole
     solve finishes (chunk_scheduler.solve), and the notices fire during it -- so this reads a
@@ -1929,17 +1932,11 @@ def _only_presentation_changed(sender) -> bool:
     from its absence.
     """
     try:
-        changes = list(sender.get_dag_node().iter_changes())
+        # Nothing recorded reads as False, i.e. assume it mattered: a missed re-run is a
+        # wrong simulation, an extra one is only slow.
+        return sender.get_dag_node().only_presentation_changed()
     except Exception:  # noqa: BLE001 - never let this stop a legitimate re-run
         return False
-    if not changes:
-        # Nothing recorded: assume it mattered. A missed re-run is a wrong simulation; an
-        # extra one is only slow.
-        return False
-    return all(
-        getattr(prop, "is_presentation_change", lambda: False)()
-        for _alias, prop in changes
-    )
 
 
 def _schedule_auto_run(root_chunk) -> None:

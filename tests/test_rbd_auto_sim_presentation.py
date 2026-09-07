@@ -138,8 +138,11 @@ def test_a_sender_with_nothing_recorded_is_assumed_to_matter() -> None:
     class _Empty:
         def get_dag_node(self):
             class _Node:
-                def iter_changes(self):
-                    return iter(())
+                def only_presentation_changed(self):
+                    # What DagNode returns with nothing recorded. Kept as the real method
+                    # rather than an empty iter_changes(), or this passes through the
+                    # unreadable-sender except branch and stops testing anything.
+                    return False
 
             return _Node()
 

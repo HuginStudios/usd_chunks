@@ -236,6 +236,67 @@ class TestChangeReasons:
         assert list(b.get_dag_node().iter_changes()) == []
 
 
+class TestPresentationVerdict:
+    """only_presentation_changed() is what execute() gates the module re-run on."""
+
+    def test_a_data_change_is_not_presentation(self):
+        chunk = Node("chunk", ChunkNoticeAlias.CHUNK_CHANGED)
+        param = Node("param", ChunkNoticeAlias.PARAM_CHANGED)
+        param.set_owner(chunk)
+        clean(chunk, param)
+
+        param.get_dag_node().dirty = True
+
+        assert chunk.get_dag_node().only_presentation_changed() is False
+
+    def test_a_state_change_is_presentation(self):
+        chunk = Node("chunk", ChunkNoticeAlias.CHUNK_CHANGED)
+        state = PresentationNode("state", ChunkNoticeAlias.STATE_CHANGED)
+        state.set_owner(chunk)
+        clean(chunk, state)
+
+        state.get_dag_node().dirty = True
+
+        assert chunk.get_dag_node().only_presentation_changed() is True
+
+    def test_presentation_is_recognised_without_a_state_changed_alias(self):
+        # The regression this replaced: execute() used to test the *alias*, so a
+        # presentation_only param -- which raises PARAM_CHANGED, not STATE_CHANGED --
+        # read as a data change at dispatch even though propagate_dirty had already
+        # routed it as presentation. The Scatter Brush's radius is this case.
+        chunk = Node("chunk", ChunkNoticeAlias.CHUNK_CHANGED)
+        param = PresentationNode("param", ChunkNoticeAlias.PARAM_CHANGED)
+        param.set_owner(chunk)
+        clean(chunk, param)
+
+        param.get_dag_node().dirty = True
+
+        aliases = [alias for alias, _ in chunk.get_dag_node().iter_changes()]
+        assert aliases == [ChunkNoticeAlias.PARAM_CHANGED], "setup no longer models the bug"
+        assert chunk.get_dag_node().only_presentation_changed() is True
+
+    def test_one_data_change_among_presentation_ones_still_cooks(self):
+        chunk = Node("chunk", ChunkNoticeAlias.CHUNK_CHANGED)
+        state = PresentationNode("state", ChunkNoticeAlias.STATE_CHANGED)
+        param = Node("param", ChunkNoticeAlias.PARAM_CHANGED)
+        state.set_owner(chunk)
+        param.set_owner(chunk)
+        clean(chunk, state, param)
+
+        state.get_dag_node().dirty = True
+        param.get_dag_node().dirty = True
+
+        assert chunk.get_dag_node().only_presentation_changed() is False
+
+    def test_nothing_recorded_is_not_presentation(self):
+        # A direct dirty solve -- execute-on-creation -- carries no propagated change and
+        # must still cook.
+        chunk = Node("chunk", ChunkNoticeAlias.CHUNK_CHANGED)
+        clean(chunk)
+
+        assert chunk.get_dag_node().only_presentation_changed() is False
+
+
 class TestPresentationChanges:
     def test_dependants_are_left_clean(self):
         # Selecting a node used to dirty every chunk downstream of it along the exec chain.
