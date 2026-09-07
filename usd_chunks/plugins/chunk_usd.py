@@ -470,6 +470,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 return  # tab context — no USD prim to remove
             sdf_path = Sdf.Path(sender.prim_path)
             chunk_root = str(sdf_path.GetParentPath())
+            self._delete_nested_contexts(sdf_path)
         else:
             # request_delete clears the owner before firing CHUNK_DELETED, so get_context()
             # (and thus _resolve_chunk_root) is None here and would resolve to the wrong root
@@ -527,6 +528,37 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # that was downstream of it (heal_exec_chain_on_delete has just rewired the chain
         # around it) — re-home those chunks to the target that survives at their position.
         reconcile_edit_targets(self._stage, self._scene)
+
+    def _delete_nested_contexts(self, group_path: "Sdf.Path") -> None:
+        """Delete the chunkgroups nested inside the group being deleted.
+
+        ChunkContainerBase.request_delete cascades through get_my_params(), which reaches a
+        plain chunk created inside a group -- it really is a param of it. A nested
+        CHUNKGROUP is not: it nests by prim path, as a context in its own right, so the
+        cascade never reached it and neither did anything downstream of CHUNK_DELETED.
+
+        The visible symptom was the group's own prim removal taking the whole subtree's
+        prim specs with it while the inner chunks stayed alive in Python, still owning
+        their layers, still sublayered into the graph. Delete a chunkgroup containing
+        chunkgroup/prim and /prim was still authored and still composed afterwards, with
+        nothing left on the graph to remove it -- it only *looked* gone when a recook
+        happened to mute it.
+
+        Deleting each nested group is enough to reach the leaves, since its own params
+        cascade normally from there. Snapshot first: request_delete mutates the scene's
+        chunk list as it goes. Descendants before the parent's prim specs are removed,
+        while their paths still resolve.
+        """
+        prefix = str(group_path) + "/"
+        for chunk in list(self._scene.get_chunks()):
+            if chunk is None or getattr(chunk, "_deleting", False):
+                continue
+            if not chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                # A plain chunk under this prefix is a param of one of these groups (or of
+                # the group being deleted) and is already covered by the param cascade.
+                continue
+            if get_chunk_prim_path(chunk).startswith(prefix):
+                chunk.request_delete()
 
     def _on_state_changed(self, notice, sender: "core.ChunkBase") -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
