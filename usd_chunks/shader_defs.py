@@ -200,6 +200,10 @@ def available_source_types() -> List[str]:
     return [str(s) for s in (_first_attr(Sdr.Registry(), _REGISTRY_METHODS["source_types"]) or ())]
 
 
+#: Whether the "registry unavailable" warning has been said once this process.
+_registry_warned = False
+
+
 def iter_shader_defs(source_type: str = "") -> Iterator[ShaderDef]:
     """Yield every shader definition the registry can parse.
 
@@ -223,7 +227,16 @@ def iter_shader_defs(source_type: str = "") -> Iterator[ShaderDef]:
         # Seen on a USD 26.05 build -- "Invalid version 0.0: both components must be
         # non-negative and at least one non-zero" -- where nothing usd_chunks owns is
         # involved and there is nothing for a caller to do but carry on with no shaders.
-        logger.warning("Shader registry unavailable, no shader definitions: %s", e)
+        # Once per process, not once per menu: the failure is retried every time a menu is
+        # drawn (see ChunkConfig.get_variants -- a registry that needs its renderer
+        # initialised can start working later), and saying so on every right-click buries
+        # everything else in the log. The retry still happens; only the telling is deduped.
+        global _registry_warned
+        if not _registry_warned:
+            _registry_warned = True
+            logger.warning("Shader registry unavailable, no shader definitions: %s", e)
+        else:
+            logger.debug("Shader registry still unavailable: %s", e)
         return
 
     for name in names:

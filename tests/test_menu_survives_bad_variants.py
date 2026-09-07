@@ -65,3 +65,28 @@ def test_the_registry_being_unusable_is_not_an_exception(monkeypatch):
     monkeypatch.setattr(Sdr, "Registry", _boom)
 
     assert list(shader_defs.iter_shader_defs()) == []
+
+
+def test_the_registry_warning_is_said_once_per_process(monkeypatch, caplog):
+    """Retried every menu draw, but not re-announced every menu draw.
+
+    The retry is deliberate -- a registry that needs its renderer initialised can start
+    working later -- but on a build where it never will, saying so on every right-click
+    buries everything else in the log.
+    """
+    import logging
+
+    from pxr import Sdr
+
+    from usd_chunks import shader_defs
+
+    monkeypatch.setattr(shader_defs, "_registry_warned", False)
+    monkeypatch.setattr(Sdr, "Registry", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("nope")))
+
+    with caplog.at_level(logging.WARNING, logger="usd_chunks.shader_defs"):
+        list(shader_defs.iter_shader_defs())
+        list(shader_defs.iter_shader_defs())
+        list(shader_defs.iter_shader_defs())
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, f"expected one warning for three attempts, got {len(warnings)}"
