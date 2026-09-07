@@ -64,11 +64,11 @@ def test_the_shutdown_write_stays_quiet_when_the_stream_is_already_closed() -> N
     if not manager.package_dir:
         return  # no dependency dir in this environment; nothing gets written
 
-    # save_json logs at DEBUG, and this logger sits at INFO by default -- so the message is
-    # filtered out before it reaches any handler and nothing goes wrong. Raising it here is
-    # what makes the test exercise the path at all; without it the test passes whether the
-    # fix is present or not, which is worse than having no test.
-    serial_logger = logging.getLogger("usd_chunks.chunk_serial")
+    # write_package_cache logs at DEBUG, and this logger sits at INFO by default -- so the
+    # message is filtered out before it reaches any handler and nothing goes wrong. Raising
+    # it here is what makes the test exercise the path at all; without it the test passes
+    # whether the fix is present or not, which is worse than having no test.
+    serial_logger = logging.getLogger("usd_chunks.chunk_cache")
     previous_level = serial_logger.level
     serial_logger.setLevel(logging.DEBUG)
 

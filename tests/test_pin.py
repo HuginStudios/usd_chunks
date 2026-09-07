@@ -213,3 +213,185 @@ def test_pin_is_idempotent_restore(tmp_path):
     # ...second pin sees the recorded lock and restores the same version.
     second = pinmod.pin(scene, pin_dir=tmp_path / "pin2", copy=True, stores=[store])
     assert second.lock() == {"prim-chunk": "galder:2.0.0"}
+
+
+class TestPackageLock:
+    """The impl pins say which chunk code produced a scene; these say what it stood on.
+
+    A pin without them reproduces the recipe and not the result -- mujoco is the case that
+    matters, where a solver change moves the physics with every chunk byte-identical.
+    """
+
+    def test_versions_round_trip_through_custom_layer_data(self):
+        from pxr import Sdf
+
+        layer = Sdf.Layer.CreateAnonymous()
+        pinmod.write_packages(layer, {"numpy": "2.4.2", "mujoco": "3.12.0"})
+        assert pinmod.read_packages(layer) == {"numpy": "2.4.2", "mujoco": "3.12.0"}
+
+    def test_they_sit_beside_the_impl_pins_rather_than_inside_them(self):
+        """read_lock's contract is a flat {chunkType: 'store:version'}; widening it would
+        break every reader to save one key."""
+        from pxr import Sdf
+
+        layer = Sdf.Layer.CreateAnonymous()
+        pinmod.write_lock(layer, {"transform": "store:1.0.0"})
+        pinmod.write_packages(layer, {"numpy": "2.4.2"})
+
+        assert pinmod.read_lock(layer) == {"transform": "store:1.0.0"}
+        assert pinmod.read_packages(layer) == {"numpy": "2.4.2"}
+
+    def test_nothing_recorded_reads_as_empty(self):
+        from pxr import Sdf
+
+        assert pinmod.read_packages(Sdf.Layer.CreateAnonymous()) == {}
+
+    def test_an_empty_lock_writes_no_key(self):
+        """A scene whose chunks need nothing should not carry an empty dict implying it
+        was checked and found bare."""
+        from pxr import Sdf
+
+        layer = Sdf.Layer.CreateAnonymous()
+        pinmod.write_packages(layer, {})
+        assert pinmod.PACKAGES_KEY not in (layer.customLayerData or {})
+
+    def test_it_records_the_installed_version_not_the_declared_range(self):
+        """rbd_solver declares mujoco>=3.1,<4. What belongs in a lock is what ran."""
+        from usd_chunks import chunk_registry
+        from usd_chunks.chunk_core import SceneSender
+
+        class _NoScene(SceneSender):
+            def get_stage(self):
+                return None
+
+            def get_selected_prims(self):
+                return []
+
+            def should_install_package(self, package):
+                return False
+
+        registry = chunk_registry.ChunkRegistry()
+        registry.initialize(_NoScene(), "pytest")
+        packages = pinmod.collect_packages(["rbd_solver"])
+        if "numpy" not in packages:
+            pytest.skip("rbd_solver not registered, or numpy absent")
+        assert not any(c in packages["numpy"] for c in "<>=,"), packages
+        assert packages["numpy"] == chunk_registry.installed_version("numpy")
+
+    def test_an_unregistered_chunk_type_contributes_nothing(self):
+        assert pinmod.collect_packages(["definitely-not-a-chunk"]) == {}
+
+
+class TestProvisionVenv:
+    """The npm-ci half: a recorded lock is only worth something if something applies it."""
+
+    def test_an_empty_lock_creates_nothing(self, tmp_path):
+        """A scene whose chunks need no packages needs no environment."""
+        target = tmp_path / "env"
+        python, installed, problems = pinmod.provision_venv({}, target)
+        assert (python, installed, problems) == (None, [], [])
+        assert not target.exists()
+
+    def test_the_interpreter_path_is_platform_correct(self, tmp_path):
+        import os
+
+        expected = "Scripts" if os.name == "nt" else "bin"
+        assert pinmod.venv_python(tmp_path).parent.name == expected
+
+    @pytest.mark.slow
+    def test_it_installs_the_exact_locked_versions(self, tmp_path):
+        """Exact, not the declared range -- resolving ranges again would let versions drift,
+        which is the thing the lock exists to stop."""
+        import subprocess
+
+        target = tmp_path / "env"
+        python, installed, problems = pinmod.provision_venv({"packaging": "24.0"}, target)
+        assert not problems, problems
+        assert installed == ["packaging==24.0"]
+
+        out = subprocess.run(
+            [str(python), "-c", "import packaging; print(packaging.__version__)"],
+            capture_output=True, text=True,
+        )
+        assert out.stdout.strip() == "24.0", out.stdout + out.stderr
+
+    @pytest.mark.slow
+    def test_the_host_stack_stays_visible(self, tmp_path):
+        """system_site_packages is not a convenience: pxr comes from a bundle pip cannot
+        install, so a fully isolated venv is one where every chunk fails to import USD."""
+        import subprocess
+
+        target = tmp_path / "env"
+        python, _, problems = pinmod.provision_venv({"packaging": "24.0"}, target)
+        assert not problems, problems
+
+        out = subprocess.run(
+            [str(python), "-c", "import pxr; print('ok')"], capture_output=True, text=True
+        )
+        assert out.stdout.strip() == "ok", out.stdout + out.stderr
+
+
+class TestIntegrityHashes:
+    """A version says which impl; a hash says whether it is still those bytes.
+
+    The gap a version alone leaves: edit a pinned chunk by hand and it is still 1.2.0,
+    producing different results with an identical lock.
+    """
+
+    def test_a_hash_round_trips(self):
+        from pxr import Sdf
+
+        layer = Sdf.Layer.CreateAnonymous()
+        pinmod.write_hashes(layer, {"transform": "sha256:abc"})
+        assert pinmod.read_hashes(layer) == {"transform": "sha256:abc"}
+
+    def test_it_sits_beside_the_pins_and_packages(self):
+        from pxr import Sdf
+
+        layer = Sdf.Layer.CreateAnonymous()
+        pinmod.write_lock(layer, {"transform": "store:1.0.0"})
+        pinmod.write_packages(layer, {"numpy": "2.4.2"})
+        pinmod.write_hashes(layer, {"transform": "sha256:abc"})
+
+        assert pinmod.read_lock(layer) == {"transform": "store:1.0.0"}
+        assert pinmod.read_packages(layer) == {"numpy": "2.4.2"}
+        assert pinmod.read_hashes(layer) == {"transform": "sha256:abc"}
+
+    def test_hashing_reads_whole_bytes(self, tmp_path):
+        """Not the whitespace-stripped main() digest ChunkModule caches: that one ignores
+        formatting on purpose, and integrity has to notice everything."""
+        a = tmp_path / "a.py"
+        b = tmp_path / "b.py"
+        a.write_text("def main():\n    return 1\n", encoding="utf-8")
+        b.write_text("def main():\n        return 1\n", encoding="utf-8")
+        assert pinmod.hash_file(a) != pinmod.hash_file(b)
+
+    def test_an_unreadable_file_hashes_to_none(self, tmp_path):
+        assert pinmod.hash_file(tmp_path / "nope.py") is None
+
+    def test_an_edited_impl_is_caught_though_the_version_did_not_move(self, tmp_path):
+        """The whole point. Same chunk type, same version, different bytes."""
+        impl = tmp_path / "transform.py"
+        impl.write_text("def main():\n    return 1\n", encoding="utf-8")
+        entry = pinmod.MaterializedPin("transform", "store", "1.2.0", impl, "copy")
+        recorded = pinmod.collect_hashes([entry])
+
+        impl.write_text("def main():\n    return 2\n", encoding="utf-8")
+
+        problems = pinmod.verify_hashes([entry], recorded)
+        assert len(problems) == 1
+        assert "transform==1.2.0" in problems[0]
+        assert "content changed since it was pinned" in problems[0]
+
+    def test_an_untouched_impl_verifies(self, tmp_path):
+        impl = tmp_path / "transform.py"
+        impl.write_text("def main():\n    return 1\n", encoding="utf-8")
+        entry = pinmod.MaterializedPin("transform", "store", "1.2.0", impl, "copy")
+        assert pinmod.verify_hashes([entry], pinmod.collect_hashes([entry])) == []
+
+    def test_a_lock_predating_hashes_still_restores(self, tmp_path):
+        """Refusing to restore an older lock would be worse than the gap it closes."""
+        impl = tmp_path / "transform.py"
+        impl.write_text("def main():\n    return 1\n", encoding="utf-8")
+        entry = pinmod.MaterializedPin("transform", "store", "1.2.0", impl, "copy")
+        assert pinmod.verify_hashes([entry], {}) == []

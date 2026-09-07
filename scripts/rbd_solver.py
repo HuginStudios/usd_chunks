@@ -11,7 +11,7 @@ import random
 from collections.abc import Generator
 
 from PySide6 import QtCore
-from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 from usd_chunks import chunk, chunk_gizmo, chunk_registry, chunk_utils
 from usd_chunks.plugins import chunk_usd
@@ -1049,6 +1049,95 @@ def simulate_mujoco(
     return all_mats
 
 
+def simulate_mujoco_articulated(
+    stage: Usd.Stage,
+    roots,
+    layer: Sdf.Layer,
+    frame_count: int,
+    fps: float,
+    gravity: float,
+    mass: float,
+    substeps: int,
+    init_vel: list[float],
+    ang_vel: list[float],
+    start_frame: int,
+    collision_prims: list[Usd.Prim] | None = None,
+    friction: float = 0.5,
+    restitution: float = 0.1,
+    solver_iters: int = 30,
+    hfield_res: int = 96,
+    collider_mode: str = "Auto",
+    collider_thickness: float = 0.0,
+    floor_drop: float = 0.0,
+    free_root: bool = True,
+    settle_only: bool = False,
+    lin_damping: float = 0.0,
+    ang_damping: float = 0.05,
+    collision_margin: float = 0.0,
+    node=None,
+    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    turbulence: float = 0.0,
+    turb_scale: float = 100.0,
+    turb_speed: float = 1.0,
+    turb_seed: int = 0,
+) -> "dict | None":
+    """Run an articulated MuJoCo simulation and bake a transform per link.
+
+    The counterpart of simulate_mujoco for an asset that is a mechanism rather than a
+    single rigid body. Each link keeps its own baked transform, so a door's swing lands on
+    the door prim instead of being flattened into the body.
+    """
+    if not _HAS_MUJOCO:
+        print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
+        return None
+
+    up_idx = 1 if UsdGeom.GetStageUpAxis(stage).upper() == "Y" else 2
+    gen = _sim_articulated_gen_mj(
+        roots,
+        frame_count=frame_count,
+        gravity=gravity,
+        friction=friction,
+        restitution=restitution,
+        mass=mass,
+        substeps=substeps,
+        start_frame=start_frame,
+        dt=1.0 / fps,
+        up_idx=up_idx,
+        solver_iters=solver_iters,
+        collision_prims=collision_prims,
+        hfield_res=hfield_res,
+        collider_mode=collider_mode,
+        collider_thickness=collider_thickness,
+        floor_drop=floor_drop,
+        free_root=free_root,
+        init_vel=init_vel,
+        ang_vel=ang_vel,
+        lin_damping=lin_damping,
+        ang_damping=ang_damping,
+        collision_margin=collision_margin,
+        wind=wind,
+        turbulence=turbulence,
+        turb_scale=turb_scale,
+        turb_speed=turb_speed,
+        turb_seed=turb_seed,
+    )
+
+    results = None
+    try:
+        while True:
+            next(gen)
+    except StopIteration as exc:
+        results = exc.value
+
+    if not results:
+        print("[MuJoCoSolver] Articulated simulation produced no results")
+        return None
+
+    _write_articulated_results(stage, roots, layer, results, start_frame, settle_only, node)
+    print(f"[MuJoCoSolver] Baked {frame_count} frames across {len(results)} links")
+    return results
+
+
 def _proto_hull_verts(stage: Usd.Stage, proto_targets, cap: int = 200) -> _np.ndarray | None:
     """Prototype mesh vertices for a shared convex-hull collider (extracted once).
 
@@ -1532,6 +1621,778 @@ def clear_collision(owner, notice, sender) -> None:
     print("[MuJoCoSolver] Cleared collision prims")
 
 
+# UsdPhysics collider approximation -> this chunk's Shape Type. Only the tokens with a
+# single-geom MuJoCo equivalent are here: convexDecomposition and sdf need several geoms or
+# a signed-distance field, so they keep whatever the param says rather than being silently
+# downgraded to something that simulates differently.
+_APPROXIMATION_TO_SHAPE = {
+    "convexHull": "Convex Hull",
+    "convexDecomposition": None,
+    "meshSimplification": "Convex Hull",
+    "boundingCube": "Box",
+    "boundingSphere": "Sphere",
+    "sdf": None,
+    "none": "Convex Hull",
+}
+
+
+def _physics_material(prim: Usd.Prim):
+    """The PhysicsMaterialAPI bound to prim through the 'physics' material purpose, or None.
+
+    Physics materials bind the way shading materials do, on their own purpose, so one prim
+    can carry both a look and a set of contact properties.
+    """
+    if not prim or not prim.IsValid():
+        return None
+    material, _rel = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial("physics")
+    if not material:
+        return None
+    mat_prim = material.GetPrim()
+    if not mat_prim or not mat_prim.HasAPI(UsdPhysics.MaterialAPI):
+        return None
+    return UsdPhysics.MaterialAPI(mat_prim)
+
+
+def _authored(attr):
+    """An attribute's value if it was actually authored, else None.
+
+    HasAuthoredValue is the point: every UsdPhysics attribute has a schema fallback, so
+    Get() always returns something. Trusting that would let a schema default silently
+    outrank the chunk's param, which inverts the precedence this is here to establish.
+    """
+    if attr and attr.HasAuthoredValue():
+        return attr.Get()
+    return None
+
+
+def _scene_gravity(stage: Usd.Stage, fallback: float):
+    """Gravity from a UsdPhysics.Scene on the stage, as the signed scalar this chunk uses.
+
+    The schema states a magnitude and a direction; the solver applies a signed scalar along
+    the stage up axis, so only the component along up survives the translation.
+    """
+    if not stage:
+        return fallback, None
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdPhysics.Scene):
+            continue
+        scene = UsdPhysics.Scene(prim)
+        magnitude = _authored(scene.GetGravityMagnitudeAttr())
+        if magnitude is None:
+            return fallback, None
+        direction = _authored(scene.GetGravityDirectionAttr())
+        up_index = {"X": 0, "Y": 1, "Z": 2}.get(UsdGeom.GetStageUpAxis(stage), 2)
+        sign = -1.0
+        if direction is not None and abs(direction[up_index]) > 1e-9:
+            sign = 1.0 if direction[up_index] > 0.0 else -1.0
+        return sign * abs(magnitude), str(prim.GetPath())
+    return fallback, None
+
+
+def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
+    """Physics for this run, preferring what the asset authors over the chunk's params.
+
+    A sim-ready asset already states its mass, contact properties and collider
+    approximation. Re-deriving those from a global slider throws away the part its author
+    was careful about, and is why the solver could not usefully consume a library asset.
+
+    Anything not authored falls through to *defaults*, so a scene carrying no UsdPhysics
+    simulates exactly as it did before.
+
+    Values are taken in stage units and used as-is, deliberately. The solver already feeds
+    USD geometry to MuJoCo unscaled, and the Gravity param exists to absorb the difference
+    (its tooltip suggests ~100 on a centimetre scene). Converting only mass to SI while
+    lengths stayed in stage units would make that worse, not better -- real unit handling
+    means scaling the geometry too, which is a change to the model build, not to reading.
+
+    Args:
+        stage (Usd.Stage): The stage being simulated
+        prim (Usd.Prim): The prim being simulated
+        defaults (dict): The chunk's param values, used wherever nothing is authored
+
+    Returns:
+        dict: gravity, mass, friction, restitution, shape_type, kinematic
+    """
+    out = dict(defaults)
+    out["kinematic"] = False
+    found = []
+
+    if prim and prim.IsValid():
+        if prim.HasAPI(UsdPhysics.MassAPI):
+            mass = _authored(UsdPhysics.MassAPI(prim).GetMassAttr())
+            if mass is not None and mass > 0.0:
+                out["mass"] = mass
+                found.append("mass=%g" % mass)
+
+        # A kinematic body is driven rather than solved. The solver already has that notion
+        # for animated colliders (mocap bodies), so honouring the flag keeps the asset's
+        # own intent instead of dropping a conveyor belt into free fall.
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            if _authored(UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr()):
+                out["kinematic"] = True
+                found.append("kinematic")
+
+        material = _physics_material(prim)
+        if material is not None:
+            friction = _authored(material.GetDynamicFrictionAttr())
+            if friction is None:
+                friction = _authored(material.GetStaticFrictionAttr())
+            if friction is not None:
+                out["friction"] = friction
+                found.append("friction=%g" % friction)
+            restitution = _authored(material.GetRestitutionAttr())
+            if restitution is not None:
+                out["restitution"] = restitution
+                found.append("restitution=%g" % restitution)
+
+        # The approximation is the asset author's decision about how this shape should be
+        # collided -- exactly what Shape Type otherwise has to guess.
+        if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
+            approximation = _authored(UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr())
+            shape = _APPROXIMATION_TO_SHAPE.get(approximation)
+            if shape:
+                out["shape_type"] = shape
+                found.append("shape=%s" % shape)
+            elif approximation:
+                print(
+                    "[RBDSolver] approximation '%s' has no single-geom MuJoCo equivalent -- "
+                    "keeping Shape Type '%s'" % (approximation, out["shape_type"])
+                )
+
+    gravity, scene_path = _scene_gravity(stage, out["gravity"])
+    if scene_path:
+        out["gravity"] = gravity
+        found.append("gravity=%g (%s)" % (gravity, scene_path))
+
+    if found:
+        print("[RBDSolver] using authored UsdPhysics: %s" % ", ".join(found))
+    return out
+
+
+# --- articulation -----------------------------------------------------------
+#
+# A sim-ready asset describes a mechanism as flat sibling links joined by UsdPhysics
+# joints -- the tree is in the joint relationships, not in the prim hierarchy. The
+# joint prim itself lives inside the child link, and physics:body0 is the parent while
+# physics:body1 is the child. A joint with no body0 is anchored to the world.
+#
+# Only the three joint types that carry a real mechanism are handled: revolute,
+# prismatic and fixed. Together they were 98% of the joints in the corpus this was
+# built against (682 revolute, 640 prismatic, 316 fixed, 30 generic). A generic
+# PhysicsJoint has no single MuJoCo equivalent and is treated as fixed rather than
+# guessed at.
+
+_AXIS_VECTORS = {"X": Gf.Vec3d(1, 0, 0), "Y": Gf.Vec3d(0, 1, 0), "Z": Gf.Vec3d(0, 0, 1)}
+
+_JOINT_REVOLUTE = "PhysicsRevoluteJoint"
+_JOINT_PRISMATIC = "PhysicsPrismaticJoint"
+_JOINT_FIXED = "PhysicsFixedJoint"
+
+
+class _Link:
+    """One rigid body in an articulated asset, and the joint attaching it to its parent."""
+
+    __slots__ = ("prim", "parent", "joint", "children", "name")
+
+    def __init__(self, prim):
+        self.prim = prim
+        self.parent = None
+        self.joint = None
+        self.children = []
+        self.name = prim.GetName()
+
+
+class _Joint:
+    """A parsed UsdPhysics joint, in the terms MuJoCo needs."""
+
+    __slots__ = ("kind", "axis", "pos", "lower", "upper", "damping", "stiffness", "friction")
+
+    def __init__(self, kind, axis, pos, lower, upper, damping, stiffness, friction):
+        self.kind = kind
+        self.axis = axis
+        self.pos = pos
+        self.lower = lower
+        self.upper = upper
+        self.damping = damping
+        self.stiffness = stiffness
+        self.friction = friction
+
+
+def _joint_target(rel):
+    """First target path of a joint's body relationship, or None if unauthored."""
+    if not rel:
+        return None
+    targets = rel.GetTargets()
+    return targets[0] if targets else None
+
+
+def _parse_joint(joint_prim):
+    """Read one joint into MuJoCo's terms, or None if it is a type we do not handle.
+
+    The axis is a token naming an axis of the joint frame, and that frame is expressed
+    in the *child* body's space by localRot1 -- so the axis MuJoCo wants is the token
+    rotated by that quaternion. Getting this wrong hinges the door about the right
+    point in the wrong plane, which looks plausible and is not.
+
+    Rotational limits are authored in DEGREES; MuJoCo hinge ranges are radians.
+    """
+    type_name = str(joint_prim.GetTypeName())
+    if type_name == _JOINT_REVOLUTE:
+        kind = "revolute"
+    elif type_name == _JOINT_PRISMATIC:
+        kind = "prismatic"
+    else:
+        # Fixed, or a generic PhysicsJoint we decline to guess at.
+        kind = "fixed"
+
+    axis_attr = joint_prim.GetAttribute("physics:axis")
+    axis_token = axis_attr.Get() if axis_attr and axis_attr.HasAuthoredValue() else "X"
+    axis_local = _AXIS_VECTORS.get(str(axis_token), Gf.Vec3d(1, 0, 0))
+
+    rot_attr = joint_prim.GetAttribute("physics:localRot1")
+    if rot_attr and rot_attr.HasAuthoredValue():
+        q = rot_attr.Get()
+        axis_world = Gf.Rotation(Gf.Quatd(float(q.real), Gf.Vec3d(*[float(c) for c in q.imaginary]))).TransformDir(axis_local)
+    else:
+        axis_world = axis_local
+
+    pos_attr = joint_prim.GetAttribute("physics:localPos1")
+    pos = pos_attr.Get() if pos_attr and pos_attr.HasAuthoredValue() else Gf.Vec3f(0, 0, 0)
+
+    lower = _authored(joint_prim.GetAttribute("physics:lowerLimit"))
+    upper = _authored(joint_prim.GetAttribute("physics:upperLimit"))
+    if kind == "revolute":
+        # Degrees in USD, radians in MuJoCo.
+        lower = math.radians(lower) if lower is not None else None
+        upper = math.radians(upper) if upper is not None else None
+
+    # Drives: the passive half is what a settle or a destruction sim wants -- a door that
+    # swings and comes to rest. Actuators (targetPosition) are deliberately ignored; nothing
+    # here is driving the mechanism to a pose.
+    damping = stiffness = None
+    for prefix in ("drive:X:physics:", "drive:angular:physics:", "drive:linear:physics:",
+                   "drive:rotX:physics:", "drive:rotY:physics:", "drive:rotZ:physics:",
+                   "drive:transX:physics:"):
+        d = _authored(joint_prim.GetAttribute(prefix + "damping"))
+        k = _authored(joint_prim.GetAttribute(prefix + "stiffness"))
+        if d is not None or k is not None:
+            damping, stiffness = d, k
+            break
+
+    friction = _authored(joint_prim.GetAttribute("physxJoint:jointFriction"))
+
+    return _Joint(
+        kind,
+        [float(axis_world[0]), float(axis_world[1]), float(axis_world[2])],
+        [float(pos[0]), float(pos[1]), float(pos[2])],
+        lower, upper, damping, stiffness, friction,
+    )
+
+
+def read_articulations(root_prim):
+    """Parse an articulated asset under root_prim into link trees.
+
+    Returns a list of root _Links, one per independent mechanism. Empty when the subtree
+    holds no joints at all, which is the signal to use the plain rigid-body path.
+
+    More than one root is normal rather than exceptional: 28 of the 243 articulated assets
+    in the corpus this was built against have several -- an appliance plus its unjointed
+    removable parts, and in one case fourteen of them. Simulating only the first would
+    silently drop the rest.
+    """
+    if not root_prim or not root_prim.IsValid():
+        return []
+
+    links = {}
+    joints = []
+    for prim in Usd.PrimRange(root_prim):
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            links[prim.GetPath()] = _Link(prim)
+        if "Joint" in str(prim.GetTypeName()):
+            joints.append(prim)
+
+    if not joints or not links:
+        return []
+
+    for joint_prim in joints:
+        body0 = _joint_target(joint_prim.GetRelationship("physics:body0"))
+        body1 = _joint_target(joint_prim.GetRelationship("physics:body1"))
+        child = links.get(body1)
+        if child is None:
+            continue
+        if body0 is None:
+            # No body0 means anchored to the world; the link stays a root.
+            continue
+        parent = links.get(body0)
+        if parent is None or parent is child:
+            continue
+        child.parent = parent
+        child.joint = _parse_joint(joint_prim)
+        parent.children.append(child)
+
+    # A link with no collider anywhere beneath it and nothing hanging off it is not a
+    # physical body. These assets apply PhysicsRigidBodyAPI to annotation scopes -- the
+    # `Sites` prims holding manipulation target markers -- which compile as massless
+    # bodies and take the whole model down with an error that names only the scope.
+    for path, link in list(links.items()):
+        if link.children:
+            continue
+        has_collider = any(
+            pr.HasAPI(UsdPhysics.CollisionAPI) for pr in Usd.PrimRange(link.prim)
+        )
+        if not has_collider:
+            if link.parent is not None and link in link.parent.children:
+                link.parent.children.remove(link)
+            del links[path]
+
+    roots = [lk for lk in links.values() if lk.parent is None]
+    if not roots:
+        # Every link claims a parent: a closed loop, which MuJoCo's tree cannot express.
+        print("[RBDSolver] articulation has no root link (closed kinematic loop) -- skipping")
+    return roots
+
+
+def _iter_links(root):
+    """Depth-first walk of a link tree, parents before children."""
+    stack = [root]
+    while stack:
+        link = stack.pop()
+        yield link
+        stack.extend(reversed(link.children))
+
+
+def _prim_scale(matrix):
+    """Per-axis scale of a transform, as the lengths of its basis rows."""
+    return [matrix.GetRow3(i).GetLength() for i in range(3)]
+
+
+def _collider_shape(prim, to_link):
+    """(mjGeom type, size, pos, quat) for one collision prim, in its link's frame.
+
+    Sizes come from the gprim's own attributes rather than its `extent`, deliberately.
+    The corpus this was built against authors `extent` as the *final* size while also
+    carrying a scale, and leaves `size` unauthored -- so it defaults to 2. A bound-based
+    reader multiplies the two and gets a collider five times too small, with no error
+    anywhere. Reading size/radius/height and applying the transform's scale once is both
+    correct per the schema and immune to that.
+    """
+    local = to_link  # prim-local -> link space
+    scale = _prim_scale(local)
+    pos = local.ExtractTranslation()
+    quat = local.RemoveScaleShear().ExtractRotationQuat()
+    qi = quat.GetImaginary()
+    quat_mj = [quat.GetReal(), float(qi[0]), float(qi[1]), float(qi[2])]
+    pos_mj = [float(pos[0]), float(pos[1]), float(pos[2])]
+
+    type_name = str(prim.GetTypeName())
+    if type_name == "Cube":
+        half = UsdGeom.Cube(prim).GetSizeAttr().Get() * 0.5
+        size = [max(half * scale[i], 1e-6) for i in range(3)]
+        return _mj.mjtGeom.mjGEOM_BOX, size, pos_mj, quat_mj
+
+    if type_name == "Sphere":
+        radius = float(UsdGeom.Sphere(prim).GetRadiusAttr().Get() or 1.0)
+        return _mj.mjtGeom.mjGEOM_SPHERE, [max(radius * max(scale), 1e-6), 0.0, 0.0], pos_mj, quat_mj
+
+    if type_name == "Cylinder":
+        cyl = UsdGeom.Cylinder(prim)
+        radius = float(cyl.GetRadiusAttr().Get() or 1.0)
+        height = float(cyl.GetHeightAttr().Get() or 2.0)
+        axis = str(cyl.GetAxisAttr().Get() or "Z")
+        idx = {"X": 0, "Y": 1, "Z": 2}.get(axis, 2)
+        lateral = [scale[i] for i in range(3) if i != idx]
+        size = [max(radius * max(lateral), 1e-6), max(height * 0.5 * scale[idx], 1e-6), 0.0]
+        # MuJoCo cylinders run along their local Z; rotate when the prim says otherwise.
+        if axis == "X":
+            quat_mj = [0.7071068, 0.0, 0.7071068, 0.0]
+        elif axis == "Y":
+            quat_mj = [0.7071068, -0.7071068, 0.0, 0.0]
+        return _mj.mjtGeom.mjGEOM_CYLINDER, size, pos_mj, quat_mj
+
+    if type_name == "Mesh":
+        points = UsdGeom.Mesh(prim).GetPointsAttr().Get()
+        if not points:
+            return None
+        verts = []
+        for pt in points:
+            lp = local.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
+            verts.append([float(lp[0]), float(lp[1]), float(lp[2])])
+        if len(verts) > 256:
+            verts = verts[:: max(1, len(verts) // 256)][:256]
+        # Position and rotation are already folded into the transformed vertices.
+        return "mesh", _np.array(verts, dtype=_np.float32), [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
+
+    return None
+
+
+def _add_link_geoms(spec, body, link_prim, link_world_inv, friction, contact_tc,
+                    restitution, collision_margin=0.0):
+    """Attach a link's authored collision prims to its MuJoCo body.
+
+    Sim-ready assets ship purpose-built collision proxies under a Collisions scope --
+    primitive cubes and cylinders, not the render mesh. Using them is both more accurate
+    and far cheaper than hulling the visual geometry, and it is the part of the asset its
+    author was most deliberate about.
+
+    Those proxies carry `purpose = guide` so they never render. A BBoxCache built for the
+    default purpose alone returns an EMPTY bound for every one of them without complaining,
+    which reads as "this link has no colliders", leaves the body massless, and fails the
+    compile with a message about mjMINVAL that says nothing about purposes.
+    """
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    count = 0
+    for prim in Usd.PrimRange(link_prim):
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        to_link = xform_cache.GetLocalToWorldTransform(prim) * link_world_inv
+        shape = _collider_shape(prim, to_link)
+        if shape is None:
+            continue
+        geom_type, size, pos, quat = shape
+
+        geom = body.add_geom()
+        if geom_type == "mesh":
+            mesh_spec = spec.add_mesh()
+            mesh_spec.name = f"hull_{link_prim.GetName()}_{count}"
+            mesh_spec.uservert = size.flatten()
+            mesh_spec.maxhullvert = 64
+            geom.type = _mj.mjtGeom.mjGEOM_MESH
+            geom.meshname = mesh_spec.name
+            geom.friction = [friction, 0.005, 0.0001]
+            geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, restitution)) * 0.9]
+            geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
+            geom.condim = 3
+            count += 1
+            continue
+
+        geom.friction = [friction, 0.005, 0.0001]
+        geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, restitution)) * 0.9]
+        geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
+        geom.condim = 3
+        geom.type = geom_type
+        geom.size = [v + collision_margin if v > 0.0 else v for v in size]
+        geom.pos = pos
+        geom.quat = quat
+        count += 1
+    return count
+
+
+def _sim_articulated_gen_mj(
+    roots,
+    frame_count: int,
+    gravity: float,
+    friction: float,
+    restitution: float,
+    mass: float,
+    substeps: int,
+    start_frame: int,
+    dt: float,
+    up_idx: int,
+    solver_iters: int,
+    lin_damping: float = 0.0,
+    ang_damping: float = 0.05,
+    collision_prims: "list | None" = None,
+    hfield_res: int = 96,
+    collider_mode: str = "Auto",
+    collider_thickness: float = 0.0,
+    floor_drop: float = 0.0,
+    free_root: bool = True,
+    init_vel: "list | None" = None,
+    ang_vel: "list | None" = None,
+    collision_margin: float = 0.0,
+    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    turbulence: float = 0.0,
+    turb_scale: float = 100.0,
+    turb_speed: float = 1.0,
+    turb_seed: int = 0,
+) -> Generator[int, None, "dict | None"]:
+    """Simulate an articulated asset, yielding frame index and returning per-link matrices.
+
+    Bodies are nested to mirror the joint tree, in each link's own prim frame rather than
+    on its geometry centre: joint anchors are authored in prim space, and an articulated
+    asset is authored as a coherent mechanism, so the far-from-origin problem the rigid
+    path guards against does not arise the same way.
+    """
+    if not roots:
+        return None
+    built = build_articulated_spec(
+        roots, gravity, friction, restitution, mass, substeps, dt, up_idx,
+        solver_iters, collision_prims, hfield_res, collider_mode, collider_thickness,
+        floor_drop, free_root, collision_margin,
+    )
+    if built is None:
+        return None
+    model, data, ordered = built
+    if free_root and (init_vel or ang_vel):
+        for root in roots:
+            jid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_JOINT, f"{root.name}_free")
+            if jid < 0:
+                continue
+            dof0 = model.jnt_dofadr[jid]
+            if init_vel:
+                data.qvel[dof0:dof0 + 3] = init_vel[:3]
+            if ang_vel:
+                data.qvel[dof0 + 3:dof0 + 6] = ang_vel[:3]
+        _mj.mj_forward(model, data)
+
+    ids = {}
+    for link in ordered:
+        bid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, link.name)
+        if bid >= 0:
+            ids[link.name] = bid
+
+    # Linear/angular damping on each free root's DOFs, as the rigid path does.
+    root_bids = []
+    for root in roots:
+        jid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_JOINT, f"{root.name}_free")
+        if jid < 0:
+            continue
+        dof0 = model.jnt_dofadr[jid]
+        model.dof_damping[dof0:dof0 + 3] = lin_damping
+        model.dof_damping[dof0 + 3:dof0 + 6] = ang_damping
+        bid = ids.get(root.name)
+        if bid is not None:
+            root_bids.append(bid)
+
+    phases = _force_phases(turb_seed)
+    sim_t = 0.0
+    sub_dt = dt / substeps
+
+    results = {name: [] for name in ids}
+    for frame in range(frame_count):
+        for name, bid in ids.items():
+            pos = data.xpos[bid]
+            quat = data.xquat[bid]
+            mat = Gf.Matrix4d(1.0)
+            mat.SetRotate(Gf.Quatd(float(quat[0]), Gf.Vec3d(float(quat[1]), float(quat[2]), float(quat[3]))))
+            mat.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+            results[name].append(mat)
+        for _ in range(substeps):
+            # Wind pushes the free roots. A link inside a mechanism inherits the motion
+            # through its joint rather than being blown independently, which is both
+            # cheaper and what a hinged door on a tumbling appliance actually does.
+            if root_bids:
+                _apply_wind(model, data, tuple(root_bids), wind, turbulence,
+                            turb_scale, turb_speed, phases, sim_t)
+            _mj.mj_step(model, data)
+            sim_t += sub_dt
+        yield frame
+
+    return results
+
+
+def build_articulated_spec(
+    roots,
+    gravity: float,
+    friction: float,
+    restitution: float,
+    mass: float,
+    substeps: int,
+    dt: float,
+    up_idx: int,
+    solver_iters: int,
+    collision_prims: "list | None" = None,
+    hfield_res: int = 96,
+    collider_mode: str = "Auto",
+    collider_thickness: float = 0.0,
+    floor_drop: float = 0.0,
+    free_root: bool = True,
+    collision_margin: float = 0.0,
+):
+    """Compile an articulated asset into a MuJoCo model.
+
+    Split out of the simulate generator so the model can be built, inspected and rendered
+    without running a bake -- which is what makes the joint frames checkable at all.
+
+    Returns (model, data, ordered_links), or None if the model would not compile.
+    """
+    if not roots:
+        return None
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    spec = _mj.MjSpec()
+    # MuJoCo's compiler defaults to interpreting angles as DEGREES. Joint limits are
+    # converted to radians when the USD joint is parsed, so leaving this alone applies the
+    # conversion twice and a 90-degree door limit compiles as 1.6 degrees -- a hinge that
+    # is present, correctly placed, and barely moves.
+    spec.compiler.degree = False
+    sub_dt = dt / substeps
+    spec.option.timestep = sub_dt
+    grav = [0.0, 0.0, 0.0]
+    grav[up_idx] = gravity
+    spec.option.gravity = grav
+    spec.option.iterations = solver_iters
+    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
+    contact_tc = max(2.0 * sub_dt, 0.01)
+
+    _add_colliders(
+        spec, collision_prims, up_idx, friction, contact_tc,
+        1.0, hfield_res, floor_drop, collider_mode, collider_thickness,
+    )
+
+    bodies = {}
+    link_world = {}
+    ordered = [link for root in roots for link in _iter_links(root)]
+
+    for link in ordered:
+        world = xform_cache.GetLocalToWorldTransform(link.prim).RemoveScaleShear()
+        link_world[link.name] = world
+        if link.parent is None:
+            parent_body = spec.worldbody
+            rel = world
+        else:
+            parent_body = bodies[link.parent.name]
+            rel = world * link_world[link.parent.name].GetInverse()
+
+        body = parent_body.add_body()
+        body.name = link.name
+        t = rel.ExtractTranslation()
+        q = rel.ExtractRotationQuat()
+        qi = q.GetImaginary()
+        body.pos = [float(t[0]), float(t[1]), float(t[2])]
+        body.quat = [q.GetReal(), float(qi[0]), float(qi[1]), float(qi[2])]
+        bodies[link.name] = body
+
+        if link.parent is None:
+            # A sim-ready asset usually pins its base to the world with a FixedJoint, which
+            # is right for manipulation training -- a microwave on a counter stays put. An
+            # RBD solver is normally asked the opposite question (drop this and see what
+            # happens), so the root gets a free joint unless the caller wants the asset's
+            # own anchoring honoured.
+            if free_root:
+                root_jnt = body.add_joint()
+                root_jnt.type = _mj.mjtJoint.mjJNT_FREE
+                root_jnt.name = f"{link.name}_free"
+        else:
+            j = link.joint
+            # A fixed joint means no degree of freedom: the child is welded to its parent,
+            # which in MuJoCo is simply a body with no joint at all.
+            jnt = None
+            if j.kind in ("revolute", "prismatic"):
+                jnt = body.add_joint()
+                jnt.name = f"{link.name}_joint"
+                jnt.type = (_mj.mjtJoint.mjJNT_HINGE if j.kind == "revolute"
+                            else _mj.mjtJoint.mjJNT_SLIDE)
+
+            if jnt is not None:
+                jnt.pos = j.pos
+                jnt.axis = j.axis
+                if j.lower is not None and j.upper is not None and j.upper > j.lower:
+                    # A limit far beyond a full turn is an asset's way of saying "free
+                    # spinning" (a microwave turntable); treat it as unlimited.
+                    span = j.upper - j.lower
+                    if j.kind != "revolute" or span < 2.0 * math.pi:
+                        jnt.limited = True
+                        jnt.range = [j.lower, j.upper]
+                # MjSpec sizes damping and stiffness for a ball joint's three DOFs; a
+                # hinge or slide uses the first slot only.
+                if j.damping is not None:
+                    jnt.damping = [max(float(j.damping), 0.0), 0.0, 0.0]
+                if j.stiffness is not None:
+                    jnt.stiffness = [max(float(j.stiffness), 0.0), 0.0, 0.0]
+                if j.friction is not None:
+                    jnt.frictionloss = max(float(j.friction), 0.0)
+
+        link_mass = _authored(UsdPhysics.MassAPI(link.prim).GetMassAttr()) if link.prim.HasAPI(UsdPhysics.MassAPI) else None
+        n = _add_link_geoms(spec, body, link.prim, world.GetInverse(), friction,
+                            contact_tc, restitution, collision_margin)
+        if n and link_mass:
+            for g in body.geoms:
+                g.mass = float(link_mass) / n
+        elif n:
+            for g in body.geoms:
+                g.mass = mass / n
+
+    try:
+        model = spec.compile()
+    except Exception as exc:  # noqa: BLE001 - a compile failure must not take the chunk down
+        print(f"[RBDSolver/MuJoCo] Articulated scene compile failed: {exc}")
+        return None
+
+    data = _mj.MjData(model)
+    _mj.mj_forward(model, data)
+    print(f"[RBDSolver/MuJoCo] Compiled articulation — {model.nbody} bodies, "
+          f"{model.njnt} joints, {model.ngeom} geoms")
+    return model, data, ordered
+
+
+def _write_articulated_results(stage, roots, layer, results, start_frame,
+                               settle_only=False, node=None):
+    """Author each link's simulated transform back onto its own prim.
+
+    Follows _write_prim_results rather than authoring a plain transform op, for the two
+    reasons recorded there:
+
+    * The bake goes into THIS chunk's own named op, and the op order is derived the same
+      way every other transform-authoring chunk derives it. Clearing the order and writing
+      a bare xformOp:transform excludes an upstream Transform's op entirely -- the op stays
+      on the prim, typed and valued, and is never read.
+    * What is written is this chunk's *share*, not the absolute placement. The simulated
+      matrix says where the link should end up in world space; composing that on top of the
+      ops that already placed it would apply them twice.
+
+    settle_only writes the resting pose as the attribute's default with no time samples: a
+    prim carrying PhysicsRigidBodyAPI *and* animated transforms is contradictory, and a
+    downstream simulator would fight the animation.
+    """
+    if not results:
+        return
+
+    # Match the target layer's timeCodesPerSecond to the stage's before authoring samples.
+    # USD maps sample times through a layer offset built from the ratio between them, so
+    # writing frame 1..40 into a 24-TCPS layer over a 60-TCPS stage silently lands them at
+    # 2.5..100. The values are right and the timing is wrong, which surfaces as an
+    # animation that plays at the wrong speed rather than as any kind of error.
+    stage_tcps = stage.GetTimeCodesPerSecond()
+    if stage_tcps and layer.timeCodesPerSecond != stage_tcps:
+        layer.timeCodesPerSecond = stage_tcps
+
+    op_name = chunk_utils.xform_op_name(node) if node is not None else "xformOp:transform"
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    written = 0
+
+    with Usd.EditContext(stage, layer):
+        for link in (found for root in roots for found in _iter_links(root)):
+            mats = results.get(link.name)
+            if not mats:
+                continue
+            prim = link.prim
+
+            parent = prim.GetParent()
+            parent_world_inv = Gf.Matrix4d(1.0)
+            if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
+                parent_world_inv = xform_cache.GetLocalToWorldTransform(parent).GetInverse()
+
+            order = (
+                chunk_gizmo.xform_op_order(node, prim, op_name)
+                if node is not None
+                else [op_name]
+            )
+            order_attr = prim.GetAttribute("xformOpOrder")
+            if not order_attr:
+                order_attr = prim.CreateAttribute("xformOpOrder", Sdf.ValueTypeNames.TokenArray)
+            order_attr.Set(order)
+
+            xf_attr = prim.GetAttribute(op_name)
+            if not xf_attr:
+                xf_attr = prim.CreateAttribute(op_name, Sdf.ValueTypeNames.Matrix4d)
+
+            inv_upstream = _upstream_xform(prim, op_name).GetInverse()
+            if settle_only:
+                xf_attr.Set(mats[-1] * parent_world_inv * inv_upstream)
+            else:
+                xf_attr.Set(mats[0] * parent_world_inv * inv_upstream)
+                for i, mat in enumerate(mats):
+                    xf_attr.Set(mat * parent_world_inv * inv_upstream,
+                                Usd.TimeCode(start_frame + i))
+            written += 1
+
+    if not settle_only and written:
+        frames = len(next(iter(results.values())))
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            stage.SetStartTimeCode(start_frame)
+            stage.SetEndTimeCode(start_frame + frames - 1)
+
+
 def _run(owner, notice, sender) -> None:
     if not _HAS_MUJOCO:
         print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
@@ -1600,7 +2461,60 @@ def _run(owner, notice, sender) -> None:
     scratch_stage = chunk_usd.get_upstream_stage(stage, owner.get_scene(), _chunk)
     collision_prims = _parse_collision_prims(collision_path_value, scratch_stage)
 
-    if UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
+    # A sim-ready asset states its own mass, contact properties and collider approximation.
+    # Prefer those; the params stay as the fallback for geometry that says nothing.
+    authored = _authored_physics(
+        stage,
+        prim,
+        dict(
+            gravity=gravity,
+            mass=mass,
+            friction=friction,
+            restitution=restitution,
+            shape_type=shape_type,
+        ),
+    )
+    gravity = authored["gravity"]
+    mass = authored["mass"]
+    friction = authored["friction"]
+    restitution = authored["restitution"]
+    shape_type = authored["shape_type"]
+    if authored["kinematic"]:
+        print("[RBDSolver] target prim is a kinematic rigid body -- driven, not solved")
+
+    # An asset that carries UsdPhysics joints is a mechanism, not a single rigid body:
+    # simulate it as a kinematic tree so a door or drawer keeps its own motion. Assets
+    # with no joints fall through to the paths below unchanged.
+    articulations = read_articulations(prim)
+    if articulations:
+        simulate_mujoco_articulated(
+            stage,
+            articulations,
+            layer,
+            frame_count,
+            fps,
+            gravity,
+            mass,
+            substeps,
+            init_vel,
+            ang_vel,
+            start_frame,
+            collision_prims=collision_prims,
+            friction=friction,
+            restitution=restitution,
+            solver_iters=30,
+            hfield_res=_chunk.get_param("hfield_res", is_i).value,
+            collider_mode=_chunk.get_param("collider_mode", is_s).value,
+            collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
+            floor_drop=floor_drop,
+            lin_damping=lin_damping,
+            ang_damping=ang_damping,
+            collision_margin=_chunk.get_param("collision_margin", is_f).value,
+            settle_only=bool(_chunk.get_param("settle_to_rest", chunk.is_param_t(bool)).value),
+            node=_chunk,
+            **forces,
+        )
+    elif UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
         simulate_mujoco_instancer(
             stage,
             prim,
@@ -1751,7 +2665,10 @@ def _only_presentation_changed(sender) -> bool:
 
     Asked of the framework rather than answered here, so the DISABLED carve-out keeps working:
     disabling a chunk is a state change, but it decides whether that chunk cooks, and is
-    therefore a real simulation input.
+    therefore a real simulation input. DagNode.only_presentation_changed reads back the
+    verdict chunk_scheduler recorded when the change was propagated; this used to re-ask each
+    sender's is_presentation_change(), which re-reads an old_value/value pair that has since
+    moved on.
 
     Only meaningful *inside* the notice. `_changes` is cleared in a `finally` once the whole
     solve finishes (chunk_scheduler.solve), and the notices fire during it -- so this reads a
@@ -1760,17 +2677,11 @@ def _only_presentation_changed(sender) -> bool:
     from its absence.
     """
     try:
-        changes = list(sender.get_dag_node().iter_changes())
+        # Nothing recorded reads as False, i.e. assume it mattered: a missed re-run is a
+        # wrong simulation, an extra one is only slow.
+        return sender.get_dag_node().only_presentation_changed()
     except Exception:  # noqa: BLE001 - never let this stop a legitimate re-run
         return False
-    if not changes:
-        # Nothing recorded: assume it mattered. A missed re-run is a wrong simulation; an
-        # extra one is only slow.
-        return False
-    return all(
-        getattr(prop, "is_presentation_change", lambda: False)()
-        for _alias, prop in changes
-    )
 
 
 def _schedule_auto_run(root_chunk) -> None:
@@ -1824,6 +2735,20 @@ def main() -> chunk.Chunk:
     )
     auto_sim.add_callback(_on_auto_sim_toggled)
     chunk_api.add_param(auto_sim)
+
+    chunk_api.add_param(
+        chunk.Checkbox(
+            "settle_to_rest",
+            "Settle To Rest",
+            default_value=False,
+            tooltip="Bake only the final resting pose, as the transform's default value, "
+            "instead of the whole frame range. Use it to drop props into a plausible "
+            "arrangement rather than to keep the animation of them falling. "
+            "Matters for a sim-ready asset: a prim carrying PhysicsRigidBodyAPI *and* "
+            "animated transforms is contradictory, and a downstream simulator ends up "
+            "fighting the keyframes. Articulated assets only.",
+        )
+    )
 
     _GF = (
         chunk.ChunkFlags.GroupFlags.COLLAPSABLE
@@ -2159,4 +3084,13 @@ def config() -> chunk.DefaulConfig:
             "for objects to rest on or in (a heightfield is built for concave shapes like\n"
             "bowls). Requires the 'mujoco' package."
         ),
+        # Declared, not just described. Saying it in the description tells a person
+        # reading the chunk list; declaring it is what lets the framework act -- name
+        # the missing package when it is absent, and install it when the user has opted
+        # in. Without this the chunk reported "mujoco not installed" to the console and
+        # there was nothing for the host to offer.
+        #
+        # scipy is deliberately absent: a genuine optional, imported inside the functions
+        # that want it, with a documented fallback when it is missing.
+        requirements=["mujoco>=3.1,<4", "numpy>=2,<3"],
     )

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pxr import Usd
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 
 
 def _generate_dest_path(stage: Usd.Stage, source_path: str) -> str:
@@ -117,16 +117,37 @@ def execute(node):
     if not source_prim.IsValid():
         return
 
-    # Determine destination path
+    # Determine destination path. Only an empty field gets filled in; _generate_dest_path
+    # already steps around anything occupying the stage, so a suggestion never collides.
+    #
+    # A destination that is already set is an instruction, not a suggestion, and is left
+    # exactly as it is. There used to be a second pass here that re-generated the path
+    # whenever a prim already stood at it -- which read as collision handling but fired
+    # hardest on this chunk's own output. Saving bakes the copy into the file, so on reopen
+    # FlowerPotA_5_copy1 genuinely is on the stage, the check called that a collision, and
+    # the destination was renamed to the still-free FlowerPotA_5_copy. The saved value was
+    # replaced before anything downstream could look at it: a Transform aimed at _copy1 was
+    # left pointing at a prim that no longer existed, silently doing nothing, and the copy
+    # sat unmoved on top of its original. Reopening the same file twice moved it again.
+    #
+    # Re-authoring over the baked result is safe: the copy goes onto this chunk's own layer,
+    # which it clears at the top of every cook, so a reopen reproduces the same prim rather
+    # than accumulating another one.
     dest_path = dest_param.value.strip() if dest_param.value else ""
     if not dest_path:
         dest_path = _generate_dest_path(stage, source_path)
         dest_param.value = dest_path
-
-    # Handle collision
-    if stage.GetPrimAtPath(dest_path).IsValid():
-        dest_path = _generate_dest_path(stage, source_path)
-        dest_param.value = dest_path
+    else:
+        # The param, not its value: given a param, get_unique_path clears this chunk's own
+        # layer before looking, so the copy it made last cook does not read as a collision
+        # and walk the suffix up on every execute.
+        dest_path = chunk_utils.get_unique_path(stage, dest_param)
+        # Never write back over an expression. get_unique_path resolves one to its current
+        # value, so assigning that would replace the wire with the path it happened to
+        # produce, and the connection is gone. Same guard prim.py uses.
+        raw = dest_param.raw_value
+        if not chunk_utils.has_expression(raw or "") and dest_path != (raw or ""):
+            dest_param.value = dest_path
 
     _copy_prim_recursive(stage, source_prim, dest_path)
 

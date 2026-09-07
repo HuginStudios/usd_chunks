@@ -47,7 +47,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self
-from usd_chunks import chunk_scheduler, chunk_serial
+from usd_chunks import chunk_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -565,9 +565,12 @@ class DagNode:
     )
 
     def __init__(self, propagator: "ChunkNoticePropagator"):
-        # Insertion-ordered set of the change reasons that dirtied this node, maintained
-        # by chunk_scheduler.propagate_dirty and replayed by iter_changes().
-        self._changes: Dict[Tuple[ChunkNoticeAlias, "DagNode"], None] = {}
+        # Insertion-ordered map of the change reasons that dirtied this node, maintained
+        # by chunk_scheduler.propagate_dirty and replayed by iter_changes(). The value is
+        # the presentation-vs-data verdict for that reason, decided once at origin by
+        # AttributeSender.is_presentation_change and carried unchanged from there --
+        # see only_presentation_changed().
+        self._changes: Dict[Tuple[ChunkNoticeAlias, "DagNode"], bool] = {}
         self._dirty = True
         self._connections: DagConnections = DagConnections()
         self._propagator = weakref.ref(propagator)
@@ -654,6 +657,38 @@ class DagNode:
         for alias, node in sorted(self._changes, key=lambda x: x[1]._index):
             yield alias, node.propagator
         return StopIteration()
+
+    def only_presentation_changed(self) -> bool:
+        """
+        Whether every change that dirtied this node was presentation only, i.e. something
+        nothing computes from. A chunk whose changes are all presentation must not re-cook.
+
+        The verdict is read back from what chunk_scheduler recorded when each change was
+        propagated, not re-derived here. Both of the older ways of asking are lossy:
+
+        * The aliases in _changes are only a proxy. A `presentation_only` param raises
+          PARAM_CHANGED rather than STATE_CHANGED, so an alias test disagrees with
+          AttributeSender.is_presentation_change in exactly that case.
+        * Asking the sender again reads an old_value/value pair that has moved on since,
+          and is only meaningful while the solve that recorded it is still running.
+
+        False when nothing was recorded, so a direct dirty solve -- execute-on-creation,
+        which carries no propagated change -- still counts as real work and cooks.
+
+        Returns:
+            bool: True if there is at least one recorded change and all of them are
+                presentation only
+        """
+        seen = False
+        for (_alias, node), presentation in self._changes.items():
+            # A dead propagator's reason is dropped, matching what iter_changes()'s
+            # consumers already do: it can no longer describe anything.
+            if node.propagator is None:
+                continue
+            if not presentation:
+                return False
+            seen = True
+        return seen
 
     def set_graph_id(self, node: "DagNode"):
         if not (node._part_of_graph and self._part_of_graph):
@@ -942,7 +977,7 @@ class DagNode:
         yield from chunk_scheduler.solve(self)
 
 
-class CallbackContainer(chunk_serial.Serializeable):
+class CallbackContainer:
     """
     A container for managing callbacks on the ChunkNoticePropagator. Some callbacks can be tagged private, or should be executed when a chunk is
     loaded. This is handled here rather than directly on the NoticeConnection objects as to not pollute that class.
@@ -959,18 +994,7 @@ class CallbackContainer(chunk_serial.Serializeable):
         super().__init__()
         self.callbacks: List[Dict[Literal["conn", "on_create", "private"], Any]] = []
 
-    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
-        # We serialize only non-private callbacks
-        if name == "callbacks":
-            return True, [
-                {"conn": x.get("conn"), "on_create": x.get("on_create")} for x in self.callbacks if not x.get("private")
-            ]
-        return False, None
 
-    def post_serial_setattr(self, name, value):
-        if name == "on_create_callbacks":
-            return super().post_serial_setattr(name, weakref.WeakSet(value))
-        super().post_serial_setattr(name, value)
 
     def add(self, conn: "NoticeConnection", trigger_on_create=True, private=False):
         self.callbacks.append({"conn": conn, "on_create": trigger_on_create, "private": private})
@@ -992,7 +1016,7 @@ class CallbackContainer(chunk_serial.Serializeable):
         self.callbacks.clear()
 
 
-class ChunkNoticePropagator(chunk_serial.Serializeable):
+class ChunkNoticePropagator:
     """
     A base class that implements the connectability of chunk objects. Chunk objects may be connected to eachother through
     'physical' connections, and to callbacks through 'non-physical' connections. These two connection methods differ in how
@@ -1034,40 +1058,8 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
         self._blocked = False
         super().__init__(*args, **kwargs)
 
-    def serialize(self, glb):
-        if (res := super().serialize(glb)) and isinstance(res, chunk_serial.SerializedClass):
-            res.attributes["dependencies"] = [node for _, node in self.get_dependencies()]
 
-            if self.get_dag_node()._part_of_graph and (owner := self.get_owner()):
-                # The owner should always be serialized as a reference. This ensures no circular dependencies
-                res.attributes["owner"] = chunk_serial.SerializedReference(hash(owner)).as_dict()
-        return res
 
-    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
-        if name == "_callbacks":
-            return True, value
-        if name.startswith("_"):
-            return False, value
-        return super().should_serialize_attribute(name, value)
-
-    def post_serial_setattr(self, name, value):
-        self.set_blocked(True)
-        if name == "dependencies":
-            # Since the _dependencies is an attribute of the DagNode, calling setattr(self, '_dependencies', value)
-            # would set the _dependencies on the AttributesBase instance. So instead we make sure the dependencies goes to the
-            # DagNode. The dependencies are serialized to the AttributesBase
-            for dep in value:
-                self.add_dependency(dep)
-        elif name == "_callbacks":
-            # Instead of overriding the callbacks, we extend it in order to keep callbacks created prior to post_serial_setattr() is called, i.e. from __init__.
-            # An example of this is the ChunkBase class that creates some callbacks in __init__, but as they are private, they are not serialized, therefore
-            # if we were to do self._callbacks = value, those initial callbacks would be deleted
-            self._callbacks.extend(value)
-        elif name == "owner":
-            self.set_owner(value)
-        else:
-            super().post_serial_setattr(name, value)
-        self.set_blocked(False)
 
     @abstractmethod
     def request_delete(self):
@@ -1249,11 +1241,15 @@ class ChunkNoticePropagator(chunk_serial.Serializeable):
             if notice := prop.send_self():
                 msg += f"   {notice.alias.name}\n"
 
-            # A pure state change (selection, collapse, disable) propagates only as
-            # STATE_CHANGED — it must not re-run the module. Data changes (params/inputs) and a
-            # direct dirty solve (execute-on-creation, which carries no propagated change) still
-            # execute. Selection/disable side effects run above via data_changed / send_self.
-            state_only = bool(changes) and all(a == ChunkNoticeAlias.STATE_CHANGED for a, _ in changes)
+            # A pure state change (selection, collapse, disable) must not re-run the module.
+            # Data changes (params/inputs) and a direct dirty solve (execute-on-creation,
+            # which carries no propagated change) still execute. Selection/disable side
+            # effects run above via data_changed / send_self.
+            #
+            # Read back from the verdict chunk_scheduler recorded rather than re-derived from
+            # the aliases: a `presentation_only` param raises PARAM_CHANGED, not
+            # STATE_CHANGED, so the old alias test called it a data change and re-cooked.
+            state_only = n.only_presentation_changed()
             if not state_only and (module := getattr(prop, '_module', None)):
                 stage = prop.get_stage()
                 ctx = prop.get_edit_context()
@@ -1632,7 +1628,7 @@ def _register_global(alias: "ChunkNoticeAlias", notice_type, connection: "Notice
     return _SharedGlobalListener(dispatch, connection)
 
 
-class NoticeConnection(chunk_serial.Serializeable):
+class NoticeConnection:
     """
     A storage for a TfListener object. This class provides a simple client-facing interface for
     creating callbacks for the TfNotice system, with some additional functionality. This exists also
@@ -1730,22 +1726,7 @@ class NoticeConnection(chunk_serial.Serializeable):
     def sender(self, obj):
         self._sender = None if obj is None else weakref.ref(obj, self._connection_broke)
 
-    def serialize_kwarg(self, name: str, default: Any) -> Any:
-        if name == "method":
-            return self.get_method()
-        if name == "alias":
-            return self.alias
-        if name == "sender":
-            return self.sender
-        if name == "globally":
-            return self.globally
-        if name == "owner":
-            return self.owner
-        return super().serialize_kwarg(name, default)
 
-    def should_serialize_attribute(self, name: str, value: Any) -> Tuple[bool, Any]:
-        # No attributes should be serialized as the attributes are serialized by kwargs
-        return False, None
 
     def trigger(self):
         """

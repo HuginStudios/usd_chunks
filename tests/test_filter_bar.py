@@ -220,6 +220,23 @@ def test_fuzzy_matches_rejects_unrelated_term() -> None:
     assert chunk_usd.fuzzy_matches("xyz123", "transform_scale") is False
 
 
+def test_fuzzy_matches_rejects_a_shorter_name_that_merely_shares_a_prefix() -> None:
+    """Searching for the longer of two similarly-named chunks returns only that one.
+
+    Two transforms named "haha" and "haha222": searching "haha222" used to bring back
+    "haha" as well. Nothing was wrong with the search term -- SequenceMatcher normalises
+    by combined length, so the four shared characters carried "haha" to 0.73, over the
+    typo threshold. The shorter name is not a misspelling of what was typed.
+    """
+    assert chunk_usd.fuzzy_matches("haha222", "haha") is False
+    assert chunk_usd.fuzzy_matches("haha222", "haha222") is True
+
+
+def test_fuzzy_matches_still_finds_longer_names_from_a_fragment() -> None:
+    """The narrowing above is one-directional: typing a prefix still widens, as before."""
+    assert chunk_usd.fuzzy_matches("haha", "haha222") is True
+
+
 def test_chunk_matches_search_scopes_to_name_or_type() -> None:
     c = _chunk_with_module("transform_a", module="xform")
     assert chunk_usd.chunk_matches_search(c, "xform", scope="type") is True
