@@ -1445,6 +1445,15 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     """
 
     initialized: bool = False
+    #: Identifiers of every layer this manager created. Declared here, not only in
+    #: initialize(), because is_chunk_internal_layer reads it and is reachable before this
+    #: singleton has been initialized at all: ChunkStageSync.initialize ->
+    #: reconcile_edit_targets -> _migratable_layers asks the question while setting a stage
+    #: up, and a host or a test that brings the sync up first crashed with AttributeError
+    #: instead of getting the correct answer, which is that nothing is internal yet.
+    #: initialize() and reset() both rebind it to a fresh set, so the class-level one is
+    #: only ever the empty pre-initialize answer.
+    internal_layer_ids: set = set()
 
     def initialize(self, stage: Usd.Stage):
         """
