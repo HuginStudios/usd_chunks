@@ -22,15 +22,23 @@ want="$(mktemp)"
 trap 'rm -f "$out" "$got" "$want"' EXIT
 
 if command -v ruff > /dev/null 2>&1; then
-    say "pre-push: ruff check ."
-    ruff check "$root" || {
+    # TRACKED files only, which is what CI lints -- it checks out the repository, so an
+    # untracked file in your working tree is invisible to it. Linting the tree instead
+    # (plain `ruff check .`) means a scratch script you never intend to commit blocks every
+    # push: measured at 129 errors from working-tree-only files in one real checkout, none
+    # of which CI would ever see.
+    say "pre-push: ruff (tracked Python)"
+    if ! git ls-files -z '*.py' | xargs -0 ruff check --; then
         say "pre-push: ruff failed. Fix, or push with --no-verify."
         exit 1
-    }
+    fi
 fi
 
 say "pre-push: pytest (full suite, a few minutes -- Ctrl-C, or push with --no-verify, to skip)"
-python -m pytest "$root/tests" -q -rf > "$out" 2>&1
+# --color=no matters: pytest colours its output even when it is redirected to a file (it
+# does so here), and the escape codes sit in front of the word FAILED, so the summary parse
+# below silently matched nothing and every run looked green.
+python -m pytest "$root/tests" -q -rf --color=no > "$out" 2>&1
 status=$?
 
 # pytest exit codes: 0 all passed, 1 tests failed. Anything else -- a collection error, an
@@ -42,12 +50,29 @@ if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
     exit 1
 fi
 
-grep '^FAILED ' "$out" | sed 's/^FAILED //; s/ - .*//' | sort -u > "$got"
-if [ -f "$baseline" ]; then
-    grep -v '^[[:space:]]*#' "$baseline" | sed '/^[[:space:]]*$/d' | sort -u > "$want"
-else
-    : > "$want"
+grep '^FAILED ' "$out" | sed 's/
+$//; s/^FAILED //; s/ - .*//' | sort -u > "$got"
+
+# pytest said something failed but nothing could be read out of its summary: the parse is
+# broken, not the suite. Block -- a gate that cannot see failures must not report success.
+if [ "$status" -eq 1 ] && [ ! -s "$got" ]; then
+    tail -30 "$out" >&2
+    say "pre-push: pytest reported failures, but none could be parsed from its output."
+    say "pre-push: refusing to call that a pass. Push with --no-verify if you must."
+    exit 1
 fi
+# Two lists, both optional. known-failures.txt is shared and is about the code -- what
+# fails on main for everyone. known-failures.local.txt is yours, gitignored, and is for
+# what only fails on YOUR machine: a scratch chunk in scripts/ that trips test_chunk_deps,
+# a pip test that needs a network you do not have. Keeping those out of the shared list
+# matters in both directions -- they would mask a real regression for everyone else, and
+# the "this passed, delete it" report would nag whoever does not share your environment.
+: > "$want"
+for f in "$baseline" "$root/hooks/known-failures.local.txt"; do
+    [ -f "$f" ] || continue
+    grep -v '^[[:space:]]*#' "$f" | sed '/^[[:space:]]*$/d' >> "$want"
+done
+sort -u -o "$want" "$want"
 
 new=$(comm -23 "$got" "$want")
 fixed=$(comm -13 "$got" "$want")
