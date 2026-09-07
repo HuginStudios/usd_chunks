@@ -4455,6 +4455,19 @@ class ChunkConfig(AttributesBase):
     Base class for Configs. A config sets some load time configurations for a chunk.
     """
 
+    def get_variants(self) -> list:
+        """The menu entries, building them first if they were declared lazily.
+
+        Memoised onto the field, so the callable runs once per process however many menus
+        are drawn. Callers should use this rather than reading .variants, which may still
+        be the callable.
+        """
+        variants = self.variants
+        if callable(variants):
+            variants = list(variants())
+            object.__setattr__(self, "variants", variants)
+        return variants
+
     category: str = attrs.field(default="Chunks")
     description: str = attrs.field(default="Chunk description...")
     load_for_plugin: Optional[str] = attrs.field(default=None)
@@ -4464,7 +4477,16 @@ class ChunkConfig(AttributesBase):
     interactive: bool = attrs.field(default=False)
     terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
     outputs: list[tuple[str, str]] = attrs.field(factory=list)  # extra typed output ports: [(name, SdfTypeName), ...]
-    variants: list[tuple[str, dict]] = attrs.field(factory=list)  # extra menu entries: [(label, {param: value}), ...]
+    # Extra menu entries: [(label, {param: value}), ...], or a callable returning them.
+    #
+    # A callable because building this list can be expensive and is only ever needed to
+    # draw a menu. mtlx_shader enumerates 784 MaterialX definitions from the Sdr registry
+    # to collapse them into 217 entries, which measured at 1.88s -- 76% of the whole
+    # registry discovery -- paid in every process, including headless sweeps that never
+    # draw a menu at all. Pass a callable and that cost moves to the first menu build.
+    variants: "list[tuple[str, dict]] | Callable[[], list[tuple[str, dict]]]" = attrs.field(
+        factory=list
+    )
     gizmos: list[GizmoBase] = attrs.field(factory=list)  # viewport handles: authored as ui:gizmo:* on the chunk prim
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:

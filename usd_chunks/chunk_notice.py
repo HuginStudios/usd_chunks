@@ -565,9 +565,12 @@ class DagNode:
     )
 
     def __init__(self, propagator: "ChunkNoticePropagator"):
-        # Insertion-ordered set of the change reasons that dirtied this node, maintained
-        # by chunk_scheduler.propagate_dirty and replayed by iter_changes().
-        self._changes: Dict[Tuple[ChunkNoticeAlias, "DagNode"], None] = {}
+        # Insertion-ordered map of the change reasons that dirtied this node, maintained
+        # by chunk_scheduler.propagate_dirty and replayed by iter_changes(). The value is
+        # the presentation-vs-data verdict for that reason, decided once at origin by
+        # AttributeSender.is_presentation_change and carried unchanged from there --
+        # see only_presentation_changed().
+        self._changes: Dict[Tuple[ChunkNoticeAlias, "DagNode"], bool] = {}
         self._dirty = True
         self._connections: DagConnections = DagConnections()
         self._propagator = weakref.ref(propagator)
@@ -654,6 +657,38 @@ class DagNode:
         for alias, node in sorted(self._changes, key=lambda x: x[1]._index):
             yield alias, node.propagator
         return StopIteration()
+
+    def only_presentation_changed(self) -> bool:
+        """
+        Whether every change that dirtied this node was presentation only, i.e. something
+        nothing computes from. A chunk whose changes are all presentation must not re-cook.
+
+        The verdict is read back from what chunk_scheduler recorded when each change was
+        propagated, not re-derived here. Both of the older ways of asking are lossy:
+
+        * The aliases in _changes are only a proxy. A `presentation_only` param raises
+          PARAM_CHANGED rather than STATE_CHANGED, so an alias test disagrees with
+          AttributeSender.is_presentation_change in exactly that case.
+        * Asking the sender again reads an old_value/value pair that has moved on since,
+          and is only meaningful while the solve that recorded it is still running.
+
+        False when nothing was recorded, so a direct dirty solve -- execute-on-creation,
+        which carries no propagated change -- still counts as real work and cooks.
+
+        Returns:
+            bool: True if there is at least one recorded change and all of them are
+                presentation only
+        """
+        seen = False
+        for (_alias, node), presentation in self._changes.items():
+            # A dead propagator's reason is dropped, matching what iter_changes()'s
+            # consumers already do: it can no longer describe anything.
+            if node.propagator is None:
+                continue
+            if not presentation:
+                return False
+            seen = True
+        return seen
 
     def set_graph_id(self, node: "DagNode"):
         if not (node._part_of_graph and self._part_of_graph):
@@ -1206,11 +1241,15 @@ class ChunkNoticePropagator:
             if notice := prop.send_self():
                 msg += f"   {notice.alias.name}\n"
 
-            # A pure state change (selection, collapse, disable) propagates only as
-            # STATE_CHANGED — it must not re-run the module. Data changes (params/inputs) and a
-            # direct dirty solve (execute-on-creation, which carries no propagated change) still
-            # execute. Selection/disable side effects run above via data_changed / send_self.
-            state_only = bool(changes) and all(a == ChunkNoticeAlias.STATE_CHANGED for a, _ in changes)
+            # A pure state change (selection, collapse, disable) must not re-run the module.
+            # Data changes (params/inputs) and a direct dirty solve (execute-on-creation,
+            # which carries no propagated change) still execute. Selection/disable side
+            # effects run above via data_changed / send_self.
+            #
+            # Read back from the verdict chunk_scheduler recorded rather than re-derived from
+            # the aliases: a `presentation_only` param raises PARAM_CHANGED, not
+            # STATE_CHANGED, so the old alias test called it a data change and re-cooked.
+            state_only = n.only_presentation_changed()
             if not state_only and (module := getattr(prop, '_module', None)):
                 stage = prop.get_stage()
                 ctx = prop.get_edit_context()

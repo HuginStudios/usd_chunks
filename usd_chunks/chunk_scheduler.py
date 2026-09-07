@@ -14,11 +14,19 @@ Every answer is derived from the topology at the moment it is asked, so nothing 
 be kept in sync while the graph is being built or rewired.
 
 The one piece of per-node state the scheduler does maintain is the *change reason*: when
-a node is dirtied, each node it dirties records which ChunkNoticeAlias caused it and
-which node it came from. That pairing is what `DagNode.iter_changes()` replays, and what
-lets `ChunkNoticePropagator.execute()` tell a pure state change (selection, collapse,
-disable) apart from a data change and skip re-cooking the module. A scheduler that only
-tracked "dirty" would re-cook chunks on selection.
+a node is dirtied, each node it dirties records which ChunkNoticeAlias caused it, which
+node it came from, and whether that change was presentation only. That triple is what
+`DagNode.iter_changes()` and `DagNode.only_presentation_changed()` replay, and what lets
+`ChunkNoticePropagator.execute()` tell a pure state change (selection, collapse, disable)
+apart from a data change and skip re-cooking the module. A scheduler that only tracked
+"dirty" would re-cook chunks on selection.
+
+The presentation verdict is decided once, here, from `AttributeSender
+.is_presentation_change()`, and carried unchanged through both downstream propagation and
+ownership inheritance. Consumers read it back rather than re-deriving it: the aliases
+alone cannot express it (a `presentation_only` param raises PARAM_CHANGED, not
+STATE_CHANGED), and re-asking a sender later reads an old_value/value pair that has since
+moved on.
 
 A change nothing computes from -- hiding a param, folding a group open, selecting a node
 -- takes `propagate_presentation` instead, which dirties only the ownership chain the UI
@@ -249,9 +257,13 @@ def propagate_presentation(seed: "DagNode"):
     Args:
         seed (DagNode): The node that changed
     """
-    reasons: Dict[Tuple["chunk_notice.ChunkNoticeAlias", "DagNode"], None] = dict(seed._changes)
+    reasons: Dict[Tuple["chunk_notice.ChunkNoticeAlias", "DagNode"], bool] = dict(seed._changes)
     if (prop := seed.propagator) is not None and (alias := prop.get_notice_alias()):
-        reasons[(alias, seed)] = None
+        # True is the verdict, not a placeholder: reaching here *is* the decision that this
+        # change is presentation only, and DagNode.only_presentation_changed reads it back
+        # rather than guessing from the alias -- which a presentation_only param, raising
+        # PARAM_CHANGED, would fail.
+        reasons[(alias, seed)] = True
 
     node = seed
     seen = {id(seed)}
@@ -315,7 +327,9 @@ def propagate_dirty(seed: "DagNode"):
         conns = node._connections
         for out in conns.outputs.values():
             out._index += 1
-            out._changes[(input_changed, node)] = None
+            # False: propagate_dirty is the data-change path. A presentation change was
+            # routed to propagate_presentation above and never reaches here.
+            out._changes[(input_changed, node)] = False
 
         if (owner_ref := conns.owner) is None or (owner := owner_ref()) is None:
             continue
@@ -324,7 +338,7 @@ def propagate_dirty(seed: "DagNode"):
         owner_node._index += 1
         owner_node._changes.update(node._changes)
         if node.propagator and (alias := node.propagator.get_notice_alias()):
-            owner_node._changes[(alias, node)] = None
+            owner_node._changes[(alias, node)] = False
 
 
 def solve(seed: "DagNode") -> Generator["DagNode", None, None]:

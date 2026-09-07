@@ -619,28 +619,39 @@ def main():
     return chunk_api
 
 
-def config():
-    # One menu entry per family, grouped by role. MaterialX spells the same operation once
-    # per operand type -- 784 definitions are only 217 distinct operations, with "convert"
-    # alone accounting for 47 -- so the entries are collapsed the way Houdini's MaterialX
-    # VOPs are, one node with a Signature to pick the type. Role is MaterialX's own
-    # nodegroup (math, pbr, adjustment, ...); family would be the wrong axis, being close
-    # to per-node, and grouping by it just moves the unnavigable list one level down.
-    #
-    # Empty in a runtime with no MaterialX (pip usd-core), which is the correct answer
-    # there rather than an error.
+def _menu_variants():
+    """The menu entries, built only when a menu is actually drawn.
+
+    Walking the Sdr registry for 784 definitions costs ~1.9s, and config() runs at
+    discovery in every process -- including `usdchunks run` and `sweep`, which never draw a
+    menu. Handing ChunkConfig a callable moves that off the startup path entirely; it is
+    resolved and memoised by ChunkConfig.get_variants on first use.
+
+    One entry per family, grouped by role. MaterialX spells the same operation once
+    MaterialX spells the same operation once per operand type -- 784 definitions are only
+    217 distinct operations, with "convert" alone accounting for 47 -- so the entries are
+    collapsed the way Houdini's MaterialX VOPs are, one node with a Signature to pick the
+    type. Role is MaterialX's own nodegroup (math, pbr, adjustment, ...); family would be
+    the wrong axis, being close to per-node, and grouping by it just moves the unnavigable
+    list one level down.
+
+    Empty in a runtime with no MaterialX (pip usd-core), which is the correct answer there
+    rather than an error.
+    """
     families: dict = {}
     for d in shader_defs.iter_shader_defs(SOURCE_TYPE):
         families.setdefault((d.role or d.context or "other", d.family), []).append(d)
 
-    variants = [
+    return [
         (f"{role}/{family}", {"nodedef": _preferred(defs).identifier})
         for (role, family), defs in families.items()
     ]
 
+
+def config():
     return chunk.DefaulConfig(
         category="MaterialX",
-        variants=variants,
+        variants=_menu_variants,
         description="""
         Authors a MaterialX shader as a UsdShade.Shader prim, with its params generated
         from the shader's own definition in USD's shader registry (Sdr).
