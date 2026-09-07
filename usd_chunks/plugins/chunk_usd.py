@@ -247,6 +247,26 @@ def sdf_type_for_param(param) -> "Sdf.ValueTypeName | None":
     return sdf_type
 
 
+def _author_stage_expression(attr: "Usd.Attribute", raw: str, param) -> None:
+    """Store a ${VAR} stage expression on attr, keeping both the text and a usable value.
+
+    store_expression_text already splits by attr type: a String attr holds the text as its
+    own value (so the field reloads showing ${SHOT}, which is what the user typed), and
+    every other type keeps it in customData. Only the latter needs the resolved value
+    written alongside -- a Float attr reading back as the literal "${COUNT}" is not a
+    number to anything downstream, and param.value is where the substitution has already
+    happened.
+
+    Unlike a @Node.param@ wire there are no connections to author: a stage variable is a
+    value on the stage, not another param, so there is nothing on the graph to point at.
+    """
+    chunk_utils.store_expression_text(attr, raw)
+    if attr.GetTypeName() != Sdf.ValueTypeNames.String:
+        resolved = getattr(param, "value", None)
+        if resolved is not None and not isinstance(resolved, str):
+            attr.Set(resolved)
+
+
 class ChunkStageSync(metaclass=RegistrySingleton):
     """
     Singleton that authors a Chunk prim on the stage whenever a Python chunk
@@ -1022,17 +1042,28 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         existing_conns = exec_input_connections(dep_prim)
         if src_path in existing_conns:
             return
-        if is_merge_prim(dep_prim):
+        slots = exec_input_slots_for_prim(dep_prim)
+        if is_merge_prim(dep_prim) or slots > 1:
             # A merge holds exactly one connection per slot. Stacking a second target onto
             # slot 0 (what the branch below does) would collapse two branches into a single
             # port and destroy the ordering the slots exist to express, so author into the
             # first free slot instead — appending the new branch as the weakest. Density is
             # guaranteed by normalize_merge_slots, so the free slot is just the count.
+            #
+            # A fixed-slot chunk (config.exec_inputs > 1) wants the same placement for a
+            # different reason: its slots are positional, so add_dependency filling slot 0
+            # twice would silently make the second branch mean what the first does. Past the
+            # last slot the wire stacks onto slot 0 rather than inventing a port the chunk
+            # does not have -- add_dependency has no port to have been dropped on, so
+            # refusing outright would lose the edge with nothing to show for it.
+            index = len(existing_conns)
+            if not is_merge_prim(dep_prim) and index >= slots:
+                index = 0
             with self._chunk_prim_edit_context(dependent):
                 exec_in = dep_prim.CreateAttribute(
-                    exec_input_name(len(existing_conns)), Sdf.ValueTypeNames.Token, custom=False
+                    exec_input_name(index), Sdf.ValueTypeNames.Token, custom=False
                 )
-                exec_in.SetConnections([src_path])
+                exec_in.SetConnections(list(exec_in.GetConnections()) + [src_path])
         else:
             with self._chunk_prim_edit_context(dependent):
                 exec_in = dep_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
@@ -1174,7 +1205,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if raw is None:
             return
         is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-        type_source = getattr(param, 'default_value', None) if is_expr else raw
+        # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
+        is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
+        type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
         sdf_type = _SDF_TYPE_MAP.get(type(type_source))
         # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
         # type — there is no tuple entry, so without this a colour param resolves to no
@@ -1185,7 +1218,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if sdf_type is None:
             return
         default = getattr(param, 'default_value', None)
-        if not force and not is_expr and raw == default:
+        if not force and not is_expr and not is_stage_expr and raw == default:
             return  # still at default — don't create attr
 
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
@@ -1220,6 +1253,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
+                elif is_stage_expr:
+                    _author_stage_expression(attr, raw, param)
                 else:
                     attr.Set(raw)
         param._connect_param_attr(attr)
@@ -1265,7 +1300,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if raw is None:
                 continue
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            type_source = getattr(param, 'default_value', None) if is_expr else raw
+            # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
+            is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
+            type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
             sdf_type = _SDF_TYPE_MAP.get(type(type_source))
             if sdf_type is None:
                 continue
@@ -1287,7 +1324,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 attr = saved
             else:
                 backing_path = getattr(param, '_param_attr_path', None)
-                if not is_expr:
+                if not is_expr and not is_stage_expr:
                     if backing_path:
                         # param_from_attr: only store if the real USD attr has been authored
                         backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
@@ -1302,6 +1339,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     if is_expr:
                         attr.SetConnections(self._expr_connections(prim, raw))
                         chunk_utils.store_expression_text(attr, raw)
+                    elif is_stage_expr:
+                        _author_stage_expression(attr, raw, param)
                     else:
                         attr.Set(raw)
 
@@ -1626,12 +1665,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if raw is None:
                     continue
                 is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-                type_source = getattr(param, 'default_value', None) if is_expr else raw
+                # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
+                is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
+                type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
                 sdf_type = _SDF_TYPE_MAP.get(type(type_source))
                 if sdf_type is None:
                     continue
                 backing_path = getattr(param, '_param_attr_path', None)
-                if not is_expr:
+                if not is_expr and not is_stage_expr:
                     if backing_path:
                         backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
                         if not (backing and backing.HasAuthoredValue()):
@@ -1646,6 +1687,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
+                elif is_stage_expr:
+                    _author_stage_expression(attr, raw, param)
                 elif not attr.Get():
                     attr.Set(raw)
 
@@ -1800,6 +1843,93 @@ def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
     takes more than one exec input."""
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "merge")
+
+
+def exec_input_slots(chunk: "core.ChunkBase") -> int:
+    """How many positional exec input ports this chunk has.
+
+    1 for almost everything -- one inputs:chunk that several wires may stack on. Above 1
+    the slots mean different things and each gets its own port, which is what a Stage
+    Expression Filter needs: forwarding slot 0 and gating slot 1 is not a property a merge
+    ordering can express.
+
+    A Merge answers 1 here and is handled by is_merge_chunk instead: its slots are dense
+    and grow with what is wired in, so a fixed count is the wrong question for it.
+    """
+    cfg = chunk.get_config()
+    return max(1, int(getattr(cfg, "exec_inputs", 1) or 1)) if cfg else 1
+
+
+def exec_input_slots_for_prim(prim: "Usd.Prim") -> int:
+    """exec_input_slots for a bare prim -- used by the node graph, which builds ports from
+    the stage and may have no live chunk object to ask.
+
+    Read off the registry's discovery-time config rather than by importing the module: the
+    config is parsed when chunks are found, so this costs a dict lookup and never triggers
+    a module load while a scene is being built.
+    """
+    if not (prim and prim.IsValid()):
+        return 1
+    attr = prim.GetAttribute(_CHUNK_TYPE_ATTR)
+    module_name = attr.Get() if attr and attr.IsValid() else None
+    if not module_name:
+        return 1
+    module = chunk_registry.ChunkRegistry().get_chunk_module(str(module_name))
+    cfg = getattr(module, "config", None) if module else None
+    return max(1, int(getattr(cfg, "exec_inputs", 1) or 1)) if cfg else 1
+
+
+def upstream_chunks(chunk: "core.ChunkBase", seen: "set | None" = None) -> set:
+    """`chunk` and everything upstream of it on the exec chain.
+
+    Transitive, because suppressing a branch has to suppress the whole branch and not
+    merely the chunk plugged into the slot -- the rest of it would carry on authoring into
+    the composed stage.
+
+    Guarded against revisiting: a diamond (two branches sharing a source) would otherwise
+    walk the shared part once per path, and a cycle would not terminate at all.
+    """
+    seen = set() if seen is None else seen
+    if any(c is chunk for c in seen):
+        return seen
+    seen.add(chunk)
+    for dep in exec_dependencies(chunk):
+        upstream_chunks(dep, seen)
+    return seen
+
+
+def set_chunk_muted(stage: "Usd.Stage", target: "core.ChunkBase", muted: bool) -> bool:
+    """Block or unblock one chunk and mute or unmute its layer.
+
+    Blocking is the engine's own lever, deliberately not the DISABLED state: DISABLED
+    belongs to the user, who sets it by hand and expects it to stay. A chunk reaching in to
+    set and clear it on chunks it does not own means every flip risks undoing theirs.
+    ChunkLayerManager already guards the two against each other, so a blocked layer is never
+    un-muted by the disable path.
+
+    Never a context (a tab or group): is_blocked() climbs the owner chain, so blocking a
+    container would propagate down and block its whole subtree, including branches the
+    caller meant to keep. Containers author nothing of their own -- their leaves are handled
+    individually by the caller's loop, exactly as recook_for_view does it.
+
+    Returns:
+        bool: True if target was a chunk this can act on (i.e. not a context)
+    """
+    if target.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+        return False
+
+    target.set_blocked(muted)
+    layer = chunk_registry.ChunkLayerManager().get_layer(target)
+    if stage is None or layer is None:
+        return True
+    # stage.Mute/UnmuteLayer, not layer.SetMuted: SetMuted recomposes lazily and expires
+    # prims, which is the "chunk layers disappear" bug the rest of the codebase avoids the
+    # same way.
+    if muted:
+        stage.MuteLayer(layer.identifier)
+    else:
+        stage.UnmuteLayer(layer.identifier)
+    return True
 
 
 def is_merge_prim(prim: "Usd.Prim") -> bool:

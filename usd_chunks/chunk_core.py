@@ -2815,7 +2815,14 @@ class ChunkUsdAttributeSupport(AttributesBase):
             val = attr.Get(0)
             connections = attr.GetConnections()
             if not connections:
-                if val is not None:
+                # A ${VAR} stage expression on a non-String attr is stored resolved, with
+                # its text in customData -- same split store_expression_text makes for a
+                # numeric param wire. Without reading it back here the param reloads
+                # holding whatever the variable happened to resolve to when it was saved,
+                # and stops tracking the variable at all.
+                if text := chunk_utils.read_expression_text(attr):
+                    self.value = text
+                elif val is not None:
                     self.value = val
             elif text := chunk_utils.read_expression_text(attr):
                 self.value = text
@@ -3010,7 +3017,11 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         if attr.name == "value":
             if val is None:
                 return self.default_value
-            if isinstance(val, str) and chunk_utils.has_expression(val):
+            if chunk_utils.is_expression_text(val):
+                # Either kind: a @Node.param@ wire or a ${VAR} stage expression. Both are
+                # text a numeric param legitimately holds -- the number appears when the
+                # value is READ (__getattribute__ resolves it), so converting here would
+                # destroy the text that makes the value track its source at all.
                 return val  # Store expression strings as-is without type conversion
 
         if attr.name == "default_value":
@@ -3037,7 +3048,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "value" and val is not None:
-            if isinstance(val, str) and chunk_utils.has_expression(val):
+            if chunk_utils.is_expression_text(val):
                 return True  # Expression strings bypass type checking; resolved in value_changed
             expected_type = ChunkFlags.ParamTypeToTypes(self.get_type())
 
@@ -3221,9 +3232,36 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         if name == "value" and "value" in self.__dict__:
             raw = self.__dict__["value"]
             if isinstance(raw, str) and chunk_utils.has_expression(raw):
-                return self._resolve_expression_string(raw)
+                raw = self._resolve_expression_string(raw)
+            # Second, and in this order: a param wire can deliver a string that itself
+            # carries a ${VAR}, so the @refs@ have to be substituted before the stage
+            # variables are. The reverse order would leave a variable arriving through a
+            # wire unexpanded.
+            if isinstance(raw, str) and chunk_utils.has_stage_expression(raw):
+                return self._resolve_stage_expression(raw)
             return raw
         return super().__getattribute__(name)
+
+    def _resolve_stage_expression(self, expr: str) -> Any:
+        """Substitute the stage's expression variables into expr.
+
+        Separate from the @Node.param@ machinery above and deliberately much simpler: a
+        stage variable is a value on the stage, not a param, so there is no ref to resolve,
+        no NoticeConnection to install and no cycle to guard against. The dict is read on
+        every access rather than cached, which is what makes changing a variable take
+        effect everywhere at once without anything having to be invalidated.
+
+        A numeric param gets the same arithmetic treatment an expression does: USD hands
+        back a typed value for a fully-delimited expression, but the loose ${VAR} form
+        substitutes text, and "${COUNT}" on a Slider has to read back as a number or every
+        consumer downstream -- the USD attr write included -- gets a str.
+        """
+        resolved = chunk_utils.resolve_stage_expression(expr, self.get_stage())
+        if isinstance(resolved, str) and self._expression_is_numeric():
+            if (number := chunk_utils.eval_arithmetic(resolved)) is not None:
+                types = ChunkFlags.ParamTypeToTypes(self.evaluate_type())
+                return int(number) if types and types[0] is int else float(number)
+        return resolved
 
     def _resolve_expression_string(self, expr: str) -> Any:
         if self._resolving_expr:
@@ -4476,6 +4514,13 @@ class ChunkConfig(AttributesBase):
     module: str = attrs.field(default="")
     interactive: bool = attrs.field(default=False)
     terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
+    # How many exec input slots the chunk has. 1 is the ordinary case: one inputs:chunk
+    # port, which may still carry several wires stacked on it. Above 1 the slots are
+    # POSITIONAL and each gets its own port -- Stage Expression Filter's slot 0 is the
+    # stream it always forwards and slot 1 the branch it gates, so which wire landed where
+    # is the whole meaning. A Merge is neither: its slot count grows with what is wired
+    # into it, which is is_merge_chunk's business, not this field's.
+    exec_inputs: int = attrs.field(default=1)
     outputs: list[tuple[str, str]] = attrs.field(factory=list)  # extra typed output ports: [(name, SdfTypeName), ...]
     # Extra menu entries: [(label, {param: value}), ...], or a callable returning them.
     #
