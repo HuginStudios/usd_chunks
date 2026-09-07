@@ -156,3 +156,76 @@ def test_diving_two_levels_deep_still_reaches_the_upstream_group(groups):
     content = _content(groups["stage"])
     assert "/from_a" in content
     assert "/from_a2" in content
+
+
+def test_a_chunk_inside_the_group_reads_the_upstream_group_when_naming(qapp):
+    """The reported symptom, through a real chunk rather than the mute state.
+
+    Duplicate Prim suggests a destination by walking the '_copy', '_copy1', ... suffix
+    until it finds a path nothing occupies -- read off the live stage. With group A's copy
+    muted away, the chunk inside group B saw a free '_copy' and suggested the path group A
+    had already taken, which is what made the bug visible in the first place: two chunks
+    duplicating the same source both claiming one destination.
+    """
+    src = "/Kitchen/Pot"
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim(src, "Xform")
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    docker = ChunkWidgetDocker()
+    docker.resize(600, 600)
+    docker.show()
+    qapp.processEvents()
+
+    def settle():
+        for _ in range(30):
+            qapp.processEvents()
+            QtCore.QThread.msleep(10)
+        qapp.processEvents()
+
+    def mk(key, context=None):
+        mod = reg.get_chunk_module(key)
+        cs = mod.create() if mod.loaded else mod.load()
+        prev = scene._current_context
+        scene._current_context = weakref.ref(context) if context is not None else None
+        try:
+            for c in cs:
+                scene.add_chunk(c)
+        finally:
+            scene._current_context = prev
+        return cs[0]
+
+    ga = mk("chunkgroup")
+    dupe_a = mk("core_usd.duplicate_prim", context=ga)
+    gb = mk("chunkgroup")
+    dupe_b = mk("core_usd.duplicate_prim", context=gb)
+    settle()
+    view = next(c for c in scene.get_chunks() if chunk_usd.is_view_chunk(c))
+    connect_exec(stage, scene, get_chunk_prim_path(ga), get_chunk_prim_path(gb))
+    connect_exec(stage, scene, get_chunk_prim_path(gb), get_chunk_prim_path(view))
+    settle()
+    chunk_usd.recook_focus(stage, scene, scene.get_root_context(), view)
+    settle()
+
+    dupe_a.get_param("source_prim").value = src
+    settle()
+    assert dupe_a.get_param("dest_path").value == f"{src}_copy"
+
+    # Diving in is how you get a chunk into group B at all, so it is where the user hits this.
+    docker._on_dive_into(gb)
+    settle()
+
+    dupe_b.get_param("source_prim").value = src
+    settle()
+    assert dupe_b.get_param("dest_path").value == f"{src}_copy1", (
+        "the copy group A already made is on the stage; the next free name is _copy1"
+    )
