@@ -48,9 +48,37 @@ Lint before pushing, since CI enforces it:
 ruff check .
 ```
 
-CI runs the suite on Linux (3.10, 3.11, 3.13) and Windows (3.13), and separately installs
-the built wheel into a clean virtualenv to catch packaging mistakes that an editable
-install hides.
+CI runs one row — Windows, Python 3.11, the version the DCCs ship (Houdini 20.5, Maya
+2025) — and it runs exactly two commands: `ruff check .` and `pytest`.
+
+## Git hooks
+
+Optional, per clone, and worth it — especially while CI is unavailable:
+
+```
+sh hooks/install.sh
+```
+
+That sets `core.hooksPath` to the tracked `hooks/` directory. Nothing is copied, so the
+hooks stay reviewable in git and update when you pull. Undo with
+`git config --unset core.hooksPath`.
+
+What you get is CI's two commands, split by what each one costs:
+
+| | runs | takes |
+|---|---|---|
+| `pre-commit` | ruff on the staged Python, a core smoke set, and any test file the commit touches | ~3s |
+| `pre-push` | `ruff` on tracked Python, then the full suite | ~7min |
+
+Skip either with `--no-verify`; `USD_CHUNKS_SKIP_PREPUSH=1` also skips the slow one.
+
+The suite is not green today, so `pre-push` blocks only on failures that are *not* in
+`hooks/known-failures.txt`. That file is a debt list with a note on why each entry fails;
+it should only ever shrink, and the hook tells you when an entry starts passing so it can
+be deleted.
+
+Hooks already in `.git/hooks` keep working — `core.hooksPath` replaces that directory
+rather than adding to it, so each hook here runs its `.git/hooks` counterpart first.
 
 ## Finding your way around
 
