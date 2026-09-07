@@ -30,6 +30,8 @@ from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-export
 logger = logging.getLogger(__name__)
 
 _CHUNK_TYPE_ATTR = "info:chunkType"
+#: What a chunk with no module of its own is saved as, so it can be read back (scripts/runtime.py).
+_RUNTIME_CHUNK_TYPE = "runtime"
 _INPUTS_PREFIX = "inputs:"
 # The ObjectsChanged field name for a connection edit; a value write reports "default".
 _CONNECTION_PATHS_FIELD = "connectionPaths"
@@ -1637,11 +1639,21 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     ui_api.CreatePosAttr(Gf.Vec2f(index * _NODE_STEP, 0.0))
 
             config = chunk.get_config()
-            if config and config.module:
+            # A chunk built in the interpreter has no module, and info:chunkType is how a
+            # load finds what to rebuild a prim from -- so without a fallback its prim was
+            # written complete, params and values and all, and then skipped on the way back
+            # in. Saved as the generic `runtime` type instead, which rebuilds its params
+            # from those same attributes. Never overwrites a real module's own type.
+            module_name = config.module if config else ""
+            # A module-less CONTEXT is not a runtime chunk: load_chunks recognises a plain
+            # tab context by the ABSENCE of a type, and stamping one on would make it try to
+            # rebuild the tab as a chunk inside itself.
+            fallback = "" if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) else _RUNTIME_CHUNK_TYPE
+            if module_name or fallback:
                 attr = prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
                 attr.SetVariability(Sdf.VariabilityUniform)
                 if not attr.Get():
-                    attr.Set(config.module)
+                    attr.Set(module_name or fallback)
 
             pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
             pinned_attr.SetVariability(Sdf.VariabilityUniform)
@@ -4188,6 +4200,7 @@ def load_chunks(
                 # Fire CHUNK_LOADED for all loaded chunks (UI notification) and restore
                 # params that were created dynamically inside execute (e.g. show_attribute).
                 for prim, added in deferred:
+                    _rebuild_runtime_params(prim, added)
                     chunk_notice.send_notice(
                         chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
                     )
@@ -4684,6 +4697,48 @@ def _resolve_pending_expressions(deferred, warn: bool) -> None:
                         "that does not exist; it will not update live",
                         raw, c.name, path,
                     )
+
+
+def _rebuild_runtime_params(prim: "Usd.Prim", chunk: "core.ChunkBase") -> None:
+    """Give a saved runtime chunk its params back, from the prim's own attributes.
+
+    A chunk built in the interpreter has no module, so there is no main() to rebuild its
+    params -- the file is the only description of them that exists. It is a complete one for
+    what a param IS: name, type and value are all authored as inputs:*, which is why the
+    chunk could be saved in full and still come back empty.
+
+    Only for the generic `runtime` type. Every other chunk gets its params from its module,
+    and inventing extra ones here from stray attributes would fight it.
+
+    What the attributes cannot say is which WIDGET a param was: param_from_attr maps a USD
+    type to a param class, so a Slider of floats returns as whatever float maps to, without
+    its range, flags or label. Values, names and wiring are exact; the rest is a file
+    format's worth of work that a chunk with a module never needs.
+    """
+    if not (prim and prim.IsValid()):
+        return
+    type_attr = prim.GetAttribute(_CHUNK_TYPE_ATTR)
+    if not (type_attr and type_attr.Get() == _RUNTIME_CHUNK_TYPE):
+        return
+    for attr in prim.GetAttributes():
+        name = attr.GetName()
+        if not name.startswith(_INPUTS_PREFIX):
+            continue
+        param_name = name[len(_INPUTS_PREFIX):]
+        # A nested param (inputs:group:param) needs a group that the flat attribute list
+        # does not describe. Left alone rather than flattened into the wrong shape.
+        if ":" in param_name:
+            continue
+        if chunk.get_param(param_name) is not None:
+            continue
+        try:
+            param = _chunk_mod.param_from_attr(attr, param_name)
+        except Exception as e:  # noqa: BLE001 - one odd attribute must not stop the load
+            logger.debug("runtime chunk %s: skipping %s (%s)", prim.GetPath(), name, e)
+            continue
+        if param is not None:
+            param.set_flag(ChunkFlags.ParamFlags.LABELED)
+            chunk.add_param(param)
 
 
 def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:

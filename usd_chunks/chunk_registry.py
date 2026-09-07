@@ -1333,6 +1333,8 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         entries: List[MenuEntry] = []
 
         for mod in self.get_chunk_modules(sort_result=sort_result):
+            if mod.config.hidden:
+                continue  # a type that exists to be loaded, not to be picked
             namespace = mod.get_menu_path()
             tooltip = clean_description(mod.config.description)
 
