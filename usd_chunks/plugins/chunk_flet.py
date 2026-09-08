@@ -102,17 +102,22 @@ class FletParamWidget(chunk_core.ChunkParamWidgetBase):
 
     # -- plumbing ----------------------------------------------------------
 
-    def _update(self, control=None):
-        """Push a change to the client, if this widget has reached a page yet.
+    #: Set once the controls are actually on a page. Until then update() must not be
+    #: called at all: on an unmounted control it does not fail fast, it can block waiting
+    #: for a client round-trip that will never come -- and since every widget sets its
+    #: initial value during construction, that is a hang before the first frame is ever
+    #: drawn. Headless never saw it, because with no page at all update() fails instantly.
+    live = False
 
-        A control that is not on a page raises when updated, and widgets are built before
-        they are added -- so this is the normal case during construction, not an error.
-        """
+    def _update(self, control=None):
+        """Push a change to the client, if the widget is on a page."""
+        if not self.live:
+            return
         target = control if control is not None else self.control
         try:
             if target is not None:
                 target.update()
-        except Exception:  # noqa: BLE001 -- not mounted yet
+        except Exception:  # noqa: BLE001 -- gone, or not mounted after all
             pass
 
     def as_row(self) -> ft.Control:
@@ -350,6 +355,8 @@ class FletGroupWidget:
             on_click=self.toggle if self.collapsible else None)
         self.control = ft.Column([self.header, self.content], spacing=0, tight=True)
 
+    live = False
+
     def toggle(self, _event=None):
         self.collapsed = not self.collapsed
         if self.collapsed:
@@ -358,10 +365,12 @@ class FletGroupWidget:
             self.group.unset_state(ChunkFlags.State.COLLAPSED)
         self.content.visible = not self.collapsed
         self.arrow.value = self.ARROW_SHUT if self.collapsed else self.ARROW_OPEN
+        if not self.live:
+            return
         for control in (self.content, self.arrow):
             try:
                 control.update()
-            except Exception:  # noqa: BLE001 -- not mounted yet
+            except Exception:  # noqa: BLE001 -- gone, or not mounted after all
                 pass
 
 
@@ -392,3 +401,14 @@ def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = Non
         return controls
 
     return walk(chunk_obj), widgets
+
+
+def mark_live(widgets) -> None:
+    """Let widgets talk to the client, once their controls are on a page.
+
+    Called by the view after page.add. Before that a widget must stay silent: update() on
+    an unmounted control can block on a round-trip that never happens, and every widget
+    sets its initial value while being built.
+    """
+    for widget in widgets:
+        widget.live = True

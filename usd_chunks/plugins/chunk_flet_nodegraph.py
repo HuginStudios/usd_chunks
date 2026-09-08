@@ -136,6 +136,7 @@ class GraphView:
         self.canvas: cv.Canvas | None = None
         self.stack: ft.Stack | None = None
         self.param_widgets: list = []
+        self.live = False  # nothing may update the client until page.add has run
         self.status_text: ft.Text | None = None
         self.reload()
 
@@ -391,6 +392,8 @@ class GraphView:
 
             if chunk_obj is not None:
                 param_controls, widgets = chunk_flet.build_chunk_controls(chunk_obj)
+                if self.live:
+                    chunk_flet.mark_live(widgets)
                 self.param_widgets += widgets
                 # No height cap and no inner scroll: a capped body silently hides params,
                 # which is exactly what a node graph must not do -- you cannot tell a chunk
@@ -422,6 +425,8 @@ class GraphView:
                 + (f"   —   {self.status}" if self.status else ""))
 
     def refresh(self, bodies: bool = False):
+        if not self.live:
+            return
         """Redraw. `bodies` rebuilds the node controls too, which is only needed when the
         set of nodes changed -- rebuilding them on every drag frame would recreate every
         param widget sixty times a second and drop the notice callbacks they hold."""
@@ -473,6 +478,10 @@ def main(page: ft.Page, network: str, context: str | None = None):
             ),
         ], expand=True, scroll=ft.ScrollMode.AUTO)
     )
+    # Only now may the widgets speak to the client: before page.add their controls are not
+    # mounted, and update() on an unmounted control can block rather than fail.
+    chunk_flet.mark_live(view.param_widgets)
+    view.live = True
 
 
 if __name__ == "__main__":
