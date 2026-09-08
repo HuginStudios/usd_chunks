@@ -61,6 +61,9 @@ COL_TEXT = "#cccccc"
 NODE_W, HEADER_H, ROW_H = 260.0, 30.0, 16.0  # wider: Qt's nodes fit a path
 BODY_PAD = 8.0  # the body Container's padding, which offsets every row inside it
 PORT_R = 5.0
+#: Expression badge on a wire. Same radius and glyph as Qt (ChunkEdgeItem._EXP_RADIUS)
+#: so the two frontends read identically.
+EXP_R = 12.0
 GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to hit
 MARGIN = 120.0
 
@@ -379,6 +382,17 @@ class GraphView:
                  cv.Path.CubicTo(x1 + reach, y1, x2 - reach, y2, x2, y2)],
                 paint=ft.Paint(stroke_width=2.0 if edge.is_exec else 1.2, color=colour,
                                style=ft.PaintingStyle.STROKE)))
+            if edge.expression:
+                # The straight midpoint is also the curve's own midpoint here: the control
+                # points are offset horizontally by the same reach from each end, so the
+                # cubic at t=0.5 reduces to ((x1+x2)/2, (y1+y2)/2). The badge sits ON the
+                # wire rather than beside it, which is why Qt picks the same point.
+                mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+                out.append(cv.Circle(mx, my, EXP_R, paint=ft.Paint(color=colour)))
+                out.append(cv.Text(
+                    mx, my, "Exp", ft.TextStyle(size=9, weight=ft.FontWeight.BOLD,
+                                                color="#ffffff"),
+                    alignment=ft.Alignment.CENTER))
 
         for path, prim in self.prims.items():
             x, y = self.positions[path]
