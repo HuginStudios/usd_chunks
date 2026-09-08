@@ -950,3 +950,104 @@ GRAPH_FRONTEND_METHODS = (
     "active_slot", "set_active_slot",
     "frame",
 )
+
+
+# ---------------------------------------------------------------------------
+# Operations
+#
+# The toolkit-free half of what a frontend's edit commands do. Both frontends had
+# their own copy of each of these, identical line for line, because they grew in Qt
+# and were rewritten from scratch for Flet.
+#
+# Materialization is NOT here, and that is deliberate rather than unfinished. Qt
+# defers wiring a paste through a QTimer because its ports arrive in deferred proxy
+# batches, guards a window with chunk._executing, and blocks pasted chunks when the
+# context has an active view; Flet builds synchronously and needs none of it. The
+# steps that differ are the whole of the difference, so a shared materialize would be
+# a function with a Qt branch and a Flet branch inside it.
+# ---------------------------------------------------------------------------
+
+
+def exec_boundary(stage: Usd.Stage, inside: "set[str]") -> "tuple[list[str], list[str]]":
+    """(feeds, consumers) -- the exec wires crossing into and out of `inside`.
+
+    Read this BEFORE removing anything. Deleting a selection heals the exec chain closed
+    as it goes, so afterwards nothing records what used to attach where, and a group put
+    in its place has nothing to reconnect to.
+
+    Order is preserved and duplicates dropped: the first wire found wins, so re-wiring is
+    deterministic rather than set-ordered.
+    """
+    feeds: list[str] = []
+    consumers: list[str] = []
+    for prim in stage.TraverseAll():
+        if prim.GetTypeName() != CHUNK_TYPENAME:
+            continue
+        path = str(prim.GetPath())
+        for attr in chunk_usd.iter_exec_inputs(prim):
+            for conn in attr.GetConnections():
+                source = str(conn.GetPrimPath())
+                if path in inside and source not in inside and source not in feeds:
+                    feeds.append(source)
+                elif source in inside and path not in inside and path not in consumers:
+                    consumers.append(path)
+    return feeds, consumers
+
+
+def snapshot_selection(chunks: dict, prims: dict, positions: dict, scene, stage,
+                       selected: "set[str]"):
+    """(clipboard nodes, clipboard edges) for `selected`.
+
+    Positions come back relative to the selection's top-left, so a paste lands as a shape
+    rather than at whatever absolute coordinates the originals had.
+
+    A wire with only one end selected is DROPPED, not recreated against the original
+    outside node. Copying half a chain and having the copy silently wire itself into the
+    original's upstream is worse than copying half a chain.
+
+    View chunks are excluded: they are per-context slot machinery, not content, and a
+    second view in a slot that already has one is meaningless.
+    """
+    chosen = [p for p in selected if p in prims and p in positions]
+    chosen = [p for p in chosen
+              if p not in chunks or not chunk_usd.is_view_chunk(chunks[p])]
+    if not chosen:
+        return [], []
+
+    min_x = min(positions[p][0] for p in chosen)
+    min_y = min(positions[p][1] for p in chosen)
+    nodes, index = [], {}
+    for path in chosen:
+        chunk = chunks.get(path)
+        if chunk is None:
+            continue
+        rel = (positions[path][0] - min_x, positions[path][1] - min_y)
+        clip = snapshot_chunk_node(chunk, scene, stage, rel)
+        if clip is None:
+            continue  # no module behind it -- nothing to recreate it from
+        index[path] = len(nodes)
+        nodes.append(clip)
+
+    edges = []
+    for path in chosen:
+        dst_index = index.get(path)
+        if dst_index is None:
+            continue
+        for dst_attr, src_path, src_attr in iter_prim_connections(prims[path]):
+            src_index = index.get(src_path)
+            if src_index is None:
+                continue
+            edges.append(ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
+    return nodes, edges
+
+
+def delete_chunks(chunks) -> int:
+    """Delete these chunks, returning how many were asked for.
+
+    request_delete heals the exec chain closed as it removes each one, so callers that
+    need to know what was attached must read exec_boundary first.
+    """
+    chunks = list(chunks)
+    for chunk in chunks:
+        chunk.request_delete()
+    return len(chunks)

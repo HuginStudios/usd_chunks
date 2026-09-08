@@ -441,41 +441,10 @@ class GraphView:
     # -- clipboard ---------------------------------------------------------
 
     def snapshot_selection(self):
-        """(nodes, edges) for the current selection, in the engine's clipboard format.
-
-        Positions are relative to the selection's top-left, so a paste lands as a shape
-        rather than at absolute coordinates. A wire to a node OUTSIDE the selection is
-        dropped rather than recreated against the original -- only wires between two
-        selected nodes survive, which is what Qt does.
-        """
-        chosen = [p for p in self.selected_nodes if p in self.prims]
-        if not chosen:
-            return [], []
-        min_x = min(self.positions[p][0] for p in chosen)
-        min_y = min(self.positions[p][1] for p in chosen)
-        nodes, index = [], {}
-        for path in chosen:
-            chunk = self.chunks.get(path)
-            if chunk is None:
-                continue
-            rel = (self.positions[path][0] - min_x, self.positions[path][1] - min_y)
-            clip = chunk_graph.snapshot_chunk_node(chunk, self.scene, self.stage, rel)
-            if clip is None:
-                continue  # no module behind it; nothing to recreate it from
-            index[path] = len(nodes)
-            nodes.append(clip)
-
-        edges = []
-        for path in chosen:
-            dst_index = index.get(path)
-            if dst_index is None:
-                continue
-            for dst_attr, src_path, src_attr in chunk_graph.iter_prim_connections(self.prims[path]):
-                src_index = index.get(src_path)
-                if src_index is None:
-                    continue
-                edges.append(chunk_graph.ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
-        return nodes, edges
+        """(nodes, edges) for the current selection, in the engine's clipboard format."""
+        return chunk_graph.snapshot_selection(
+            self.chunks, self.prims, self.positions, self.scene, self.stage,
+            self.selected_nodes)
 
     def copy_selection(self):
         nodes, edges = self.snapshot_selection()
@@ -568,26 +537,6 @@ class GraphView:
 
     # -- grouping ----------------------------------------------------------
 
-    def _exec_boundary(self, inside: set):
-        """(feeds, consumers) -- the exec wires crossing into and out of `inside`.
-
-        Read BEFORE anything is removed. Deleting the selection heals the exec chain
-        closed as it goes, so afterwards nothing records what used to attach where.
-        """
-        feeds, consumers = [], []
-        for prim in self.stage.TraverseAll():
-            if prim.GetTypeName() != chunk_graph.CHUNK_TYPENAME:
-                continue
-            path = str(prim.GetPath())
-            for attr in chunk_usd.iter_exec_inputs(prim):
-                for conn in attr.GetConnections():
-                    source = str(conn.GetPrimPath())
-                    if path in inside and source not in inside and source not in feeds:
-                        feeds.append(source)
-                    elif source in inside and path not in inside and path not in consumers:
-                        consumers.append(path)
-        return feeds, consumers
-
     def group_selection(self):
         """Ctrl+G: put the selected chunks in a new chunkgroup.
 
@@ -602,7 +551,7 @@ class GraphView:
 
         centre_x = sum(self.positions[p][0] for p in chosen) / len(chosen)
         centre_y = sum(self.positions[p][1] for p in chosen) / len(chosen)
-        feeds, consumers = self._exec_boundary(set(chosen))
+        feeds, consumers = chunk_graph.exec_boundary(self.stage, set(chosen))
 
         nodes, edges = self.snapshot_selection()
         if not nodes:
@@ -922,8 +871,7 @@ class GraphView:
         if not chunks:
             self.status = "nothing selected"
             return self.refresh()
-        for chunk in chunks:
-            chunk.request_delete()
+        chunk_graph.delete_chunks(chunks)
         self.stage.GetRootLayer().Save()
         self.selected_nodes = set()
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}

@@ -3305,19 +3305,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Read the boundary while it still exists. Cut heals the chain closed as it
         # removes the nodes, so afterwards nothing records what used to attach where.
         inside = {chunk_usd.get_chunk_prim_path(n.chunk) for n in selected}
-        feeds_selection: "list[str]" = []
-        fed_by_selection: "list[str]" = []
-        for prim in stage.TraverseAll():
-            if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
-                continue
-            path = str(prim.GetPath())
-            for attr in chunk_usd.iter_exec_inputs(prim):
-                for conn in attr.GetConnections():
-                    source = str(conn.GetPrimPath())
-                    if path in inside and source not in inside and source not in feeds_selection:
-                        feeds_selection.append(source)
-                    elif source in inside and path not in inside and path not in fed_by_selection:
-                        fed_by_selection.append(path)
+        feeds_selection, fed_by_selection = chunk_graph.exec_boundary(stage, inside)
 
         # Cut second, while the nodes are still here to be snapshotted.
         self._cut_selected_to_clipboard()
@@ -3676,13 +3664,29 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # ------------------------------------------------------------------
     # Keyboard
 
+    def frontend(self, docker=None) -> "QtGraphFrontend":
+        """This view as a chunk_graph.GraphFrontend.
+
+        Cached, because the adapter is stateless but callers hold on to what they get and
+        identity comparisons are cheaper to reason about than a new object per call.
+
+        The keyboard handler below routes through this rather than calling the private
+        methods directly, so the contract is a real code path rather than a shape only the
+        tests ever exercise. That was a live review finding: an adapter nothing constructs
+        rots, and passing a conformance test is not evidence it works.
+        """
+        existing = getattr(self, "_frontend", None)
+        if existing is None or (docker is not None and existing.docker is not docker):
+            self._frontend = QtGraphFrontend(self, docker)
+        return self._frontend
+
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if event.key() == QtCore.Qt.Key.Key_Tab:
             self._open_tab_menu()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_F:
-            self._frame_nodes()
+            self.frontend().frame(self.frontend().selected_nodes or self.scene()._nodes)
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_Escape:
@@ -3694,24 +3698,24 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_Delete:
-            self._delete_selected()
+            self.frontend().delete_selected()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_D:
             # Ctrl+D duplicates; bare D (no modifier) toggles disable -- same disambiguation
             # as Ctrl+V/bare-V below.
             if event.modifiers() & QtCore.Qt.ControlModifier:
-                self._duplicate_selected()
+                self.frontend().duplicate_selection()
             else:
-                self._toggle_disable_selected()
+                self.frontend().toggle_disable_selected()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_C and (event.modifiers() & QtCore.Qt.ControlModifier):
-            self._copy_selected_to_clipboard()
+            self.frontend().copy_selection()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_X and (event.modifiers() & QtCore.Qt.ControlModifier):
-            self._cut_selected_to_clipboard()
+            self.frontend().cut_selection()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_V:
@@ -3761,8 +3765,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Capture relevance BEFORE request_delete() touches anything -- see
         # mark_pending_delete_relevance's docstring for why it can't be judged afterward.
         self.mark_pending_delete_relevance(selected)
-        for c in selected:
-            c.request_delete()
+        chunk_graph.delete_chunks(selected)
 
     def _toggle_disable_selected(self) -> None:
         graph_scene = self.scene()
