@@ -366,5 +366,10 @@ def config():
 
         Links are authored flat rather than nested, so a rotation cannot propagate down a
         hierarchy: every descendant of a posed joint is moved explicitly.
+
+        Wire it DOWNSTREAM of whatever authored the rest pose. Posing is an override, and an
+        override only wins if its layer does: chunk layers are ranked by exec position, so
+        an unwired pose chunk authors correct transforms into a weaker layer and they are
+        composed away without a word.
         """,
     )
