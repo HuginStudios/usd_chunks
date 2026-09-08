@@ -318,3 +318,45 @@ class TestMutating:
         chunk_graph.disconnect(stage, port, prims)
 
         assert attr.GetConnections() == []
+
+    def test_a_rejected_expression_does_not_lose_the_wire(self, stage):
+        """The connection and its expression can fail independently.
+
+        A param that validates its value rejects the expression text outright -- a
+        file-path param checks the file exists, and "@Node.param@" is not a path. The
+        connection is authored before that point, so raising would leave the wire in place
+        and hand the caller an exception. It is reported instead.
+        """
+        class Refuses:
+            name = "target"
+            default_value = ""
+
+            @property
+            def value(self):
+                return ""
+
+            @value.setter
+            def value(self, _):
+                raise ValueError("path for attribute value does not exist")
+
+        class Chunk:
+            def get_param(self, _name):
+                return Refuses()
+
+        ports = self._ports(stage)
+        src = next(p for p in ports["/chunks/Source"]
+                   if p.name == "primpath_location" and not p.is_input)
+        dst = next(p for p in ports["/chunks/Off"]
+                   if p.name == "chunk" and p.is_input)
+        # Same type on both ends so the pair is legal: retype the destination for the test.
+        dst = chunk_graph.PortRef(dst.node_path, "/chunks/Off.inputs:thing",
+                                  chunk_graph.PORT_STRING, True)
+
+        change = chunk_graph.connect(stage, src, dst, {"/chunks/Off": Chunk()})
+
+        assert change is not None, "the wire must still be authored"
+        assert "path for attribute value does not exist" in change.expression_error
+        attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Off.inputs:thing"))
+        assert [str(c) for c in attr.GetConnections()] == [
+            "/chunks/Source.inputs:primpath_location"
+        ]

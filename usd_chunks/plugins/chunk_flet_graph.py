@@ -29,7 +29,11 @@ import flet as ft
 import flet.canvas as cv
 from pxr import Gf, Sdf, Usd
 
-from usd_chunks.plugins import chunk_graph
+from usd_chunks import chunk_registry
+from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_registry import ChunkLayerManager
+from usd_chunks.plugins import chunk_graph, chunk_usd
+from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, load_chunks
 
 #: One colour per port type, matching the Qt view's vocabulary.
 PORT_COLOUR = {
@@ -46,6 +50,20 @@ NODE_W, HEADER_H, ROW_H = 210.0, 30.0, 16.0
 PORT_R = 5.0
 GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to hit
 MARGIN = 60.0
+
+
+class _Scene(SceneSender):
+    """The minimum a chunk session needs to exist: a stage and a selection."""
+
+    def __init__(self, stage):
+        super().__init__()
+        self._stage = stage
+
+    def get_stage(self):
+        return self._stage
+
+    def get_selected_prims(self):
+        return []
 
 
 def contexts(stage) -> list[str]:
@@ -90,11 +108,31 @@ class GraphView:
         # dropping this collects the stage and expires every prim -- which surfaces later
         # as "accessed invalid expired prim", nowhere near the cause.
         self.stage = Usd.Stage.Open(network)
+        # A live session, the same as Qt has. Without one the view can still draw -- ports
+        # and wires come off the prims -- but two things quietly differ: a Menu and a
+        # LineEdit are both strings in USD, so only the chunk knows which port type to
+        # show, and a param wire needs its @Node.param@ expression written onto the
+        # destination param, which is a chunk operation. Falling back rather than failing,
+        # because a stage is still worth looking at when the modules cannot be found.
+        self.chunks: dict = {}
+        self.session_error = ""
+        try:
+            self.scene = _Scene(self.stage)
+            chunk_registry.ChunkRegistry().initialize(self.scene, "flet")
+            ChunkLayerManager().initialize(self.stage)
+            chunk_usd.ChunkStageSync().initialize(self.stage, self.scene)
+            load_chunks(self.stage, self.scene)
+            self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        except Exception as exc:  # noqa: BLE001 -- a broken session must not stop drawing
+            self.session_error = f"no chunk session ({type(exc).__name__}); drawing only"
+
         self.available = contexts(self.stage)
         self.context = context or default_context(self.stage)
         self.selected: chunk_graph.PortRef | None = None
         self.status = ""
         self.dragging: str | None = None
+        self.wiring: chunk_graph.PortRef | None = None
+        self.wire_to = (0.0, 0.0)
         self.canvas: cv.Canvas | None = None
         self.status_text: ft.Text | None = None
         self.reload()
@@ -102,7 +140,8 @@ class GraphView:
     # -- state -------------------------------------------------------------
 
     def reload(self):
-        self.prims, self.ports, self.edges = chunk_graph.read_graph(self.stage, self.context)
+        self.prims, self.ports, self.edges = chunk_graph.read_graph(
+            self.stage, self.context, self.chunks)
         raw = {path: chunk_graph.node_position(prim) for path, prim in self.prims.items()}
         # Screen space is USD space shifted so the top-left node sits at MARGIN. The offset
         # is kept because a drag has to be written back in the coordinates USD stores.
@@ -171,14 +210,16 @@ class GraphView:
             self.selected, self.status = None, ""
             return self.refresh()
 
-        change = chunk_graph.connect(self.stage, self.selected, port)
+        change = chunk_graph.connect(self.stage, self.selected, port, self.chunks)
         if change is None:
             # The engine's rule, reported rather than re-derived here.
             self.status = (f"cannot connect {self.selected.name} "
                            f"({self.selected.port_type}) to {port.name} ({port.port_type})")
         else:
             self.stage.GetRootLayer().Save()
-            self.status = f"connected {self.selected.name} -> {port.name}"
+            self.status = (f"connected {self.selected.name} -> {port.name}"
+                           + (f" (expression refused: {change.expression_error})"
+                              if change.expression_error else ""))
             self.reload()
         self.selected = None
         self.refresh()
@@ -187,7 +228,7 @@ class GraphView:
         port = self.port_at(event.local_x, event.local_y)
         if port is None:
             return
-        change = chunk_graph.disconnect(self.stage, port, self.prims)
+        change = chunk_graph.disconnect(self.stage, port, self.prims, self.chunks)
         if change.edges_dirty:
             self.stage.GetRootLayer().Save()
             self.status = f"disconnected {port.name}"
@@ -198,13 +239,20 @@ class GraphView:
         self.refresh()
 
     def on_pan_start(self, event):
-        # A grab on a port is the start of a wire, not a move, so the node stays put.
-        if self.port_at(event.local_x, event.local_y) is not None:
+        # A grab on a port starts a wire; anywhere else on a node moves it.
+        port = self.port_at(event.local_x, event.local_y)
+        if port is not None:
+            self.wiring = port
+            self.wire_to = (event.local_x, event.local_y)
             self.dragging = None
-            return
+            return self.refresh()
         self.dragging = self.node_at(event.local_x, event.local_y)
 
     def on_pan_update(self, event):
+        if self.wiring is not None:
+            x, y = self.wire_to
+            self.wire_to = (x + event.delta_x, y + event.delta_y)
+            return self.refresh()
         if not self.dragging:
             return
         x, y = self.positions[self.dragging]
@@ -212,6 +260,26 @@ class GraphView:
         self.refresh()
 
     def on_pan_end(self, event):
+        if self.wiring is not None:
+            source, self.wiring = self.wiring, None
+            target = self.port_at(*self.wire_to)
+            if target is None:
+                self.status = ""
+            elif target.attr_path == source.attr_path:
+                self.status = ""
+            else:
+                change = chunk_graph.connect(self.stage, source, target, self.chunks)
+                if change is None:
+                    self.status = (f"cannot connect {source.name} ({source.port_type}) "
+                                   f"to {target.name} ({target.port_type})")
+                else:
+                    self.stage.GetRootLayer().Save()
+                    self.status = (f"connected {source.name} -> {target.name}"
+                                   + (f" (expression refused: {change.expression_error})"
+                                      if change.expression_error else ""))
+                    self.reload()
+            self.selected = None
+            return self.refresh()
         if not self.dragging:
             return
         # Back into USD, in USD's own coordinates. The position is the shared state that
@@ -231,6 +299,15 @@ class GraphView:
 
     def shapes(self):
         out = []
+        if self.wiring is not None:
+            x1, y1 = self.port_xy(self.wiring)
+            x2, y2 = self.wire_to
+            reach = max(40.0, abs(x2 - x1) * 0.5)
+            out.append(cv.Path(
+                [cv.Path.MoveTo(x1, y1),
+                 cv.Path.CubicTo(x1 + reach, y1, x2 - reach, y2, x2, y2)],
+                paint=ft.Paint(stroke_width=1.6, color="#ffffff",
+                               style=ft.PaintingStyle.STROKE)))
         for edge in self.edges:
             src_node, dst_node = edge.src_node_path, edge.dst_node_path
             if src_node not in self.positions or dst_node not in self.positions:
@@ -294,6 +371,7 @@ class GraphView:
         return (f"{self.context}   —   {len(self.prims)} nodes · {len(self.edges)} wires · "
                 f"{sum(len(v) for v in self.ports.values())} ports · "
                 f"{len(self.available)} context(s)"
+                + (f"   —   {self.session_error}" if self.session_error else "")
                 + (f"   —   {self.status}" if self.status else ""))
 
     def refresh(self):

@@ -356,6 +356,9 @@ class GraphChange:
     edges_dirty: bool = True
     touched_nodes: set[str] = None
     exec_changed: bool = False
+    #: Set when the wire was authored but its expression could not be written -- the
+    #: connection stands, the value will not resolve through it until the text is fixed.
+    expression_error: str = ""
 
     def __post_init__(self):
         if self.touched_nodes is None:
@@ -424,17 +427,27 @@ def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None
         dst_attr.SetConnections([src_conn_path])
 
     # A typed wire also writes the expression that makes the value resolve at runtime. The
-    # wiring and the expression are separate: clearing the text keeps the wire.
+    # wiring and the expression are separate concerns -- clearing the text keeps the wire --
+    # and they can fail separately too: a param that validates its value rejects the
+    # expression text outright (a prim-path LineEdit checks the path exists, and
+    # "@Node.param@" is not a path). The connection is already authored by this point, so
+    # raising would leave the wire in place and the caller holding an exception. Report it
+    # instead and let the view say so.
+    expression_error = ""
     if src.port_type != PORT_EXEC:
         dst_chunk = chunks.get(dst.node_path)
         if dst_chunk is not None:
             param = dst_chunk.get_param(dst.name)
             if param is not None:
                 src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
-                param.value = f"@{src_node_name}.{src.name}@"
+                try:
+                    param.value = f"@{src_node_name}.{src.name}@"
+                except Exception as exc:  # noqa: BLE001 -- the wire stands either way
+                    expression_error = f"{type(exc).__name__}: {exc}"
 
     return GraphChange(touched_nodes={dst.node_path},
-                       exec_changed=src.port_type == PORT_EXEC)
+                       exec_changed=src.port_type == PORT_EXEC,
+                       expression_error=expression_error)
 
 
 def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None = None) -> GraphChange:
