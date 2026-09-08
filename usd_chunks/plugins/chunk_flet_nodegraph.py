@@ -66,6 +66,7 @@ PORT_R = 5.0
 EXP_R = 12.0
 GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to hit
 MARGIN = 120.0
+ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.25, 3.0, 1.1
 
 
 class _Scene(SceneSender):
@@ -155,6 +156,14 @@ class GraphView:
         #: {node path: {param name: y within the body}} -- filled by node_controls, which
         #: is the only place that knows how the params were laid out.
         self.param_offsets: dict = {}
+        #: Screen = layout * zoom + pan. Everything the view computes -- positions,
+        #: port_xy, extent -- stays in unscaled layout space; the transform is applied
+        #: once when drawing and inverted once when hit-testing, so no geometry code
+        #: has to know the canvas is zoomed.
+        self.zoom = 1.0
+        self.pan = (0.0, 0.0)
+        self.panning = False
+        self.pan_container: ft.Container | None = None
         self.live = False  # nothing may update the client until page.add has run
         self.status_text: ft.Text | None = None
         self.reload()
@@ -193,6 +202,34 @@ class GraphView:
             rows = len(list(chunk_obj.get_params()))
             body = HEADER_H + 40.0 + 46.0 * rows + 16
         return max(ports, body)
+
+    # -- pointer -> layout -------------------------------------------------
+
+    def _xy(self, event) -> tuple[float, float]:
+        """A pointer event's position in layout space.
+
+        Flet 0.80 reports a pointer as an Offset on `local_position`. This file used to
+        read `event.local_x`, which does not exist on any of these event classes -- so
+        every handler raised AttributeError on the first click and none of the graph
+        interaction worked at all. Reading the source made it look implemented.
+
+        The zoom/pan inverse lives here too, so there is exactly one place where a screen
+        point becomes a layout point.
+        """
+        point = event.local_position
+        return ((point.x - self.pan[0]) / self.zoom,
+                (point.y - self.pan[1]) / self.zoom)
+
+    def _to_screen(self, x: float, y: float) -> tuple[float, float]:
+        """Layout point -> screen point. The inverse of _xy, for anyone who has a node
+        position and needs to know where to aim a pointer at it."""
+        return (x * self.zoom + self.pan[0], y * self.zoom + self.pan[1])
+
+    def _delta(self, event) -> tuple[float, float]:
+        """A drag delta in layout space -- a 10px drag moves a node 10px at zoom 1, and
+        20 layout units at zoom 0.5, which is what keeps the node under the cursor."""
+        delta = event.local_delta
+        return (delta.x / self.zoom, delta.y / self.zoom)
 
     def port_xy(self, port: chunk_graph.PortRef):
         """Where a port's dot lands.
@@ -250,7 +287,7 @@ class GraphView:
     # -- input -------------------------------------------------------------
 
     def on_tap(self, event):
-        port = self.port_at(event.local_x, event.local_y)
+        port = self.port_at(*self._xy(event))
         if port is None:
             self.selected, self.status = None, ""
             return self.refresh()
@@ -279,7 +316,7 @@ class GraphView:
         self.refresh(bodies=True)
 
     def on_secondary_tap(self, event):
-        port = self.port_at(event.local_x, event.local_y)
+        port = self.port_at(*self._xy(event))
         if port is None:
             return
         change = chunk_graph.disconnect(self.stage, port, self.prims, self.chunks)
@@ -294,26 +331,64 @@ class GraphView:
 
     def on_pan_start(self, event):
         # A grab on a port starts a wire; anywhere else on a node moves it.
-        port = self.port_at(event.local_x, event.local_y)
+        x, y = self._xy(event)
+        port = self.port_at(x, y)
         if port is not None:
             self.wiring = port
-            self.wire_to = (event.local_x, event.local_y)
+            self.wire_to = (x, y)
             self.dragging = None
             return self.refresh()
-        self.dragging = self.node_at(event.local_x, event.local_y)
+        self.dragging = self.node_at(x, y)
+        # Empty canvas: drag the view itself. Nothing else claimed this gesture.
+        self.panning = self.dragging is None
 
     def on_pan_update(self, event):
+        if self.panning:
+            # Pan is a SCREEN translation, so it uses the raw delta: dividing by
+            # zoom here would make the canvas slide faster the further you zoom out.
+            self.pan = (self.pan[0] + event.local_delta.x,
+                        self.pan[1] + event.local_delta.y)
+            return self.refresh()
+        dx, dy = self._delta(event)
         if self.wiring is not None:
             x, y = self.wire_to
-            self.wire_to = (x + event.delta_x, y + event.delta_y)
+            self.wire_to = (x + dx, y + dy)
             return self.refresh()
         if not self.dragging:
             return
         x, y = self.positions[self.dragging]
-        self.positions[self.dragging] = (x + event.delta_x, y + event.delta_y)
+        self.positions[self.dragging] = (x + dx, y + dy)
+        self.refresh()
+
+    def on_scroll(self, event):
+        """Wheel zoom, anchored on the pointer.
+
+        The layout point under the cursor is computed BEFORE the zoom changes and the pan
+        is then solved so that same point lands back under the cursor. Scaling about the
+        origin instead is the usual bug: the graph appears to flee the pointer, and at 3x
+        whatever you were looking at is off-screen.
+        """
+        point = event.local_position
+        lx, ly = self._xy(event)
+        step = ZOOM_STEP if event.scroll_delta.y < 0 else 1.0 / ZOOM_STEP
+        zoom = min(ZOOM_MAX, max(ZOOM_MIN, self.zoom * step))
+        if zoom == self.zoom:
+            return
+        self.zoom = zoom
+        self.pan = (point.x - lx * zoom, point.y - ly * zoom)
+        self.status = f"zoom {zoom:.2f}x"
+        self.refresh()
+
+    def reset_view(self):
+        """Back to 1:1, top-left. The escape hatch when a zoom has lost the graph."""
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.status = "view reset"
         self.refresh()
 
     def on_pan_end(self, event):
+        if self.panning:
+            self.panning = False
+            return
         if self.wiring is not None:
             source, self.wiring = self.wiring, None
             target = self.port_at(*self.wire_to)
@@ -488,6 +563,11 @@ class GraphView:
         param widget sixty times a second and drop the notice callbacks they hold."""
         # Same ordering rule as main(): the bodies report the offsets the ports need.
         rebuilt = self.node_controls() if (bodies and self.stack is not None) else None
+        if self.pan_container is not None:
+            # One transform for the whole scene -- canvas AND the real param widgets in
+            # the Stack -- so the wires cannot drift away from the bodies they touch.
+            self.pan_container.scale = ft.Scale(self.zoom, alignment=ft.Alignment.TOP_LEFT)
+            self.pan_container.left, self.pan_container.top = self.pan
         if self.canvas is not None:
             self.canvas.shapes = self.shapes()
             self.canvas.width, self.canvas.height = self.extent()
@@ -523,21 +603,32 @@ def main(page: ft.Page, network: str, context: str | None = None):
     # Canvas first in the Stack so the wires pass UNDER the node bodies, as in Qt.
     view.stack = ft.Stack([view.canvas] + bodies, width=width, height=height)
 
+    # The scene sits in a positioned, scaled Container; the GestureDetector wraps the
+    # viewport OUTSIDE it. That order matters: events must arrive in unscaled screen
+    # coordinates for _xy to invert, and the detector has to cover the whole viewport
+    # rather than just the drawn extent, or empty space would not be draggable.
+    view.pan_container = ft.Container(view.stack, left=0, top=0,
+                                      scale=ft.Scale(1.0, alignment=ft.Alignment.TOP_LEFT))
+    viewport = ft.Stack([view.pan_container], expand=True, clip_behavior=ft.ClipBehavior.HARD_EDGE)
+
     page.add(
         ft.Column([
             ft.Container(view.status_text, padding=10, bgcolor=COL_NODE_HEADER),
             ft.Container(
                 ft.GestureDetector(
-                    content=view.stack,
+                    content=viewport,
                     on_tap_down=view.on_tap,
                     on_secondary_tap_down=view.on_secondary_tap,
                     on_pan_start=view.on_pan_start,
                     on_pan_update=view.on_pan_update,
                     on_pan_end=view.on_pan_end,
+                    on_scroll=view.on_scroll,
                 ),
                 expand=True,
             ),
-        ], expand=True, scroll=ft.ScrollMode.AUTO)
+        # No ScrollMode: panning replaces it. Left on, a wheel event would both scroll
+        # the Column and zoom the graph, and the two fight.
+        ], expand=True)
     )
     # Only now may the widgets speak to the client: before page.add their controls are not
     # mounted, and update() on an unmounted control can block rather than fail.
