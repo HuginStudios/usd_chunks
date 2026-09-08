@@ -213,7 +213,7 @@ def test_pasted_widget_shows_the_copied_value_even_when_blocked(graph) -> None:
 
     param_widget = next(
         w for w in node._chunk_widget.findChildren(QtWidgets.QWidget)
-        if isinstance(w, chunk_core.ChunkParamWidgetBase) and getattr(w.param, "name", None) == "layer_name"
+        if isinstance(w, chunk_widget_api.ChunkParamWidgetBase) and getattr(w.param, "name", None) == "layer_name"
     )
     line_edit = param_widget.findChild(QtWidgets.QLineEdit)
     assert line_edit is not None

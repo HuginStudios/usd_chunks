@@ -391,7 +391,7 @@ class MenuActionNotice(ChunkNotice):
 
 @chunk_notice(ChunkNoticeAlias.WIDGET_CHANGED)
 class WidgetChangedNotice(ChunkNotice):
-    data: "chunk_core.ChunkParamWidgetBase"
+    data: "chunk_widget_api.ChunkParamWidgetBase"
 
 
 ### UsdView selection notices

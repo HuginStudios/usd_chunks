@@ -1,3 +1,4 @@
+from usd_chunks import chunk_widget_api
 from usd_chunks import chunk, chunk_core
 from PySide6 import QtWidgets
 
@@ -6,7 +7,7 @@ def customButtonClicked(owner, notice, sender):
     print(owner.user_data["customValue"])
 
 
-class MyWidget(chunk_core.ChunkParamWidgetBase, QtWidgets.QPushButton):
+class MyWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QPushButton):
     def __init__(self, param: chunk.ChunkParamBase):
         super().__init__(param)
 

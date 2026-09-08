@@ -5,8 +5,9 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_utils
 import usd_chunks.chunk_flags
-from usd_chunks.chunk_core import ChunkParamWidgetBase
+from usd_chunks.chunk_widget_api import ChunkParamWidgetBase
 from usd_chunks import chunk_naming
+from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks.plugins import chunk_usd
 
@@ -871,7 +872,7 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
             self.value_changed((color.redF(), color.greenF(), color.blueF()))
 
 
-class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
+class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
     widget_map = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
@@ -1312,7 +1313,7 @@ class ContainerWidget(
         else:
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
 
-    def get_widget_factory(self) -> chunk_core.ChunkWidgetFactoryBase:
+    def get_widget_factory(self) -> chunk_widget_api.ChunkWidgetFactoryBase:
         if factory := self.group.widget_factory:
             return factory
         else:
@@ -1509,7 +1510,7 @@ class ContainerWidget(
 
         elif isinstance(widget, chunk_core.ChunkContainerWidgetBase):
             widget.group.request_delete()
-        elif isinstance(widget, chunk_core.ChunkParamWidgetBase):
+        elif isinstance(widget, chunk_widget_api.ChunkParamWidgetBase):
             widget.param.request_delete()
         self.remove_widget(widget)
 

@@ -21,6 +21,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_naming
+from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_registry
 from usd_chunks.plugins import chunk_graph
 from usd_chunks.plugins import chunk_graph_layout
@@ -1252,7 +1253,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         param_widgets = {
             w.param: w
             for w in chunk_widget.findChildren(QtWidgets.QWidget)
-            if isinstance(w, core.ChunkParamWidgetBase)
+            if isinstance(w, chunk_widget_api.ChunkParamWidgetBase)
         }
         containers_by_group = {
             w.group: w

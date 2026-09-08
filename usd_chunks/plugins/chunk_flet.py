@@ -1,6 +1,6 @@
 """Flet widgets for chunk params -- the Flet counterpart of `chunk_qt`.
 
-The framework was built for this: `chunk_core.ChunkWidgetFactoryBase` is a Protocol
+The framework was built for this: `chunk_widget_api.ChunkWidgetFactoryBase` is a Protocol
 documented as "implemented for any specific UI library", and every param already declares
 what it is through `ChunkFlags.ParamType` rather than through a Qt class. So a second
 toolkit needs a factory and a widget per type, and nothing else.
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import flet as ft
 
-from usd_chunks import chunk, chunk_core
+from usd_chunks import chunk, chunk_core, chunk_widget_api
 from usd_chunks.chunk_flags import ChunkFlags
 
 
@@ -30,7 +30,7 @@ ROW_GAP = 3.0
 GROUP_HEADER_H = 22.0
 
 
-class FletParamWidget(chunk_core.ChunkParamWidgetBase):
+class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
     """A Flet control bound to one chunk param, in both directions."""
 
     #: Height of this widget's control, label excluded.
@@ -322,7 +322,7 @@ class FletLabelWidget(FletParamWidget):
         return self.control
 
 
-class ChunkFletWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
+class ChunkFletWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
     """Param type -> Flet widget. The same shape as ChunkQTWidgetFactory, by design.
 
     Keyed on ChunkFlags.ParamType, which is what params already declare themselves as, so
