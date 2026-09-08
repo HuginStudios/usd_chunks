@@ -283,6 +283,13 @@ def execute(node):
     targets = node.get_param("write_targets")
     layer = node.get_edit_context()
 
+    # Cleared first, so a pose is absolute rather than cumulative. apply_pose reads the
+    # composed transform, which includes whatever this layer wrote last cook -- so without
+    # this each execute rotates again from where the last one stopped, and a slider dragged
+    # twice puts the joint somewhere neither value asked for. A wedge sweeping the same
+    # slider compounds it once per variant.
+    layer.Clear()
+
     with Usd.EditContext(stage, layer):
         posed = apply_pose(stage, roots, values, root_path,
                            write_targets=bool(targets.value) if targets else True)
