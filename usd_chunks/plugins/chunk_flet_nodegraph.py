@@ -457,12 +457,14 @@ class GraphView:
         """Redraw. `bodies` rebuilds the node controls too, which is only needed when the
         set of nodes changed -- rebuilding them on every drag frame would recreate every
         param widget sixty times a second and drop the notice callbacks they hold."""
+        # Same ordering rule as main(): the bodies report the offsets the ports need.
+        rebuilt = self.node_controls() if (bodies and self.stack is not None) else None
         if self.canvas is not None:
             self.canvas.shapes = self.shapes()
             self.canvas.width, self.canvas.height = self.extent()
             self.canvas.update()
-        if bodies and self.stack is not None:
-            self.stack.controls = [self.canvas] + self.node_controls()
+        if rebuilt is not None:
+            self.stack.controls = [self.canvas] + rebuilt
             self.stack.update()
         elif self.stack is not None:
             # Positions moved but the controls are the same objects: move them in place.
@@ -483,11 +485,14 @@ def main(page: ft.Page, network: str, context: str | None = None):
     page.padding = 0
 
     width, height = view.extent()
+    # Bodies BEFORE shapes. node_controls is what discovers where each param's control
+    # landed, and shapes() needs those offsets to put a port level with its param -- built
+    # the other way round the ports fall back to a fixed grid and silently miss.
+    bodies = view.node_controls()
     view.canvas = cv.Canvas(view.shapes(), width=width, height=height)
     view.status_text = ft.Text(view.summary(), size=12, color=COL_ACCENT)
-    # Canvas first so the wires pass UNDER the node bodies, the way they do in Qt.
-    view.stack = ft.Stack([view.canvas] + view.node_controls(),
-                          width=width, height=height)
+    # Canvas first in the Stack so the wires pass UNDER the node bodies, as in Qt.
+    view.stack = ft.Stack([view.canvas] + bodies, width=width, height=height)
 
     page.add(
         ft.Column([
