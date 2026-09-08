@@ -254,8 +254,9 @@ _param_port_type = chunk_graph.param_port_type
 
 
 
-_node_clipboard: list[_ClipboardNode] = []
-_edge_clipboard: list[_ClipboardEdge] = []
+# The clipboard lives in chunk_graph (see the aliases at the top of this file). These
+# two names used to be rebound here, which silently gave Qt a clipboard of its own --
+# so a copy in one frontend was invisible to the other despite the shared format.
 
 
 
@@ -4664,7 +4665,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         entry = FilterableChunkMenu().select_module(global_pos)
         if not entry:
             return
+        self.create_chunk_from_entry(entry, scene_pos)
 
+    def create_chunk_from_entry(self, entry, scene_pos: QtCore.QPointF):
+        """Create one MenuEntry's chunk(s) at scene_pos, with no UI of its own.
+
+        Split out of _create_chunk_at for the frontend contract: choosing the entry is the
+        frontend's business (a Qt menu here, a dialog in Flet), creating it is not.
+        """
         chunks = entry.create()
 
         scene = _chunk.get_scene()
@@ -5009,3 +5017,163 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         event.accept()
 
 
+class QtGraphFrontend:
+    """chunk_graph.GraphFrontend, for Qt.
+
+    An adapter rather than a base class, for two reasons.
+
+    ABCMeta cannot be mixed into a PySide6 class -- the metaclasses conflict -- and the
+    combined-metaclass workaround constructs but silently skips the abstract check, so
+    inheritance would give the appearance of a contract without the substance.
+
+    And the Qt graph is not one object. It is a ChunkGraphScene, a ChunkGraphView and the
+    ChunkWidgetDocker that owns navigation between context tabs; Flet is a single
+    GraphView. A contract phrased as "subclass this" would have had to pick one of those
+    shapes and force the other to match. Delegation lets each keep its own.
+
+    Two verbs are genuinely structural rather than cosmetic differences:
+
+    dive_into is a Qt Signal, not a call -- the scene emits, the docker opens a tab for the
+    group. So diving here means emitting, and the navigation happens elsewhere.
+
+    dive_out has no counterpart at all: Qt navigates by tab, and "out" is the docker's
+    back step through its nav history. Without a docker this adapter cannot do it, and
+    says so rather than pretending.
+    """
+
+    def __init__(self, view: "ChunkGraphView", docker=None):
+        #: The ChunkGraphView. Its scene and scene_sender are reached through it, so the
+        #: adapter holds one reference rather than three that could drift apart.
+        self.view = view
+        #: ChunkWidgetDocker, which owns tab navigation. Optional: everything except
+        #: dive_out works without it.
+        self.docker = docker
+
+    # -- plumbing ----------------------------------------------------------
+
+    def _scene(self):
+        scene = self.view.scene()
+        return scene if isinstance(scene, ChunkGraphScene) else None
+
+    def _node(self, path: str):
+        scene = self._scene()
+        return scene._nodes.get(path) if scene is not None else None
+
+    def _chunk(self, path: str):
+        node = self._node(path)
+        return node.chunk if node is not None else None
+
+    @property
+    def context(self) -> str:
+        """The prim path of the graph being shown."""
+        context = self.view._graph_context()
+        return chunk_usd.get_chunk_prim_path(context) if context is not None else ""
+
+    @property
+    def selected_nodes(self) -> set:
+        scene = self._scene()
+        if scene is None:
+            return set()
+        return {
+            path for path, node in scene._nodes.items()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED)
+        }
+
+    # -- selection ---------------------------------------------------------
+
+    def set_selection(self, paths, add: bool = False) -> None:
+        scene = self._scene()
+        if scene is None or scene._scene_sender is None:
+            return
+        chunks = [c for c in (self._chunk(p) for p in paths) if c is not None]
+        if add:
+            # Dedupe on identity: ChunkBase does not promise __hash__/__eq__ semantics
+            # that a set would use correctly here.
+            merged = {id(c): c for c in self.selected_chunks()}
+            merged.update({id(c): c for c in chunks})
+            chunks = list(merged.values())
+        scene._scene_sender.set_selected_chunks(chunks)
+
+    def selected_chunks(self) -> list:
+        return self.view.selected_chunks()
+
+    # -- editing -----------------------------------------------------------
+
+    def delete_selected(self) -> None:
+        self.view._delete_selected()
+
+    def toggle_disable_selected(self) -> None:
+        self.view._toggle_disable_selected()
+
+    def copy_selection(self) -> None:
+        self.view._copy_selected_to_clipboard()
+
+    def cut_selection(self) -> None:
+        self.view._cut_selected_to_clipboard()
+
+    def paste_at(self, x: float, y: float, nodes=None, edges=None) -> None:
+        position = QtCore.QPointF(x, y)
+        if nodes is None and edges is None:
+            self.view._paste_clipboard_at(position)
+            return
+        self.view._materialize_at(list(nodes or []), list(edges or []), position)
+
+    def duplicate_selection(self) -> None:
+        self.view._duplicate_selected()
+
+    def group_selection(self) -> None:
+        self.view._group_selected()
+
+    def create_chunk(self, entry, x: float, y: float) -> None:
+        self.view.create_chunk_from_entry(entry, QtCore.QPointF(x, y))
+
+    # -- navigation --------------------------------------------------------
+
+    def can_dive(self, path: str) -> bool:
+        chunk = self._chunk(path)
+        return chunk is not None and chunk_usd.is_chunkgroup(chunk)
+
+    def dive_into(self, path: str) -> None:
+        scene = self._scene()
+        chunk = self._chunk(path)
+        if scene is None or chunk is None or not self.can_dive(path):
+            return
+        scene.dive_into.emit(chunk)
+
+    def dive_out(self) -> None:
+        """Step back through the docker's navigation history.
+
+        Qt has no "leave this group" operation: it dives by opening a tab, so coming out
+        is a back step. With no docker there is nothing to step through.
+        """
+        if self.docker is None:
+            return
+        self.docker._nav_step(-1)
+
+    # -- views -------------------------------------------------------------
+
+    def active_slot(self) -> int:
+        return int(self.view._view_state.active_slot)
+
+    def set_active_slot(self, slot: int) -> None:
+        self.view._view_state.set_slot(int(slot))
+
+    # -- viewport ----------------------------------------------------------
+
+    def frame(self, paths) -> None:
+        """Fit those nodes.
+
+        Qt's own _frame_nodes always frames the selection-or-everything, so it cannot
+        honour an explicit list; this does the same union-and-fit against the nodes asked
+        for, and falls back to _frame_nodes when none of them are on screen.
+        """
+        items = [n for n in (self._node(p) for p in paths) if n is not None]
+        if not items:
+            self.view._frame_nodes()
+            return
+        rect = QtCore.QRectF()
+        for item in items:
+            rect = rect.united(item.sceneBoundingRect())
+        rect.adjust(-60, -60, 60, 60)
+        self.view.fitInView(rect, QtCore.Qt.KeepAspectRatio)
+        self.view._apply_lod()
