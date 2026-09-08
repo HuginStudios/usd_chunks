@@ -27,7 +27,7 @@ from usd_chunks.plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
+from usd_chunks.plugins.chunk_qt_widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
 
 _PORT_RADIUS = 5
 _PORT_SNAP_PIXELS = 20  # on-screen click-tolerance radius for dropping a dragged wire near a port
@@ -2122,6 +2122,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         )
 
         self._rebuild_nodes()
+        # The context this graph was just built for is what the path row names, and a build
+        # is the only thing that changes it.
+        for view in self.views():
+            if hasattr(view, "refresh_breadcrumb"):
+                view.refresh_breadcrumb()
 
     def _schedule_rebuild(self):
         """Queue one deferred, coalesced rebuild.
@@ -3029,6 +3034,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._rubber_band_add = False  # Shift held: add boxed nodes to selection instead of replacing
 
         self._menubar = QtWidgets.QMenuBar(self)
+        # The path to this graph's own context, in the strip under the tabs -- the row that
+        # says where you are belongs against the graph you are looking at, not above the tab
+        # bar where it has to describe whichever tab is current.
+        self._breadcrumb = ChunkContextBreadcrumb(self._menubar)
+        self._breadcrumb.navigate.connect(self.dive_into)
+        self._menubar.setCornerWidget(self._breadcrumb, QtCore.Qt.Corner.TopLeftCorner)
+        # A rule between this strip and the tabs above it, so the path reads as belonging to
+        # the graph rather than as a second row of tabs.
+        self._menubar.setStyleSheet("QMenuBar { border-top: 1px solid #3a3a3a; }")
         view_menu = self._menubar.addMenu("View")
         self._param_edge_action = view_menu.addAction("Show param connections")
         self._param_edge_action.setCheckable(True)
@@ -3082,6 +3096,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def showEvent(self, event: QtGui.QShowEvent):
         super().showEvent(event)
         self._proxy_key_router.install()
+        self.refresh_breadcrumb()
+
+    def refresh_breadcrumb(self) -> None:
+        """Point the path row at this graph's own context.
+
+        Called when the page becomes visible and at the end of a scene build -- the two
+        moments the context can differ from what is drawn. Cheap either way: the row is one
+        button per level of nesting.
+        """
+        breadcrumb = getattr(self, "_breadcrumb", None)
+        if breadcrumb is not None:
+            breadcrumb.set_context(self._graph_context())
 
     @staticmethod
     def _grid_points_in_rect(rect: QtCore.QRectF, spacing: int) -> list:

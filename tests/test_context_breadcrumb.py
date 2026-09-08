@@ -15,9 +15,8 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt import (
-    ChunkContextBreadcrumb, ChunkWidgetDocker, context_ancestry,
-)
+from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.plugins.chunk_qt_widgets import ChunkContextBreadcrumb, context_ancestry
 from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
 
 
@@ -97,7 +96,7 @@ def test_the_row_shows_the_whole_path(nested):
     docker._on_dive_into(nested["inner"])
     nested["settle"]()
 
-    assert _texts(docker._breadcrumb) == [
+    assert _texts(docker.tab_widget.get_current_graph_view()._breadcrumb) == [
         nested["root"].name, nested["outer"].name, nested["middle"].name, nested["inner"].name
     ]
 
@@ -108,7 +107,7 @@ def test_the_group_you_are_in_is_not_a_button_to_press(nested):
     docker._on_dive_into(nested["inner"])
     nested["settle"]()
 
-    entries = docker._breadcrumb.findChildren(QtWidgets.QToolButton)
+    entries = docker.tab_widget.get_current_graph_view()._breadcrumb.findChildren(QtWidgets.QToolButton)
     assert entries[-1].text() == nested["inner"].name
     assert not entries[-1].isEnabled()
     assert all(e.isEnabled() for e in entries[:-1]), "every ancestor stays clickable"
@@ -123,7 +122,7 @@ def test_clicking_an_ancestor_goes_there(nested):
 
     # By position, not by text: a group nested inside another may legitimately carry the
     # same name (/chunks/ChunkGroup/ChunkGroup), so the label alone does not identify one.
-    entry = docker._breadcrumb.findChildren(QtWidgets.QToolButton)[1]
+    entry = docker.tab_widget.get_current_graph_view()._breadcrumb.findChildren(QtWidgets.QToolButton)[1]
     entry.click()
     nested["settle"]()
     assert docker._current_context() is nested["outer"]
@@ -147,7 +146,7 @@ def test_it_reaches_a_group_that_has_no_tab_open(nested):
     assert docker.tab_widget.get_chunk_context_index(nested["middle"]) is None
 
     # Position again -- index 2 is `middle` in root > outer > middle > inner.
-    entry = docker._breadcrumb.findChildren(QtWidgets.QToolButton)[2]
+    entry = docker.tab_widget.get_current_graph_view()._breadcrumb.findChildren(QtWidgets.QToolButton)[2]
     entry.click()
     nested["settle"]()
 
