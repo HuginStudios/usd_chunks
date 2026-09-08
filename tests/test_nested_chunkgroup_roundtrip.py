@@ -120,20 +120,31 @@ def test_a_nested_group_comes_back_nested(reopened):
 
 
 def test_a_nested_group_keeps_the_name_the_file_gave_it(reopened):
-    """The specific regression: a suffix appearing on a name nothing renamed."""
-    _live, scene2, _stage2, _saved = reopened
+    """The specific regression: a suffix appearing on a name nothing renamed.
 
-    names = [c.name for c in scene2.get_chunks()]
-    assert not any(n.endswith("1") for n in names), (
-        f"nothing renamed these; a '1' means the load did: {names}"
+    Asserted against the names the file was written with, rather than against a name
+    ENDING IN "1", which is what this used to look for. That worked while a nested group
+    took its parent's name and could only get a suffix by being renamed on load -- now a
+    group is named apart from its parent when it is created, so "ChunkGroup1" is what a
+    correct file says, and the heuristic would fail on a scene that round-tripped
+    perfectly.
+    """
+    live, scene2, _stage2, _saved = reopened
+
+    live_names = sorted(p.rsplit("/", 1)[-1] for p in live)
+    assert sorted(c.name for c in scene2.get_chunks()) == live_names, (
+        "a reopened scene must carry the names the file gave it"
     )
 
 
 def test_the_reopened_scene_has_one_default_group(reopened):
-    """A nested group restored at the root collides with the default and gets renamed."""
+    """A nested group restored at the root would show up as a second top-level context."""
     _live, scene2, _stage2, _saved = reopened
 
-    names = [c.name for c in _contexts(scene2)]
-    assert not any(n.endswith("1") for n in names), (
-        f"a collision-renamed context means one was restored to the wrong parent: {names}"
+    top_level = [
+        c for c in _contexts(scene2)
+        if get_chunk_prim_path(c).count("/") == 2  # /chunks/<name>
+    ]
+    assert len(top_level) == 1, (
+        f"expected only the default group at the root, got {[c.name for c in top_level]}"
     )

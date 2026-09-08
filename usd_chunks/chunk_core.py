@@ -4758,6 +4758,24 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 if root is not None and root is not c:
                     parent = weakref.ref(root)
             c._parent_context = parent
+            # A CONTEXT is not in the flat scene container, so the name check above cannot
+            # see the one collision that matters most: a group taking the name of the group
+            # it sits inside. A new scene produced /chunks/ChunkGroup/ChunkGroup -- two tabs
+            # both reading "ChunkGroup", and a context path that repeated itself.
+            #
+            # Only for a group being CREATED. A restored one keeps its name whatever it
+            # collides with: the file is authoritative about what it is called, its prim
+            # path already makes it unique, and the name is what expressions reference.
+            parent_ctx = parent() if parent else None
+            # `restoring` above is not enough on its own: it also requires prim_path, which
+            # a nested group does not have yet at this point in a load, so relying on it
+            # renamed exactly the groups a file is most authoritative about. During a load,
+            # nothing here renames anything.
+            loading = chunk_notice._loading_stage is not None
+            if parent_ctx is not None and not restoring and not loading:
+                reserved = set(names) | set(parent_ctx.get_reserved_names())
+                if c.name in reserved:
+                    c.name = c.get_valid_child_name(c.name, reserved)
             self._current_context = weakref.ref(c)
             # User-created group chunks (have a module config) need PARAM_ADDED to fire
             # so ChunkStageSync can create their USD prim. Tab contexts skip this.
