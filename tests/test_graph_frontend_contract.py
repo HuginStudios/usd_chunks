@@ -32,6 +32,12 @@ def frontends():
     facade = getattr(qg, "QtGraphFrontend", None)
     if facade is not None:
         found.append(("qt", facade))
+
+    try:
+        from usd_chunks.plugins import chunk_imgui_nodegraph as ig
+    except ImportError:  # pragma: no cover - imgui-bundle is an optional extra
+        return found
+    found.append(("imgui", ig.ImGuiGraphView))
     return found
 
 
