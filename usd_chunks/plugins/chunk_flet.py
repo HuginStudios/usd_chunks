@@ -22,8 +22,25 @@ from usd_chunks import chunk, chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
 
 
+#: Row metrics. Flet lays out at render time and gives no way to ask a control how tall it
+#: ended up, so the heights a port needs to line up against have to be declared rather than
+#: measured. Qt reads live widget geometry instead -- same intent, different means.
+LABEL_H = 14.0
+ROW_GAP = 3.0
+GROUP_HEADER_H = 22.0
+
+
 class FletParamWidget(chunk_core.ChunkParamWidgetBase):
     """A Flet control bound to one chunk param, in both directions."""
+
+    #: Height of this widget's control, label excluded.
+    CONTROL_H = 30.0
+    #: Whether a label is stacked above it.
+    HAS_LABEL = True
+
+    @classmethod
+    def row_height(cls) -> float:
+        return (LABEL_H if cls.HAS_LABEL else 0.0) + cls.CONTROL_H
 
     def __init__(self, param, *args, **kwargs):
         self.control: ft.Control | None = None
@@ -126,6 +143,7 @@ class FletParamWidget(chunk_core.ChunkParamWidgetBase):
 
 
 class FletSliderWidget(FletParamWidget):
+    CONTROL_H = 26.0
     def build(self):
         param = self.param
         self.readout = ft.Text("", size=10, color="#cab46a", width=52,
@@ -159,6 +177,7 @@ class FletSliderWidget(FletParamWidget):
 
 
 class FletTextWidget(FletParamWidget):
+    CONTROL_H = 30.0
     def build(self):
         self.control = ft.TextField(
             dense=True, on_change=self.on_changed, text_size=11,
@@ -171,6 +190,7 @@ class FletTextWidget(FletParamWidget):
 
 
 class FletMultilineTextWidget(FletTextWidget):
+    CONTROL_H = 76.0
     def build(self):
         self.control = ft.TextField(
             multiline=True, min_lines=3, dense=True, on_change=self.on_changed,
@@ -180,6 +200,7 @@ class FletMultilineTextWidget(FletTextWidget):
 
 
 class FletCheckboxWidget(FletParamWidget):
+    CONTROL_H = 26.0
     def build(self):
         self.control = ft.Checkbox(on_change=self.on_changed)
 
@@ -191,6 +212,7 @@ class FletCheckboxWidget(FletParamWidget):
 
 
 class FletMenuWidget(FletParamWidget):
+    CONTROL_H = 34.0
     def build(self):
         items = [ft.dropdown.Option(str(i)) for i in getattr(self.param, "menu_items", [])]
         self.control = ft.Dropdown(
@@ -203,6 +225,8 @@ class FletMenuWidget(FletParamWidget):
 
 
 class FletButtonWidget(FletParamWidget):
+    CONTROL_H = 34.0
+    HAS_LABEL = False
     def build(self):
         self.control = ft.ElevatedButton(content=self.param.get_label() or self.param.name,
                                          on_click=self.on_clicked)
@@ -230,6 +254,7 @@ class FletButtonWidget(FletParamWidget):
 
 class FletColorWidget(FletParamWidget):
     """No native colour picker in Flet, so: a swatch plus editable "r, g, b"."""
+    CONTROL_H = 30.0
 
     def build(self):
         self.swatch = ft.Container(width=22, height=22, border_radius=3,
@@ -266,6 +291,8 @@ class FletColorWidget(FletParamWidget):
 
 
 class FletSeparatorWidget(FletParamWidget):
+    CONTROL_H = 8.0
+    HAS_LABEL = False
     def build(self):
         self.control = ft.Divider(height=1, color="#4a4a4a")
 
@@ -283,6 +310,8 @@ class FletSeparatorWidget(FletParamWidget):
 
 
 class FletLabelWidget(FletParamWidget):
+    CONTROL_H = 16.0
+    HAS_LABEL = False
     def build(self):
         self.control = ft.Text("", size=11, color="#cccccc")
 
@@ -377,30 +406,46 @@ class FletGroupWidget:
 def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = None):
     """Every param of a chunk as Flet controls, groups collapsible, nothing hidden.
 
-    Returns (controls, widgets). The widgets come back because nothing else holds them:
+    Returns (controls, widgets, offsets). The widgets come back because nothing else holds
+    them:
     each registers a notice callback, and a widget that is collected stops updating -- the
     same lifetime trap plain closures have with add_callback. Group widgets are included
     for the same reason: they own the collapse toggle.
     """
     factory = factory or ChunkFletWidgetFactory()
     widgets = []
+    #: {param name: y of the row's centre}, in the same coordinate space as the body's
+    #: contents, so a port can be drawn level with the control it belongs to instead of on
+    #: an arbitrary grid.
+    offsets: dict[str, float] = {}
 
-    def walk(owner):
+    def walk(owner, top: float):
         controls = []
+        y = top
         for param in owner.get_my_params():
             if not isinstance(param, chunk_core.ChunkParamBase):
-                group = FletGroupWidget(param, walk(param))
+                collapsed = (param.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE)
+                             and param.has_state(ChunkFlags.State.COLLAPSED))
+                inner, inner_height = ([], 0.0) if collapsed else walk(param, y + GROUP_HEADER_H)
+                group = FletGroupWidget(param, inner)
                 widgets.append(group)
                 controls.append(group.control)
+                y += GROUP_HEADER_H + inner_height
                 continue
             widget = factory.create_widget(param)
             if widget is None:
                 continue
             widgets.append(widget)
             controls.append(widget.as_row())
-        return controls
+            height = type(widget).row_height()
+            # The centre of the CONTROL, not of the row: the label sits above it, and a
+            # port level with the label points at nothing.
+            offsets[param.name] = y + (LABEL_H if type(widget).HAS_LABEL else 0.0)                 + type(widget).CONTROL_H / 2.0
+            y += height + ROW_GAP
+        return controls, y - top
 
-    return walk(chunk_obj), widgets
+    controls, _ = walk(chunk_obj, 0.0)
+    return controls, widgets, offsets
 
 
 def mark_live(widgets) -> None:

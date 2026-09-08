@@ -59,6 +59,7 @@ COL_CANVAS = "#252525"
 COL_TEXT = "#cccccc"
 
 NODE_W, HEADER_H, ROW_H = 260.0, 30.0, 16.0  # wider: Qt's nodes fit a path
+BODY_PAD = 8.0  # the body Container's padding, which offsets every row inside it
 PORT_R = 5.0
 GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to hit
 MARGIN = 120.0
@@ -148,6 +149,9 @@ class GraphView:
         self.canvas: cv.Canvas | None = None
         self.stack: ft.Stack | None = None
         self.param_widgets: list = []
+        #: {node path: {param name: y within the body}} -- filled by node_controls, which
+        #: is the only place that knows how the params were laid out.
+        self.param_offsets: dict = {}
         self.live = False  # nothing may update the client until page.add has run
         self.status_text: ft.Text | None = None
         self.reload()
@@ -194,15 +198,22 @@ class GraphView:
         carries, not where to draw it. Qt derives Y from live widget geometry; here it is a
         row, and both are legitimate answers to a question the engine does not ask.
         """
-        ins, outs = self.rows(port.node_path)
         x0, y0 = self.positions[port.node_path]
-        # ON the body edge, which is where a connector belongs. The body is a control
-        # stacked over the canvas, but its padding is inert -- only a TextField or Slider
-        # swallows a click, and those sit inside the padding, so a dot on the border still
-        # reaches the gesture detector underneath.
-        if port.is_input:
-            return x0, y0 + HEADER_H + ROW_H * (ins.index(port) + 0.5)
-        return x0 + NODE_W, y0 + HEADER_H + ROW_H * (outs.index(port) + 0.5)
+        x = x0 if port.is_input else x0 + NODE_W
+
+        # A param port sits level with its own control. Qt reads that position off live
+        # widget geometry; Flet cannot be asked, so build_chunk_controls reports where it
+        # put each row and this places the dot against it. Without that the ports march
+        # down a fixed grid while the params sit wherever their controls landed, and the
+        # two only agree by accident.
+        offsets = self.param_offsets.get(port.node_path) or {}
+        if port.name in offsets:
+            return x, y0 + HEADER_H + BODY_PAD + offsets[port.name]
+
+        # Exec ports, and anything with no control of its own, fall back to the header.
+        ins, outs = self.rows(port.node_path)
+        row = (ins if port.is_input else outs).index(port)
+        return x, y0 + HEADER_H / 2.0 + ROW_H * row
 
     # -- hit testing -------------------------------------------------------
 
@@ -405,7 +416,9 @@ class GraphView:
                 width=NODE_W)]
 
             if chunk_obj is not None:
-                param_controls, widgets = chunk_flet.build_chunk_controls(chunk_obj)
+                param_controls, widgets, offsets = chunk_flet.build_chunk_controls(chunk_obj)
+                # Where each param's control ended up, so a port lands level with it.
+                self.param_offsets[path] = offsets
                 if self.live:
                     chunk_flet.mark_live(widgets)
                 self.param_widgets += widgets
