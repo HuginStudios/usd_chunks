@@ -27,20 +27,20 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
 
-from usd_chunks import chunk_names
+from usd_chunks import chunk_naming
 
 logger = logging.getLogger(__name__)
 
-# The chunk vocabulary itself lives in chunk_names, which imports nothing and can be read
+# The chunk vocabulary itself lives in chunk_naming, which imports nothing and can be read
 # without this module's machinery. Re-exported under the existing private names so every
 # call site here and elsewhere is unaffected -- one definition, two spellings.
-_CHUNK_TYPE_ATTR = chunk_names.CHUNK_TYPE_ATTR
-_INPUTS_PREFIX = chunk_names.INPUTS_PREFIX
+_CHUNK_TYPE_ATTR = chunk_naming.CHUNK_TYPE_ATTR
+_INPUTS_PREFIX = chunk_naming.INPUTS_PREFIX
 # The ObjectsChanged field name for a connection edit; a value write reports "default".
 _CONNECTION_PATHS_FIELD = "connectionPaths"
-_EXEC_OUTPUT = chunk_names.EXEC_OUTPUT
-_EXEC_INPUT = chunk_names.EXEC_INPUT
-_CHUNK_PRIM_TYPENAME = chunk_names.CHUNK_PRIM_TYPENAME
+_EXEC_OUTPUT = chunk_naming.EXEC_OUTPUT
+_EXEC_INPUT = chunk_naming.EXEC_INPUT
+_CHUNK_PRIM_TYPENAME = chunk_naming.CHUNK_PRIM_TYPENAME
 # Usd.Stage.Traverse()'s default predicate skips INACTIVE prims, and a disabled chunk is
 # authored as exactly that (see _on_state_changed). Loading a file through the default
 # predicate therefore never saw a disabled chunk at all -- it was in the file, with
@@ -49,8 +49,8 @@ _LOAD_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 # /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
 # default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
 # scope look like a chunk prim to anything reading the stage back.
-_CHUNKS_ROOT_TYPENAME = chunk_names.CHUNKS_ROOT_TYPENAME
-_CHUNKS_ROOT = chunk_names.CHUNKS_ROOT
+_CHUNKS_ROOT_TYPENAME = chunk_naming.CHUNKS_ROOT_TYPENAME
+_CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
 
 # Merge chunks fan several exec branches into one node, so they need more than the single
 # inputs:chunk every other chunk has. Extra slots are numbered from 1 -- slot 0 deliberately
@@ -59,12 +59,12 @@ _CHUNKS_ROOT = chunk_names.CHUNKS_ROOT
 # transparently sees the merge's PRIMARY input, which is the answer those consumers want
 # anyway. Only code that genuinely needs every branch (edge drawing, tail detection,
 # disconnect) has to iterate.
-_EXEC_INPUT_NUMBERED = chunk_names.EXEC_INPUT_NUMBERED
+_EXEC_INPUT_NUMBERED = chunk_naming.EXEC_INPUT_NUMBERED
 
-is_exec_input_name = chunk_names.is_exec_input_name
-exec_input_index = chunk_names.exec_input_index
-exec_input_name = chunk_names.exec_input_name
-iter_exec_inputs = chunk_names.iter_exec_inputs
+is_exec_input_name = chunk_naming.is_exec_input_name
+exec_input_index = chunk_naming.exec_input_index
+exec_input_name = chunk_naming.exec_input_name
+iter_exec_inputs = chunk_naming.iter_exec_inputs
 
 
 def exec_input_connections(prim: "Usd.Prim") -> "list[Sdf.Path]":

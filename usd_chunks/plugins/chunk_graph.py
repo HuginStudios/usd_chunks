@@ -1,6 +1,6 @@
 """The node graph as data: nodes, ports and edges, with no toolkit attached.
 
-It depends on `chunk_names` for the chunk vocabulary and reaches for `chunk_usd` only
+It depends on `chunk_naming` for the chunk vocabulary and reaches for `chunk_usd` only
 inside the one function that needs a live session, so the reading and typing half runs with
 no stage machinery loaded at all.
 
@@ -34,7 +34,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_utils
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
-from usd_chunks import chunk_names
+from usd_chunks import chunk_naming
 
 #: Port types. Tokens rather than an enum because they are already persisted as strings in
 #: the Qt view's colour table and read by name in ~40 places.
@@ -48,13 +48,13 @@ PORT_VECTOR = "vector"
 
 EXEC_INPUT = "inputs:chunk"
 EXEC_OUTPUT = "outputs:chunk"
-CHUNKS_ROOT = chunk_names.CHUNKS_ROOT
+CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
 
 #: The prim type a chunk is, and the root scope, both taken from chunk_usd rather than
 #: spelled out again -- renaming either there should not leave the graph quietly finding
 #: nothing. Bound directly, not via getattr with a fallback: a fallback would paper over
 #: exactly the rename it is supposed to catch.
-CHUNK_TYPENAME = chunk_names.CHUNK_PRIM_TYPENAME
+CHUNK_TYPENAME = chunk_naming.CHUNK_PRIM_TYPENAME
 
 #: Chunk prims are found with this rather than the default predicate: a disabled chunk is
 #: an INACTIVE prim and still belongs on the graph, drawn greyed.
@@ -161,7 +161,7 @@ class PortRef:
     @property
     def is_exec(self) -> bool:
         suffix = self.attr_path.split(".", 1)[-1]
-        return chunk_names.is_exec_input_name(suffix) or suffix == EXEC_OUTPUT
+        return chunk_naming.is_exec_input_name(suffix) or suffix == EXEC_OUTPUT
 
 
 @dataclass(frozen=True)
@@ -218,7 +218,7 @@ def iter_ports(prim: Usd.Prim, chunk=None) -> list[PortRef]:
     # Extra exec slots: a merge grows inputs:chunk1, chunk2 ... as branches are wired.
     for attr in prim.GetAttributes():
         name = attr.GetName()
-        if name != EXEC_INPUT and chunk_names.is_exec_input_name(name):
+        if name != EXEC_INPUT and chunk_naming.is_exec_input_name(name):
             ports.append(PortRef(path, f"{path}.{name}", PORT_EXEC, True))
 
     if chunk is not None:
@@ -238,7 +238,7 @@ def iter_ports(prim: Usd.Prim, chunk=None) -> list[PortRef]:
     seen = {p.attr_path for p in ports}
     for attr in prim.GetAttributes():
         name = attr.GetName()
-        if name in (EXEC_INPUT, EXEC_OUTPUT) or chunk_names.is_exec_input_name(name):
+        if name in (EXEC_INPUT, EXEC_OUTPUT) or chunk_naming.is_exec_input_name(name):
             continue
         if not (name.startswith("inputs:") or name.startswith("outputs:")):
             continue
@@ -268,7 +268,7 @@ def build_edges(prims: dict[str, Usd.Prim], chunks: dict | None = None,
             name = attr.GetName()
             if not name.startswith("inputs:"):
                 continue
-            is_exec = chunk_names.is_exec_input_name(name)
+            is_exec = chunk_naming.is_exec_input_name(name)
             if not is_exec and not show_param_edges:
                 continue
 
@@ -503,7 +503,7 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
             # Every exec slot, not only inputs:chunk -- a merge fed through slot 2 is just
             # as much a successor, and skipping it would leave that slot pointing at a node
             # the user just detached.
-            for succ_attr in chunk_names.iter_exec_inputs(prim):
+            for succ_attr in chunk_naming.iter_exec_inputs(prim):
                 if not any(str(c) == out_attr_path for c in succ_attr.GetConnections()):
                     continue
                 predecessors = attr.GetConnections()
