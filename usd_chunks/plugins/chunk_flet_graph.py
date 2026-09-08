@@ -135,46 +135,65 @@ def build_shapes(prims, ports, edges):
     return shapes, width, height
 
 
-def read(network: str):
-    """Stage, nodes, ports and edges for whichever context in the file holds chunks.
+def contexts(stage) -> list[str]:
+    """Every prim path that holds Chunk prims, outermost first.
 
-    The stage comes back with them deliberately. A Usd.Prim does not keep its stage alive,
-    so returning only the prims lets the stage be collected the moment this returns and
-    every prim expires -- the failure reads as "accessed invalid expired prim" from
-    whatever touches one first, nowhere near the cause.
+    A chunkgroup is both a node in its parent's graph and a graph of its own, so a file
+    has several of these and they nest.
+    """
+    found, pending = [], [chunk_graph.CHUNKS_ROOT]
+    while pending:
+        root = pending.pop(0)
+        nodes = chunk_graph.resolve_graph_nodes(stage, root)
+        if not nodes:
+            continue
+        found.append(root)
+        pending += [str(p.GetPath()) for p in nodes]
+    return found
+
+
+def read(network: str, context: str | None = None):
+    """Stage, nodes, ports and edges for ONE context.
+
+    One, not all of them. A chunkgroup appears as a single node in its parent's graph and
+    as a whole graph when you dive into it -- drawing every context onto one canvas shows
+    the group node sitting beside its own children, which is two views of the same thing
+    at once and reads as duplication. Qt shows one context at a time and so does this.
+
+    The stage comes back too, deliberately. A Usd.Prim does not keep its stage alive, so
+    returning only prims lets the stage be collected the moment this returns and every prim
+    expires -- surfacing later as "accessed invalid expired prim", nowhere near the cause.
     """
     stage = Usd.Stage.Open(network)
-    roots, pending = [], [chunk_graph.CHUNKS_ROOT]
-    while pending:
-        root = pending.pop()
-        found = chunk_graph.resolve_graph_nodes(stage, root)
-        if not found:
-            continue
-        roots.append(root)
-        pending += [str(p.GetPath()) for p in found]
-
-    prims, ports, edges = {}, {}, []
-    for root in roots:
-        got_prims, got_ports, got_edges = chunk_graph.read_graph(stage, root)
-        prims.update(got_prims)
-        ports.update(got_ports)
-        edges += got_edges
-    return stage, prims, ports, edges
+    available = contexts(stage)
+    if context is None:
+        # Default to the innermost context on the outermost chain: a file whose top level
+        # holds nothing but one chunkgroup is asking to be opened inside it.
+        context = available[0] if available else chunk_graph.CHUNKS_ROOT
+        while True:
+            nodes = chunk_graph.resolve_graph_nodes(stage, context)
+            if len(nodes) == 1 and str(nodes[0].GetPath()) in available:
+                context = str(nodes[0].GetPath())
+                continue
+            break
+    prims, ports, edges = chunk_graph.read_graph(stage, context)
+    return stage, prims, ports, edges, context, available
 
 
-def main(page: ft.Page, network: str):
+def main(page: ft.Page, network: str, chosen_context: str | None = None):
     page.title = f"Chunk graph — {network.rsplit('/', 1)[-1]}"
     page.bgcolor = "#232323"
     page.padding = 0
 
-    page.stage, prims, ports, edges = read(network)  # held on the page: see read()
+    page.stage, prims, ports, edges, context, available = read(network, chosen_context)
     shapes, width, height = build_shapes(prims, ports, edges)
 
     page.add(
         ft.Column([
             ft.Container(
-                ft.Text(f"{len(prims)} nodes · {len(edges)} wires · "
-                        f"{sum(len(v) for v in ports.values())} ports — drawn from "
+                ft.Text(f"{context}   —   {len(prims)} nodes · {len(edges)} wires · "
+                        f"{sum(len(v) for v in ports.values())} ports · "
+                        f"{len(available)} context(s) in file   —   drawn from "
                         f"chunk_graph, no Qt",
                         size=12, color="#9fb0c0"),
                 padding=10, bgcolor="#1b1b1b",
@@ -191,4 +210,5 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         raise SystemExit("usage: python -m usd_chunks.plugins.chunk_flet_graph <network.usda>")
     target = sys.argv[1]
-    ft.run(lambda page: main(page, target))
+    wanted = sys.argv[2] if len(sys.argv) > 2 else None
+    ft.run(lambda page: main(page, target, wanted))
