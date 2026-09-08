@@ -511,3 +511,35 @@ def test_prim_path_and_lofted_container_match_header_panel_tint(qapp) -> None:
     for widget in (w._prim_path_field, w._lofted_container):
         assert _PARAMS_HEADER_BG in widget.styleSheet()
         assert widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground) is True
+
+
+def test_toggling_the_pin_filter_still_works_after_the_edit_target_moves() -> None:
+    """Regression: the setter wrote through the stage's ambient edit target, so a toggle
+    made before an Edit Target chunk moved that target and one made after landed in two
+    different layers. The stronger layer kept winning and the toggle silently stopped
+    responding. Writes go to the attribute's own home layer instead."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+
+    stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
+    chunk_usd.set_pin_filter_enabled(ctx, False)
+    assert chunk_usd.is_pin_filter_enabled(ctx) is False
+
+    stage.SetEditTarget(Usd.EditTarget(stage.GetRootLayer()))
+    chunk_usd.set_pin_filter_enabled(ctx, True)
+
+    assert chunk_usd.is_pin_filter_enabled(ctx) is True
+
+
+def test_the_search_query_still_updates_after_the_edit_target_moves() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+
+    stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
+    chunk_usd.set_search_query(ctx, "apple")
+    stage.SetEditTarget(Usd.EditTarget(stage.GetRootLayer()))
+    chunk_usd.set_search_query(ctx, "pear")
+
+    assert chunk_usd.get_search_query(ctx) == "pear"

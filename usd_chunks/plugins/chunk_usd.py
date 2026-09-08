@@ -26,18 +26,19 @@ from usd_chunks import chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
+from usd_chunks import chunk_schema
 
 logger = logging.getLogger(__name__)
 
-_CHUNK_TYPE_ATTR = "info:chunkType"
+_CHUNK_TYPE_ATTR = chunk_schema.CHUNK_TYPE
 #: What a chunk with no module of its own is saved as, so it can be read back (scripts/runtime.py).
 _RUNTIME_CHUNK_TYPE = "runtime"
 _INPUTS_PREFIX = "inputs:"
 # The ObjectsChanged field name for a connection edit; a value write reports "default".
 _CONNECTION_PATHS_FIELD = "connectionPaths"
-_EXEC_OUTPUT = "outputs:chunk"
-_EXEC_INPUT = "inputs:chunk"
-_CHUNK_PRIM_TYPENAME = "Chunk"
+_EXEC_OUTPUT = chunk_schema.EXEC_OUTPUT
+_EXEC_INPUT = chunk_schema.EXEC_INPUT
+_CHUNK_PRIM_TYPENAME = chunk_schema.CHUNK_PRIM_TYPENAME
 # Usd.Stage.Traverse()'s default predicate skips INACTIVE prims, and a disabled chunk is
 # authored as exactly that (see _on_state_changed). Loading a file through the default
 # predicate therefore never saw a disabled chunk at all -- it was in the file, with
@@ -46,8 +47,8 @@ _LOAD_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 # /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
 # default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
 # scope look like a chunk prim to anything reading the stage back.
-_CHUNKS_ROOT_TYPENAME = "Scope"
-_CHUNKS_ROOT = "/chunks"
+_CHUNKS_ROOT_TYPENAME = chunk_schema.CHUNKS_ROOT_TYPENAME
+_CHUNKS_ROOT = chunk_schema.CHUNKS_ROOT
 
 # Merge chunks fan several exec branches into one node, so they need more than the single
 # inputs:chunk every other chunk has. Extra slots are numbered from 1 -- slot 0 deliberately
@@ -101,7 +102,7 @@ def exec_input_connections(prim: "Usd.Prim") -> "list[Sdf.Path]":
 # downstream of it authors into. Publishing it (rather than importing the Edit Target
 # script's resolution logic into core) keeps core decoupled from the script — same
 # published-marker pattern as chunk:pinned / set_chunk_pinned.
-_EDIT_TARGET_MARKER = "chunk:editTargetLayer"
+_EDIT_TARGET_MARKER = chunk_schema.EDIT_TARGET_LAYER
 
 _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
 
@@ -358,6 +359,31 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not (self.initialized and self._stage):
             return contextlib.nullcontext()
         return Usd.EditContext(self._stage, chunk_utils.get_bookkeeping_layer(self._stage, owner))
+
+    def prim_path_of(self, chunk: "core.ChunkBase") -> "str | None":
+        """Where ``chunk``'s prim actually is, or None if it has none yet.
+
+        There are two answers to "where does this chunk live on the stage", and they are not
+        interchangeable. ``get_chunk_prim_path`` *derives* one from the chunk's name and its
+        context, which is what you want when authoring a prim that does not exist yet. This
+        returns the one that was actually *authored*, tracked across renames and reparents by
+        ``_handle_rename``/``_rebase_descendant_paths``, which is what you want when looking
+        one up.
+
+        The two agree right up until they don't — mid-rename, or for a chunk whose context
+        moved — and until this existed the only way to ask for the recorded answer was to
+        reach into ``_chunk_prim_paths`` and key it by ``id()`` by hand, which several tests
+        did.
+        """
+        return self._chunk_prim_paths.get(id(chunk))
+
+    def prim_of(self, chunk: "core.ChunkBase") -> "Usd.Prim | None":
+        """``chunk``'s authored prim, or None if it has none or the stage has moved on."""
+        path = self.prim_path_of(chunk)
+        if not (path and self._stage):
+            return None
+        prim = self._stage.GetPrimAtPath(Sdf.Path(path))
+        return prim if prim.IsValid() else None
 
     def clear_attr_connections(self, attr: Usd.Attribute) -> None:
         """Clear connections from a chunk prim attr in every layer where a connection
@@ -1667,7 +1693,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if not attr.Get():
                     attr.Set(module_name or fallback)
 
-            pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
+            pinned_attr = prim.CreateAttribute(chunk_schema.PINNED, chunk_schema.ATTR_PINNED.type, custom=True)
             pinned_attr.SetVariability(Sdf.VariabilityUniform)
             if not pinned_attr.HasAuthoredValue():
                 # Views are never auto-pinned, regardless of which surface/flow created them —
@@ -2000,186 +2026,89 @@ def is_merge_prim(prim: "Usd.Prim") -> bool:
 def is_chunk_pinned(chunk: "core.ChunkBase") -> bool:
     """Return whether chunk is pinned into its context's Params page.
 
-    Reads the persisted ``chunk:pinned`` custom attribute (see ADR-0003), following the
-    ``chunk:activeView`` precedent. An explicitly authored value (set by set_chunk_pinned, i.e.
-    the Pin/Unpin menu action, or already written by _define_prim for this chunk) always wins.
+    Reads the persisted ``chunk:pinned`` attribute (see ADR-0003). An explicitly authored
+    value — set by set_chunk_pinned (the Pin/Unpin menu action) or already written by
+    _define_prim for this chunk — always wins.
 
-    Otherwise — no authored value, which can mean the PRIM ITSELF doesn't exist yet, not just
-    a missing attribute on an existing one — fall back in order:
+    Otherwise there is no authored value, which can mean the PRIM ITSELF does not exist yet
+    rather than just a missing attribute on an existing one. Fall back in order:
 
-    1. Views are graph-wiring utility nodes, never meant for Params curation: default unpinned,
-       whether genuinely legacy, mid-creation, or racing _define_prim's own write (below).
+    1. Views are graph-wiring utility nodes, never meant for Params curation: default
+       unpinned, whether genuinely legacy, mid-creation, or racing _define_prim's own write.
     2. _pin_new_chunks, when a create/paste flow is actively deciding this chunk's pin state
-       right now. Set by the caller BEFORE the create notice is even sent, so it's correct
+       right now. Set by the caller BEFORE the create notice is even sent, so it is correct
        regardless of listener order. This matters because the Params-page widget and
-       ChunkStageSync both react to the same PARAM_ADDED notice for a newly-created chunk, and
-       delivery order between two independent listeners on one notice isn't guaranteed — the
-       widget's listener can run (and call this) before ChunkStageSync's has even started
-       _define_prim, let alone authored the attribute. Falling back to the migration default
-       in that window would show a freshly Graph-created chunk in Params for a moment, and
-       permanently, since nothing re-checks after _define_prim's write lands right after.
-    3. Migration default: pinned=true, so a genuinely legacy chunk (no creation flow involved
-       at all — e.g. a scene saved before this feature shipped) doesn't lose Params visibility.
+       ChunkStageSync both react to the same PARAM_ADDED notice for a newly-created chunk,
+       and delivery order between two independent listeners on one notice is not guaranteed
+       — the widget's listener can run (and call this) before ChunkStageSync's has even
+       started _define_prim, let alone authored the attribute. Falling back to the migration
+       default in that window would show a freshly Graph-created chunk in Params for a
+       moment, and permanently, since nothing re-checks after _define_prim's write lands.
+    3. Migration default: pinned, so a genuinely legacy chunk — a scene saved before this
+       feature shipped, with no creation flow involved at all — keeps Params visibility.
+
+    The three-way fallback is why this reads through chunk_schema.read_authored rather than
+    chunk_schema.read: it has to tell "nobody has decided yet" from "somebody decided False".
     """
-    stage = chunk.get_stage()
-    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))) if stage else None
-    attr = prim.GetAttribute("chunk:pinned") if (prim and prim.IsValid()) else None
-    val = attr.Get() if (attr and attr.IsValid()) else None
-    if val is not None:
-        return bool(val)
+    authored = chunk_schema.read_authored(chunk, chunk_schema.ATTR_PINNED)
+    if authored is not None:
+        return bool(authored)
     if is_view_chunk(chunk):
         return False
     if _pin_new_chunks is not None:
         return _pin_new_chunks
-    return True
+    return chunk_schema.ATTR_PINNED.default
 
 
 def set_chunk_pinned(chunk: "core.ChunkBase", pinned: bool) -> None:
-    """Persist chunk's pinned state as a custom ``chunk:pinned`` attribute on its prim.
-
-    This is chunk-prim bookkeeping like any other inputs:/outputs: attr — it must not
-    rely on the stage's ambient edit target (chunk_utils.get_bookkeeping_layer resolves
-    it instead, following Edit Target for a regular chunk / pinned to session for a
-    CONTEXT chunk). Update an existing spec in place (chunk_utils.get_attr_home_layer)
-    so toggling this repeatedly never leaves an older, stronger opinion in one layer
-    shadowing a newer one authored into a different, weaker layer — the exact
-    "second mutation doesn't propagate" bug this same class of fix addresses elsewhere
-    (see ChunkParamBase.data_changed / update_usd_prop).
-    """
-    stage = chunk.get_stage()
-    if not stage:
-        return
-    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
-    if not prim.IsValid():
-        return
-    prev_w = chunk_notice._usd_write_active
-    chunk_notice._usd_write_active = True
-    try:
-        attr = prim.GetAttribute("chunk:pinned")
-        home = chunk_utils.get_attr_home_layer(attr) if attr and attr.IsValid() else None
-        target = home or chunk_utils.get_bookkeeping_layer(stage, chunk)
-        with Usd.EditContext(stage, target):
-            prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(pinned))
-    finally:
-        chunk_notice._usd_write_active = prev_w
+    """Persist chunk's pinned state on its prim."""
+    chunk_schema.write(chunk, chunk_schema.ATTR_PINNED, bool(pinned))
 
 
 def _context_own_prim_path(context: "core.ChunkBase") -> "str | None":
-    """Return a CONTEXT chunk's own prim path — NOT get_chunk_prim_path(context), which is for
-    a chunk resolving its path as a CHILD of some parent context. Called on the context itself,
-    get_chunk_prim_path double-appends: ChunkBase.get_context() returns self for a chunk that
-    already has the CONTEXT flag, so _resolve_chunk_root(context) resolves to context.prim_path,
-    and get_chunk_prim_path then appends "/{context.name}" a second time (only chunkgroups
-    dodge this, because their prim_path branch short-circuits before _resolve_chunk_root runs).
-    Both a plain tab and a chunkgroup already have .prim_path set directly at creation
-    (add_context / the group-node prim_path assignment in _on_param_added) — just use it.
-    """
-    return context.prim_path
+    """A CONTEXT chunk's own prim path. See chunk_schema.prim_path, which owns the rule."""
+    return chunk_schema.prim_path(context, chunk_schema.Where.CONTEXT)
 
 
 def is_pin_filter_enabled(context: "core.ChunkBase") -> bool:
-    """Return whether context's Params page currently applies the pin filter (only pinned
-    chunks show) or not (every chunk shows, regardless of pin state).
+    """Whether context's Params page currently applies the pin filter (only pinned chunks
+    show) or not (every chunk shows, regardless of pin state).
 
-    Reads the persisted ``filter:pinEnabled`` custom attribute on the context's own prim, same
-    pattern as ``chunk:pinned``. Absent attribute means enabled — a tab from before this filter-
-    bar feature shipped keeps behaving exactly as it does today (pin filter always applied).
+    Absent means enabled — a tab from before the filter bar shipped keeps behaving as it
+    always did.
     """
-    stage = context.get_stage()
-    path = _context_own_prim_path(context)
-    prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
-    attr = prim.GetAttribute("filter:pinEnabled") if (prim and prim.IsValid()) else None
-    val = attr.Get() if (attr and attr.IsValid()) else None
-    return True if val is None else bool(val)
+    return bool(chunk_schema.read(context, chunk_schema.ATTR_PIN_FILTER))
 
 
 def set_pin_filter_enabled(context: "core.ChunkBase", enabled: bool) -> None:
-    """Persist context's pin-filter toggle as a custom ``filter:pinEnabled`` attribute on its
-    own prim (the context/tab prim itself, not any of its children).
-
-    Unlike a regular chunk, a plain tab context's own prim is never explicitly authored by
-    _define_prim — a tab context is added with send_added=False (see SceneSender.add_chunk),
-    so PARAM_ADDED never fires for it and its prim only starts existing as an implicit ancestor
-    once some CHILD chunk is added under it. An empty, just-created tab therefore has no prim
-    at all yet — define one on demand here rather than silently no-op-ing.
-    """
-    stage = context.get_stage()
-    path = _context_own_prim_path(context)
-    if not stage or not path:
-        return
-    prev_w = chunk_notice._usd_write_active
-    chunk_notice._usd_write_active = True
-    try:
-        prim = stage.GetPrimAtPath(Sdf.Path(path))
-        if not prim.IsValid():
-            prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        prim.CreateAttribute("filter:pinEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(enabled))
-    finally:
-        chunk_notice._usd_write_active = prev_w
+    """Persist context's pin-filter toggle on its own prim."""
+    chunk_schema.write(context, chunk_schema.ATTR_PIN_FILTER, bool(enabled))
 
 
-_SEARCH_SCOPES = ("both", "name", "type")
+_SEARCH_SCOPES = chunk_schema.SEARCH_SCOPES
 
 
 def get_search_query(context: "core.ChunkBase") -> str:
-    """Return context's persisted Params-page search query. Absent attribute means empty —
-    a tab from before this search feature shipped behaves as if nothing was ever typed."""
-    stage = context.get_stage()
-    path = _context_own_prim_path(context)
-    prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
-    attr = prim.GetAttribute("filter:searchQuery") if (prim and prim.IsValid()) else None
-    val = attr.Get() if (attr and attr.IsValid()) else None
-    return val or ""
+    """context's persisted Params-page search query. Absent means empty."""
+    return chunk_schema.read(context, chunk_schema.ATTR_SEARCH_QUERY)
 
 
 def set_search_query(context: "core.ChunkBase", query: str) -> None:
-    """Persist context's Params-page search query as a custom ``filter:searchQuery`` attribute
-    on its own prim. Defines the prim on demand — see set_pin_filter_enabled's docstring for
-    why a plain tab context may not have one yet."""
-    stage = context.get_stage()
-    path = _context_own_prim_path(context)
-    if not stage or not path:
-        return
-    prev_w = chunk_notice._usd_write_active
-    chunk_notice._usd_write_active = True
-    try:
-        prim = stage.GetPrimAtPath(Sdf.Path(path))
-        if not prim.IsValid():
-            prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        prim.CreateAttribute("filter:searchQuery", Sdf.ValueTypeNames.String, custom=True).Set(query)
-    finally:
-        chunk_notice._usd_write_active = prev_w
+    """Persist context's Params-page search query on its own prim."""
+    chunk_schema.write(context, chunk_schema.ATTR_SEARCH_QUERY, query)
 
 
 def get_search_scope(context: "core.ChunkBase") -> str:
-    """Return context's persisted search scope — one of "both", "name", "type". Absent
-    attribute, or an unrecognized stored value, means "both" (search name and type)."""
-    stage = context.get_stage()
-    path = _context_own_prim_path(context)
-    prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
-    attr = prim.GetAttribute("filter:searchScope") if (prim and prim.IsValid()) else None
-    val = attr.Get() if (attr and attr.IsValid()) else None
-    return val if val in _SEARCH_SCOPES else "both"
+    """context's persisted search scope — one of "both", "name", "type". An absent or
+    unrecognised stored value means "both"."""
+    return chunk_schema.read(context, chunk_schema.ATTR_SEARCH_SCOPE)
 
 
 def set_search_scope(context: "core.ChunkBase", scope: str) -> None:
-    """Persist context's search scope ("both", "name", or "type") as a custom
-    ``filter:searchScope`` attribute on its own prim."""
-    if scope not in _SEARCH_SCOPES:
-        scope = "both"
-    stage = context.get_stage()
-    path = _context_own_prim_path(context)
-    if not stage or not path:
-        return
-    prev_w = chunk_notice._usd_write_active
-    chunk_notice._usd_write_active = True
-    try:
-        prim = stage.GetPrimAtPath(Sdf.Path(path))
-        if not prim.IsValid():
-            prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        prim.CreateAttribute("filter:searchScope", Sdf.ValueTypeNames.String, custom=True).Set(scope)
-    finally:
-        chunk_notice._usd_write_active = prev_w
+    """Persist context's search scope on its own prim."""
+    if scope not in chunk_schema.SEARCH_SCOPES:
+        scope = chunk_schema.ATTR_SEARCH_SCOPE.default
+    chunk_schema.write(context, chunk_schema.ATTR_SEARCH_SCOPE, scope)
 
 
 # How many characters a typo may cost. Two covers a doubled letter, a swap and a slip;
@@ -2238,7 +2167,7 @@ def find_group_active_view(
     gp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(group)))
     slot = None
     if gp and gp.IsValid():
-        a = gp.GetAttribute("chunk:activeView")
+        a = gp.GetAttribute(chunk_schema.ACTIVE_VIEW)
         if a and a.IsValid():
             slot = a.Get()
     if slot:

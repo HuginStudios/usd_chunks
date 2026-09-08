@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from usd_chunks import chunk_schema
 from usd_chunks.stores import StoreProvider, discovered_stores, resolve_across_stores
 
 #: Layer-level key holding the flat lock: {chunkType: "store:version"}.
@@ -208,14 +209,14 @@ def collect_specs(stage) -> Dict[str, Optional[str]]:
     specs: Dict[str, Optional[str]] = {}
     conflicts: Dict[str, set] = {}
     for prim in stage.Traverse():
-        if prim.GetTypeName() != "Chunk":
+        if prim.GetTypeName() != chunk_schema.CHUNK_PRIM_TYPENAME:
             continue
-        ct_attr = prim.GetAttribute("info:chunkType")
+        ct_attr = prim.GetAttribute(chunk_schema.CHUNK_TYPE)
         ct = ct_attr.Get() if ct_attr else None
         if not ct or str(ct) == CHUNKGROUP_SENTINEL:
             continue
         ct = str(ct)
-        v_attr = prim.GetAttribute("info:chunkVersion")
+        v_attr = prim.GetAttribute(chunk_schema.CHUNK_VERSION)
         raw = v_attr.Get() if (v_attr and v_attr.HasValue()) else None
         spec = str(raw) if raw else None
         prev = specs.get(ct, "___unset___")

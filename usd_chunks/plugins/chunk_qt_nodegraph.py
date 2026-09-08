@@ -23,6 +23,7 @@ from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
 from usd_chunks.plugins import chunk_graph_layout
 from usd_chunks import chunk_utils
+from usd_chunks import chunk_schema
 from usd_chunks.plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
@@ -134,10 +135,12 @@ _COL_TEXT_PRIMARY = QtGui.QColor("#ffffff")
 _COL_TEXT_SECONDARY = QtGui.QColor("#aaaaaa")
 _COL_TEXT_LOCKED = QtGui.QColor("#888877")
 
-_CHUNKS_ROOT = "/chunks"
-_CHUNK_PRIM_TYPENAME = "Chunk"
-_EXEC_INPUT = "inputs:chunk"
-_EXEC_OUTPUT = "outputs:chunk"
+# Declared once, in chunk_schema — these names are the persisted file format, and a second
+# copy of them here is a second place for them to drift.
+_CHUNKS_ROOT = chunk_schema.CHUNKS_ROOT
+_CHUNK_PRIM_TYPENAME = chunk_schema.CHUNK_PRIM_TYPENAME
+_EXEC_INPUT = chunk_schema.EXEC_INPUT
+_EXEC_OUTPUT = chunk_schema.EXEC_OUTPUT
 _UNBUILT = object()  # sentinel for ChunkGraphScene._built_context
 # Child predicate that keeps disabled chunks: disabling sets the chunk prim inactive
 # (prim.SetActive(False)), and the default GetChildren() skips inactive prims — which would
@@ -850,7 +853,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
         self._stale = chunk.has_state(ChunkFlags.State.STALE)
         self._update_stale_tooltip()
-        _chunk_type = prim.GetAttribute("info:chunkType").Get()
+        _chunk_type = chunk_schema.chunk_type(prim)
         self._is_view = _chunk_type == "view"
         self._is_dot = _chunk_type == "dot"
         self._is_merge = _chunk_type == "merge"
@@ -2625,7 +2628,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 self._schedule_rebuild()
                 return
         for path in notice.GetChangedInfoOnlyPaths():
-            if path.IsPropertyPath() and path.name == "ui:nodegraph:node:pos":
+            if path.IsPropertyPath() and path.name == chunk_schema.NODE_POS:
                 prim_path = str(path.GetPrimPath())
                 node = self._nodes.get(prim_path)
                 if node:
@@ -4707,12 +4710,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         target_prim = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
         if not target_prim.IsValid():
             return
-        if target_prim.GetAttribute("info:chunkType").Get() == "view":
+        if chunk_schema.chunk_type(target_prim) == "view":
             return
 
         # If a view is already wired to this prim, activate it instead of creating a duplicate.
         for prim in stage.Traverse():
-            if prim.GetAttribute("info:chunkType").Get() != "view":
+            if chunk_schema.chunk_type(prim) != "view":
                 continue
             exec_in = prim.GetAttribute(_EXEC_INPUT)
             if exec_in.IsValid():
@@ -4730,7 +4733,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         target_parent = str(Sdf.Path(target_prim_path).GetParentPath())
         used_slots: set = set()
         for prim in stage.Traverse():
-            if prim.GetAttribute("info:chunkType").Get() != "view":
+            if chunk_schema.chunk_type(prim) != "view":
                 continue
             if str(prim.GetPath().GetParentPath()) != target_parent:
                 continue
@@ -4844,7 +4847,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if context is not None:
             gp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(context)))
             if gp and gp.IsValid():
-                a = gp.GetAttribute("chunk:activeView")
+                a = gp.GetAttribute(chunk_schema.ACTIVE_VIEW)
                 if a and a.IsValid():
                     slot = a.Get()
         if not slot or not chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context):
@@ -4932,14 +4935,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     # Target, rather than relying on the stage's ambient one (see
                     # set_chunk_pinned for the same "second mutation doesn't propagate"
                     # class of bug this avoids).
-                    active_view_attr = gp.GetAttribute("chunk:activeView")
+                    active_view_attr = gp.GetAttribute(chunk_schema.ACTIVE_VIEW)
                     home = (
                         chunk_utils.get_attr_home_layer(active_view_attr)
                         if active_view_attr and active_view_attr.IsValid() else None
                     )
                     target = home or chunk_utils.get_bookkeeping_layer(stage, context)
                     with Usd.EditContext(stage, target):
-                        gp.CreateAttribute("chunk:activeView", Sdf.ValueTypeNames.Int, custom=True).Set(int(slot))
+                        gp.CreateAttribute(chunk_schema.ACTIVE_VIEW, chunk_schema.ATTR_ACTIVE_VIEW.type, custom=True).Set(int(slot))
                 finally:
                     chunk_usd.chunk_notice._usd_write_active = prev_w
         if view_chunk is not None:

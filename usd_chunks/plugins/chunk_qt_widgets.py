@@ -7,6 +7,7 @@ from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chu
 import usd_chunks.chunk_flags
 from usd_chunks.chunk_core import ChunkParamWidgetBase
 from usd_chunks import chunk_core
+from usd_chunks import chunk_schema
 from usd_chunks.plugins import chunk_usd
 
 from functools import partial
@@ -1644,10 +1645,10 @@ class ViewSlotState(QtCore.QObject):
         if stage:
             prim = stage.GetPrimAtPath(prim_path)
             if prim.IsValid():
-                is_view_chunk = prim.GetAttribute("info:chunkType").Get() == "view"
+                is_view_chunk = chunk_schema.chunk_type(prim) == "view"
             if not is_view_chunk:
                 for p in stage.Traverse():
-                    if p.GetAttribute("info:chunkType").Get() != "view":
+                    if chunk_schema.chunk_type(p) != "view":
                         continue
                     exec_in = p.GetAttribute("inputs:chunk")
                     if exec_in.IsValid():

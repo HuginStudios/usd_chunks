@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pxr import Usd, UsdUtils
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
+from usd_chunks import chunk_schema
 from usd_chunks.plugins.chunk_usd import (
     ChunkLayerManager,
     ChunkStageSync,
@@ -185,7 +186,7 @@ def cmd_info(args):
     for prim in stage.Traverse():
         if prim.GetTypeName() != "Chunk":
             continue
-        if prim.GetAttribute("info:chunkType").Get() != "chunkgroup":
+        if chunk_schema.chunk_type(prim) != "chunkgroup":
             continue
 
         doc = prim.GetAttribute(f"{_INPUTS}doc").Get()
@@ -210,7 +211,7 @@ def cmd_info(args):
             and attr.Get() is not None
         ]
 
-        node_count = sum(1 for child in prim.GetChildren() if child.GetAttribute("info:chunkType").Get())
+        node_count = sum(1 for child in prim.GetChildren() if chunk_schema.chunk_type(child))
         print(f"Nodes: {node_count}")
         print()
         print("Params:")
@@ -240,7 +241,7 @@ def cmd_validate(args):
     for prim in stage.Traverse():
         if prim.GetTypeName() != "Chunk":
             continue
-        chunk_type = prim.GetAttribute("info:chunkType").Get()
+        chunk_type = chunk_schema.chunk_type(prim)
         if not chunk_type:
             continue
         total += 1
@@ -449,7 +450,7 @@ def _find_wedge(stage):
     for prim in stage.TraverseAll():
         if prim.GetTypeName() != "Chunk":
             continue
-        attr = prim.GetAttribute("info:chunkType")
+        attr = prim.GetAttribute(chunk_schema.CHUNK_TYPE)
         if attr and attr.Get() == WEDGE_CHUNK_TYPE:
             return prim
     return None
