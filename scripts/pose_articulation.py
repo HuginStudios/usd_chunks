@@ -152,14 +152,30 @@ def _harvest(node):
     return {p.name: float(p.value or 0.0) for p in _lofted(node)}
 
 
-def _flat(prim, root_path):
-    """Is this link a direct child of the articulation root?
+def _outermost(prims):
+    """The prims to actually move: those with no ancestor in the same set.
 
-    Links the solver simulates are authored flat, and those are the ones that carry a pose
-    of their own. A nested link is welded to its parent and follows it for free -- posing
-    it directly would apply its parent's rotation to it twice.
+    A link whose ancestor is also being moved inherits that move through the hierarchy, so
+    moving it as well applies the rotation to it twice. A link with no moved ancestor gets
+    nothing for free and has to be moved itself.
+
+    This used to ask a narrower question -- "is this a direct child of the articulation
+    root" -- which is true of everything urdf_import authors, because it deliberately
+    authors moving links flat. It is not true of a scene: a room full of appliances puts
+    each one under its own Xform, so every posable link is a grandchild of the root and the
+    old test rejected all of them. 48 joints, sliders for every one, and nothing moved.
     """
-    return prim.GetPath().GetParentPath() == root_path
+    paths = {prim.GetPath() for prim in prims}
+    keep = []
+    for prim in prims:
+        path = prim.GetPath().GetParentPath()
+        while not path.IsAbsoluteRootPath():
+            if path in paths:
+                break
+            path = path.GetParentPath()
+        else:
+            keep.append(prim)
+    return keep
 
 
 def _descendants(link):
@@ -221,16 +237,19 @@ def apply_pose(stage, roots, values, root_path, write_targets=True):
     """
     local = {}
     for link in _posable(roots):
-        for reachable in _descendants(link):
-            if reachable.prim not in local:
-                local[reachable.prim] = UsdGeom.Xformable(
-                    reachable.prim).GetLocalTransformation()
+        for reachable in _outermost([d.prim for d in _descendants(link)]):
+            if reachable not in local:
+                local[reachable] = UsdGeom.Xformable(reachable).GetLocalTransformation()
 
     posed = 0
     touched = set()
     for link in _posable(roots):
         value = values.get(link.name)
-        if value is None or abs(value) < 1e-12:
+        # Not finite is a real case, not a defensive flourish: an asset whose joint limits
+        # are nan produces a nan angle, and a nan reaches a quaternion and then every
+        # transform downstream without ever raising -- the same way an uninitialised
+        # Gf.Rotation did.
+        if value is None or not math.isfinite(value) or abs(value) < 1e-12:
             continue
         joint = link.joint
 
@@ -252,11 +271,11 @@ def apply_pose(stage, roots, values, root_path, write_targets=True):
         else:
             step = Gf.Matrix4d().SetTranslate(axis * value)
 
-        for moved in _descendants(link):
-            if not _flat(moved.prim, root_path) or moved.prim not in local:
+        for moved in _outermost([d.prim for d in _descendants(link)]):
+            if moved not in local:
                 continue
-            local[moved.prim] = local[moved.prim] * step
-            touched.add(moved.prim)
+            local[moved] = local[moved] * step
+            touched.add(moved)
 
         if write_targets and (prim := _joint_prim(link)) is not None:
             _write_target(prim, joint.kind, value)
