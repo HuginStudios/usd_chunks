@@ -85,7 +85,17 @@ def _saved_values(node):
     stage = scene.get_stage() if scene else None
     if stage is None:
         return {}
-    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(node)))
+    # A chunk exists as a Python object before it exists as a prim, and this runs from a
+    # notice callback -- so it can be asked for its prim path before there is one. Raising
+    # here does not surface as an error message, it surfaces as a node the UI cannot build
+    # a body for, which is a much worse way to find out.
+    try:
+        path = get_chunk_prim_path(node)
+    except Exception:
+        return {}
+    if not path:
+        return {}
+    prim = stage.GetPrimAtPath(Sdf.Path(path))
     if not prim or not prim.IsValid():
         return {}
     values = {}
