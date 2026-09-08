@@ -27,15 +27,20 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
 
+from usd_chunks import chunk_schema
+
 logger = logging.getLogger(__name__)
 
-_CHUNK_TYPE_ATTR = "info:chunkType"
-_INPUTS_PREFIX = "inputs:"
+# The chunk vocabulary itself lives in chunk_schema, which imports nothing and can be read
+# without this module's machinery. Re-exported under the existing private names so every
+# call site here and elsewhere is unaffected -- one definition, two spellings.
+_CHUNK_TYPE_ATTR = chunk_schema.CHUNK_TYPE_ATTR
+_INPUTS_PREFIX = chunk_schema.INPUTS_PREFIX
 # The ObjectsChanged field name for a connection edit; a value write reports "default".
 _CONNECTION_PATHS_FIELD = "connectionPaths"
-_EXEC_OUTPUT = "outputs:chunk"
-_EXEC_INPUT = "inputs:chunk"
-_CHUNK_PRIM_TYPENAME = "Chunk"
+_EXEC_OUTPUT = chunk_schema.EXEC_OUTPUT
+_EXEC_INPUT = chunk_schema.EXEC_INPUT
+_CHUNK_PRIM_TYPENAME = chunk_schema.CHUNK_PRIM_TYPENAME
 # Usd.Stage.Traverse()'s default predicate skips INACTIVE prims, and a disabled chunk is
 # authored as exactly that (see _on_state_changed). Loading a file through the default
 # predicate therefore never saw a disabled chunk at all -- it was in the file, with
@@ -44,8 +49,8 @@ _LOAD_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 # /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
 # default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
 # scope look like a chunk prim to anything reading the stage back.
-_CHUNKS_ROOT_TYPENAME = "Scope"
-_CHUNKS_ROOT = "/chunks"
+_CHUNKS_ROOT_TYPENAME = chunk_schema.CHUNKS_ROOT_TYPENAME
+_CHUNKS_ROOT = chunk_schema.CHUNKS_ROOT
 
 # Merge chunks fan several exec branches into one node, so they need more than the single
 # inputs:chunk every other chunk has. Extra slots are numbered from 1 -- slot 0 deliberately
@@ -54,39 +59,12 @@ _CHUNKS_ROOT = "/chunks"
 # transparently sees the merge's PRIMARY input, which is the answer those consumers want
 # anyway. Only code that genuinely needs every branch (edge drawing, tail detection,
 # disconnect) has to iterate.
-_EXEC_INPUT_NUMBERED = re.compile(r"^inputs:chunk([1-9]\d*)$")
+_EXEC_INPUT_NUMBERED = chunk_schema.EXEC_INPUT_NUMBERED
 
-
-def is_exec_input_name(name: str) -> bool:
-    """Whether an attribute name is an exec input -- inputs:chunk, or a merge's
-    inputs:chunk<N> for N >= 1."""
-    return name == _EXEC_INPUT or bool(_EXEC_INPUT_NUMBERED.match(name))
-
-
-def exec_input_index(name: str) -> int:
-    """The slot number an exec input attribute name refers to (inputs:chunk -> 0)."""
-    match = _EXEC_INPUT_NUMBERED.match(name)
-    return int(match.group(1)) if match else 0
-
-
-def exec_input_name(index: int) -> str:
-    """The attribute name for exec slot `index`. Slot 0 is the plain inputs:chunk."""
-    return _EXEC_INPUT if index == 0 else f"{_EXEC_INPUT}{index}"
-
-
-def iter_exec_inputs(prim: "Usd.Prim") -> "list[Usd.Attribute]":
-    """A prim's exec input attributes, ordered by slot number -- strongest branch first.
-
-    Sorted by the PARSED index, never by attribute name: prim.GetAttributes() is
-    alphabetical, which puts inputs:chunk10 before inputs:chunk2. Slot order decides which
-    branch's opinion wins, so a string sort would silently mis-rank a merge with ten or
-    more inputs.
-    """
-    if not (prim and prim.IsValid()):
-        return []
-    attrs = [a for a in prim.GetAttributes() if is_exec_input_name(a.GetName())]
-    attrs.sort(key=lambda a: exec_input_index(a.GetName()))
-    return attrs
+is_exec_input_name = chunk_schema.is_exec_input_name
+exec_input_index = chunk_schema.exec_input_index
+exec_input_name = chunk_schema.exec_input_name
+iter_exec_inputs = chunk_schema.iter_exec_inputs
 
 
 def exec_input_connections(prim: "Usd.Prim") -> "list[Sdf.Path]":
