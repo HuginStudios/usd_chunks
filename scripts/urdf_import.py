@@ -452,17 +452,31 @@ def execute(node):
         print(f"[URDFImport] no such file: {file_path}")
         return
 
-    stage = node.get_stage()
-    layer = node.get_edit_context()
-    if layer is None:
-        return
-    layer.Clear()
-
     mesh_root = (node.get_param("mesh_root").value or "").strip() or os.path.dirname(file_path)
     scale = float(node.get_param("scale").value or 1.0)
     approximation = node.get_param("collider_approximation").value or "convexHull"
     want_visual = bool(node.get_param("import_visual").value)
     want_collision = bool(node.get_param("import_collision").value)
+
+    # view-driven execution re-runs every chunk upstream of the active view on EVERY recook
+    # (chunk_usd.recook_for_view, no per-node dirty tracking yet -- see the framework's own
+    # "STILL TODO: finer dirty/cache" note). For most chunks that is cheap; this one parses
+    # STL meshes vertex-by-vertex in pure Python, so a 400k-face robot re-triangulates on
+    # every unrelated downstream change -- a Pose Articulation slider drag two chunks
+    # downstream, felt live as the whole graph stalling. None of that work depends on
+    # anything but this chunk's own params and the source file, so skip it entirely when
+    # neither has changed since the last cook.
+    signature = (file_path, os.path.getmtime(file_path), root_path, mesh_root, scale,
+                 approximation, want_visual, want_collision)
+    if getattr(node, "_urdf_signature", None) == signature:
+        return
+    node._urdf_signature = signature
+
+    stage = node.get_stage()
+    layer = node.get_edit_context()
+    if layer is None:
+        return
+    layer.Clear()
 
     with Usd.EditContext(stage, layer):
         try:
@@ -523,11 +537,26 @@ def execute(node):
                 # A nested (fixed) link is placed relative to its parent; a flat one carries
                 # the accumulated pose, since nothing above it supplies one.
                 placement = local if nest else world
+                # Authored as an explicit, self-contained xformOpOrder rather than via
+                # AddTranslateOp/AddOrientOp: those compose against the CURRENTLY COMPOSED
+                # (cross-layer) xformOpOrder, not this layer's own. A re-import wipes this
+                # layer with layer.Clear() but a stronger downstream layer -- Pose
+                # Articulation's own override, still authored from the pose applied before
+                # this re-import -- is still in effect at this point, so Add*Op folds that
+                # layer's leftover "xformOp:transform" into the freshly-cleared import
+                # layer's own order. The link ends up composing translate*orient*transform,
+                # applying its own rest pose AND a stale pose override on top -- live-reported
+                # as a link's translation reading right after a Scale change while a pose was
+                # applied. Explicit CreateAttribute + SetXformOpOrder authors exactly these
+                # two ops, ignoring whatever a stronger layer currently has in effect.
                 xform = UsdGeom.Xformable(prim)
-                xform.AddTranslateOp().Set(placement.ExtractTranslation())
-                xform.AddOrientOp().Set(
-                    _to_quat(Gf.Rotation(placement.ExtractRotationQuat()))
-                )
+                translate_attr = prim.CreateAttribute(
+                    "xformOp:translate", Sdf.ValueTypeNames.Double3, custom=False)
+                translate_attr.Set(Gf.Vec3d(placement.ExtractTranslation()))
+                orient_attr = prim.CreateAttribute(
+                    "xformOp:orient", Sdf.ValueTypeNames.Quatf, custom=False)
+                orient_attr.Set(_to_quat(Gf.Rotation(placement.ExtractRotationQuat())))
+                xform.SetXformOpOrder([UsdGeom.XformOp(translate_attr), UsdGeom.XformOp(orient_attr)])
 
             UsdPhysics.RigidBodyAPI.Apply(prim)
             _author_inertial(prim, link, scale)

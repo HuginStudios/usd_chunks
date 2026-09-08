@@ -51,7 +51,7 @@ from typing import (
 from pathlib import Path
 import attrs
 from attr import _make as attrMake
-from pxr import Sdf, Usd, UsdGeom, Gf
+from pxr import Sdf, Tf, Usd, UsdGeom, Gf
 from typing_extensions import Self, dataclass_transform, Required
 
 from usd_chunks.chunk_notice import Predicate
@@ -3942,11 +3942,22 @@ class ChunkBase(ChunkGroupBase):
         )
 
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
-        # Strip spaces so prim_path stays a valid USD path, but leave None alone — otherwise
-        # str(None) makes prim_path the string "None", which is truthy and Sdf.Path("None")
-        # collapses to an invalid empty path (breaks chunkgroups / _resolve_chunk_root).
+        # Sanitize each path segment so prim_path stays a valid USD path, but leave None
+        # alone — otherwise str(None) makes prim_path the string "None", which is truthy
+        # and Sdf.Path("None") collapses to an invalid empty path (breaks chunkgroups /
+        # _resolve_chunk_root).
+        #
+        # Used to only strip spaces, which is the one illegal character a name happened to
+        # hit first. Anything else — a comma or a hyphen in a context's display name
+        # ("SO-101 Bench", "One Stage, Three Shots") — produced a prim_path Sdf.Path
+        # silently refuses to compose into a real prim: the tab looked created, but no
+        # chunk placed "under" it ever actually had anywhere to live. Tf.MakeValidIdentifier
+        # is USD's own routine for this and handles every illegal character, not just one;
+        # applied per path segment (split on "/") so it sanitizes names, not the slashes
+        # that separate them.
         if attr.name == "prim_path" and val is not None:
-            return str(val).replace(" ", "")
+            text = str(val)
+            return "/".join(Tf.MakeValidIdentifier(part) if part else part for part in text.split("/"))
         return super().convert_attr(attr, val)
 
     def start_gizmo(self, notice=None, sender=None):

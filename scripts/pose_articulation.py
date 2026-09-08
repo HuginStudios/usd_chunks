@@ -195,6 +195,10 @@ def _descendants(link):
     return out
 
 
+#: What UsdGeomXformable actually names a plain (uninstanced) transform op.
+_TRANSFORM_OP_NAME = "xformOp:transform"
+
+
 def _set_local(prim, matrix):
     """Author the whole local transform as one matrix op.
 
@@ -204,12 +208,25 @@ def _set_local(prim, matrix):
     single xformOp:transform in a stronger layer has no order to get wrong.
     """
     xform = UsdGeom.Xformable(prim)
-    op = None
-    for existing in xform.GetOrderedXformOps():
-        if existing.GetOpType() == UsdGeom.XformOp.TypeTransform:
-            op = existing
-            break
-    if op is None:
+    order_attr = xform.GetXformOpOrderAttr()
+    order = list(order_attr.Get() or [])
+
+    if _TRANSFORM_OP_NAME in order:
+        # AddTransformOp() below would raise "already exists in xformOpOrder" here even
+        # though the loop that used to guard it (checking GetOrderedXformOps() for a
+        # TypeTransform op) found nothing: GetOrderedXformOps() silently DROPS an entry
+        # from the composed xformOpOrder when its own attribute spec doesn't resolve --
+        # live-reported after re-running URDFImport while a pose was applied, which wipes
+        # and rebuilds the prim while a weaker layer (this chunk's own, from the pose
+        # written before the re-import) still lists xformOp:transform. AddXformOp's
+        # internal duplicate check reads the raw xformOpOrder token list, not the
+        # (silently short) resolved op list, so it still refuses. Get-or-create the
+        # attribute directly instead of going through that check.
+        attr = prim.GetAttribute(_TRANSFORM_OP_NAME)
+        if not attr or not attr.IsValid():
+            attr = prim.CreateAttribute(_TRANSFORM_OP_NAME, Sdf.ValueTypeNames.Matrix4d, custom=False)
+        op = UsdGeom.XformOp(attr)
+    else:
         op = xform.AddTransformOp()
     op.Set(matrix)
     xform.SetXformOpOrder([op])
