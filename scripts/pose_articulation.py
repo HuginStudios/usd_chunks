@@ -271,6 +271,20 @@ def apply_pose(stage, roots, values, root_path, write_targets=True):
 
 
 def execute(node):
+    # Guarded here rather than only in the callback, because _harvest writes the pose spec
+    # and a param write is itself a value change the framework cooks on. Without this one
+    # slider move cooked three times: once from the callback below, once from the framework,
+    # and once more from the spec write -- tripling the whole upstream chain in the UI.
+    if id(node) in _BUSY:
+        return
+    _BUSY.add(id(node))
+    try:
+        _execute(node)
+    finally:
+        _BUSY.discard(id(node))
+
+
+def _execute(node):
     stage, roots = _roots(node)
     if stage is None or not roots:
         return
@@ -310,16 +324,16 @@ _BUSY = set()
 
 
 def _param_changed(owner, notice, _sender):
+    """Re-loft the sliders when the target changes. Cooking is the framework's job.
+
+    Calling execute() here as well is the obvious thing to write and it is a second cook
+    of the whole chain: a value change already cooks the chunk.
+    """
     if id(owner) in _BUSY:
         return
     changed = getattr(notice, "data", None)
     if changed is not None and getattr(changed, "name", None) == "prim_path":
         _sync_joints(owner)
-    _BUSY.add(id(owner))
-    try:
-        execute(owner)
-    finally:
-        _BUSY.discard(id(owner))
 
 
 def _chunk_loaded(owner, _notice, _sender):
