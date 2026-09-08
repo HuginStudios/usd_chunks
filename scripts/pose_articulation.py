@@ -26,11 +26,16 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 from usd_chunks import chunk
 from usd_chunks import chunk_notice
 from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 
 import rbd_solver
 
+#: Attributes on the chunk prim that are params of the chunk, not joints.
+_NOT_A_JOINT = ("inputs:chunk", "inputs:prim_path", "inputs:write_targets",
+                "inputs:pose")
+
 #: Params the chunk always has. Everything else on it is a lofted joint.
-_FIXED = ("prim_path", "pose", "write_targets")
+_FIXED = ("prim_path", "write_targets")
 
 
 def _roots(node):
@@ -67,31 +72,31 @@ def _posable(roots):
     return found
 
 
-def _parse_pose(text):
-    """{joint name: value} from the pose spec, one `name value` per line.
+def _saved_values(node):
+    """Slider values recovered from the chunk's own prim.
 
-    Text, and authoritative, for the reason the wedge's ranges are: a param lofted at
-    runtime is gone when the file is reopened. The joints themselves can be recovered from
-    the stage, but the angles cannot be recovered from anywhere -- so they live here, and
-    the sliders are a view of them.
+    The sliders are created at runtime, so they do not exist yet when the loader restores
+    param values -- but the values were written to USD all the same, as inputs:<joint> on
+    the chunk prim. Reading them back from there is what lets a pose survive a save without
+    keeping a second copy of the same numbers in a text param, which was only ever able to
+    disagree with the first.
     """
+    scene = node.get_scene()
+    stage = scene.get_stage() if scene else None
+    if stage is None:
+        return {}
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(node)))
+    if not prim or not prim.IsValid():
+        return {}
     values = {}
-    for line in (text or "").splitlines():
-        parts = line.split()
-        if not parts or parts[0].startswith("#"):
+    for attr in prim.GetAttributes():
+        name = attr.GetName()
+        if not name.startswith("inputs:") or name in _NOT_A_JOINT:
             continue
-        if len(parts) < 2:
-            print(f"[Pose] cannot read {line!r}")
-            continue
-        try:
-            values[parts[0]] = float(parts[1])
-        except ValueError:
-            print(f"[Pose] cannot read angle in {line!r}")
+        value = attr.Get()
+        if isinstance(value, float):
+            values[name[len("inputs:"):]] = float(value)
     return values
-
-
-def _format_pose(values):
-    return "\n".join(f"{name} {value:g}" for name, value in values.items())
 
 
 def _lofted(node):
@@ -128,7 +133,7 @@ def _sync_joints(node):
         if name not in wanted:
             node.remove_param_or_group(param)
 
-    pose = _parse_pose(node.get_param("pose").value if node.get_param("pose") else "")
+    pose = _saved_values(node)
     flags = ChunkFlags.ParamFlags.LABELED
     for name, (kind, lower, upper) in wanted.items():
         if name in have:
@@ -143,16 +148,8 @@ def _sync_joints(node):
 
 
 def _harvest(node):
-    """Slider values back into the spec, so what was posed survives the file."""
-    values = {p.name: float(p.value or 0.0) for p in _lofted(node)}
-    if not values:
-        return {}
-    spec = node.get_param("pose")
-    if spec is not None:
-        text = _format_pose(values)
-        if spec.value != text:
-            spec.value = text
-    return values
+    """The angle each slider is asking for."""
+    return {p.name: float(p.value or 0.0) for p in _lofted(node)}
 
 
 def _flat(prim, root_path):
@@ -271,10 +268,9 @@ def apply_pose(stage, roots, values, root_path, write_targets=True):
 
 
 def execute(node):
-    # Guarded here rather than only in the callback, because _harvest writes the pose spec
-    # and a param write is itself a value change the framework cooks on. Without this one
-    # slider move cooked three times: once from the callback below, once from the framework,
-    # and once more from the spec write -- tripling the whole upstream chain in the UI.
+    # Guarded so a cook cannot start a second one. A value change already cooks the chunk,
+    # so calling execute() from the callback below as well made one slider move cook twice
+    # -- and in the UI a cook is a full view recook, so the whole upstream chain paid it.
     if id(node) in _BUSY:
         return
     _BUSY.add(id(node))
@@ -288,6 +284,15 @@ def _execute(node):
     stage, roots = _roots(node)
     if stage is None or not roots:
         return
+
+    # Re-loft here rather than relying on CHUNK_LOADED having fired. The sliders are created
+    # at runtime, so a chunk that arrives without them poses nothing and says nothing -- the
+    # asset simply opens in its rest pose. Depending on load-notice ordering to avoid that
+    # is depending on something this chunk cannot see; asking whether the sliders are there
+    # is something it can.
+    if _posable(roots) and not _lofted(node):
+        _sync_joints(node)
+
     values = _harvest(node)
     if not values:
         return
@@ -318,8 +323,7 @@ def _execute(node):
         print(f"[Pose] posed {posed} joint(s) under {root_path}")
 
 
-#: Nodes currently inside execute(), by id. _harvest writes the pose spec, which is itself
-#: a param change, so without this the first slider move recurses until the stack runs out.
+#: Nodes currently inside execute(), by id, so a cook cannot re-enter itself.
 _BUSY = set()
 
 
@@ -337,8 +341,9 @@ def _param_changed(owner, notice, _sender):
 
 
 def _chunk_loaded(owner, _notice, _sender):
-    # The joints are recoverable from the stage and the angles from the spec; the sliders
-    # themselves are not, so they are rebuilt from both.
+    # Neither the sliders nor their values survive a load on their own: the sliders are
+    # created at runtime, and the loader restores values before they exist. The joints come
+    # back from the stage and the angles from the chunk prim's own inputs: attributes.
     node = owner
     _sync_joints(node)
     execute(node)
@@ -353,13 +358,6 @@ def main():
             tooltip="The articulation root -- a robot, a cabinet, anything carrying "
                     "UsdPhysics joints. One slider is lofted per revolute or prismatic "
                     "joint found beneath it.",
-        ),
-        chunk.TextEdit(
-            "pose", "Pose",
-            tooltip="One `joint angle` per line, degrees for revolute joints. This is the "
-                    "authoritative record -- the sliders are a view of it, because params "
-                    "lofted at runtime do not survive a save and these angles could not be "
-                    "recovered from anywhere else.",
         ),
         chunk.Checkbox(
             "write_targets", "Write Drive Targets", default_value=True,
