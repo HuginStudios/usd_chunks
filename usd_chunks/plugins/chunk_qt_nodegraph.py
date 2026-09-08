@@ -4205,14 +4205,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._drag_detach_attr = None
         self._drag_detach_source_port = None
 
+    def _as_port_ref(self, item: ChunkPortItem) -> chunk_graph.PortRef:
+        """A Qt port item as the engine's plain description of it.
+
+        The three fields the graph logic ever reads -- which attribute, what type, which
+        direction -- which is why the logic was never really entangled with Qt at all.
+        """
+        return chunk_graph.PortRef(
+            node_path=str(Sdf.Path(item.attr_path).GetPrimPath()),
+            attr_path=item.attr_path,
+            port_type=item.port_type,
+            is_input=item.is_input,
+        )
+
     def _can_connect(self, a: ChunkPortItem, b: ChunkPortItem) -> bool:
-        if a.port_type != b.port_type:
-            return False
-        if a.is_input == b.is_input:
-            return False
-        if Sdf.Path(a.attr_path).GetPrimPath() == Sdf.Path(b.attr_path).GetPrimPath():
-            return False
-        return True
+        return chunk_graph.can_connect(self._as_port_ref(a), self._as_port_ref(b))
 
     def _drag_target_ok(self, hit: ChunkPortItem) -> bool:
         """Whether `hit` is a valid drop target for the wire currently being dragged."""

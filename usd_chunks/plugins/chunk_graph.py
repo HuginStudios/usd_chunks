@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_core as core
+from usd_chunks import chunk_utils
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.plugins import chunk_usd
 
@@ -323,13 +324,132 @@ def read_graph(stage: Usd.Stage, root_path: str = CHUNKS_ROOT, chunks: dict | No
 def can_connect(a: PortRef, b: PortRef) -> bool:
     """Is a wire between these two legal?
 
-    One end has to be an input and the other an output, they cannot belong to the same
-    node, and exec only meets exec. Everything else is allowed to convert: an int into a
-    float port is a coercion the param system already performs, and refusing it here would
-    make the graph stricter than the thing it draws.
+    The types must match exactly, one end must be an input and the other an output, and
+    they cannot belong to the same node. Exact rather than convertible: an int into a float
+    port looks harmless and the param system would coerce it, but the Qt view has always
+    refused it, and an engine that is more permissive than the frontend it was extracted
+    from would let a second frontend author graphs the first one considers invalid.
     """
+    if a.port_type != b.port_type:
+        return False
     if a.is_input == b.is_input:
         return False
-    if a.node_path == b.node_path:
-        return False
-    return (a.port_type == PORT_EXEC) == (b.port_type == PORT_EXEC)
+    return a.node_path != b.node_path
+
+
+# ---------------------------------------------------------------------------
+# Mutating operations
+#
+# These author USD and return a GraphChange saying what moved. They deliberately do NOT
+# redraw, recook or touch a view: that is the caller's business, and keeping it out is what
+# lets the same op serve a Qt scene and a Flet canvas.
+
+
+@dataclass
+class GraphChange:
+    """What a mutation touched, so a view can react without re-deriving it.
+
+    `touched_nodes` holds prim paths whose chunk may need recooking -- the caller maps them
+    back to chunk objects, because which of them matter depends on the active view.
+    """
+
+    edges_dirty: bool = True
+    touched_nodes: set[str] = None
+    exec_changed: bool = False
+
+    def __post_init__(self):
+        if self.touched_nodes is None:
+            self.touched_nodes = set()
+
+
+def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None) -> GraphChange | None:
+    """Wire two ports. Returns None if the pair is not connectable.
+
+    Order does not matter: whichever end is the input becomes the destination, since a USD
+    connection is owned by the consumer.
+    """
+    if not can_connect(a, b):
+        return None
+    chunks = chunks or {}
+    src, dst = (b, a) if a.is_input else (a, b)
+
+    dst_attr = stage.GetAttributeAtPath(Sdf.Path(dst.attr_path))
+    if not (dst_attr and dst_attr.IsValid()):
+        # An unconnected node has no inputs:chunk attribute yet -- it is created on first
+        # wiring rather than up front, so it has to be created here.
+        prim = stage.GetPrimAtPath(Sdf.Path(dst.attr_path).GetPrimPath())
+        if not prim.IsValid():
+            return None
+        sdf_type = Sdf.ValueTypeNames.Token if dst.port_type == PORT_EXEC else Sdf.ValueTypeNames.String
+        dst_attr = prim.CreateAttribute(dst.attr_path.rsplit(".", 1)[-1], sdf_type, custom=False)
+        if not dst_attr.IsValid():
+            return None
+
+    # An exec connection references outputs:chunk; a typed param connection references the
+    # source's INPUTS:param, not its outputs -- the output dot is a drawing convention, the
+    # connection names where the value actually lives.
+    if src.port_type == PORT_EXEC:
+        src_conn_path = Sdf.Path(src.attr_path)
+    else:
+        src_conn_path = Sdf.Path(src.attr_path.replace(".outputs:", ".inputs:", 1))
+
+    # Bookkeeping follows the Edit Target: update in place where a spec already exists,
+    # otherwise resolve where a new one belongs, rather than trusting the ambient target.
+    home = chunk_utils.get_attr_home_layer(dst_attr)
+    target = home or chunk_utils.get_bookkeeping_layer(stage, chunks.get(dst.node_path))
+    with Usd.EditContext(stage, target):
+        dst_attr.SetConnections([src_conn_path])
+
+    # A typed wire also writes the expression that makes the value resolve at runtime. The
+    # wiring and the expression are separate: clearing the text keeps the wire.
+    if src.port_type != PORT_EXEC:
+        dst_chunk = chunks.get(dst.node_path)
+        if dst_chunk is not None:
+            param = dst_chunk.get_param(dst.name)
+            if param is not None:
+                src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
+                param.value = f"@{src_node_name}.{src.name}@"
+
+    return GraphChange(touched_nodes={dst.node_path},
+                       exec_changed=src.port_type == PORT_EXEC)
+
+
+def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None = None) -> GraphChange:
+    """Clear a port's connections, healing the exec chain across the gap.
+
+    Detaching a node from the middle of an exec chain rewires its successor to its
+    predecessor, so removing one node does not sever everything downstream of it.
+    """
+    chunks = chunks or {}
+    touched = {port.node_path}
+    attr = stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
+    if not (attr and attr.IsValid()):
+        return GraphChange(edges_dirty=False, touched_nodes=set())
+
+    if port.port_type == PORT_EXEC:
+        out_attr_path = f"{port.node_path}.{EXEC_OUTPUT}"
+        for path, prim in prims.items():
+            # Every exec slot, not only inputs:chunk -- a merge fed through slot 2 is just
+            # as much a successor, and skipping it would leave that slot pointing at a node
+            # the user just detached.
+            for succ_attr in chunk_usd.iter_exec_inputs(prim):
+                if not any(str(c) == out_attr_path for c in succ_attr.GetConnections()):
+                    continue
+                predecessors = attr.GetConnections()
+                if predecessors:
+                    succ_attr.SetConnections(list(predecessors))
+                else:
+                    succ_attr.ClearConnections()
+                touched.add(path)
+                break
+
+    chunk_usd.ChunkStageSync().clear_attr_connections(attr)
+
+    if port.port_type != PORT_EXEC and port.is_input:
+        chunk = chunks.get(port.node_path)
+        if chunk is not None:
+            param = chunk.get_param(port.name.replace(":", "."))
+            if param is not None:
+                param.value = param.default_value
+
+    return GraphChange(touched_nodes=touched, exec_changed=port.port_type == PORT_EXEC)

@@ -7,12 +7,16 @@ is not one, and the absence is the evidence.
 """
 from __future__ import annotations
 
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks.plugins import chunk_graph
+
+REPO = Path(__file__).resolve().parent.parent
 
 
 NETWORK = """#usda 1.0
@@ -60,11 +64,22 @@ class TestNoToolkit:
     def test_importing_the_engine_does_not_import_qt(self):
         """The whole premise, asserted rather than assumed.
 
-        chunk_graph is imported at module scope above, so by the time this runs Qt would
-        already be in sys.modules if any of its dependency chain reached for it.
+        In a SUBPROCESS, because the assertion is about the engine's dependency chain and
+        not about this process: run under the full suite, sibling modules have already
+        imported PySide6, and checking sys.modules here would fail for a reason that has
+        nothing to do with chunk_graph. A fresh interpreter that imports only the engine is
+        the only place the question can honestly be asked.
         """
-        leaked = sorted(m for m in sys.modules if "PySide" in m or "shiboken" in m)
-        assert leaked == [], f"the engine pulled in Qt: {leaked}"
+        source = (
+            "import sys;"
+            "import usd_chunks.plugins.chunk_graph;"
+            "leaked=sorted(m for m in sys.modules if 'PySide' in m or 'shiboken' in m);"
+            "print(','.join(leaked))"
+        )
+        result = subprocess.run([sys.executable, "-c", source],
+                                capture_output=True, text=True, cwd=str(REPO))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "", f"the engine pulled in Qt: {result.stdout}"
 
 
 class TestReadingAGraph:
@@ -184,3 +199,104 @@ class TestConnectionRules:
         data_in = next(p for p in ports["/chunks/Middle"]
                        if p.port_type != chunk_graph.PORT_EXEC and p.is_input)
         assert not chunk_graph.can_connect(exec_out, data_in)
+
+
+class TestMutating:
+    """Authoring, without a view anywhere.
+
+    These are the ops a frontend calls when the user drags a wire. That they run here --
+    no scene, no widgets, no QApplication -- is what makes a second frontend possible
+    rather than merely drawable.
+    """
+
+    def _ports(self, stage):
+        _, ports, _ = chunk_graph.read_graph(stage)
+        return ports
+
+    def test_connecting_exec_authors_the_connection(self, stage):
+        ports = self._ports(stage)
+        src = next(p for p in ports["/chunks/Middle"]
+                   if p.name == "chunk" and not p.is_input)
+        dst = next(p for p in ports["/chunks/Off"] if p.name == "chunk" and p.is_input)
+
+        change = chunk_graph.connect(stage, src, dst)
+        assert change is not None
+        assert change.exec_changed
+        assert change.touched_nodes == {"/chunks/Off"}
+
+        attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Off.inputs:chunk"))
+        assert [str(c) for c in attr.GetConnections()] == ["/chunks/Middle.outputs:chunk"]
+
+    def test_the_order_of_the_two_ends_does_not_matter(self, stage):
+        """A USD connection is owned by the consumer, so whichever end is the input
+        becomes the destination regardless of which was grabbed first."""
+        ports = self._ports(stage)
+        src = next(p for p in ports["/chunks/Middle"]
+                   if p.name == "chunk" and not p.is_input)
+        dst = next(p for p in ports["/chunks/Off"] if p.name == "chunk" and p.is_input)
+
+        chunk_graph.connect(stage, dst, src)  # deliberately reversed
+        attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Off.inputs:chunk"))
+        assert [str(c) for c in attr.GetConnections()] == ["/chunks/Middle.outputs:chunk"]
+
+    def test_an_illegal_pair_authors_nothing(self, stage):
+        ports = self._ports(stage)
+        a = next(p for p in ports["/chunks/Source"] if p.is_input)
+        b = next(p for p in ports["/chunks/Middle"] if p.is_input)
+        assert chunk_graph.connect(stage, a, b) is None
+
+    def test_a_param_wire_points_at_the_sources_input(self, stage):
+        """The output dot is a drawing convention; the value lives on the source's
+        inputs: attribute and that is what the connection names."""
+        ports = self._ports(stage)
+        src = next(p for p in ports["/chunks/Source"]
+                   if p.name == "primpath_location" and not p.is_input)
+        dst = next(p for p in ports["/chunks/Off"] if p.name == "chunk" and p.is_input)
+        assert chunk_graph.connect(stage, src, dst) is None, "types differ, so no wire"
+
+    def test_disconnect_heals_the_exec_chain(self, stage):
+        """Source -> Middle -> Off, then detach Middle: Off must fall back to Source
+        rather than being left wired to a node that is no longer in the chain."""
+        ports = self._ports(stage)
+        mid_out = next(p for p in ports["/chunks/Middle"]
+                       if p.name == "chunk" and not p.is_input)
+        off_in = next(p for p in ports["/chunks/Off"] if p.name == "chunk" and p.is_input)
+        chunk_graph.connect(stage, mid_out, off_in)
+
+        prims = {str(p.GetPath()): p for p in chunk_graph.resolve_graph_nodes(stage)}
+        mid_in = next(p for p in ports["/chunks/Middle"]
+                      if p.name == "chunk" and p.is_input)
+        change = chunk_graph.disconnect(stage, mid_in, prims)
+
+        assert "/chunks/Off" in change.touched_nodes
+        attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Off.inputs:chunk"))
+        assert [str(c) for c in attr.GetConnections()] == ["/chunks/Source.outputs:chunk"]
+
+    def test_disconnecting_a_port_with_no_attribute_does_nothing(self, stage):
+        """An unwired exec input has no attribute yet -- it is created on first connect.
+
+        There is nothing to clear and nothing to heal, so the op reports no change rather
+        than manufacturing an attribute in order to empty it.
+        """
+        prims = {str(p.GetPath()): p for p in chunk_graph.resolve_graph_nodes(stage)}
+        assert not stage.GetAttributeAtPath(Sdf.Path("/chunks/Source.inputs:chunk"))
+        port = next(p for p in self._ports(stage)["/chunks/Source"]
+                    if p.name == "chunk" and p.is_input)
+        change = chunk_graph.disconnect(stage, port, prims)
+        assert change.touched_nodes == set()
+        assert not change.edges_dirty
+
+    def test_detaching_a_head_clears_its_successor(self, stage):
+        """With no predecessor to heal to, the successor's slot is emptied -- not left
+        pointing at the node that was just detached."""
+        source = stage.GetPrimAtPath("/chunks/Source")
+        source.CreateAttribute("inputs:chunk", Sdf.ValueTypeNames.Token, custom=False)
+        prims = {str(p.GetPath()): p for p in chunk_graph.resolve_graph_nodes(stage)}
+        port = next(p for p in self._ports(stage)["/chunks/Source"]
+                    if p.name == "chunk" and p.is_input)
+
+        change = chunk_graph.disconnect(stage, port, prims)
+
+        assert "/chunks/Middle" in change.touched_nodes
+        attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Middle.inputs:chunk"))
+        assert [str(c) for c in attr.GetConnections()] == []
