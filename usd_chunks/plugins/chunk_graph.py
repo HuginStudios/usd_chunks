@@ -49,6 +49,7 @@ PORT_STRING = "string"
 PORT_COLOR = "color"
 PORT_VECTOR = "vector"
 
+INPUTS_PREFIX = chunk_naming.INPUTS_PREFIX
 EXEC_INPUT = chunk_naming.EXEC_INPUT
 EXEC_OUTPUT = chunk_naming.EXEC_OUTPUT
 CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
@@ -1051,3 +1052,28 @@ def delete_chunks(chunks) -> int:
     for chunk in chunks:
         chunk.request_delete()
     return len(chunks)
+
+
+def layout_adjacency(prims: dict) -> "tuple[dict, dict]":
+    """(up_of, down_of) keyed by prim path, from EVERY connection on these prims.
+
+    Exec and typed data alike, and independent of whether a frontend is currently drawing
+    param wires: a layout should account for every real connection, not only the ones
+    visible. Both maps are scoped to `prims`, which is what chunk_graph_layout requires of
+    its callers.
+    """
+    up_of: dict = {}
+    down_of: dict = {}
+    for path, prim in prims.items():
+        if not prim.IsValid():
+            continue
+        for attr in prim.GetAttributes():
+            if not attr.GetName().startswith(INPUTS_PREFIX):
+                continue
+            for conn in attr.GetConnections():
+                source = str(conn.GetPrimPath())
+                if source == path or source not in prims:
+                    continue
+                up_of.setdefault(path, set()).add(source)
+                down_of.setdefault(source, set()).add(path)
+    return up_of, down_of

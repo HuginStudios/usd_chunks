@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 import weakref
 
 import flet as ft
@@ -35,7 +36,7 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_flet, chunk_graph, chunk_usd
+from usd_chunks.plugins import chunk_flet, chunk_graph, chunk_graph_layout, chunk_usd
 from usd_chunks.chunk_scene import CHUNKGROUP_MODULE
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, load_chunks
 
@@ -74,6 +75,13 @@ EXP_R = 12.0
 GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to hit
 MARGIN = 120.0
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.25, 3.0, 1.1
+
+#: Shake-to-disconnect. Same thresholds as the Qt graph, so the gesture feels the same in
+#: both: a drag has to genuinely wag rather than wobble.
+SHAKE_WINDOW = 0.4        # seconds of drag samples to consider
+SHAKE_MIN_STEP = 5.0      # layout units; smaller moves are jitter
+SHAKE_MIN_TRAVEL = 140.0  # total distance travelled inside the window
+SHAKE_REVERSALS = 4       # horizontal direction changes needed to fire
 
 #: Which view slot drives execution, stored on the CONTEXT prim -- the same attribute Qt
 #: reads, so an active view survives a round trip through either frontend.
@@ -190,6 +198,10 @@ class GraphView:
         #: Whose param controls have keyboard focus. Per view, not global:
         #: two windows in one process must not suppress each other's shortcuts.
         self.focus = chunk_flet.FocusTracker()
+        #: (time, x) samples for the drag in progress -- see _shake_fired.
+        self._shake_samples: list = []
+        self._shook = False
+        self._moved_far_enough = False
         self.live = False  # nothing may update the client until page.add has run
         self.status_text: ft.Text | None = None
         self.reload()
@@ -382,6 +394,9 @@ class GraphView:
         self.refresh()
 
     def on_pan_start(self, event):
+        self._shake_samples = []
+        self._shook = False
+        self._moved_far_enough = False
         # A grab on a port starts a wire; anywhere else on a node moves it.
         x, y = self._xy(event)
         port = self.port_at(x, y)
@@ -402,6 +417,10 @@ class GraphView:
                         self.pan[1] + event.local_delta.y)
             return self.refresh()
         dx, dy = self._delta(event)
+        if self.dragging and not self._shook and self._shake_fired(self.positions[self.dragging][0]):
+            self._shook = True
+            shaken, self.dragging = self.dragging, None
+            return self.shake_disconnect(shaken)
         if self.wiring is not None:
             x, y = self.wire_to
             self.wire_to = (x + dx, y + dy)
@@ -410,6 +429,8 @@ class GraphView:
             return
         x, y = self.positions[self.dragging]
         self.positions[self.dragging] = (x + dx, y + dy)
+        if abs(dx) + abs(dy) > 0.0:
+            self._moved_far_enough = True
         self.refresh()
 
     # -- selection ---------------------------------------------------------
@@ -620,6 +641,183 @@ class GraphView:
         left = min(self.positions[p][0] for p in chosen)
         top = min(self.positions[p][1] for p in chosen)
         self.paste_at(left + 40, top + 40, nodes, edges)
+
+    # -- layout ------------------------------------------------------------
+
+    def _write_position(self, path: str, x: float, y: float) -> None:
+        """Persist a node position, in the coordinates USD stores."""
+        prim = self.prims.get(path)
+        if prim is None:
+            return
+        attr = prim.GetAttribute(chunk_graph.POS_ATTR)
+        if not attr:
+            attr = prim.CreateAttribute(chunk_graph.POS_ATTR, Sdf.ValueTypeNames.Float2)
+        attr.Set(Gf.Vec2f(*(float(v) for v in self._layout_to_usd(x, y))))
+
+    def auto_layout(self):
+        """L: lay out the selection's connected subgraph, or everything.
+
+        The algorithm is chunk_graph_layout, which the Qt graph also uses -- it was already
+        toolkit-free and simply had no second caller until now.
+        """
+        if not self.prims:
+            return self.refresh()
+        up_of, down_of = chunk_graph.layout_adjacency(self.prims)
+        seeds = [p for p in self.selected_nodes if p in self.prims]
+        if seeds:
+            grown = chunk_graph_layout.grow_to_connected_subgraph(seeds, up_of, down_of)
+            node_ids = sorted(grown & set(self.prims))
+        else:
+            node_ids = sorted(self.prims)
+        if not node_ids:
+            return self.refresh()
+
+        wanted = set(node_ids)
+        scoped_up = {n: {u for u in up_of.get(n, ()) if u in wanted} for n in node_ids}
+        scoped_down = {n: {d for d in down_of.get(n, ()) if d in wanted} for n in node_ids}
+
+        placed = chunk_graph_layout.layout_positions(
+            node_ids,
+            size_of=lambda n: (NODE_W, self.node_height(n)),
+            # Flet has no lock concept yet: Qt marks nodes whose prim comes from an
+            # external or referenced layer and refuses to move them. Until this frontend
+            # knows that, nothing is locked -- which means a layout here CAN move a node Qt
+            # would have pinned.
+            is_locked=lambda n: False,
+            current_pos=lambda n: self.positions[n],
+            up_of=scoped_up,
+            down_of=scoped_down,
+        )
+        for path, (x, y) in placed.items():
+            self.positions[path] = (x, y)
+            self._write_position(path, x, y)
+        self.stage.GetRootLayer().Save()
+        self.status = "laid out %d" % len(placed)
+        self.reload()
+        self.refresh(bodies=True)
+
+    # -- splice and shake --------------------------------------------------
+
+    def _curve_points(self, x1, y1, x2, y2, steps: int = 24):
+        """Points along the same cubic shapes() draws, for hit-testing a wire."""
+        reach = max(40.0, abs(x2 - x1) * 0.5)
+        cx1, cy1, cx2, cy2 = x1 + reach, y1, x2 - reach, y2
+        points = []
+        for i in range(steps + 1):
+            t = i / steps
+            u = 1.0 - t
+            points.append((
+                u * u * u * x1 + 3 * u * u * t * cx1 + 3 * u * t * t * cx2 + t * t * t * x2,
+                u * u * u * y1 + 3 * u * u * t * cy1 + 3 * u * t * t * cy2 + t * t * t * y2,
+            ))
+        return points
+
+    def edge_under_node(self, path: str):
+        """The first wire passing under this node's rect, ignoring its own.
+
+        Qt asks QPainterPath.intersects; there is no such call here, so the curve is
+        sampled and each point tested against the rect. Same question, and the sampling is
+        dense enough that a wire crossing a 260px-wide node cannot slip between samples.
+        """
+        if path not in self.positions:
+            return None
+        nx, ny = self.positions[path]
+        nh = self.node_height(path)
+        for edge in self.edges:
+            if edge.src_node_path == path or edge.dst_node_path == path:
+                continue
+            src = self._port_ref(edge.src_node_path, edge.src_attr_path)
+            dst = self._port_ref(edge.dst_node_path, edge.dst_attr_path)
+            if src is None or dst is None:
+                continue
+            x1, y1 = self.port_xy(src)
+            x2, y2 = self.port_xy(dst)
+            for px, py in self._curve_points(x1, y1, x2, y2):
+                if nx <= px <= nx + NODE_W and ny <= py <= ny + nh:
+                    return edge, src, dst
+        return None
+
+    def _port_ref(self, node_path: str, attr_path: str):
+        return next((p for p in self.ports.get(node_path, []) if p.attr_path == attr_path),
+                    None)
+
+    def try_splice(self, path: str) -> bool:
+        """If this node was dropped on a wire A->B, splice it in as A->self->B."""
+        found = self.edge_under_node(path)
+        if found is None:
+            return False
+        _edge, a_out, b_in = found
+        mine = self.ports.get(path, [])
+        my_in = next((p for p in mine if p.is_input and chunk_graph.can_connect(a_out, p)),
+                     None)
+        my_out = next((p for p in mine if not p.is_input and chunk_graph.can_connect(p, b_in)),
+                      None)
+        if my_in is None or my_out is None:
+            return False
+        chunk_graph.connect(self.stage, a_out, my_in, self.chunks)
+        # The second replaces B's old input from A, which is what makes it a splice rather
+        # than a second wire into B.
+        chunk_graph.connect(self.stage, my_out, b_in, self.chunks)
+        self.stage.GetRootLayer().Save()
+        self.status = "spliced into the wire"
+        self.reload()
+        return True
+
+    def _shake_fired(self, x: float) -> bool:
+        """Has the drag wagged back and forth enough to mean "disconnect me"?
+
+        Samples are kept for a short window and direction changes counted, with a minimum
+        step so a shaky hand is not a gesture and a minimum total travel so a slow wiggle
+        is not either.
+        """
+        now = time.monotonic()
+        self._shake_samples.append((now, x))
+        self._shake_samples = [(t, v) for t, v in self._shake_samples
+                               if now - t <= SHAKE_WINDOW]
+        if len(self._shake_samples) < SHAKE_REVERSALS + 1:
+            return False
+        travel, reversals, direction = 0.0, 0, 0
+        previous = self._shake_samples[0][1]
+        for _t, value in self._shake_samples[1:]:
+            step = value - previous
+            if abs(step) < SHAKE_MIN_STEP:
+                continue
+            travel += abs(step)
+            new_direction = 1 if step > 0 else -1
+            if direction and new_direction != direction:
+                reversals += 1
+            direction = new_direction
+            previous = value
+        return reversals >= SHAKE_REVERSALS and travel >= SHAKE_MIN_TRAVEL
+
+    def shake_disconnect(self, path: str):
+        """Disconnect every wire on this node, healing the exec chain around it.
+
+        A -> C -> B becomes A -> B when C is shaken loose. Typed wires are simply cleared;
+        there is no meaningful heal for them, which is the same line Qt takes.
+        """
+        prim = self.prims.get(path)
+        if prim is None:
+            return
+        upstream = []
+        exec_in = prim.GetAttribute(chunk_graph.EXEC_INPUT)
+        if exec_in and exec_in.IsValid():
+            upstream = [str(c.GetPrimPath()) for c in exec_in.GetConnections()]
+
+        for port in list(self.ports.get(path, [])):
+            chunk_graph.disconnect(self.stage, port, self.prims, self.chunks)
+        # Successors lose their feed when the node between them goes, so hand them the
+        # node's own predecessor -- slot 0 only, since a successor has one slot to inherit
+        # into (the same choice chunk_usd.heal_exec_chain_on_delete makes).
+        if upstream:
+            source = upstream[0]
+            for edge in list(self.edges):
+                if edge.is_exec and edge.src_node_path == path:
+                    chunk_usd.connect_exec(self.stage, self.scene, source, edge.dst_node_path)
+        self.stage.GetRootLayer().Save()
+        self.status = "disconnected %s" % path.rsplit("/", 1)[-1]
+        self.reload()
+        self.refresh(bodies=True)
 
     # -- navigation --------------------------------------------------------
 
@@ -833,6 +1031,8 @@ class GraphView:
             return self.toggle_disable_selected()
         if key == "f":
             return self.frame(self.selected_nodes or self.prims)
+        if key == "l":
+            return self.auto_layout()
         if key == "c" and event.ctrl:
             return self.copy_selection()
         if key == "x" and event.ctrl:
@@ -1063,17 +1263,18 @@ class GraphView:
             return self.refresh()
         if not self.dragging:
             return
+        dropped = self.dragging
+        self.dragging = None
         # Back into USD, in USD's own coordinates. The position is the shared state that
         # makes this view and the Qt one show the same arrangement of the same file.
-        x, y = self.positions[self.dragging]
-        prim = self.prims[self.dragging]
-        attr = prim.GetAttribute(chunk_graph.POS_ATTR)
-        if not attr:
-            attr = prim.CreateAttribute(chunk_graph.POS_ATTR, Sdf.ValueTypeNames.Float2)
-        attr.Set(Gf.Vec2f(*(float(v) for v in self._layout_to_usd(x, y))))
+        x, y = self.positions[dropped]
+        self._write_position(dropped, x, y)
         self.stage.GetRootLayer().Save()
-        self.status = f"moved {self.dragging.rsplit('/', 1)[-1]}"
-        self.dragging = None
+        self.status = f"moved {dropped.rsplit('/', 1)[-1]}"
+        # Only after a real move: a plain click on a node sitting over a wire must not
+        # splice it in. The move is what says the drop was meant.
+        if self._moved_far_enough and self.try_splice(dropped):
+            return self.refresh(bodies=True)
         self.refresh()
 
     # -- drawing -----------------------------------------------------------

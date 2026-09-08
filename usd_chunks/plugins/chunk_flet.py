@@ -186,10 +186,14 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
         if not self.live:
             return
         target = control if control is not None else self.control
+        if target is None:
+            return
         try:
-            if target is not None:
-                target.update()
-        except Exception:  # noqa: BLE001 -- gone, or not mounted after all
+            target.update()
+        except (RuntimeError, AssertionError):
+            # "Control must be added to the page first" -- the widget outlived the page,
+            # or `live` was set before this particular control was mounted. Narrowed from
+            # bare Exception, which also swallowed real errors raised while rendering.
             pass
 
     def as_row(self) -> ft.Control:
@@ -459,7 +463,9 @@ class FletGroupWidget:
         for control in (self.content, self.arrow):
             try:
                 control.update()
-            except Exception:  # noqa: BLE001 -- gone, or not mounted after all
+            except (RuntimeError, AssertionError):
+                # Same as FletParamWidget._update: an unmounted control raises RuntimeError
+                # rather than failing quietly, and that is the only case worth ignoring.
                 pass
 
 
