@@ -46,7 +46,7 @@ PORT_COLOUR = {
     chunk_graph.PORT_VECTOR: "#d4c95e",
 }
 
-NODE_W, HEADER_H, ROW_H = 210.0, 30.0, 16.0
+NODE_W, HEADER_H, ROW_H = 260.0, 30.0, 16.0  # wider: Qt's nodes fit a path
 PORT_R = 5.0
 GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to hit
 MARGIN = 120.0
@@ -167,8 +167,11 @@ class GraphView:
         chunk_obj = self.chunks.get(path)
         body = 0.0
         if chunk_obj is not None:
+            # Rough: a labelled control is about 46px, a group heading about 22. Only used
+            # for hit-testing and for spacing the graph, not for sizing the real control,
+            # which measures itself.
             rows = len(list(chunk_obj.get_params()))
-            body = HEADER_H + min(260.0, 40.0 + 46.0 * rows) + 16
+            body = HEADER_H + 40.0 + 46.0 * rows + 16
         return max(ports, body)
 
     def port_xy(self, port: chunk_graph.PortRef):
@@ -389,9 +392,12 @@ class GraphView:
             if chunk_obj is not None:
                 param_controls, widgets = chunk_flet.build_chunk_controls(chunk_obj)
                 self.param_widgets += widgets
+                # No height cap and no inner scroll: a capped body silently hides params,
+                # which is exactly what a node graph must not do -- you cannot tell a chunk
+                # with four params from one with fourteen.
                 body.append(ft.Container(
-                    ft.Column(param_controls, spacing=2, tight=True, scroll=ft.ScrollMode.AUTO),
-                    padding=8, width=NODE_W, height=min(260.0, 40.0 + 46.0 * len(param_controls)),
+                    ft.Column(param_controls, spacing=3, tight=True),
+                    padding=8, width=NODE_W,
                 ))
 
             controls.append(ft.Container(

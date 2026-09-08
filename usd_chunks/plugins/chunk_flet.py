@@ -27,7 +27,7 @@ class FletParamWidget(chunk_core.ChunkParamWidgetBase):
 
     def __init__(self, param, *args, **kwargs):
         self.control: ft.Control | None = None
-        self.label_control = ft.Text("", size=11, color="#b9b9b9")
+        self.label_control = ft.Text("", size=10, color="#a8a8a8")
         self._suppress = False
         super().__init__(param, *args, **kwargs)
         self.build()
@@ -117,25 +117,36 @@ class FletParamWidget(chunk_core.ChunkParamWidgetBase):
 
     def as_row(self) -> ft.Control:
         """Label above control, which is how the Qt LabeledWidget stacks them."""
-        return ft.Column([self.label_control, self.control], spacing=2, tight=True)
+        return ft.Column([self.label_control, self.control], spacing=1, tight=True)
 
 
 class FletSliderWidget(FletParamWidget):
     def build(self):
         param = self.param
-        self.control = ft.Slider(
+        self.readout = ft.Text("", size=10, color="#c8d4de", width=52,
+                               text_align=ft.TextAlign.RIGHT)
+        self.slider = ft.Slider(
             min=float(getattr(param, "min_value", 0.0) or 0.0),
             max=float(getattr(param, "max_value", 1.0) or 1.0),
-            on_change=self.on_changed,
+            on_change=self.on_changed, expand=True, height=26,
         )
+        # A bare Flet slider shows no number. Qt's does, and a param you can only read by
+        # dragging it is not the same control.
+        self.control = ft.Row([self.slider, self.readout], spacing=4, tight=True)
 
     def apply_value(self, value):
         try:
-            self.control.value = float(value)
+            self.slider.value = float(value)
         except (TypeError, ValueError):
-            # An expression (@Node.param@) is a legal param value and not a number. The
-            # slider cannot show it; the text field variants can, so it is left alone here.
-            pass
+            # An expression (@Node.param@) is a legal param value and not a number, so the
+            # slider cannot show it -- but the readout can, which is better than nothing.
+            self.readout.value = str(value)
+            return
+        self.readout.value = ("%d" if getattr(self.param, "is_int", False) else "%.3f") % (
+            self.slider.value)
+
+    def get_value(self):
+        return self.slider.value
 
     def read_event(self, event):
         value = float(event.control.value)
@@ -144,7 +155,11 @@ class FletSliderWidget(FletParamWidget):
 
 class FletTextWidget(FletParamWidget):
     def build(self):
-        self.control = ft.TextField(dense=True, on_change=self.on_changed)
+        self.control = ft.TextField(
+            dense=True, on_change=self.on_changed, text_size=11,
+            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+            filled=True, fill_color="#1f1f1f", border_color="#4a4a4a",
+            focused_border_color="#6a8caf", border_radius=3, height=30)
 
     def apply_value(self, value):
         self.control.value = "" if value is None else str(value)
@@ -152,8 +167,11 @@ class FletTextWidget(FletParamWidget):
 
 class FletMultilineTextWidget(FletTextWidget):
     def build(self):
-        self.control = ft.TextField(multiline=True, min_lines=3, dense=True,
-                                    on_change=self.on_changed)
+        self.control = ft.TextField(
+            multiline=True, min_lines=3, dense=True, on_change=self.on_changed,
+            text_size=11, filled=True, fill_color="#1f1f1f", border_color="#4a4a4a",
+            focused_border_color="#6a8caf", border_radius=3,
+            content_padding=ft.Padding.all(8))
 
 
 class FletCheckboxWidget(FletParamWidget):
@@ -170,7 +188,10 @@ class FletCheckboxWidget(FletParamWidget):
 class FletMenuWidget(FletParamWidget):
     def build(self):
         items = [ft.dropdown.Option(str(i)) for i in getattr(self.param, "menu_items", [])]
-        self.control = ft.Dropdown(options=items, dense=True, on_change=self.on_changed)
+        self.control = ft.Dropdown(
+            options=items, dense=True, on_change=self.on_changed, text_size=11,
+            filled=True, fill_color="#1f1f1f", border_color="#4a4a4a",
+            border_radius=3, content_padding=ft.Padding.symmetric(vertical=4, horizontal=8))
 
     def apply_value(self, value):
         self.control.value = None if value is None else str(value)
@@ -299,32 +320,75 @@ class ChunkFletWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
         return widget_class(param)
 
 
-def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = None):
-    """Every param of a chunk as Flet controls, groups included.
+class FletGroupWidget:
+    """A collapsible group, mirroring Qt's ContainerWidget.
 
-    Returns (controls, widgets). The widgets are returned because nothing else holds them:
+    COLLAPSABLE is a group FLAG (may it fold) and COLLAPSED is a group STATE (is it folded
+    now). The state is written back on toggle so the fold survives a rebuild and matches
+    what Qt would show for the same chunk -- and it is deliberately only a presentation
+    bit: folding a section open does not dirty the chunk or cause a cook.
+    """
+
+    ARROW_OPEN, ARROW_SHUT = "▾", "▸"
+
+    def __init__(self, group, content_controls):
+        self.group = group
+        self.collapsible = bool(group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE))
+        self.collapsed = bool(group.has_state(ChunkFlags.State.COLLAPSED))
+
+        self.content = ft.Column(content_controls, spacing=3, tight=True,
+                                 visible=not (self.collapsible and self.collapsed))
+        self.arrow = ft.Text(self.ARROW_SHUT if self.content.visible is False
+                             else self.ARROW_OPEN, size=10, color="#9fb0c0")
+        label = group.get_label() if hasattr(group, "get_label") else group.name
+        header = ft.Row(
+            ([self.arrow] if self.collapsible else [])
+            + [ft.Text(label or "", size=11, weight=ft.FontWeight.W_500, color="#c8d4de")],
+            spacing=4, tight=True)
+        self.header = ft.Container(
+            header, padding=ft.Padding.only(top=6, bottom=2),
+            on_click=self.toggle if self.collapsible else None)
+        self.control = ft.Column([self.header, self.content], spacing=0, tight=True)
+
+    def toggle(self, _event=None):
+        self.collapsed = not self.collapsed
+        if self.collapsed:
+            self.group.set_state(ChunkFlags.State.COLLAPSED)
+        else:
+            self.group.unset_state(ChunkFlags.State.COLLAPSED)
+        self.content.visible = not self.collapsed
+        self.arrow.value = self.ARROW_SHUT if self.collapsed else self.ARROW_OPEN
+        for control in (self.content, self.arrow):
+            try:
+                control.update()
+            except Exception:  # noqa: BLE001 -- not mounted yet
+                pass
+
+
+def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = None):
+    """Every param of a chunk as Flet controls, groups collapsible, nothing hidden.
+
+    Returns (controls, widgets). The widgets come back because nothing else holds them:
     each registers a notice callback, and a widget that is collected stops updating -- the
-    same lifetime trap plain closures have with add_callback.
+    same lifetime trap plain closures have with add_callback. Group widgets are included
+    for the same reason: they own the collapse toggle.
     """
     factory = factory or ChunkFletWidgetFactory()
-    controls, widgets = [], []
+    widgets = []
 
-    def walk(owner, depth=0):
+    def walk(owner):
+        controls = []
         for param in owner.get_my_params():
             if not isinstance(param, chunk_core.ChunkParamBase):
-                # A group: a heading, then its contents indented.
-                label = param.get_label() if hasattr(param, "get_label") else param.name
-                controls.append(ft.Container(
-                    ft.Text(label, size=11, weight=ft.FontWeight.W_500, color="#9fb0c0"),
-                    padding=ft.Padding.only(left=depth * 10, top=6)))
-                walk(param, depth + 1)
+                group = FletGroupWidget(param, walk(param))
+                widgets.append(group)
+                controls.append(group.control)
                 continue
             widget = factory.create_widget(param)
             if widget is None:
                 continue
             widgets.append(widget)
-            controls.append(ft.Container(widget.as_row(),
-                                         padding=ft.Padding.only(left=depth * 10)))
+            controls.append(widget.as_row())
+        return controls
 
-    walk(chunk_obj)
-    return controls, widgets
+    return walk(chunk_obj), widgets
