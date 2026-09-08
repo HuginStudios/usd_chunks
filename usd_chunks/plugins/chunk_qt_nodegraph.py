@@ -21,6 +21,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
+from usd_chunks.plugins import chunk_graph
 from usd_chunks.plugins import chunk_graph_layout
 from usd_chunks import chunk_utils
 from usd_chunks.plugins import chunk_usd
@@ -164,13 +165,16 @@ def _get_proxy_sink() -> QtWidgets.QWidget:
         _proxy_sink.show()
     return _proxy_sink
 
-_PORT_EXEC = "exec"
-_PORT_FLOAT = "float"
-_PORT_INT = "int"
-_PORT_BOOL = "bool"
-_PORT_STRING = "string"
-_PORT_COLOR = "color"
-_PORT_VECTOR = "vector"
+# The port vocabulary lives in chunk_graph so every frontend names types the same way.
+# Aliased rather than re-exported by hand: ~40 references read _PORT_* already, and a
+# second definition here is the thing that lets Qt and a non-Qt view disagree.
+_PORT_EXEC = chunk_graph.PORT_EXEC
+_PORT_FLOAT = chunk_graph.PORT_FLOAT
+_PORT_INT = chunk_graph.PORT_INT
+_PORT_BOOL = chunk_graph.PORT_BOOL
+_PORT_STRING = chunk_graph.PORT_STRING
+_PORT_COLOR = chunk_graph.PORT_COLOR
+_PORT_VECTOR = chunk_graph.PORT_VECTOR
 
 _COL_PORT_COLOR = QtGui.QColor("#c87060")  # muted red
 
@@ -214,57 +218,12 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
 
 
 
-def _sdf_to_port_type(sdf_type_name) -> str:
-    if sdf_type_name in (Sdf.ValueTypeNames.Color3f, Sdf.ValueTypeNames.Color4f):
-        return _PORT_COLOR
-    if sdf_type_name in (Sdf.ValueTypeNames.Bool,):
-        return _PORT_BOOL
-    if sdf_type_name in (Sdf.ValueTypeNames.String, Sdf.ValueTypeNames.Token, Sdf.ValueTypeNames.Asset):
-        return _PORT_STRING
-    if sdf_type_name in (
-        Sdf.ValueTypeNames.Int, Sdf.ValueTypeNames.Int2,
-        Sdf.ValueTypeNames.Int3, Sdf.ValueTypeNames.Int4,
-    ):
-        return _PORT_INT
-    if sdf_type_name in (
-        Sdf.ValueTypeNames.Float2, Sdf.ValueTypeNames.Float3, Sdf.ValueTypeNames.Float4,
-    ):
-        return _PORT_VECTOR
-    return _PORT_FLOAT
-
-
-def _iter_connectable_params(obj: core.ChunkCommon):
-    """Recursively yield float/int/bool/string/menu/color params and vectors from a chunk or group."""
-    for param in obj.get_my_params():
-        if isinstance(param, (Slider, Spinbox, Checkbox, LineEdit, TextEdit, FileBrowser, ColorPicker, Menu)):
-            yield param
-        elif isinstance(param, core.ChunkVectorBase):
-            yield param  # vector as a single port — children are not connectable individually
-        elif not isinstance(param, core.ChunkParamBase):
-            yield from _iter_connectable_params(param)
-
-
-def _iter_all_vectors(obj: core.ChunkCommon):
-    """Recursively yield all ChunkVectorBase instances from a chunk or group."""
-    for param in obj.get_my_params():
-        if isinstance(param, core.ChunkVectorBase):
-            yield param
-        elif not isinstance(param, core.ChunkParamBase):
-            yield from _iter_all_vectors(param)
-
-
-def _param_port_type(param) -> str:
-    if isinstance(param, ColorPicker):
-        return _PORT_COLOR
-    if isinstance(param, core.ChunkVectorBase):
-        return _PORT_VECTOR
-    if isinstance(param, Checkbox):
-        return _PORT_BOOL
-    if isinstance(param, (LineEdit, TextEdit, FileBrowser, Menu)):
-        return _PORT_STRING
-    if param.value is not None and isinstance(param.value, int) and not isinstance(param.value, bool):
-        return _PORT_INT
-    return _PORT_FLOAT
+# Port typing and param traversal are pure functions over Sdf types and the param
+# classes -- no Qt in any of them -- so they live in the engine and the view borrows them.
+_sdf_to_port_type = chunk_graph.sdf_to_port_type
+_iter_connectable_params = chunk_graph.iter_connectable_params
+_iter_all_vectors = chunk_graph.iter_all_vectors
+_param_port_type = chunk_graph.param_port_type
 
 
 # ---------------------------------------------------------------------------
