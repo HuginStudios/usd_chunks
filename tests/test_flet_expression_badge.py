@@ -13,38 +13,15 @@ import dataclasses
 import flet.canvas as cv
 import pytest
 
+from graph_fixtures import make_network
 from usd_chunks.plugins import chunk_flet_nodegraph as fg
 
-NETWORK = """#usda 1.0
-
-def Scope "chunks"
-{
-    def Chunk "Source"
-    {
-        uniform token info:chunkType = "transform"
-        string inputs:primpath_location = "/World/thing"
-        uniform token outputs:chunk
-        uniform float2 ui:nodegraph:node:pos = (100, 50)
-    }
-
-    def Chunk "Driven"
-    {
-        uniform token info:chunkType = "transform"
-        token inputs:chunk.connect = </chunks/Source.outputs:chunk>
-        string inputs:primpath_location = "/World/thing"
-        double inputs:tx = 0
-        double inputs:tx.connect = </chunks/Source.inputs:tx>
-        uniform float2 ui:nodegraph:node:pos = (400, 50)
-    }
-}
-"""
 
 
 @pytest.fixture
 def view(tmp_path):
-    path = tmp_path / "expr.usda"
-    path.write_text(NETWORK, encoding="utf-8")
-    return fg.GraphView(str(path))
+    path, context = make_network(tmp_path / "expr.usda")
+    return fg.GraphView(path, context)
 
 
 def _badges(view):

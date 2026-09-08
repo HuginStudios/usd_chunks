@@ -164,6 +164,8 @@ class GraphView:
         self.pan = (0.0, 0.0)
         self.panning = False
         self.pan_container: ft.Container | None = None
+        #: Set by main(). Needed to open a dialog; None in tests and headless use.
+        self.page: ft.Page | None = None
         self.live = False  # nothing may update the client until page.add has run
         self.status_text: ft.Text | None = None
         self.reload()
@@ -174,13 +176,18 @@ class GraphView:
         self.prims, self.ports, self.edges = chunk_graph.read_graph(
             self.stage, self.context, self.chunks)
         raw = {path: chunk_graph.node_position(prim) for path, prim in self.prims.items()}
+        # USD is Y-up, this canvas is Y-down, so USD y is negated -- exactly what Qt does
+        # (chunk_qt_nodegraph writes _create_node_pos as (x, -y)). Without the flip the two
+        # frontends render the same file mirrored vertically, and a node dragged in one
+        # jumps to the opposite side when opened in the other.
+        flipped = {path: (x, -y) for path, (x, y) in raw.items()}
         # MARGIN has to clear the port dots and their labels, which now hang off the left.
         # Screen space is USD space shifted so the top-left node sits at MARGIN. The offset
         # is kept because a drag has to be written back in the coordinates USD stores.
-        self.origin = (min((x for x, _ in raw.values()), default=0.0) - MARGIN,
-                       min((y for _, y in raw.values()), default=0.0) - MARGIN)
+        self.origin = (min((x for x, _ in flipped.values()), default=0.0) - MARGIN,
+                       min((y for _, y in flipped.values()), default=0.0) - MARGIN)
         self.positions = {p: (x - self.origin[0], y - self.origin[1])
-                          for p, (x, y) in raw.items()}
+                          for p, (x, y) in flipped.items()}
 
     def rows(self, path: str):
         node_ports = self.ports[path]
@@ -219,6 +226,11 @@ class GraphView:
         point = event.local_position
         return ((point.x - self.pan[0]) / self.zoom,
                 (point.y - self.pan[1]) / self.zoom)
+
+    def _layout_to_usd(self, x: float, y: float) -> tuple[float, float]:
+        """Layout point -> the coordinates USD stores. Undoes the origin shift and the
+        Y-up flip together; every write of a node position goes through here."""
+        return (x + self.origin[0], -(y + self.origin[1]))
 
     def _to_screen(self, x: float, y: float) -> tuple[float, float]:
         """Layout point -> screen point. The inverse of _xy, for anyone who has a node
@@ -316,9 +328,12 @@ class GraphView:
         self.refresh(bodies=True)
 
     def on_secondary_tap(self, event):
-        port = self.port_at(*self._xy(event))
+        x, y = self._xy(event)
+        port = self.port_at(x, y)
         if port is None:
-            return
+            # Qt opens its chunk menu here. Flet used to do nothing on empty space, which
+            # left no way to create a node at all.
+            return self.open_create_menu(x, y)
         change = chunk_graph.disconnect(self.stage, port, self.prims, self.chunks)
         if change.edges_dirty:
             self.stage.GetRootLayer().Save()
@@ -359,6 +374,93 @@ class GraphView:
         x, y = self.positions[self.dragging]
         self.positions[self.dragging] = (x + dx, y + dy)
         self.refresh()
+
+    # -- creating nodes ----------------------------------------------------
+
+    def menu_entries(self):
+        """Every chunk the registry offers, as the frontend-agnostic MenuEntry list.
+
+        Qt renders the same list. A module that declares ChunkConfig.variants therefore
+        gains them here too, without this file knowing variants exist.
+        """
+        try:
+            return chunk_registry.ChunkRegistry().get_menu_entries()
+        except Exception as exc:  # noqa: BLE001 -- a broken registry must not kill the view
+            self.status = f"no chunk menu ({type(exc).__name__})"
+            return []
+
+    def create_chunk(self, entry, x: float, y: float):
+        """Create one menu entry's chunk(s) at a layout position.
+
+        The same sequence Qt runs: set the module-level position hook chunk_usd reads
+        while a chunk is being added, add through the scene so the normal load path
+        authors the prim, then clear the hook. Bypassing add_chunk and writing a prim
+        directly would skip the registration the rest of the framework relies on.
+        """
+        if self.scene is None:
+            self.status = "no chunk session; cannot create"
+            return self.refresh()
+        previous = chunk_usd._create_node_pos
+        chunk_usd._create_node_pos = self._layout_to_usd(x, y)
+        chunk_usd._pin_new_chunks = False
+        try:
+            created = entry.create()
+            for c in created:
+                self.scene.add_chunk(c)
+        except Exception as exc:  # noqa: BLE001 -- report, do not take the window down
+            self.status = f"create failed: {type(exc).__name__}: {exc}"
+            created = []
+        finally:
+            chunk_usd._create_node_pos = previous
+            chunk_usd._pin_new_chunks = None
+
+        if created:
+            self.stage.GetRootLayer().Save()
+            self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+            self.status = f"created {created[0].name}"
+            self.reload()
+        self.refresh(bodies=True)
+
+    def open_create_menu(self, x: float, y: float):
+        """A searchable list of chunks, landing the choice at (x, y).
+
+        Flet has no context-menu primitive that can pop at an arbitrary point, so this is
+        a dialog. The search field matches MenuEntry.search_terms, the same terms Qt's
+        filterable menu matches, so typing "trans" finds the same entries in both.
+        """
+        entries = self.menu_entries()
+        if not entries or self.page is None:
+            return self.refresh()
+
+        results = ft.ListView(spacing=1, height=360)
+
+        def show(term: str = ""):
+            term = term.strip().lower()
+            results.controls = [
+                ft.TextButton(
+                    " / ".join(e.namespace) or e.label,
+                    tooltip=e.tooltip or None,
+                    on_click=lambda _ev, entry=e: pick(entry),
+                )
+                for e in entries
+                if not term or any(term in t for t in e.search_terms)
+            ][:200]  # a long list is a slow dialog; refine the search instead
+            if self.live:
+                results.update()
+
+        def pick(entry):
+            self.page.close(dialog)
+            self.create_chunk(entry, x, y)
+
+        field = ft.TextField(label="chunk", autofocus=True, dense=True,
+                             on_change=lambda ev: show(ev.control.value))
+        show()
+        dialog = ft.AlertDialog(
+            title=ft.Text("New chunk", size=14),
+            content=ft.Column([field, results], width=420, height=420, tight=True),
+            actions=[ft.TextButton("Cancel", on_click=lambda _ev: self.page.close(dialog))],
+        )
+        self.page.open(dialog)
 
     def on_scroll(self, event):
         """Wheel zoom, anchored on the pointer.
@@ -418,7 +520,7 @@ class GraphView:
         attr = prim.GetAttribute(chunk_graph.POS_ATTR)
         if not attr:
             attr = prim.CreateAttribute(chunk_graph.POS_ATTR, Sdf.ValueTypeNames.Float2)
-        attr.Set(Gf.Vec2f(float(x + self.origin[0]), float(y + self.origin[1])))
+        attr.Set(Gf.Vec2f(*(float(v) for v in self._layout_to_usd(x, y))))
         self.stage.GetRootLayer().Save()
         self.status = f"moved {self.dragging.rsplit('/', 1)[-1]}"
         self.dragging = None
@@ -589,6 +691,7 @@ class GraphView:
 
 def main(page: ft.Page, network: str, context: str | None = None):
     view = GraphView(network, context)
+    view.page = page
     page.title = f"Chunk graph — {network.rsplit('/', 1)[-1]}"
     page.bgcolor = COL_CANVAS
     page.padding = 0
