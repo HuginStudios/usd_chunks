@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -142,6 +143,51 @@ def _reference_rpy(roll, pitch, yaw, vector):
     return (cz * x2 - sz * y2, sz * x2 + cz * y2, z2)
 
 
+BILLION_LAUGHS = """<?xml version="1.0"?>
+<!DOCTYPE robot [
+  <!ENTITY a "aaaaaaaaaa">
+  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+  <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+]>
+<robot name="&c;"><link name="base"/></robot>
+"""
+
+
+class TestUntrustedInput:
+    """A URDF is a download. It gets parsed before anyone has looked at it."""
+
+    def test_a_doctype_is_refused(self):
+        """ElementTree expands entities, so a few lines can exhaust memory.
+
+        Measured on the three-level version below: 210 bytes of source expands to a
+        kilobyte, and every further level multiplies that again. A URDF has no legitimate
+        use for a DOCTYPE, so refusing one costs nothing.
+        """
+        bomb = BILLION_LAUGHS
+        with pytest.raises(ValueError, match="DOCTYPE"):
+            urdf_import.parse(bomb)
+
+    def test_ordinary_urdf_still_parses(self):
+        """The guard must not be a scheme that rejects real files."""
+        assert urdf_import.parse(TWO_LINK)["roots"] == ["base"]
+
+    def test_the_urdf_is_not_held_open(self, scene, tmp_path):
+        """Windows keeps a lock on an unclosed handle, so the file cannot be replaced.
+
+        Honest about its own limits: on CPython this passes with or without the fix,
+        because refcounting closes the temporary as soon as read() returns. It is here to
+        state the requirement and to catch a regression on a runtime that collects less
+        promptly -- not as evidence the bare open() was harmless. It was not: nothing in
+        the language guarantees that timing, and the import read every mesh that way too.
+        """
+        stage, _ = scene
+        _import(scene, TWO_LINK, tmp_path)
+        source = tmp_path / "robot.urdf"
+        replacement = tmp_path / "other.urdf"
+        replacement.write_text(TWO_LINK, encoding="utf-8")
+        os.replace(replacement, source)  # raises PermissionError if still held
+
+
 class TestOrigin:
     @pytest.mark.parametrize(
         "rpy",
@@ -208,6 +254,126 @@ TWISTED = """<robot name="twisted">
   </joint>
 </robot>
 """
+
+
+#: A branching mechanism whose joint origins turn about TWO axes at once.
+#:
+#: That is the whole point of it. A single-axis rpy composes the same whichever way the
+#: rotations are multiplied, so the SO-101 and the Panda both validated an implementation
+#: that was wrong -- only the Open Duck Mini, which has two-axis origins and branches,
+#: exposed it. This is the smallest thing with that property, and it needs no meshes, so
+#: the check can live in the suite instead of in a PR description.
+TWO_AXIS = """<robot name="twoaxis">
+  <link name="base">
+    <inertial><mass value="1"/><origin xyz="0 0 0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+  </link>
+  <link name="left_upper">
+    <inertial><mass value="1"/><origin xyz="0 0 0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+  </link>
+  <link name="left_lower">
+    <inertial><mass value="1"/><origin xyz="0 0 0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+  </link>
+  <link name="right_upper">
+    <inertial><mass value="1"/><origin xyz="0 0 0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+  </link>
+  <joint name="left_hip" type="revolute">
+    <parent link="base"/><child link="left_upper"/>
+    <origin xyz="0.019 0.035 -0.046" rpy="-1.5707963 0 1.5707963"/>
+    <axis xyz="0 0 1"/><limit lower="-0.6" upper="0.6" effort="10" velocity="1"/>
+  </joint>
+  <joint name="left_knee" type="revolute">
+    <parent link="left_upper"/><child link="left_lower"/>
+    <origin xyz="0.074 0 0.035" rpy="3.1415927 1.5707963 0"/>
+    <axis xyz="0 -1 0"/><limit lower="-0.6" upper="0.6" effort="10" velocity="1"/>
+  </joint>
+  <joint name="right_hip" type="revolute">
+    <parent link="base"/><child link="right_upper"/>
+    <origin xyz="0.019 -0.035 -0.046" rpy="0.3 -0.7 1.1"/>
+    <axis xyz="0 0 1"/><limit lower="-0.6" upper="0.6" effort="10" velocity="1"/>
+  </joint>
+</robot>
+"""
+
+#: The real robots this was validated against are not in the repo -- they are downloads,
+#: and the meshes are tens of megabytes. To re-run the full check, fetch:
+#:
+#:   SO-101   github.com/TheRobotStudio/SO-ARM100 (so101_new_calib.urdf)
+#:   Panda    github.com/frankaemika/franka_ros   (panda.urdf + collision STLs)
+#:   Duck     github.com/apirrone/Open_Duck_Mini  branch v2,
+#:            mini_bdx/robots/open_duck_mini_v2/robot.urdf
+#:
+#: then point URDF_ORACLE_ASSETS at a directory holding them and the test below picks
+#: every .urdf up. The synthetic case above is what actually guards the bug in CI.
+_ASSET_DIR = os.environ.get("URDF_ORACLE_ASSETS")
+
+mujoco = pytest.importorskip("mujoco", reason="the FK oracle needs MuJoCo")
+
+
+def _mujoco_positions(urdf_path):
+    """Where MuJoCo puts each body, parsing the same URDF independently."""
+    model = mujoco.MjModel.from_xml_path(str(urdf_path))
+    data = mujoco.MjData(model)
+    mujoco.mj_resetData(model, data)
+    mujoco.mj_forward(model, data)
+    out = {}
+    for index in range(model.nbody):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, index)
+        if name:
+            out[name] = tuple(float(v) for v in data.xpos[index])
+    return out
+
+
+class TestAgainstMuJoCo:
+    """The mapping checked against something that had no hand in producing it.
+
+    Every other test here asserts what this code was written to do. MuJoCo parses the same
+    URDF and computes its own forward kinematics, so agreeing with it is evidence rather
+    than restatement -- and it is the only kind of test that would have caught the rpy
+    composition being backwards.
+    """
+
+    def test_every_link_is_where_mujoco_puts_it(self, scene, tmp_path):
+        stage, _ = scene
+        _import(scene, TWO_AXIS, tmp_path)
+        reference = _mujoco_positions(tmp_path / "robot.urdf")
+
+        cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        checked = 0
+        for name, expected in reference.items():
+            prim = stage.GetPrimAtPath(f"/World/robot/{name}")
+            if not prim.IsValid():
+                continue
+            ours = cache.GetLocalToWorldTransform(prim).ExtractTranslation()
+            for got, want in zip(ours, expected):
+                assert got == pytest.approx(want, abs=1e-6), f"{name} is misplaced"
+            checked += 1
+        # Three of the four links: MuJoCo folds a URDF's root into its worldbody, so
+        # `base` is not a body it can be asked about. The same is true of the SO-101's
+        # base_link and the Panda's, which is why they were skipped there too.
+        assert checked == 3, "the oracle compared the wrong number of links"
+
+    @pytest.mark.skipif(not _ASSET_DIR, reason="URDF_ORACLE_ASSETS is not set")
+    def test_real_robots_match_mujoco(self, scene, tmp_path):
+        """The same check against the robots as downloaded, when they are available."""
+        stage, _ = scene
+        sources = sorted(Path(_ASSET_DIR).rglob("*.urdf"))
+        assert sources, f"no .urdf under {_ASSET_DIR}"
+        for source in sources:
+            reference = _mujoco_positions(source)
+            _import(scene, source.read_text(encoding="utf-8"), tmp_path,
+                    mesh_root=str(source.parent))
+            cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+            for name, expected in reference.items():
+                prim = stage.GetPrimAtPath(f"/World/robot/{name}")
+                if not prim.IsValid():
+                    continue
+                ours = cache.GetLocalToWorldTransform(prim).ExtractTranslation()
+                for got, want in zip(ours, expected):
+                    assert got == pytest.approx(want, abs=1e-5), f"{source.name}: {name}"
 
 
 class TestJointFrames:

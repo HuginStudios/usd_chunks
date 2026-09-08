@@ -232,7 +232,8 @@ def read_stl(path):
     hash and a tolerance, and flat-shaded triangles are what an STL means anyway.
     """
     try:
-        data = open(path, "rb").read()
+        with open(path, "rb") as handle:
+            data = handle.read()
     except OSError:
         return None
     if len(data) < 84:
@@ -406,6 +407,12 @@ def parse(source: str) -> dict:
     Separate from authoring so the tree logic is testable on its own, and so a malformed
     file fails before anything has been written to the stage.
     """
+    # A URDF is something you download, and ElementTree expands entities: three <!ENTITY>
+    # lines turn 210 bytes into a kilobyte, and each further level multiplies it again, so
+    # a small file can exhaust memory before anything gets parsed. A URDF has no legitimate
+    # use for a DOCTYPE, so refusing one costs nothing and closes it.
+    if "<!DOCTYPE" in source[:4096]:
+        raise ValueError("URDF declares a DOCTYPE; refusing to expand entities")
     root = ET.fromstring(source)
     links = {link.get("name"): link for link in root.findall("link")}
     # find(), not get(): <parent> and <child> are elements in URDF, not attributes. Reading
@@ -459,7 +466,8 @@ def execute(node):
 
     with Usd.EditContext(stage, layer):
         try:
-            robot = parse(open(file_path, encoding="utf-8").read())
+            with open(file_path, encoding="utf-8") as handle:
+                robot = parse(handle.read())
         except ET.ParseError as exc:
             print(f"[URDFImport] {file_path} is not readable URDF: {exc}")
             return
