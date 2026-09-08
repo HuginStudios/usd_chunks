@@ -71,6 +71,13 @@ GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to 
 MARGIN = 120.0
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.25, 3.0, 1.1
 
+#: Which view slot drives execution, stored on the CONTEXT prim -- the same attribute Qt
+#: reads, so an active view survives a round trip through either frontend.
+ACTIVE_VIEW_ATTR = "chunk:activeView"
+#: Which slot a view chunk occupies, stored on the view's own prim.
+VIEW_SLOT_ATTR = "view:slot"
+CHUNK_TYPE_ATTR = "info:chunkType"
+
 
 class _Scene(SceneSender):
     """The minimum a chunk session needs to exist: a stage and a selection."""
@@ -661,6 +668,108 @@ class GraphView:
         top = min(self.positions[p][1] for p in chosen)
         self.paste_at(left + 40, top + 40, nodes, edges)
 
+    # -- view slots --------------------------------------------------------
+
+    def _context_prim(self):
+        prim = self.stage.GetPrimAtPath(Sdf.Path(self.context))
+        return prim if prim and prim.IsValid() else None
+
+    def active_slot(self) -> int:
+        """The view slot driving execution in this context, 0 for none.
+
+        Stored as chunk:activeView on the CONTEXT prim, which is the same place Qt reads
+        and writes -- so a file saved with slot 2 active opens on slot 2 in either
+        frontend. Each context has its own slots: a tab view and a group view can both be
+        slot 1 without colliding.
+        """
+        prim = self._context_prim()
+        if prim is None:
+            return 0
+        attr = prim.GetAttribute(ACTIVE_VIEW_ATTR)
+        return int(attr.Get() or 0) if attr and attr.IsValid() else 0
+
+    def view_chunks(self) -> dict:
+        """{slot: node path} for the view chunks in this context."""
+        found = {}
+        for path, prim in self.prims.items():
+            if (prim.GetAttribute(CHUNK_TYPE_ATTR).Get() or "") != "view":
+                continue
+            attr = prim.GetAttribute(VIEW_SLOT_ATTR)
+            slot = int(attr.Get() or 0) if attr and attr.IsValid() else 0
+            if slot:
+                found[slot] = path
+        return found
+
+    def set_active_slot(self, slot: int):
+        """Switch which view drives execution, and recook for it.
+
+        The cooking itself is chunk_usd.recook_for_view -- the same function the Qt graph
+        calls. It blocks and mutes everything outside the active view's upstream tree, so
+        this is a real execution switch rather than a highlight.
+        """
+        prim = self._context_prim()
+        if prim is None or self.scene is None:
+            self.status = "no context to switch views in"
+            return self.refresh()
+        # Resolve BEFORE writing anything. Writing first meant switching to an empty slot
+        # persisted a slot with no view behind it -- the attribute said 3, nothing cooked,
+        # and the file carried that state to the next open.
+        context_chunk = self.chunks.get(self.context)
+        view_chunk = None
+        if slot:
+            view_chunk = chunk_usd.find_view_chunk_for_slot(
+                slot, self.stage, self.scene, context_chunk)
+            if view_chunk is None:
+                self.status = "no view in slot %d" % slot
+                return self.refresh()
+
+        if slot:
+            attr = prim.GetAttribute(ACTIVE_VIEW_ATTR)
+            if not (attr and attr.IsValid()):
+                attr = prim.CreateAttribute(ACTIVE_VIEW_ATTR, Sdf.ValueTypeNames.Int,
+                                            custom=True)
+            attr.Set(int(slot))
+        elif (attr := prim.GetAttribute(ACTIVE_VIEW_ATTR)) and attr.IsValid():
+            # Slot 0 is "no view". Qt never writes a 0, it clears -- an authored 0 and an
+            # absent attribute would otherwise be two spellings of the same state.
+            prim.RemoveProperty(ACTIVE_VIEW_ATTR)
+        try:
+            chunk_usd.recook_for_view(self.stage, self.scene, context_chunk, view_chunk)
+        except Exception as exc:  # noqa: BLE001 -- a failed cook must not kill the view
+            self.status = "recook failed: %s" % type(exc).__name__
+        else:
+            self.status = ("view %d active" % slot) if slot else "no active view"
+        self.stage.GetRootLayer().Save()
+        self.reload()
+        self.refresh(bodies=True)
+
+    def create_view(self, x: float, y: float):
+        """V: add a view node, taking the lowest free slot."""
+        taken = set(self.view_chunks())
+        free = next((n for n in (1, 2, 3) if n not in taken), None)
+        if free is None:
+            self.status = "all three view slots are taken"
+            return self.refresh()
+        entry = next((e for e in self.menu_entries()
+                      if getattr(e.module, "module_name", "") == "view"), None)
+        if entry is None:
+            self.status = "no view module"
+            return self.refresh()
+
+        before = set(self.prims)
+        self.create_chunk(entry, x, y)
+        made = set(self.prims) - before
+        if not made:
+            return
+        prim = self.prims[made.pop()]
+        attr = prim.GetAttribute(VIEW_SLOT_ATTR)
+        if not (attr and attr.IsValid()):
+            attr = prim.CreateAttribute(VIEW_SLOT_ATTR, Sdf.ValueTypeNames.Int, custom=True)
+        attr.Set(int(free))
+        self.stage.GetRootLayer().Save()
+        self.reload()
+        self.set_active_slot(free)
+
     # -- keyboard ----------------------------------------------------------
 
     def on_key(self, event):
@@ -694,6 +803,10 @@ class GraphView:
             return self.paste_at(*self._xy_of_viewport_centre())
         if key == "d" and event.ctrl:
             return self.duplicate_selection()
+        if key in ("0", "1", "2", "3") and not event.ctrl:
+            return self.set_active_slot(int(key))
+        if key == "v" and not event.ctrl:
+            return self.create_view(*self._xy_of_viewport_centre())
         if key == "g" and event.ctrl:
             return self.group_selection()
         if key == "a" and event.ctrl:
@@ -987,6 +1100,19 @@ class GraphView:
                         else ft.Alignment.TOP_LEFT))
         return out
 
+    def _header_colour(self, path: str, prim) -> str:
+        """A node's header colour. The active view gets the reserved accent, an inactive
+        view a dimmed one -- which of the three is driving execution is the single most
+        useful thing the graph can tell you at a glance."""
+        if chunk_graph.is_disabled(prim):
+            return "#242424"
+        slots = self.view_chunks()
+        active = self.active_slot()
+        for slot, view_path in slots.items():
+            if view_path == path:
+                return COL_VIEW_HEADER if slot == active else "#5a4030"
+        return COL_NODE_HEADER
+
     def node_controls(self):
         """One positioned Container per node, holding that chunk's real param widgets.
 
@@ -1006,7 +1132,7 @@ class GraphView:
             body = [ft.Container(
                 ft.Text(chunk_graph.node_label(prim), size=12, color=COL_TEXT,
                         weight=ft.FontWeight.W_500),
-                bgcolor="#242424" if chunk_graph.is_disabled(prim) else COL_NODE_HEADER,
+                bgcolor=self._header_colour(path, prim),
                 padding=ft.Padding.symmetric(vertical=5, horizontal=10),
                 border_radius=ft.BorderRadius.only(top_left=6, top_right=6),
                 width=NODE_W)]
