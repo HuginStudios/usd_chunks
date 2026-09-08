@@ -32,7 +32,7 @@ from pxr import Gf, Sdf, Usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_graph, chunk_usd
+from usd_chunks.plugins import chunk_flet, chunk_graph, chunk_usd
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, load_chunks
 
 #: One colour per port type, matching the Qt view's vocabulary.
@@ -49,7 +49,7 @@ PORT_COLOUR = {
 NODE_W, HEADER_H, ROW_H = 210.0, 30.0, 16.0
 PORT_R = 5.0
 GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to hit
-MARGIN = 60.0
+MARGIN = 120.0
 
 
 class _Scene(SceneSender):
@@ -134,6 +134,8 @@ class GraphView:
         self.wiring: chunk_graph.PortRef | None = None
         self.wire_to = (0.0, 0.0)
         self.canvas: cv.Canvas | None = None
+        self.stack: ft.Stack | None = None
+        self.param_widgets: list = []
         self.status_text: ft.Text | None = None
         self.reload()
 
@@ -143,6 +145,7 @@ class GraphView:
         self.prims, self.ports, self.edges = chunk_graph.read_graph(
             self.stage, self.context, self.chunks)
         raw = {path: chunk_graph.node_position(prim) for path, prim in self.prims.items()}
+        # MARGIN has to clear the port dots and their labels, which now hang off the left.
         # Screen space is USD space shifted so the top-left node sits at MARGIN. The offset
         # is kept because a drag has to be written back in the coordinates USD stores.
         self.origin = (min((x for x, _ in raw.values()), default=0.0) - MARGIN,
@@ -158,8 +161,15 @@ class GraphView:
         return sorted(ins, key=key), sorted(outs, key=key)
 
     def node_height(self, path: str) -> float:
+        """Tall enough for the ports AND for the param body sitting beside them."""
         ins, outs = self.rows(path)
-        return HEADER_H + ROW_H * max(len(ins), len(outs), 1) + 8
+        ports = HEADER_H + ROW_H * max(len(ins), len(outs), 1) + 8
+        chunk_obj = self.chunks.get(path)
+        body = 0.0
+        if chunk_obj is not None:
+            rows = len(list(chunk_obj.get_params()))
+            body = HEADER_H + min(260.0, 40.0 + 46.0 * rows) + 16
+        return max(ports, body)
 
     def port_xy(self, port: chunk_graph.PortRef):
         """Where a port's dot lands.
@@ -170,9 +180,12 @@ class GraphView:
         """
         ins, outs = self.rows(port.node_path)
         x0, y0 = self.positions[port.node_path]
+        # Just OUTSIDE the body, not on its edge. The body is a real control stacked over
+        # the canvas, so a dot drawn on the edge is underneath it and the click never
+        # reaches the gesture detector -- the port would be visible and dead.
         if port.is_input:
-            return x0, y0 + HEADER_H + ROW_H * (ins.index(port) + 0.5)
-        return x0 + NODE_W, y0 + HEADER_H + ROW_H * (outs.index(port) + 0.5)
+            return x0 - PORT_R - 2, y0 + HEADER_H + ROW_H * (ins.index(port) + 0.5)
+        return x0 + NODE_W + PORT_R + 2, y0 + HEADER_H + ROW_H * (outs.index(port) + 0.5)
 
     # -- hit testing -------------------------------------------------------
 
@@ -222,7 +235,7 @@ class GraphView:
                               if change.expression_error else ""))
             self.reload()
         self.selected = None
-        self.refresh()
+        self.refresh(bodies=True)
 
     def on_secondary_tap(self, event):
         port = self.port_at(event.local_x, event.local_y)
@@ -332,22 +345,9 @@ class GraphView:
             x, y = self.positions[path]
             height = self.node_height(path)
             off = chunk_graph.is_disabled(prim)
-            out.append(cv.Rect(x, y, NODE_W, height, border_radius=6,
-                               paint=ft.Paint(color="#2a2a2a" if off else "#3a3a3a")))
-            out.append(cv.Rect(x, y, NODE_W, HEADER_H, border_radius=6,
-                               paint=ft.Paint(color="#33383d" if off else "#4a5a6a")))
-            out.append(cv.Rect(x, y, NODE_W, height, border_radius=6,
-                               paint=ft.Paint(stroke_width=1, color="#101010",
-                                              style=ft.PaintingStyle.STROKE)))
-            out.append(cv.Text(x + 10, y + 7, chunk_graph.node_label(prim),
-                               ft.TextStyle(size=13, color="#ffffff",
-                                            weight=ft.FontWeight.W_500)))
-            kind = chunk_graph.node_kind(prim)
-            if kind:
-                out.append(cv.Text(x + NODE_W - 10, y + 10, kind,
-                                   ft.TextStyle(size=9, color="#9fb0c0"),
-                                   alignment=ft.Alignment.TOP_RIGHT))
-
+            # The body is a real control now (see node_controls); the canvas keeps the
+            # wires and the ports, which have to sit on the same surface as the curves
+            # that meet them.
             for port in self.ports[path]:
                 px, py = self.port_xy(port)
                 if self.selected is not None and port.attr_path == self.selected.attr_path:
@@ -356,11 +356,52 @@ class GraphView:
                                      paint=ft.Paint(color=PORT_COLOUR.get(port.port_type,
                                                                           "#888888"))))
                 out.append(cv.Text(
-                    px + PORT_R + 4 if port.is_input else px - PORT_R - 4, py - 7,
+                    px - PORT_R - 4 if port.is_input else px + PORT_R + 4, py - 7,
                     port.name, ft.TextStyle(size=9, color="#b9b9b9"),
-                    alignment=ft.Alignment.TOP_LEFT if port.is_input
-                    else ft.Alignment.TOP_RIGHT))
+                    alignment=ft.Alignment.TOP_RIGHT if port.is_input
+                    else ft.Alignment.TOP_LEFT))
         return out
+
+    def node_controls(self):
+        """One positioned Container per node, holding that chunk's real param widgets.
+
+        Qt embeds the actual ChunkWidget on its canvas through a proxy; a Flet canvas
+        cannot host controls at all, so the graph is a Stack -- wires drawn on a canvas
+        underneath, node bodies as ordinary positioned controls on top. Same result, and
+        the params are live: moving a slider here changes the chunk.
+
+        The widgets are kept on self because nothing else holds them. Each registers a
+        notice callback, and a collected widget stops updating.
+        """
+        self.param_widgets = []
+        controls = []
+        for path, prim in self.prims.items():
+            x, y = self.positions[path]
+            chunk_obj = self.chunks.get(path)
+            body = [ft.Container(
+                ft.Text(chunk_graph.node_label(prim), size=13, color="#ffffff",
+                        weight=ft.FontWeight.W_500),
+                bgcolor="#33383d" if chunk_graph.is_disabled(prim) else "#4a5a6a",
+                padding=ft.Padding.symmetric(vertical=5, horizontal=10),
+                border_radius=ft.BorderRadius.only(top_left=6, top_right=6),
+                width=NODE_W)]
+
+            if chunk_obj is not None:
+                param_controls, widgets = chunk_flet.build_chunk_controls(chunk_obj)
+                self.param_widgets += widgets
+                body.append(ft.Container(
+                    ft.Column(param_controls, spacing=2, tight=True, scroll=ft.ScrollMode.AUTO),
+                    padding=8, width=NODE_W, height=min(260.0, 40.0 + 46.0 * len(param_controls)),
+                ))
+
+            controls.append(ft.Container(
+                ft.Column(body, spacing=0, tight=True),
+                data=path,  # so a move can find this control without rebuilding it
+                left=x, top=y, width=NODE_W,
+                bgcolor="#2a2a2a" if chunk_graph.is_disabled(prim) else "#3a3a3a",
+                border=ft.Border.all(1, "#101010"), border_radius=6,
+            ))
+        return controls
 
     def extent(self):
         width = max((x for x, _ in self.positions.values()), default=0) + NODE_W + MARGIN * 2
@@ -374,11 +415,24 @@ class GraphView:
                 + (f"   —   {self.session_error}" if self.session_error else "")
                 + (f"   —   {self.status}" if self.status else ""))
 
-    def refresh(self):
+    def refresh(self, bodies: bool = False):
+        """Redraw. `bodies` rebuilds the node controls too, which is only needed when the
+        set of nodes changed -- rebuilding them on every drag frame would recreate every
+        param widget sixty times a second and drop the notice callbacks they hold."""
         if self.canvas is not None:
             self.canvas.shapes = self.shapes()
             self.canvas.width, self.canvas.height = self.extent()
             self.canvas.update()
+        if bodies and self.stack is not None:
+            self.stack.controls = [self.canvas] + self.node_controls()
+            self.stack.update()
+        elif self.stack is not None:
+            # Positions moved but the controls are the same objects: move them in place.
+            for control in self.stack.controls[1:]:
+                path = getattr(control, "data", None)
+                if path in self.positions:
+                    control.left, control.top = self.positions[path]
+            self.stack.update()
         if self.status_text is not None:
             self.status_text.value = self.summary()
             self.status_text.update()
@@ -393,13 +447,16 @@ def main(page: ft.Page, network: str, context: str | None = None):
     width, height = view.extent()
     view.canvas = cv.Canvas(view.shapes(), width=width, height=height)
     view.status_text = ft.Text(view.summary(), size=12, color="#9fb0c0")
+    # Canvas first so the wires pass UNDER the node bodies, the way they do in Qt.
+    view.stack = ft.Stack([view.canvas] + view.node_controls(),
+                          width=width, height=height)
 
     page.add(
         ft.Column([
             ft.Container(view.status_text, padding=10, bgcolor="#1b1b1b"),
             ft.Container(
                 ft.GestureDetector(
-                    content=view.canvas,
+                    content=view.stack,
                     on_tap_down=view.on_tap,
                     on_secondary_tap_down=view.on_secondary_tap,
                     on_pan_start=view.on_pan_start,
