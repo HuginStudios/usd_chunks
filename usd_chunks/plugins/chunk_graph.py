@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from pxr import Sdf, Usd
 
@@ -801,3 +802,151 @@ def apply_param_values(chunk: core.ChunkCommon, values: list) -> None:
 #: be pasted in the Flet one, because both now speak the same ClipboardNode/ClipboardEdge.
 node_clipboard: list = []
 edge_clipboard: list = []
+
+
+# ---------------------------------------------------------------------------
+# The frontend contract
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class GraphFrontend(Protocol):
+    """What a graph frontend has to be able to do, whatever it draws with.
+
+    This exists because the second frontend silently lacked half of the first one, and
+    nothing said so. Qt and Flet had eleven operations with the same meaning under eleven
+    different names -- `_delete_selected` and `delete_selected`,
+    `_copy_selected_to_clipboard` and `copy_selection` -- and exactly two names in common.
+    A third frontend (QML, ImGui, a web client) had nothing to read but the Qt file, which
+    is 5000 lines and mostly Qt.
+
+    **Scope.** These are the verbs. Drawing and input are deliberately absent: they have no
+    shared shape. Flet computes `shapes()` and positions bodies in a Stack; Qt builds
+    QGraphicsItems that place themselves; QML would bind a model to delegates. Requiring
+    any one of those shapes would smuggle a toolkit's design into the contract. So the rule
+    is: if it decides *what happens to the graph* it belongs here, and if it decides *what
+    appears on screen* it does not.
+
+    **Why a Protocol and not an ABC.** ABCMeta cannot be mixed into a PySide6 class -- the
+    metaclasses conflict outright. The usual workaround (a metaclass deriving from both)
+    does construct, but Shiboken's __call__ skips the abstract-method check, so an
+    incomplete Qt frontend instantiates happily. A contract that appears to be enforced but
+    is not is worse than none, so enforcement lives in a conformance test instead
+    (tests/test_graph_frontend_contract.py), which checks names AND signatures.
+
+    **Names.** Taken from the Flet implementation, because Qt's equivalents are private and
+    inconsistently phrased, not because Flet is the reference. A Qt adapter conforms by
+    delegating.
+
+    Implementations are also expected to hold `context` (the prim path of the graph being
+    shown) and `selected_nodes` (a set of prim paths), but a Protocol cannot usefully
+    require plain attributes on classes that may compute them, so they are documented here
+    rather than declared.
+    """
+
+    # -- selection ---------------------------------------------------------
+
+    def set_selection(self, paths, add: bool = False) -> None:
+        """Select these node paths, replacing the selection unless `add`.
+
+        Must mirror onto each chunk's ChunkFlags.State.SELECTED bit: the shared operations
+        read the bit, not a frontend attribute, so a selection kept privately is invisible
+        to them.
+        """
+
+    def selected_chunks(self) -> list:
+        """The selected chunks, as chunk objects."""
+
+    # -- editing -----------------------------------------------------------
+
+    def delete_selected(self) -> None:
+        """Delete the selected chunks, healing the exec chain closed behind them."""
+
+    def toggle_disable_selected(self) -> None:
+        """Flip DISABLED on the selection. A disabled chunk stays visible, greyed."""
+
+    def copy_selection(self) -> None:
+        """Snapshot the selection into chunk_graph.node_clipboard/edge_clipboard.
+
+        The clipboard is shared between frontends, so a copy here must be pasteable
+        anywhere: put ClipboardNode/ClipboardEdge in those two module-level lists rather
+        than inventing a private format.
+        """
+
+    def cut_selection(self) -> None:
+        """Copy, then delete."""
+
+    def paste_at(self, x: float, y: float, nodes=None, edges=None) -> None:
+        """Materialize the clipboard at a layout point, wire it, and select the result.
+
+        Wires with both ends in the clipboard are recreated between the new nodes; a wire
+        with only one end copied is dropped rather than reattached to the original.
+        """
+
+    def duplicate_selection(self) -> None:
+        """Copy and paste in one step at an offset, WITHOUT touching the clipboard."""
+
+    def group_selection(self) -> None:
+        """Put the selection in a new chunkgroup, which takes its place in the exec chain.
+
+        The boundary must be read before anything is removed: deleting the selection heals
+        the chain closed, after which nothing records what used to attach where.
+        """
+
+    def create_chunk(self, entry, x: float, y: float) -> None:
+        """Create one ChunkRegistry MenuEntry's chunk(s) at a layout point.
+
+        Takes an entry rather than a module name so variants work, and takes no menu: how
+        the user picks the entry is the frontend's business.
+        """
+
+    # -- navigation --------------------------------------------------------
+
+    def can_dive(self, path: str) -> bool:
+        """Whether `path` is a subnet the user may navigate into.
+
+        Must key on chunk_usd.is_chunkgroup, not on the CONTEXT flag: a chunk-in-chunk
+        carries CONTEXT too and is an implementation detail, not a subnet.
+        """
+
+    def dive_into(self, path: str) -> None:
+        """Show the inside of that chunkgroup as the graph.
+
+        Whatever this does, creating a chunk afterwards must land INSIDE the group --
+        add_chunk parents to the scene's current context, which navigating does not set by
+        itself.
+        """
+
+    def dive_out(self) -> None:
+        """Back up to the enclosing graph. A no-op at the top."""
+
+    # -- views -------------------------------------------------------------
+
+    def active_slot(self) -> int:
+        """Which view slot drives execution here; 0 for none."""
+
+    def set_active_slot(self, slot: int) -> None:
+        """Switch the driving view and recook.
+
+        Must go through chunk_usd.recook_for_view -- a highlight is not a view switch --
+        and must persist to chunk:activeView on the context prim, clearing rather than
+        writing a 0, so the choice survives a save and is seen by other frontends.
+        """
+
+    # -- viewport ----------------------------------------------------------
+
+    def frame(self, paths) -> None:
+        """Fit those nodes in the viewport."""
+
+
+#: The verbs a conformance test checks. Kept as data so a test can report exactly what a
+#: new frontend is missing instead of failing on the first absent name.
+GRAPH_FRONTEND_METHODS = (
+    "set_selection", "selected_chunks",
+    "delete_selected", "toggle_disable_selected",
+    "copy_selection", "cut_selection", "paste_at", "duplicate_selection",
+    "group_selection", "create_chunk",
+    "can_dive", "dive_into", "dive_out",
+    "active_slot", "set_active_slot",
+    "frame",
+)
