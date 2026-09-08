@@ -245,10 +245,14 @@ class FletMenuWidget(FletParamWidget):
     CONTROL_H = 34.0
     def build(self):
         items = [ft.dropdown.Option(str(i)) for i in getattr(self.param, "menu_items", [])]
-        self.control = ft.Dropdown(
-            options=items, dense=True, on_change=self.on_changed, text_size=11,
+        # on_select, not on_change: Flet 0.80's Dropdown has no on_change at all and
+        # raises on the keyword. It does have on_focus/on_blur, so it takes part in the
+        # is_editing() guard like the text fields -- an open dropdown must not let a
+        # keystroke through to the graph's shortcuts.
+        self.control = self._typing(ft.Dropdown(
+            options=items, dense=True, on_select=self.on_changed, text_size=11,
             filled=True, fill_color="#202020", border_color="#404040",
-            border_radius=3, content_padding=ft.Padding.symmetric(vertical=4, horizontal=8))
+            border_radius=3, content_padding=ft.Padding.symmetric(vertical=4, horizontal=8)))
 
     def apply_value(self, value):
         self.control.value = None if value is None else str(value)
