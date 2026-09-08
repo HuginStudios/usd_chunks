@@ -115,21 +115,33 @@ class TestFocusGuard:
             assert control.on_focus is not None, f"{name} does not report focus"
 
     def test_focus_counting_is_balanced(self, factory):
-        param = chunk.LineEdit("line")
-        widget = factory.create_widget(param)
-        assert not chunk_flet.is_editing()
+        tracker = chunk_flet.FocusTracker()
+        widget = factory.create_widget(chunk.LineEdit("line"))
+        widget.focus = tracker
+        assert not tracker.is_editing()
         widget.on_focus(None)
-        assert chunk_flet.is_editing()
+        assert tracker.is_editing()
         widget.on_blur(None)
-        assert not chunk_flet.is_editing()
+        assert not tracker.is_editing()
 
     def test_blur_without_focus_does_not_go_negative(self, factory):
         """A stray blur must not drive the counter below zero -- it would then take two
         focuses to register one, and the guard would silently stop working."""
+        tracker = chunk_flet.FocusTracker()
         widget = factory.create_widget(chunk.LineEdit("line"))
+        widget.focus = tracker
         widget.on_blur(None)
         widget.on_blur(None)
         widget.on_focus(None)
-        assert chunk_flet.is_editing()
+        assert tracker.is_editing()
         widget.on_blur(None)
-        assert not chunk_flet.is_editing()
+        assert not tracker.is_editing()
+
+    def test_two_trackers_are_independent(self, factory):
+        """The reason this is an object: two graph windows in one process shared a single
+        module-level counter, so typing in one suppressed the other's shortcuts."""
+        a, b = chunk_flet.FocusTracker(), chunk_flet.FocusTracker()
+        widget = factory.create_widget(chunk.LineEdit("line"))
+        widget.focus = a
+        widget.on_focus(None)
+        assert a.is_editing() and not b.is_editing()

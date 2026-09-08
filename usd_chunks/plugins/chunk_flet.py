@@ -16,27 +16,48 @@ to the param there would be re-entered by the notice that write produces.
 """
 from __future__ import annotations
 
+import logging
+
 import flet as ft
 
 from usd_chunks import chunk, chunk_core, chunk_widget_api
 from usd_chunks.chunk_flags import ChunkFlags
 
+logger = logging.getLogger(__name__)
+
 
 #: Row metrics. Flet lays out at render time and gives no way to ask a control how tall it
 #: ended up, so the heights a port needs to line up against have to be declared rather than
 #: measured. Qt reads live widget geometry instead -- same intent, different means.
-#: How many param controls currently hold keyboard focus.
-#:
-#: A graph frontend puts its shortcuts on the page, because Flet has no per-control key
-#: handling -- so Delete would delete the selected NODE while you are editing a text field,
-#: and D would toggle disable instead of typing a "d". The widgets know when they are being
-#: typed into and nothing else does, so they report it here and the graph asks.
-_EDITING = 0
+class FocusTracker:
+    """How many param controls currently hold keyboard focus.
 
+    A graph frontend puts its shortcuts on the page, because Flet has no per-control key
+    handling -- so Delete would delete the selected NODE while you are editing a text
+    field, and D would toggle disable instead of typing a "d". The widgets know when they
+    are being typed into and nothing else does, so they report it here and the graph asks.
 
-def is_editing() -> bool:
-    """True while a param control has keyboard focus."""
-    return _EDITING > 0
+    An object rather than a module global: two graph windows in one process shared a
+    single counter, so typing in one suppressed the other's shortcuts, and a widget
+    destroyed while focused leaked its count for the life of the process. Each view owns
+    one, and it dies with the widgets that feed it.
+    """
+
+    __slots__ = ("_count",)
+
+    def __init__(self):
+        self._count = 0
+
+    def enter(self) -> None:
+        self._count += 1
+
+    def leave(self) -> None:
+        # Never below zero: a stray blur would otherwise make it take two focuses to
+        # register one, and the guard would quietly stop working.
+        self._count = max(0, self._count - 1)
+
+    def is_editing(self) -> bool:
+        return self._count > 0
 
 
 LABEL_H = 14.0
@@ -123,13 +144,17 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
     # -- widget -> param ---------------------------------------------------
 
+    #: Set by build_chunk_controls. None when a widget is built outside a view, in which
+    #: case focus simply goes unreported -- there is no graph listening for it.
+    focus: "FocusTracker | None" = None
+
     def on_focus(self, _event):
-        global _EDITING
-        _EDITING += 1
+        if self.focus is not None:
+            self.focus.enter()
 
     def on_blur(self, _event):
-        global _EDITING
-        _EDITING = max(0, _EDITING - 1)
+        if self.focus is not None:
+            self.focus.leave()
 
     def _typing(self, control):
         """Wire a control's focus signals, if it has them. Called by the widgets whose
@@ -383,8 +408,8 @@ class ChunkFletWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
     def create_widget(self, param: "chunk.ChunkParamBase"):
         widget_class = self.get_map().get(param.evaluate_type())
         if widget_class is None:
-            print(f"[ChunkFlet] no widget for param {param.name!r} "
-                  f"({param.evaluate_type()!r})")
+            logger.warning("no Flet widget for param %r (%r)",
+                           param.name, param.evaluate_type())
             return None
         return widget_class(param)
 
@@ -438,7 +463,8 @@ class FletGroupWidget:
                 pass
 
 
-def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = None):
+def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = None,
+                         focus: "FocusTracker | None" = None):
     """Every param of a chunk as Flet controls, groups collapsible, nothing hidden.
 
     Returns (controls, widgets, offsets). The widgets come back because nothing else holds
@@ -468,6 +494,8 @@ def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = Non
                 y += GROUP_HEADER_H + inner_height
                 continue
             widget = factory.create_widget(param)
+            if widget is not None:
+                widget.focus = focus
             if widget is None:
                 continue
             widgets.append(widget)

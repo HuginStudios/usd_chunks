@@ -235,11 +235,16 @@ class TestSelectionAndKeys:
         view.on_key(key("A", ctrl=True))
         assert view.selected_nodes == set(view.prims)
 
-    def test_shortcuts_are_ignored_while_typing(self, view, first, monkeypatch):
+    def test_shortcuts_are_ignored_while_typing(self, view, first):
         """The focus rule. A page-level handler sees keystrokes meant for a TextField
-        inside a node; without this, typing a prim path deletes the node."""
+        inside a node; without this, typing a prim path deletes the node.
+
+        Driven through the tracker a widget actually calls, rather than by patching the
+        query -- the first version patched is_editing, which only proved the branch reads
+        it, not that a focused widget ever gets it there.
+        """
         view.set_selection([first])
-        monkeypatch.setattr(chunk_flet, "is_editing", lambda: True)
+        view.focus.enter()
         view.on_key(key("Delete"))
         assert first in view.prims, "Delete fired while a param was being edited"
         assert view.selected_nodes == {first}

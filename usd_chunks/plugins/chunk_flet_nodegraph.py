@@ -23,6 +23,7 @@ connects but does not yet write the expression.
 """
 from __future__ import annotations
 
+import logging
 import sys
 import weakref
 
@@ -37,6 +38,8 @@ from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.plugins import chunk_flet, chunk_graph, chunk_usd
 from usd_chunks.chunk_scene import CHUNKGROUP_MODULE
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, load_chunks
+
+logger = logging.getLogger(__name__)
 
 # Lifted verbatim from chunk_qt_nodegraph rather than picked to look similar. Two
 # frontends onto the same graph that disagree about what a float port looks like are two
@@ -151,7 +154,10 @@ class GraphView:
             chunk_usd.ChunkStageSync().initialize(self.stage, self.scene)
             load_chunks(self.stage, self.scene)
             self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
-        except Exception as exc:  # noqa: BLE001 -- a broken session must not stop drawing
+        except (AttributeError, KeyError, RuntimeError, OSError, ValueError) as exc:
+            # Loading a network runs chunk modules, so this can fail for environmental
+            # reasons and the view is still worth showing. Narrowed from bare Exception so
+            # a TypeError in this file's own setup is not disguised as a missing session.
             self.session_error = f"no chunk session ({type(exc).__name__}); drawing only"
 
         self.available = contexts(self.stage)
@@ -181,6 +187,9 @@ class GraphView:
         #: where Qt keeps it and what the shared operations read -- so a selection means
         #: the same thing to both frontends rather than being a private view detail.
         self.selected_nodes: set[str] = set()
+        #: Whose param controls have keyboard focus. Per view, not global:
+        #: two windows in one process must not suppress each other's shortcuts.
+        self.focus = chunk_flet.FocusTracker()
         self.live = False  # nothing may update the client until page.add has run
         self.status_text: ft.Text | None = None
         self.reload()
@@ -421,7 +430,9 @@ class GraphView:
                     chunk.set_state(ChunkFlags.State.SELECTED)
                 else:
                     chunk.unset_state(ChunkFlags.State.SELECTED)
-            except Exception:  # noqa: BLE001 -- a chunk that cannot hold state is not fatal
+            except AttributeError:
+                # A chunk object that does not carry state bits at all. Anything else is a
+                # bug and should surface rather than be skipped silently.
                 continue
 
     def selected_chunks(self):
@@ -810,7 +821,12 @@ class GraphView:
             prim.RemoveProperty(ACTIVE_VIEW_ATTR)
         try:
             chunk_usd.recook_for_view(self.stage, self.scene, context_chunk, view_chunk)
-        except Exception as exc:  # noqa: BLE001 -- a failed cook must not kill the view
+        except Exception as exc:  # noqa: BLE001
+            # Deliberately wide, and the only one left that is: a recook executes every
+            # chunk upstream of the view, which is arbitrary user code and can raise
+            # anything. Losing the window because one chunk is broken would be worse than
+            # reporting it. Logged as well as shown, or the traceback is gone for good.
+            logger.exception("recook failed while switching view slot")
             self.status = "recook failed: %s" % type(exc).__name__
         else:
             self.status = ("view %d active" % slot) if slot else "no active view"
@@ -854,7 +870,7 @@ class GraphView:
         including the ones meant for a TextField inside a node. Without this guard,
         typing a prim path would delete the node on Delete and toggle disable on "d".
         """
-        if chunk_flet.is_editing():
+        if self.focus.is_editing():
             return
         key = (event.key or "").lower()
         if key == "escape":
@@ -967,7 +983,10 @@ class GraphView:
         """
         try:
             return chunk_registry.ChunkRegistry().get_menu_entries()
-        except Exception as exc:  # noqa: BLE001 -- a broken registry must not kill the view
+        except (AttributeError, RuntimeError, OSError) as exc:
+            # Discovery walks the filesystem and imports arbitrary chunk modules, so it can
+            # fail for environmental reasons. Narrowed from bare Exception, which was also
+            # swallowing genuine bugs in the menu-building code itself.
             self.status = f"no chunk menu ({type(exc).__name__})"
             return []
 
@@ -1220,7 +1239,8 @@ class GraphView:
                 width=NODE_W)]
 
             if chunk_obj is not None:
-                param_controls, widgets, offsets = chunk_flet.build_chunk_controls(chunk_obj)
+                param_controls, widgets, offsets = chunk_flet.build_chunk_controls(
+                    chunk_obj, focus=self.focus)
                 # Where each param's control ended up, so a port lands level with it.
                 self.param_offsets[path] = offsets
                 if self.live:
