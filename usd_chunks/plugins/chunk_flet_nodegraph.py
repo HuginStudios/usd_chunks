@@ -58,6 +58,7 @@ COL_NODE_HEADER = "#2a2a2a"
 COL_NODE_BORDER = "#555555"
 COL_ACCENT = "#cab46a"        # ChunkWidget.SELECTED_COLOR
 COL_VIEW_HEADER = "#c87830"   # the ACTIVE view, the one driving execution
+COL_GROUP_HEADER = "#3d5a6c"  # a chunkgroup: double-click dives into it
 COL_CANVAS = "#252525"
 COL_TEXT = "#cccccc"
 
@@ -187,6 +188,9 @@ class GraphView:
     # -- state -------------------------------------------------------------
 
     def reload(self):
+        # Recomputed here, not just at construction: grouping creates a context and
+        # deleting a group removes one, and dive_out reads this list to find its parent.
+        self.available = contexts(self.stage)
         self.prims, self.ports, self.edges = chunk_graph.read_graph(
             self.stage, self.context, self.chunks)
         raw = {path: chunk_graph.node_position(prim) for path, prim in self.prims.items()}
@@ -498,7 +502,12 @@ class GraphView:
             self.status = "clipboard empty"
             return self.refresh()
 
-        made = self._materialize(nodes, x, y)
+        nested, prev_ctx = self._nest()
+        try:
+            made = self._materialize(nodes, x, y)
+        finally:
+            if nested:
+                self.scene._current_context = prev_ctx
         created = {i: get_chunk_prim_path(c) for i, c in made.items()}
 
         self.stage.GetRootLayer().Save()
@@ -668,6 +677,89 @@ class GraphView:
         top = min(self.positions[p][1] for p in chosen)
         self.paste_at(left + 40, top + 40, nodes, edges)
 
+    # -- navigation --------------------------------------------------------
+
+    def can_dive(self, path: str) -> bool:
+        """Whether `path` is a subnet the user may navigate into.
+
+        Keyed on is_chunkgroup, not on the CONTEXT flag. Both a chunkgroup and a
+        chunk-in-chunk (AMDMaterialXLibrary, which creates `reference` and `bind_material`
+        as an implementation detail) carry CONTEXT, so the flag cannot tell them apart --
+        which is exactly why diving into the AMD node used to be offered and should not be.
+        """
+        chunk = self.chunks.get(path)
+        return chunk is not None and chunk_usd.is_chunkgroup(chunk)
+
+    def dive_into(self, path: str):
+        """Show the inside of a chunkgroup as the graph."""
+        if not self.can_dive(path):
+            return self.refresh()
+        self.context = path
+        self.selected_nodes = set()
+        self.selected = None
+        self.wiring = None
+        # Framing is per-graph: the inside of a group has its own coordinates, and keeping
+        # the outer zoom would open it somewhere off-screen.
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.status = "in %s" % path.rsplit("/", 1)[-1]
+        self.reload()
+        self.refresh(bodies=True)
+
+    def parent_context(self) -> "str | None":
+        """The context enclosing this one, or None at the top."""
+        if not self.context or self.context == chunk_graph.CHUNKS_ROOT:
+            return None
+        parent = self.context.rsplit("/", 1)[0]
+        while parent and parent != "":
+            if parent in self.available:
+                return parent
+            if "/" not in parent.lstrip("/"):
+                break
+            parent = parent.rsplit("/", 1)[0]
+        return chunk_graph.CHUNKS_ROOT if chunk_graph.CHUNKS_ROOT in self.available else None
+
+    def dive_out(self):
+        """Back up to the enclosing graph."""
+        parent = self.parent_context()
+        if parent is None:
+            self.status = "already at the top"
+            return self.refresh()
+        inner = self.context
+        self.context = parent
+        self.selected_nodes = set()
+        self.selected = None
+        self.wiring = None
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.reload()
+        # Land with the group you came out of selected, so you can see where you were.
+        if inner in self.prims:
+            self.set_selection([inner])
+        self.status = "in %s" % parent.rsplit("/", 1)[-1]
+        self.refresh(bodies=True)
+
+    def on_double_tap(self, event):
+        node = self.node_at(*self._xy(event))
+        if node is None:
+            return self.dive_out()
+        if self.can_dive(node):
+            return self.dive_into(node)
+        self.status = "%s is not a subnet" % node.rsplit("/", 1)[-1]
+        self.refresh()
+
+    def _nest(self):
+        """Point the scene's current context at the group being shown, if any.
+
+        add_chunk parents new chunks to scene._current_context, which a dive does not set
+        -- so without this, creating a node while inside a group silently added it to the
+        graph OUTSIDE. Returns (changed, previous) to restore.
+        """
+        chunk = self.chunks.get(self.context)
+        if chunk is not None and chunk_usd.is_group_chunk(chunk):
+            previous = self.scene._current_context
+            self.scene._current_context = weakref.ref(chunk)
+            return True, previous
+        return False, None
+
     # -- view slots --------------------------------------------------------
 
     def _context_prim(self):
@@ -803,6 +895,10 @@ class GraphView:
             return self.paste_at(*self._xy_of_viewport_centre())
         if key == "d" and event.ctrl:
             return self.duplicate_selection()
+        if key == "backspace":
+            return self.dive_out()
+        if key == "enter" and len(self.selected_nodes) == 1:
+            return self.dive_into(next(iter(self.selected_nodes)))
         if key in ("0", "1", "2", "3") and not event.ctrl:
             return self.set_active_slot(int(key))
         if key == "v" and not event.ctrl:
@@ -906,6 +1002,7 @@ class GraphView:
         previous = chunk_usd._create_node_pos
         chunk_usd._create_node_pos = self._layout_to_usd(x, y)
         chunk_usd._pin_new_chunks = False
+        nested, prev_ctx = self._nest()
         try:
             created = entry.create()
             for c in created:
@@ -916,6 +1013,8 @@ class GraphView:
         finally:
             chunk_usd._create_node_pos = previous
             chunk_usd._pin_new_chunks = None
+            if nested:
+                self.scene._current_context = prev_ctx
 
         if created:
             self.stage.GetRootLayer().Save()
@@ -1106,6 +1205,8 @@ class GraphView:
         useful thing the graph can tell you at a glance."""
         if chunk_graph.is_disabled(prim):
             return "#242424"
+        if self.can_dive(path):
+            return COL_GROUP_HEADER
         slots = self.view_chunks()
         active = self.active_slot()
         for slot, view_path in slots.items():
@@ -1171,8 +1272,16 @@ class GraphView:
         height = max((y for _, y in self.positions.values()), default=0) + 300
         return width, height
 
+    def breadcrumb(self) -> str:
+        """Where you are, and how deep. Diving with nothing to show for it on screen is
+        how you get lost in a nested graph."""
+        if not self.context or self.context == chunk_graph.CHUNKS_ROOT:
+            return self.context or chunk_graph.CHUNKS_ROOT
+        parts = [p for p in self.context.split("/") if p]
+        return " / ".join(parts)
+
     def summary(self):
-        return (f"{self.context}   —   {len(self.prims)} nodes · {len(self.edges)} wires · "
+        return (f"{self.breadcrumb()}   —   {len(self.prims)} nodes · {len(self.edges)} wires · "
                 f"{sum(len(v) for v in self.ports.values())} ports · "
                 f"{len(self.available)} context(s)"
                 + (f"   —   {self.session_error}" if self.session_error else "")
@@ -1248,6 +1357,7 @@ def main(page: ft.Page, network: str, context: str | None = None):
                     on_pan_update=view.on_pan_update,
                     on_pan_end=view.on_pan_end,
                     on_scroll=view.on_scroll,
+                    on_double_tap_down=view.on_double_tap,
                 ),
                 expand=True,
             ),
