@@ -6,6 +6,7 @@ import uuid
 from contextlib import contextmanager, ExitStack
 from pxr import Sdf, Usd
 
+from usd_chunks import chunk_naming
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 
@@ -864,7 +865,7 @@ def _recorded_suffixes(stage, prim) -> set:
         return set()
     suffixes = set()
     for other in stage.TraverseAll():
-        if other == prim or other.GetTypeName() != "Chunk":
+        if other == prim or other.GetTypeName() != chunk_naming.CHUNK_PRIM_TYPENAME:
             continue
         attr = other.GetAttribute(XFORM_OP_ID_ATTR)
         value = attr.Get() if attr and attr.IsValid() else None

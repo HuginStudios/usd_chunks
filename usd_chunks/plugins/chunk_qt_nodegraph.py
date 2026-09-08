@@ -20,6 +20,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_core as core
+from usd_chunks import chunk_naming
 from usd_chunks import chunk_registry
 from usd_chunks.plugins import chunk_graph
 from usd_chunks.plugins import chunk_graph_layout
@@ -135,10 +136,10 @@ _COL_TEXT_PRIMARY = QtGui.QColor("#ffffff")
 _COL_TEXT_SECONDARY = QtGui.QColor("#aaaaaa")
 _COL_TEXT_LOCKED = QtGui.QColor("#888877")
 
-_CHUNKS_ROOT = "/chunks"
-_CHUNK_PRIM_TYPENAME = "Chunk"
-_EXEC_INPUT = "inputs:chunk"
-_EXEC_OUTPUT = "outputs:chunk"
+_CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
+_CHUNK_PRIM_TYPENAME = chunk_naming.CHUNK_PRIM_TYPENAME
+_EXEC_INPUT = chunk_naming.EXEC_INPUT
+_EXEC_OUTPUT = chunk_naming.EXEC_OUTPUT
 _UNBUILT = object()  # sentinel for ChunkGraphScene._built_context
 # Child predicate that keeps disabled chunks: disabling sets the chunk prim inactive
 # (prim.SetActive(False)), and the default GetChildren() skips inactive prims — which would
@@ -943,7 +944,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._exec_in_ports.append(port)
         self._exec_in_port = self._exec_in_ports[0]
 
-        if prim.HasAttribute("outputs:chunk"):
+        if prim.HasAttribute(chunk_naming.EXEC_OUTPUT):
             self._exec_out_port = ChunkPortItem(
                 f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
             )
@@ -1142,7 +1143,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         attrs = [
             a for a in self.prim.GetAttributes()
             if a.GetName().startswith("outputs:")
-            and a.GetName() != "outputs:chunk"
+            and a.GetName() != chunk_naming.EXEC_OUTPUT
             and a.GetName() not in covered
         ]
         if not attrs:

@@ -6,6 +6,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_utils
 import usd_chunks.chunk_flags
 from usd_chunks.chunk_core import ChunkParamWidgetBase
+from usd_chunks import chunk_naming
 from usd_chunks import chunk_core
 from usd_chunks.plugins import chunk_usd
 
@@ -1649,7 +1650,7 @@ class ViewSlotState(QtCore.QObject):
                 for p in stage.Traverse():
                     if p.GetAttribute("info:chunkType").Get() != "view":
                         continue
-                    exec_in = p.GetAttribute("inputs:chunk")
+                    exec_in = p.GetAttribute(chunk_naming.EXEC_INPUT)
                     if exec_in.IsValid():
                         for conn_path in exec_in.GetConnections():
                             if str(conn_path.GetPrimPath()) == prim_path:

@@ -46,8 +46,8 @@ PORT_STRING = "string"
 PORT_COLOR = "color"
 PORT_VECTOR = "vector"
 
-EXEC_INPUT = "inputs:chunk"
-EXEC_OUTPUT = "outputs:chunk"
+EXEC_INPUT = chunk_naming.EXEC_INPUT
+EXEC_OUTPUT = chunk_naming.EXEC_OUTPUT
 CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
 
 #: The prim type a chunk is, and the root scope, both taken from chunk_usd rather than
