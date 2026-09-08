@@ -27,7 +27,7 @@ from usd_chunks.plugins import chunk_usd
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
+from usd_chunks.plugins.chunk_qt_widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
 
 _PORT_RADIUS = 5
 _PORT_SNAP_PIXELS = 20  # on-screen click-tolerance radius for dropping a dragged wire near a port
@@ -165,6 +165,8 @@ def _get_proxy_sink() -> QtWidgets.QWidget:
     return _proxy_sink
 
 _PORT_EXEC = "exec"
+#: Inset of the floating context path from the graph viewport's top-left corner.
+_BREADCRUMB_MARGIN = 6
 _PORT_FLOAT = "float"
 _PORT_INT = "int"
 _PORT_BOOL = "bool"
@@ -2122,6 +2124,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         )
 
         self._rebuild_nodes()
+        # The context this graph was just built for is what the path row names, and a build
+        # is the only thing that changes it.
+        for view in self.views():
+            if hasattr(view, "refresh_breadcrumb"):
+                view.refresh_breadcrumb()
 
     def _schedule_rebuild(self):
         """Queue one deferred, coalesced rebuild.
@@ -3038,6 +3045,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         mh = self._menubar.sizeHint().height()
         self.setViewportMargins(0, mh, 0, 0)
 
+        # The path to this graph's own context, floating IN the canvas rather than in a
+        # strip above it. A row of chrome has to be given a height, and a height that suits
+        # one font clips another -- which is exactly what happened: the descenders went
+        # missing. Here the widget is sized by what it contains, so there is nothing to clip
+        # it, and the path reads as part of the graph it describes.
+        self._breadcrumb = ChunkContextBreadcrumb(self.viewport())
+        self._breadcrumb.navigate.connect(self.dive_into)
+        self._breadcrumb.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self._breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
+        self._breadcrumb.raise_()
+
         self._proxy_key_router = _ProxyKeyRouter(self)
         self._proxy_key_router.install()
         # Pair the install with a removal, or every view ever built leaves a filter
@@ -3071,6 +3089,25 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def resizeEvent(self, event: QtGui.QResizeEvent):
         super().resizeEvent(event)
         self._menubar.setFixedWidth(self.width())
+        self._anchor_breadcrumb()
+
+    def scrollContentsBy(self, dx: int, dy: int):
+        """Keep the context path pinned to the corner while the canvas moves under it.
+
+        QAbstractScrollArea scrolls the viewport's CHILD WIDGETS along with its contents, so
+        a widget parented to the viewport pans with the graph -- the path drifted off with
+        the nodes and read as one of them. Panning is the only thing that moves it, so
+        putting it back here costs a move per scroll and nothing else.
+        """
+        super().scrollContentsBy(dx, dy)
+        self._anchor_breadcrumb()
+
+    def _anchor_breadcrumb(self) -> None:
+        """Top-left of the canvas, above whatever is drawn there."""
+        breadcrumb = getattr(self, "_breadcrumb", None)
+        if breadcrumb is not None:
+            breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
+            breadcrumb.raise_()
 
     def hideEvent(self, event: QtGui.QHideEvent):
         super().hideEvent(event)
@@ -3082,6 +3119,23 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def showEvent(self, event: QtGui.QShowEvent):
         super().showEvent(event)
         self._proxy_key_router.install()
+        self.refresh_breadcrumb()
+
+    def refresh_breadcrumb(self) -> None:
+        """Point the path row at this graph's own context.
+
+        Called when the page becomes visible and at the end of a scene build -- the two
+        moments the context can differ from what is drawn. Cheap either way: the row is one
+        button per level of nesting.
+        """
+        breadcrumb = getattr(self, "_breadcrumb", None)
+        if breadcrumb is None:
+            return
+        breadcrumb.set_context(self._graph_context())
+        # Sized by its contents, not by a strip: a floating row has nothing to stretch it,
+        # so it has to take the width its buttons actually need or it clips them.
+        breadcrumb.resize(breadcrumb.sizeHint())
+        self._anchor_breadcrumb()
 
     @staticmethod
     def _grid_points_in_rect(rect: QtCore.QRectF, spacing: int) -> list:

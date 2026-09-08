@@ -2524,3 +2524,141 @@ def file_dial(name_filter: Optional[str] = None, create_new=False, directory=Fal
         res = QtWidgets.QFileDialog.getOpenFileName(None, "Open File", "", _filter, "")
 
     return res[0]
+
+
+class ChunkContextBreadcrumb(QtWidgets.QWidget):
+    """The path from the scene's root group down to the one being looked at.
+
+    Tabs here are the groups you have OPENED, in the order you opened them -- browser tabs,
+    not a tree. That is what makes them fast to hit and also what makes them silent about
+    hierarchy: dive straight into a nested group from the graph and its parent may not be
+    open at all, so no amount of arranging the tab row can show where you are. A path can,
+    because it is not a set: it has direction, it is as long as the nesting is deep rather
+    than as long as the session, and it leaves the tabs where muscle memory left them.
+
+    Every entry is clickable, including one whose group has no tab open -- clicking it dives
+    there and opens one. A path you can only partly click is the thing that makes context
+    navigation irritating elsewhere.
+    """
+
+    #: Emitted with the context chunk the user clicked.
+    navigate = QtCore.Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._layout = QtWidgets.QHBoxLayout(self)
+        self._layout.setContentsMargins(6, 2, 6, 2)
+        self._layout.setSpacing(3)
+        # Sized by what it holds. It floats over the graph canvas rather than living in a
+        # strip, so nothing stretches it and nothing clips it -- a strip has to be given a
+        # height, and a height that suits one font cuts the descenders off another.
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed
+        )
+        # Nothing but the text. A plate under it read as a panel sitting on the graph --
+        # one more piece of furniture -- where the path is meant to be a label on the canvas
+        # itself. The buttons are auto-raise, so they stay flat until hovered, and the
+        # explicit transparency keeps a host stylesheet from painting one back in.
+        self.setObjectName("chunkContextPath")
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet(
+            "QWidget#chunkContextPath { background: transparent; }"
+            "QWidget#chunkContextPath QToolButton { background: transparent; border: none; }"
+            "QWidget#chunkContextPath QLabel { background: transparent; }"
+        )
+
+    def showEvent(self, event):
+        """Take the size the path needs, once there is something laid out to measure.
+
+        A layout skips hidden widgets, and a child created while its parent is not yet
+        visible is hidden -- so sizing at set_context time measured the margins alone and
+        left a 12x4 plate holding four buttons nobody could see. Being shown is the first
+        moment the hint is real.
+        """
+        super().showEvent(event)
+        self.resize(self.sizeHint())
+
+    def set_context(self, ctx) -> None:
+        """Rebuild the row for ctx, root first."""
+        while (item := self._layout.takeAt(0)) is not None:
+            if (w := item.widget()) is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+        entries = context_ancestry(ctx)
+        # Nothing to say at the root of an empty scene, and an empty plate floating in the
+        # corner is worse than no plate.
+        self.setVisible(bool(entries))
+        for i, node in enumerate(entries):
+            if i:
+                sep = QtWidgets.QLabel("›", self)  # a single ›, not a > that reads as markup
+                sep.setEnabled(False)
+                # A touch larger than the names it divides: at the same size the glyph is
+                # thin enough to read as punctuation inside a word rather than as a step
+                # between two places.
+                sep_font = sep.font()
+                sep_font.setPointSizeF(sep_font.pointSizeF() + 2)
+                sep.setFont(sep_font)
+                sep.show()
+                self._layout.addWidget(sep)
+            entry = self._entry(node, is_current=node is ctx)
+            # Shown explicitly. These are built into an already-visible parent, and a child
+            # that is never shown is skipped by the layout -- which is how the plate ended
+            # up 12x4 with a full path inside it.
+            entry.show()
+            self._layout.addWidget(entry)
+        # No trailing stretch: that belonged to a full-width row. A floating plate is as
+        # wide as its path, and a stretch would make it as wide as the graph.
+        #
+        # Activated before measuring, or adjustSize() asks a layout that has not laid
+        # anything out yet and gets the margins alone -- a 12x4 plate with four invisible
+        # buttons in it.
+        self._layout.activate()
+        # resize(sizeHint()), not adjustSize(): adjustSize leaves a child of a plain
+        # (layout-less) parent at whatever size it already had, so the plate stayed at its
+        # margins -- 12x4 -- while reporting a 669x26 hint and holding four buttons nobody
+        # could see.
+        self.resize(self.sizeHint())
+
+    def _entry(self, node, is_current: bool) -> QtWidgets.QWidget:
+        button = QtWidgets.QToolButton(self)
+        button.setText(node.name)
+        button.setAutoRaise(True)
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        font = button.font()
+        font.setPointSizeF(max(6.0, font.pointSizeF() - 1))
+        # The one you are in is stated, not offered: bold and inert, so the row reads as a
+        # position rather than as four things to press.
+        font.setBold(is_current)
+        button.setFont(font)
+        if is_current:
+            button.setEnabled(False)
+        else:
+            button.clicked.connect(lambda _=False, n=node: self.navigate.emit(n))
+        return button
+
+
+def context_ancestry(ctx) -> list:
+    """ctx and everything it is nested inside, outermost first.
+
+    Walks _parent_context, which is what actually records the nesting -- get_context()
+    returns self for a context chunk and so says nothing about where it sits. Guarded
+    against a cycle: prim nesting should prevent one, but a path widget is a poor place to
+    discover otherwise.
+    """
+    chain: list = []
+    seen: set = set()
+    node = ctx
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        # A context can be walked while it is still being built, before it has been named.
+        # There is nothing to label such an entry with and nothing useful to click, and the
+        # row is refreshed again when the page is shown -- so leave it out rather than draw
+        # a blank button that navigates somewhere unnameable.
+        if getattr(node, "name", ""):
+            chain.append(node)
+        parent_ref = getattr(node, "_parent_context", None)
+        node = parent_ref() if parent_ref else None
+    chain.reverse()
+    return chain
