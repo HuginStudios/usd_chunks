@@ -13,6 +13,8 @@ import flet as ft
 import pytest
 
 from graph_fixtures import make_network
+from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.plugins import chunk_flet
 from usd_chunks.plugins import chunk_flet_nodegraph as fg
 from usd_chunks.plugins import chunk_graph
 
@@ -55,6 +57,11 @@ def drag(x, y, dx, dy):
 def start(x, y):
     return ft.DragStartEvent(name="pan_start", control=None, kind=None, timestamp=0,
                              local_position=ft.Offset(x, y), global_position=ft.Offset(x, y))
+
+
+def key(name, ctrl=False, shift=False):
+    return ft.KeyboardEvent(name="keyboard", control=None, key=name,
+                            shift=shift, ctrl=ctrl, alt=False, meta=False)
 
 
 def scroll(x, y, dy):
@@ -188,3 +195,60 @@ class TestYConvention:
         # asserted the layout value and failed for that reason alone.
         assert (after[0] - before[0]) == pytest.approx(25, abs=0.5)
         assert (after[1] - before[1]) == pytest.approx(-35, abs=0.5)  # Y-down -> Y-up
+
+
+class TestSelectionAndKeys:
+    def test_a_tap_on_a_node_body_selects_it(self, view, first):
+        x, y = view.positions[first]
+        view.on_tap(tap(x + fg.NODE_W / 2, y + 6))
+        assert view.selected_nodes == {first}
+
+    def test_selection_is_mirrored_onto_the_chunk(self, view, first):
+        """Qt's operations read the SELECTED state bit, not a view attribute. If Flet kept
+        selection to itself, a shared operation would see nothing selected."""
+        view.set_selection([first])
+        chunk = view.chunks[first]
+        assert chunk.has_state(ChunkFlags.State.SELECTED)
+        view.set_selection(())
+        assert not chunk.has_state(ChunkFlags.State.SELECTED)
+
+    def test_escape_clears_the_selection(self, view, first):
+        view.set_selection([first])
+        view.on_key(key("Escape"))
+        assert view.selected_nodes == set()
+
+    def test_delete_removes_the_selected_node(self, view, first):
+        view.set_selection([first])
+        view.on_key(key("Delete"))
+        assert first not in view.prims
+
+    def test_d_toggles_disable(self, view, first):
+        view.set_selection([first])
+        assert not chunk_graph.is_disabled(view.prims[first])
+        view.on_key(key("D"))
+        assert chunk_graph.is_disabled(view.prims[first])
+        view.set_selection([first])
+        view.on_key(key("D"))
+        assert not chunk_graph.is_disabled(view.prims[first])
+
+    def test_ctrl_a_selects_everything(self, view):
+        view.on_key(key("A", ctrl=True))
+        assert view.selected_nodes == set(view.prims)
+
+    def test_shortcuts_are_ignored_while_typing(self, view, first, monkeypatch):
+        """The focus rule. A page-level handler sees keystrokes meant for a TextField
+        inside a node; without this, typing a prim path deletes the node."""
+        view.set_selection([first])
+        monkeypatch.setattr(chunk_flet, "is_editing", lambda: True)
+        view.on_key(key("Delete"))
+        assert first in view.prims, "Delete fired while a param was being edited"
+        assert view.selected_nodes == {first}
+
+    def test_f_frames_the_selection(self, view, first):
+        view.zoom, view.pan = 3.0, (999.0, 999.0)
+        view.set_selection([first])
+        view.on_key(key("F"))
+        assert view.zoom != 3.0 and view.pan != (999.0, 999.0)
+        # The framed node's centre should land near the middle of the nominal viewport.
+        cx = view.positions[first][0] + fg.NODE_W / 2
+        assert view._to_screen(cx, view.positions[first][1])[0] == pytest.approx(600, abs=60)

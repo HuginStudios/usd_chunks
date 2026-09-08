@@ -25,6 +25,20 @@ from usd_chunks.chunk_flags import ChunkFlags
 #: Row metrics. Flet lays out at render time and gives no way to ask a control how tall it
 #: ended up, so the heights a port needs to line up against have to be declared rather than
 #: measured. Qt reads live widget geometry instead -- same intent, different means.
+#: How many param controls currently hold keyboard focus.
+#:
+#: A graph frontend puts its shortcuts on the page, because Flet has no per-control key
+#: handling -- so Delete would delete the selected NODE while you are editing a text field,
+#: and D would toggle disable instead of typing a "d". The widgets know when they are being
+#: typed into and nothing else does, so they report it here and the graph asks.
+_EDITING = 0
+
+
+def is_editing() -> bool:
+    """True while a param control has keyboard focus."""
+    return _EDITING > 0
+
+
 LABEL_H = 14.0
 ROW_GAP = 3.0
 GROUP_HEADER_H = 22.0
@@ -109,6 +123,22 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
     # -- widget -> param ---------------------------------------------------
 
+    def on_focus(self, _event):
+        global _EDITING
+        _EDITING += 1
+
+    def on_blur(self, _event):
+        global _EDITING
+        _EDITING = max(0, _EDITING - 1)
+
+    def _typing(self, control):
+        """Wire a control's focus signals, if it has them. Called by the widgets whose
+        control accepts typed text -- a Checkbox or a Button cannot swallow a shortcut."""
+        if hasattr(control, "on_focus"):
+            control.on_focus = self.on_focus
+            control.on_blur = self.on_blur
+        return control
+
     def on_changed(self, event):
         if self._suppress:
             return
@@ -179,11 +209,11 @@ class FletSliderWidget(FletParamWidget):
 class FletTextWidget(FletParamWidget):
     CONTROL_H = 30.0
     def build(self):
-        self.control = ft.TextField(
+        self.control = self._typing(ft.TextField(
             dense=True, on_change=self.on_changed, text_size=11,
             content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
             filled=True, fill_color="#202020", border_color="#404040",
-            focused_border_color="#cab46a", border_radius=3, height=30)
+            focused_border_color="#cab46a", border_radius=3, height=30))
 
     def apply_value(self, value):
         self.control.value = "" if value is None else str(value)
@@ -192,11 +222,11 @@ class FletTextWidget(FletParamWidget):
 class FletMultilineTextWidget(FletTextWidget):
     CONTROL_H = 76.0
     def build(self):
-        self.control = ft.TextField(
+        self.control = self._typing(ft.TextField(
             multiline=True, min_lines=3, dense=True, on_change=self.on_changed,
             text_size=11, filled=True, fill_color="#202020", border_color="#404040",
             focused_border_color="#cab46a", border_radius=3,
-            content_padding=ft.Padding.all(8))
+            content_padding=ft.Padding.all(8)))
 
 
 class FletCheckboxWidget(FletParamWidget):
@@ -259,7 +289,8 @@ class FletColorWidget(FletParamWidget):
     def build(self):
         self.swatch = ft.Container(width=22, height=22, border_radius=3,
                                    bgcolor="#808080")
-        self.field = ft.TextField(dense=True, on_change=self.on_changed, expand=True)
+        self.field = self._typing(
+            ft.TextField(dense=True, on_change=self.on_changed, expand=True))
         self.control = ft.Row([self.swatch, self.field], spacing=6, tight=True)
 
     def apply_value(self, value):

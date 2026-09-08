@@ -30,6 +30,7 @@ import flet.canvas as cv
 from pxr import Gf, Sdf, Usd
 
 from usd_chunks import chunk_registry
+from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.plugins import chunk_flet, chunk_graph, chunk_usd
@@ -166,6 +167,10 @@ class GraphView:
         self.pan_container: ft.Container | None = None
         #: Set by main(). Needed to open a dialog; None in tests and headless use.
         self.page: ft.Page | None = None
+        #: Selected node paths. Mirrored onto each chunk's SELECTED state bit, which is
+        #: where Qt keeps it and what the shared operations read -- so a selection means
+        #: the same thing to both frontends rather than being a private view detail.
+        self.selected_nodes: set[str] = set()
         self.live = False  # nothing may update the client until page.add has run
         self.status_text: ft.Text | None = None
         self.reload()
@@ -299,9 +304,19 @@ class GraphView:
     # -- input -------------------------------------------------------------
 
     def on_tap(self, event):
-        port = self.port_at(*self._xy(event))
+        x, y = self._xy(event)
+        port = self.port_at(x, y)
         if port is None:
-            self.selected, self.status = None, ""
+            node = self.node_at(x, y)
+            self.selected = None
+            if node is not None:
+                # Flet reports no modifier on a tap, so a tap always replaces the
+                # selection; Ctrl+A selects everything and Escape clears it.
+                self.set_selection([node])
+                self.status = f"selected {node.rsplit('/', 1)[-1]}"
+            else:
+                self.set_selection(())
+                self.status = ""
             return self.refresh()
 
         if self.selected is None:
@@ -373,6 +388,114 @@ class GraphView:
             return
         x, y = self.positions[self.dragging]
         self.positions[self.dragging] = (x + dx, y + dy)
+        self.refresh()
+
+    # -- selection ---------------------------------------------------------
+
+    def set_selection(self, paths, add: bool = False):
+        """Select these nodes, mirroring onto the chunks' SELECTED state.
+
+        The state bit is presentation only -- chunk_scheduler.propagate_presentation --
+        so selecting cooks nothing. Writing it anyway is what lets an operation ask the
+        chunks what is selected instead of being handed a list by whichever frontend
+        happened to call it.
+        """
+        paths = set(paths)
+        self.selected_nodes = (self.selected_nodes | paths) if add else paths
+        for path, chunk in self.chunks.items():
+            try:
+                if path in self.selected_nodes:
+                    chunk.set_state(ChunkFlags.State.SELECTED)
+                else:
+                    chunk.unset_state(ChunkFlags.State.SELECTED)
+            except Exception:  # noqa: BLE001 -- a chunk that cannot hold state is not fatal
+                continue
+
+    def selected_chunks(self):
+        return [c for p, c in self.chunks.items() if p in self.selected_nodes]
+
+    # -- keyboard ----------------------------------------------------------
+
+    def on_key(self, event):
+        """Graph shortcuts, ignored while a param is being typed into.
+
+        Flet has no per-control key handling: a page handler sees every keystroke,
+        including the ones meant for a TextField inside a node. Without this guard,
+        typing a prim path would delete the node on Delete and toggle disable on "d".
+        """
+        if chunk_flet.is_editing():
+            return
+        key = (event.key or "").lower()
+        if key == "escape":
+            self.wiring = None
+            self.set_selection(())
+            self.status = ""
+            return self.refresh()
+        if key == "delete":
+            return self.delete_selected()
+        if key == "d":
+            return self.toggle_disable_selected()
+        if key == "f":
+            return self.frame(self.selected_nodes or self.prims)
+        if key == "a" and event.ctrl:
+            self.set_selection(self.prims)
+            self.status = f"selected {len(self.selected_nodes)}"
+            return self.refresh()
+
+    def delete_selected(self):
+        chunks = self.selected_chunks()
+        if not chunks:
+            self.status = "nothing selected"
+            return self.refresh()
+        for chunk in chunks:
+            chunk.request_delete()
+        self.stage.GetRootLayer().Save()
+        self.selected_nodes = set()
+        self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.status = f"deleted {len(chunks)}"
+        self.reload()
+        self.refresh(bodies=True)
+
+    def toggle_disable_selected(self):
+        chunks = self.selected_chunks()
+        if not chunks:
+            self.status = "nothing selected"
+            return self.refresh()
+        for chunk in chunks:
+            if chunk.has_state(ChunkFlags.State.DISABLED):
+                chunk.unset_state(ChunkFlags.State.DISABLED)
+            else:
+                chunk.set_state(ChunkFlags.State.DISABLED)
+        self.stage.GetRootLayer().Save()
+        self.status = f"toggled {len(chunks)}"
+        self.reload()
+        self.refresh(bodies=True)
+
+    def frame(self, paths):
+        """Fit `paths` in the viewport -- Qt's F.
+
+        Needs the viewport size, which only the page knows; with no page (tests, headless)
+        the zoom is still solved so the maths stays testable, using a nominal viewport.
+        """
+        paths = [p for p in paths if p in self.positions]
+        if not paths:
+            return self.refresh()
+        xs = [self.positions[p][0] for p in paths]
+        ys = [self.positions[p][1] for p in paths]
+        left, top = min(xs), min(ys)
+        right = max(x + NODE_W for x in xs)
+        bottom = max(self.positions[p][1] + self.node_height(p) for p in paths)
+        vw = (self.page.width or 1200.0) if self.page is not None else 1200.0
+        vh = (self.page.height or 800.0) if self.page is not None else 800.0
+        vh = max(1.0, vh - 60.0)  # the status bar is not canvas
+        pad = 40.0
+        zoom = min((vw - pad * 2) / max(1.0, right - left),
+                   (vh - pad * 2) / max(1.0, bottom - top))
+        self.zoom = min(ZOOM_MAX, max(ZOOM_MIN, zoom))
+        # Centre what was framed rather than pinning it to a corner.
+        self.pan = (vw / 2 - (left + right) / 2 * self.zoom,
+                    vh / 2 - (top + bottom) / 2 * self.zoom)
+        self.status = f"framed {len(paths)}"
         self.refresh()
 
     # -- creating nodes ----------------------------------------------------
@@ -641,7 +764,12 @@ class GraphView:
                 data=path,  # so a move can find this control without rebuilding it
                 left=x, top=y, width=NODE_W,
                 bgcolor="#2f2f2f" if chunk_graph.is_disabled(prim) else COL_NODE_BG,
-                border=ft.Border.all(1, COL_NODE_BORDER), border_radius=6,
+                # Selection reads as a thicker accent border, the way Qt draws it. The
+                # body is a real control sitting ON the canvas, so a highlight drawn
+                # underneath as a canvas shape would be hidden by it.
+                border=(ft.Border.all(2, COL_ACCENT) if path in self.selected_nodes
+                        else ft.Border.all(1, COL_NODE_BORDER)),
+                border_radius=6,
             ))
         return controls
 
@@ -692,6 +820,7 @@ class GraphView:
 def main(page: ft.Page, network: str, context: str | None = None):
     view = GraphView(network, context)
     view.page = page
+    page.on_keyboard_event = view.on_key
     page.title = f"Chunk graph — {network.rsplit('/', 1)[-1]}"
     page.bgcolor = COL_CANVAS
     page.padding = 0
