@@ -3089,6 +3089,25 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def resizeEvent(self, event: QtGui.QResizeEvent):
         super().resizeEvent(event)
         self._menubar.setFixedWidth(self.width())
+        self._anchor_breadcrumb()
+
+    def scrollContentsBy(self, dx: int, dy: int):
+        """Keep the context path pinned to the corner while the canvas moves under it.
+
+        QAbstractScrollArea scrolls the viewport's CHILD WIDGETS along with its contents, so
+        a widget parented to the viewport pans with the graph -- the path drifted off with
+        the nodes and read as one of them. Panning is the only thing that moves it, so
+        putting it back here costs a move per scroll and nothing else.
+        """
+        super().scrollContentsBy(dx, dy)
+        self._anchor_breadcrumb()
+
+    def _anchor_breadcrumb(self) -> None:
+        """Top-left of the canvas, above whatever is drawn there."""
+        breadcrumb = getattr(self, "_breadcrumb", None)
+        if breadcrumb is not None:
+            breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
+            breadcrumb.raise_()
 
     def hideEvent(self, event: QtGui.QHideEvent):
         super().hideEvent(event)
@@ -3116,8 +3135,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Sized by its contents, not by a strip: a floating row has nothing to stretch it,
         # so it has to take the width its buttons actually need or it clips them.
         breadcrumb.resize(breadcrumb.sizeHint())
-        breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
-        breadcrumb.raise_()
+        self._anchor_breadcrumb()
 
     @staticmethod
     def _grid_points_in_rect(rect: QtCore.QRectF, spacing: int) -> list:

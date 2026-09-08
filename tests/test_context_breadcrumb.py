@@ -219,3 +219,29 @@ def test_the_row_is_actually_on_screen(nested):
     assert 0 <= top_left.x() < 40 and 0 <= top_left.y() < 40, (
         f"expected it tucked into the canvas corner, got {top_left}"
     )
+
+
+def test_it_stays_in_the_corner_when_the_graph_moves(nested):
+    """Pinned to the canvas, not carried by it.
+
+    QAbstractScrollArea scrolls the viewport's CHILD WIDGETS along with its contents, so a
+    widget parented to the viewport pans with the graph -- the path drifted off among the
+    nodes and read as one of them.
+    """
+    docker = nested["docker"]
+    docker._on_dive_into(nested["inner"])
+    nested["settle"]()
+    graph_view = docker.tab_widget.get_current_graph_view()
+    breadcrumb = graph_view._breadcrumb
+    corner = breadcrumb.pos()
+
+    graph_view.scale(1.5, 1.5)
+    graph_view.centerOn(500, 500)
+    nested["settle"]()
+    assert breadcrumb.pos() == corner, (
+        f"panning moved the path to {breadcrumb.pos()}; it belongs at {corner}"
+    )
+
+    graph_view.resize(graph_view.width() - 120, graph_view.height() - 80)
+    nested["settle"]()
+    assert breadcrumb.pos() == corner, "resizing must not move it either"
