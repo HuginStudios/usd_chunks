@@ -35,16 +35,28 @@ from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.plugins import chunk_flet, chunk_graph, chunk_usd
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, load_chunks
 
-#: One colour per port type, matching the Qt view's vocabulary.
+# Lifted verbatim from chunk_qt_nodegraph rather than picked to look similar. Two
+# frontends onto the same graph that disagree about what a float port looks like are two
+# different tools, and the muted palette is a deliberate choice there: saturated dots on a
+# dark canvas read as errors.
 PORT_COLOUR = {
-    chunk_graph.PORT_EXEC: "#e0e0e0",
-    chunk_graph.PORT_FLOAT: "#7fbf7f",
-    chunk_graph.PORT_INT: "#5fa8d3",
-    chunk_graph.PORT_BOOL: "#c98bdb",
-    chunk_graph.PORT_STRING: "#d9a05b",
-    chunk_graph.PORT_COLOR: "#d76b6b",
-    chunk_graph.PORT_VECTOR: "#d4c95e",
+    chunk_graph.PORT_EXEC: "#999999",
+    chunk_graph.PORT_FLOAT: "#a06845",   # muted orange
+    chunk_graph.PORT_INT: "#5d7ea8",     # muted blue
+    chunk_graph.PORT_BOOL: "#9e8e4a",    # muted yellow
+    chunk_graph.PORT_STRING: "#6a9070",  # muted green
+    chunk_graph.PORT_COLOR: "#c87060",   # muted red
+    chunk_graph.PORT_VECTOR: "#9a5da8",  # muted purple
 }
+
+#: Node chrome, also from the Qt view.
+COL_NODE_BG = "#3a3a3a"
+COL_NODE_HEADER = "#2a2a2a"
+COL_NODE_BORDER = "#555555"
+COL_ACCENT = "#cab46a"        # ChunkWidget.SELECTED_COLOR
+COL_VIEW_HEADER = "#c87830"   # the ACTIVE view, the one driving execution
+COL_CANVAS = "#252525"
+COL_TEXT = "#cccccc"
 
 NODE_W, HEADER_H, ROW_H = 260.0, 30.0, 16.0  # wider: Qt's nodes fit a path
 PORT_R = 5.0
@@ -184,12 +196,13 @@ class GraphView:
         """
         ins, outs = self.rows(port.node_path)
         x0, y0 = self.positions[port.node_path]
-        # Just OUTSIDE the body, not on its edge. The body is a real control stacked over
-        # the canvas, so a dot drawn on the edge is underneath it and the click never
-        # reaches the gesture detector -- the port would be visible and dead.
+        # ON the body edge, which is where a connector belongs. The body is a control
+        # stacked over the canvas, but its padding is inert -- only a TextField or Slider
+        # swallows a click, and those sit inside the padding, so a dot on the border still
+        # reaches the gesture detector underneath.
         if port.is_input:
-            return x0 - PORT_R - 2, y0 + HEADER_H + ROW_H * (ins.index(port) + 0.5)
-        return x0 + NODE_W + PORT_R + 2, y0 + HEADER_H + ROW_H * (outs.index(port) + 0.5)
+            return x0, y0 + HEADER_H + ROW_H * (ins.index(port) + 0.5)
+        return x0 + NODE_W, y0 + HEADER_H + ROW_H * (outs.index(port) + 0.5)
 
     # -- hit testing -------------------------------------------------------
 
@@ -323,7 +336,7 @@ class GraphView:
             out.append(cv.Path(
                 [cv.Path.MoveTo(x1, y1),
                  cv.Path.CubicTo(x1 + reach, y1, x2 - reach, y2, x2, y2)],
-                paint=ft.Paint(stroke_width=1.6, color="#ffffff",
+                paint=ft.Paint(stroke_width=1.6, color=COL_ACCENT,
                                style=ft.PaintingStyle.STROKE)))
         for edge in self.edges:
             src_node, dst_node = edge.src_node_path, edge.dst_node_path
@@ -337,7 +350,8 @@ class GraphView:
                 continue
             x1, y1 = self.port_xy(src)
             x2, y2 = self.port_xy(dst)
-            colour = "#f2c14e" if edge.expression else PORT_COLOUR.get(src.port_type, "#888888")
+            # An expression-driven wire takes the accent, the way Qt highlights it.
+            colour = COL_ACCENT if edge.expression else PORT_COLOUR.get(src.port_type, "#888888")
             reach = max(40.0, abs(x2 - x1) * 0.5)
             out.append(cv.Path(
                 [cv.Path.MoveTo(x1, y1),
@@ -355,13 +369,13 @@ class GraphView:
             for port in self.ports[path]:
                 px, py = self.port_xy(port)
                 if self.selected is not None and port.attr_path == self.selected.attr_path:
-                    out.append(cv.Circle(px, py, PORT_R + 3, paint=ft.Paint(color="#ffffff")))
+                    out.append(cv.Circle(px, py, PORT_R + 3, paint=ft.Paint(color=COL_ACCENT)))
                 out.append(cv.Circle(px, py, PORT_R,
                                      paint=ft.Paint(color=PORT_COLOUR.get(port.port_type,
                                                                           "#888888"))))
                 out.append(cv.Text(
-                    px - PORT_R - 4 if port.is_input else px + PORT_R + 4, py - 7,
-                    port.name, ft.TextStyle(size=9, color="#b9b9b9"),
+                    px - PORT_R - 5 if port.is_input else px + PORT_R + 5, py - 7,
+                    port.name, ft.TextStyle(size=9, color="#8f8f8f"),
                     alignment=ft.Alignment.TOP_RIGHT if port.is_input
                     else ft.Alignment.TOP_LEFT))
         return out
@@ -383,9 +397,9 @@ class GraphView:
             x, y = self.positions[path]
             chunk_obj = self.chunks.get(path)
             body = [ft.Container(
-                ft.Text(chunk_graph.node_label(prim), size=13, color="#ffffff",
+                ft.Text(chunk_graph.node_label(prim), size=12, color=COL_TEXT,
                         weight=ft.FontWeight.W_500),
-                bgcolor="#33383d" if chunk_graph.is_disabled(prim) else "#4a5a6a",
+                bgcolor="#242424" if chunk_graph.is_disabled(prim) else COL_NODE_HEADER,
                 padding=ft.Padding.symmetric(vertical=5, horizontal=10),
                 border_radius=ft.BorderRadius.only(top_left=6, top_right=6),
                 width=NODE_W)]
@@ -407,8 +421,8 @@ class GraphView:
                 ft.Column(body, spacing=0, tight=True),
                 data=path,  # so a move can find this control without rebuilding it
                 left=x, top=y, width=NODE_W,
-                bgcolor="#2a2a2a" if chunk_graph.is_disabled(prim) else "#3a3a3a",
-                border=ft.Border.all(1, "#101010"), border_radius=6,
+                bgcolor="#2f2f2f" if chunk_graph.is_disabled(prim) else COL_NODE_BG,
+                border=ft.Border.all(1, COL_NODE_BORDER), border_radius=6,
             ))
         return controls
 
@@ -452,19 +466,19 @@ class GraphView:
 def main(page: ft.Page, network: str, context: str | None = None):
     view = GraphView(network, context)
     page.title = f"Chunk graph — {network.rsplit('/', 1)[-1]}"
-    page.bgcolor = "#232323"
+    page.bgcolor = COL_CANVAS
     page.padding = 0
 
     width, height = view.extent()
     view.canvas = cv.Canvas(view.shapes(), width=width, height=height)
-    view.status_text = ft.Text(view.summary(), size=12, color="#9fb0c0")
+    view.status_text = ft.Text(view.summary(), size=12, color=COL_ACCENT)
     # Canvas first so the wires pass UNDER the node bodies, the way they do in Qt.
     view.stack = ft.Stack([view.canvas] + view.node_controls(),
                           width=width, height=height)
 
     page.add(
         ft.Column([
-            ft.Container(view.status_text, padding=10, bgcolor="#1b1b1b"),
+            ft.Container(view.status_text, padding=10, bgcolor=COL_NODE_HEADER),
             ft.Container(
                 ft.GestureDetector(
                     content=view.stack,

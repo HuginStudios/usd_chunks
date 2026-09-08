@@ -27,7 +27,7 @@ class FletParamWidget(chunk_core.ChunkParamWidgetBase):
 
     def __init__(self, param, *args, **kwargs):
         self.control: ft.Control | None = None
-        self.label_control = ft.Text("", size=10, color="#a8a8a8")
+        self.label_control = ft.Text("", size=10, color="#7a7a7a")
         self._suppress = False
         super().__init__(param, *args, **kwargs)
         self.build()
@@ -128,7 +128,7 @@ class FletParamWidget(chunk_core.ChunkParamWidgetBase):
 class FletSliderWidget(FletParamWidget):
     def build(self):
         param = self.param
-        self.readout = ft.Text("", size=10, color="#c8d4de", width=52,
+        self.readout = ft.Text("", size=10, color="#cab46a", width=52,
                                text_align=ft.TextAlign.RIGHT)
         self.slider = ft.Slider(
             min=float(getattr(param, "min_value", 0.0) or 0.0),
@@ -163,8 +163,8 @@ class FletTextWidget(FletParamWidget):
         self.control = ft.TextField(
             dense=True, on_change=self.on_changed, text_size=11,
             content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
-            filled=True, fill_color="#1f1f1f", border_color="#4a4a4a",
-            focused_border_color="#6a8caf", border_radius=3, height=30)
+            filled=True, fill_color="#202020", border_color="#404040",
+            focused_border_color="#cab46a", border_radius=3, height=30)
 
     def apply_value(self, value):
         self.control.value = "" if value is None else str(value)
@@ -174,8 +174,8 @@ class FletMultilineTextWidget(FletTextWidget):
     def build(self):
         self.control = ft.TextField(
             multiline=True, min_lines=3, dense=True, on_change=self.on_changed,
-            text_size=11, filled=True, fill_color="#1f1f1f", border_color="#4a4a4a",
-            focused_border_color="#6a8caf", border_radius=3,
+            text_size=11, filled=True, fill_color="#202020", border_color="#404040",
+            focused_border_color="#cab46a", border_radius=3,
             content_padding=ft.Padding.all(8))
 
 
@@ -195,7 +195,7 @@ class FletMenuWidget(FletParamWidget):
         items = [ft.dropdown.Option(str(i)) for i in getattr(self.param, "menu_items", [])]
         self.control = ft.Dropdown(
             options=items, dense=True, on_change=self.on_changed, text_size=11,
-            filled=True, fill_color="#1f1f1f", border_color="#4a4a4a",
+            filled=True, fill_color="#202020", border_color="#404040",
             border_radius=3, content_padding=ft.Padding.symmetric(vertical=4, horizontal=8))
 
     def apply_value(self, value):
@@ -344,11 +344,11 @@ class FletGroupWidget:
         self.content = ft.Column(content_controls, spacing=3, tight=True,
                                  visible=not (self.collapsible and self.collapsed))
         self.arrow = ft.Text(self.ARROW_SHUT if self.content.visible is False
-                             else self.ARROW_OPEN, size=10, color="#9fb0c0")
+                             else self.ARROW_OPEN, size=10, color="#cab46a")
         label = group.get_label() if hasattr(group, "get_label") else group.name
         header = ft.Row(
             ([self.arrow] if self.collapsible else [])
-            + [ft.Text(label or "", size=11, weight=ft.FontWeight.W_500, color="#c8d4de")],
+            + [ft.Text(label or "", size=11, weight=ft.FontWeight.W_500, color="#cccccc")],
             spacing=4, tight=True)
         self.header = ft.Container(
             header, padding=ft.Padding.only(top=6, bottom=2),
