@@ -2555,14 +2555,16 @@ class ChunkContextBreadcrumb(QtWidgets.QWidget):
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed
         )
-        # Faint plate under the text so the path stays readable over the grid and over a
-        # node that happens to sit beneath it.
+        # Nothing but the text. A plate under it read as a panel sitting on the graph --
+        # one more piece of furniture -- where the path is meant to be a label on the canvas
+        # itself. The buttons are auto-raise, so they stay flat until hovered, and the
+        # explicit transparency keeps a host stylesheet from painting one back in.
         self.setObjectName("chunkContextPath")
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(
-            "QWidget#chunkContextPath {"
-            " background: rgba(30, 30, 30, 180);"
-            " border: 1px solid rgba(90, 90, 90, 120);"
-            " border-radius: 3px; }"
+            "QWidget#chunkContextPath { background: transparent; }"
+            "QWidget#chunkContextPath QToolButton { background: transparent; border: none; }"
+            "QWidget#chunkContextPath QLabel { background: transparent; }"
         )
 
     def showEvent(self, event):
