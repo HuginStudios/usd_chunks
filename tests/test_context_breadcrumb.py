@@ -202,12 +202,20 @@ def test_the_row_is_actually_on_screen(nested):
     breadcrumb = graph_view._breadcrumb
     entries = breadcrumb.findChildren(QtWidgets.QToolButton)
 
-    assert breadcrumb.isVisible(), "the row itself must be shown"
-    assert breadcrumb.width() > 0 and breadcrumb.height() > 0, (
-        f"the row has no room: {breadcrumb.size()}"
+    assert not breadcrumb.isHidden(), "the row itself must be shown"
+    assert breadcrumb.width() > 20 and breadcrumb.height() > 10, (
+        f"the plate collapsed to its margins: {breadcrumb.size()}"
     )
-    assert all(e.isVisible() and e.width() > 0 for e in entries), (
-        "every entry must be laid out, not squeezed to nothing"
+    # isHidden rather than isVisible: whether an ancestor happens to be on screen is the
+    # test harness's business, but a child that was never shown is skipped by the layout --
+    # which is the actual failure this guards (a full path inside a 12x4 plate).
+    assert all(not e.isHidden() and e.width() > 0 for e in entries), (
+        f"every entry must be laid out: {[(e.text(), e.size()) for e in entries]}"
     )
-    # And it sits in the strip the graph reserves at its top, above the canvas.
-    assert breadcrumb.mapTo(graph_view, QtCore.QPoint(0, 0)).y() < graph_view.viewportMargins().top() + 1
+    # And it floats inside the graph's own canvas, near its top-left corner.
+    viewport = graph_view.viewport()
+    assert breadcrumb.parent() is viewport
+    top_left = breadcrumb.mapTo(viewport, QtCore.QPoint(0, 0))
+    assert 0 <= top_left.x() < 40 and 0 <= top_left.y() < 40, (
+        f"expected it tucked into the canvas corner, got {top_left}"
+    )

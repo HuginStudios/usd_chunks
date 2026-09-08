@@ -2547,11 +2547,34 @@ class ChunkContextBreadcrumb(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._layout = QtWidgets.QHBoxLayout(self)
-        self._layout.setContentsMargins(6, 1, 6, 1)
+        self._layout.setContentsMargins(6, 2, 6, 2)
         self._layout.setSpacing(3)
+        # Sized by what it holds. It floats over the graph canvas rather than living in a
+        # strip, so nothing stretches it and nothing clips it -- a strip has to be given a
+        # height, and a height that suits one font cuts the descenders off another.
         self.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.Fixed
+            QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed
         )
+        # Faint plate under the text so the path stays readable over the grid and over a
+        # node that happens to sit beneath it.
+        self.setObjectName("chunkContextPath")
+        self.setStyleSheet(
+            "QWidget#chunkContextPath {"
+            " background: rgba(30, 30, 30, 180);"
+            " border: 1px solid rgba(90, 90, 90, 120);"
+            " border-radius: 3px; }"
+        )
+
+    def showEvent(self, event):
+        """Take the size the path needs, once there is something laid out to measure.
+
+        A layout skips hidden widgets, and a child created while its parent is not yet
+        visible is hidden -- so sizing at set_context time measured the margins alone and
+        left a 12x4 plate holding four buttons nobody could see. Being shown is the first
+        moment the hint is real.
+        """
+        super().showEvent(event)
+        self.resize(self.sizeHint())
 
     def set_context(self, ctx) -> None:
         """Rebuild the row for ctx, root first."""
@@ -2560,7 +2583,11 @@ class ChunkContextBreadcrumb(QtWidgets.QWidget):
                 w.setParent(None)
                 w.deleteLater()
 
-        for i, node in enumerate(context_ancestry(ctx)):
+        entries = context_ancestry(ctx)
+        # Nothing to say at the root of an empty scene, and an empty plate floating in the
+        # corner is worse than no plate.
+        self.setVisible(bool(entries))
+        for i, node in enumerate(entries):
             if i:
                 sep = QtWidgets.QLabel("›", self)  # a single ›, not a > that reads as markup
                 sep.setEnabled(False)
@@ -2570,9 +2597,26 @@ class ChunkContextBreadcrumb(QtWidgets.QWidget):
                 sep_font = sep.font()
                 sep_font.setPointSizeF(sep_font.pointSizeF() + 2)
                 sep.setFont(sep_font)
+                sep.show()
                 self._layout.addWidget(sep)
-            self._layout.addWidget(self._entry(node, is_current=node is ctx))
-        self._layout.addStretch(1)
+            entry = self._entry(node, is_current=node is ctx)
+            # Shown explicitly. These are built into an already-visible parent, and a child
+            # that is never shown is skipped by the layout -- which is how the plate ended
+            # up 12x4 with a full path inside it.
+            entry.show()
+            self._layout.addWidget(entry)
+        # No trailing stretch: that belonged to a full-width row. A floating plate is as
+        # wide as its path, and a stretch would make it as wide as the graph.
+        #
+        # Activated before measuring, or adjustSize() asks a layout that has not laid
+        # anything out yet and gets the margins alone -- a 12x4 plate with four invisible
+        # buttons in it.
+        self._layout.activate()
+        # resize(sizeHint()), not adjustSize(): adjustSize leaves a child of a plain
+        # (layout-less) parent at whatever size it already had, so the plate stayed at its
+        # margins -- 12x4 -- while reporting a 669x26 hint and holding four buttons nobody
+        # could see.
+        self.resize(self.sizeHint())
 
     def _entry(self, node, is_current: bool) -> QtWidgets.QWidget:
         button = QtWidgets.QToolButton(self)

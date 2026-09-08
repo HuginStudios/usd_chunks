@@ -165,6 +165,8 @@ def _get_proxy_sink() -> QtWidgets.QWidget:
     return _proxy_sink
 
 _PORT_EXEC = "exec"
+#: Inset of the floating context path from the graph viewport's top-left corner.
+_BREADCRUMB_MARGIN = 6
 _PORT_FLOAT = "float"
 _PORT_INT = "int"
 _PORT_BOOL = "bool"
@@ -3033,38 +3035,26 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._rubber_band_origin = QtCore.QPoint()
         self._rubber_band_add = False  # Shift held: add boxed nodes to selection instead of replacing
 
-        # The strip under the tabs: the path to this graph's own context on the left, the
-        # View menu on the right. A real row rather than the menu bar's corner widget --
-        # a QMenuBar sizes a corner widget from the hint it has when it is set, and this one
-        # starts empty (its contents arrive with the first context), so it was given no
-        # width and never appeared at all.
-        self._top_strip = QtWidgets.QWidget(self)
-        strip_layout = QtWidgets.QHBoxLayout(self._top_strip)
-        strip_layout.setContentsMargins(0, 0, 0, 0)
-        strip_layout.setSpacing(0)
-
-        self._breadcrumb = ChunkContextBreadcrumb(self._top_strip)
-        self._breadcrumb.navigate.connect(self.dive_into)
-        strip_layout.addWidget(self._breadcrumb, 1)
-
-        self._menubar = QtWidgets.QMenuBar(self._top_strip)
+        self._menubar = QtWidgets.QMenuBar(self)
         view_menu = self._menubar.addMenu("View")
         self._param_edge_action = view_menu.addAction("Show param connections")
         self._param_edge_action.setCheckable(True)
         self._param_edge_action.setChecked(True)
         self._param_edge_action.triggered.connect(self._on_toggle_param_edges)
-        strip_layout.addWidget(self._menubar, 0)
-
-        # A rule between this strip and the tabs above it, so the path reads as belonging to
-        # the graph rather than as a second row of tabs.
-        self._top_strip.setStyleSheet(
-            "QWidget#chunkTopStrip { border-top: 1px solid #3a3a3a; }"
-        )
-        self._top_strip.setObjectName("chunkTopStrip")
-        mh = max(self._menubar.sizeHint().height(), self._breadcrumb.sizeHint().height())
-        self._top_strip.setFixedHeight(mh)
-        self._top_strip.setFixedWidth(self.width())
+        self._menubar.setFixedWidth(self.width())
+        mh = self._menubar.sizeHint().height()
         self.setViewportMargins(0, mh, 0, 0)
+
+        # The path to this graph's own context, floating IN the canvas rather than in a
+        # strip above it. A row of chrome has to be given a height, and a height that suits
+        # one font clips another -- which is exactly what happened: the descenders went
+        # missing. Here the widget is sized by what it contains, so there is nothing to clip
+        # it, and the path reads as part of the graph it describes.
+        self._breadcrumb = ChunkContextBreadcrumb(self.viewport())
+        self._breadcrumb.navigate.connect(self.dive_into)
+        self._breadcrumb.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self._breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
+        self._breadcrumb.raise_()
 
         self._proxy_key_router = _ProxyKeyRouter(self)
         self._proxy_key_router.install()
@@ -3098,7 +3088,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     def resizeEvent(self, event: QtGui.QResizeEvent):
         super().resizeEvent(event)
-        self._top_strip.setFixedWidth(self.width())
+        self._menubar.setFixedWidth(self.width())
 
     def hideEvent(self, event: QtGui.QHideEvent):
         super().hideEvent(event)
@@ -3120,8 +3110,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         button per level of nesting.
         """
         breadcrumb = getattr(self, "_breadcrumb", None)
-        if breadcrumb is not None:
-            breadcrumb.set_context(self._graph_context())
+        if breadcrumb is None:
+            return
+        breadcrumb.set_context(self._graph_context())
+        # Sized by its contents, not by a strip: a floating row has nothing to stretch it,
+        # so it has to take the width its buttons actually need or it clips them.
+        breadcrumb.resize(breadcrumb.sizeHint())
+        breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
+        breadcrumb.raise_()
 
     @staticmethod
     def _grid_points_in_rect(rect: QtCore.QRectF, spacing: int) -> list:
