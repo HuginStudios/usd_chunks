@@ -4523,6 +4523,12 @@ class ChunkConfig(AttributesBase):
     required_modules: list[str] = attrs.field(factory=list)
     module: str = attrs.field(default="")
     interactive: bool = attrs.field(default=False)
+    # Kept out of the chunk menu. For a type that exists so something can be SAVED and read
+    # back rather than created by hand -- `runtime`, the type a chunk built in the
+    # interpreter is written as. It still has to be a registered module, since that is how
+    # a load finds what to rebuild a prim from; it just should not be offered as a thing to
+    # add to a graph.
+    hidden: bool = attrs.field(default=False)
     terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
     # How many exec input slots the chunk has. 1 is the ordinary case: one inputs:chunk
     # port, which may still carry several wires stacked on it. Above 1 the slots are
