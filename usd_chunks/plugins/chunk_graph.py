@@ -44,7 +44,13 @@ PORT_VECTOR = "vector"
 
 EXEC_INPUT = "inputs:chunk"
 EXEC_OUTPUT = "outputs:chunk"
-CHUNKS_ROOT = "/chunks"
+CHUNKS_ROOT = chunk_usd._CHUNKS_ROOT
+
+#: The prim type a chunk is, and the root scope, both taken from chunk_usd rather than
+#: spelled out again -- renaming either there should not leave the graph quietly finding
+#: nothing. Bound directly, not via getattr with a fallback: a fallback would paper over
+#: exactly the rename it is supposed to catch.
+CHUNK_TYPENAME = chunk_usd._CHUNK_PRIM_TYPENAME
 
 #: Chunk prims are found with this rather than the default predicate: a disabled chunk is
 #: an INACTIVE prim and still belongs on the graph, drawn greyed.
@@ -130,6 +136,25 @@ class PortRef:
         return self.attr_path.rsplit(":", 1)[-1]
 
     @property
+    def param_name(self) -> str:
+        """The name get_param answers to, namespaces included.
+
+        A param inside a page group is `inputs:Base:base_color` in USD and `Base.base_color`
+        to the chunk. `name` is the last segment and is right for a label; it is wrong for
+        a lookup, which is why both exist.
+
+        Qt is inconsistent about this today -- its connect path uses the last segment while
+        its disconnect path uses the dotted form -- so one of the two is wrong for a
+        grouped param. Preserved rather than silently changed here: unifying the two call
+        sites is the job, and altering what either one resolves to is a separate decision.
+        """
+        suffix = self.attr_path.split(".", 1)[-1]
+        for prefix in ("inputs:", "outputs:"):
+            if suffix.startswith(prefix):
+                return suffix[len(prefix):].replace(":", ".")
+        return suffix.replace(":", ".")
+
+    @property
     def is_exec(self) -> bool:
         suffix = self.attr_path.split(".", 1)[-1]
         return chunk_usd.is_exec_input_name(suffix) or suffix == EXEC_OUTPUT
@@ -168,7 +193,7 @@ def resolve_graph_nodes(stage: Usd.Stage, root_path: str = CHUNKS_ROOT) -> list[
     if not root or not root.IsValid():
         return []
     return [prim for prim in root.GetFilteredChildren(INCLUDE_INACTIVE)
-            if prim.GetTypeName() == "Chunk"]
+            if prim.GetTypeName() == CHUNK_TYPENAME]
 
 
 def iter_ports(prim: Usd.Prim, chunk=None) -> list[PortRef]:
@@ -484,7 +509,7 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
     if port.port_type != PORT_EXEC and port.is_input:
         chunk = chunks.get(port.node_path)
         if chunk is not None:
-            param = chunk.get_param(port.name.replace(":", "."))
+            param = chunk.get_param(port.param_name)
             if param is not None:
                 param.value = param.default_value
 

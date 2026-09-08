@@ -218,8 +218,18 @@ class GraphView:
     # -- hit testing -------------------------------------------------------
 
     def port_at(self, x: float, y: float):
+        """Nearest port within the grab radius.
+
+        Only nodes whose rect the point could plausibly belong to are scanned: a click
+        used to measure every port on every node, on every press and every drag frame.
+        """
         best, best_distance = None, GRAB_R
         for path in self.prims:
+            nx, ny = self.positions[path]
+            if not (nx - GRAB_R - PORT_R <= x <= nx + NODE_W + GRAB_R + PORT_R):
+                continue
+            if not (ny - GRAB_R <= y <= ny + self.node_height(path) + GRAB_R):
+                continue
             for port in self.ports[path]:
                 px, py = self.port_xy(port)
                 distance = ((px - x) ** 2 + (py - y) ** 2) ** 0.5
@@ -384,11 +394,16 @@ class GraphView:
                 out.append(cv.Circle(px, py, PORT_R,
                                      paint=ft.Paint(color=PORT_COLOUR.get(port.port_type,
                                                                           "#888888"))))
-                out.append(cv.Text(
-                    px - PORT_R - 5 if port.is_input else px + PORT_R + 5, py - 7,
-                    port.name, ft.TextStyle(size=9, color="#8f8f8f"),
-                    alignment=ft.Alignment.TOP_RIGHT if port.is_input
-                    else ft.Alignment.TOP_LEFT))
+                # No label on a param port: the control it sits beside is already
+                # labelled, and printing the name twice is noise that also collides with
+                # the wires. Exec ports keep theirs -- they have no control to borrow one
+                # from -- and the header names the node.
+                if port.port_type == chunk_graph.PORT_EXEC:
+                    out.append(cv.Text(
+                        px - PORT_R - 5 if port.is_input else px + PORT_R + 5, py - 7,
+                        port.name, ft.TextStyle(size=9, color="#8f8f8f"),
+                        alignment=ft.Alignment.TOP_RIGHT if port.is_input
+                        else ft.Alignment.TOP_LEFT))
         return out
 
     def node_controls(self):

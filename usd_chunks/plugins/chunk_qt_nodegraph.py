@@ -4253,114 +4253,80 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             attr_name = "outputs:" + attr_name[len("inputs:"):]
         return src_node.get_port(f"{src_prim_path}.{attr_name}")
 
+    def _engine_context(self, graph_scene: "ChunkGraphScene"):
+        """The prims and chunks the engine needs, keyed the way it keys them.
+
+        Not _graph_context: this class already has one of those, answering a different
+        question with a different signature, and the later definition simply wins.
+        """
+        prims = {path: node.prim for path, node in graph_scene._nodes.items()
+                 if node.prim.IsValid()}
+        chunks = {path: node.chunk for path, node in graph_scene._nodes.items()
+                  if getattr(node, "chunk", None) is not None}
+        return prims, chunks
+
     def _author_connection(self, a: ChunkPortItem, b: ChunkPortItem) -> None:
-        src, dst = (b, a) if a.is_input else (a, b)
+        """Wire two ports, then redraw and recook.
+
+        The authoring itself lives in chunk_graph, so this view and the Flet one perform
+        the same operation rather than two implementations that agree until one of them is
+        fixed. They had already drifted: disconnect was made to work without a live chunk
+        session, and connect learned to survive a param that refuses an expression, and
+        neither reached the copy that used to live here.
+        """
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage:
             return
-        dst_attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(dst.attr_path))
-        if not (dst_attr and dst_attr.IsValid()):
-            # Attribute doesn't exist yet (e.g. inputs:chunk on a not-yet-connected node).
-            prim = graph_scene._stage.GetPrimAtPath(Sdf.Path(dst.attr_path).GetPrimPath())
-            if not prim.IsValid():
-                return
-            sdf_type = Sdf.ValueTypeNames.Token if dst.port_type == _PORT_EXEC else Sdf.ValueTypeNames.String
-            dst_attr = prim.CreateAttribute(dst.attr_path.rsplit(".", 1)[-1], sdf_type, custom=False)
-            if not dst_attr.IsValid():
-                return
-        # Exec connections reference outputs:chunk; typed param connections reference inputs:param.
-        if src.port_type == _PORT_EXEC:
-            src_conn_path = Sdf.Path(src.attr_path)
-        else:
-            src_conn_path = Sdf.Path(src.attr_path.replace(".outputs:", ".inputs:", 1))
-        # Chunk-prim bookkeeping (this connection) follows Edit Target now — update in
-        # place if the attr already had a spec somewhere, else resolve where a brand
-        # new one should go, rather than relying on the stage's ambient edit target.
-        home = chunk_utils.get_attr_home_layer(dst_attr)
-        if home:
-            target = home
-        else:
-            dst_node = graph_scene._nodes.get(str(Sdf.Path(dst.attr_path).GetPrimPath()))
-            target = chunk_utils.get_bookkeeping_layer(graph_scene._stage, getattr(dst_node, "chunk", None))
-        with Usd.EditContext(graph_scene._stage, target):
-            dst_attr.SetConnections([src_conn_path])
+        _prims, chunks = self._engine_context(graph_scene)
+        change = chunk_graph.connect(graph_scene._stage, self._as_port_ref(a),
+                                     self._as_port_ref(b), chunks)
+        if change is None:
+            return
+        if change.expression_error:
+            # The wire stands; only the expression was refused. Worth saying so -- the
+            # value will not resolve through a connection that looks complete.
+            print(f"[ChunkGraph] wired, but the expression was refused: "
+                  f"{change.expression_error}")
 
-        # For typed params, also write an expression so the value resolves at runtime.
-        # The user can clear it from the QLineEdit to keep the wiring without expression eval.
-        # ChunkVectorBase supports this too (whole-vector references, e.g. @Node.vecParam@ —
-        # no per-component wiring).
-        dst_node = graph_scene._nodes.get(str(Sdf.Path(dst.attr_path).GetPrimPath()))
-        if src.port_type != _PORT_EXEC:
-            src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
-            src_param_name = src.attr_path.rsplit(":", 1)[-1]
-            dst_param_name = dst.attr_path.rsplit(":", 1)[-1]
-            if dst_node:
-                param = dst_node.chunk.get_param(dst_param_name)
-                if param is not None:
-                    param.value = f"@{src_node_name}.{src_param_name}@"
-
-        # Wiring a new exec edge can put the node (and everything downstream) under a
-        # different Edit Target — re-home them to honor the target at their new position.
-        # (This drag-drop path authors inputs:chunk directly, so DEPENDENCY_ADDED — which
-        # ChunkStageSync._on_dependency_added also reconciles on — never fires here.)
-        if src.port_type == _PORT_EXEC:
+        # Everything below is the view's own work, which is why it stayed here.
+        if change.exec_changed:
+            # A new exec edge can move the node (and everything downstream) under a
+            # different Edit Target -- re-home them to honour the target at the new
+            # position. This path authors inputs:chunk directly, so DEPENDENCY_ADDED never
+            # fires and ChunkStageSync does not reconcile on its own.
             chunk_usd.reconcile_edit_targets(graph_scene._stage, chunk_usd.ChunkStageSync()._scene)
         graph_scene._build_edges()
-        # A new connection can only change the active view's cook set if its destination side
-        # is (or feeds) the view -- wiring two nodes off in an unrelated part of the graph can't
-        # add anything reachable from the view. Unresolvable dst_node (shouldn't happen once
-        # dst_attr validated above) falls back to an unconditional recook to stay safe.
-        self._recook_active_view({dst_node.chunk} if dst_node else None)
+        # A new connection can only change the active view's cook set if its destination
+        # is, or feeds, the view: wiring two nodes elsewhere cannot add anything reachable.
+        touched = {chunks[path] for path in change.touched_nodes if path in chunks}
+        self._recook_active_view(touched or None)
 
     def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: "ChunkGraphScene") -> None:
-        changed_nodes = set()
-        port_node = graph_scene._nodes.get(str(Sdf.Path(port.attr_path).GetPrimPath()))
-        if port_node:
-            changed_nodes.add(port_node)
-        # For exec ports: rewire predecessor → successor before clearing.
-        if port.port_type == _PORT_EXEC:
-            prim_path = Sdf.Path(port.attr_path).GetPrimPath()
-            out_attr_path = str(prim_path) + ".outputs:chunk"
-            # Find any successor whose exec input points to this node's outputs:chunk. Every
-            # slot, not just inputs:chunk: a merge fed through slot 2 is a successor too, and
-            # missing it would leave that slot wired to a node the user just detached.
-            for node in graph_scene._nodes.values():
-                for succ_attr in chunk_usd.iter_exec_inputs(node.prim):
-                    if not any(str(c) == out_attr_path for c in succ_attr.GetConnections()):
-                        continue
-                    # Rewire successor to this node's predecessor.
-                    pred_conns = attr.GetConnections()
-                    if pred_conns:
-                        succ_attr.SetConnections(list(pred_conns))
-                    else:
-                        succ_attr.ClearConnections()
-                    changed_nodes.add(node)
-                    break
-        chunk_usd.ChunkStageSync().clear_attr_connections(attr)
-        # For typed ports, re-execute the owning chunk so shader-level connections
-        # (e.g. UsdUVTexture.inputs:st) are cleared to match the disconnected chunk state.
-        # Resetting param.value to default_value also clears a ChunkVectorBase's
-        # expression string (its value setter treats a non-string Sequence as "not
-        # an expression"), same as it does for scalar params.
+        """Clear a port, healing the exec chain, then redraw and recook.
+
+        `attr` is accepted for call-site compatibility and deliberately unused: the engine
+        resolves the attribute itself, so both frontends read the same one.
+        """
+        prims, chunks = self._engine_context(graph_scene)
+        change = chunk_graph.disconnect(graph_scene._stage, self._as_port_ref(port),
+                                        prims, chunks)
+        if not change.edges_dirty:
+            return
+
+        # Re-execute the owning chunk so shader-level connections (a UsdUVTexture's
+        # inputs:st, say) clear to match. The engine resets the param; only the view knows
+        # a cook is wanted here.
         if port.port_type != _PORT_EXEC:
-            prim_path = str(Sdf.Path(port.attr_path).GetPrimPath())
-            node = graph_scene._nodes.get(prim_path)
-            if node and getattr(node, 'chunk', None):
-                if port.is_input:
-                    attr_local = port.attr_path.rsplit(".", 1)[-1]
-                    if attr_local.startswith("inputs:"):
-                        param_name = attr_local[len("inputs:"):].replace(":", ".")
-                        param = node.chunk.get_param(param_name)
-                        if param is not None:
-                            param.value = param.default_value
+            node = graph_scene._nodes.get(str(Sdf.Path(port.attr_path).GetPrimPath()))
+            if node and getattr(node, "chunk", None):
                 node.chunk.execute()
-        # Detaching an exec wire can change which Edit Target applies to the node (and its
-        # downstream) — re-home them to the target that survives at their new position.
+
+        # Detaching an exec wire can change which Edit Target applies to the node and its
+        # downstream -- re-home them to the target that survives at the new position.
         chunk_usd.reconcile_edit_targets(graph_scene._stage, chunk_usd.ChunkStageSync()._scene)
         graph_scene._build_edges()
-        # See _author_connection: a disconnect can only affect the view's cook set if the
-        # touched node(s) were themselves reachable from the view.
-        self._recook_active_view({n.chunk for n in changed_nodes} if changed_nodes else None)
+        touched = {chunks[path] for path in change.touched_nodes if path in chunks}
+        self._recook_active_view(touched or None)
 
     def _clear_input_connection(self, port: ChunkPortItem, graph_scene: "ChunkGraphScene") -> bool:
         """Clear one input port's connections (no exec chain-heal). For typed ports also reset
