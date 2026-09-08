@@ -414,6 +414,143 @@ class GraphView:
     def selected_chunks(self):
         return [c for p, c in self.chunks.items() if p in self.selected_nodes]
 
+    # -- clipboard ---------------------------------------------------------
+
+    def snapshot_selection(self):
+        """(nodes, edges) for the current selection, in the engine's clipboard format.
+
+        Positions are relative to the selection's top-left, so a paste lands as a shape
+        rather than at absolute coordinates. A wire to a node OUTSIDE the selection is
+        dropped rather than recreated against the original -- only wires between two
+        selected nodes survive, which is what Qt does.
+        """
+        chosen = [p for p in self.selected_nodes if p in self.prims]
+        if not chosen:
+            return [], []
+        min_x = min(self.positions[p][0] for p in chosen)
+        min_y = min(self.positions[p][1] for p in chosen)
+        nodes, index = [], {}
+        for path in chosen:
+            chunk = self.chunks.get(path)
+            if chunk is None:
+                continue
+            rel = (self.positions[path][0] - min_x, self.positions[path][1] - min_y)
+            clip = chunk_graph.snapshot_chunk_node(chunk, self.scene, self.stage, rel)
+            if clip is None:
+                continue  # no module behind it; nothing to recreate it from
+            index[path] = len(nodes)
+            nodes.append(clip)
+
+        edges = []
+        for path in chosen:
+            dst_index = index.get(path)
+            if dst_index is None:
+                continue
+            for dst_attr, src_path, src_attr in chunk_graph.iter_prim_connections(self.prims[path]):
+                src_index = index.get(src_path)
+                if src_index is None:
+                    continue
+                edges.append(chunk_graph.ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
+        return nodes, edges
+
+    def copy_selection(self):
+        nodes, edges = self.snapshot_selection()
+        if not nodes:
+            self.status = "nothing to copy"
+            return self.refresh()
+        # The engine's lists, not copies of them: Qt reads these same two objects, so a
+        # selection copied there can be pasted here.
+        chunk_graph.node_clipboard[:] = nodes
+        chunk_graph.edge_clipboard[:] = edges
+        self.status = "copied %d" % len(nodes)
+        self.refresh()
+
+    def cut_selection(self):
+        nodes, edges = self.snapshot_selection()
+        if not nodes:
+            self.status = "nothing to cut"
+            return self.refresh()
+        chunk_graph.node_clipboard[:] = nodes
+        chunk_graph.edge_clipboard[:] = edges
+        self.delete_selected()
+        self.status = "cut %d" % len(nodes)
+        self.refresh()
+
+    def paste_at(self, x: float, y: float, nodes=None, edges=None):
+        """Materialize clipboard nodes at a layout point and re-wire them.
+
+        Qt defers its wiring on a timer because its ports arrive in deferred proxy
+        batches; here reload() builds everything synchronously, so the ports exist the
+        moment it returns and the wiring is a straight second pass.
+        """
+        nodes = chunk_graph.node_clipboard if nodes is None else nodes
+        edges = chunk_graph.edge_clipboard if edges is None else edges
+        if not nodes or self.scene is None:
+            self.status = "clipboard empty"
+            return self.refresh()
+
+        registry = chunk_registry.ChunkRegistry()
+        created = {}
+        previous = chunk_usd._create_node_pos
+        try:
+            for i, item in enumerate(nodes):
+                module = registry.get_chunk_module(item.module_name)
+                if module is None:
+                    continue
+                made = module.create() if module.loaded else module.load()
+                if not made:
+                    continue
+                primary = made[0]
+                # Rows before values: a list group starts empty on a fresh chunk, so its
+                # values have nowhere to land until the rows it had are back.
+                chunk_graph.apply_list_sizes(primary, getattr(item, "list_sizes", []))
+                chunk_graph.apply_param_values(primary, item.values)
+                chunk_usd._create_node_pos = self._layout_to_usd(
+                    x + item.rel_pos[0], y + item.rel_pos[1])
+                for c in made:
+                    self.scene.add_chunk(c)
+                created[i] = get_chunk_prim_path(primary)
+        finally:
+            chunk_usd._create_node_pos = previous
+
+        self.stage.GetRootLayer().Save()
+        self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.reload()
+
+        for edge in edges:
+            src_path = created.get(edge.src_index)
+            dst_path = created.get(edge.dst_index)
+            if not src_path or not dst_path:
+                continue
+            src = self._port(src_path, edge.src_attr)
+            dst = self._port(dst_path, edge.dst_attr)
+            if src is not None and dst is not None:
+                chunk_graph.connect(self.stage, src, dst, self.chunks)
+        if edges:
+            self.stage.GetRootLayer().Save()
+            self.reload()
+
+        self.set_selection(created.values())
+        self.status = "pasted %d" % len(created)
+        self.refresh(bodies=True)
+
+    def _port(self, node_path: str, attr_suffix: str):
+        """The PortRef for node_path.attr_suffix, or None if that port is not exposed."""
+        wanted = "%s.%s" % (node_path, attr_suffix)
+        return next((p for p in self.ports.get(node_path, []) if p.attr_path == wanted), None)
+
+    def duplicate_selection(self):
+        """Copy and paste in one step at a fixed offset, leaving the clipboard alone -- so
+        duplicating never clobbers whatever was last explicitly copied."""
+        nodes, edges = self.snapshot_selection()
+        if not nodes:
+            self.status = "nothing to duplicate"
+            return self.refresh()
+        chosen = [p for p in self.selected_nodes if p in self.positions]
+        left = min(self.positions[p][0] for p in chosen)
+        top = min(self.positions[p][1] for p in chosen)
+        self.paste_at(left + 40, top + 40, nodes, edges)
+
     # -- keyboard ----------------------------------------------------------
 
     def on_key(self, event):
@@ -433,14 +570,32 @@ class GraphView:
             return self.refresh()
         if key == "delete":
             return self.delete_selected()
-        if key == "d":
+        if key == "d" and not event.ctrl:
             return self.toggle_disable_selected()
         if key == "f":
             return self.frame(self.selected_nodes or self.prims)
+        if key == "c" and event.ctrl:
+            return self.copy_selection()
+        if key == "x" and event.ctrl:
+            return self.cut_selection()
+        if key == "v" and event.ctrl:
+            # A key event carries no pointer position in Flet, so paste lands at the
+            # middle of the viewport rather than at the cursor as it does in Qt.
+            return self.paste_at(*self._xy_of_viewport_centre())
+        if key == "d" and event.ctrl:
+            return self.duplicate_selection()
         if key == "a" and event.ctrl:
             self.set_selection(self.prims)
             self.status = f"selected {len(self.selected_nodes)}"
             return self.refresh()
+
+    def _xy_from_screen(self, x: float, y: float) -> tuple[float, float]:
+        return ((x - self.pan[0]) / self.zoom, (y - self.pan[1]) / self.zoom)
+
+    def _xy_of_viewport_centre(self) -> tuple[float, float]:
+        vw = (self.page.width or 1200.0) if self.page is not None else 1200.0
+        vh = (self.page.height or 800.0) if self.page is not None else 800.0
+        return self._xy_from_screen(vw / 2, vh / 2)
 
     def delete_selected(self):
         chunks = self.selected_chunks()
