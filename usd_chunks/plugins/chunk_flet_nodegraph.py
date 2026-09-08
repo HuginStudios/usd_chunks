@@ -24,6 +24,7 @@ connects but does not yet write the expression.
 from __future__ import annotations
 
 import sys
+import weakref
 
 import flet as ft
 import flet.canvas as cv
@@ -34,6 +35,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.plugins import chunk_flet, chunk_graph, chunk_usd
+from usd_chunks.chunk_scene import CHUNKGROUP_MODULE
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, load_chunks
 
 # Lifted verbatim from chunk_qt_nodegraph rather than picked to look similar. Two
@@ -489,29 +491,8 @@ class GraphView:
             self.status = "clipboard empty"
             return self.refresh()
 
-        registry = chunk_registry.ChunkRegistry()
-        created = {}
-        previous = chunk_usd._create_node_pos
-        try:
-            for i, item in enumerate(nodes):
-                module = registry.get_chunk_module(item.module_name)
-                if module is None:
-                    continue
-                made = module.create() if module.loaded else module.load()
-                if not made:
-                    continue
-                primary = made[0]
-                # Rows before values: a list group starts empty on a fresh chunk, so its
-                # values have nowhere to land until the rows it had are back.
-                chunk_graph.apply_list_sizes(primary, getattr(item, "list_sizes", []))
-                chunk_graph.apply_param_values(primary, item.values)
-                chunk_usd._create_node_pos = self._layout_to_usd(
-                    x + item.rel_pos[0], y + item.rel_pos[1])
-                for c in made:
-                    self.scene.add_chunk(c)
-                created[i] = get_chunk_prim_path(primary)
-        finally:
-            chunk_usd._create_node_pos = previous
+        made = self._materialize(nodes, x, y)
+        created = {i: get_chunk_prim_path(c) for i, c in made.items()}
 
         self.stage.GetRootLayer().Save()
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
@@ -532,6 +513,135 @@ class GraphView:
 
         self.set_selection(created.values())
         self.status = "pasted %d" % len(created)
+        self.refresh(bodies=True)
+
+    def _materialize(self, nodes, x: float, y: float) -> dict:
+        """Create clipboard nodes at a layout point. Returns {clipboard index: chunk}.
+
+        Split out of paste_at because grouping needs the chunks without the port-based
+        wiring: a paste into a group puts them somewhere this view is not showing, so
+        they have no ports here to wire through.
+        """
+        registry = chunk_registry.ChunkRegistry()
+        made = {}
+        previous = chunk_usd._create_node_pos
+        try:
+            for i, item in enumerate(nodes):
+                module = registry.get_chunk_module(item.module_name)
+                if module is None:
+                    continue
+                chunks = module.create() if module.loaded else module.load()
+                if not chunks:
+                    continue
+                primary = chunks[0]
+                # Rows before values: a list group starts empty on a fresh chunk, so its
+                # values have nowhere to land until the rows it had are back.
+                chunk_graph.apply_list_sizes(primary, getattr(item, "list_sizes", []))
+                chunk_graph.apply_param_values(primary, item.values)
+                chunk_usd._create_node_pos = self._layout_to_usd(
+                    x + item.rel_pos[0], y + item.rel_pos[1])
+                for c in chunks:
+                    self.scene.add_chunk(c)
+                made[i] = primary
+        finally:
+            chunk_usd._create_node_pos = previous
+        return made
+
+    # -- grouping ----------------------------------------------------------
+
+    def _exec_boundary(self, inside: set):
+        """(feeds, consumers) -- the exec wires crossing into and out of `inside`.
+
+        Read BEFORE anything is removed. Deleting the selection heals the exec chain
+        closed as it goes, so afterwards nothing records what used to attach where.
+        """
+        feeds, consumers = [], []
+        for prim in self.stage.TraverseAll():
+            if prim.GetTypeName() != chunk_graph.CHUNK_TYPENAME:
+                continue
+            path = str(prim.GetPath())
+            for attr in chunk_usd.iter_exec_inputs(prim):
+                for conn in attr.GetConnections():
+                    source = str(conn.GetPrimPath())
+                    if path in inside and source not in inside and source not in feeds:
+                        feeds.append(source)
+                    elif source in inside and path not in inside and path not in consumers:
+                        consumers.append(path)
+        return feeds, consumers
+
+    def group_selection(self):
+        """Ctrl+G: put the selected chunks in a new chunkgroup.
+
+        The sequence a user would do by hand -- read the boundary, cut, make a group,
+        paste inside it, then wire the group in where the selection used to be -- so the
+        group takes the selection's place in the chain rather than leaving a hole.
+        """
+        chosen = [p for p in self.selected_nodes if p in self.prims]
+        if not chosen or self.scene is None:
+            self.status = "nothing to group"
+            return self.refresh()
+
+        centre_x = sum(self.positions[p][0] for p in chosen) / len(chosen)
+        centre_y = sum(self.positions[p][1] for p in chosen) / len(chosen)
+        feeds, consumers = self._exec_boundary(set(chosen))
+
+        nodes, edges = self.snapshot_selection()
+        if not nodes:
+            self.status = "nothing to group"
+            return self.refresh()
+        self.delete_selected()
+
+        registry = chunk_registry.ChunkRegistry()
+        module = registry.get_chunk_module(CHUNKGROUP_MODULE)
+        if module is None:
+            self.status = "no chunkgroup module"
+            return self.refresh()
+        made = module.create() if module.loaded else module.load()
+        if not made:
+            self.status = "could not create a chunkgroup"
+            return self.refresh()
+        group = made[0]
+
+        previous = chunk_usd._create_node_pos
+        chunk_usd._create_node_pos = self._layout_to_usd(centre_x, centre_y)
+        try:
+            self.scene.add_chunk(group)
+        finally:
+            chunk_usd._create_node_pos = previous
+        group_path = get_chunk_prim_path(group)
+
+        # Paste inside the group: pointing the scene's current context at it is what
+        # diving in before a paste amounts to.
+        prev_ctx = self.scene._current_context
+        self.scene._current_context = weakref.ref(group)
+        try:
+            pasted = self._materialize(nodes, centre_x, centre_y)
+        finally:
+            self.scene._current_context = prev_ctx
+
+        # Wire the pasted chunks to each other directly rather than through ports: they
+        # are inside a group this view is not showing, so they have no ports here.
+        for edge in edges:
+            src = pasted.get(edge.src_index)
+            dst = pasted.get(edge.dst_index)
+            if src is None or dst is None:
+                continue
+            if not (edge.src_attr.endswith("chunk") and edge.dst_attr.endswith("chunk")):
+                continue  # a typed param wire, not an exec one
+            chunk_usd.connect_exec(self.stage, self.scene,
+                                   get_chunk_prim_path(src), get_chunk_prim_path(dst))
+
+        # And put the group where the selection was in the chain.
+        for source in feeds:
+            chunk_usd.connect_exec(self.stage, self.scene, source, group_path)
+        for consumer in consumers:
+            chunk_usd.connect_exec(self.stage, self.scene, group_path, consumer)
+
+        self.stage.GetRootLayer().Save()
+        self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.reload()
+        self.set_selection([group_path] if group_path in self.prims else ())
+        self.status = "grouped %d" % len(nodes)
         self.refresh(bodies=True)
 
     def _port(self, node_path: str, attr_suffix: str):
@@ -584,6 +694,8 @@ class GraphView:
             return self.paste_at(*self._xy_of_viewport_centre())
         if key == "d" and event.ctrl:
             return self.duplicate_selection()
+        if key == "g" and event.ctrl:
+            return self.group_selection()
         if key == "a" and event.ctrl:
             self.set_selection(self.prims)
             self.status = f"selected {len(self.selected_nodes)}"

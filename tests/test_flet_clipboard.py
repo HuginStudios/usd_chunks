@@ -160,3 +160,44 @@ class TestShortcuts:
         view.set_selection([first])
         view.on_key(key("X", ctrl=True))
         assert first not in view.prims
+
+
+class TestGrouping:
+    def test_grouping_replaces_the_selection_with_one_node(self, view):
+        view.set_selection(view.prims)
+        view.group_selection()
+        assert len(view.prims) == 1
+        only = next(iter(view.prims.values()))
+        assert (only.GetAttribute("info:chunkType").Get() or "") == "chunkgroup"
+
+    def test_the_grouped_chunks_live_inside_the_group(self, view):
+        view.set_selection(view.prims)
+        view.group_selection()
+        group_path = next(iter(view.prims))
+        inner = [str(p.GetPath()) for p in view.stage.TraverseAll()
+                 if p.GetTypeName() == "Chunk"
+                 and str(p.GetPath()).startswith(group_path + "/")]
+        assert len(inner) == 2, f"expected 2 chunks inside the group, got {inner}"
+
+    def test_the_group_takes_the_selections_place_in_the_chain(self, view, first):
+        """Group only the downstream node: the wire that fed it must now feed the group,
+        or grouping leaves a hole in the exec chain."""
+        downstream = sorted(view.prims)[1]
+        view.set_selection([downstream])
+        view.group_selection()
+        group_path = next(p for p, prim in view.prims.items()
+                          if (prim.GetAttribute("info:chunkType").Get() or "") == "chunkgroup")
+        wired = [e for e in view.edges
+                 if e.is_exec and e.src_node_path == first and e.dst_node_path == group_path]
+        assert wired, "the upstream wire was not reconnected to the group"
+
+    def test_grouping_nothing_is_a_no_op(self, view):
+        before = set(view.prims)
+        view.group_selection()
+        assert set(view.prims) == before
+        assert "nothing" in view.status
+
+    def test_ctrl_g_groups(self, view):
+        view.set_selection(view.prims)
+        view.on_key(key("G", ctrl=True))
+        assert len(view.prims) == 1
