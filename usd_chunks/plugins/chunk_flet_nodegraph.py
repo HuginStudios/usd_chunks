@@ -502,12 +502,8 @@ class GraphView:
             self.status = "clipboard empty"
             return self.refresh()
 
-        nested, prev_ctx = self._nest()
-        try:
+        with self.scene.creating_in(self._nest_target()):
             made = self._materialize(nodes, x, y)
-        finally:
-            if nested:
-                self.scene._current_context = prev_ctx
         created = {i: get_chunk_prim_path(c) for i, c in made.items()}
 
         self.stage.GetRootLayer().Save()
@@ -540,27 +536,23 @@ class GraphView:
         """
         registry = chunk_registry.ChunkRegistry()
         made = {}
-        previous = chunk_usd._create_node_pos
-        try:
-            for i, item in enumerate(nodes):
-                module = registry.get_chunk_module(item.module_name)
-                if module is None:
-                    continue
-                chunks = module.create() if module.loaded else module.load()
-                if not chunks:
-                    continue
-                primary = chunks[0]
-                # Rows before values: a list group starts empty on a fresh chunk, so its
-                # values have nowhere to land until the rows it had are back.
-                chunk_graph.apply_list_sizes(primary, getattr(item, "list_sizes", []))
-                chunk_graph.apply_param_values(primary, item.values)
-                chunk_usd._create_node_pos = self._layout_to_usd(
-                    x + item.rel_pos[0], y + item.rel_pos[1])
+        for i, item in enumerate(nodes):
+            module = registry.get_chunk_module(item.module_name)
+            if module is None:
+                continue
+            chunks = module.create() if module.loaded else module.load()
+            if not chunks:
+                continue
+            primary = chunks[0]
+            # Rows before values: a list group starts empty on a fresh chunk, so its
+            # values have nowhere to land until the rows it had are back.
+            chunk_graph.apply_list_sizes(primary, getattr(item, "list_sizes", []))
+            chunk_graph.apply_param_values(primary, item.values)
+            position = self._layout_to_usd(x + item.rel_pos[0], y + item.rel_pos[1])
+            with chunk_usd.creating_at(position):
                 for c in chunks:
                     self.scene.add_chunk(c)
-                made[i] = primary
-        finally:
-            chunk_usd._create_node_pos = previous
+            made[i] = primary
         return made
 
     # -- grouping ----------------------------------------------------------
@@ -618,22 +610,14 @@ class GraphView:
             return self.refresh()
         group = made[0]
 
-        previous = chunk_usd._create_node_pos
-        chunk_usd._create_node_pos = self._layout_to_usd(centre_x, centre_y)
-        try:
+        with chunk_usd.creating_at(self._layout_to_usd(centre_x, centre_y)):
             self.scene.add_chunk(group)
-        finally:
-            chunk_usd._create_node_pos = previous
         group_path = get_chunk_prim_path(group)
 
         # Paste inside the group: pointing the scene's current context at it is what
         # diving in before a paste amounts to.
-        prev_ctx = self.scene._current_context
-        self.scene._current_context = weakref.ref(group)
-        try:
+        with self.scene.creating_in(group):
             pasted = self._materialize(nodes, centre_x, centre_y)
-        finally:
-            self.scene._current_context = prev_ctx
 
         # Wire the pasted chunks to each other directly rather than through ports: they
         # are inside a group this view is not showing, so they have no ports here.
@@ -746,19 +730,18 @@ class GraphView:
         self.status = "%s is not a subnet" % node.rsplit("/", 1)[-1]
         self.refresh()
 
-    def _nest(self):
-        """Point the scene's current context at the group being shown, if any.
+    def _nest_target(self):
+        """The chunk new chunks should be parented to: the group being shown, or None.
 
-        add_chunk parents new chunks to scene._current_context, which a dive does not set
-        -- so without this, creating a node while inside a group silently added it to the
-        graph OUTSIDE. Returns (changed, previous) to restore.
+        add_chunk parents to the scene's current context, which a dive does not set -- so
+        without this, creating a node while inside a group silently added it to the graph
+        OUTSIDE. Pushing and restoring is SceneSender.creating_in's job now; this only
+        answers which context.
         """
         chunk = self.chunks.get(self.context)
         if chunk is not None and chunk_usd.is_group_chunk(chunk):
-            previous = self.scene._current_context
-            self.scene._current_context = weakref.ref(chunk)
-            return True, previous
-        return False, None
+            return chunk
+        return None
 
     # -- view slots --------------------------------------------------------
 
@@ -999,22 +982,20 @@ class GraphView:
         if self.scene is None:
             self.status = "no chunk session; cannot create"
             return self.refresh()
-        previous = chunk_usd._create_node_pos
-        chunk_usd._create_node_pos = self._layout_to_usd(x, y)
-        chunk_usd._pin_new_chunks = False
-        nested, prev_ctx = self._nest()
+        created = []
         try:
-            created = entry.create()
-            for c in created:
-                self.scene.add_chunk(c)
-        except Exception as exc:  # noqa: BLE001 -- report, do not take the window down
+            with chunk_usd.creating_at(self._layout_to_usd(x, y), pin=False), \
+                    self.scene.creating_in(self._nest_target()):
+                created = entry.create()
+                for c in created:
+                    self.scene.add_chunk(c)
+        except (AttributeError, KeyError, TypeError, ValueError, RuntimeError) as exc:
+            # A chunk module is arbitrary user code, so creating one can fail in ways this
+            # view cannot anticipate -- but not in EVERY way: KeyboardInterrupt and
+            # SystemExit must still travel, and catching bare Exception was hiding real
+            # bugs in here behind a status line.
             self.status = f"create failed: {type(exc).__name__}: {exc}"
             created = []
-        finally:
-            chunk_usd._create_node_pos = previous
-            chunk_usd._pin_new_chunks = None
-            if nested:
-                self.scene._current_context = prev_ctx
 
         if created:
             self.stage.GetRootLayer().Save()

@@ -672,13 +672,9 @@ def test_copying_a_group_recursively_duplicates_its_children(qapp) -> None:
     qapp.processEvents()
     gv = docker.tab_widget.get_current_graph_view()
 
-    nested, prev = gv._push_nest_context(scene, group)
-    try:
+    with scene.creating_in(gv._nest_target(group)):
         child_a = _mk(transform_mod, scene)
         child_b = _mk(transform_mod, scene)
-    finally:
-        if nested:
-            scene._current_context = prev
     qapp.processEvents()
     assert child_a.get_context() is group
     assert child_b.get_context() is group
@@ -739,12 +735,8 @@ def test_duplicating_a_nested_group_in_group_produces_independent_copies_at_both
     qapp.processEvents()
     gv = docker.tab_widget.get_current_graph_view()
 
-    nested_o, prev_o = gv._push_nest_context(scene, outer)
-    try:
+    with scene.creating_in(gv._nest_target(outer)):
         inner = _mk(group_mod, scene)
-    finally:
-        if nested_o:
-            scene._current_context = prev_o
     qapp.processEvents()
     # A nested ChunkGroup's own get_context() returns itself (documented quirk -- see
     # nodegraph._iter_group_children's docstring), never its structural parent, so "is inner
@@ -753,12 +745,8 @@ def test_duplicating_a_nested_group_in_group_produces_independent_copies_at_both
     stage = gv.scene()._stage
     assert inner in nodegraph._iter_group_children(outer, scene, stage)
 
-    nested_i, prev_i = gv._push_nest_context(scene, inner)
-    try:
+    with scene.creating_in(gv._nest_target(inner)):
         leaf = _mk(transform_mod, scene)
-    finally:
-        if nested_i:
-            scene._current_context = prev_i
     qapp.processEvents()
     assert leaf.get_context() is inner
 

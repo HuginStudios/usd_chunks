@@ -106,6 +106,32 @@ _pin_new_chunks: "bool | None" = None
 # index default. None → use the default. Cleared by the caller after the create.
 _create_node_pos: "tuple[float, float] | None" = None
 
+
+@contextlib.contextmanager
+def creating_at(pos: "tuple[float, float] | None", pin: "bool | None" = None):
+    """Create chunks at `pos` (USD space) for the duration of the block.
+
+    The two globals above are how a caller passes a position and a pin preference down
+    into _define_prim, which is several frames below and has no argument for either.
+    Every caller used to save both, assign, and restore in a try/finally -- nine copies
+    of that between the two frontends, each an opportunity to forget the restore and
+    leave every later chunk landing at someone else's mouse position.
+
+    Nesting works: the previous values come back rather than being cleared, so grouping
+    (which creates a group, then materializes chunks inside it) does not lose the outer
+    position when the inner block ends.
+    """
+    global _create_node_pos, _pin_new_chunks
+    previous_pos, previous_pin = _create_node_pos, _pin_new_chunks
+    _create_node_pos = pos
+    if pin is not None:
+        _pin_new_chunks = pin
+    try:
+        yield
+    finally:
+        _create_node_pos = previous_pos
+        _pin_new_chunks = previous_pin
+
 # Just above float32's ~1e-7 relative precision. A param holds a Python float (64-bit) but
 # is stored in USD as a 32-bit float, so a value that made the round trip comes back
 # differing in the 8th significant digit -- e.g. param -3.3492076146840537 vs USD

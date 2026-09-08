@@ -2935,17 +2935,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             for c in scene.get_chunks()
         )
 
-    def _push_nest_context(self, scene, context):
-        """When the graph is dived into a chunkgroup, make new chunks nest into it. add_chunk
-        uses scene._current_context, which isn't set for a dive — so without this, creating a
-        node inside a group silently added it to the tab instead. Returns (changed, previous) to
-        restore. No-op at the tab level (plain contexts have no module)."""
+    def _nest_target(self, context):
+        """The context new chunks should nest into, or None to leave them where they land.
+
+        When the graph is dived into a chunkgroup, add_chunk must parent into it -- it uses
+        the scene's current context, which isn't set for a dive, so without this creating a
+        node inside a group silently added it to the tab instead. No-op at the tab level
+        (plain contexts have no module).
+
+        Pushing and restoring is SceneSender.creating_in's job now; this only answers which
+        context, which is the half that differs between frontends.
+        """
         cfg = context.get_config() if context is not None else None
         if context is not None and context.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module:
-            prev = scene._current_context
-            scene._current_context = weakref.ref(context)
-            return True, prev
-        return False, None
+            return context
+        return None
 
     # ------------------------------------------------------------------
     # Copy / Paste
@@ -3079,7 +3083,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         """Create new chunk(s) from clip_nodes centered at scene_pos, wire clip_edges between
         them, and select the result -- nested into whatever context/tab this view is
         currently showing, same mechanism right-click "New Chunk" already uses
-        (_push_nest_context), which is what makes pasting/duplicating into a chunkgroup work
+        (scene.creating_in), which is what makes pasting/duplicating into a chunkgroup work
         for free, including a selection copied from a different context. Shared by both Paste
         (module clipboard) and Duplicate (clipboard-free, straight from the selection).
         Returns the list of newly created primary chunks."""
@@ -3093,10 +3097,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return []
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        nested, prev_ctx = self._push_nest_context(scene, context)
         new_chunks: list[core.ChunkBase] = []
         new_path_by_index: dict[int, str] = {}
-        try:
+        with scene.creating_in(self._nest_target(context)):
             for index, item in enumerate(clip_nodes):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
@@ -3141,8 +3144,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 pos = (scene_pos.x() + item.rel_pos[0], scene_pos.y() + item.rel_pos[1])
                 # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_usd in USD
                 # space (see chunk_usd._create_node_pos usage elsewhere in this file).
-                chunk_usd._create_node_pos = (pos[0], -pos[1])
-                try:
+                with chunk_usd.creating_at((pos[0], -pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
                     for c in blockable:
@@ -3161,15 +3163,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         # add_chunk so it runs with correct positioning/parenting in place.
                         for c in blockable:
                             c.execute()
-                finally:
-                    chunk_usd._create_node_pos = None
                 new_chunks.append(primary)
                 new_path_by_index[index] = chunk_usd.get_chunk_prim_path(primary)
                 if item.children:
                     self._materialize_children(primary, item.children, item.child_edges)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
         if new_chunks and graph_scene._scene_sender:
             graph_scene._scene_sender.set_selected_chunks(new_chunks)
         if clip_edges:
@@ -3208,10 +3205,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         stage = scene.get_stage()
         if not stage:
             return
-        nested, prev_ctx = self._push_nest_context(scene, parent_chunk)
         child_path_by_index: dict[int, str] = {}
         child_chunk_by_index: dict[int, core.ChunkBase] = {}
-        try:
+        with scene.creating_in(self._nest_target(parent_chunk)):
             for index, item in enumerate(clip_children):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
@@ -3251,23 +3247,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # have nowhere to land until the rows it had are back.
                 _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
-                chunk_usd._create_node_pos = (item.rel_pos[0], -item.rel_pos[1])
-                try:
+                with chunk_usd.creating_at((item.rel_pos[0], -item.rel_pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
                     for c in blockable:
                         c._executing = False
                         c.set_blocked(True)
-                finally:
-                    chunk_usd._create_node_pos = None
                 path = chunk_usd.get_chunk_prim_path(primary)
                 child_path_by_index[index] = path
                 child_chunk_by_index[index] = primary
                 if item.children:
                     self._materialize_children(primary, item.children, item.child_edges)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
         for edge in clip_child_edges:
             src_path = child_path_by_index.get(edge.src_index)
             dst_path = child_path_by_index.get(edge.dst_index)
@@ -3344,12 +3334,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         group = created[0]
 
         context = self._graph_context()
-        prev_ctx = scene_sender._current_context
-        scene_sender._current_context = weakref.ref(context) if context is not None else None
-        try:
+        with scene_sender.creating_in(context):
             scene_sender.add_chunk(group)
-        finally:
-            scene_sender._current_context = prev_ctx
 
         group_prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(group)))
         if group_prim and group_prim.IsValid():
@@ -3363,13 +3349,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # group stands in as the built context for the duration.
         edges = list(_edge_clipboard)
         prev_built = graph_scene._built_context
-        prev_ctx = scene_sender._current_context
         graph_scene._built_context = group
-        scene_sender._current_context = weakref.ref(group)
         try:
-            pasted = self._paste_clipboard_at(QtCore.QPointF(centre_x, centre_y))
+            with scene_sender.creating_in(group):
+                pasted = self._paste_clipboard_at(QtCore.QPointF(centre_x, centre_y))
         finally:
-            scene_sender._current_context = prev_ctx
             graph_scene._built_context = prev_built
 
         # Wire the pasted chunks to each other here rather than leaving it to the paste's
@@ -3934,17 +3918,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
         # Create the node at the wire-drop point instead of the far-away index default.
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
+        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y())), \
+                scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
         new_chunk = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
         if new_chunk is None:
             return
@@ -4681,19 +4660,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        chunk_usd._pin_new_chunks = False
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
+        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
-            chunk_usd._pin_new_chunks = None
 
         menu_view = next((c for c in chunks if chunk_usd.is_view_chunk(c)), None)
         if menu_view is not None:
@@ -4890,17 +4862,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        chunk_usd._pin_new_chunks = False
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
+        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
-            chunk_usd._pin_new_chunks = None
 
         list_group = primary.get_param("imports", _chunk.is_inst(_chunk.ListGroup))
         if list_group is not None:
@@ -4944,17 +4909,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        chunk_usd._pin_new_chunks = False
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
+        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
-            chunk_usd._pin_new_chunks = None
 
         if file_param := primary.get_param("file_path"):
             file_param.value = path

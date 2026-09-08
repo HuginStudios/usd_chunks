@@ -16,6 +16,7 @@ existing `from usd_chunks.chunk_core import SceneSender` imports keep working.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import weakref
 from abc import abstractmethod
@@ -62,6 +63,35 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._current_context: Optional[weakref.ReferenceType[ChunkBase]] = None
         self._selected_chunks: weakref.WeakSet[ChunkBase] = weakref.WeakSet()
         self._stage_replaced_listeners: list = []
+
+    @property
+    def current_context(self) -> "ChunkBase | None":
+        """The chunk new chunks are parented to, or None for the scene root.
+
+        add_chunk reads this. Both graph frontends have to set it -- creating a node while
+        dived into a group must land inside the group -- so it is public API rather than
+        the private attribute each of them was reaching into.
+        """
+        return self._current_context() if self._current_context else None
+
+    @contextlib.contextmanager
+    def creating_in(self, context: "ChunkBase | None"):
+        """Parent chunks created in this block to `context`.
+
+        Replaces the save-assign-restore each frontend wrote by hand around
+        _current_context: Qt's _push_nest_context and Flet's _nest were the same six lines
+        against a private attribute, and both had to remember the restore or every later
+        chunk would silently keep landing in the group.
+
+        Passing None means the scene root. Nesting restores the previous context, not the
+        root, so a dive inside a paste inside a group unwinds correctly.
+        """
+        previous = self._current_context
+        self._current_context = weakref.ref(context) if context is not None else None
+        try:
+            yield
+        finally:
+            self._current_context = previous
 
     def add_stage_replaced_listener(self, callback) -> None:
         """Register a callback invoked when the DCC opens a new stage.
