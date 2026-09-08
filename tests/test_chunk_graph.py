@@ -300,3 +300,21 @@ class TestMutating:
         assert "/chunks/Middle" in change.touched_nodes
         attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Middle.inputs:chunk"))
         assert [str(c) for c in attr.GetConnections()] == []
+
+    def test_disconnect_works_without_a_live_chunk_session(self, stage):
+        """The engine must not need a session to author.
+
+        ChunkStageSync.clear_attr_connections returns silently when uninitialised, so
+        routing every disconnect through it gave a frontend that reads a stage -- rather
+        than joining a session -- an operation that reported success and changed nothing.
+        These tests never initialise one, which is exactly the case that was broken.
+        """
+        prims = {str(p.GetPath()): p for p in chunk_graph.resolve_graph_nodes(stage)}
+        port = next(p for p in self._ports(stage)["/chunks/Middle"]
+                    if p.name == "chunk" and p.is_input)
+        attr = stage.GetAttributeAtPath(Sdf.Path("/chunks/Middle.inputs:chunk"))
+        assert attr.GetConnections(), "precondition: it starts wired"
+
+        chunk_graph.disconnect(stage, port, prims)
+
+        assert attr.GetConnections() == []

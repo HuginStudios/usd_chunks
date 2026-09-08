@@ -362,6 +362,29 @@ class GraphChange:
             self.touched_nodes = set()
 
 
+def _clear_connections(stage: Usd.Stage, attr: Usd.Attribute) -> None:
+    """Clear a connection wherever an opinion for it exists, not just in the edit layer.
+
+    A connection may have been authored under a different Edit Target, or before any Edit
+    Target chunk ran; clearing only the current layer silently no-ops and leaves the
+    original opinion composed in as a stale, seemingly undeletable wire.
+
+    Delegates to ChunkStageSync when a session is live, because that path also keeps the
+    session's own bookkeeping in step. Without one it does the work itself -- ChunkStageSync
+    returns silently when uninitialised, so a frontend that reads a stage rather than
+    joining a session got a disconnect that reported success and changed nothing.
+    """
+    sync = chunk_usd.ChunkStageSync()
+    if getattr(sync, "initialized", False) and getattr(sync, "_stage", None) is stage:
+        sync.clear_attr_connections(attr)
+        return
+    for layer in stage.GetLayerStack(includeSessionLayers=True):
+        spec = layer.GetAttributeAtPath(attr.GetPath())
+        if spec and spec.connectionPathList.explicitItems:
+            with Usd.EditContext(stage, layer):
+                attr.ClearConnections()
+
+
 def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None) -> GraphChange | None:
     """Wire two ports. Returns None if the pair is not connectable.
 
@@ -443,7 +466,7 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
                 touched.add(path)
                 break
 
-    chunk_usd.ChunkStageSync().clear_attr_connections(attr)
+    _clear_connections(stage, attr)
 
     if port.port_type != PORT_EXEC and port.is_input:
         chunk = chunks.get(port.node_path)
