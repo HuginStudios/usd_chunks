@@ -67,7 +67,7 @@ def _create(env_, key):
 
 
 def _chunk_prim(stage, chunk):
-    return stage.GetPrimAtPath(Sdf.Path(ChunkStageSync()._chunk_prim_paths[id(chunk)]))
+    return ChunkStageSync().prim_of(chunk)
 
 
 def _cook(stage, chunk, module):
@@ -169,7 +169,7 @@ def test_duplicate_shaders_get_unique_names_and_paths(env):
     nodes = [_create(env, ADD) for _ in range(3)]
 
     names = [n.name for n in nodes]
-    paths = [ChunkStageSync()._chunk_prim_paths[id(n)] for n in nodes]
+    paths = [ChunkStageSync().prim_path_of(n) for n in nodes]
 
     assert len(set(names)) == 3, names
     assert len(set(paths)) == 3, paths
@@ -225,8 +225,8 @@ def test_texture_wires_into_surface_base_color(env):
     surf = _create(env, SURFACE)
     tex = _create(env, TEXTURE)
 
-    surf_prim_path = ChunkStageSync()._chunk_prim_paths[id(surf)]
-    tex_prim_path = ChunkStageSync()._chunk_prim_paths[id(tex)]
+    surf_prim_path = ChunkStageSync().prim_path_of(surf)
+    tex_prim_path = ChunkStageSync().prim_path_of(tex)
 
     # Wire as the node graph does. Two details matter and both come from reading what the
     # graph actually authors: the connection lands on the BARE param name (its ports are

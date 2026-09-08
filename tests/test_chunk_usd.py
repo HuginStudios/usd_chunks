@@ -1705,8 +1705,8 @@ def test_rename_context_prim_path() -> None:
     assert not stage.GetPrimAtPath("/old_ctx/c1").IsValid()
 
 
-def test_rename_context_prim_path_updates_chunk_prim_paths() -> None:
-    """rename_context_prim_path must update ChunkStageSync._chunk_prim_paths.
+def test_rename_context_prim_path_updates_the_recorded_prim_path() -> None:
+    """rename_context_prim_path must update the prim path ChunkStageSync records.
 
     Regression: after rename the tracking dict still pointed to the old path so
     state sync and active-state detection silently stopped working — the prim
@@ -1724,14 +1724,14 @@ def test_rename_context_prim_path_updates_chunk_prim_paths() -> None:
 
     sync = ChunkStageSync()
     assert stage.GetPrimAtPath("/MyTab/c1").IsValid(), "prim must exist before rename"
-    assert sync._chunk_prim_paths.get(id(c1)) == "/MyTab/c1"
+    assert sync.prim_path_of(c1) == "/MyTab/c1"
 
     rename_context_prim_path(ctx, "/mychunks")
 
     assert stage.GetPrimAtPath("/mychunks/c1").IsValid(), "prim must be at new path"
     assert not stage.GetPrimAtPath("/MyTab/c1").IsValid(), "old prim must be removed"
-    assert sync._chunk_prim_paths.get(id(c1)) == "/mychunks/c1", \
-        "_chunk_prim_paths must be updated so sync still finds the chunk"
+    assert sync.prim_path_of(c1) == "/mychunks/c1", \
+        "the recorded prim path must be updated so sync still finds the chunk"
 
 
 # ---------------------------------------------------------------------------
@@ -2947,7 +2947,7 @@ def test_rename_group_is_sibling_and_rebases_children() -> None:
     assert not stage.GetPrimAtPath(Sdf.Path(old_root)).IsValid()
     assert stage.GetPrimAtPath(Sdf.Path(new_root)).IsValid()
     # child moved with the subtree and its tracked path was rebased
-    assert ChunkStageSync()._chunk_prim_paths[id(child)] == f"{new_root}/{child.name}"
+    assert ChunkStageSync().prim_path_of(child) == f"{new_root}/{child.name}"
     assert stage.GetPrimAtPath(Sdf.Path(f"{new_root}/{child.name}")).IsValid()
 
 
