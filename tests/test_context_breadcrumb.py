@@ -183,3 +183,31 @@ def test_a_context_with_no_parent_is_a_path_of_one(qapp):
     breadcrumb.set_context(None)
 
     assert _texts(breadcrumb) == []
+
+
+def test_the_row_is_actually_on_screen(nested):
+    """Visible and laid out, not merely constructed.
+
+    The first attempt put the path in the menu bar's corner widget, where every one of
+    these tests still passed -- the buttons existed and answered to a click -- while the row
+    was invisible in the application, because a QMenuBar sizes a corner widget from the hint
+    it has when it is set and this one starts empty. Existence is not the property that was
+    wanted.
+    """
+    docker = nested["docker"]
+    docker._on_dive_into(nested["inner"])
+    nested["settle"]()
+
+    graph_view = docker.tab_widget.get_current_graph_view()
+    breadcrumb = graph_view._breadcrumb
+    entries = breadcrumb.findChildren(QtWidgets.QToolButton)
+
+    assert breadcrumb.isVisible(), "the row itself must be shown"
+    assert breadcrumb.width() > 0 and breadcrumb.height() > 0, (
+        f"the row has no room: {breadcrumb.size()}"
+    )
+    assert all(e.isVisible() and e.width() > 0 for e in entries), (
+        "every entry must be laid out, not squeezed to nothing"
+    )
+    # And it sits in the strip the graph reserves at its top, above the canvas.
+    assert breadcrumb.mapTo(graph_view, QtCore.QPoint(0, 0)).y() < graph_view.viewportMargins().top() + 1

@@ -3033,23 +3033,37 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._rubber_band_origin = QtCore.QPoint()
         self._rubber_band_add = False  # Shift held: add boxed nodes to selection instead of replacing
 
-        self._menubar = QtWidgets.QMenuBar(self)
-        # The path to this graph's own context, in the strip under the tabs -- the row that
-        # says where you are belongs against the graph you are looking at, not above the tab
-        # bar where it has to describe whichever tab is current.
-        self._breadcrumb = ChunkContextBreadcrumb(self._menubar)
+        # The strip under the tabs: the path to this graph's own context on the left, the
+        # View menu on the right. A real row rather than the menu bar's corner widget --
+        # a QMenuBar sizes a corner widget from the hint it has when it is set, and this one
+        # starts empty (its contents arrive with the first context), so it was given no
+        # width and never appeared at all.
+        self._top_strip = QtWidgets.QWidget(self)
+        strip_layout = QtWidgets.QHBoxLayout(self._top_strip)
+        strip_layout.setContentsMargins(0, 0, 0, 0)
+        strip_layout.setSpacing(0)
+
+        self._breadcrumb = ChunkContextBreadcrumb(self._top_strip)
         self._breadcrumb.navigate.connect(self.dive_into)
-        self._menubar.setCornerWidget(self._breadcrumb, QtCore.Qt.Corner.TopLeftCorner)
-        # A rule between this strip and the tabs above it, so the path reads as belonging to
-        # the graph rather than as a second row of tabs.
-        self._menubar.setStyleSheet("QMenuBar { border-top: 1px solid #3a3a3a; }")
+        strip_layout.addWidget(self._breadcrumb, 1)
+
+        self._menubar = QtWidgets.QMenuBar(self._top_strip)
         view_menu = self._menubar.addMenu("View")
         self._param_edge_action = view_menu.addAction("Show param connections")
         self._param_edge_action.setCheckable(True)
         self._param_edge_action.setChecked(True)
         self._param_edge_action.triggered.connect(self._on_toggle_param_edges)
-        self._menubar.setFixedWidth(self.width())
-        mh = self._menubar.sizeHint().height()
+        strip_layout.addWidget(self._menubar, 0)
+
+        # A rule between this strip and the tabs above it, so the path reads as belonging to
+        # the graph rather than as a second row of tabs.
+        self._top_strip.setStyleSheet(
+            "QWidget#chunkTopStrip { border-top: 1px solid #3a3a3a; }"
+        )
+        self._top_strip.setObjectName("chunkTopStrip")
+        mh = max(self._menubar.sizeHint().height(), self._breadcrumb.sizeHint().height())
+        self._top_strip.setFixedHeight(mh)
+        self._top_strip.setFixedWidth(self.width())
         self.setViewportMargins(0, mh, 0, 0)
 
         self._proxy_key_router = _ProxyKeyRouter(self)
@@ -3084,7 +3098,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     def resizeEvent(self, event: QtGui.QResizeEvent):
         super().resizeEvent(event)
-        self._menubar.setFixedWidth(self.width())
+        self._top_strip.setFixedWidth(self.width())
 
     def hideEvent(self, event: QtGui.QHideEvent):
         super().hideEvent(event)
