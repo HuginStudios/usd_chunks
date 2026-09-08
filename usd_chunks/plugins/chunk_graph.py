@@ -35,6 +35,8 @@ from usd_chunks import chunk_core as core
 from usd_chunks import chunk_utils
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks import chunk_naming
+from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.plugins import chunk_usd
 
 #: Port types. Tokens rather than an enum because they are already persisted as strings in
 #: the Qt view's colour table and read by name in ~40 places.
@@ -318,6 +320,20 @@ def node_position(prim: Usd.Prim, default: tuple[float, float] = (0.0, 0.0)) -> 
     return (float(value[0]), float(value[1])) if value is not None else default
 
 
+def graph_position(prim: "Usd.Prim | None") -> tuple[float, float]:
+    """A prim's node position in CANVAS space: USD is Y-up, a canvas is Y-down.
+
+    node_position returns what USD stores; this returns what a graph draws. Both frontends
+    flip, so the flip is defined once here rather than twice, differently -- which is
+    exactly what had happened (Qt flipped, Flet did not, and the same file rendered
+    mirrored between them).
+    """
+    if prim is None or not prim.IsValid():
+        return (0.0, 0.0)
+    x, y = node_position(prim)
+    return (x, -y)
+
+
 def node_size(prim: Usd.Prim, default: tuple[float, float] = DEFAULT_NODE_SIZE) -> tuple[float, float]:
     attr = prim.GetAttribute(SIZE_ATTR)
     value = attr.Get() if attr and attr.HasAuthoredValue() else None
@@ -524,3 +540,264 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
                 param.value = param.default_value
 
     return GraphChange(touched_nodes=touched, exec_changed=port.port_type == PORT_EXEC)
+
+
+def iter_copyable_params(chunk: core.ChunkCommon):
+    """`iter_connectable_params`, minus anything flagged State.HIDDEN.
+
+    A HIDDEN param is a chunk module's own internal bookkeeping, never meant for a user to
+    see or set directly -- e.g. scripts/create_layer.py's _new_layer_id/_layer_name_used/
+    _parent_layer_id, which cache identifiers for the anon Sdf.Layer *that specific chunk
+    instance* created. Copying those verbatim onto a pasted chunk hands it the ORIGINAL
+    instance's cached identifier; since that layer is still alive (Sdf.Layer.Find succeeds
+    process-wide, not scoped to this chunk), the pasted chunk's own next execute() silently
+    adopts and reuses the original's real layer object instead of creating an independent one
+    of its own -- the two nodes end up secretly sharing state. Not scoped to
+    scripts/create_layer.py specifically -- any chunk module using a HIDDEN param the same way
+    has the identical hazard, so the exclusion lives at this shared, module-agnostic level
+    rather than as a create_layer-specific special case.
+
+    Deliberately a separate generator from `iter_connectable_params` itself (used elsewhere
+    for port placement) rather than changing what that one yields -- copy/paste is the only
+    caller that needs this narrower set."""
+    for param in iter_connectable_params(chunk):
+        if param.has_state(ChunkFlags.State.HIDDEN):
+            continue
+        yield param
+
+
+def iter_chunk_param_paths(chunk: core.ChunkCommon, prefix: str = ""):
+    """(dotted path, param) for everything under `chunk`, groups included."""
+    for param in chunk.get_my_params():
+        path = f"{prefix}{param.name}"
+        yield path, param
+        if isinstance(param, core.ChunkGroupBase):
+            yield from iter_chunk_param_paths(param, f"{path}.")
+
+
+# ---------------------------------------------------------------------------
+# Clipboard
+#
+# The format a copied selection travels in, and the snapshot/restore logic around it.
+# Moved here from chunk_qt_nodegraph, which is where it grew: none of it was ever Qt --
+# the only toolkit reference was a QPointF holding a relative position, now a plain
+# tuple. Both frontends share the model AND the module-level clipboard below, so a
+# selection copied in one can be pasted in the other.
+#
+# What deliberately did NOT move is materialization. Qt defers wiring pasted edges
+# through a QTimer because its proxy widgets are built in batches and the new nodes'
+# ports do not exist yet; Flet builds its bodies synchronously and needs no such dance.
+# The shape of a paste is toolkit business, the shape of a CLIPBOARD is not.
+# ---------------------------------------------------------------------------
+
+class ClipboardNode:
+    __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges", "list_sizes")
+
+    def __init__(
+        self, module_name: str, values: list, rel_pos: tuple[float, float],
+        children: "list[ClipboardNode] | None" = None,
+        child_edges: "list[ClipboardEdge] | None" = None,
+        list_sizes: "list[tuple[str, int]] | None" = None,
+    ):
+        self.module_name = module_name
+        self.values = values
+        # How many rows each of the chunk's list groups held. Values alone are not enough:
+        # a freshly created chunk starts with zero rows, so there is nothing for the
+        # positional zip to pair them against and every row is silently dropped.
+        self.list_sizes = list_sizes or []
+        self.rel_pos = rel_pos  # position relative to the copied selection's top-left corner
+        # Only non-empty for a ChunkGroup: its nested sub-chunks and the wiring between them,
+        # so copying/duplicating/cutting a group recursively takes its whole contents along
+        # instead of pasting an empty group. rel_pos for a child is relative to the *group's
+        # own children's* top-left, not the top-level selection's.
+        self.children: list[ClipboardNode] = children or []
+        self.child_edges: list[ClipboardEdge] = child_edges or []
+
+
+class ClipboardEdge:
+    """A wire between two copied nodes, referenced by index into the node clipboard rather
+    than by prim path (paths don't exist yet at copy time for a not-yet-pasted node, and
+    change on every paste anyway). src_attr/dst_attr are ChunkPortItem-suffix form
+    ("outputs:chunk"/"inputs:tx", ...), not raw Sdf connection-target form -- see
+    `iter_prim_connections`."""
+
+    __slots__ = ("src_index", "src_attr", "dst_index", "dst_attr")
+
+    def __init__(self, src_index: int, src_attr: str, dst_index: int, dst_attr: str):
+        self.src_index = src_index
+        self.src_attr = src_attr
+        self.dst_index = dst_index
+        self.dst_attr = dst_attr
+
+
+def iter_prim_connections(prim: Usd.Prim):
+    """Yield (dst_attr_suffix, src_prim_path, src_attr_suffix) for every real inputs:*
+    connection on this prim, in ChunkPortItem.attr_path suffix form for BOTH ends (e.g. dst
+    "inputs:tx", src "outputs:tx") -- independent of the "Show param connections" view toggle
+    (unlike ChunkGraphScene._build_edges, which only builds what's currently drawn), since
+    copy/paste needs every real connection, not just the visible ones. Takes a bare Usd.Prim
+    rather than a ChunkNodeItem so it also works for a ChunkGroup's children, which have no
+    live Qt node at all unless someone has dived into that group."""
+    if not prim.IsValid():
+        return
+    for attr in prim.GetAttributes():
+        attr_name = attr.GetName()
+        if not attr_name.startswith("inputs:"):
+            continue
+        for conn_path in attr.GetConnections():
+            src_prim_path = str(conn_path.GetPrimPath())
+            if chunk_usd.is_exec_input_name(attr_name):
+                # Exec connections point straight at the source's outputs:chunk already.
+                src_attr_suffix = conn_path.name
+            else:
+                # Typed connections normally point at the source's OWN inputs:param (see
+                # ChunkGraphView._author_connection), but an expression referencing an
+                # OUTPUT-flagged param authors the target as outputs:param directly (see
+                # ChunkBase.data_changed's use_out branch in chunk_core). Normalize BOTH to
+                # the ChunkPortItem-suffix "outputs:param" form used on both ends elsewhere
+                # -- strip whichever namespace prefix is actually present rather than
+                # assuming inputs: (blindly slicing len("inputs:") off an already-outputs:
+                # target left a stray leading colon -> "outputs::param" -> a malformed
+                # Sdf.Path that resolved to <>, crashing SetConnections on paste).
+                bare = conn_path.name.split(":", 1)[-1]
+                src_attr_suffix = "outputs:" + bare
+            yield attr_name, src_prim_path, src_attr_suffix
+
+
+def iter_group_children(chunk: "core.ChunkBase", scene_sender: core.SceneSender, stage: Usd.Stage):
+    """Yield the direct children of a ChunkGroup -- both plain leaf chunks (found via
+    get_context(), which walks the real Python ownership chain) and nested sub-groups (which
+    get_context() can NEVER find this way: it returns self for any CONTEXT-flagged chunk --
+    see ChunkGraphScene._rebuild_nodes's own "c is not context" guard for the same quirk --
+    and a sub-group is always added as a top-level scene entry, never actually owned by its
+    structural parent). Mirrors _rebuild_nodes's own combined lookup (get_context() equality
+    plus a get_context_for_prim_path() scan of the group's own USD children) exactly, so a
+    ChunkGroup nested inside another ChunkGroup is still found. View chunks are excluded --
+    not content worth duplicating, matching the top-level selection's own exclusion."""
+    by_path: dict[str, "core.ChunkBase"] = {
+        chunk_usd.get_chunk_prim_path(c): c
+        for c in scene_sender.get_chunks()
+        if c.get_context() == chunk and c is not chunk and not chunk_usd.is_view_chunk(c)
+    }
+    root_prim = stage.GetPrimAtPath(Sdf.Path(chunk.prim_path)) if chunk.prim_path else None
+    if root_prim is not None and root_prim.IsValid():
+        for prim in root_prim.GetFilteredChildren(INCLUDE_INACTIVE):
+            path = str(prim.GetPath())
+            if path in by_path:
+                continue
+            ctx_chunk = scene_sender.get_context_for_prim_path(path)
+            if ctx_chunk is not None and not chunk_usd.is_view_chunk(ctx_chunk):
+                by_path[path] = ctx_chunk
+    return list(by_path.values())
+
+
+def snapshot_chunk_node(
+    chunk: "core.ChunkBase", scene_sender: core.SceneSender, stage: Usd.Stage, rel_pos: tuple[float, float]
+) -> "ClipboardNode | None":
+    """Build a ClipboardNode for `chunk` at rel_pos, recursing into its own children (and
+    their internal wiring) if it's a ChunkGroup -- shared by the top-level selection snapshot
+    and by each recursive level of group contents. Returns None for a chunk with no module
+    (nothing to recreate it from -- e.g. a bare exec 'dot')."""
+    cfg = chunk.get_config()
+    module_name = cfg.module if cfg else None
+    if not module_name:
+        return None
+    clip_node = ClipboardNode(
+        module_name, snapshot_param_values(chunk), rel_pos,
+        list_sizes=snapshot_list_sizes(chunk),
+    )
+    if not chunk_usd.is_group_chunk(chunk):
+        return clip_node
+
+    children = iter_group_children(chunk, scene_sender, stage)
+    child_prims: dict[str, Usd.Prim] = {}
+    child_pos: dict[str, tuple[float, float]] = {}
+    for child in children:
+        path = chunk_usd.get_chunk_prim_path(child)
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        child_prims[path] = prim
+        child_pos[path] = graph_position(prim)
+    if child_pos:
+        min_x = min(p[0] for p in child_pos.values())
+        min_y = min(p[1] for p in child_pos.values())
+    else:
+        min_x = min_y = 0.0
+
+    kept_index: dict[str, int] = {}
+    for child in children:
+        path = chunk_usd.get_chunk_prim_path(child)
+        pos = child_pos[path]
+        child_clip = snapshot_chunk_node(
+            child, scene_sender, stage, (pos[0] - min_x, pos[1] - min_y)
+        )
+        if child_clip is None:
+            continue
+        kept_index[path] = len(clip_node.children)
+        clip_node.children.append(child_clip)
+
+    for child in children:
+        path = chunk_usd.get_chunk_prim_path(child)
+        dst_index = kept_index.get(path)
+        prim = child_prims.get(path)
+        if dst_index is None or prim is None:
+            continue
+        for dst_attr, src_prim_path, src_attr in iter_prim_connections(prim):
+            src_index = kept_index.get(src_prim_path)
+            if src_index is None:
+                continue  # source outside this group's copied children -- wire dropped
+            clip_node.child_edges.append(ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
+
+    return clip_node
+
+
+def snapshot_list_sizes(chunk: core.ChunkCommon) -> "list[tuple[str, int]]":
+    """How many rows each list group on `chunk` holds, keyed by param path.
+
+    A list group's rows are created at runtime, so a pasted chunk has none of them and the
+    positional value snapshot has nothing to land on -- copying a Sublayer with a path set
+    produced one with an empty list and no path, and the same for every other chunk built
+    on a list group.
+    """
+    sizes: "list[tuple[str, int]]" = []
+    for path, param in iter_chunk_param_paths(chunk):
+        if isinstance(param, core.ChunkListGroupBase):
+            sizes.append((path, param.size))
+    return sizes
+
+
+def apply_list_sizes(chunk: core.ChunkCommon, sizes: "list[tuple[str, int]]") -> None:
+    """Grow each list group back before any value is applied, so the rows exist to take them."""
+    for path, size in sizes:
+        param = chunk.get_param(path)
+        if isinstance(param, core.ChunkListGroupBase) and param.size != size:
+            try:
+                param.size = size
+            except Exception:
+                # A list whose size cannot be set (driven by something else, or a module
+                # that has changed shape since the copy) should not abort the paste.
+                continue
+
+
+def snapshot_param_values(chunk: core.ChunkCommon) -> list:
+    """Positional snapshot of every copyable param's value, in `iter_copyable_params`
+    order. Two instances of the same chunk module build their param tree in the same code
+    order, so a plain positional zip (see `apply_param_values`) is enough to pair them back
+    up -- no param-path bookkeeping needed."""
+    return [p.value for p in iter_copyable_params(chunk)]
+
+
+def apply_param_values(chunk: core.ChunkCommon, values: list) -> None:
+    for param, value in zip(iter_copyable_params(chunk), values):
+        try:
+            param.value = value
+        except Exception:
+            # A param whose value can't be re-applied as-is (e.g. a stale expression string
+            # for a wire that wasn't copied along with it) shouldn't abort the rest of the
+            # paste -- leave it at its default and move on.
+            continue
+
+
+#: The clipboard itself. Module level, and shared: a selection copied in the Qt graph can
+#: be pasted in the Flet one, because both now speak the same ClipboardNode/ClipboardEdge.
+node_clipboard: list = []
+edge_clipboard: list = []
