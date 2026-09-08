@@ -19,6 +19,7 @@ from usd_chunks.plugins.chunk_qt_widgets import (
     apply_chunk_stylesheet,
     ViewSlotState,
     _clean_description,
+    context_ancestry,
 )
 
 # Re-exported, not used here: chunk_qt is the Qt entry point chunks and DCC plugins
@@ -489,6 +490,24 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         # Return None rather than assert.
         return w if isinstance(w, ChunkWidget) else None
 
+    def mark_ancestors(self, ctx) -> None:
+        """Mark the open tabs that the current context is nested inside.
+
+        The breadcrumb says where you are; this says which of the tabs already in front of
+        you are on that path -- the one thing arranging the tab row by hierarchy was meant
+        to convey, without moving anything. Colour only: a tab that is an ancestor is still
+        an ordinary tab, and its position never changes.
+        """
+        ancestry = {id(node) for node in context_ancestry(ctx)}
+        palette = self.palette()
+        plain = palette.color(QtGui.QPalette.ColorRole.WindowText)
+        marked = palette.color(QtGui.QPalette.ColorRole.Link)
+        for i in range(self.count()):
+            page = self.widget(i)
+            tab_ctx = page.ctx() if isinstance(page, ChunkTabContextStack) else None
+            on_path = tab_ctx is not None and id(tab_ctx) in ancestry and tab_ctx is not ctx
+            self.tabBar().setTabTextColor(i, marked if on_path else plain)
+
     def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
         for i in range(self.count()):
             w = self.widget(i)
@@ -705,6 +724,11 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             if idx is not None:
                 self.tab_widget.add_chunk_to_tab(loaded_chunk, idx)
 
+    def _refresh_context_path(self) -> None:
+        """Mark the tabs the current context is nested inside. The path itself is drawn by
+        the graph view, in its own top strip -- see ChunkContextBreadcrumb."""
+        self.tab_widget.mark_ancestors(self._current_context())
+
     def _current_context(self):
         idx = self.tab_widget.currentIndex()
         if idx < 0:
@@ -755,6 +779,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
     def _on_tab_changed(self, _):
         registry = chunk_registry.ChunkRegistry()
+        self._refresh_context_path()
         self._record_nav(self._current_context())
         if registry.initialized:
             ctx = self._current_context()
