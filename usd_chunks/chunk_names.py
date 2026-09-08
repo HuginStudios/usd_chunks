@@ -1,4 +1,8 @@
-"""What a chunk is called in USD: prim type, root scope, and the exec-input naming.
+"""What a chunk is CALLED in USD: prim type, root scope, and the exec-input naming.
+
+Names, not a schema. "Schema" in USD means an IsA or API schema with generated classes and
+a registered type -- nothing here defines one. This is the vocabulary those names are
+spelled with, which is a different and much smaller thing.
 
 Split out of `plugins/chunk_usd` so the vocabulary can be read without the machinery. That
 module is five thousand lines and pulls in two hundred and fifty others -- reasonable for
