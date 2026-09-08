@@ -293,7 +293,15 @@ def execute(node):
     with Usd.EditContext(stage, layer):
         posed = apply_pose(stage, roots, values, root_path,
                            write_targets=bool(targets.value) if targets else True)
-    print(f"[Pose] posed {posed} joint(s) under {root_path}")
+    # Only when the shape of the work changes, not once per cook. A slider drag cooks this
+    # chunk several times a second and each print is free in a terminal but not in a panel
+    # that captures stdout into a widget -- there it is a repaint per line, which is felt
+    # as the slider being laggy rather than as the chunk being chatty.
+    last = getattr(node, "_pose_reported", None)
+    now = (posed, str(root_path))
+    if now != last:
+        node._pose_reported = now
+        print(f"[Pose] posed {posed} joint(s) under {root_path}")
 
 
 #: Nodes currently inside execute(), by id. _harvest writes the pose spec, which is itself
