@@ -1,24 +1,23 @@
 """Opening a network and saving it must not empty the file.
 
-A network containing an `edit_target` chunk loses every chunk prim from its root layer the
-moment it is opened and saved. Three prims go in, one comes out. The composed stage still
-shows all three in memory -- the specs have been removed from the ROOT layer and now
-resolve from elsewhere -- so nothing looks wrong until the save lands, and then the file on
-disk is gutted.
+A network containing an `edit_target` chunk used to lose every chunk prim from its root
+layer the moment it was opened and saved: three prims in, one out. The composed stage still
+showed all three, because the specs had been moved out of the ROOT layer and resolved from
+where they landed -- so nothing looked wrong until the save wrote the gutted layer.
 
-Reproduced with no frontend at all: `Usd.Stage.Open` + `load_chunks` + `Save()`. It is not
-a graph, Qt, Flet or ImGui problem. Verified present on `main` as well as on the branch
-this test was written on, so it is pre-existing rather than a regression -- but it is
-reachable from every frontend, because saving after a load is what happens when a user
-drags a node or runs auto-layout.
+It reproduced with no frontend at all -- `Usd.Stage.Open` + `load_chunks` + `Save()` -- and
+identically on `main`, so it was pre-existing rather than a regression, and reachable from
+every frontend: saving after a load is what happens when a user drags a node.
 
 Related history: docs record an edit-target migration during load deleting specs from the
 opened file's layer, fixed 2026-09-02. This is the same shape and is either a recurrence or
 a sibling case that fix did not cover.
 
-Marked xfail(strict=True) rather than deleted or skipped: the suite stays green, the bug
-stays recorded, and the day it is fixed this file fails loudly and tells whoever fixed it
-to drop the marker.
+FIXED: publish_edit_target called reconcile_edit_targets without protect_root_layer, and a
+load takes that branch every single time -- the Edit Target marker stores a layer
+identifier, and an anonymous layer gets a new identifier in every process, so `old_ident !=
+ident` even when nothing changed. chunk_usd._loading now scopes the protection to a load.
+These tests stay as the regression guard.
 """
 from __future__ import annotations
 
@@ -101,23 +100,25 @@ class TestRoundTripKeepsTheFile:
         _open_and_save(path)
         assert _count(path) == before
 
-    @pytest.mark.xfail(strict=True, reason="edit_target chunk: load empties the root layer")
     def test_an_edit_target_network_survives(self, tmp_path):
-        """The bug. Remove the xfail marker when this starts passing."""
+        """The bug this file was written for. Fixed: publish_edit_target reconciled without
+        protect_root_layer, and a load takes that branch every time because an anonymous
+        layer's identifier is new in each process."""
         path = str(tmp_path / "et.usda")
         before = _build(path, ("transform", "edit_target"))
         _open_and_save(path)
         assert _count(path) == before
 
-    def test_the_loss_is_invisible_until_the_save(self, tmp_path):
-        """Why it is dangerous rather than merely wrong.
+    def test_the_root_layer_keeps_its_specs_not_just_the_composed_stage(self, tmp_path):
+        """The check that would have caught it, kept as the regression guard.
 
-        The composed stage still reports every chunk after the load, so a frontend has no
-        way to notice: the specs are gone from the ROOT layer while still resolving from
-        somewhere else. Only writing that layer reveals it.
+        Why it needs saying separately: the composed stage reported every chunk even while
+        the bug was live, because the specs had been MOVED out of the root layer and still
+        resolved from where they landed. Nothing looked wrong until a save wrote the gutted
+        layer, so asserting on the stage alone would pass against the broken code.
         """
         path = str(tmp_path / "et2.usda")
         before = _build(path, ("transform", "edit_target"))
         in_memory = _open_and_save(path)
-        assert in_memory >= before, "the stage would have to look wrong for this to be catchable"
-        assert _count(path) < before, "if this stops holding, the bug is fixed -- see above"
+        assert in_memory >= before, "the stage should still resolve every chunk"
+        assert _count(path) == before, "the root layer lost specs the stage still showed"
