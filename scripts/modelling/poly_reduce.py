@@ -24,8 +24,8 @@ What actually makes or breaks a reducer on a real asset is not the collapse math
   ever straddle the boundary, and every surviving triangle still belongs to exactly one
   subset — its `indices` are rewritten to match;
 * **carries vertex primvars through** (`displayColor`, skinning weights, anything
-  `vertex`/`varying`) using the collapse history the library can replay, which gives an
-  original-vertex → reduced-vertex mapping.
+  `vertex`/`varying`) by resolving the decimator's own collapse history into an
+  original-vertex → reduced-vertex mapping (`collapse_mapping`).
 
 Anything that genuinely cannot survive a change of topology is blocked rather than left
 lying: authored `normals` (the renderer computes better ones for the new surface than a
@@ -51,12 +51,10 @@ from usd_chunks.plugins import chunk_usd
 
 try:
     import fast_simplification
-    from fast_simplification.replay import replay_simplification
 
     _HAS_SIMPLIFY = True
 except ImportError:  # pragma: no cover - exercised only on a machine without the wheel
     fast_simplification = None
-    replay_simplification = None
     _HAS_SIMPLIFY = False
 
 logger = logging.getLogger(__name__)
@@ -102,7 +100,7 @@ class ReducedMesh:
     belongs to nothing.
 
     Both are None when the caller did not ask for them, or when the collapse history could
-    not be replayed. That is a "no attributes survive" answer, not a "use these anyway"
+    not be resolved. That is a "no attributes survive" answer, not a "use these anyway"
     one — a wrong mapping would scatter UVs across the mesh, which is far worse than a
     reduced mesh that has lost them.
     """
@@ -301,7 +299,7 @@ def reduce_triangles(
 
     source_point = source_corner = None
     if carry_attributes:
-        mapping = _replay_mapping(weld_points, weld_tris, collapses, out_tris.shape)
+        mapping = collapse_mapping(weld_tris, collapses, len(weld_points), len(out_points))
         if mapping is not None:
             representative = np.zeros(len(out_points), dtype=np.int64)
             live = np.flatnonzero(mapping >= 0)
@@ -312,26 +310,59 @@ def reduce_triangles(
     return ReducedMesh(np.asarray(out_points, dtype=np.float64), out_tris, source_point, source_corner)
 
 
-def _replay_mapping(weld_points, weld_tris, collapses, expected_shape):
-    """original vertex -> reduced vertex, by replaying the collapse history.
+def collapse_mapping(triangles, collapses, n_points, n_reduced):
+    """welded vertex -> reduced vertex, derived straight from the collapse history.
 
-    The replay produces the same topology as the decimation it replays (positions differ
-    only by a float32 round-trip), which is what makes it safe to take the mapping from
-    here and the geometry from `simplify` — the higher-precision, quadric-optimal one. The
-    shape check is the guard on that assumption; if it ever stops holding, attributes are
-    dropped rather than scrambled onto the wrong vertices.
+    `collapses[i] = [i0, i1]` says vertex `i1` was merged into `i0`. Each vertex can only
+    be collapsed away once, so the pairs form a forest and resolving every chain to its
+    root is pointer-jumping — a handful of vectorised passes, no ordering to respect.
+    A surviving triangle is then an original triangle whose three roots are still distinct
+    (an edge collapse deletes a triangle exactly when two of its corners merge), and the
+    decimator numbers the survivors in original-index order, which `np.searchsorted` over
+    the sorted survivors reproduces.
+
+    This used to call the library's `replay_simplification`, which returns the same answer
+    — but gets there via `np.delete` inside a Python loop over the isolated points it has
+    to clean up. On a mesh made of thousands of disconnected cards (a tree's twigs, say)
+    that list is enormous and the loop goes quadratic: 0.4s of decimation turned into
+    **698 seconds** on a 505k-triangle fir tree. Deriving it here is exact, and free.
+
+    Returns None if the derivation disagrees with what the decimator actually produced;
+    attributes are then dropped rather than scattered onto the wrong vertices.
     """
-    try:
-        _, replay_tris, mapping = replay_simplification(
-            weld_points.astype(np.float32), weld_tris.astype(np.int32), collapses
+    parent = np.arange(n_points, dtype=np.int64)
+    collapses = np.asarray(collapses, dtype=np.int64).reshape(-1, 2)
+    if collapses.size:
+        parent[collapses[:, 1]] = collapses[:, 0]
+        for _ in range(64):  # a cap, not an expected bound — depth is logarithmic in practice
+            jumped = parent[parent]
+            if np.array_equal(jumped, parent):
+                break
+            parent = jumped
+        else:  # pragma: no cover - would mean the collapse pairs are not a forest
+            logger.debug("collapse chains did not settle; reduced mesh will carry no primvars")
+            return None
+
+    rooted = parent[triangles]
+    kept = (
+        (rooted[:, 0] != rooted[:, 1])
+        & (rooted[:, 1] != rooted[:, 2])
+        & (rooted[:, 0] != rooted[:, 2])
+    )
+    survivors = np.unique(rooted[kept])
+    if len(survivors) != n_reduced:
+        logger.debug(
+            "derived %d surviving vertices but the decimation produced %d; "
+            "reduced mesh will carry no primvars",
+            len(survivors),
+            n_reduced,
         )
-    except Exception:  # pragma: no cover - defensive, the library raises on odd meshes
-        logger.debug("collapse replay failed; reduced mesh will carry no primvars", exc_info=True)
         return None
-    if np.shape(replay_tris) != expected_shape:
-        logger.debug("collapse replay disagreed with the decimation; dropping primvars")
-        return None
-    return np.asarray(mapping, dtype=np.int64)
+
+    mapping = np.full(n_points, -1, dtype=np.int64)
+    alive = np.flatnonzero(np.isin(parent, survivors))
+    mapping[alive] = np.searchsorted(survivors, parent[alive])
+    return mapping
 
 
 def target_triangle_count(mode, n_tris, keep_percent, target_tris) -> int | None:
@@ -719,7 +750,11 @@ def main():
     chunk_api.add_param(
         chunk.Label(
             "readout",
-            default_value="nothing reduced yet",
+            # The widget paints the *label* over the value at construction
+            # (ChunkParamWidgetBase.setup_chunk_widget sets value then label), so the
+            # starting text has to be the label; the value takes over from the first cook.
+            "not reduced yet",
+            default_value="not reduced yet",
             tooltip="What the last cook produced.",
         )
     )

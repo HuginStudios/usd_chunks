@@ -482,3 +482,50 @@ def test_a_key_too_wide_to_pack_falls_back_instead_of_wrapping_around() -> None:
 
     assert pr._pack_key([wide, wide, wide]) is None
     assert len(np.unique(pr.combine_codes(wide, wide, wide))) == 3
+
+
+# ---------------------------------------------------------------------------
+# the collapse mapping
+# ---------------------------------------------------------------------------
+
+
+@needs_simplify
+def test_the_derived_mapping_agrees_with_the_decimation_it_describes() -> None:
+    """Every carried primvar is indexed through this mapping, so it has to name the same
+    reduced vertex the decimator actually produced. It is derived from the collapse pairs
+    rather than obtained from the library, because the library's own replay helper deletes
+    isolated points one at a time in a Python loop and goes quadratic (see
+    `collapse_mapping`) — this pins that the cheap derivation is also the correct one."""
+    points, counts, indices = _sphere(30, 30)
+    triangles, corners, _ = pr.fan_triangulate(counts, indices)
+
+    reduced = pr.reduce_triangles(points, triangles, corners, target_count=len(triangles) // 4)
+
+    # Each reduced vertex must sit near the original vertex whose primvars it inherits:
+    # a mapping off by even one index would pair them with an unrelated part of the mesh.
+    moved = np.linalg.norm(reduced.points - points[reduced.source_point], axis=1)
+    assert moved.max() < 0.2  # unit sphere
+    assert len(np.unique(reduced.source_point)) == len(reduced.points)
+
+
+@needs_simplify
+def test_a_mesh_of_thousands_of_disconnected_cards_reduces_promptly() -> None:
+    """The shape that broke it: a fir tree is a quarter of a million twig cards, and the
+    library's replay helper took 698 seconds on it where the decimation itself took 0.4.
+    Nothing about this mesh is unusual except how many separate islands it has."""
+    import time
+
+    n_cards = 4000
+    origins = np.arange(n_cards, dtype=np.float64)[:, None] * [1.0, 0.0, 0.0]
+    quad = np.array([[0, 0, 0], [0.8, 0, 0], [0.8, 0.8, 0.1], [0, 0.8, 0]], dtype=np.float64)
+    points = (origins[:, None, :] + quad[None, :, :]).reshape(-1, 3)
+    counts = np.full(n_cards, 4, dtype=np.int64)
+    indices = np.arange(n_cards * 4, dtype=np.int64)
+    triangles, corners, _ = pr.fan_triangulate(counts, indices)
+
+    started = time.perf_counter()
+    reduced = pr.reduce_triangles(points, triangles, corners, target_count=len(triangles) // 4)
+    elapsed = time.perf_counter() - started
+
+    assert reduced is not None and reduced.source_point is not None
+    assert elapsed < 10.0  # loose: the point is seconds-not-minutes, not a timing target
