@@ -30,7 +30,7 @@ ROW_H = 22.0
 #: Width of the label column. Labels go on the LEFT, in their own column, because ImGui's
 #: default puts them to the right of the widget -- which reads as "0.000 X" and looks like
 #: the value is labelling the axis rather than the other way round.
-LABEL_W = 104.0
+LABEL_W = 124.0
 #: How much a drag has to move to change a value by one unit.
 DRAG_SPEED = 0.01
 
@@ -38,10 +38,15 @@ _GROUP_TITLE = (0.72, 0.72, 0.76, 1.0)
 
 
 def _label(text: str, width: float = LABEL_W) -> None:
-    """A left-hand label, vertically centred against the widget it names."""
+    """A left-hand label, vertically centred against the widget it names.
+
+    A label longer than the column pushes the widget right rather than overlapping it:
+    same_line's absolute position cannot move something left, so "Import Prim Path" used
+    to sit underneath its own field. The max() makes the column grow for that row instead.
+    """
     imgui.align_text_to_frame_padding()
     imgui.text(text)
-    imgui.same_line(width)
+    imgui.same_line(max(width, imgui.calc_text_size(text).x + 8.0))
 
 
 def _numeric(param, ident: str, width: float) -> bool:

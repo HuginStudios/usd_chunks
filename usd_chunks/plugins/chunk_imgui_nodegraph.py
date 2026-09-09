@@ -40,6 +40,8 @@ logger = logging.getLogger(__name__)
 NODE_W = 220.0
 SOCKET_R = 5.0          # radius of a pin's dot
 SOCKET_BOX = 14.0       # the square a socket reserves, so labels line up
+BODY_W = 300.0          # content width of a node, and what an output pin aligns to
+SIDE_PAD = 8.0          # horizontal breathing room INSIDE the pin row, not on the border
 
 #: Port colours, matching the Flet frontend so the same wire reads the same in both.
 PORT_COLOUR = {
@@ -146,6 +148,11 @@ class ImGuiGraphView:
         self.status = ""
         self.selected_nodes: set[str] = set()
         self._placed: set[str] = set()  # nodes whose position has been pushed to the editor
+        #: Show every data pin, or only the ones carrying a wire. Off by default: a
+        #: Transform exposes 28 ports and 2 of them are wired, so drawing all of them made
+        #: the node twenty-four rows taller than its own body. Qt draws the equivalent
+        #: line with its "Show param connections" toggle.
+        self.show_all_pins = False
         self._editor = None
         self.reload()
 
@@ -215,51 +222,86 @@ class ImGuiGraphView:
             ed.set_node_position(node_id, imgui.ImVec2(float(x), float(y)))
             self._placed.add(path)
 
+        # Zero horizontal node padding: a socket drawn at x=0 then lands exactly on the
+        # node's border, which is where a port belongs. The vertical padding stays, and
+        # the row content indents itself by SIDE_PAD instead, so only the dots touch the
+        # edge and the labels still have room.
+        ed.push_style_var(ed.StyleVar.node_padding, imgui.ImVec4(0.0, 8.0, 0.0, 8.0))
         ed.begin_node(node_id)
+        imgui.indent(SIDE_PAD)
         label = chunk_graph.node_label(prim)
         if chunk_graph.is_disabled(prim):
             imgui.text_disabled(label + "  (disabled)")
         else:
             imgui.text_colored(imgui.ImVec4(0.79, 0.71, 0.42, 1.0), label)
-        imgui.dummy(imgui.ImVec2(NODE_W, 1.0))
+        imgui.dummy(imgui.ImVec2(BODY_W - SIDE_PAD * 2, 1.0))
+        imgui.unindent(SIDE_PAD)
 
-        ins = [p for p in self.ports[path] if p.is_input]
-        outs = [p for p in self.ports[path] if not p.is_input]
         wired = self._wired_attr_paths()
+        shown = [p for p in self.ports[path] if self._pin_visible(p, wired)]
+        hidden = len(self.ports[path]) - len(shown)
+        ins = [p for p in shown if p.is_input]
+        outs = [p for p in shown if not p.is_input]
 
         # Inputs down the left edge, outputs down the right, both anchored to their dot.
         # Drawn as two groups on one line so a node is as tall as its longest side rather
         # than the sum of both -- the previous stacked layout is why Transform ran off the
         # bottom of the window.
-        imgui.begin_group()
-        for port in ins:
-            ed.begin_pin(ed.PinId(self.ids.get(port.attr_path)), ed.PinKind.input)
-            _socket(port.port_type, port.attr_path in wired)
-            imgui.same_line()
-            imgui.text(port.name)
-            ed.end_pin()
-        imgui.end_group()
+        # One row per pin index, inputs on the left border and outputs on the right, so a
+        # node is as tall as its longer side rather than the sum of both -- and so a wire
+        # meets the node where the border is, not somewhere inside it.
+        for index in range(max(len(ins), len(outs))):
+            start_y = imgui.get_cursor_screen_pos().y
+            if index < len(ins):
+                port = ins[index]
+                ed.begin_pin(ed.PinId(self.ids.get(port.attr_path)), ed.PinKind.input)
+                _socket(port.port_type, port.attr_path in wired)
+                imgui.same_line(0.0, 4.0)
+                imgui.text(port.name)
+                ed.end_pin()
+            else:
+                imgui.dummy(imgui.ImVec2(SOCKET_BOX, SOCKET_BOX))
 
-        imgui.same_line()
-        imgui.dummy(imgui.ImVec2(12.0, 1.0))
-        imgui.same_line()
+            if index < len(outs):
+                port = outs[index]
+                label_w = imgui.calc_text_size(port.name).x
+                # Right-align to the node's content width: label, then the dot on the edge.
+                imgui.same_line(BODY_W - SOCKET_BOX - label_w - 4.0)
+                ed.begin_pin(ed.PinId(self.ids.get(port.attr_path)), ed.PinKind.output)
+                imgui.text(port.name)
+                imgui.same_line(0.0, 4.0)
+                _socket(port.port_type, port.attr_path in wired)
+                ed.end_pin()
+            _ = start_y
 
-        imgui.begin_group()
-        for port in outs:
-            ed.begin_pin(ed.PinId(self.ids.get(port.attr_path)), ed.PinKind.output)
-            imgui.text(port.name)
-            imgui.same_line()
-            _socket(port.port_type, port.attr_path in wired)
-            ed.end_pin()
-        imgui.end_group()
+        imgui.indent(SIDE_PAD)
+        if hidden:
+            imgui.text_disabled("+%d unwired ports  (P)" % hidden)
 
         chunk = self.chunks.get(path)
         if chunk is not None:
             imgui.separator()
             # draw_params, not a flattened walk: a group of plain numbers becomes one
             # inline row, which is what keeps a Transform node a readable height.
-            chunk_imgui.draw_params(chunk, width=NODE_W - 40)
+            chunk_imgui.draw_params(chunk, width=BODY_W - chunk_imgui.LABEL_W - SIDE_PAD * 3)
+        imgui.unindent(SIDE_PAD)
         ed.end_node()
+        ed.pop_style_var()
+
+    def _pin_visible(self, port, wired: set) -> bool:
+        """Whether to draw this pin.
+
+        Exec pins always: they are the chain, and hiding one would hide the graph's
+        structure. A data pin only when it carries a wire -- or when the user has asked
+        for all of them.
+
+        Safe by construction: a link only exists between two wired ports, and a wired port
+        is always shown, so hiding can never leave a link pointing at a pin that was not
+        drawn.
+        """
+        if self.show_all_pins or port.port_type == chunk_graph.PORT_EXEC:
+            return True
+        return port.attr_path in wired
 
     def _wired_attr_paths(self) -> set:
         """Every attr path with an edge on it, for filled-vs-hollow sockets."""
@@ -352,10 +394,16 @@ class ImGuiGraphView:
             (imgui.Key.l, self.auto_layout),
             (imgui.Key.f, lambda: self.frame(self.selected_nodes or self.prims)),
             (imgui.Key.g, self.group_selection),
+            (imgui.Key.p, self.toggle_all_pins),
         ):
             if imgui.is_key_pressed(key):
                 action()
                 return
+
+    def toggle_all_pins(self) -> None:
+        """P: show every data pin, or only the wired ones."""
+        self.show_all_pins = not self.show_all_pins
+        self.status = "all pins" if self.show_all_pins else "wired pins only"
 
     # -- the contract ------------------------------------------------------
 

@@ -211,3 +211,55 @@ class TestParamLayout:
         param = view.chunks[first].get_param("tx")
         param.value = 250.0
         assert param.value == pytest.approx(250.0)
+
+
+class TestPinFiltering:
+    """A Transform exposes 28 ports and wires 2 of them.
+
+    Drawing all of them made the node twenty-four rows taller than its own body, which is
+    what made the first renders unreadable. Qt draws the same line with its "Show param
+    connections" toggle.
+    """
+
+    def test_unwired_data_pins_are_hidden_by_default(self, view, first):
+        wired = view._wired_attr_paths()
+        ports = view.ports[first]
+        hidden = [p for p in ports if not view._pin_visible(p, wired)]
+        assert hidden, "fixture has no unwired data ports, so this proves nothing"
+        assert all(p.port_type != chunk_graph.PORT_EXEC for p in hidden)
+        assert all(p.attr_path not in wired for p in hidden)
+
+    def test_exec_pins_are_always_shown(self, view, first):
+        wired = view._wired_attr_paths()
+        execs = [p for p in view.ports[first] if p.port_type == chunk_graph.PORT_EXEC]
+        assert execs
+        assert all(view._pin_visible(p, wired) for p in execs)
+
+    def test_a_wired_data_pin_is_shown(self, view):
+        """Whichever ports carry edges must be visible, whatever their type."""
+        wired = view._wired_attr_paths()
+        assert wired
+        for path, ports in view.ports.items():
+            for port in ports:
+                if port.attr_path in wired:
+                    assert view._pin_visible(port, wired)
+
+    def test_the_toggle_reveals_everything(self, view, first):
+        wired = view._wired_attr_paths()
+        view.toggle_all_pins()
+        assert view.show_all_pins
+        assert all(view._pin_visible(p, wired) for p in view.ports[first])
+        view.toggle_all_pins()
+        assert not view.show_all_pins
+
+    def test_hiding_never_orphans_a_link(self, view):
+        """The safety property. A link is drawn between two pins; if hiding could remove a
+        pin a link points at, the editor would draw that link to nowhere -- which is
+        exactly the class of bug that produced the wires running off the canvas."""
+        wired = view._wired_attr_paths()
+        for edge in view.edges:
+            for node_path, attr_path in ((edge.src_node_path, edge.src_attr_path),
+                                         (edge.dst_node_path, edge.dst_attr_path)):
+                port = view._port_for_attr(node_path, attr_path)
+                assert port is not None, f"edge endpoint {attr_path} has no port"
+                assert view._pin_visible(port, wired), f"{attr_path} is wired but hidden"
