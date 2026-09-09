@@ -2735,6 +2735,20 @@ class _ProxyKeyRouter(QtCore.QObject):
             # guard were ever actually hit.
             return False
         etype = event.type()
+        if etype == QtCore.QEvent.Type.MouseButtonPress:
+            # A click anywhere outside this graph view -- most commonly usdview's own 3D
+            # viewport -- means the user's intent has moved on from whatever proxy widget
+            # was last clicked in the graph. Without this, _active/_view_active stay stuck
+            # on e.g. a Script Runner's text field forever (nothing else ever clears them),
+            # and the unconditional fallback at the bottom of this method kept hijacking
+            # every later keystroke -- including the viewport's own R/F camera shortcuts --
+            # and typing them into that field instead, no matter where the cursor now was.
+            if QtWidgets.QApplication.activePopupWidget() is None:
+                view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+                if not view_global.contains(QtGui.QCursor.pos()):
+                    self._active = None
+                    self._view_active = False
+            return False
         if etype not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
             return False
         if QtWidgets.QApplication.activePopupWidget() is not None:
@@ -2943,7 +2957,11 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
-        if self._active is None:
+        if self._active is None or not self._view_active:
+            # _view_active is False once a click has landed outside the graph view (see the
+            # MouseButtonPress branch above) -- an _active proxy left over from an earlier
+            # click must not keep swallowing keys once the user's attention, and clicks, have
+            # moved to e.g. the viewport.
             return False
         if etype == QtCore.QEvent.Type.ShortcutOverride:
             event.accept()
