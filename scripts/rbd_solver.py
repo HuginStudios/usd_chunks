@@ -1095,6 +1095,12 @@ def simulate_mujoco(
         lin_damping,
         ang_damping,
         hfield_res=hfield_res,
+        # Both of these were accepted by this function and then dropped on the floor, so the
+        # chunk's Collider Mode and Collider Thickness did nothing at all for a single rigid
+        # body -- every collider was built as if Auto, whatever the UI said. The instancer
+        # and articulated paths forwarded them all along, which is why it went unnoticed.
+        collider_mode=collider_mode,
+        collider_thickness=collider_thickness,
         floor_drop=floor_drop,
         wind=wind,
         turbulence=turbulence,
