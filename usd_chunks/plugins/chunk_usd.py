@@ -2825,6 +2825,39 @@ def _migrate_chunk_bookkeeping(
 
 _reconciling = False
 
+#: True while load_chunks is rebuilding a scene from a file.
+#:
+#: Opening a file must not rewrite it. load_chunks already passes protect_root_layer=True to
+#: its own reconcile for that reason, but a load also COOKS, and cooking an Edit Target chunk
+#: calls publish_edit_target -- which reconciles again, and did so unguarded.
+#:
+#: That second reconcile fires on every open, not rarely: the marker holds a layer
+#: identifier, and an anonymous layer gets a NEW identifier in each process, so
+#: `old_ident != ident` is true on reload even when nothing about the file changed. The
+#: reconcile then migrates bookkeeping out of the root layer, and _migrate_chunk_bookkeeping
+#: moves a spec by DELETING the original -- gutting the file that was just opened. The
+#: damage is invisible until something saves, because the composed stage still resolves
+#: every chunk from the layer they were moved into.
+#:
+#: Deliberately not a blanket protection inside reconcile_edit_targets: re-homing out of the
+#: root layer is exactly right when a user re-points an Edit Target at runtime. It is wrong
+#: only while loading, where the file already records where each chunk's bookkeeping lives
+#: and is therefore the answer rather than the question.
+_loading = False
+
+
+@contextlib.contextmanager
+def _loading_from_file():
+    """Mark a load in progress. Re-entrant: a nested load restores, never clears."""
+    global _loading
+    previous = _loading
+    _loading = True
+    try:
+        yield
+    finally:
+        _loading = previous
+
+
 
 def _chunks_downstream_of(roots: "list[core.ChunkBase]") -> "set[int]":
     """ids of every chunk that solves at or after one of roots.
@@ -3125,7 +3158,9 @@ def publish_edit_target(chunk: "core.ChunkBase", stage: "Usd.Stage", layer: "Sdf
     # re-executes on every stage content change (its refresh callback), so reconciling
     # unconditionally here would run — and thrash — on every unrelated edit.
     if old_ident != ident:
-        reconcile_edit_targets(stage, _active_scene())
+        # protect_root_layer while loading -- see _loading. This branch is taken on EVERY
+        # open, because an anonymous layer's identifier is new in every process.
+        reconcile_edit_targets(stage, _active_scene(), protect_root_layer=_loading)
 
 
 def get_exec_upstream_chunks(
@@ -3852,6 +3887,18 @@ def load_chunks(
     if not stage:
         return
 
+    with _loading_from_file():
+        _load_chunks(stage, scene, loaded_prim_paths, prims)
+
+
+def _load_chunks(
+    stage: Usd.Stage,
+    scene: "core.SceneSender",
+    loaded_prim_paths: set[str] | None = None,
+    prims: "Generator | None" = None,
+):
+    """load_chunks' body. Split out only so the _loading window covers all of it, including
+    the cook loop at the end -- which is where an Edit Target chunk executes and reconciles."""
     to_load = []
     # Top-level (direct child of the pseudo-root) Chunk-typed prims with no chunkType —
     # a structural context prim (a Tab/ChunkGroup saved via export_chunks), not a
