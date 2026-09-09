@@ -1120,6 +1120,7 @@ def simulate_mujoco_articulated(
         turb_scale=turb_scale,
         turb_speed=turb_speed,
         turb_seed=turb_seed,
+        settle_only=settle_only,
     )
 
     results = None
@@ -2077,6 +2078,10 @@ def _add_link_geoms(spec, body, link_prim, link_world_inv, friction, contact_tc,
     return count
 
 
+_SETTLE_VEL_THRESH = 0.02
+_SETTLE_MAX_EXTRA_FRAMES = 240
+
+
 def _sim_articulated_gen_mj(
     roots,
     frame_count: int,
@@ -2105,6 +2110,7 @@ def _sim_articulated_gen_mj(
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
+    settle_only: bool = False,
 ) -> Generator[int, None, "dict | None"]:
     """Simulate an articulated asset, yielding frame index and returning per-link matrices.
 
@@ -2177,6 +2183,34 @@ def _sim_articulated_gen_mj(
             _mj.mj_step(model, data)
             sim_t += sub_dt
         yield frame
+
+    if settle_only:
+        # frame_count is an animation-preview length, not a promise that the mechanism has
+        # actually stopped moving by the last frame -- a door still swinging, or a body still
+        # settling into contact, would otherwise get baked mid-motion as "rest" just because
+        # the frame budget ran out. Keep stepping (still substep-accurate, wind included)
+        # until the whole system's velocity drops below rest, capped so a perpetually
+        # jittering contact can't spin forever, then append that pose as the final frame --
+        # _write_articulated_results always takes mats[-1] for settle_only.
+        extra = 0
+        while (
+            extra < _SETTLE_MAX_EXTRA_FRAMES
+            and float(_np.linalg.norm(data.qvel)) > _SETTLE_VEL_THRESH
+        ):
+            for _ in range(substeps):
+                if root_bids:
+                    _apply_wind(model, data, tuple(root_bids), wind, turbulence,
+                                turb_scale, turb_speed, phases, sim_t)
+                _mj.mj_step(model, data)
+                sim_t += sub_dt
+            extra += 1
+        for name, bid in ids.items():
+            pos = data.xpos[bid]
+            quat = data.xquat[bid]
+            mat = Gf.Matrix4d(1.0)
+            mat.SetRotate(Gf.Quatd(float(quat[0]), Gf.Vec3d(float(quat[1]), float(quat[2]), float(quat[3]))))
+            mat.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+            results[name].append(mat)
 
     return results
 

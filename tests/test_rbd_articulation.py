@@ -290,6 +290,30 @@ class TestWriteBack:
         assert op.GetTimeSamples() == []
         assert op.Get() is not None
 
+    def test_settle_only_keeps_stepping_past_frame_count_until_at_rest(self):
+        """frame_count=1 is nowhere near enough for a falling+swinging door to stop moving.
+        Before this fix, settle_only just grabbed whichever frame frame_count happened to
+        land on -- correct only when the caller's frame_count was generous enough, which is
+        exactly why "Settle To Rest" looked flaky rather than reliably broken. The generator
+        must now keep stepping past frame_count on its own until the mechanism is actually
+        at rest (or hits its safety cap), appending that pose as one extra frame."""
+        stage, root = _cabinet()
+        roots = rbd.read_articulations(root)
+
+        gen = rbd._sim_articulated_gen_mj(
+            roots, frame_count=1, gravity=-9.81, friction=0.7, restitution=0.0,
+            mass=1.0, substeps=2, start_frame=1, dt=1 / 24.0, up_idx=2,
+            solver_iters=20, collision_prims=[], floor_drop=2.0, settle_only=True,
+        )
+        try:
+            while True:
+                next(gen)
+        except StopIteration as exc:
+            results = exc.value
+
+        for mats in results.values():
+            assert len(mats) == 2  # the one preview frame, plus the appended settle frame
+
     def test_sample_times_are_not_rescaled_by_a_layer_offset(self):
         """USD maps sample times through a layer offset built from the ratio between the
         target layer's timeCodesPerSecond and the stage's. Writing frames 1..6 into a
