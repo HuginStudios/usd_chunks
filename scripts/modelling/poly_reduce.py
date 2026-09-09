@@ -41,6 +41,7 @@ again, and again on every cook.
 from __future__ import annotations
 
 import logging
+import zlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -188,18 +189,51 @@ def _pack_key(columns):
     return key
 
 
+def _densify(key) -> np.ndarray:
+    """Renumber a key array so its labels run 0..n-1."""
+    _, inverse = np.unique(key, return_inverse=True)
+    return np.asarray(inverse, dtype=np.int64).reshape(-1)
+
+
+def _width(column) -> int:
+    return int(column.max()) + 1 if column.size else 1
+
+
 def combine_codes(*code_arrays) -> np.ndarray:
-    """Fold several per-element label arrays into one, again densely numbered."""
+    """Fold several per-element label arrays into one, again densely numbered.
+
+    Folded one column at a time rather than all at once, because the packed range is the
+    *product* of the column widths and three float components of a UV set blow past int64
+    on their own: a mesh with a few million distinct u's, v's and w's gives 10**18 before
+    the third column is even folded in. Renumbering what has been folded so far collapses
+    that back to the number of combinations actually present — normally orders of magnitude
+    smaller — and folding continues. Getting this wrong is not a correctness bug (the
+    row-wise fallback is exact) but a 5x one: on a 4.2M-triangle tree the lexsort it fell
+    back to cost 10.6s where the packed path costs ~2s.
+    """
     columns = [np.asarray(c, dtype=np.int64).reshape(-1) for c in code_arrays if c is not None]
     if not columns:
         return None
     if len(columns) == 1:
         return columns[0]
-    key = _pack_key(columns)
-    if key is None:
-        _, inverse = np.unique(np.stack(columns, axis=1), axis=0, return_inverse=True)
-    else:
-        _, inverse = np.unique(key, return_inverse=True)
+
+    key = columns[0]
+    span = _width(key)
+    for index, column in enumerate(columns[1:], start=1):
+        width = _width(column)
+        if span > _KEY_LIMIT // width:
+            key = _densify(key)
+            span = _width(key)
+            if span > _KEY_LIMIT // width:
+                # Genuinely too wide even after renumbering: compare the rows themselves.
+                return _densify_rows(columns)
+        key = key * width + column
+        span *= width
+    return _densify(key)
+
+
+def _densify_rows(columns) -> np.ndarray:
+    _, inverse = np.unique(np.stack(columns, axis=1), axis=0, return_inverse=True)
     return np.asarray(inverse, dtype=np.int64).reshape(-1)
 
 
@@ -423,7 +457,15 @@ def _face_subsets(prim, n_faces):
         idx = np.asarray(indices, dtype=np.int64)
         membership[idx[(idx >= 0) & (idx < n_faces)], column] = True
 
-    rows, code_per_face = np.unique(membership, axis=0, return_inverse=True)
+    if len(subsets) < 63:
+        # One bit per subset packs the whole membership row into an integer, so the labels
+        # come from a 1-D `np.unique` (a sort) rather than a row-wise one (a lexsort over a
+        # 2-million-row array, which cost seconds on a real tree).
+        bits = membership.astype(np.int64) @ (1 << np.arange(len(subsets), dtype=np.int64))
+        packed, code_per_face = np.unique(bits, return_inverse=True)
+        rows = ((packed[:, None] >> np.arange(len(subsets), dtype=np.int64)) & 1).astype(bool)
+    else:  # pragma: no cover - a mesh with 63+ face subsets
+        rows, code_per_face = np.unique(membership, axis=0, return_inverse=True)
     return subsets, np.asarray(code_per_face, dtype=np.int64).reshape(-1), rows
 
 
@@ -620,17 +662,82 @@ def _author(stage, plan: _Plan) -> None:
             subset.GetIndicesAttr().Set(indices)
 
 
+# What the last cook of each chunk saw, keyed by that chunk's own layer identifier.
+# See `_fingerprint` for why this exists.
+_LAST_COOK: dict = {}
+
+
+def _checksum(values):
+    """A cheap content signature for one USD array — its length and a CRC of its bytes."""
+    if values is None:
+        return None
+    array = np.ascontiguousarray(np.asarray(values))
+    try:
+        return len(array), zlib.crc32(array)
+    except (TypeError, ValueError):  # pragma: no cover - object dtypes have no buffer
+        return len(array), None
+
+
+def _fingerprint(prims, settings) -> tuple:
+    """Everything this chunk's output depends on, cheaply.
+
+    The graph re-runs a chunk far more often than its inputs actually change: switching the
+    active view, adding a node, wiring one up all trigger a view-driven recook of the whole
+    upstream tree. That is fine for a chunk that costs a millisecond and unusable for one
+    that costs forty seconds — a 4M-triangle reduction was re-running on every unrelated
+    edit in the graph. Comparing this against the last cook's makes those re-runs cost a
+    few array checksums instead (~0.4s on that same mesh) rather than the whole decimation.
+
+    It signs the geometry, every primvar and every subset — not just the point count —
+    because an upstream chunk editing a mesh in place is exactly the case that *must* still
+    re-cook, and it usually leaves the array lengths alone.
+    """
+    parts = [settings]
+    for prim in prims:
+        mesh = UsdGeom.Mesh(prim)
+        entry = [str(prim.GetPath())]
+        entry += [
+            _checksum(attr.Get())
+            for attr in (
+                mesh.GetPointsAttr(),
+                mesh.GetFaceVertexCountsAttr(),
+                mesh.GetFaceVertexIndicesAttr(),
+            )
+        ]
+        entry += [
+            (pv.GetPrimvarName(), pv.GetInterpolation(), _checksum(_primvar_values(pv)))
+            for pv in UsdGeom.PrimvarsAPI(prim).GetPrimvars()
+        ]
+        entry += [
+            (str(subset.GetPrim().GetPath()), _checksum(subset.GetIndicesAttr().Get()))
+            for subset in UsdGeom.Subset.GetAllGeomSubsets(UsdGeom.Imageable(prim))
+        ]
+        parts.append(tuple(entry))
+    return tuple(parts)
+
+
 # ---------------------------------------------------------------------------
 # chunk
 # ---------------------------------------------------------------------------
+
+
+def _compact(count: int) -> str:
+    """1_044_205 -> "1.04M". The readout sits in a fixed-width node header, and a full
+    "4,176,819 → 1,044,205 triangles (25.0%)" is simply cut off mid-word there."""
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.2f}M"
+    if count >= 10_000:
+        return f"{count / 1_000:.0f}k"
+    return f"{count:,}"
 
 
 def _report(node, plans, note=""):
     before = sum(p.before for p in plans)
     after = sum(len(p.reduced.triangles) for p in plans)
     if plans:
-        share = f"{after * 100.0 / before:.1f}%" if before else "—"
-        text = f"{before:,} → {after:,} triangles ({share}) over {len(plans)} mesh(es)"
+        share = f"{after * 100.0 / before:.0f}%" if before else "?"
+        meshes = f" · {len(plans)} meshes" if len(plans) > 1 else ""
+        text = f"{_compact(before)} → {_compact(after)} tris ({share}){meshes}"
     else:
         text = note or "nothing reduced — check the mesh path"
     if readout := node.get_param("readout"):
@@ -704,14 +811,22 @@ def execute(node: chunk.Chunk) -> None:
     # (and re-reduces) the result of the last one. See the module docstring.
     upstream = chunk_usd.get_upstream_stage(stage, node.get_scene(), node)
 
+    targets = [
+        prim for path in paths for prim in _mesh_prims(upstream.GetPrimAtPath(path), recurse)
+    ]
+    settings = (mode, keep_percent, target_tris, aggressiveness, lock_boundary, keep_uvs, recurse)
+    fingerprint = _fingerprint(targets, settings)
+    if _LAST_COOK.get(layer.identifier) == fingerprint and not layer.empty:
+        # Same inputs, same settings, and the result of last time is still in our layer.
+        return
+
     plans = []
-    for path in paths:
-        for prim in _mesh_prims(upstream.GetPrimAtPath(path), recurse):
-            plan = _plan_mesh(
-                prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, lock_boundary
-            )
-            if plan is not None:
-                plans.append(plan)
+    for prim in targets:
+        plan = _plan_mesh(
+            prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, lock_boundary
+        )
+        if plan is not None:
+            plans.append(plan)
 
     # Only now, with every mesh decided, does the old output go away.
     _clear_layer(layer)
@@ -719,6 +834,11 @@ def execute(node: chunk.Chunk) -> None:
         for plan in plans:
             _author(stage, plan)
 
+    if len(_LAST_COOK) > 256:
+        # A deleted chunk leaves its entry behind; nothing looks them up again, so rather
+        # than track chunk lifetimes for a dict of small tuples, drop the lot occasionally.
+        _LAST_COOK.clear()
+    _LAST_COOK[layer.identifier] = fingerprint
     _report(node, plans)
 
 

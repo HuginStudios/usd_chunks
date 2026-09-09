@@ -529,3 +529,91 @@ def test_a_mesh_of_thousands_of_disconnected_cards_reduces_promptly() -> None:
 
     assert reduced is not None and reduced.source_point is not None
     assert elapsed < 10.0  # loose: the point is seconds-not-minutes, not a timing target
+
+
+# ---------------------------------------------------------------------------
+# not re-doing work
+# ---------------------------------------------------------------------------
+
+
+def _live_module():
+    """The module copy the registry actually loaded and calls `execute` on.
+
+    Importing `scripts.modelling.poly_reduce` gives a *second*, independent copy under a
+    different `sys.modules` key — with its own `_LAST_COOK` — so a test about cook state
+    has to reach the registry's one.
+    """
+    return chunk_registry.ChunkRegistry().get_chunk_module("modelling.poly_reduce").module
+
+
+@needs_simplify
+def test_an_unchanged_recook_does_not_redo_the_reduction(wired) -> None:
+    """The graph re-runs a chunk's execute far more often than its inputs change — a view
+    switch, a new node, a fresh wire all trigger a view-driven recook of the whole upstream
+    tree. Live-reported as usdview freezing on unrelated edits, because a 4M-triangle
+    reduction is 40s and was being redone every time. Proven here by tampering with the
+    authored result: an unchanged recook must leave it exactly as it was."""
+    stage, make = wired
+    points, counts, indices = _grid(30)
+    _define_mesh(stage, "/Mesh", points, counts, indices)
+
+    node = make()
+    node.get_param("keep_percent").value = 20.0
+    node.get_param("prim_path").value = "/Mesh"
+    reduced_count = _triangle_count(stage)
+    assert reduced_count < len(counts)
+
+    with Usd.EditContext(stage, node.get_edit_context()):
+        UsdGeom.Mesh(stage.GetPrimAtPath("/Mesh")).GetFaceVertexCountsAttr().Set(Vt.IntArray([3]))
+
+    _live_module().execute(node)
+
+    assert _triangle_count(stage) == 1  # the tamper survived: nothing was recomputed
+
+
+@needs_simplify
+def test_a_changed_setting_still_recooks(wired) -> None:
+    """The other half of the same guard — skipping work must never outlive the reason for
+    skipping it."""
+    stage, make = wired
+    points, counts, indices = _grid(30)
+    _define_mesh(stage, "/Mesh", points, counts, indices)
+
+    node = make()
+    node.get_param("keep_percent").value = 50.0
+    node.get_param("prim_path").value = "/Mesh"
+    half = _triangle_count(stage)
+
+    node.get_param("keep_percent").value = 10.0
+
+    assert _triangle_count(stage) < half
+
+
+@needs_simplify
+def test_an_upstream_edit_to_the_same_mesh_still_recooks(wired) -> None:
+    """The case that makes a cheap fingerprint of point *counts* alone wrong: an upstream
+    chunk moving the geometry leaves every array the same length."""
+    stage, make = wired
+    points, counts, indices = _grid(30)
+    mesh = _define_mesh(stage, "/Mesh", points, counts, indices)
+
+    node = make()
+    node.get_param("keep_percent").value = 30.0
+    node.get_param("prim_path").value = "/Mesh"
+    before = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Mesh")).GetPointsAttr().Get())
+
+    moved = points + np.array([0.0, 0.0, 5.0])
+    mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(moved, dtype=np.float32)))
+    _live_module().execute(node)
+
+    after = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Mesh")).GetPointsAttr().Get())
+    assert after[:, 2].mean() == pytest.approx(before[:, 2].mean() + 5.0, abs=1e-3)
+
+
+def test_the_readout_stays_short_enough_for_the_node_header() -> None:
+    """Live-reported: "4,176,819 → 1,044,205 triangles (25.0%)" is simply cut off in the
+    node's fixed-width header, so the number you most want is the one you cannot see."""
+    assert pr._compact(4_176_819) == "4.18M"
+    assert pr._compact(1_044_205) == "1.04M"
+    assert pr._compact(90_989) == "91k"
+    assert pr._compact(940) == "940"
