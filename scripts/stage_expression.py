@@ -42,7 +42,11 @@ Requires: usd_chunks.
 
 from __future__ import annotations
 
+import logging
+
 from usd_chunks import chunk, chunk_notice, chunk_utils
+
+logger = logging.getLogger(__name__)
 
 #: Params the chunk always has. Everything else on it is a lofted variable.
 _FIXED = frozenset({"variables", "owned", "composed"})
@@ -71,10 +75,10 @@ def _parse_spec(text):
             name, _, default = line.partition(" ")
         name = name.strip()
         if not name.isidentifier():
-            print(f"[Stage Expression] {name!r} is not a usable variable name, skipping")
+            logger.warning("%r is not a usable variable name, skipping", name)
             continue
         if name in _FIXED:
-            print(f"[Stage Expression] {name!r} is reserved by the chunk, skipping")
+            logger.warning("%r is reserved by the chunk, skipping", name)
             continue
         rows.append((name, default.strip()))
     return rows
@@ -168,9 +172,9 @@ def execute(node):
         composed.value = "\n".join(f"{k} = {v}" for k, v in sorted(variables.items()))
 
     if mine:
-        print(f"[Stage Expression] {len(mine)} variable(s): " + ", ".join(sorted(mine)))
+        logger.debug("%d variable(s): %s", len(mine), ", ".join(sorted(mine)))
     else:
-        print("[Stage Expression] no variables declared")
+        logger.debug("no variables declared")
 
 
 def _spec_changed(owner, _notice, _sender):

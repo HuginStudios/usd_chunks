@@ -19,11 +19,14 @@ mismatch USD refuses), which is exactly why the typed outputs exist.
 """
 from __future__ import annotations
 
+import logging
 import traceback
 
 from usd_chunks import chunk
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks import chunk_registry
+
+logger = logging.getLogger(__name__)
 
 
 # Output-type menu value -> (result param name, coercion). The coercion turns whatever the
@@ -162,7 +165,7 @@ def _run_script(chunk_obj):
     try:
         exec(compile(code, "<Python>", "exec"), exec_globals)
     except Exception:
-        print(f"[Python] Error:\n{traceback.format_exc()}")
+        logger.error("Error:\n%s", traceback.format_exc())
         return
 
     if result_param:
@@ -179,7 +182,7 @@ def _run_script(chunk_obj):
                 # The script produced something that can't become the chosen type (e.g.
                 # "int" selected but result is "abc"). Leave the output empty and say so,
                 # rather than raising and aborting the whole cook.
-                print(f"[Python] result {value!r} is not a valid {out_type}")
+                logger.warning("result %r is not a valid %s", value, out_type)
                 result_param.value = _empty_for(out_name)
 
 

@@ -26,7 +26,6 @@ def _download_camera_types_cache(camera_cache):
 
 def _get_camera_data():
     camera_cache = os.path.join(os.path.dirname(__file__), "cameras.json")
-    print(camera_cache)
     if not os.path.exists(camera_cache):
         data = _download_camera_types_cache(camera_cache)
     else:

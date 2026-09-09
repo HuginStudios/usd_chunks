@@ -30,11 +30,14 @@ Requires: usd_chunks.
 from __future__ import annotations
 
 import fnmatch
+import logging
 import re
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins import chunk_usd
+
+logger = logging.getLogger(__name__)
 
 #: Where the filter records what it muted, so a branch that stops being upstream is
 #: un-muted rather than left blocked forever. Hidden: bookkeeping, not a control.
@@ -65,7 +68,7 @@ def _matches(value: str, pattern: str, mode: str) -> bool:
         try:
             return re.search(pattern, value) is not None
         except re.error as exc:
-            print(f"[Stage Expression Filter] {pattern!r} is not a valid regex: {exc}")
+            logger.warning("%r is not a valid regex: %s", pattern, exc)
             return False
     return fnmatch.fnmatchcase(value, pattern)
 
@@ -149,8 +152,10 @@ def execute(node):
 
     _record(node, muted)
     verdict = "passes" if passed else "blocked"
-    print(f"[Stage Expression Filter] {value!r} {mode.lower()} {pattern!r} -> {verdict}"
-          + (f", muted {len(muted)} chunk(s)" if muted else ""))
+    logger.debug(
+        "%r %s %r -> %s%s", value, mode.lower(), pattern, verdict,
+        f", muted {len(muted)} chunk(s)" if muted else "",
+    )
 
 
 def main():

@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import colorsys
 import hashlib
+import logging
 
 from pxr import Sdf
 
 from usd_chunks import chunk, chunk_notice
+
+logger = logging.getLogger(__name__)
 
 #: Params the wedge always has. Everything else on it is a lofted range.
 _FIXED = frozenset({
@@ -123,18 +126,18 @@ def _parse_spec(text):
                 try:
                     row["weights"] = [float(w) for w in rest[3].split(",")]
                 except ValueError:
-                    print(f"[Wedge] cannot read weights {rest[3]!r}, using uniform")
+                    logger.warning("cannot read weights %r, using uniform", rest[3])
             rows.append(row)
         elif len(rest) >= 2:
             try:
                 low, high = float(rest[0]), float(rest[1])
             except ValueError:
-                print(f"[Wedge] cannot read range {line!r}")
+                logger.warning("cannot read range %r", line)
                 continue
             rows.append({"name": name, "kind": "float",
                          "low": min(low, high), "high": max(low, high)})
         else:
-            print(f"[Wedge] cannot read range {line!r}")
+            logger.warning("cannot read range %r", line)
     return rows
 
 
@@ -189,7 +192,7 @@ def _refresh_count(node):
         return
     total = _combinations(node)
     if total <= 1:
-        print("[Wedge] Enumerate needs at least one variants range with options")
+        logger.warning("Enumerate needs at least one variants range with options")
     if node.get_param("count").value != total:
         node.get_param("count").value = total
 
@@ -277,11 +280,11 @@ def _variant_names(node, prim_path, set_name):
         return []
     prim = stage.GetPrimAtPath(Sdf.Path(prim_path))
     if not prim or not prim.IsValid():
-        print(f"[Wedge] no prim at {prim_path}")
+        logger.warning("no prim at %s", prim_path)
         return []
     vset = prim.GetVariantSets().GetVariantSet(set_name)
     if not vset:
-        print(f"[Wedge] {prim_path} has no variantSet {set_name!r}")
+        logger.warning("%s has no variantSet %r", prim_path, set_name)
         return []
     return list(vset.GetVariantNames())
 
@@ -365,8 +368,10 @@ def sample(node, index: int) -> dict:
                 unit = _unit(seed, index, param.name)
                 weights = row.get("weights")
                 if weights and len(weights) != len(names):
-                    print(f"[Wedge] {param.name}: {len(weights)} weights for "
-                          f"{len(names)} variants, using uniform")
+                    logger.warning(
+                        "%s: %d weights for %d variants, using uniform",
+                        param.name, len(weights), len(names),
+                    )
                     weights = None
                 pick = (_weighted_pick(unit, weights) if weights
                         else int(unit * len(names)) % len(names))
@@ -414,10 +419,10 @@ def add_range(owner, notice, sender) -> None:
     node = owner.get_chunk()
     name = (node.get_param("new_name").value or "").strip()
     if not name:
-        print("[Wedge] Name the range before adding it")
+        logger.warning("Name the range before adding it")
         return
     if name in _FIXED or any(p.name == name for p in _ranges(node)):
-        print(f"[Wedge] {name!r} is already taken")
+        logger.warning("%r is already taken", name)
         return
 
     low = float(node.get_param("new_min").value or 0.0)
@@ -434,10 +439,10 @@ def add_color(owner, notice, sender) -> None:
     node = owner.get_chunk()
     name = (node.get_param("new_color_name").value or "").strip()
     if not name:
-        print("[Wedge] Name the colour before adding it")
+        logger.warning("Name the colour before adding it")
         return
     if name in _FIXED or any(p.name == name for p in _ranges(node)):
-        print(f"[Wedge] {name!r} is already taken")
+        logger.warning("%r is already taken", name)
         return
 
     _append_spec(node, f"{name} color")

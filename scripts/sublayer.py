@@ -1,4 +1,8 @@
+import logging
+
 from usd_chunks import chunk
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_sublayers(owner: chunk.Chunk) -> None:
@@ -23,7 +27,7 @@ def _apply_sublayers(owner: chunk.Chunk) -> None:
         # in which we can add in our sublayer path.
         if edit_layer := owner.get_edit_context():
             edit_layer.subLayerPaths = paths
-            print(f"Updated stage with sublayer. {paths}")
+            logger.debug("Updated stage with sublayer. %s", paths)
 
 
 def execute(node: chunk.Chunk) -> None:
