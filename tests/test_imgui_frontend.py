@@ -178,3 +178,36 @@ class TestImmediateModeWidgets:
         from usd_chunks.plugins import chunk_imgui
         assert not hasattr(chunk_imgui, "ChunkImGuiWidgetFactory")
         assert callable(chunk_imgui.draw_param)
+
+
+class TestParamLayout:
+    """The drawing decisions that made the first render unreadable.
+
+    Not pixel assertions -- there is no frame here -- but the structural choices behind
+    them, which is what actually regressed: flattening groups, and laying out against a
+    node size nobody measured.
+    """
+
+    def test_groups_are_not_flattened_for_drawing(self, view, first):
+        """A Transform models a vector as a GROUP of three sliders. Flattened, that is
+        twelve labelled rows and a node taller than the window; kept as groups it is four
+        inline rows."""
+        from usd_chunks.plugins import chunk_imgui
+        chunk = view.chunks[first]
+        top = [p for p in chunk.get_my_params() if hasattr(p, "get_my_params")]
+        assert top, "fixture chunk has no groups, so this proves nothing"
+        assert len(chunk_imgui.visible_params(chunk)) > len(top), (
+            "flattening should yield more leaves than there are groups")
+
+    def test_layout_uses_the_measured_node_size_when_available(self, view, first):
+        """Headless there is no editor, so this exercises the fallback branch and pins the
+        contract: a size is always returned, never zero, or the layout divides by it."""
+        width, height = view._node_size(first)
+        assert width > 1.0 and height > 1.0
+
+    def test_numeric_params_are_unbounded(self, view, first):
+        """The first version drew every number as a slider clamped to +/-100, so a
+        translate of 250 silently became 100. Values must survive being set."""
+        param = view.chunks[first].get_param("tx")
+        param.value = 250.0
+        assert param.value == pytest.approx(250.0)

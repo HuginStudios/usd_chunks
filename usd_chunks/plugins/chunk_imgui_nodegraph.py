@@ -218,8 +218,9 @@ class ImGuiGraphView:
         ed.begin_node(node_id)
         label = chunk_graph.node_label(prim)
         if chunk_graph.is_disabled(prim):
-            label += "  (disabled)"
-        imgui.text(label)
+            imgui.text_disabled(label + "  (disabled)")
+        else:
+            imgui.text_colored(imgui.ImVec4(0.79, 0.71, 0.42, 1.0), label)
         imgui.dummy(imgui.ImVec2(NODE_W, 1.0))
 
         ins = [p for p in self.ports[path] if p.is_input]
@@ -254,8 +255,10 @@ class ImGuiGraphView:
 
         chunk = self.chunks.get(path)
         if chunk is not None:
-            for param in chunk_imgui.visible_params(chunk):
-                chunk_imgui.draw_param(param, width=NODE_W - 60)
+            imgui.separator()
+            # draw_params, not a flattened walk: a group of plain numbers becomes one
+            # inline row, which is what keeps a Transform node a readable height.
+            chunk_imgui.draw_params(chunk, width=NODE_W - 40)
         ed.end_node()
 
     def _wired_attr_paths(self) -> set:
@@ -638,6 +641,18 @@ class ImGuiGraphView:
 
     # -- layout ------------------------------------------------------------
 
+    def _node_size(self, path: str) -> "tuple[float, float]":
+        """A node's real size once the editor has drawn it, else a nominal one.
+
+        get_node_size returns zeroes for a node that has not been through a frame yet, so
+        the fallback is not defensive padding -- it is the first-layout case.
+        """
+        if self._editor is not None and path in self._placed:
+            size = ed.get_node_size(ed.NodeId(self.ids.get(path)))
+            if size.x > 1.0 and size.y > 1.0:
+                return (size.x, size.y)
+        return (NODE_W * 1.6, 200.0)
+
     def auto_layout(self) -> None:
         if not self.prims:
             return
@@ -654,7 +669,11 @@ class ImGuiGraphView:
         positions = self.positions
         placed = chunk_graph_layout.layout_positions(
             node_ids,
-            size_of=lambda n: (NODE_W, 120.0),
+            # The editor's measured size, not a guess. A node here is as wide as its
+            # widest param row and as tall as its content, and both vary a lot -- laying
+            # out against a nominal 220x120 packed the columns so tightly that node bodies
+            # overlapped the node to their right.
+            size_of=self._node_size,
             is_locked=lambda n: False,
             current_pos=lambda n: positions[n],
             up_of={n: {u for u in up_of.get(n, ()) if u in wanted} for n in node_ids},

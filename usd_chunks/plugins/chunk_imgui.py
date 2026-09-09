@@ -18,6 +18,7 @@ import logging
 
 from imgui_bundle import imgui
 
+from usd_chunks import chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
 
 logger = logging.getLogger(__name__)
@@ -26,77 +27,107 @@ logger = logging.getLogger(__name__)
 #: rather than measured for the same reason Flet declares them: the value is needed before
 #: the row is drawn.
 ROW_H = 22.0
-LABEL_W = 92.0
+#: Width of the label column. Labels go on the LEFT, in their own column, because ImGui's
+#: default puts them to the right of the widget -- which reads as "0.000 X" and looks like
+#: the value is labelling the axis rather than the other way round.
+LABEL_W = 104.0
+#: How much a drag has to move to change a value by one unit.
+DRAG_SPEED = 0.01
+
+_GROUP_TITLE = (0.72, 0.72, 0.76, 1.0)
 
 
-def _labelled(param) -> str:
-    return param.get_label() or param.name
+def _label(text: str, width: float = LABEL_W) -> None:
+    """A left-hand label, vertically centred against the widget it names."""
+    imgui.align_text_to_frame_padding()
+    imgui.text(text)
+    imgui.same_line(width)
+
+
+def _numeric(param, ident: str, width: float) -> bool:
+    """A number field. Drag, not slider.
+
+    A slider needs a range, and a transform has none -- the previous version clamped every
+    value to +/-100, so typing a translate of 250 silently became 100. drag_float with
+    v_min == v_max leaves the value unbounded, which is what these params actually are.
+    """
+    imgui.set_next_item_width(width)
+    if getattr(param, "is_int", False):
+        changed, value = imgui.drag_int(ident, int(param.value or 0), 1.0)
+    else:
+        changed, value = imgui.drag_float(ident, float(param.value or 0.0), DRAG_SPEED,
+                                          0.0, 0.0, "%.3f")
+    if changed:
+        param.value = value
+    return changed
+
+
+def _is_numeric(param) -> bool:
+    return param.evaluate_type() in (
+        ChunkFlags.ParamType.FLOAT_SLIDER, ChunkFlags.ParamType.INT_SLIDER,
+        ChunkFlags.ParamType.FLOAT_SPINBOX, ChunkFlags.ParamType.INT_SPINBOX,
+    )
 
 
 def draw_param(param, width: float = 150.0) -> bool:
-    """Draw one param. Returns True if the user changed it.
+    """Draw one param as a labelled row. Returns True if the user changed it.
 
-    Writing back is a plain assignment to `param.value`, the same as every other frontend —
-    the notice system does the rest, so this stays ignorant of chunks and of USD.
+    The imgui label is always `##something`: the visible text is drawn by _label on the
+    left, and the `##` form keeps the widget's identity without printing it again.
     """
     kind = param.evaluate_type()
+    name = param.get_label() or param.name
+    ident = "##%s" % param.name
     imgui.push_id(str(id(param)))
     changed = False
     try:
-        imgui.set_next_item_width(width)
-        if kind in (ChunkFlags.ParamType.FLOAT_SLIDER, ChunkFlags.ParamType.INT_SLIDER):
-            value = param.value or 0
-            if getattr(param, "is_int", False):
-                changed, new = imgui.slider_int(_labelled(param), int(value), -100, 100)
-            else:
-                changed, new = imgui.slider_float(_labelled(param), float(value), -100.0, 100.0)
-            if changed:
-                param.value = new
-
-        elif kind == ChunkFlags.ParamType.CHECKBOX:
-            changed, new = imgui.checkbox(_labelled(param), bool(param.value))
-            if changed:
-                param.value = new
-
-        elif kind == ChunkFlags.ParamType.STRING_MENU:
-            items = list(getattr(param, "menu_items", None) or [])
-            current = str(param.value) if param.value is not None else ""
-            index = items.index(current) if current in items else 0
-            if items:
-                changed, index = imgui.combo(_labelled(param), index, items)
-                if changed:
-                    param.value = items[index]
-
+        if kind == ChunkFlags.ParamType.SEPARATOR:
+            imgui.separator()
+        elif kind == ChunkFlags.ParamType.LABEL:
+            imgui.text_disabled(str(param.value or name))
         elif kind == ChunkFlags.ParamType.BUTTON:
-            if imgui.button(_labelled(param)):
+            if imgui.button(name, imgui.ImVec2(width + LABEL_W * 0.5, 0)):
                 # A Button param carries no value; toggling is how the other frontends
                 # fire it, so the notice fires the same way here.
                 param.value = not bool(param.value)
                 changed = True
-
-        elif kind == ChunkFlags.ParamType.LABEL:
-            imgui.text(str(param.value or _labelled(param)))
-
-        elif kind == ChunkFlags.ParamType.SEPARATOR:
-            imgui.separator()
-
+        elif _is_numeric(param):
+            _label(name)
+            changed = _numeric(param, ident, width)
+        elif kind == ChunkFlags.ParamType.CHECKBOX:
+            _label(name)
+            changed, value = imgui.checkbox(ident, bool(param.value))
+            if changed:
+                param.value = value
+        elif kind == ChunkFlags.ParamType.STRING_MENU:
+            _label(name)
+            items = list(getattr(param, "menu_items", None) or [])
+            current = str(param.value) if param.value is not None else ""
+            index = items.index(current) if current in items else 0
+            if items:
+                imgui.set_next_item_width(width)
+                changed, index = imgui.combo(ident, index, items)
+                if changed:
+                    param.value = items[index]
         elif kind == ChunkFlags.ParamType.COLOR_PICKER:
+            _label(name)
             value = param.value or (0.0, 0.0, 0.0)
             try:
                 rgb = [float(value[0]), float(value[1]), float(value[2])]
             except (TypeError, IndexError, ValueError):
                 rgb = [0.0, 0.0, 0.0]
-            changed, rgb = imgui.color_edit3(_labelled(param), rgb)
+            imgui.set_next_item_width(width)
+            changed, rgb = imgui.color_edit3(ident, rgb)
             if changed:
                 param.value = tuple(rgb)
-
         else:
             # LINEEDIT, TEXTEDIT, FILE and anything unmapped: a text field is a truthful
             # fallback rather than a blank, and every one of those types IS text.
-            text = "" if param.value is None else str(param.value)
-            changed, new = imgui.input_text(_labelled(param), text)
+            _label(name)
+            imgui.set_next_item_width(width)
+            changed, value = imgui.input_text(ident, "" if param.value is None else str(param.value))
             if changed:
-                param.value = new
+                param.value = value
     except Exception:  # noqa: BLE001
         # A param whose value cannot be coerced to what its widget wants must not take the
         # frame down -- one bad chunk would otherwise blank the whole graph. Logged, not
@@ -107,12 +138,74 @@ def draw_param(param, width: float = 150.0) -> bool:
     return changed
 
 
-def visible_params(chunk_obj):
-    """The params worth drawing, groups flattened, hidden ones dropped."""
-    out = []
-    for param in chunk_obj.get_my_params():
-        if param.has_state(ChunkFlags.State.HIDDEN):
+def _visible_children(group):
+    return [p for p in group.get_my_params() if not p.has_state(ChunkFlags.State.HIDDEN)]
+
+
+def _inline_group(group, children, width: float) -> None:
+    """A group of same-typed numbers on ONE row: `translate  [x][y][z]`.
+
+    scripts/transform.py models a vector as a Group of three Sliders, not as a Vector
+    param, so flattening gave twelve labelled rows and a node taller than the window. This
+    is the whole reason that node was unreadable.
+    """
+    _label(group.get_label() or group.name)
+    each = max(38.0, (width - (len(children) - 1) * 4.0) / len(children))
+    for index, child in enumerate(children):
+        if index:
+            imgui.same_line(0.0, 4.0)
+        imgui.push_id(str(id(child)))
+        try:
+            _numeric(child, "##%s" % child.name, each)
+        finally:
+            imgui.pop_id()
+
+
+def draw_params(chunk_obj, width: float = 150.0, depth: int = 0) -> None:
+    """Every visible param of a chunk, groups kept as groups.
+
+    Flattening was the first version and it is what made a Transform node fifteen rows
+    tall. A group whose children are all plain numbers becomes one inline row; any other
+    group becomes a titled block.
+    """
+    for param in _visible_children(chunk_obj):
+        if not hasattr(param, "get_my_params"):
+            draw_param(param, width)
             continue
+
+        children = _visible_children(param)
+        if not children:
+            continue
+        if all(_is_numeric(child) for child in children) and len(children) <= 4:
+            _inline_group(param, children, width)
+            continue
+
+        numbers = [c for c in children if _is_numeric(c)]
+        others = [c for c in children if not _is_numeric(c)]
+        if numbers and len(numbers) <= 4:
+            _inline_group(param, numbers, width)
+        else:
+            imgui.text_colored(imgui.ImVec4(*_GROUP_TITLE), param.get_label() or param.name)
+        for child in others:
+            draw_params_child(child, width, depth + 1)
+
+
+def draw_params_child(param, width: float, depth: int) -> None:
+    """One child of a group: either a nested group or a plain param."""
+    if hasattr(param, "get_my_params"):
+        draw_params(param, width, depth)
+    else:
+        draw_param(param, width)
+
+
+def visible_params(chunk_obj):
+    """Every visible leaf param, groups flattened.
+
+    Kept because the graph frontend's tests use it to assert what is drawable; the drawing
+    itself goes through draw_params, which does NOT flatten.
+    """
+    out = []
+    for param in _visible_children(chunk_obj):
         if hasattr(param, "get_my_params"):
             out.extend(visible_params(param))
         else:
