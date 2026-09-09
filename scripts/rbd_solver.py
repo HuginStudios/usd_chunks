@@ -78,6 +78,44 @@ def _apply_wind(model, data, body_ids, wind, amp: float, scale: float, speed: fl
         data.xfrc_applied[bid][2] = wind[2] + fz
 
 
+#: What counts as "stopped moving", as the norm of the whole model's generalised velocity,
+#: and how long a settle is allowed to chase it before giving up. The cap is what keeps a
+#: contact that jitters forever (a sphere microsliding in a bowl) from hanging the bake --
+#: it stops at whatever it had, which is no worse than the frame-count-limited result this
+#: replaced.
+_SETTLE_VEL_THRESH = 0.02
+_SETTLE_MAX_EXTRA_FRAMES = 240
+
+
+def _step_until_at_rest(model, data, substeps: int, sub_dt: float, sim_t: float,
+                        apply_forces=None) -> float:
+    """Keep stepping past the frame budget until the whole model stops moving.
+
+    `frame_count` is an animation-preview length, not a promise that anything has settled:
+    a body still dropping, a door still swinging or a pile still shuffling would otherwise
+    be baked mid-motion and called rest, which is exactly why "Settle To Rest" looked like
+    it only worked sometimes. Whether it did came down to whether the caller's frame count
+    happened to be generous enough for that particular scene.
+
+    Stepping is substep-accurate and keeps applying forces, so a settle under wind rests
+    where the wind holds it rather than where it would have fallen without it.
+
+    Returns the advanced sim time; the caller reads the settled pose off `data` itself.
+    """
+    extra = 0
+    while (
+        extra < _SETTLE_MAX_EXTRA_FRAMES
+        and float(_np.linalg.norm(data.qvel)) > _SETTLE_VEL_THRESH
+    ):
+        for _ in range(substeps):
+            if apply_forces is not None:
+                apply_forces(sim_t)
+            _mj.mj_step(model, data)
+            sim_t += sub_dt
+        extra += 1
+    return sim_t
+
+
 def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_cell: float = 0.0) -> dict | None:
     """Sample the top surface of *cprim*'s meshes into a MuJoCo heightfield.
 
@@ -588,6 +626,7 @@ def _sim_prim_gen_mj(
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
+    settle_only: bool = False,
 ) -> Generator[int, None, list[Gf.Matrix4d] | None]:
     """MuJoCo rigid body simulation â€” yields frame index, returns all_mats.
 
@@ -830,6 +869,22 @@ def _sim_prim_gen_mj(
         # Update debug collision geoms for this frame
         yield frame
 
+    if settle_only:
+        # Same contract as the articulated path: run on until the body has actually stopped,
+        # then append that pose as the final entry, which is the one _write_prim_results
+        # takes for a settle.
+        sim_t = _step_until_at_rest(
+            model, data, substeps, sub_dt, sim_t,
+            lambda t: _apply_wind(model, data, (bid,), wind, turbulence,
+                                  turb_scale, turb_speed, phases, t),
+        )
+        pos = data.xpos[bid]
+        qmj = data.xquat[bid]
+        body_now = Gf.Matrix4d()
+        body_now.SetRotate(Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3])))
+        body_now.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+        all_mats.append(prim_world_rest * rest_inv * body_now)
+
     return all_mats
 
 
@@ -884,8 +939,15 @@ def _write_prim_results(
     start_frame: int,
     scale_xyz: tuple[float, float, float] | None = None,
     node=None,
+    settle_only: bool = False,
 ) -> None:
-    """Write single-prim simulation results to USD (main-thread only)."""
+    """Write single-prim simulation results to USD (main-thread only).
+
+    settle_only writes the resting pose as the attribute's default with no time samples,
+    for the same reason the articulated path does (see _write_articulated_results): a prim
+    carrying PhysicsRigidBodyAPI *and* animated transforms is contradictory, and a
+    downstream simulator ends up fighting the keyframes.
+    """
     if scale_xyz and any(abs(s - 1.0) > 1e-6 for s in scale_xyz):
         sx, sy, sz = scale_xyz
         # Build a scale matrix to left-multiply each sim RT frame (row-vector convention:
@@ -936,9 +998,18 @@ def _write_prim_results(
         # arriving at something that contributes a share has to have the share divided out.
         upstream = _upstream_xform(prim, op_name)
         inv_upstream = upstream.GetInverse()
-        xf_attr.Set(_local(all_mats[0]) * inv_upstream)
-        for frame_idx, mat in enumerate(all_mats):
-            xf_attr.Set(_local(mat) * inv_upstream, Usd.TimeCode(start_frame + frame_idx))
+        if settle_only:
+            # The settled pose is the last entry -- the generator appends it after stepping
+            # on past frame_count. Default only: no samples to fight, and nothing that
+            # depends on the timeline being parked anywhere in particular.
+            xf_attr.Set(_local(all_mats[-1]) * inv_upstream)
+        else:
+            xf_attr.Set(_local(all_mats[0]) * inv_upstream)
+            for frame_idx, mat in enumerate(all_mats):
+                xf_attr.Set(_local(mat) * inv_upstream, Usd.TimeCode(start_frame + frame_idx))
+    if settle_only:
+        print(f"[RBDSolver] Settled {prim.GetPath()}")
+        return
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         stage.SetStartTimeCode(start_frame)
         stage.SetEndTimeCode(start_frame + len(all_mats) - 1)
@@ -978,6 +1049,7 @@ def simulate_mujoco(
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     node=None,
+    settle_only: bool = False,
 ) -> list[Gf.Matrix4d] | None:
     """Run MuJoCo simulation.
 
@@ -1029,6 +1101,7 @@ def simulate_mujoco(
         turb_scale=turb_scale,
         turb_speed=turb_speed,
         turb_seed=turb_seed,
+        settle_only=settle_only,
     )
 
     # Exhaust the generator to get all_mats
@@ -1044,8 +1117,10 @@ def simulate_mujoco(
         return
 
     # Write results using the proven writer
-    _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz, node)
-    print(f"[MuJoCoSolver] Baked {frame_count} frames on {prim.GetPath()}")
+    _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz,
+                        node, settle_only)
+    if not settle_only:
+        print(f"[MuJoCoSolver] Baked {frame_count} frames on {prim.GetPath()}")
     return all_mats
 
 
@@ -1201,6 +1276,7 @@ def simulate_mujoco_instancer(
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
+    settle_only: bool = False,
 ) -> None:
     """Run MuJoCo multi-body simulation for a UsdGeom.PointInstancer using MjSpec.
 
@@ -1452,18 +1528,9 @@ def simulate_mujoco_instancer(
     sim_t = 0.0
     all_positions = []
     all_orientations = []
-    for frame in range(frame_count):
-        # Update kinematic (mocap) collision bodies from USD time samples
-        for mid, cprim in mocap_ids:
-            tc = Usd.TimeCode(start_frame + frame)
-            kc = UsdGeom.XformCache(tc)
-            kxf = kc.GetLocalToWorldTransform(cprim)
-            kt = kxf.ExtractTranslation()
-            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()
-            ki = kq.GetImaginary()
-            data.mocap_pos[mid] = [float(kt[0]), float(kt[1]), float(kt[2])]
-            data.mocap_quat[mid] = [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]
 
+    def _snapshot():
+        """The instancer's own arrays for the state the bodies are in right now."""
         frame_pos = Vt.Vec3fArray(num_instances)
         frame_ori = Vt.QuathArray(num_instances)
         for i in range(num_instances):
@@ -1490,7 +1557,21 @@ def simulate_mujoco_instancer(
             lq = (inst_rot_inv * body_rot).GetQuat()
             li = lq.GetImaginary()
             frame_ori[i] = Gf.Quath(float(lq.GetReal()), float(li[0]), float(li[1]), float(li[2]))
+        return frame_pos, frame_ori
 
+    for frame in range(frame_count):
+        # Update kinematic (mocap) collision bodies from USD time samples
+        for mid, cprim in mocap_ids:
+            tc = Usd.TimeCode(start_frame + frame)
+            kc = UsdGeom.XformCache(tc)
+            kxf = kc.GetLocalToWorldTransform(cprim)
+            kt = kxf.ExtractTranslation()
+            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()
+            ki = kq.GetImaginary()
+            data.mocap_pos[mid] = [float(kt[0]), float(kt[1]), float(kt[2])]
+            data.mocap_quat[mid] = [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]
+
+        frame_pos, frame_ori = _snapshot()
         all_positions.append(frame_pos)
         all_orientations.append(frame_ori)
 
@@ -1498,6 +1579,27 @@ def simulate_mujoco_instancer(
             _apply_wind(model, data, bids, wind, turbulence, turb_scale, turb_speed, phases, sim_t)
             _mj.mj_step(model, data)
             sim_t += sub_dt
+
+    if settle_only:
+        # A pile is the case this matters most for: instances shuffle against each other
+        # long after a body dropped on its own would have stopped, so the frame count that
+        # looked settled for one prop rarely is for fifty.
+        _step_until_at_rest(
+            model, data, substeps, sub_dt, sim_t,
+            lambda t: _apply_wind(model, data, bids, wind, turbulence,
+                                  turb_scale, turb_speed, phases, t),
+        )
+        settled_pos, settled_ori = _snapshot()
+        # Defaults, not samples, and deliberately not just the strongest opinion: Scatter
+        # Points authors its layout as a default too, so leaving this as time samples only
+        # (as an animated bake does) means anything reading the instancer at Default() --
+        # rather than at a frame -- resolves straight past the simulation to the raw
+        # scattered layout underneath.
+        with Usd.EditContext(stage, layer):
+            positions_attr.Set(settled_pos)
+            orientations_attr.Set(settled_ori)
+        print(f"[MuJoCoSolver] Settled PointInstancer {prim.GetPath()} ({num_instances} bodies)")
+        return
 
     # Write time samples
     with Usd.EditContext(stage, layer):
@@ -2185,25 +2287,13 @@ def _sim_articulated_gen_mj(
         yield frame
 
     if settle_only:
-        # frame_count is an animation-preview length, not a promise that the mechanism has
-        # actually stopped moving by the last frame -- a door still swinging, or a body still
-        # settling into contact, would otherwise get baked mid-motion as "rest" just because
-        # the frame budget ran out. Keep stepping (still substep-accurate, wind included)
-        # until the whole system's velocity drops below rest, capped so a perpetually
-        # jittering contact can't spin forever, then append that pose as the final frame --
-        # _write_articulated_results always takes mats[-1] for settle_only.
-        extra = 0
-        while (
-            extra < _SETTLE_MAX_EXTRA_FRAMES
-            and float(_np.linalg.norm(data.qvel)) > _SETTLE_VEL_THRESH
-        ):
-            for _ in range(substeps):
-                if root_bids:
-                    _apply_wind(model, data, tuple(root_bids), wind, turbulence,
-                                turb_scale, turb_speed, phases, sim_t)
-                _mj.mj_step(model, data)
-                sim_t += sub_dt
-            extra += 1
+        # Keep going until the mechanism is actually at rest, then append that pose as the
+        # final frame -- _write_articulated_results always takes mats[-1] for settle_only.
+        sim_t = _step_until_at_rest(
+            model, data, substeps, sub_dt, sim_t,
+            (lambda t: _apply_wind(model, data, tuple(root_bids), wind, turbulence,
+                                   turb_scale, turb_speed, phases, t)) if root_bids else None,
+        )
         for name, bid in ids.items():
             pos = data.xpos[bid]
             quat = data.xquat[bid]
@@ -2516,6 +2606,7 @@ def _run(owner, notice, sender) -> None:
     init_vel = _vec3(_chunk, "initial_velocity")
     ang_vel = _vec3(_chunk, "angular_velocity")
     floor_drop = _chunk.get_param("floor_drop", is_f).value
+    settle_only = bool(_chunk.get_param("settle_to_rest", chunk.is_param_t(bool)).value)
     forces = dict(
         wind=_vec3(_chunk, "wind"),
         turbulence=_chunk.get_param("turbulence", is_f).value,
@@ -2595,7 +2686,7 @@ def _run(owner, notice, sender) -> None:
             lin_damping=lin_damping,
             ang_damping=ang_damping,
             collision_margin=_chunk.get_param("collision_margin", is_f).value,
-            settle_only=bool(_chunk.get_param("settle_to_rest", chunk.is_param_t(bool)).value),
+            settle_only=settle_only,
             node=_chunk,
             **forces,
         )
@@ -2625,6 +2716,7 @@ def _run(owner, notice, sender) -> None:
             collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
             tri_budget=_chunk.get_param("tri_budget", is_i).value,
             floor_drop=floor_drop,
+            settle_only=settle_only,
             **forces,
         )
     else:
@@ -2664,6 +2756,7 @@ def _run(owner, notice, sender) -> None:
             tri_budget=_chunk.get_param("tri_budget", is_i).value,
             floor_drop=floor_drop,
             node=_chunk,
+            settle_only=settle_only,
             **forces,
         )
 
@@ -2673,7 +2766,8 @@ def _run(owner, notice, sender) -> None:
 
     try:
         scene = chunk_registry.ChunkRegistry().scene
-        if scene:
+        # A settle bakes no animation, so there is no range to widen the timeline to.
+        if scene and not settle_only:
             scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
     except Exception:
         pass
@@ -2850,12 +2944,15 @@ def main() -> chunk.Chunk:
             "settle_to_rest",
             "Settle To Rest",
             default_value=False,
-            tooltip="Bake only the final resting pose, as the transform's default value, "
-            "instead of the whole frame range. Use it to drop props into a plausible "
-            "arrangement rather than to keep the animation of them falling. "
+            tooltip="Bake only the final resting pose, as a default value with no time "
+            "samples, instead of the whole frame range. Use it to drop props into a "
+            "plausible arrangement rather than to keep the animation of them falling.\n"
+            "The simulation runs on past Frames until everything has actually stopped "
+            "moving, so the pose is settled rather than whatever Frames happened to end "
+            "on.\n"
             "Matters for a sim-ready asset: a prim carrying PhysicsRigidBodyAPI *and* "
             "animated transforms is contradictory, and a downstream simulator ends up "
-            "fighting the keyframes. Articulated assets only.",
+            "fighting the keyframes.",
         )
     )
 
