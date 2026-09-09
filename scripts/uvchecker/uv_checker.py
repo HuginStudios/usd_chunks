@@ -1,7 +1,34 @@
+import logging
 import os
 from usd_chunks import chunk, chunk_notice, chunk_registry
-from pxr import Sdf, UsdShade
+from pxr import Ar, Sdf, UsdShade
 from PySide6 import QtWidgets
+
+logger = logging.getLogger(__name__)
+
+
+def texture_file_is_usable(path: str) -> bool:
+    """Whether a UsdUVTexture authored with *path* will actually have an image to load.
+
+    A texture whose file cannot be resolved is not merely a missing image: the shader
+    network still carries the whole UV chain (primvar reader -> UsdTransform2d -> the
+    texture's `st`), and a render delegate that drops the unloadable texture node while
+    still translating what fed it is left holding a connection to a node it never built.
+    hdCycles fails exactly that way -- "Failed to load 1 image files" followed by
+    "Could not find node '/Mapping' to connect" out of BuildShaderGraph (its Cycles
+    `mapping` node being the translation of our UsdTransform2d) -- and takes usdview down
+    with it on a delegate switch. So the chain is only worth authoring when the image is
+    really there.
+
+    A path carrying a `<UDIM>` (or any other `<token>`) is left alone: those never resolve
+    as a plain file and are meant not to, so treating them as missing would break a
+    perfectly valid texture set.
+    """
+    if not path:
+        return False
+    if "<" in path and ">" in path:
+        return True  # UDIM / token pattern -- not resolvable as a single file by design
+    return bool(Ar.GetResolver().Resolve(path))
 
 
 def _apply_material(owner: chunk.Chunk, prims) -> None:
@@ -36,6 +63,23 @@ def _apply_material(owner: chunk.Chunk, prims) -> None:
     preview = UsdShade.Shader.Define(stage, surface_path)
     stage.GetPrimAtPath(surface_path).GetAttribute("info:id").Set("UsdPreviewSurface")
 
+    path_to_uv = checker_file
+    if not path_to_uv:
+        path_to_uv = os.path.sep.join([os.path.dirname(__file__), "CustomUVChecker_byValle_2K.png"])
+
+    if not texture_file_is_usable(path_to_uv):
+        # No image to sample: bind a plain surface rather than a texture network whose
+        # image cannot load -- see texture_file_is_usable for what that costs downstream.
+        logger.warning("texture file does not resolve, binding a plain surface: %s", path_to_uv)
+        preview.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.5, 0.5, 0.5))
+        preview_output_surface = preview.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+        material.GetOutput("surface").ConnectToSource(preview_output_surface)
+        for prim in prims:
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+                material, UsdShade.Tokens.strongerThanDescendants
+            )
+        return
+
     texture = UsdShade.Shader.Define(stage, texture_path)
     stage.GetPrimAtPath(texture_path).GetAttribute("info:id").Set("UsdUVTexture")
 
@@ -52,9 +96,6 @@ def _apply_material(owner: chunk.Chunk, prims) -> None:
     preview_in_diff = preview.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
     texture_out_rgb = texture.CreateOutput("rgb", Sdf.ValueTypeNames.Color3f)
     preview_in_diff.ConnectToSource(texture_out_rgb)
-    path_to_uv = checker_file
-    if not path_to_uv:
-        path_to_uv = os.path.sep.join([os.path.dirname(__file__), "CustomUVChecker_byValle_2K.png"])
 
     texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(path_to_uv)
     transform2d_out_result = transform2d.CreateOutput("result", Sdf.ValueTypeNames.Float2)
