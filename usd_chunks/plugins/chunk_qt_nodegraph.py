@@ -1081,6 +1081,15 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         views = self.scene().views() if self.scene() is not None else []
         if views and not getattr(views[0], "_lod_bodies_shown", True):
             self._proxy.setVisible(False)
+        if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
+            # A chunk that is already collapsed by the time its proxy is finally built (e.g.
+            # loaded from a saved scene, where create_proxy() runs in a deferred batch well
+            # after state was restored) has no STATE_CHANGED transition to trigger
+            # _set_collapsed's own setVisible(False) -- the state never actually changed,
+            # it was simply already this way. Without this, the body shows fully expanded
+            # (params and all) until something unrelated later toggles COLLAPSED off and
+            # back on.
+            self._proxy.setVisible(False)
         self._full_height = _NODE_HEADER_H + chunk_widget.sizeHint().height()
         self._height = self._full_height
         self.prepareGeometryChange()
@@ -1915,17 +1924,25 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 # -- see is_height_settled. _on_height_settled re-runs LOD once it is safe,
                 # so nothing is lost by declining here.
                 return
+            # LOD only ever toggles "full body" vs. "simple" and has no concept of collapse,
+            # so a collapsed node's widget must stay hidden even when LOD asks to show bodies
+            # again -- otherwise zooming back in force-shows the full param widget on a node
+            # still drawn at header height (the widget then renders outside/under the node's
+            # own box, with the usual stale-layout blank flash of a proxy widget that was
+            # hidden for a while). Ports still follow LOD normally either way -- a collapsed
+            # node's exec/connected ports are meant to stay visible independent of its body.
+            widget_visible = visible and not self.chunk.has_state(ChunkFlags.State.COLLAPSED)
             # Skip only when the flag AND the proxy agree. They can diverge: a body that
             # declined an earlier hide, or one whose proxy was rebuilt under it, leaves the
             # flag saying flat while the widget is still up, and trusting the flag alone
             # then strands it visible forever (41 of 56 buried nodes, measured).
             if self._lod_simple == (not visible) and (
-                proxy is None or proxy.isVisible() == visible
+                proxy is None or proxy.isVisible() == widget_visible
             ):
                 return
             self._lod_simple = not visible
             if proxy is not None:
-                proxy.setVisible(visible)
+                proxy.setVisible(widget_visible)
             for port in self._ports:
                 port.setVisible(visible)
             self._apply_dim()
@@ -2735,6 +2752,20 @@ class _ProxyKeyRouter(QtCore.QObject):
             # guard were ever actually hit.
             return False
         etype = event.type()
+        if etype == QtCore.QEvent.Type.MouseButtonPress:
+            # A click anywhere outside this graph view -- most commonly usdview's own 3D
+            # viewport -- means the user's intent has moved on from whatever proxy widget
+            # was last clicked in the graph. Without this, _active/_view_active stay stuck
+            # on e.g. a Script Runner's text field forever (nothing else ever clears them),
+            # and the unconditional fallback at the bottom of this method kept hijacking
+            # every later keystroke -- including the viewport's own R/F camera shortcuts --
+            # and typing them into that field instead, no matter where the cursor now was.
+            if QtWidgets.QApplication.activePopupWidget() is None:
+                view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+                if not view_global.contains(QtGui.QCursor.pos()):
+                    self._active = None
+                    self._view_active = False
+            return False
         if etype not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
             return False
         if QtWidgets.QApplication.activePopupWidget() is not None:
@@ -2943,7 +2974,11 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
-        if self._active is None:
+        if self._active is None or not self._view_active:
+            # _view_active is False once a click has landed outside the graph view (see the
+            # MouseButtonPress branch above) -- an _active proxy left over from an earlier
+            # click must not keep swallowing keys once the user's attention, and clicks, have
+            # moved to e.g. the viewport.
             return False
         if etype == QtCore.QEvent.Type.ShortcutOverride:
             event.accept()

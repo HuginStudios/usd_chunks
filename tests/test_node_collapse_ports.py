@@ -99,6 +99,31 @@ def test_collapsing_an_unwired_node_leaves_no_typed_ports(graph) -> None:
     assert node._typed_ports == []
 
 
+def test_a_node_collapsed_before_its_proxy_settles_keeps_its_body_hidden(graph) -> None:
+    """Regression: a chunk collapsed the instant it's created (e.g. restored already-COLLAPSED
+    from a saved scene) has its state set before ChunkNodeItem's own STATE_CHANGED listener
+    exists to react to it -- there is no transition to trigger _set_collapsed's hide.
+
+    create_proxy() itself is aware of this (checks has_state(COLLAPSED) directly rather than
+    relying on the notice), but the node's own height settling shortly after fires
+    ChunkGraphScene._on_heights_settled -> ChunkGraphView._apply_lod -> set_body_visible(True)
+    for every node in view range, and that path used to force every proxy visible regardless
+    of collapse state -- silently undoing create_proxy()'s hide a moment later and leaving the
+    node showing its full param body outside its own (correctly small) header-height box."""
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("transform")
+    chunk = _mk(mod, scene)
+    # Collapse immediately, before processEvents() lets the node/proxy get built at all.
+    chunk.set_state(ChunkFlags.State.COLLAPSED)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    node = gv.scene()._nodes[get_chunk_prim_path(chunk)]
+    _pump(qapp, 0.3)  # long enough for the proxy to build and heights to settle
+
+    assert node._height == nodegraph._NODE_HEADER_H
+    assert node._proxy is not None and not node._proxy.isVisible()
+
+
 def test_collapsing_a_wired_node_keeps_the_connected_ports_off_the_exec_ports(graph) -> None:
     qapp, reg, scene, docker = graph
     mod = reg.get_chunk_module("transform")

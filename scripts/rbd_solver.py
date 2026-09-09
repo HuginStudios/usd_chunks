@@ -2180,6 +2180,10 @@ def _add_link_geoms(spec, body, link_prim, link_world_inv, friction, contact_tc,
     return count
 
 
+_SETTLE_VEL_THRESH = 0.02
+_SETTLE_MAX_EXTRA_FRAMES = 240
+
+
 def _sim_articulated_gen_mj(
     roots,
     frame_count: int,

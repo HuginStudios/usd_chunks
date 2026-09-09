@@ -118,16 +118,29 @@ def test_signature_lists_every_sibling_definition(env):
 
 
 def test_created_shader_lofts_params_and_ports(env):
+    """The shader's inputs arrive as params grouped by MaterialX page, and a param's port
+    is namespaced by the page it sits in.
+
+    The port half is checked after giving the param a value, not straight after creation:
+    an inputs: attr is authored when a param's value changes, so a freshly created shader
+    whose params still hold their nodedef defaults has params but no attrs yet. Asserting
+    on the ports immediately was testing the wrong moment -- it passed only while lofting
+    happened to author every input eagerly, and says nothing about the naming contract it
+    exists to pin.
+    """
     stage, _, _, _ = env
     surf = _create(env, SURFACE)
-    prim = _chunk_prim(stage, surf)
 
-    inputs = _ports(prim, "inputs:")
+    groups = [p for p in surf.get_my_params() if hasattr(p, "add_param")]
+    assert [g.name for g in groups][:2] == ["Base", "Specular"], "inputs loft into page groups"
+    base_color = next(c for c in surf.get_param("Base").get_my_params() if c.name == "base_color")
+
+    base_color.value = (0.1, 0.2, 0.3)
+
+    inputs = _ports(_chunk_prim(stage, surf), "inputs:")
     assert "Base:base_color" in inputs, "page groups namespace the port name"
-    assert inputs["Base:base_color"] == "float3"
 
     # Groups start collapsed: 40-odd inputs across nine pages is taller than the graph.
-    groups = [p for p in surf.get_my_params() if hasattr(p, "add_param")]
     assert groups and all(g.has_state(ChunkFlags.State.COLLAPSED) for g in groups)
 
 
@@ -136,23 +149,30 @@ def test_outputs_are_bare_attrs_typed_to_match_their_input_port(env):
     which makes _place_prim_output_ports skip it while _place_param_ports has no visible
     widget to position it against -- so the port vanishes entirely.
 
-    A colour output is authored Float3 rather than Color3f so that its port type matches
-    the vector port of the Vector param it feeds; Color3f would give a colour port that
-    cannot connect to the very input it exists for.
+    The type is the shader's own, straight out of the nodedef: a colour output is authored
+    Color3f, which is what Sdr reports for ND_tiledimage_color3. This test used to assert
+    Float3, from a superseded decision to round a colour down to the type a Vector param
+    would give it -- _author_output_attrs' own docstring now records the opposite choice
+    ("keeps the shader's real type"), and the assertion was simply never updated with it.
     """
     stage, _, _, _ = env
     tex = _create(env, TEXTURE)
     prim = _chunk_prim(stage, tex)
 
-    assert _ports(prim, "outputs:") == {"out": "float3"}
+    assert _ports(prim, "outputs:") == {"out": "color3f"}
     assert tex.get_param("out") is None, "an output must not create a param"
 
 
 def test_signature_switch_retypes_the_output_port(env):
+    """color3 in, float out -- the port follows the nodedef, not the chunk's first shape.
+
+    (The starting type is Color3f for the same reason as the test above: it is what Sdr
+    reports for ND_add_color3.)
+    """
     stage, _, _, _ = env
     node = _create(env, ADD)
 
-    assert _ports(_chunk_prim(stage, node), "outputs:")["out"] == "float3"
+    assert _ports(_chunk_prim(stage, node), "outputs:")["out"] == "color3f"
 
     node.get_param("signature").value = "float"
 
