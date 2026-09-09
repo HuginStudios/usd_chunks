@@ -629,7 +629,10 @@ def execute(node):
 def main():
     chunk_api = chunk.Chunk("URDF Import")
     chunk_api.add_param(
-        chunk.FileBrowser("file_path", extensions=[".urdf", ".xml"])
+        chunk.FileBrowser(
+            "file_path", extensions=[".urdf", ".xml"],
+            flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.FILE_EXISTING,
+        )
     )
     chunk_api.add_params([
         chunk.LineEdit(
