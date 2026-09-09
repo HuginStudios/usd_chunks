@@ -21,7 +21,7 @@ packed result with no simulation at all.
 Region filtering goes through a single per-point mask hook, so a future paint gizmo can
 supply a weight without touching the sampler/distribution/variation code.
 
-Requires: pxr (OpenUSD), usd_chunks.
+Requires: pxr (OpenUSD), usd_chunks, numpy (bulk mesh maths -- see `_TriangleSoup`).
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ import random
 import re
 from dataclasses import dataclass, field
 
+import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_utils
@@ -65,75 +66,205 @@ _MAX_PROTOTYPES = 64  # a wildcard row on a big variant set shouldn't author 500
 # ---------------------------------------------------------------------------
 
 
-def _collect_triangles(prim):
-    """Collect world-space (v0, v1, v2, normal) triangles from prim + descendants."""
-    if not prim or not prim.IsValid():
-        return []
+class _TriangleSoup:
+    """World-space triangles, held as four (N, 3) arrays rather than N Python tuples.
 
-    triangles = []
+    A tuple soup was the obvious representation and is unusable past a few thousand faces.
+    On a 680k-triangle photogrammetry rock -- an ordinary asset, not a stress test -- just
+    *building* the list cost 28 seconds, and ten of those went on constructing the Gf.Vec3f
+    objects: the geometry arrives from USD as flat buffers, and turning those into Python
+    objects to do float arithmetic on one at a time is the whole expense. Sampling two
+    hundred points off it then cost another twenty, re-walking the same list to add up
+    areas. Wired to a Scatter Brush, whose every stroke recooks, that was the reported
+    five-minute freeze.
+
+    So nothing is ever materialised. Positions, areas, bounds, the slope filter and the
+    bucket grids are each one array expression, and the same asset now collects in 0.13s
+    and samples in well under a second. Only the few places that genuinely want a single
+    triangle -- and the tests -- go through `__getitem__`, which builds its four Gf.Vec3f
+    on the spot.
+
+    Immutable by convention: `select` returns a new soup rather than filtering in place, so
+    the surface triangles a slope filter produces and the full set Stack mode needs can
+    coexist without either copying the other's vertices.
+    """
+
+    __slots__ = ("v0", "v1", "v2", "n")
+
+    def __init__(self, v0, v1, v2, n):
+        self.v0, self.v1, self.v2, self.n = v0, v1, v2, n
+
+    @classmethod
+    def empty(cls):
+        zero = np.zeros((0, 3), dtype=np.float64)
+        return cls(zero, zero, zero, zero)
+
+    @classmethod
+    def from_arrays(cls, points, i0, i1, i2):
+        """Triangles from a vertex array and three index arrays, normals included.
+
+        A degenerate face keeps its near-zero raw cross product rather than being dropped:
+        the slope filter already rejects anything shorter than 1e-8, and dropping them here
+        would renumber every triangle after them for no gain.
+        """
+        v0, v1, v2 = points[i0], points[i1], points[i2]
+        n = np.cross(v1 - v0, v2 - v0)
+        length = np.linalg.norm(n, axis=1)
+        real = length > 1e-8
+        n[real] /= length[real, None]
+        return cls(v0, v1, v2, n)
+
+    def __len__(self):
+        return len(self.v0)
+
+    def __bool__(self):
+        return len(self.v0) > 0
+
+    def __getitem__(self, index):
+        return (
+            Gf.Vec3f(*self.v0[index]),
+            Gf.Vec3f(*self.v1[index]),
+            Gf.Vec3f(*self.v2[index]),
+            Gf.Vec3f(*self.n[index]),
+        )
+
+    def __iter__(self):
+        for i in range(len(self.v0)):
+            yield self[i]
+
+    def select(self, keep):
+        """The subset a boolean mask picks out, as a new soup."""
+        return _TriangleSoup(self.v0[keep], self.v1[keep], self.v2[keep], self.n[keep])
+
+    def bounds(self):
+        """Axis-aligned (min, max) Gf.Vec3f, or None when empty."""
+        if not len(self.v0):
+            return None
+        corners = np.concatenate((self.v0, self.v1, self.v2))
+        return Gf.Vec3f(*corners.min(axis=0)), Gf.Vec3f(*corners.max(axis=0))
+
+    def areas(self):
+        """Per-triangle area -- the weight an area-weighted sampler draws against."""
+        return 0.5 * np.linalg.norm(np.cross(self.v1 - self.v0, self.v2 - self.v0), axis=1)
+
+    def slope_mask(self, world_up, max_slope_deg):
+        """Which triangles face within `max_slope_deg` of world up.
+
+        The rule `_slope_ok` states, asked of every triangle at once. Filtering the soup by
+        list comprehension was the last per-triangle Python loop on the Surface path, and on
+        a dense mesh it cost more than the sampling it fed.
+        """
+        if max_slope_deg >= 180.0:
+            return np.ones(len(self.v0), dtype=bool)
+        up = np.asarray([world_up[0], world_up[1], world_up[2]], dtype=self.n.dtype)
+        # Normals are unit length except where the triangle was degenerate -- and those are
+        # exactly the ones the scalar rule rejects.
+        length = np.linalg.norm(self.n, axis=1)
+        angle = np.degrees(np.arccos(np.clip(self.n @ up, -1.0, 1.0)))
+        return (length >= 1e-8) & (angle <= max_slope_deg + 1e-4)
+
+    def cell_span(self, axis, origin, cell, cells):
+        """Per-triangle (first, last) bucket index along one axis, clamped to the grid.
+
+        Both ray grids bucket triangles by their extent in a couple of axes, and building
+        those buckets meant a Python pass over every triangle -- paying up front the cost
+        the grids exist to avoid.
+        """
+        lo = np.minimum(np.minimum(self.v0[:, axis], self.v1[:, axis]), self.v2[:, axis])
+        hi = np.maximum(np.maximum(self.v0[:, axis], self.v1[:, axis]), self.v2[:, axis])
+        first = np.clip(((lo - origin) / cell).astype(np.int64), 0, cells - 1)
+        last = np.clip(((hi - origin) / cell).astype(np.int64), 0, cells - 1)
+        return first, last
+
+
+def _world_points(prim, points):
+    """A mesh's points in world space, as an (N, 3) array."""
+    matrix = np.asarray(UsdGeom.XformCache().GetLocalToWorldTransform(prim), dtype=np.float64)
+    # Row-vector convention, which is what Gf.Matrix4d.Transform uses: p * M, with the
+    # translation in the last row.
+    return np.asarray(points, dtype=np.float64) @ matrix[:3, :3] + matrix[3, :3]
+
+
+def _fan_triangulate(counts, indices):
+    """Fan-triangulate every face at once: three index arrays, or None if there are no faces.
+
+    The same fan the per-face loop walked -- (v0, vi, vi+1) for i in 1..count-2 -- as index
+    arithmetic, so USD's flat face buffers are never unpacked a face at a time. Faces with
+    fewer than three vertices contribute nothing, as before.
+    """
+    if not len(counts):
+        return None
+    per_face = np.maximum(counts - 2, 0)
+    total = int(per_face.sum())
+    if total == 0:
+        return None
+    face_start = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    fan_start = np.concatenate(([0], np.cumsum(per_face)[:-1]))
+    # Which face each triangle came from, and how far into that face's fan it is.
+    face_of = np.repeat(np.arange(len(counts)), per_face)
+    within = np.arange(total) - np.repeat(fan_start, per_face)
+    base = face_start[face_of]
+    return indices[base], indices[base + within + 1], indices[base + within + 2]
+
+
+def _collect_triangles(prim):
+    """World-space triangles from prim and its descendants, as a `_TriangleSoup`."""
+    if not prim or not prim.IsValid():
+        return _TriangleSoup.empty()
+
+    parts = []
     for p in Usd.PrimRange(prim):
         mesh = UsdGeom.Mesh(p)
         points = mesh.GetPointsAttr().Get()
         if not points:
             continue
-        face_counts = mesh.GetFaceVertexCountsAttr().Get()
-        face_indices = mesh.GetFaceVertexIndicesAttr().Get()
-        if not face_counts or not face_indices:
+        counts = mesh.GetFaceVertexCountsAttr().Get()
+        indices = mesh.GetFaceVertexIndicesAttr().Get()
+        if not counts or not indices:
             continue
+        fan = _fan_triangulate(
+            np.asarray(counts, dtype=np.int64), np.asarray(indices, dtype=np.int64)
+        )
+        if fan is None:
+            continue
+        parts.append(_TriangleSoup.from_arrays(_world_points(p, points), *fan))
 
-        xform_cache = UsdGeom.XformCache()
-        world_xf = xform_cache.GetLocalToWorldTransform(p)
-        world_pts = []
-        for pt in points:
-            wp = world_xf.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
-            world_pts.append(Gf.Vec3f(wp[0], wp[1], wp[2]))
+    if len(parts) == 1:
+        return parts[0]
+    if parts:
+        return _TriangleSoup(*(
+            np.concatenate([getattr(part, name) for part in parts])
+            for name in ("v0", "v1", "v2", "n")
+        ))
 
-        idx = 0
-        for fc in face_counts:
-            if fc >= 3:
-                v0 = world_pts[face_indices[idx]]
-                for i in range(1, fc - 1):
-                    v1 = world_pts[face_indices[idx + i]]
-                    v2 = world_pts[face_indices[idx + i + 1]]
-                    e1 = v1 - v0
-                    e2 = v2 - v0
-                    n = Gf.Vec3f(
-                        e1[1] * e2[2] - e1[2] * e2[1],
-                        e1[2] * e2[0] - e1[0] * e2[2],
-                        e1[0] * e2[1] - e1[1] * e2[0],
-                    )
-                    ln = Gf.GetLength(n)
-                    if ln > 1e-8:
-                        n = n / ln
-                    triangles.append((v0, v1, v2, n))
-            idx += fc
-
-    if not triangles:
-        # Fallback: flat quad on the top face of the bounding box.
-        bbox_cache = UsdGeom.BBoxCache(0, [UsdGeom.Tokens.default_])
-        bbox_range = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
-        if not bbox_range.IsEmpty():
-            mn = bbox_range.GetMin()
-            mx = bbox_range.GetMax()
-            v0 = Gf.Vec3f(mn[0], mn[1], mx[2])
-            v1 = Gf.Vec3f(mx[0], mn[1], mx[2])
-            v2 = Gf.Vec3f(mx[0], mx[1], mx[2])
-            v3 = Gf.Vec3f(mn[0], mx[1], mx[2])
-            up = Gf.Vec3f(0, 0, 1)
-            triangles.append((v0, v1, v2, up))
-            triangles.append((v0, v2, v3, up))
-
-    return triangles
+    # Fallback: a flat quad on the top face of the bounding box.
+    bbox_cache = UsdGeom.BBoxCache(0, [UsdGeom.Tokens.default_])
+    bbox_range = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
+    if bbox_range.IsEmpty():
+        return _TriangleSoup.empty()
+    mn = bbox_range.GetMin()
+    mx = bbox_range.GetMax()
+    corners = np.asarray(
+        [
+            [mn[0], mn[1], mx[2]],
+            [mx[0], mn[1], mx[2]],
+            [mx[0], mx[1], mx[2]],
+            [mn[0], mx[1], mx[2]],
+        ],
+        dtype=np.float64,
+    )
+    # (v0, v1, v2) and (v0, v2, v3), the same two triangles as before.
+    return _TriangleSoup(
+        corners[[0, 0]],
+        corners[[1, 2]],
+        corners[[2, 3]],
+        np.asarray([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
+    )
 
 
 def _triangle_bounds(triangles):
     """Axis-aligned (min, max) Vec3f of a triangle soup, or None when empty."""
-    if not triangles:
-        return None
-    xs = [v[0] for tri in triangles for v in tri[:3]]
-    ys = [v[1] for tri in triangles for v in tri[:3]]
-    zs = [v[2] for tri in triangles for v in tri[:3]]
-    return Gf.Vec3f(min(xs), min(ys), min(zs)), Gf.Vec3f(max(xs), max(ys), max(zs))
+    return triangles.bounds() if triangles is not None else None
 
 
 def _slope_ok(normal, world_up, max_slope_deg):
@@ -141,6 +272,10 @@ def _slope_ok(normal, world_up, max_slope_deg):
 
     90 = every upward-facing face (the old default); 0 = only perfectly flat;
     180 = every face (e.g. wrap a sphere).
+
+    One triangle at a time. The cook filters a whole soup through
+    `_TriangleSoup.slope_mask`, which is this rule vectorised; this stays for callers
+    holding a single normal.
     """
     if max_slope_deg >= 180.0:
         return True
@@ -153,25 +288,34 @@ def _slope_ok(normal, world_up, max_slope_deg):
     return angle <= max_slope_deg + 1e-4
 
 
-def _ray_triangle(orig, direction, v0, v1, v2):
-    """Möller–Trumbore. Returns the ray parameter t of the front hit, or None."""
+def _ray_triangles(origin, direction, v0, v1, v2):
+    """Moller-Trumbore against many triangles at once: ray parameter t, NaN where missed.
+
+    Vectorised because both ray grids cast thousands of rays and each one tests every
+    triangle in its bucket -- which on a dense mesh is hundreds. The tolerances are the
+    scalar version's, kept identical so a hit here is a hit there.
+    """
     e1 = v1 - v0
     e2 = v2 - v0
-    h = Gf.Cross(direction, e2)
-    a = Gf.Dot(e1, h)
-    if abs(a) < 1e-12:
-        return None
-    f = 1.0 / a
-    s = orig - v0
-    u = f * Gf.Dot(s, h)
-    if u < -1e-6 or u > 1.0 + 1e-6:
-        return None
-    q = Gf.Cross(s, e1)
-    v = f * Gf.Dot(direction, q)
-    if v < -1e-6 or u + v > 1.0 + 1e-6:
-        return None
-    t = f * Gf.Dot(e2, q)
-    return t if t > 1e-9 else None
+    ray = np.broadcast_to(np.asarray(direction, dtype=np.float64), e2.shape)
+    h = np.cross(ray, e2)
+    a = np.einsum("ij,ij->i", e1, h)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f = 1.0 / a
+        s = np.asarray(origin, dtype=np.float64) - v0
+        u = f * np.einsum("ij,ij->i", s, h)
+        q = np.cross(s, e1)
+        v = f * np.einsum("ij,ij->i", ray, q)
+        t = f * np.einsum("ij,ij->i", e2, q)
+    hit = (
+        (np.abs(a) >= 1e-12)
+        & (u >= -1e-6)
+        & (u <= 1.0 + 1e-6)
+        & (v >= -1e-6)
+        & (u + v <= 1.0 + 1e-6)
+        & (t > 1e-9)
+    )
+    return np.where(hit, t, np.nan)
 
 
 class _PoissonGrid:
@@ -203,84 +347,176 @@ class _PoissonGrid:
         self._grid.setdefault(self._key(pt), []).append(pt)
 
 
-class _SurfaceRayGrid:
-    """Lateral bucket grid over a triangle soup, for downward ray casts.
+class _TriangleBuckets:
+    """Triangles bucketed by their extent in two axes, for casting rays along the third.
 
-    Stack mode needs "where does the surface sit under this lattice point" thousands of
-    times; bucketing the triangles by their extent in the two non-up axes keeps each cast
-    to the handful of faces the ray can actually hit.
+    Both ray users want the same thing -- "which faces can a ray at this lateral position
+    possibly hit" -- and each had grown its own copy of the grid: Stack's `_SurfaceRayGrid`
+    bucketing in the two non-up axes, Volume's point-in-mesh test bucketing in (y, z). Two
+    hand-rolled dictionaries, two clamped key functions, one bug surface each.
+
+    The build is a single array expression. On a 680k-triangle mesh, filling the dictionary a
+    triangle at a time cost more than every ray it went on to accelerate.
+    """
+
+    __slots__ = ("_axes", "_cells", "_origin", "_cell", "_groups")
+
+    def __init__(self, triangles, axes, cells=64):
+        self._axes = tuple(axes)
+        self._cells = max(1, int(cells))
+        self._groups: dict = {}
+
+        bounds = triangles.bounds()
+        if bounds is None:
+            self._origin = (0.0, 0.0)
+            self._cell = (1.0, 1.0)
+            return
+
+        low, high = bounds
+        a, b = self._axes
+        self._origin = (low[a], low[b])
+        self._cell = (
+            max((high[a] - low[a]) / self._cells, 1e-9),
+            max((high[b] - low[b]) / self._cells, 1e-9),
+        )
+
+        first_a, last_a = triangles.cell_span(a, self._origin[0], self._cell[0], self._cells)
+        first_b, last_b = triangles.cell_span(b, self._origin[1], self._cell[1], self._cells)
+        self._groups = _group_by_cell(first_a, last_a, first_b, last_b, self._cells)
+
+    def key(self, value_a, value_b):
+        return (
+            max(0, min(self._cells - 1, int((value_a - self._origin[0]) / self._cell[0]))),
+            max(0, min(self._cells - 1, int((value_b - self._origin[1]) / self._cell[1]))),
+        )
+
+    def candidates(self, value_a, value_b):
+        """Indices of every triangle whose extent covers this lateral position, or None."""
+        return self._groups.get(self.key(value_a, value_b))
+
+
+def _group_by_cell(first_a, last_a, first_b, last_b, cells):
+    """`{(a, b): triangle indices}` for triangles spanning those inclusive cell ranges.
+
+    A triangle usually falls in one cell, but a large one straddles several and has to
+    appear in each -- so the spans are expanded before grouping. Both steps are array
+    arithmetic: the expansion by `repeat`, the grouping by sorting on a flattened key and
+    splitting where it changes.
+    """
+    span_a = last_a - first_a + 1
+    span_b = last_b - first_b + 1
+    per_triangle = span_a * span_b
+    total = int(per_triangle.sum())
+    if total == 0:
+        return {}
+
+    triangle = np.repeat(np.arange(len(per_triangle)), per_triangle)
+    block_start = np.concatenate(([0], np.cumsum(per_triangle)[:-1]))
+    within = np.arange(total) - np.repeat(block_start, per_triangle)
+    wide_b = np.repeat(span_b, per_triangle)
+    cell_a = np.repeat(first_a, per_triangle) + within // wide_b
+    cell_b = np.repeat(first_b, per_triangle) + within % wide_b
+
+    flat = cell_a * cells + cell_b
+    order = np.argsort(flat, kind="stable")
+    flat = flat[order]
+    triangle = triangle[order]
+    keys, starts = np.unique(flat, return_index=True)
+    return {
+        (int(k) // cells, int(k) % cells): group
+        for k, group in zip(keys, np.split(triangle, starts[1:]))
+    }
+
+
+class _SurfaceRayGrid:
+    """Downward ray casts against a triangle soup, for Stack mode.
+
+    Stack needs "where does the surface sit under this lattice point" thousands of times.
+    The bucketing keeps each cast to the faces the ray can actually reach; `_ray_triangles`
+    then tests that whole bucket in one call rather than one triangle at a time.
     """
 
     def __init__(self, triangles, up_idx, cells=64):
         self._triangles = triangles
         self._up_idx = up_idx
         self._axes = [i for i in range(3) if i != up_idx]
-        bounds = _triangle_bounds(triangles)
-        self._grid: dict = {}
-        if not bounds:
-            self._min = Gf.Vec3f(0, 0, 0)
-            self._max = Gf.Vec3f(0, 0, 0)
-            self._cell = (1.0, 1.0)
-            return
-        self._min, self._max = bounds
-        a, b = self._axes
-        self._cells = cells
-        self._cell = (
-            max((self._max[a] - self._min[a]) / cells, 1e-9),
-            max((self._max[b] - self._min[b]) / cells, 1e-9),
-        )
-        for ti, tri in enumerate(triangles):
-            va, vb = self._axes
-            lo_a = min(tri[0][va], tri[1][va], tri[2][va])
-            hi_a = max(tri[0][va], tri[1][va], tri[2][va])
-            lo_b = min(tri[0][vb], tri[1][vb], tri[2][vb])
-            hi_b = max(tri[0][vb], tri[1][vb], tri[2][vb])
-            for ca in range(self._key(lo_a, 0), self._key(hi_a, 0) + 1):
-                for cb in range(self._key(lo_b, 1), self._key(hi_b, 1) + 1):
-                    self._grid.setdefault((ca, cb), []).append(ti)
-
-    def _key(self, value, axis):
-        a = self._axes[axis]
-        idx = int((value - self._min[a]) / self._cell[axis])
-        return max(0, min(getattr(self, "_cells", 1) - 1, idx))
+        self._buckets = _TriangleBuckets(triangles, self._axes, cells)
+        bounds = triangles.bounds()
+        self._min, self._max = bounds if bounds else (Gf.Vec3f(0, 0, 0), Gf.Vec3f(0, 0, 0))
 
     def hit(self, lateral_a, lateral_b, up_dir):
         """Highest (point, normal) under the given lateral position, or None."""
-        cand = self._grid.get((self._key(lateral_a, 0), self._key(lateral_b, 1)))
-        if not cand:
+        candidates = self._buckets.candidates(lateral_a, lateral_b)
+        if candidates is None or not len(candidates):
             return None
         a, b = self._axes
-        orig = [0.0, 0.0, 0.0]
-        orig[a] = lateral_a
-        orig[b] = lateral_b
-        # Start clear of the mesh and cast down; the first surface met from above is the
-        # one an instance should rest on (a bowl's inner floor, not its underside).
-        orig[self._up_idx] = self._max[self._up_idx] + max(1.0, self._max[self._up_idx] - self._min[self._up_idx])
-        origin = Gf.Vec3f(*orig)
-        direction = -up_dir
-        best_t = None
-        best_normal = None
-        for ti in cand:
-            v0, v1, v2, n = self._triangles[ti]
-            t = _ray_triangle(origin, direction, v0, v1, v2)
-            if t is None:
-                continue
-            if best_t is None or t < best_t:
-                best_t = t
-                best_normal = n
-        if best_t is None:
+        origin = [0.0, 0.0, 0.0]
+        origin[a] = lateral_a
+        origin[b] = lateral_b
+        # Start clear of the mesh and cast down; the first surface met from above is the one
+        # an instance should rest on (a bowl's inner floor, not its underside).
+        span = self._max[self._up_idx] - self._min[self._up_idx]
+        origin[self._up_idx] = self._max[self._up_idx] + max(1.0, span)
+
+        direction = np.asarray([-up_dir[0], -up_dir[1], -up_dir[2]], dtype=np.float64)
+        soup = self._triangles
+        t = _ray_triangles(
+            np.asarray(origin, dtype=np.float64),
+            direction,
+            soup.v0[candidates],
+            soup.v1[candidates],
+            soup.v2[candidates],
+        )
+        if np.all(np.isnan(t)):
             return None
-        return origin + direction * best_t, best_normal
+        nearest = int(np.nanargmin(t))
+        point = np.asarray(origin) + direction * t[nearest]
+        return Gf.Vec3f(*point), Gf.Vec3f(*soup.n[candidates[nearest]])
 
 
 #: Per-vertex float, 0..1, saying how much scatter a part of the surface wants. Painted by
 #: the brush; ordinary USD, so a DCC's own paint tool or a bake can author it just as well.
 DENSITY_PRIMVAR = "scatterDensity"
 
-#: How finely the lookup grid divides the surface's bounds. The grid only has to be fine
-#: enough that a cell holds few vertices, since a query answers with the nearest one in it --
-#: past that it costs memory for nothing.
+#: How finely the lookup grid divides the surface's bounds, at its coarsest. The grid only
+#: has to be fine enough that a cell holds few vertices, since a query answers with the
+#: nearest one in it -- past that it costs memory for nothing.
 _LOOKUP_DIVISIONS = 48
+
+#: ...but a fixed 48 is far too coarse for a scanned mesh. The vertices of a surface fall in
+#: roughly `divisions**2` cells, so 340k of them over 48 divisions is a hundred and fifty per
+#: cell -- four thousand distances per query once the neighbours are included, which is the
+#: brute force the grid exists to avoid.
+_LOOKUP_TARGET_PER_CELL = 8
+#: Past this the dictionary costs more than the search it saves.
+_LOOKUP_MAX_DIVISIONS = 512
+
+
+def _lookup_divisions(vertex_count):
+    """Grid resolution for a painted field of this many vertices."""
+    wanted = math.sqrt(max(vertex_count, 1) / _LOOKUP_TARGET_PER_CELL)
+    return int(max(_LOOKUP_DIVISIONS, min(_LOOKUP_MAX_DIVISIONS, wanted)))
+
+
+#: Cell ids are packed into one integer -- `(x * S + y) * S + z` -- so a cell groups with
+#: np.unique and looks up without a tuple being built per query. Wide enough that no two
+#: cells of any grid this builds can land on the same id, and the packing is linear, so a
+#: neighbour's id is this cell's plus a constant.
+_KEY_STRIDE = 1 << 20
+
+#: The 27-cell neighbourhood, as offsets in packed-id space.
+_KEY_OFFSETS = np.asarray(
+    [
+        (dx * _KEY_STRIDE + dy) * _KEY_STRIDE + dz
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+    ],
+    dtype=np.int64,
+)
+
+#: Shared empty result, so a query landing outside the painted region allocates nothing.
+_NO_INDICES = np.zeros(0, dtype=np.int64)
 
 
 #: What only means something when scatter is choosing the positions itself. Wire painted
@@ -368,7 +604,7 @@ def _density_mask(prim, primvar_name=None):
     if not prim or not prim.IsValid() or not primvar_name:
         return None
 
-    points, weights = [], []
+    point_parts, weight_parts = [], []
     for p in Usd.PrimRange(prim):
         mesh = UsdGeom.Mesh(p)
         mesh_points = mesh.GetPointsAttr().Get()
@@ -381,10 +617,11 @@ def _density_mask(prim, primvar_name=None):
         values = primvar.ComputeFlattened()
         if values is None:
             continue
+        values = np.asarray(values, dtype=np.float64)
         # Constant interpolation is one number for the whole mesh -- a legitimate way to dial
         # a surface down without painting it, and it has no per-vertex values to index.
         if len(values) == 1:
-            values = [values[0]] * len(mesh_points)
+            values = np.full(len(mesh_points), values[0])
         if len(values) < len(mesh_points):
             logger.warning(
                 "%s has %d %s values for %d points; ignoring it",
@@ -392,15 +629,14 @@ def _density_mask(prim, primvar_name=None):
             )
             continue
 
-        world_xf = UsdGeom.XformCache().GetLocalToWorldTransform(p)
-        for i, pt in enumerate(mesh_points):
-            wp = world_xf.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
-            points.append(Gf.Vec3f(wp[0], wp[1], wp[2]))
-            weights.append(float(values[i]))
+        point_parts.append(_world_points(p, mesh_points))
+        weight_parts.append(values[:len(mesh_points)])
 
-    if not points:
+    if not point_parts:
         return None
-    return _NearestWeight(points, weights).sample
+    return _NearestWeight(
+        np.concatenate(point_parts), np.concatenate(weight_parts)
+    ).sample
 
 
 class _NearestWeight:
@@ -408,45 +644,63 @@ class _NearestWeight:
 
     Brute force over every vertex would be O(V) per candidate point, and the sampler makes up
     to a hundred candidates per instance -- on a real mesh that is the whole cook. The grid
-    makes it O(1) at the cost of one pass at build time.
+    makes it near-constant at the cost of one pass at build time.
+
+    Both halves are array work. Building the grid a vertex at a time, each one first
+    transformed to world space through Gf, took tens of seconds on a scanned mesh -- and it
+    happens on every cook, so a Scatter Brush upstream paid it on every stroke.
     """
 
+    __slots__ = ("_points", "_weights", "_origin", "_cell", "_cells", "_neighbourhood")
+
     def __init__(self, points, weights):
-        self._weights = weights
-        lo = [min(p[i] for p in points) for i in range(3)]
-        hi = [max(p[i] for p in points) for i in range(3)]
-        span = max(max(hi[i] - lo[i] for i in range(3)), 1e-6)
-        self._origin = lo
-        self._cell = span / _LOOKUP_DIVISIONS
+        self._points = np.asarray(points, dtype=np.float64)
+        self._weights = np.clip(np.asarray(weights, dtype=np.float64), 0.0, 1.0)
 
-        self._cells = {}
-        for index, pt in enumerate(points):
-            self._cells.setdefault(self._key(pt), []).append((pt, index))
+        low = self._points.min(axis=0)
+        span = max(float((self._points.max(axis=0) - low).max()), 1e-6)
+        divisions = _lookup_divisions(len(self._points))
+        self._origin = low
+        self._cell = span / divisions
 
-    def _key(self, pt):
-        return tuple(int((pt[i] - self._origin[i]) // self._cell) for i in range(3))
+        keys = self._keys(self._points)
+        order = np.argsort(keys, kind="stable")
+        unique, starts = np.unique(keys[order], return_index=True)
+        self._cells = dict(zip(unique.tolist(), np.split(np.arange(len(keys))[order], starts[1:])))
+        # A cell's 27-neighbourhood, merged on first use. Candidates cluster -- a scatter
+        # makes many of them in the same region -- so the merge is paid once per cell rather
+        # than once per query, which is where the concatenation cost would otherwise land.
+        self._neighbourhood: dict = {}
+
+    def _keys(self, points):
+        """Flat cell ids for an (N, 3) array of points.
+
+        Flat rather than a (x, y, z) tuple: an integer key groups with `np.unique` and looks
+        up without building a tuple per query. `_KEY_STRIDE` is far larger than any grid this
+        builds, so distinct cells cannot collide onto one id.
+        """
+        cell = np.floor_divide(np.asarray(points) - self._origin, self._cell).astype(np.int64)
+        return (cell[..., 0] * _KEY_STRIDE + cell[..., 1]) * _KEY_STRIDE + cell[..., 2]
+
+    def _nearby(self, key):
+        merged = self._neighbourhood.get(key)
+        if merged is None:
+            parts = [self._cells[k] for k in key + _KEY_OFFSETS if k in self._cells]
+            merged = np.concatenate(parts) if parts else _NO_INDICES
+            self._neighbourhood[key] = merged
+        return merged
 
     def sample(self, point, normal=None):
         """The painted weight nearest `point`, in 0..1. `normal` is unused but is part of the
         hook's signature -- a future falloff-by-facing would want it."""
-        key = self._key(point)
-        best, best_dist = None, None
         # The point can land nearer a vertex in an adjacent cell than one in its own, and an
         # empty cell is ordinary on a coarse mesh, so the neighbours are always searched.
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    for candidate, index in self._cells.get(
-                        (key[0] + dx, key[1] + dy, key[2] + dz), ()
-                    ):
-                        offset = candidate - point
-                        dist = offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]
-                        if best_dist is None or dist < best_dist:
-                            best, best_dist = index, dist
-        if best is None:
+        nearby = self._nearby(int(self._keys(np.asarray([point[0], point[1], point[2]]))))
+        if not len(nearby):
             # Nothing painted anywhere near: outside the painted region entirely.
             return 0.0
-        return min(1.0, max(0.0, self._weights[best]))
+        offset = self._points[nearby] - np.asarray([point[0], point[1], point[2]])
+        return float(self._weights[nearby[np.einsum("ij,ij->i", offset, offset).argmin()]])
 
 
 def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
@@ -455,27 +709,25 @@ def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     *mask*: optional per-point hook ``mask(point, normal) -> 0..1`` — the paint
     gizmo will pass a weight function here; a candidate is kept with that
     probability. None means accept everything that passes spacing.
-    """
-    areas = []
-    for v0, v1, v2, _ in triangles:
-        e1, e2 = v1 - v0, v2 - v0
-        cross = Gf.Vec3f(
-            e1[1] * e2[2] - e1[2] * e2[1],
-            e1[2] * e2[0] - e1[0] * e2[2],
-            e1[0] * e2[1] - e1[1] * e2[0],
-        )
-        areas.append(0.5 * Gf.GetLength(cross))
 
-    total_area = sum(areas)
-    if total_area < 1e-10:
+    The area table and its cumulative distribution are built in one array pass -- adding up
+    679,936 triangle areas a Gf.Vec3f cross product at a time took twenty seconds, which was
+    most of a cook on a photogrammetry mesh. The draw loop itself is deliberately unchanged:
+    it consumes the generator in exactly the same order (triangle, u, v, then the mask's
+    roll), so a given seed still produces the scatter it always did.
+    """
+    if not len(triangles):
         return [], []
 
-    cdf = []
-    cumulative = 0.0
-    for a in areas:
-        cumulative += a / total_area
-        cdf.append(cumulative)
+    areas = triangles.areas()
+    total_area = float(areas.sum())
+    if total_area < 1e-10:
+        return [], []
+    # Back to a plain list for the draw: bisect over one is faster per call than
+    # np.searchsorted, which pays array-protocol overhead on a single scalar.
+    cdf = (np.cumsum(areas) / total_area).tolist()
 
+    v0s, v1s, v2s, normals_all = triangles.v0, triangles.v1, triangles.v2, triangles.n
     positions, normals = [], []
     grid = _PoissonGrid(min_dist)
     max_attempts = count * 100
@@ -483,17 +735,18 @@ def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     while len(positions) < count and attempts < max_attempts:
         attempts += 1
         tri_idx = min(bisect.bisect_left(cdf, rng.random()), len(triangles) - 1)
-        v0, v1, v2, n = triangles[tri_idx]
 
         u, v = rng.random(), rng.random()
         if u + v > 1.0:
             u, v = 1.0 - u, 1.0 - v
         w = 1.0 - u - v
+        v0, v1, v2 = v0s[tri_idx], v1s[tri_idx], v2s[tri_idx]
         pt = Gf.Vec3f(
             w * v0[0] + u * v1[0] + v * v2[0],
             w * v0[1] + u * v1[1] + v * v2[1],
             w * v0[2] + u * v1[2] + v * v2[2],
         )
+        n = Gf.Vec3f(*normals_all[tri_idx])
 
         if grid.too_close(pt):
             continue
@@ -510,64 +763,30 @@ def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
 def _fill_in_volume(triangles, count, rng, min_dist=0, mask=None):
     """Uniformly fill the interior of a closed mesh with random points.
 
-    Point-in-mesh is an odd/even ray cast along +X; triangles are bucketed by
-    their (y, z) extent so each test only checks faces the ray can actually hit
-    (was O(all triangles) per candidate — the slow path this rebuild fixes).
+    Point-in-mesh is an odd/even ray cast along +X, against the triangles `_TriangleBuckets`
+    says the ray can reach at that (y, z). The cast tests the whole bucket in one array
+    call: on a dense mesh a bucket holds hundreds of faces, and walking them in Python was
+    the cost the bucketing exists to remove.
     """
-    if not triangles:
+    if not len(triangles):
         return [], []
 
-    xs = [v[0] for tri in triangles for v in tri[:3]]
-    ys = [v[1] for tri in triangles for v in tri[:3]]
-    zs = [v[2] for tri in triangles for v in tri[:3]]
-    mn = (min(xs), min(ys), min(zs))
-    mx = (max(xs), max(ys), max(zs))
-
-    ncells = 32
-    cy = max((mx[1] - mn[1]) / ncells, 1e-9)
-    cz = max((mx[2] - mn[2]) / ncells, 1e-9)
-
-    def _gy(y):
-        return max(0, min(ncells - 1, int((y - mn[1]) / cy)))
-
-    def _gz(z):
-        return max(0, min(ncells - 1, int((z - mn[2]) / cz)))
-
-    yz_grid: dict = {}
-    for ti, (v0, v1, v2, _) in enumerate(triangles):
-        for gy in range(_gy(min(v0[1], v1[1], v2[1])), _gy(max(v0[1], v1[1], v2[1])) + 1):
-            for gz in range(_gz(min(v0[2], v1[2], v2[2])), _gz(max(v0[2], v1[2], v2[2])) + 1):
-                yz_grid.setdefault((gy, gz), []).append(ti)
+    low, high = triangles.bounds()
+    buckets = _TriangleBuckets(triangles, (1, 2), cells=_volume_cells(len(triangles)))
+    direction = np.asarray([1.0, 0.0, 0.0])
 
     def _inside(pt):
-        cand = yz_grid.get((_gy(pt[1]), _gz(pt[2])))
-        if not cand:
+        candidates = buckets.candidates(pt[1], pt[2])
+        if candidates is None or not len(candidates):
             return False
-        ox, oy, oz = pt[0], pt[1], pt[2]
-        hits = 0
-        for ti in cand:
-            v0, v1, v2, _ = triangles[ti]
-            e1x, e1y, e1z = v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]
-            e2x, e2y, e2z = v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]
-            # ray dir = (1,0,0); h = dir × e2 = (0, -e2z, e2y)
-            a = e1y * -e2z + e1z * e2y
-            if abs(a) < 1e-10:
-                continue
-            f = 1.0 / a
-            sx, sy, sz = ox - v0[0], oy - v0[1], oz - v0[2]
-            uu = f * (sy * -e2z + sz * e2y)
-            if uu < 0.0 or uu > 1.0:
-                continue
-            qx = sy * e1z - sz * e1y
-            qy = sz * e1x - sx * e1z
-            qz = sx * e1y - sy * e1x
-            vv = f * qx
-            if vv < 0.0 or uu + vv > 1.0:
-                continue
-            t = f * (e2x * qx + e2y * qy + e2z * qz)
-            if t > 1e-10:
-                hits += 1
-        return (hits % 2) == 1
+        t = _ray_triangles(
+            np.asarray([pt[0], pt[1], pt[2]], dtype=np.float64),
+            direction,
+            triangles.v0[candidates],
+            triangles.v1[candidates],
+            triangles.v2[candidates],
+        )
+        return int(np.count_nonzero(~np.isnan(t))) % 2 == 1
 
     positions, normals = [], []
     up = Gf.Vec3f(0, 1, 0)  # caller replaces with world up
@@ -576,7 +795,11 @@ def _fill_in_volume(triangles, count, rng, min_dist=0, mask=None):
     attempts = 0
     while len(positions) < count and attempts < max_attempts:
         attempts += 1
-        pt = Gf.Vec3f(rng.uniform(mn[0], mx[0]), rng.uniform(mn[1], mx[1]), rng.uniform(mn[2], mx[2]))
+        pt = Gf.Vec3f(
+            rng.uniform(low[0], high[0]),
+            rng.uniform(low[1], high[1]),
+            rng.uniform(low[2], high[2]),
+        )
         if not _inside(pt):
             continue
         if grid.too_close(pt):
@@ -588,6 +811,17 @@ def _fill_in_volume(triangles, count, rng, min_dist=0, mask=None):
         grid.add(pt)
 
     return positions, normals
+
+
+def _volume_cells(triangle_count):
+    """Grid resolution for the point-in-mesh test, from how dense the mesh is.
+
+    A fixed 32 was fine for the hand-built meshes this was written against and hopeless on a
+    scanned one: 680k triangles over 1024 cells is 660 faces to test per candidate, on every
+    candidate. Scaled so a cell holds a handful, and capped so a coarse mesh does not get a
+    grid mostly made of empty cells.
+    """
+    return int(max(32, min(256, math.sqrt(max(triangle_count, 1) / 4.0))))
 
 
 # ---------------------------------------------------------------------------
@@ -1318,8 +1552,8 @@ def execute(node):
             # Surface — slope pre-filters the triangle set (correct area weighting,
             # no wasted samples). The paint mask, being per-point, will instead be
             # passed as the `mask=` hook above.
-            surf_tris = [t for t in triangles if _slope_ok(t[3], world_up, max_slope)]
-            if surf_tris:
+            surf_tris = triangles.select(triangles.slope_mask(world_up, max_slope))
+            if len(surf_tris):
                 positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=density)
             else:
                 # No mesh / no qualifying faces — fall back to a jittered grid.
@@ -1885,6 +2119,8 @@ def main():
 def config():
     return chunk.DefaulConfig(
         category="Create",
+        # The mesh maths runs on arrays -- see `_TriangleSoup` for what it replaced and why.
+        requirements=["numpy>=2,<3"],
         description=(
             "Scatters instances of one or more prototypes across a mesh as a PointInstancer.\n"
             "\n"
