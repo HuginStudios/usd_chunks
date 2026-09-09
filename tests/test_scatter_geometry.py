@@ -14,7 +14,7 @@ import random
 
 import numpy as np
 import pytest
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 scatter = importlib.import_module("scripts.scatter_points")
 
@@ -263,12 +263,58 @@ def test_a_ray_over_nothing_reports_nothing() -> None:
 # the density lookup
 # ---------------------------------------------------------------------------
 
-def test_the_lookup_grid_stays_fine_enough_to_be_worth_having() -> None:
-    """A fixed 48 divisions put a hundred and fifty vertices in every cell of a scanned mesh,
-    which is the brute-force search the grid exists to replace."""
-    assert scatter._lookup_divisions(100) == scatter._LOOKUP_DIVISIONS
-    assert scatter._lookup_divisions(340_000) > scatter._LOOKUP_DIVISIONS
+def test_a_lookup_cell_holds_about_the_same_few_vertices_at_any_density() -> None:
+    """The invariant the whole grid rests on.
+
+    A query searches the 27 cells around it and nothing further, so the cell size has to be
+    measured against the *vertices* -- if it is pinned to the bounding box instead, the same
+    grid means "a handful of neighbours" on one mesh and "most of the surface" or "nothing at
+    all" on another. A fixed 48 divisions was wrong at both ends.
+    """
+    for count in (16, 400, 10_000, 340_000):
+        # Vertices of a surface fall in roughly divisions**2 cells.
+        per_cell = count / (scatter._lookup_divisions(count) ** 2)
+        assert 2 <= per_cell <= 32, f"{per_cell:.1f} vertices per cell at {count} vertices"
+
     assert scatter._lookup_divisions(50_000_000) == scatter._LOOKUP_MAX_DIVISIONS
+    assert scatter._lookup_divisions(0) >= 1, "an empty field must not divide by zero"
+
+
+def test_a_fully_painted_coarse_mesh_scatters_over_all_of_it() -> None:
+    """Painted everywhere has to mean the same thing as unpainted.
+
+    It did not. With the grid pinned to the bounding box, a floor of a few big quads had cells
+    far smaller than the gap between its vertices, so every candidate in the middle of a quad
+    landed in an empty neighbourhood and read as unpainted -- and the sampler's rejection loop
+    hid it, retrying until it found somewhere near a corner. A fully painted 20-unit quad put
+    139 of 200 instances within 1.1 units of a corner, in four clumps.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    mesh = _mesh(
+        stage,
+        "/World/Floor",
+        [(0, 0, 0), (20, 0, 0), (20, 20, 0), (0, 20, 0)],
+        [4],
+        [0, 1, 2, 3],
+    )
+    UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+        scatter.DENSITY_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+    ).Set(Vt.FloatArray([1.0] * 4))
+    prim = stage.GetPrimAtPath("/World/Floor")
+    soup = scatter._collect_triangles(prim)
+
+    painted, _ = scatter._scatter_on_triangles(
+        soup, 200, random.Random(1), 0,
+        mask=scatter._density_mask(prim, scatter.DENSITY_PRIMVAR),
+    )
+    unpainted, _ = scatter._scatter_on_triangles(soup, 200, random.Random(1), 0)
+
+    assert len(painted) == 200, "weight 1.0 everywhere must not reject anything"
+    # Compared against the unpainted scatter rather than an absolute figure: the claim is that
+    # the mask changed nothing, and the unpainted run is what "nothing" looks like.
+    centre = Gf.Vec3f(10, 10, 0)
+    reach = max((p - centre).GetLength() for p in painted)
+    assert reach > 0.8 * max((p - centre).GetLength() for p in unpainted)
 
 
 def _painted_row(weights_at):
