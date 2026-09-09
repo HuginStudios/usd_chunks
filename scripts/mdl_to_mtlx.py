@@ -19,9 +19,13 @@ Requires: pxr (OpenUSD), usd_chunks.
 
 from __future__ import annotations
 
+import logging
+
 from pxr import Sdf, Usd, UsdShade
 
 from usd_chunks import chunk
+
+logger = logging.getLogger(__name__)
 
 #: MDL parameter -> standard_surface input, for the scalars that map one to one.
 _SCALARS = {
@@ -113,7 +117,7 @@ def execute(node):
     stage = node.get_stage()
     root = stage.GetPrimAtPath(Sdf.Path(root_path))
     if not root or not root.IsValid():
-        print(f"[MDLtoMaterialX] no prim at {root_path}")
+        logger.warning("no prim at %s", root_path)
         return
 
     converted = skipped = 0
@@ -129,8 +133,10 @@ def execute(node):
         material.CreateSurfaceOutput(_MTLX).ConnectToSource(surface.ConnectableAPI(), "out")
         converted += 1
 
-    print(f"[MDLtoMaterialX] {converted} material(s) given an mtlx surface "
-          f"under {root_path}" + (f", {skipped} not MDL" if skipped else ""))
+    logger.debug(
+        "%d material(s) given an mtlx surface under %s%s",
+        converted, root_path, f", {skipped} not MDL" if skipped else "",
+    )
 
 
 def main():

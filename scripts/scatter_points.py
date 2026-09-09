@@ -1449,7 +1449,7 @@ def _report(node, protos, quota, count, mode, levels):
     if out_protos := node.get_param("out_prototypes"):
         out_protos.value = len(protos)
 
-    print(f"[ScatterPoints] {text.replace(chr(10), ' | ')}")
+    logger.debug("%s", text.replace(chr(10), " | "))
 
 
 # ---------------------------------------------------------------------------

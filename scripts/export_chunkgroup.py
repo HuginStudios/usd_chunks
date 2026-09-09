@@ -6,11 +6,14 @@ Requires: pxr (OpenUSD), usd_chunks.
 """
 from __future__ import annotations
 
+import logging
 import os
 import traceback
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.plugins.chunk_usd import export_chunks
+
+logger = logging.getLogger(__name__)
 
 
 def export(owner, notice, sender):
@@ -21,7 +24,7 @@ def export(owner, notice, sender):
     is_s = chunk.is_param_t(str)
     output_path = _chunk.get_param("output_file", is_s).value.strip()
     if not output_path:
-        print("[ExportChunkGroup] No output path set.")
+        logger.warning("No output path set.")
         return
 
     _, ext = os.path.splitext(output_path)
@@ -35,10 +38,9 @@ def export(owner, notice, sender):
         # A NoticeConnection callback's exceptions are caught and only logged
         # (chunk_notice.NoticeConnection.handle_callback) — never surfaced in the UI,
         # so without this print a crash here looks identical to nothing happening.
-        traceback.print_exc()
-        print("[ExportChunkGroup] Export failed — see traceback above.")
+        logger.error("Export failed:\n%s", traceback.format_exc())
         return
-    print(f"[ExportChunkGroup] Chunk graph exported to {output_path}")
+    logger.info("Chunk graph exported to %s", output_path)
 
 
 def main():

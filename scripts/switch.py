@@ -33,9 +33,13 @@ Requires: usd_chunks.
 
 from __future__ import annotations
 
+import logging
+
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins import chunk_usd
+
+logger = logging.getLogger(__name__)
 
 #: Where the switch records what it muted, so a branch that stops being upstream is still
 #: un-muted rather than left blocked forever. Hidden: bookkeeping, not a control.
@@ -156,8 +160,10 @@ def execute(node):
                 _set_muted(node, c, False)
 
     _record(node, muted)
-    print(f"[Switch] input {index} of {len(inputs)} live"
-          + (f", muted {len(muted)} chunk(s)" if muted else ""))
+    logger.debug(
+        "input %d of %d live%s", index, len(inputs),
+        f", muted {len(muted)} chunk(s)" if muted else "",
+    )
 
 
 def main():

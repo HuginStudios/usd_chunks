@@ -10,6 +10,7 @@ the standard, so building against them keeps the tests deterministic and license
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -119,17 +120,19 @@ def test_mapped_approximations_pick_the_shape_type(approximation, expected):
 
 
 @pytest.mark.parametrize("approximation", ["convexDecomposition", "sdf"])
-def test_unmapped_approximations_keep_the_param(approximation, capsys):
+def test_unmapped_approximations_keep_the_param(approximation, caplog):
     """These need several geoms or a distance field. Silently collapsing them to a convex
     hull would simulate differently from what the asset asks for, so the param stands and
-    the mismatch is reported."""
+    the mismatch is reported (at debug level -- this runs every cook, not just once, so it
+    must not spam the terminal by default)."""
     stage, prim = _stage_with_box()
     UsdPhysics.MeshCollisionAPI.Apply(prim).CreateApproximationAttr(approximation)
 
-    result = rbd._authored_physics(stage, prim, DEFAULTS)
+    with caplog.at_level(logging.DEBUG, logger="rbd_solver"):
+        result = rbd._authored_physics(stage, prim, DEFAULTS)
 
     assert result["shape_type"] == DEFAULTS["shape_type"]
-    assert approximation in capsys.readouterr().out
+    assert approximation in caplog.text
 
 
 def test_kinematic_rigid_body_is_reported():

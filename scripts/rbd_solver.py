@@ -6,6 +6,7 @@ Optional: scipy — smoother/denser heightfield colliders; falls back gracefully
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 from collections.abc import Generator
@@ -24,6 +25,8 @@ try:
 except ImportError:
     _HAS_MUJOCO = False
     _np = None
+
+logger = logging.getLogger(__name__)
 
 
 def _force_phases(seed: int) -> tuple:
@@ -662,7 +665,7 @@ def _sim_prim_gen_mj(
                 hull_verts = hull_verts[::step][:hull_max_verts]
             mesh_pts = _np.array(hull_verts, dtype=_np.float32)
         else:
-            print("[RBDSolver/MuJoCo] Convex Hull: no mesh data, falling back to Box")
+            logger.warning("Convex Hull: no mesh data, falling back to Box")
 
     # --- build MjSpec scene ---
     spec = _mj.MjSpec()
@@ -760,7 +763,7 @@ def _sim_prim_gen_mj(
     try:
         model = spec.compile()
     except Exception as _ce:
-        print(f"[RBDSolver/MuJoCo] Scene compile failed: {_ce}")
+        logger.warning("Scene compile failed: %s", _ce)
         return
 
     data = _mj.MjData(model)
@@ -785,7 +788,7 @@ def _sim_prim_gen_mj(
         mid = int(model.body_mocapid[mbid])
         mocap_ids.append((mid, cprim))
 
-    print(f"[RBDSolver/MuJoCo] Compiled â€” {model.nbody} bodies, {model.ngeom} geoms, shape={shape_type}")
+    logger.debug("Compiled - %d bodies, %d geoms, shape=%s", model.nbody, model.ngeom, shape_type)
 
     # Initialize forward kinematics so xpos/xquat are valid on frame 0
     _mj.mj_forward(model, data)
@@ -942,7 +945,7 @@ def _write_prim_results(
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         stage.SetStartTimeCode(start_frame)
         stage.SetEndTimeCode(start_frame + len(all_mats) - 1)
-    print(f"[RBDSolver] Baked {len(all_mats)} frames on {prim.GetPath()}")
+    logger.debug("Baked %d frames on %s", len(all_mats), prim.GetPath())
 
 
 def simulate_mujoco(
@@ -985,7 +988,7 @@ def simulate_mujoco(
     xformOp rather than the shared one -- see _write_prim_results.
     """
     if not _HAS_MUJOCO:
-        print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
+        logger.warning("mujoco not installed. Run: pip install mujoco")
         return
 
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
@@ -1040,12 +1043,12 @@ def simulate_mujoco(
         all_mats = e.value
 
     if not all_mats:
-        print("[MuJoCoSolver] Simulation produced no results")
+        logger.warning("Simulation produced no results")
         return
 
     # Write results using the proven writer
     _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz, node)
-    print(f"[MuJoCoSolver] Baked {frame_count} frames on {prim.GetPath()}")
+    logger.debug("Baked %d frames on %s", frame_count, prim.GetPath())
     return all_mats
 
 
@@ -1088,7 +1091,7 @@ def simulate_mujoco_articulated(
     the door prim instead of being flattened into the body.
     """
     if not _HAS_MUJOCO:
-        print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
+        logger.warning("mujoco not installed. Run: pip install mujoco")
         return None
 
     up_idx = 1 if UsdGeom.GetStageUpAxis(stage).upper() == "Y" else 2
@@ -1130,11 +1133,11 @@ def simulate_mujoco_articulated(
         results = exc.value
 
     if not results:
-        print("[MuJoCoSolver] Articulated simulation produced no results")
+        logger.warning("Articulated simulation produced no results")
         return None
 
     _write_articulated_results(stage, roots, layer, results, start_frame, settle_only, node)
-    print(f"[MuJoCoSolver] Baked {frame_count} frames across {len(results)} links")
+    logger.debug("Baked %d frames across %d links", frame_count, len(results))
     return results
 
 
@@ -1212,7 +1215,7 @@ def simulate_mujoco_instancer(
     instance's own orientation only influence the physics for Box / Convex Hull.
     """
     if not _HAS_MUJOCO:
-        print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
+        logger.warning("mujoco not installed. Run: pip install mujoco")
         return
 
     instancer = UsdGeom.PointInstancer(prim)
@@ -1221,7 +1224,7 @@ def simulate_mujoco_instancer(
     positions = positions_attr.Get()
     orientations = orientations_attr.Get()
     if not positions:
-        print("[MuJoCoSolver] No positions on PointInstancer")
+        logger.warning("No positions on PointInstancer")
         return
 
     num_instances = len(positions)
@@ -1321,7 +1324,7 @@ def simulate_mujoco_instancer(
     if shape_type == "Convex Hull":
         hull_base = _proto_hull_verts(stage, proto_targets)
         if hull_base is None:
-            print("[MuJoCoSolver] Convex Hull: no prototype mesh data, falling back to Sphere")
+            logger.warning("Convex Hull: no prototype mesh data, falling back to Sphere")
         else:
             # Recentre on the prototype's geometry centre: the body frame sits there, so the
             # hull has to be expressed about it rather than about the prototype's origin.
@@ -1419,7 +1422,7 @@ def simulate_mujoco_instancer(
     try:
         model = spec.compile()
     except Exception as e:
-        print(f"[MuJoCoSolver] Instancer compile failed: {e}")
+        logger.warning("Instancer compile failed: %s", e)
         return
 
     data = _mj.MjData(model)
@@ -1509,7 +1512,7 @@ def simulate_mujoco_instancer(
         stage.SetStartTimeCode(start_frame)
         stage.SetEndTimeCode(start_frame + frame_count - 1)
 
-    print(f"[MuJoCoSolver] Baked {frame_count} frames on PointInstancer {prim.GetPath()} ({num_instances} bodies)")
+    logger.debug("Baked %d frames on PointInstancer %s (%d bodies)", frame_count, prim.GetPath(), num_instances)
 
 
 # ---------------------------------------------------------------------------
@@ -1585,13 +1588,13 @@ def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
                 grandparent.subLayerPaths.insert(0, parent.identifier)
             break
     except Exception as e:
-        print(f"[MuJoCoSolver] Could not promote bake layer: {e}")
+        logger.warning("Could not promote bake layer: %s", e)
 
 
 def reset(owner, notice, sender) -> None:
     _clear_chunk_bake(owner)
     owner.get_chunk().set_state(chunk.ChunkFlags.State.STALE)
-    print("[MuJoCoSolver] Reset — bake cleared.")
+    logger.info("Reset - bake cleared.")
 
 
 def add_collision(owner, notice, sender) -> None:
@@ -1603,7 +1606,7 @@ def add_collision(owner, notice, sender) -> None:
         return
     selected = scene.get_selected_prims()
     if not selected:
-        print("[MuJoCoSolver] No prim selected in viewport")
+        logger.warning("No prim selected in viewport")
         return
     existing = [p.strip() for p in (param.value or "").replace(",", "\n").split("\n") if p.strip()]
     added = 0
@@ -1613,12 +1616,12 @@ def add_collision(owner, notice, sender) -> None:
             existing.append(path)
             added += 1
     param.value = "\n".join(existing)
-    print(f"[MuJoCoSolver] Added {added} collision prim(s); {len(existing)} total")
+    logger.info("Added %d collision prim(s); %d total", added, len(existing))
 
 
 def clear_collision(owner, notice, sender) -> None:
     owner.get_chunk().get_param("collision_path").value = ""
-    print("[MuJoCoSolver] Cleared collision prims")
+    logger.info("Cleared collision prims")
 
 
 # UsdPhysics collider approximation -> this chunk's Shape Type. Only the tokens with a
@@ -1754,9 +1757,9 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
                 out["shape_type"] = shape
                 found.append("shape=%s" % shape)
             elif approximation:
-                print(
-                    "[RBDSolver] approximation '%s' has no single-geom MuJoCo equivalent -- "
-                    "keeping Shape Type '%s'" % (approximation, out["shape_type"])
+                logger.debug(
+                    "approximation '%s' has no single-geom MuJoCo equivalent -- "
+                    "keeping Shape Type '%s'", approximation, out["shape_type"],
                 )
 
     gravity, scene_path = _scene_gravity(stage, out["gravity"])
@@ -1765,7 +1768,7 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
         found.append("gravity=%g (%s)" % (gravity, scene_path))
 
     if found:
-        print("[RBDSolver] using authored UsdPhysics: %s" % ", ".join(found))
+        logger.debug("using authored UsdPhysics: %s", ", ".join(found))
     return out
 
 
@@ -1948,7 +1951,7 @@ def read_articulations(root_prim):
     roots = [lk for lk in links.values() if lk.parent is None]
     if not roots:
         # Every link claims a parent: a closed loop, which MuJoCo's tree cannot express.
-        print("[RBDSolver] articulation has no root link (closed kinematic loop) -- skipping")
+        logger.warning("articulation has no root link (closed kinematic loop) -- skipping")
     return roots
 
 
@@ -2305,7 +2308,7 @@ def build_articulated_spec(
     try:
         model = spec.compile()
     except Exception as exc:  # noqa: BLE001 - a compile failure must not take the chunk down
-        print(f"[RBDSolver/MuJoCo] Articulated scene compile failed: {exc}")
+        logger.warning("Articulated scene compile failed: %s", exc)
         return None
 
     excluded = _exclude_initial_overlaps(spec, model)
@@ -2313,14 +2316,16 @@ def build_articulated_spec(
         try:
             model = spec.compile()
         except Exception as exc:  # noqa: BLE001
-            print(f"[RBDSolver/MuJoCo] Recompile after exclusions failed: {exc}")
+            logger.warning("Recompile after exclusions failed: %s", exc)
             return None
 
     data = _mj.MjData(model)
     _mj.mj_forward(model, data)
-    print(f"[RBDSolver/MuJoCo] Compiled articulation — {model.nbody} bodies, "
-          f"{model.njnt} joints, {model.ngeom} geoms"
-          + (f", {excluded} contact pair(s) excluded" if excluded else ""))
+    logger.debug(
+        "Compiled articulation - %d bodies, %d joints, %d geoms%s",
+        model.nbody, model.njnt, model.ngeom,
+        f", {excluded} contact pair(s) excluded" if excluded else "",
+    )
     return model, data, ordered
 
 
@@ -2446,7 +2451,7 @@ def _write_articulated_results(stage, roots, layer, results, start_frame,
 
 def _run(owner, notice, sender) -> None:
     if not _HAS_MUJOCO:
-        print("[MuJoCoSolver] mujoco not installed. Run: pip install mujoco")
+        logger.warning("mujoco not installed. Run: pip install mujoco")
         return
 
     _chunk = owner.get_chunk()
@@ -2456,7 +2461,7 @@ def _run(owner, notice, sender) -> None:
 
     prim_paths = _chunk.get_param("prim_path").resolve_paths()
     if not prim_paths:
-        print("[MuJoCoSolver] No target prim selected")
+        logger.warning("No target prim selected")
         return
 
     # A typed param's .value already returns the correct type and falls back to its
@@ -2531,7 +2536,7 @@ def _run(owner, notice, sender) -> None:
     restitution = authored["restitution"]
     shape_type = authored["shape_type"]
     if authored["kinematic"]:
-        print("[RBDSolver] target prim is a kinematic rigid body -- driven, not solved")
+        logger.debug("target prim is a kinematic rigid body -- driven, not solved")
 
     # An asset that carries UsdPhysics joints is a mechanism, not a single rigid body:
     # simulate it as a kinematic tree so a door or drawer keeps its own motion. Assets

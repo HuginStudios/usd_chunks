@@ -16,6 +16,7 @@ transform still reaches the stage would pass a state-only check and be wrong.
 from __future__ import annotations
 
 import importlib
+import logging
 import sys
 from pathlib import Path
 
@@ -273,10 +274,11 @@ def test_match_modes(value, pattern, mode, expected):
     assert filter_mod._matches(value, pattern, mode) is expected
 
 
-def test_a_bad_regex_reports_itself_and_does_not_match(capsys):
+def test_a_bad_regex_reports_itself_and_does_not_match(caplog):
     """Silently never matching is indistinguishable from the variable being wrong."""
-    assert filter_mod._matches("sh010", "sh01[", filter_mod.REGEX) is False
-    assert "not a valid regex" in capsys.readouterr().out
+    with caplog.at_level(logging.WARNING, logger="stage_expression_filter"):
+        assert filter_mod._matches("sh010", "sh01[", filter_mod.REGEX) is False
+    assert "not a valid regex" in caplog.text
 
 
 # ---------------------------------------------------------------------------
