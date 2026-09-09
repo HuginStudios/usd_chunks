@@ -90,3 +90,16 @@ def make_network(path, modules=("transform", "transform"),
         chunk.request_delete()
     chunk_registry.ChunkLayerManager().reset()
     return path, context
+
+
+def content_nodes(view):
+    """The graph's content nodes, sorted, excluding view chunks.
+
+    Every frontend now creates a view on open -- a context without one cooks nothing, so
+    it is real behaviour rather than decoration. Tests that mean "the chunks I built"
+    have to say so, or they pick up the View node and assert the wrong count.
+    """
+    return sorted(
+        path for path, prim in view.prims.items()
+        if (prim.GetAttribute("info:chunkType").Get() or "") != "view"
+    )

@@ -12,7 +12,7 @@ from __future__ import annotations
 import flet as ft
 import pytest
 
-from graph_fixtures import make_network
+from graph_fixtures import content_nodes, make_network
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins import chunk_flet
 from usd_chunks.plugins import chunk_flet_nodegraph as fg
@@ -25,7 +25,7 @@ def view(tmp_path):
     path, context = make_network(tmp_path / "net.usda")
     v = fg.GraphView(path, context)
     v.live = False  # no page; refresh() must stay a no-op
-    assert len(v.prims) == 2, f"fixture built {len(v.prims)} nodes, expected 2"
+    assert len(content_nodes(v)) == 2, f"fixture built {len(content_nodes(v))} content nodes"
     return v
 
 
@@ -33,12 +33,12 @@ def view(tmp_path):
 def first(view):
     """The upstream node's path. Named rather than hard-coded: add_chunk decides the
     prim name, and asserting on 'Transform1' would break the day it becomes 'Transform2'."""
-    return sorted(view.prims)[0]
+    return content_nodes(view)[0]
 
 
 @pytest.fixture
 def second(view):
-    return sorted(view.prims)[1]
+    return content_nodes(view)[1]
 
 
 def tap(x, y):

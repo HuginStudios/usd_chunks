@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("imgui_bundle", reason="imgui-bundle is an optional extra")
 
-from graph_fixtures import make_network  # noqa: E402
+from graph_fixtures import content_nodes, make_network  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
 from usd_chunks.plugins import chunk_graph  # noqa: E402
 from usd_chunks.plugins.chunk_imgui_nodegraph import ImGuiGraphView  # noqa: E402
@@ -26,18 +26,18 @@ def view(tmp_path):
     v = ImGuiGraphView(path, context)
     chunk_graph.node_clipboard.clear()
     chunk_graph.edge_clipboard.clear()
-    assert len(v.prims) == 2, f"fixture built {len(v.prims)} nodes"
+    assert len(content_nodes(v)) == 2, f"fixture built {len(content_nodes(v))} content nodes"
     return v
 
 
 @pytest.fixture
 def first(view):
-    return sorted(view.prims)[0]
+    return content_nodes(view)[0]
 
 
 class TestReading:
     def test_it_reads_the_network(self, view):
-        assert len(view.prims) == 2
+        assert len(content_nodes(view)) == 2
         assert len(view.edges) >= 1
 
     def test_positions_come_from_usd_before_the_editor_has_seen_them(self, view, first):
@@ -54,7 +54,7 @@ class TestSelection:
         assert not view.chunks[first].has_state(ChunkFlags.State.SELECTED)
 
     def test_add_extends(self, view):
-        a, b = sorted(view.prims)
+        a, b = content_nodes(view)
         view.set_selection([a])
         view.set_selection([b], add=True)
         assert view.selected_nodes == {a, b}
@@ -115,20 +115,20 @@ class TestEditing:
 
 class TestGroupingAndDiving:
     def test_group_then_dive(self, view):
-        view.set_selection(list(view.prims))
+        view.set_selection(content_nodes(view))
         view.group_selection()
-        assert len(view.prims) == 1
-        group = next(iter(view.prims))
+        assert len(content_nodes(view)) == 1
+        group = content_nodes(view)[0]
         assert view.can_dive(group)
         view.dive_into(group)
         assert view.context == group
-        assert len(view.prims) == 2
+        assert len(content_nodes(view)) == 2
 
     def test_dive_out(self, view):
         outer = view.context
-        view.set_selection(list(view.prims))
+        view.set_selection(content_nodes(view))
         view.group_selection()
-        group = next(iter(view.prims))
+        group = content_nodes(view)[0]
         view.dive_into(group)
         view.dive_out()
         assert view.context == outer
@@ -147,13 +147,28 @@ class TestGroupingAndDiving:
 
 
 class TestViewSlots:
-    def test_no_slot_by_default(self, view):
-        assert view.active_slot() == 0
+    def test_a_network_opens_with_an_active_view(self, view):
+        """Every frontend creates one on open, as Qt always has: recook_for_view cooks the
+        active view's upstream tree and blocks the rest, so a context without a view cooks
+        nothing at all."""
+        assert view.active_slot() == 1
+        assert sorted(
+            prim.GetAttribute("view:slot").Get()
+            for prim in view.prims.values()
+            if (prim.GetAttribute("info:chunkType").Get() or "") == "view"
+        ) == [1]
 
     def test_switching_to_an_empty_slot_is_refused(self, view):
         view.set_active_slot(2)
-        assert view.active_slot() == 0
+        assert view.active_slot() == 1, "an empty slot must not become active"
         assert "no view in slot 2" in view.status
+
+    def test_v_on_a_selected_node_adds_a_view(self, view, first):
+        view.set_selection([first])
+        before = set(view.prims)
+        view.create_view()
+        assert set(view.prims) - before, "no view node was created"
+        assert view.active_slot() == 2
 
 
 class TestImmediateModeWidgets:

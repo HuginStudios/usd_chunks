@@ -155,6 +155,32 @@ class ImGuiGraphView:
         self.show_all_pins = False
         self._editor = None
         self.reload()
+        self._ensure_view()
+
+    def _ensure_view(self) -> None:
+        """Give the context a view on open, as Qt has always done.
+
+        Without one nothing cooks, so a network opened here would look right and do
+        nothing -- which is exactly how the other two frontends differed from Qt.
+        """
+        if self.scene is None:
+            return
+        # Never override a slot the file already records. ensure_default_view returns the
+        # EXISTING slot when a view is already wired to the tail, so calling set_active_slot
+        # with it on every open reset whichever view the user had chosen back to that one.
+        already = self.active_slot()
+        try:
+            slot = chunk_graph.ensure_default_view(self.stage, self.scene,
+                                                   self.chunks.get(self.context))
+        except (AttributeError, KeyError, RuntimeError, ValueError):
+            logger.exception("could not create a default view")
+            return
+        if slot is None:
+            return
+        self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.reload()
+        if not already:
+            self.set_active_slot(slot)
 
     # -- reading -----------------------------------------------------------
 
@@ -395,6 +421,7 @@ class ImGuiGraphView:
             (imgui.Key.f, lambda: self.frame(self.selected_nodes or self.prims)),
             (imgui.Key.g, self.group_selection),
             (imgui.Key.p, self.toggle_all_pins),
+            (imgui.Key.v, self.create_view),
         ):
             if imgui.is_key_pressed(key):
                 action()
@@ -615,6 +642,34 @@ class ImGuiGraphView:
         self.reload()
         if inner in self.prims:
             self.set_selection([inner])
+
+    def create_view(self, target_path: str | None = None) -> None:
+        """V: wire a view to the selected node, or to the end of the chain.
+
+        A view is what drives execution -- recook_for_view cooks its upstream tree and
+        blocks the rest -- so a context without one cooks nothing at all.
+        """
+        if self.scene is None:
+            self.status = "no chunk session"
+            return
+        if target_path is None:
+            chosen = [p for p in self.selected_nodes if p in self.prims]
+            target_path = chosen[0] if chosen else None
+        if target_path is None:
+            slot = chunk_graph.ensure_default_view(self.stage, self.scene, self.context_chunk())
+        else:
+            slot = chunk_graph.create_view_for(self.stage, self.scene, target_path)
+        if slot is None:
+            self.status = "no view created"
+            return
+        self.stage.GetRootLayer().Save()
+        self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.reload()
+        self.set_active_slot(slot)
+
+    def context_chunk(self):
+        """The chunk object for the context being shown, if there is one."""
+        return self.chunks.get(self.context)
 
     def active_slot(self) -> int:
         prim = self.stage.GetPrimAtPath(Sdf.Path(self.context))

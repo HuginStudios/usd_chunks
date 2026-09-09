@@ -2904,10 +2904,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     def _context_has_view(self, scene, context) -> bool:
         """True when this context (or the graph as a whole, if context is None) has a view chunk."""
-        return any(
-            chunk_usd.is_view_chunk(c) and (context is None or c.get_context() == context)
-            for c in scene.get_chunks()
-        )
+        return chunk_graph.context_has_view(scene, context)
 
     def _nest_target(self, context):
         """The context new chunks should nest into, or None to leave them where they land.
@@ -4236,100 +4233,25 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         QtCore.QTimer.singleShot(0, self, lambda s=slot: self._view_state.set_slot(s))
 
     def _create_view_node_for_prim(self, target_prim_path: str) -> None:
-        """Create a view node wired to target_prim_path using only USD stage data."""
+        """Create a view node wired to target_prim_path, then activate its slot.
+
+        The creation itself is chunk_graph.create_view_for, shared with the Flet and ImGui
+        frontends -- it was 75 lines of USD and registry work here and nothing at all
+        there, which is why the same file used to show a view node in this graph and none
+        in the others.
+        """
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
             return
         stage = registry.scene.get_stage()
-        if not stage:
+        scene = _chunk.get_scene()
+        if not (stage and scene):
             return
-
-        target_prim = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
-        if not target_prim.IsValid():
-            return
-        if target_prim.GetAttribute("info:chunkType").Get() == "view":
-            return
-
-        # If a view is already wired to this prim, activate it instead of creating a duplicate.
-        for prim in stage.Traverse():
-            if prim.GetAttribute("info:chunkType").Get() != "view":
-                continue
-            exec_in = prim.GetAttribute(_EXEC_INPUT)
-            if exec_in.IsValid():
-                for conn_path in exec_in.GetConnections():
-                    if str(conn_path.GetPrimPath()) == target_prim_path:
-                        existing_slot = prim.GetAttribute("view:slot").Get()
-                        if existing_slot is not None:
-                            self._view_state.set_slot(existing_slot)
-                        return
-
-        # Find an unused slot — scoped to the target's container (the view is created as a sibling
-        # of the target). Each graph (tab/group) has its own slots 1-3; a GLOBAL scan runs out of
-        # slots once views exist in a few contexts, so 'Set View' silently failed, and the View{slot}
-        # name incremented globally across contexts.
-        target_parent = str(Sdf.Path(target_prim_path).GetParentPath())
-        used_slots: set = set()
-        for prim in stage.Traverse():
-            if prim.GetAttribute("info:chunkType").Get() != "view":
-                continue
-            if str(prim.GetPath().GetParentPath()) != target_parent:
-                continue
-            s = prim.GetAttribute("view:slot").Get()
-            if s is not None:
-                used_slots.add(s)
-        slot = next((s for s in [1, 2, 3] if s not in used_slots), None)
+        slot = chunk_graph.create_view_for(stage, scene, target_prim_path)
         if slot is None:
             return
-
-        mod = registry.get_chunk_module("view")
-        if not mod:
-            return
-        chunks = mod.create() if mod.loaded else mod.load()
-        if not chunks:
-            return
-        view_chunk = chunks[0]
-        view_chunk.name = f"View{slot}"
-        view_chunk.set_state(ChunkFlags.State.COLLAPSED)
-
-        # Read target pos from USD before add_chunk fires CHUNK_LOADED and rebuilds the graph.
-        node_api = UsdUI.NodeGraphNodeAPI(target_prim)
-        pos_attr = node_api.GetPosAttr()
-        raw_pos = pos_attr.Get() if (pos_attr and pos_attr.IsValid()) else None
-        tx, ty = (float(raw_pos[0]), float(raw_pos[1])) if raw_pos is not None else (0.0, 0.0)
-
-        scene = _chunk.get_scene()
-        if not scene:
-            return
-        scene.add_chunk(view_chunk)
-
-        view_prim_path = f"{chunk_usd._resolve_chunk_root(view_chunk)}/{view_chunk.name}"
-        stage = registry.scene.get_stage()
-        if not stage:
-            return
-        view_prim = stage.GetPrimAtPath(Sdf.Path(view_prim_path))
-        if not view_prim.IsValid():
-            return
-
-        # This is all first-time bookkeeping for a freshly-created view_chunk — the
-        # chunk-prim's exec wiring, its view:slot marker, and its initial position —
-        # so it belongs wherever this chunk's Edit Target currently resolves to, not
-        # wherever the stage's ambient edit target happens to be.
-        with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, view_chunk)):
-            exec_in = view_prim.GetAttribute(_EXEC_INPUT)
-            if not exec_in.IsValid():
-                exec_in = view_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-            exec_in.SetConnections([Sdf.Path(f"{target_prim_path}.{_EXEC_OUTPUT}")])
-
-            slot_attr = view_prim.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
-            slot_attr.SetVariability(Sdf.VariabilityUniform)
-            slot_attr.Set(slot)
-
-            UsdUI.NodeGraphNodeAPI.Apply(view_prim).CreatePosAttr().Set(
-                Gf.Vec2f(tx + _NODE_WIDTH + 40, ty - 80)
-            )
-
-        # Context object, as above — the view can be gone before this fires.
-        QtCore.QTimer.singleShot(0, self, lambda: self._view_state.set_slot(slot))
+        # Context object, as elsewhere: the view can be gone before this fires.
+        QtCore.QTimer.singleShot(0, self, lambda s=slot: self._view_state.set_slot(s))
 
     def set_view_state(self, vs: ViewSlotState) -> None:
         self._view_state.slot_changed.disconnect(self._on_view_slot_changed)

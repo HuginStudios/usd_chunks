@@ -8,7 +8,7 @@ from __future__ import annotations
 import flet as ft
 import pytest
 
-from graph_fixtures import make_network
+from graph_fixtures import content_nodes, make_network
 from usd_chunks.plugins import chunk_flet_nodegraph as fg
 from usd_chunks.plugins import chunk_graph
 
@@ -25,7 +25,7 @@ def view(tmp_path):
 
 @pytest.fixture
 def first(view):
-    return sorted(view.prims)[0]
+    return content_nodes(view)[0]
 
 
 def key(name, ctrl=False):
@@ -88,7 +88,7 @@ class TestCopyPaste:
 class TestWiring:
     def test_a_wire_between_two_copied_nodes_survives(self, view):
         """Both ends copied, so the wire is recreated between the two NEW nodes."""
-        view.set_selection(view.prims)
+        view.set_selection(content_nodes(view))
         view.copy_selection()
         assert len(chunk_graph.edge_clipboard) >= 1, "fixture has no wire to copy"
         before = set(view.prims)
@@ -101,7 +101,7 @@ class TestWiring:
 
     def test_a_wire_to_an_uncopied_node_is_dropped(self, view):
         """Only one end selected: the wire is not recreated against the original."""
-        downstream = sorted(view.prims)[1]
+        downstream = content_nodes(view)[1]
         view.set_selection([downstream])
         view.copy_selection()
         assert chunk_graph.edge_clipboard == []
@@ -124,7 +124,7 @@ class TestCutAndDuplicate:
 
     def test_duplicate_leaves_the_clipboard_alone(self, view, first):
         """Duplicating must not clobber whatever was last explicitly copied."""
-        second = sorted(view.prims)[1]
+        second = content_nodes(view)[1]
         view.set_selection([second])
         view.copy_selection()
         kept = list(chunk_graph.node_clipboard)
@@ -164,16 +164,16 @@ class TestShortcuts:
 
 class TestGrouping:
     def test_grouping_replaces_the_selection_with_one_node(self, view):
-        view.set_selection(view.prims)
+        view.set_selection(content_nodes(view))
         view.group_selection()
-        assert len(view.prims) == 1
-        only = next(iter(view.prims.values()))
+        assert len(content_nodes(view)) == 1
+        only = view.prims[content_nodes(view)[0]]
         assert (only.GetAttribute("info:chunkType").Get() or "") == "chunkgroup"
 
     def test_the_grouped_chunks_live_inside_the_group(self, view):
-        view.set_selection(view.prims)
+        view.set_selection(content_nodes(view))
         view.group_selection()
-        group_path = next(iter(view.prims))
+        group_path = content_nodes(view)[0]
         inner = [str(p.GetPath()) for p in view.stage.TraverseAll()
                  if p.GetTypeName() == "Chunk"
                  and str(p.GetPath()).startswith(group_path + "/")]
@@ -182,7 +182,7 @@ class TestGrouping:
     def test_the_group_takes_the_selections_place_in_the_chain(self, view, first):
         """Group only the downstream node: the wire that fed it must now feed the group,
         or grouping leaves a hole in the exec chain."""
-        downstream = sorted(view.prims)[1]
+        downstream = content_nodes(view)[1]
         view.set_selection([downstream])
         view.group_selection()
         group_path = next(p for p, prim in view.prims.items()
@@ -198,6 +198,6 @@ class TestGrouping:
         assert "nothing" in view.status
 
     def test_ctrl_g_groups(self, view):
-        view.set_selection(view.prims)
+        view.set_selection(content_nodes(view))
         view.on_key(key("G", ctrl=True))
-        assert len(view.prims) == 1
+        assert len(content_nodes(view)) == 1

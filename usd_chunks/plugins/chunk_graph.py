@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from pxr import Sdf, Usd
+from pxr import Gf, Sdf, Usd
 
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_utils
@@ -62,6 +62,7 @@ CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
 #: nothing. Bound directly, not via getattr with a fallback: a fallback would paper over
 #: exactly the rename it is supposed to catch.
 CHUNK_TYPENAME = chunk_naming.CHUNK_PRIM_TYPENAME
+CHUNK_TYPE_ATTR = chunk_naming.CHUNK_TYPE_ATTR
 
 #: Chunk prims are found with this rather than the default predicate: a disabled chunk is
 #: an INACTIVE prim and still belongs on the graph, drawn greyed.
@@ -1177,3 +1178,141 @@ def materialize(scene, nodes, to_usd) -> dict:
                 scene.add_chunk(chunk)
         made[index] = primary
     return made
+
+
+# ---------------------------------------------------------------------------
+# View nodes
+#
+# A view is what drives execution: chunk_usd.recook_for_view cooks the active view's
+# upstream tree and blocks everything else. A context with no view therefore cooks
+# NOTHING, which is why Qt has always made one on open -- and why the other two frontends
+# showing four nodes where Qt showed five was a real difference, not a cosmetic one.
+# ---------------------------------------------------------------------------
+
+VIEW_MODULE = "view"
+VIEW_SLOT_ATTR = "view:slot"
+ACTIVE_VIEW_ATTR = "chunk:activeView"
+VIEW_SLOTS = (1, 2, 3)
+
+
+def context_has_view(scene, context) -> bool:
+    """True when this context -- or the whole graph, if context is None -- has a view."""
+    return any(
+        chunk_usd.is_view_chunk(chunk) and (context is None or chunk.get_context() == context)
+        for chunk in scene.get_chunks()
+    )
+
+
+def _free_view_slot(stage: Usd.Stage, parent_path: str) -> "int | None":
+    """The lowest unused slot among this container's views.
+
+    Scoped to the container, not the stage: each graph has its own slots 1-3. A global
+    scan runs out of slots once a few contexts have views, which made "Set View" silently
+    do nothing and numbered the View{slot} names across contexts.
+    """
+    used = set()
+    for prim in stage.Traverse():
+        if prim.GetAttribute(CHUNK_TYPE_ATTR).Get() != VIEW_MODULE:
+            continue
+        if str(prim.GetPath().GetParentPath()) != parent_path:
+            continue
+        slot = prim.GetAttribute(VIEW_SLOT_ATTR).Get()
+        if slot is not None:
+            used.add(slot)
+    return next((slot for slot in VIEW_SLOTS if slot not in used), None)
+
+
+def existing_view_slot_for(stage: Usd.Stage, target_prim_path: str) -> "int | None":
+    """The slot of a view already wired to this prim, if there is one."""
+    for prim in stage.Traverse():
+        if prim.GetAttribute(CHUNK_TYPE_ATTR).Get() != VIEW_MODULE:
+            continue
+        exec_in = prim.GetAttribute(EXEC_INPUT)
+        if not (exec_in and exec_in.IsValid()):
+            continue
+        for conn in exec_in.GetConnections():
+            if str(conn.GetPrimPath()) == target_prim_path:
+                return prim.GetAttribute(VIEW_SLOT_ATTR).Get()
+    return None
+
+
+def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> "int | None":
+    """Create a view node wired to target_prim_path. Returns its slot, or None.
+
+    Returns the EXISTING slot rather than making a duplicate when a view is already wired
+    to that prim, so a caller can simply activate what comes back either way.
+
+    All USD and registry work -- no toolkit. Qt had this as a 75-line private method and
+    the other two frontends had nothing, which is why the same file showed five nodes in
+    one and four in the others.
+    """
+    target = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
+    if not target.IsValid():
+        return None
+    if target.GetAttribute(CHUNK_TYPE_ATTR).Get() == VIEW_MODULE:
+        return None
+
+    existing = existing_view_slot_for(stage, target_prim_path)
+    if existing is not None:
+        return existing
+
+    parent_path = str(Sdf.Path(target_prim_path).GetParentPath())
+    slot = _free_view_slot(stage, parent_path)
+    if slot is None:
+        return None
+
+    registry = chunk_registry.ChunkRegistry()
+    module = registry.get_chunk_module(VIEW_MODULE)
+    if module is None:
+        return None
+    made = module.create() if module.loaded else module.load()
+    if not made:
+        return None
+    view_chunk = made[0]
+    view_chunk.name = "View%d" % slot
+    view_chunk.set_state(ChunkFlags.State.COLLAPSED)
+
+    # Read the target's position BEFORE add_chunk: adding fires CHUNK_LOADED, which a
+    # frontend may answer by rebuilding its graph.
+    target_x, target_y = node_position(target)
+
+    scene.add_chunk(view_chunk)
+    view_path = "%s/%s" % (chunk_usd._resolve_chunk_root(view_chunk), view_chunk.name)
+    view_prim = stage.GetPrimAtPath(Sdf.Path(view_path))
+    if not view_prim.IsValid():
+        return None
+
+    # First-time bookkeeping for a fresh chunk -- its exec wiring, slot marker and
+    # position -- so it belongs wherever this chunk's Edit Target resolves to, not
+    # wherever the stage's ambient edit target happens to point.
+    with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, view_chunk)):
+        exec_in = view_prim.GetAttribute(EXEC_INPUT)
+        if not (exec_in and exec_in.IsValid()):
+            exec_in = view_prim.CreateAttribute(EXEC_INPUT, Sdf.ValueTypeNames.Token,
+                                                custom=False)
+        exec_in.SetConnections([Sdf.Path("%s.%s" % (target_prim_path, EXEC_OUTPUT))])
+
+        slot_attr = view_prim.CreateAttribute(VIEW_SLOT_ATTR, Sdf.ValueTypeNames.Int,
+                                              custom=True)
+        slot_attr.SetVariability(Sdf.VariabilityUniform)
+        slot_attr.Set(slot)
+
+        pos = view_prim.GetAttribute(POS_ATTR)
+        if not pos:
+            pos = view_prim.CreateAttribute(POS_ATTR, Sdf.ValueTypeNames.Float2)
+        pos.Set(Gf.Vec2f(float(target_x) + 280.0, float(target_y) + 80.0))
+    return slot
+
+
+def ensure_default_view(stage: Usd.Stage, scene, context) -> "int | None":
+    """Give this context a view if it has none, wired to the end of its exec chain.
+
+    Returns the slot to activate, or None if there was nothing to do. A context with no
+    view cooks nothing, so this is what makes a freshly opened network actually run.
+    """
+    if context_has_view(scene, context):
+        return None
+    tails = chunk_usd.get_exec_tail_chunks(stage, scene, context)
+    if not tails:
+        return None
+    return create_view_for(stage, scene, chunk_usd.get_chunk_prim_path(tails[0]))

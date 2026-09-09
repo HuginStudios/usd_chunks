@@ -205,6 +205,7 @@ class GraphView:
         self.live = False  # nothing may update the client until page.add has run
         self.status_text: ft.Text | None = None
         self.reload()
+        self._ensure_view()
 
     # -- state -------------------------------------------------------------
 
@@ -934,32 +935,204 @@ class GraphView:
         self.reload()
         self.refresh(bodies=True)
 
-    def create_view(self, x: float, y: float):
-        """V: add a view node, taking the lowest free slot."""
-        taken = set(self.view_chunks())
-        free = next((n for n in (1, 2, 3) if n not in taken), None)
-        if free is None:
-            self.status = "all three view slots are taken"
-            return self.refresh()
-        entry = next((e for e in self.menu_entries()
-                      if getattr(e.module, "module_name", "") == "view"), None)
-        if entry is None:
-            self.status = "no view module"
-            return self.refresh()
+    def create_view(self, x: float = 0.0, y: float = 0.0):
+        """V: wire a view to the selected node, or to the end of the chain.
 
-        before = set(self.prims)
-        self.create_chunk(entry, x, y)
-        made = set(self.prims) - before
-        if not made:
+        Creation is chunk_graph.create_view_for, shared with the other two frontends --
+        slot allocation is scoped to the container, and a view already wired to the target
+        is reused rather than duplicated.
+        """
+        if self.scene is None:
+            self.status = "no chunk session"
+            return self.refresh()
+        chosen = [p for p in self.selected_nodes if p in self.prims]
+        if chosen:
+            slot = chunk_graph.create_view_for(self.stage, self.scene, chosen[0])
+        else:
+            slot = chunk_graph.ensure_default_view(self.stage, self.scene,
+                                                   self.chunks.get(self.context))
+        if slot is None:
+            self.status = "no view created"
+            return self.refresh()
+        self.stage.GetRootLayer().Save()
+        self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.reload()
+        self.set_active_slot(slot)
+
+    def _ensure_view(self) -> None:
+        """Give the context a view on open, as Qt has always done. Without one, nothing
+        cooks -- a network would look right and do nothing."""
+        if self.scene is None:
             return
-        prim = self.prims[made.pop()]
-        attr = prim.GetAttribute(VIEW_SLOT_ATTR)
-        if not (attr and attr.IsValid()):
-            attr = prim.CreateAttribute(VIEW_SLOT_ATTR, Sdf.ValueTypeNames.Int, custom=True)
-        attr.Set(int(free))
+        # Never override a slot the file already records. ensure_default_view returns the
+        # EXISTING slot when a view is already wired to the tail, so calling set_active_slot
+        # with it on every open reset whichever view the user had chosen back to that one.
+        already = self.active_slot()
+        try:
+            slot = chunk_graph.ensure_default_view(self.stage, self.scene,
+                                                   self.chunks.get(self.context))
+        except (AttributeError, KeyError, RuntimeError, ValueError):
+            logger.exception("could not create a default view")
+            return
+        if slot is None:
+            return
+        self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.reload()
+        if not already:
+            self.set_active_slot(slot)
+
+    # -- navigation --------------------------------------------------------
+
+    def can_dive(self, path: str) -> bool:
+        """Whether `path` is a subnet the user may navigate into.
+
+        Keyed on is_chunkgroup, not on the CONTEXT flag. Both a chunkgroup and a
+        chunk-in-chunk (AMDMaterialXLibrary, which creates `reference` and `bind_material`
+        as an implementation detail) carry CONTEXT, so the flag cannot tell them apart --
+        which is exactly why diving into the AMD node used to be offered and should not be.
+        """
+        chunk = self.chunks.get(path)
+        return chunk is not None and chunk_usd.is_chunkgroup(chunk)
+
+    def dive_into(self, path: str):
+        """Show the inside of a chunkgroup as the graph."""
+        if not self.can_dive(path):
+            return self.refresh()
+        self.context = path
+        self.selected_nodes = set()
+        self.selected = None
+        self.wiring = None
+        # Framing is per-graph: the inside of a group has its own coordinates, and keeping
+        # the outer zoom would open it somewhere off-screen.
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.status = "in %s" % path.rsplit("/", 1)[-1]
+        self.reload()
+        self.refresh(bodies=True)
+
+    def parent_context(self) -> "str | None":
+        """The context enclosing this one, or None at the top."""
+        if not self.context or self.context == chunk_graph.CHUNKS_ROOT:
+            return None
+        parent = self.context.rsplit("/", 1)[0]
+        while parent and parent != "":
+            if parent in self.available:
+                return parent
+            if "/" not in parent.lstrip("/"):
+                break
+            parent = parent.rsplit("/", 1)[0]
+        return chunk_graph.CHUNKS_ROOT if chunk_graph.CHUNKS_ROOT in self.available else None
+
+    def dive_out(self):
+        """Back up to the enclosing graph."""
+        parent = self.parent_context()
+        if parent is None:
+            self.status = "already at the top"
+            return self.refresh()
+        inner = self.context
+        self.context = parent
+        self.selected_nodes = set()
+        self.selected = None
+        self.wiring = None
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.reload()
+        # Land with the group you came out of selected, so you can see where you were.
+        if inner in self.prims:
+            self.set_selection([inner])
+        self.status = "in %s" % parent.rsplit("/", 1)[-1]
+        self.refresh(bodies=True)
+
+    def on_double_tap(self, event):
+        node = self.node_at(*self._xy(event))
+        if node is None:
+            return self.dive_out()
+        if self.can_dive(node):
+            return self.dive_into(node)
+        self.status = "%s is not a subnet" % node.rsplit("/", 1)[-1]
+        self.refresh()
+
+    def _nest_target(self):
+        """The chunk new chunks should be parented to: the group being shown, or None."""
+        return chunk_graph.nest_target(self.chunks.get(self.context))
+
+    # -- view slots --------------------------------------------------------
+
+    def _context_prim(self):
+        prim = self.stage.GetPrimAtPath(Sdf.Path(self.context))
+        return prim if prim and prim.IsValid() else None
+
+    def active_slot(self) -> int:
+        """The view slot driving execution in this context, 0 for none.
+
+        Stored as chunk:activeView on the CONTEXT prim, which is the same place Qt reads
+        and writes -- so a file saved with slot 2 active opens on slot 2 in either
+        frontend. Each context has its own slots: a tab view and a group view can both be
+        slot 1 without colliding.
+        """
+        prim = self._context_prim()
+        if prim is None:
+            return 0
+        attr = prim.GetAttribute(ACTIVE_VIEW_ATTR)
+        return int(attr.Get() or 0) if attr and attr.IsValid() else 0
+
+    def view_chunks(self) -> dict:
+        """{slot: node path} for the view chunks in this context."""
+        found = {}
+        for path, prim in self.prims.items():
+            if (prim.GetAttribute(CHUNK_TYPE_ATTR).Get() or "") != "view":
+                continue
+            attr = prim.GetAttribute(VIEW_SLOT_ATTR)
+            slot = int(attr.Get() or 0) if attr and attr.IsValid() else 0
+            if slot:
+                found[slot] = path
+        return found
+
+    def set_active_slot(self, slot: int):
+        """Switch which view drives execution, and recook for it.
+
+        The cooking itself is chunk_usd.recook_for_view -- the same function the Qt graph
+        calls. It blocks and mutes everything outside the active view's upstream tree, so
+        this is a real execution switch rather than a highlight.
+        """
+        prim = self._context_prim()
+        if prim is None or self.scene is None:
+            self.status = "no context to switch views in"
+            return self.refresh()
+        # Resolve BEFORE writing anything. Writing first meant switching to an empty slot
+        # persisted a slot with no view behind it -- the attribute said 3, nothing cooked,
+        # and the file carried that state to the next open.
+        context_chunk = self.chunks.get(self.context)
+        view_chunk = None
+        if slot:
+            view_chunk = chunk_usd.find_view_chunk_for_slot(
+                slot, self.stage, self.scene, context_chunk)
+            if view_chunk is None:
+                self.status = "no view in slot %d" % slot
+                return self.refresh()
+
+        if slot:
+            attr = prim.GetAttribute(ACTIVE_VIEW_ATTR)
+            if not (attr and attr.IsValid()):
+                attr = prim.CreateAttribute(ACTIVE_VIEW_ATTR, Sdf.ValueTypeNames.Int,
+                                            custom=True)
+            attr.Set(int(slot))
+        elif (attr := prim.GetAttribute(ACTIVE_VIEW_ATTR)) and attr.IsValid():
+            # Slot 0 is "no view". Qt never writes a 0, it clears -- an authored 0 and an
+            # absent attribute would otherwise be two spellings of the same state.
+            prim.RemoveProperty(ACTIVE_VIEW_ATTR)
+        try:
+            chunk_usd.recook_for_view(self.stage, self.scene, context_chunk, view_chunk)
+        except Exception as exc:  # noqa: BLE001
+            # Deliberately wide, and the only one left that is: a recook executes every
+            # chunk upstream of the view, which is arbitrary user code and can raise
+            # anything. Losing the window because one chunk is broken would be worse than
+            # reporting it. Logged as well as shown, or the traceback is gone for good.
+            logger.exception("recook failed while switching view slot")
+            self.status = "recook failed: %s" % type(exc).__name__
+        else:
+            self.status = ("view %d active" % slot) if slot else "no active view"
         self.stage.GetRootLayer().Save()
         self.reload()
-        self.set_active_slot(free)
+        self.refresh(bodies=True)
 
     # -- keyboard ----------------------------------------------------------
 
@@ -1003,7 +1176,7 @@ class GraphView:
         if key in ("0", "1", "2", "3") and not event.ctrl:
             return self.set_active_slot(int(key))
         if key == "v" and not event.ctrl:
-            return self.create_view(*self._xy_of_viewport_centre())
+            return self.create_view()
         if key == "g" and event.ctrl:
             return self.group_selection()
         if key == "a" and event.ctrl:

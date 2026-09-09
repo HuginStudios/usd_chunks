@@ -9,7 +9,7 @@ from __future__ import annotations
 import flet as ft
 import pytest
 
-from graph_fixtures import make_network
+from graph_fixtures import content_nodes, make_network
 from usd_chunks.plugins import chunk_flet_nodegraph as fg
 from usd_chunks.plugins import chunk_graph
 
@@ -24,12 +24,12 @@ def view(tmp_path):
 
 @pytest.fixture
 def first(view):
-    return sorted(view.prims)[0]
+    return content_nodes(view)[0]
 
 
 @pytest.fixture
 def second(view):
-    return sorted(view.prims)[1]
+    return content_nodes(view)[1]
 
 
 def key(name, ctrl=False):
