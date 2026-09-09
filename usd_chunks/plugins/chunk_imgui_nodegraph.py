@@ -643,12 +643,22 @@ def main(network: str, context: str | None = None):
 
     def gui():
         if view._editor is None:
-            view._editor = ed.create_editor()
+            # settings_file off, deliberately. The editor would otherwise persist node
+            # positions to NodeEditor.json in the working directory and restore from it on
+            # the next open -- shadowing ui:nodegraph:node:pos, which is the position all
+            # three frontends share. USD is the source of truth for where a node sits; a
+            # per-frontend cache of the same thing can only disagree with it.
+            config = ed.Config()
+            config.settings_file = ""
+            view._editor = ed.create_editor(config)
         view.draw()
 
     params = hello_imgui.RunnerParams()
     params.app_window_params.window_title = f"Chunk graph — {network.rsplit('/', 1)[-1]}"
     params.app_window_params.window_geometry.size = (1400, 850)
+    # Window layout goes to the user config folder. The default is the CURRENT folder, so
+    # running this from a repo drops a .ini next to the source.
+    params.ini_folder_type = hello_imgui.IniFolderType.app_user_config_folder
     params.callbacks.show_gui = gui
     with _quiet_introspection():
         hello_imgui.run(params)
