@@ -19,16 +19,21 @@ Two things are written per posed joint:
 """
 from __future__ import annotations
 
+import logging
 import math
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from usd_chunks import chunk
+from usd_chunks import chunk_gizmo
 from usd_chunks import chunk_notice
+from usd_chunks import chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 
 import rbd_solver
+
+logger = logging.getLogger(__name__)
 
 #: Attributes on the chunk prim that are params of the chunk, not joints.
 _NOT_A_JOINT = ("inputs:chunk", "inputs:prim_path", "inputs:write_targets",
@@ -195,24 +200,62 @@ def _descendants(link):
     return out
 
 
-def _set_local(prim, matrix):
-    """Author the whole local transform as one matrix op.
+def _upstream_of(node, prim):
+    """The composed local transform from everything the graph places before this chunk's
+    own op on `prim` -- deliberately NOT GetLocalTransformation(), which reads EVERYTHING
+    currently on the prim, including a chunk wired DOWNSTREAM of this one (an RBD Solver
+    bake, say) if that chunk's layer currently outranks this one's, which it legitimately
+    does, being closer to the view.
 
-    Deliberately not decomposed back into the translate and orient ops the import wrote:
-    the local transform is the ops multiplied in their authored order, and rebuilding that
-    correctly means getting an order convention right for a second time in one file. A
-    single xformOp:transform in a stronger layer has no order to get wrong.
+    apply_pose used to treat GetLocalTransformation() as the rest pose to build its own
+    absolute answer from. Once something downstream also writes to the same prim, that read
+    is contaminated: a downstream bake gets folded in as if it were part of the rest pose,
+    and stays folded in even after this chunk's own next re-cook discards its own stale
+    contribution, because the downstream one is untouched. Live-reported: posing a joint
+    after running the RBD Solver corrupted the whole arm's placement, worse with every
+    further pose change, fixed only by forcing a full recook.
+
+    Reads only the ops chunk_gizmo.xform_op_order places before this chunk's own -- the
+    same graph-derived order every other transform-authoring chunk in this codebase already
+    uses to decide who's upstream of whom, applied here to ourselves instead of a caller.
     """
+    my_op = chunk_utils.xform_op_name(node)
+    order = chunk_gizmo.xform_op_order(node, prim, my_op)
+    try:
+        my_index = order.index(my_op)
+    except ValueError:
+        my_index = len(order)
+    matrix = Gf.Matrix4d(1.0)
+    for op_name in order[:my_index]:
+        attr = prim.GetAttribute(op_name)
+        if not attr or not attr.IsValid():
+            continue
+        matrix = UsdGeom.XformOp(attr).GetOpTransform(Usd.TimeCode.Default()) * matrix
+    return matrix
+
+
+def _set_local(prim, matrix, upstream, node):
+    """Author this chunk's SHARE of the local transform, not the absolute placement.
+
+    `matrix` is where the prim's local transform needs to end up; `upstream` is what the
+    ops before this chunk's own already contribute (see _upstream_of). Writing `matrix`
+    itself as this chunk's own op applies upstream's contribution a second time the moment
+    it composes rather than replaces it -- the same mistake already fixed for the RBD
+    Solver's own bake (see chunk_gizmo.xform_op_order's docstring: "the shared op is what
+    let the solver evict everyone else"). Dividing upstream back out, and owning a uniquely
+    named op via chunk_utils.xform_op_name rather than the bare "xformOp:transform" every
+    chunk used to fight over, is what lets a downstream chunk (an RBD Solver bake) coexist
+    with this one instead of silently excluding it from the order or being excluded by it.
+    """
+    my_op = chunk_utils.xform_op_name(node)
     xform = UsdGeom.Xformable(prim)
-    op = None
-    for existing in xform.GetOrderedXformOps():
-        if existing.GetOpType() == UsdGeom.XformOp.TypeTransform:
-            op = existing
-            break
-    if op is None:
-        op = xform.AddTransformOp()
-    op.Set(matrix)
-    xform.SetXformOpOrder([op])
+    order = chunk_gizmo.xform_op_order(node, prim, my_op)
+    xform.GetXformOpOrderAttr().Set(order)
+
+    attr = prim.GetAttribute(my_op)
+    if not attr or not attr.IsValid():
+        attr = prim.CreateAttribute(my_op, Sdf.ValueTypeNames.Matrix4d, custom=False)
+    attr.Set(matrix * upstream.GetInverse())
 
 
 def _write_target(joint_prim, kind, value):
@@ -230,7 +273,7 @@ def _joint_prim(link):
     return None
 
 
-def apply_pose(stage, roots, values, root_path, write_targets=True):
+def apply_pose(stage, roots, values, root_path, node, write_targets=True):
     """Move every posed joint, and everything hanging off it.
 
     Links are authored FLAT, so a rotation does not propagate down the hierarchy the way it
@@ -246,10 +289,16 @@ def apply_pose(stage, roots, values, root_path, write_targets=True):
     the last rotation -- which looks like a posing bug and is a composition one.
     """
     local = {}
+    upstream = {}
     for link in _posable(roots):
         for reachable in _outermost([d.prim for d in _descendants(link)]):
             if reachable not in local:
-                local[reachable] = UsdGeom.Xformable(reachable).GetLocalTransformation()
+                # Captured once, kept unchanged: this is what _set_local later divides back
+                # out, so it has to reflect what's genuinely upstream of this chunk, not the
+                # (possibly further-touched) working value in `local`.
+                seed = _upstream_of(node, reachable)
+                local[reachable] = seed
+                upstream[reachable] = seed
 
     posed = 0
     touched = set()
@@ -292,7 +341,7 @@ def apply_pose(stage, roots, values, root_path, write_targets=True):
         posed += 1
 
     for prim in touched:
-        _set_local(prim, local[prim])
+        _set_local(prim, local[prim], upstream[prim], node)
     return posed
 
 
@@ -339,17 +388,18 @@ def _execute(node):
     layer.Clear()
 
     with Usd.EditContext(stage, layer):
-        posed = apply_pose(stage, roots, values, root_path,
+        posed = apply_pose(stage, roots, values, root_path, node,
                            write_targets=bool(targets.value) if targets else True)
     # Only when the shape of the work changes, not once per cook. A slider drag cooks this
-    # chunk several times a second and each print is free in a terminal but not in a panel
-    # that captures stdout into a widget -- there it is a repaint per line, which is felt
-    # as the slider being laggy rather than as the chunk being chatty.
+    # chunk several times a second, and even at debug level each log call is free in a
+    # terminal but not in a panel that captures stdout into a widget -- there it is a
+    # repaint per line, which is felt as the slider being laggy rather than as the chunk
+    # being chatty.
     last = getattr(node, "_pose_reported", None)
     now = (posed, str(root_path))
     if now != last:
         node._pose_reported = now
-        print(f"[Pose] posed {posed} joint(s) under {root_path}")
+        logger.debug("posed %d joint(s) under %s", posed, root_path)
 
 
 #: Nodes currently inside execute(), by id, so a cook cannot re-enter itself.
