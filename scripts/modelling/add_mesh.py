@@ -1,11 +1,38 @@
-from pxr import Usd, UsdGeom, Sdf, UsdShade
+from pxr import Ar, Usd, UsdGeom, Sdf, UsdShade
 from usd_chunks import chunk, chunk_utils
 import itertools
+import logging
 import numpy as np
 import os
 from enum import IntEnum
 
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+def texture_file_is_usable(path: str) -> bool:
+    """Whether a UsdUVTexture authored with *path* will actually have an image to load.
+
+    A texture whose file cannot be resolved is not merely a missing image: the shader
+    network still carries the whole UV chain (primvar reader -> UsdTransform2d -> the
+    texture's `st`), and a render delegate that drops the unloadable texture node while
+    still translating what fed it is left holding a connection to a node it never built.
+    hdCycles fails exactly that way -- "Failed to load 1 image files" followed by
+    "Could not find node '/Mapping' to connect" out of BuildShaderGraph (its Cycles
+    `mapping` node being the translation of our UsdTransform2d) -- and takes usdview down
+    with it on a delegate switch. So the chain is only worth authoring when the image is
+    really there.
+
+    A path carrying a `<UDIM>` (or any other `<token>`) is left alone: those never resolve
+    as a plain file and are meant not to, so treating them as missing would break a
+    perfectly valid texture set.
+    """
+    if not path:
+        return False
+    if "<" in path and ">" in path:
+        return True  # UDIM / token pattern -- not resolvable as a single file by design
+    return bool(Ar.GetResolver().Resolve(path))
 
 
 class Topo(IntEnum):
@@ -305,6 +332,17 @@ def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
 
     preview = UsdShade.Shader.Define(stage, surface_path)
     stage.GetPrimAtPath(surface_path).GetAttribute("info:id").Set("UsdPreviewSurface")
+
+    if not texture_file_is_usable(path_to_uv):
+        # No image to sample: bind a plain surface rather than a texture network whose
+        # image cannot load -- see texture_file_is_usable for what that costs downstream.
+        logger.warning("texture file does not resolve, binding a plain surface: %s", path_to_uv)
+        preview.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.5, 0.5, 0.5))
+        preview_output_surface = preview.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+        material.GetOutput("surface").ConnectToSource(preview_output_surface)
+        api = UsdShade.MaterialBindingAPI.Apply(prim)
+        api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
+        return
 
     texture = UsdShade.Shader.Define(stage, texture_path)
     stage.GetPrimAtPath(texture_path).GetAttribute("info:id").Set("UsdUVTexture")
