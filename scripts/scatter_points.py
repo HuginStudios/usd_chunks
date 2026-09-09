@@ -481,21 +481,37 @@ DENSITY_PRIMVAR = "scatterDensity"
 #: How finely the lookup grid divides the surface's bounds, at its coarsest. The grid only
 #: has to be fine enough that a cell holds few vertices, since a query answers with the
 #: nearest one in it -- past that it costs memory for nothing.
-_LOOKUP_DIVISIONS = 48
-
-#: ...but a fixed 48 is far too coarse for a scanned mesh. The vertices of a surface fall in
-#: roughly `divisions**2` cells, so 340k of them over 48 divisions is a hundred and fifty per
-#: cell -- four thousand distances per query once the neighbours are included, which is the
-#: brute force the grid exists to avoid.
+#: How many vertices a lookup cell should hold. Everything about the grid follows from this
+#: one number, because it is what fixes the cell size *relative to the vertices* rather than
+#: to the bounding box -- and a query only ever searches the 27 cells around it, so a cell
+#: measured against anything else is a reach that means something different on every mesh.
+#:
+#: At this figure a cell comes out about 2.8 vertex spacings across whatever the density, so
+#: the neighbourhood always reaches roughly four spacings and a candidate anywhere on a
+#: triangle finds the vertices of that triangle.
 _LOOKUP_TARGET_PER_CELL = 8
+
 #: Past this the dictionary costs more than the search it saves.
 _LOOKUP_MAX_DIVISIONS = 512
 
 
 def _lookup_divisions(vertex_count):
-    """Grid resolution for a painted field of this many vertices."""
+    """How finely the lookup grid divides the painted surface's bounds.
+
+    Derived from the vertex count, with no floor under it. A fixed 48 was the original, and
+    it is wrong at both ends: far too coarse for a scan (340k vertices over 48 divisions is
+    150 per cell, four thousand distances per query -- the brute force the grid exists to
+    avoid) and, less obviously, far too *fine* for anything hand-made.
+
+    The fine end was the one that produced wrong pictures rather than slow ones. On a floor
+    of a few quads, cells of a forty-eighth of the surface are far smaller than the gap
+    between vertices, so everything in the middle of a quad sits in an empty neighbourhood
+    and reads as unpainted. A fully painted 20-unit quad scattered 139 of 200 instances, all
+    of them within 1.1 units of a corner, in four clumps -- and the sampler's rejection loop
+    hid it by simply retrying until it found somewhere near a vertex to put them.
+    """
     wanted = math.sqrt(max(vertex_count, 1) / _LOOKUP_TARGET_PER_CELL)
-    return int(max(_LOOKUP_DIVISIONS, min(_LOOKUP_MAX_DIVISIONS, wanted)))
+    return int(max(1, min(_LOOKUP_MAX_DIVISIONS, wanted)))
 
 
 #: Cell ids are packed into one integer -- `(x * S + y) * S + z` -- so a cell groups with
