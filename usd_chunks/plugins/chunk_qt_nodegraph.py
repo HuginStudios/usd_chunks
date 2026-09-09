@@ -1081,6 +1081,15 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         views = self.scene().views() if self.scene() is not None else []
         if views and not getattr(views[0], "_lod_bodies_shown", True):
             self._proxy.setVisible(False)
+        if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
+            # A chunk that is already collapsed by the time its proxy is finally built (e.g.
+            # loaded from a saved scene, where create_proxy() runs in a deferred batch well
+            # after state was restored) has no STATE_CHANGED transition to trigger
+            # _set_collapsed's own setVisible(False) -- the state never actually changed,
+            # it was simply already this way. Without this, the body shows fully expanded
+            # (params and all) until something unrelated later toggles COLLAPSED off and
+            # back on.
+            self._proxy.setVisible(False)
         self._full_height = _NODE_HEADER_H + chunk_widget.sizeHint().height()
         self._height = self._full_height
         self.prepareGeometryChange()
@@ -1915,17 +1924,25 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 # -- see is_height_settled. _on_height_settled re-runs LOD once it is safe,
                 # so nothing is lost by declining here.
                 return
+            # LOD only ever toggles "full body" vs. "simple" and has no concept of collapse,
+            # so a collapsed node's widget must stay hidden even when LOD asks to show bodies
+            # again -- otherwise zooming back in force-shows the full param widget on a node
+            # still drawn at header height (the widget then renders outside/under the node's
+            # own box, with the usual stale-layout blank flash of a proxy widget that was
+            # hidden for a while). Ports still follow LOD normally either way -- a collapsed
+            # node's exec/connected ports are meant to stay visible independent of its body.
+            widget_visible = visible and not self.chunk.has_state(ChunkFlags.State.COLLAPSED)
             # Skip only when the flag AND the proxy agree. They can diverge: a body that
             # declined an earlier hide, or one whose proxy was rebuilt under it, leaves the
             # flag saying flat while the widget is still up, and trusting the flag alone
             # then strands it visible forever (41 of 56 buried nodes, measured).
             if self._lod_simple == (not visible) and (
-                proxy is None or proxy.isVisible() == visible
+                proxy is None or proxy.isVisible() == widget_visible
             ):
                 return
             self._lod_simple = not visible
             if proxy is not None:
-                proxy.setVisible(visible)
+                proxy.setVisible(widget_visible)
             for port in self._ports:
                 port.setVisible(visible)
             self._apply_dim()
