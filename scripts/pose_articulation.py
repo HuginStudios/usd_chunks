@@ -19,6 +19,7 @@ Two things are written per posed joint:
 """
 from __future__ import annotations
 
+import logging
 import math
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -29,6 +30,8 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 
 import rbd_solver
+
+logger = logging.getLogger(__name__)
 
 #: Attributes on the chunk prim that are params of the chunk, not joints.
 _NOT_A_JOINT = ("inputs:chunk", "inputs:prim_path", "inputs:write_targets",
@@ -359,14 +362,15 @@ def _execute(node):
         posed = apply_pose(stage, roots, values, root_path,
                            write_targets=bool(targets.value) if targets else True)
     # Only when the shape of the work changes, not once per cook. A slider drag cooks this
-    # chunk several times a second and each print is free in a terminal but not in a panel
-    # that captures stdout into a widget -- there it is a repaint per line, which is felt
-    # as the slider being laggy rather than as the chunk being chatty.
+    # chunk several times a second, and even at debug level each log call is free in a
+    # terminal but not in a panel that captures stdout into a widget -- there it is a
+    # repaint per line, which is felt as the slider being laggy rather than as the chunk
+    # being chatty.
     last = getattr(node, "_pose_reported", None)
     now = (posed, str(root_path))
     if now != last:
         node._pose_reported = now
-        print(f"[Pose] posed {posed} joint(s) under {root_path}")
+        logger.debug("posed %d joint(s) under %s", posed, root_path)
 
 
 #: Nodes currently inside execute(), by id, so a cook cannot re-enter itself.
