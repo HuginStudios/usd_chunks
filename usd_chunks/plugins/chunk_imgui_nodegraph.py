@@ -38,6 +38,43 @@ from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, load_chunks
 logger = logging.getLogger(__name__)
 
 NODE_W = 220.0
+SOCKET_R = 5.0          # radius of a pin's dot
+SOCKET_BOX = 14.0       # the square a socket reserves, so labels line up
+
+#: Port colours, matching the Flet frontend so the same wire reads the same in both.
+PORT_COLOUR = {
+    chunk_graph.PORT_EXEC: (0.79, 0.79, 0.79),
+    chunk_graph.PORT_FLOAT: (0.42, 0.71, 0.98),
+    chunk_graph.PORT_INT: (0.50, 0.85, 0.62),
+    chunk_graph.PORT_BOOL: (0.90, 0.55, 0.55),
+    chunk_graph.PORT_STRING: (0.85, 0.75, 0.45),
+    chunk_graph.PORT_COLOR: (0.85, 0.55, 0.85),
+    chunk_graph.PORT_VECTOR: (0.55, 0.70, 0.90),
+}
+_FALLBACK_COLOUR = (0.6, 0.6, 0.6)
+
+
+def _socket(port_type: str, connected: bool) -> None:
+    """Draw a pin's dot and reserve its space.
+
+    A pin's clickable area is whatever is drawn between begin_pin and end_pin, and this
+    frontend drew only a text label -- so there was nothing round to aim at and the wire
+    attached to the text baseline. Hence the dot, plus a pivot below that tells the editor
+    to anchor links to its centre.
+
+    Filled means wired, hollow means free -- the same read as every node editor, and it
+    costs nothing here because the engine already knows which ports have edges.
+    """
+    red, green, blue = PORT_COLOUR.get(port_type, _FALLBACK_COLOUR)
+    colour = imgui.IM_COL32(int(red * 255), int(green * 255), int(blue * 255), 255)
+    origin = imgui.get_cursor_screen_pos()
+    imgui.dummy(imgui.ImVec2(SOCKET_BOX, SOCKET_BOX))
+    centre = imgui.ImVec2(origin.x + SOCKET_BOX * 0.5, origin.y + SOCKET_BOX * 0.5)
+    draw = imgui.get_window_draw_list()
+    if connected:
+        draw.add_circle_filled(centre, SOCKET_R, colour)
+    else:
+        draw.add_circle(centre, SOCKET_R, colour, 0, 1.6)
 
 
 class _Scene(SceneSender):
@@ -187,27 +224,62 @@ class ImGuiGraphView:
 
         ins = [p for p in self.ports[path] if p.is_input]
         outs = [p for p in self.ports[path] if not p.is_input]
+        wired = self._wired_attr_paths()
+
+        # Inputs down the left edge, outputs down the right, both anchored to their dot.
+        # Drawn as two groups on one line so a node is as tall as its longest side rather
+        # than the sum of both -- the previous stacked layout is why Transform ran off the
+        # bottom of the window.
+        imgui.begin_group()
         for port in ins:
             ed.begin_pin(ed.PinId(self.ids.get(port.attr_path)), ed.PinKind.input)
-            imgui.text(f"-> {port.name}")
+            _socket(port.port_type, port.attr_path in wired)
+            imgui.same_line()
+            imgui.text(port.name)
             ed.end_pin()
+        imgui.end_group()
+
+        imgui.same_line()
+        imgui.dummy(imgui.ImVec2(12.0, 1.0))
+        imgui.same_line()
+
+        imgui.begin_group()
+        for port in outs:
+            ed.begin_pin(ed.PinId(self.ids.get(port.attr_path)), ed.PinKind.output)
+            imgui.text(port.name)
+            imgui.same_line()
+            _socket(port.port_type, port.attr_path in wired)
+            ed.end_pin()
+        imgui.end_group()
 
         chunk = self.chunks.get(path)
         if chunk is not None:
             for param in chunk_imgui.visible_params(chunk):
                 chunk_imgui.draw_param(param, width=NODE_W - 60)
-
-        for port in outs:
-            ed.begin_pin(ed.PinId(self.ids.get(port.attr_path)), ed.PinKind.output)
-            imgui.text(f"{port.name} ->")
-            ed.end_pin()
         ed.end_node()
+
+    def _wired_attr_paths(self) -> set:
+        """Every attr path with an edge on it, for filled-vs-hollow sockets."""
+        wired = set()
+        for edge in self.edges:
+            wired.add(edge.src_attr_path)
+            wired.add(edge.dst_attr_path)
+        return wired
 
     def _draw_edge(self, edge):
         src = self.ids.get(edge.src_attr_path)
         dst = self.ids.get(edge.dst_attr_path)
         link_id = self.ids.get(f"link:{edge.src_attr_path}->{edge.dst_attr_path}")
-        ed.link(ed.LinkId(link_id), ed.PinId(src), ed.PinId(dst))
+        src_port = self._port_for_attr(edge.src_node_path, edge.src_attr_path)
+        red, green, blue = PORT_COLOUR.get(
+            src_port.port_type if src_port else "", _FALLBACK_COLOUR)
+        ed.link(ed.LinkId(link_id), ed.PinId(src), ed.PinId(dst),
+                imgui.ImVec4(red, green, blue, 1.0),
+                2.5 if edge.is_exec else 1.5)
+
+    def _port_for_attr(self, node_path: str, attr_path: str):
+        return next((p for p in self.ports.get(node_path, [])
+                     if p.attr_path == attr_path), None)
 
     # -- input -------------------------------------------------------------
 
