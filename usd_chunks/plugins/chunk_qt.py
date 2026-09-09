@@ -1022,6 +1022,11 @@ def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
         return
 
     module_dock = QtWidgets.QDockWidget("Chunks", parent_window)
+    # The constructor's "Chunks" is the *title*, not the objectName -- so the findChild
+    # above never matched and a second call would have added a second dock. It is also what
+    # QMainWindow.saveState() keys the dock's size and position by, and a dock without one is
+    # dropped from the saved layout with a warning. See chunk_window_state.
+    module_dock.setObjectName("Chunks")
 
     module_dock.setWidget(ChunkWidgetDocker(parent=module_dock))
     parent_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, module_dock)

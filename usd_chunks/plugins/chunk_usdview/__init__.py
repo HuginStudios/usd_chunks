@@ -11,7 +11,7 @@ from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
 from usd_chunks import chunk_registry, chunk_core
-from usd_chunks.plugins import chunk_qt, chunk_usd
+from usd_chunks.plugins import chunk_qt, chunk_usd, chunk_window_state
 
 from typing import List
 
@@ -263,6 +263,10 @@ def launch_chunks(usdviewApi) -> None:
     scene = UsdviewScene(usdviewApi)
 
     chunk_qt.build_chunk_docker(usdviewApi.qMainWindow)
+    # After the dock exists, before the stage is built: restoreState can only place docks
+    # that are already there, and doing it here means the window is the right size for the
+    # first thing drawn into it rather than after.
+    chunk_window_state.install(usdviewApi.qMainWindow)
     chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
     chunk_usd.initialize(usdviewApi.stage, scene)
 

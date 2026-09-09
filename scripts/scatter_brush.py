@@ -13,7 +13,7 @@ every cook -- which is why `execute` deliberately does not clear that layer. A p
 is not a slider, and reconstructing it from one would mean inventing a param type to hold a
 few thousand floats. It saves and loads with the scene like any other chunk layer.
 
-Requires: pxr (OpenUSD), usd_chunks.
+Requires: pxr (OpenUSD), usd_chunks, numpy (a stroke touches every vertex -- see `_stamp`).
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import logging
 
+import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_core, chunk_utils
@@ -53,10 +54,13 @@ def _falloff(distance, radius):
 
     A hard-edged brush is unusable for density work -- the instances it places have a visible
     boundary the eye picks out immediately, which is the thing you are painting to avoid.
+
+    Takes the whole array of distances under one dab, because on a real asset that is
+    hundreds of thousands of vertices and doing it one at a time is the stroke.
     """
     if radius <= 0.0:
-        return 0.0
-    t = max(0.0, min(1.0, 1.0 - (distance / radius)))
+        return np.zeros_like(np.asarray(distance, dtype=np.float64))
+    t = np.clip(1.0 - np.asarray(distance, dtype=np.float64) / radius, 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
 
 
@@ -109,21 +113,29 @@ def _stroke_state(node, mesh_prim, count):
     Measured on a 14.6k-vertex floor, a tick cost 173ms -- six frames a second -- and 77% of
     that was rebuilding the base colour: fourteen thousand Gf.Vec3f objects, per tick, off the
     property stack.
+
+    The colours are skipped entirely with Show Paint off. Building a per-vertex tint nobody
+    is going to look at is free on a floor and is a third of a million vectors on a scanned
+    mesh, which is the case that made it worth asking.
     """
     cache = getattr(node, _STROKE_CACHE, None)
     if cache is None:
-        return _current_weights(mesh_prim, count), []
+        return _current_weights(mesh_prim, count), _NO_COLOURS, None
     states = cache[2]
     key = str(mesh_prim.GetPath())
     state = states.get(key)
     if state is None:
-        attr = UsdGeom.Gprim(mesh_prim).GetDisplayColorAttr()
-        base = _base_colour(attr, node.get_edit_context())
         weights = _current_weights(mesh_prim, count)
-        # The colours are held too, and mutated in place: only a few hundred vertices move
-        # under a brush, and rebuilding all of them each tick was the next cost down once the
-        # base colour stopped being recomputed.
-        state = [weights, base, _tint_colours(node, weights, base)]
+        show = node.get_param("show_paint")
+        if show and show.value:
+            attr = UsdGeom.Gprim(mesh_prim).GetDisplayColorAttr()
+            under = _under_colours(_base_colour(attr, node.get_edit_context()), count)
+            # Held and mutated in place: only a few hundred vertices move under a brush, and
+            # rebuilding all of them each tick was the next cost down once the base colour
+            # stopped being recomputed.
+            state = [weights, under, _blend_tint(under, _paint_colour(node), weights)]
+        else:
+            state = [weights, _NO_COLOURS, None]
         states[key] = state
     return state
 
@@ -170,8 +182,8 @@ def _stroke_finished(owner, notice, sender):
         logger.debug("Could not recook after a stroke on %s", owner.name, exc_info=True)
 
 
-def _paint_targets(prim):
-    """Every mesh under `prim`, with its points in world space.
+def _paint_meshes(prim):
+    """Every mesh under `prim` that has points, with how many it has.
 
     A hierarchy, not a mesh. What a user picks as "the surface" is almost never a single
     Mesh -- `KitchenTable_1` is an Xform whose meshes are children, and that is the ordinary
@@ -180,21 +192,45 @@ def _paint_targets(prim):
     reported 2392 triangles. The two disagreeing about what "the surface" means is exactly
     the bug that produced.
 
+    Separate from `_paint_targets` because most callers only need to know how long the weight
+    array is. `execute` runs on every cook, and transforming a third of a million vertices to
+    world space to count them is a cook's worth of work for a number USD already knows.
+    """
+    meshes = []
+    for p in Usd.PrimRange(prim):
+        points = UsdGeom.Mesh(p).GetPointsAttr().Get()
+        if points:
+            meshes.append((p, len(points)))
+    return meshes
+
+
+def _paint_targets(prim):
+    """Every mesh under `prim`, with its points in world space as an (N, 3) array.
+
     World space, which is the space strokes arrive in. Each mesh is kept separate because the
     weight is authored per mesh: one primvar per prim that has points.
+
+    One matrix multiply per mesh, rather than a `Gf.Matrix4d.Transform` per vertex: on a
+    340k-vertex scan the per-vertex form took five and a half seconds, at the start of every
+    stroke.
     """
     targets = []
     for p in Usd.PrimRange(prim):
         points = UsdGeom.Mesh(p).GetPointsAttr().Get()
         if not points:
             continue
-        to_world = UsdGeom.Xformable(p).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        targets.append((p, [to_world.Transform(Gf.Vec3d(q[0], q[1], q[2])) for q in points]))
+        matrix = np.asarray(
+            UsdGeom.Xformable(p).ComputeLocalToWorldTransform(Usd.TimeCode.Default()),
+            dtype=np.float64,
+        )
+        # Row-vector convention, matching Gf: p * M, translation in the last row.
+        world = np.asarray(points, dtype=np.float64) @ matrix[:3, :3] + matrix[3, :3]
+        targets.append((p, world))
     return targets
 
 
 def _current_weights(prim, count):
-    """Whatever is painted now, as a plain list of floats, defaulting to unpainted.
+    """Whatever is painted now, as a float array, defaulting to unpainted.
 
     Zero rather than one: a brush chunk that has been added but never used should scatter
     nothing, so the effect of adding it is visible and undoable. An *absent* primvar still
@@ -205,14 +241,25 @@ def _current_weights(prim, count):
     if primvar and primvar.HasValue():
         values = primvar.ComputeFlattened()
         if values is not None and len(values) >= count:
-            return [float(v) for v in values[:count]]
-    return [0.0] * count
+            # Copied, not viewed: this array is mutated in place through the stroke, and the
+            # one USD handed back is its own.
+            return np.array(values[:count], dtype=np.float64)
+    return np.zeros(count, dtype=np.float64)
 
 
 _DISPLAY_COLOR = "primvars:displayColor"
 
 #: Used where the surface has no colour of its own to blend from.
 _NEUTRAL = Gf.Vec3f(0.5, 0.5, 0.5)
+
+#: "This mesh has no tint this stroke" -- Show Paint is off, or there is no state yet.
+_NO_COLOURS = np.zeros((0, 3), dtype=np.float64)
+
+
+def _paint_colour(node):
+    return np.asarray(
+        node.get_param("paint_color").value or (0.15, 0.55, 1.0), dtype=np.float64
+    )
 
 
 def _write_weights(node, stage, prim, weights, colours=None):
@@ -224,7 +271,10 @@ def _write_weights(node, stage, prim, weights, colours=None):
         primvar = UsdGeom.PrimvarsAPI(over).CreatePrimvar(
             DENSITY_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
         )
-        primvar.Set(Vt.FloatArray([float(w) for w in weights]))
+        # FromNumpy, not a list comprehension into Vt: the array is authored on every tick of
+        # a stroke, and rebuilding a third of a million Python floats to do it was most of
+        # the tick on a scanned mesh.
+        primvar.Set(Vt.FloatArray.FromNumpy(np.ascontiguousarray(weights, dtype=np.float32)))
         _write_tint(node, stage, over, weights, colours=colours)
 
 
@@ -248,23 +298,42 @@ def _write_tint(node, stage, over, weights, colours=None):
     attr = UsdGeom.Gprim(over).GetDisplayColorAttr()
     if not show or not show.value:
         _remove_our_tint(node, over)
+        _show_through_material(node, over, show=False)
         return
 
     if colours is None:
         colours = _tint_colours(node, weights, _base_colour(attr, node.get_edit_context()))
     attr = UsdGeom.Gprim(over).CreateDisplayColorAttr()
     UsdGeom.Primvar(attr).SetInterpolation(UsdGeom.Tokens.vertex)
-    attr.Set(Vt.Vec3fArray(colours))
+    attr.Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(colours, dtype=np.float32)))
+    _show_through_material(node, over, show=True)
+
+
+def _under_colours(base, count):
+    """The surface's own colour per vertex, padded out to `count` rows.
+
+    Short arrays repeat their last value and an absent one falls back to neutral grey --
+    both carried over from the per-vertex version, where the same two cases were an
+    index guard.
+    """
+    base = np.asarray(base, dtype=np.float64).reshape(-1, 3)
+    if not len(base):
+        return np.tile(np.asarray(_NEUTRAL, dtype=np.float64), (count, 1))
+    if len(base) < count:
+        base = np.concatenate((base, np.repeat(base[-1:], count - len(base), axis=0)))
+    return np.ascontiguousarray(base[:count])
+
+
+def _blend_tint(under, paint, weights):
+    """Every vertex's tint: its own colour, moved toward the paint by its weight."""
+    amount = np.clip(np.asarray(weights, dtype=np.float64), 0.0, 1.0)[:, None]
+    return under + (paint - under) * amount
 
 
 def _tint_colours(node, weights, base):
     """The whole tint, blended from whatever the surface already had."""
-    paint = Gf.Vec3f(*(node.get_param("paint_color").value or (0.15, 0.55, 1.0)))
-    colours = []
-    for index, weight in enumerate(weights):
-        under = base[index] if index < len(base) else (base[-1] if base else _NEUTRAL)
-        colours.append(under + (paint - under) * max(0.0, min(1.0, float(weight))))
-    return colours
+    count = len(weights)
+    return _blend_tint(_under_colours(base, count), _paint_colour(node), weights)
 
 
 def _remove_our_tint(node, over):
@@ -295,6 +364,59 @@ def _remove_our_tint(node, over):
         prim_spec.RemoveProperty(spec)
 
 
+_MATERIAL_BINDING = "material:binding"
+
+
+def _show_through_material(node, over, show):
+    """Let the tint actually reach the viewport on a textured asset.
+
+    `displayColor` is what a surface falls back to when nothing else has an opinion, and a
+    bound material always has one -- so on any asset with a shader on it the paint was
+    authored, correct, and completely invisible. Reported on a photogrammetry rock: the
+    strokes landed, the weights were right, and the surface never changed.
+
+    So while Show Paint is on, the surface is bound to no material in whichever layer this
+    chunk is writing to, and the fallback is what the viewport draws. Nothing is destroyed --
+    the empty binding overrides the asset's from above and is removed by name the moment Show
+    Paint goes off, the same way the tint is. Painting a mask and looking at the textured
+    asset are two different things to be doing, and the tick box is which one you are doing.
+
+    Authored on every mesh we tint rather than only where a binding is found: bindings inherit
+    down a hierarchy, so "does this prim have one" is the wrong question to ask of the prim
+    alone, and an empty relationship over an unmaterialled mesh costs a line in a layer.
+
+    Never over an existing binding, though. Where we are writing already holds a real one, we
+    would be overwriting it and, worse, deleting it on the way back out. That layer is
+    somebody's authored opinion, so it is left alone and the paint simply stays behind the
+    material -- the honest failure rather than a destructive success. The same asymmetry
+    guards the removal: only an *empty* binding is ours to take away.
+
+    A chunk layer only wins over what is weaker than it. An asset opened as the root layer
+    outranks every chunk, and there the material stands -- the same limit the tint itself has
+    always had.
+    """
+    layer = node.get_edit_context() or over.GetStage().GetEditTarget().GetLayer()
+    spec = _binding_spec(layer, over.GetPath())
+
+    if show:
+        if spec is None or not _binding_targets(spec):
+            over.CreateRelationship(_MATERIAL_BINDING, False).SetTargets([])
+        return
+
+    if spec is not None and not _binding_targets(spec):
+        layer.GetPrimAtPath(over.GetPath()).RemoveProperty(spec)
+
+
+def _binding_spec(layer, path):
+    """The material:binding relationship authored on `path` in `layer`, if any."""
+    prim_spec = layer.GetPrimAtPath(path) if layer else None
+    return prim_spec.properties.get(_MATERIAL_BINDING) if prim_spec else None
+
+
+def _binding_targets(spec):
+    return list(spec.targetPathList.GetAddedOrExplicitItems())
+
+
 def _base_colour(attr, our_layer):
     """The surface's own displayColor, ignoring the opinion we authored on top of it.
 
@@ -303,14 +425,14 @@ def _base_colour(attr, our_layer):
     into itself and drift a little further from the asset on every stroke.
     """
     if not attr or not attr.IsValid():
-        return []
+        return _NO_COLOURS
     for spec in attr.GetPropertyStack(Usd.TimeCode.Default()):
         if our_layer is not None and spec.layer == our_layer:
             continue
         value = spec.default
         if value:
-            return [Gf.Vec3f(*c) for c in value]
-    return []
+            return np.asarray(value, dtype=np.float64).reshape(-1, 3)
+    return _NO_COLOURS
 
 
 def gizmo_stroke(node, gizmo, samples):
@@ -341,42 +463,60 @@ def gizmo_stroke(node, gizmo, samples):
     if radius <= 0.0 or strength <= 0.0:
         return False
 
-    centres = [(pt, pressure) for pt, pressure, _n in map(_unpack, samples)]
-    radius_sq = radius * radius
+    centres = [(pt, pressure) for pt, pressure, _n in map(_unpack, samples) if pt is not None]
+    if not centres:
+        return False
+
+    paint = _paint_colour(node)
     touched = False
 
     for mesh_prim, points in targets:
-        weights, base, colours = _stroke_state(node, mesh_prim, len(points))
-        paint = Gf.Vec3f(*(node.get_param("paint_color").value or (0.15, 0.55, 1.0)))
-        changed = False
-        for centre, pressure in centres:
-            if centre is None:
-                continue
-            for index, point in enumerate(points):
-                offset = point - centre
-                distance_sq = offset[0] ** 2 + offset[1] ** 2 + offset[2] ** 2
-                if distance_sq > radius_sq:
-                    continue
-                amount = strength * pressure * _falloff(distance_sq ** 0.5, radius)
-                if amount <= 0.0:
-                    continue
-                weights[index] = _blend(mode, weights[index], amount)
-                if colours:
-                    # In place: only what moved under the brush is recoloured, rather than
-                    # every vertex on the surface being rebuilt on every tick.
-                    under = base[index] if index < len(base) else _NEUTRAL
-                    colours[index] = under + (paint - under) * weights[index]
-                changed = True
+        weights, under, colours = _stroke_state(node, mesh_prim, len(points))
+        moved = _stamp(points, centres, radius, strength, mode, weights)
+        if moved is None:
+            continue
+        if colours is not None:
+            # Only what the brush actually reached is recoloured, rather than every vertex on
+            # the surface being rebuilt on every tick.
+            colours[moved] = _blend_tint(under[moved], paint, weights[moved])
         # Written per mesh, and only the ones the stroke reached: a table is a dozen prims
         # and a brush touches one of them, so re-authoring all of them every tick would put
         # a full copy of every vertex array into the layer on each mouse-move.
-        if changed:
-            _write_weights(node, stage, mesh_prim, weights, colours=colours)
-            touched = True
+        _write_weights(node, stage, mesh_prim, weights, colours=colours)
+        touched = True
 
     if touched:
         setattr(node, _STROKE_TOUCHED, True)
     return touched
+
+
+def _stamp(points, centres, radius, strength, mode, weights):
+    """Fold one tick's dabs into `weights` in place; the vertices that moved, or None.
+
+    The whole surface is tested against each dab in one array pass. The per-vertex Python
+    loop this replaces was O(dabs x vertices) *per mouse-move* -- fine on a twelve-triangle
+    floor, and a third of a second per tick on a scanned rock, which is the "super heavy to
+    even start brushing" that was reported.
+
+    Dabs are still applied one after another, so a vertex caught by two of them in the same
+    tick is blended twice, in order, exactly as before.
+    """
+    radius_sq = radius * radius
+    moved = None
+    for centre, pressure in centres:
+        offset = points - np.asarray([centre[0], centre[1], centre[2]], dtype=np.float64)
+        distance_sq = np.einsum("ij,ij->i", offset, offset)
+        under = np.flatnonzero(distance_sq <= radius_sq)
+        if not len(under):
+            continue
+        amount = strength * pressure * _falloff(np.sqrt(distance_sq[under]), radius)
+        under = under[amount > 0.0]
+        if not len(under):
+            continue
+        amount = amount[amount > 0.0]
+        weights[under] = _blend(mode, weights[under], amount)
+        moved = under if moved is None else np.concatenate((moved, under))
+    return moved
 
 
 def _place_points(node, stage, samples):
@@ -514,14 +654,18 @@ def _write_points(node, stage, points, normals=None, widths=None):
 
 
 def _blend(mode, current, amount):
-    """One vertex's new weight. Clamped, because the value is used as a probability."""
+    """New weights for every vertex one dab reached. Clamped: the value is a probability.
+
+    Elementwise over arrays rather than a value at a time -- a dab on a scanned mesh covers
+    tens of thousands of vertices, and they all blend the same way.
+    """
     if mode == "Subtract":
-        return max(0.0, current - amount)
+        return np.maximum(0.0, current - amount)
     if mode == "Smooth":
         # Toward the middle rather than toward a target: with no neighbour information here,
         # this evens a field out without needing the mesh's topology.
         return current + (0.5 - current) * amount
-    return min(1.0, current + amount)
+    return np.minimum(1.0, current + amount)
 
 
 def _unpack(sample):
@@ -586,8 +730,8 @@ def _set_everywhere(node, value):
         return
     if prim is None:
         return
-    for mesh_prim, points in _paint_targets(prim):
-        _write_weights(node, stage, mesh_prim, [value] * len(points))
+    for mesh_prim, count in _paint_meshes(prim):
+        _write_weights(node, stage, mesh_prim, np.full(count, value, dtype=np.float64))
     _bump_strokes(node, reset=(value == 0.0))
 
 
@@ -598,8 +742,8 @@ def _show_paint_changed(owner, notice, sender):
     if prim is None:
         return
     _show_points(node, stage)
-    for mesh_prim, points in _paint_targets(prim):
-        _write_weights(node, stage, mesh_prim, _current_weights(mesh_prim, len(points)))
+    for mesh_prim, count in _paint_meshes(prim):
+        _write_weights(node, stage, mesh_prim, _current_weights(mesh_prim, count))
 
 
 def _show_points(node, stage):
@@ -653,9 +797,9 @@ def execute(node):
     # Only to make the attribute exist, so a scatter downstream resolves something rather
     # than nothing the moment the two are wired together. Per mesh, because the surface a
     # user picks is a hierarchy far more often than it is a single Mesh.
-    for mesh_prim, points in _paint_targets(prim):
+    for mesh_prim, count in _paint_meshes(prim):
         if not UsdGeom.PrimvarsAPI(mesh_prim).GetPrimvar(DENSITY_PRIMVAR):
-            _write_weights(node, stage, mesh_prim, [0.0] * len(points))
+            _write_weights(node, stage, mesh_prim, np.zeros(count, dtype=np.float64))
 
 
 def main():
@@ -744,8 +888,10 @@ def main():
     show = chunk.Checkbox(
         "show_paint", "Show Paint", default_value=True,
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
-        tooltip="Tint the surface by painted weight. Authored in this chunk's layer, so "
-                "unticking it puts the original colours back.",
+        tooltip="Tint the surface by painted weight. While it is on, the surface's material "
+                "is set aside so the tint is actually visible -- displayColor loses to any "
+                "shader otherwise. Both opinions live in this chunk's layer, so unticking "
+                "puts the original look back.",
     )
     show.add_callback(_show_paint_changed)
     display.add_param(show)
@@ -785,6 +931,8 @@ def config():
                         driver=("brush_grp.radius", "brush_grp.strength")),
         ],
         category=chunk.StandardCategory.UTILS,
+        # A stroke is array work over every vertex on the surface -- see `_stamp`.
+        requirements=["numpy>=2,<3"],
         description="""
         Scatter Brush — paints a per-vertex weight on a mesh saying where
         Scatter Points may place instances.
