@@ -26,7 +26,6 @@ classifiers = [
 dependencies = [
     "attrs>=25.4.0",
     "typing-extensions",
-    "usd-core",
 ]
 
 [project.urls]
@@ -35,12 +34,20 @@ Repository = "https://github.com/HuginStudios/usd_chunks"
 Issues = "https://github.com/HuginStudios/usd_chunks/issues"
 
 [project.optional-dependencies]
+# OpenUSD itself, for running outside a DCC. Deliberately NOT a hard dependency: every
+# host worth embedding in already ships USD, and installing a second one beside the
+# host's is worse than redundant. Hosts compile USD under a private namespace -- Blender's
+# is pxrBlender_v26_03__pxrReserved__, verified against bpy 5.2.1 -- so objects from a pip
+# usd-core are a different C++ type entirely and cannot be handed to the host's USD. That
+# is two unrelated USDs in one process, not one shared. Houdini and Maya do the same.
+# So: standalone gets usd-core, a DCC gets the host's pxr, and never both.
+standalone = ["usd-core"]
 # For hosts that do not already supply Qt. usdview and Houdini bring their own.
 ui = ["PySide6"]
 # `requests` is not a library dependency — the suite loads example chunks from scripts/
 # that import it. Chunks whose imports fail are skipped by the registry, so the heavier
 # example deps (numpy, opencv) are deliberately left out.
-dev = ["pytest", "pytest-xdist", "ruff", "build", "types-usd", "requests"]
+dev = ["pytest", "pytest-xdist", "ruff", "build", "types-usd", "requests", "usd-core"]
 docs = [
     "mkdocs",
     "mkdocs-material",
