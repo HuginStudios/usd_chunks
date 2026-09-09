@@ -26,6 +26,7 @@ because in Qt that derives from live widget geometry.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -35,9 +36,11 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_utils
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
-from usd_chunks import chunk_naming
+from usd_chunks import chunk_naming, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_usd
+
+logger = logging.getLogger(__name__)
+from usd_chunks.plugins import chunk_graph_layout, chunk_usd
 
 #: Port types. Tokens rather than an enum because they are already persisted as strings in
 #: the Qt view's colour table and read by name in ~40 places.
@@ -1077,3 +1080,100 @@ def layout_adjacency(prims: dict) -> "tuple[dict, dict]":
                 up_of.setdefault(path, set()).add(source)
                 down_of.setdefault(source, set()).add(path)
     return up_of, down_of
+
+
+def layout_graph(prims: dict, size_of, current_pos, seeds=None, is_locked=None) -> dict:
+    """Auto-layout. Returns {prim path: (x, y)} for the nodes that should move.
+
+    The computation only: growing a selection to its connected subgraph, scoping the
+    adjacency to what is being laid out, and running chunk_graph_layout. APPLYING the
+    result is the frontend's, because that is where they genuinely differ -- Qt calls
+    setPos on an item, Flet writes its positions dict, and ImGui hands the coordinates to
+    the node editor.
+
+    All three had their own 44-line copy of everything above that line.
+
+    size_of / current_pos / is_locked are callables taking a prim path, because only a
+    frontend knows how big a node ended up. is_locked defaults to "nothing is locked": Qt
+    pins nodes whose prim comes from a referenced layer, and the other two have no such
+    concept yet.
+
+    seeds narrows the pass to those nodes and everything connected to them -- "layout
+    selected". None lays out everything.
+    """
+    up_of, down_of = layout_adjacency(prims)
+    if seeds:
+        grown = chunk_graph_layout.grow_to_connected_subgraph(list(seeds), up_of, down_of)
+        node_ids = sorted(grown & set(prims))
+    else:
+        node_ids = sorted(prims)
+    if not node_ids:
+        return {}
+
+    wanted = set(node_ids)
+    scoped_up = {node: {u for u in up_of.get(node, ()) if u in wanted} for node in node_ids}
+    scoped_down = {node: {d for d in down_of.get(node, ()) if d in wanted} for node in node_ids}
+    return chunk_graph_layout.layout_positions(
+        node_ids, size_of, is_locked or (lambda path: False), current_pos,
+        scoped_up, scoped_down,
+    )
+
+
+def nest_target(chunk):
+    """The context new chunks should be parented to, or None to leave them at the root.
+
+    add_chunk parents to the scene's current context, which navigating into a group does
+    not set -- so without this a node created inside a group silently lands outside it.
+    Pushing and restoring is SceneSender.creating_in's job; this only answers WHICH, which
+    is the half every frontend had written for itself.
+    """
+    if chunk is not None and chunk_usd.is_group_chunk(chunk):
+        return chunk
+    return None
+
+
+def menu_entries() -> list:
+    """Every chunk the registry offers, as frontend-agnostic MenuEntry objects.
+
+    Discovery walks the filesystem and imports arbitrary chunk modules, so it can fail for
+    environmental reasons; a frontend should show an empty menu rather than die. Narrowed
+    from bare Exception so a bug in menu building still surfaces.
+    """
+    try:
+        return chunk_registry.ChunkRegistry().get_menu_entries()
+    except (AttributeError, RuntimeError, OSError):
+        logger.exception("could not build the chunk menu")
+        return []
+
+
+def materialize(scene, nodes, to_usd) -> dict:
+    """Create clipboard nodes through `scene`. Returns {clipboard index: chunk}.
+
+    to_usd(rel_x, rel_y) converts a clipboard entry's relative position into the
+    coordinates USD stores -- the one part that genuinely differs, because each frontend
+    has its own canvas origin and Y convention.
+
+    Qt does NOT use this. Its paste defers wiring through a QTimer because its ports
+    arrive in deferred proxy batches, guards a window with chunk._executing, and blocks
+    pasted chunks when the context has an active view. Those steps are the difference, so
+    it keeps its own; the two synchronous frontends had the same 20 lines twice.
+    """
+    registry = chunk_registry.ChunkRegistry()
+    made = {}
+    for index, item in enumerate(nodes):
+        module = registry.get_chunk_module(item.module_name)
+        if module is None:
+            continue
+        chunks = module.create() if module.loaded else module.load()
+        if not chunks:
+            continue
+        primary = chunks[0]
+        # Rows before values: a list group starts empty on a fresh chunk, so its values
+        # have nowhere to land until the rows it had are back.
+        apply_list_sizes(primary, getattr(item, "list_sizes", []))
+        apply_param_values(primary, item.values)
+        with chunk_usd.creating_at(to_usd(item.rel_pos[0], item.rel_pos[1])):
+            for chunk in chunks:
+                scene.add_chunk(chunk)
+        made[index] = primary
+    return made

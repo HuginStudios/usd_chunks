@@ -2181,68 +2181,42 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
     # ------------------------------------------------------------------
     # Auto-layout (L key)
 
-    def _build_layout_adjacency(self):
-        """Prim-path-keyed up/down adjacency from ALL connections (exec + typed data),
-        independent of the "Show param connections" view toggle — layout should account for
-        every real connection, not just the ones currently drawn on screen."""
-        up_of: dict = {}
-        down_of: dict = {}
-        for path, node in self._nodes.items():
-            if not node.prim.IsValid():
-                continue
-            for attr in node.prim.GetAttributes():
-                if not attr.GetName().startswith("inputs:"):
-                    continue
-                for conn_path in attr.GetConnections():
-                    src_path = str(conn_path.GetPrimPath())
-                    if src_path == path or src_path not in self._nodes:
-                        continue
-                    up_of.setdefault(path, set()).add(src_path)
-                    down_of.setdefault(src_path, set()).add(path)
-        return up_of, down_of
-
     def layout_nodes(self, seed_paths: "list[str] | None" = None) -> None:
         """Auto-layout — see plugins/chunk_graph_layout.py for the algorithm itself.
 
         seed_paths: prim paths to grow into their full connected subgraph before laying out
         (the "Layout Selected" case). None lays out every node currently in this context.
+
+        The computation is chunk_graph.layout_graph, shared with the other frontends; what
+        stays here is applying it, because only this one has QGraphicsItems to move.
         """
         if not self._nodes:
             return
-        up_of, down_of = self._build_layout_adjacency()
+        prims = {path: node.prim for path, node in self._nodes.items() if node.prim.IsValid()}
 
-        if seed_paths:
-            grown = chunk_graph_layout.grow_to_connected_subgraph(list(seed_paths), up_of, down_of)
-            node_ids = sorted(grown & set(self._nodes))
-        else:
-            node_ids = sorted(self._nodes)
-        if not node_ids:
-            return
+        def size_of(path):
+            rect = self._nodes[path].boundingRect()
+            return rect.width(), rect.height()
 
-        node_id_set = set(node_ids)
-        scoped_up = {nid: {u for u in up_of.get(nid, ()) if u in node_id_set} for nid in node_ids}
-        scoped_down = {nid: {d for d in down_of.get(nid, ()) if d in node_id_set} for nid in node_ids}
+        def current_pos(path):
+            point = self._nodes[path].pos()
+            return point.x(), point.y()
 
-        def size_of(nid):
-            r = self._nodes[nid].boundingRect()
-            return r.width(), r.height()
-
-        def is_locked(nid):
-            return self._nodes[nid]._locked
-
-        def current_pos(nid):
-            p = self._nodes[nid].pos()
-            return p.x(), p.y()
-
-        positions = chunk_graph_layout.layout_positions(
-            node_ids, size_of, is_locked, current_pos, scoped_up, scoped_down
+        positions = chunk_graph.layout_graph(
+            prims, size_of, current_pos, seeds=seed_paths,
+            # Unlike the other frontends, this one knows about locked nodes: a prim from an
+            # external or referenced layer must not be moved, though it still acts as an
+            # obstacle.
+            is_locked=lambda path: self._nodes[path]._locked,
         )
 
         # Apply after the full layout is computed (not interleaved with computing it) — each
         # setPos triggers itemChange -> update_edges_for automatically, and _write_pos_to_usd
         # persists the same ui:nodegraph:node:pos attribute an interactive drag already writes.
-        for nid, (x, y) in positions.items():
-            node = self._nodes[nid]
+        for path, (x, y) in positions.items():
+            node = self._nodes.get(path)
+            if node is None:
+                continue
             node.setPos(x, y)
             node._write_pos_to_usd()
 

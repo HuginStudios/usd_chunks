@@ -529,32 +529,10 @@ class GraphView:
         self.refresh(bodies=True)
 
     def _materialize(self, nodes, x: float, y: float) -> dict:
-        """Create clipboard nodes at a layout point. Returns {clipboard index: chunk}.
-
-        Split out of paste_at because grouping needs the chunks without the port-based
-        wiring: a paste into a group puts them somewhere this view is not showing, so
-        they have no ports here to wire through.
-        """
-        registry = chunk_registry.ChunkRegistry()
-        made = {}
-        for i, item in enumerate(nodes):
-            module = registry.get_chunk_module(item.module_name)
-            if module is None:
-                continue
-            chunks = module.create() if module.loaded else module.load()
-            if not chunks:
-                continue
-            primary = chunks[0]
-            # Rows before values: a list group starts empty on a fresh chunk, so its
-            # values have nowhere to land until the rows it had are back.
-            chunk_graph.apply_list_sizes(primary, getattr(item, "list_sizes", []))
-            chunk_graph.apply_param_values(primary, item.values)
-            position = self._layout_to_usd(x + item.rel_pos[0], y + item.rel_pos[1])
-            with chunk_usd.creating_at(position):
-                for c in chunks:
-                    self.scene.add_chunk(c)
-            made[i] = primary
-        return made
+        """Create clipboard nodes at a layout point. Returns {clipboard index: chunk}."""
+        return chunk_graph.materialize(
+            self.scene, nodes,
+            to_usd=lambda rel_x, rel_y: self._layout_to_usd(x + rel_x, y + rel_y))
 
     # -- grouping ----------------------------------------------------------
 
@@ -657,41 +635,25 @@ class GraphView:
     def auto_layout(self):
         """L: lay out the selection's connected subgraph, or everything.
 
-        The algorithm is chunk_graph_layout, which the Qt graph also uses -- it was already
-        toolkit-free and simply had no second caller until now.
+        The computation is chunk_graph.layout_graph, shared with the other two frontends.
+        What is left here is applying it, which is the part that genuinely differs.
         """
         if not self.prims:
             return self.refresh()
-        up_of, down_of = chunk_graph.layout_adjacency(self.prims)
-        seeds = [p for p in self.selected_nodes if p in self.prims]
-        if seeds:
-            grown = chunk_graph_layout.grow_to_connected_subgraph(seeds, up_of, down_of)
-            node_ids = sorted(grown & set(self.prims))
-        else:
-            node_ids = sorted(self.prims)
-        if not node_ids:
-            return self.refresh()
-
-        wanted = set(node_ids)
-        scoped_up = {n: {u for u in up_of.get(n, ()) if u in wanted} for n in node_ids}
-        scoped_down = {n: {d for d in down_of.get(n, ()) if d in wanted} for n in node_ids}
-
-        placed = chunk_graph_layout.layout_positions(
-            node_ids,
-            size_of=lambda n: (NODE_W, self.node_height(n)),
-            # Flet has no lock concept yet: Qt marks nodes whose prim comes from an
-            # external or referenced layer and refuses to move them. Until this frontend
-            # knows that, nothing is locked -- which means a layout here CAN move a node Qt
-            # would have pinned.
-            is_locked=lambda n: False,
-            current_pos=lambda n: self.positions[n],
-            up_of=scoped_up,
-            down_of=scoped_down,
+        placed = chunk_graph.layout_graph(
+            self.prims,
+            size_of=lambda path: (NODE_W, self.node_height(path)),
+            current_pos=lambda path: self.positions[path],
+            seeds=[p for p in self.selected_nodes if p in self.prims] or None,
+            # Flet has no lock concept yet: Qt pins nodes whose prim comes from an
+            # external or referenced layer. Until this frontend knows that, a layout here
+            # CAN move a node Qt would have pinned.
         )
         for path, (x, y) in placed.items():
             self.positions[path] = (x, y)
             self._write_position(path, x, y)
-        self.stage.GetRootLayer().Save()
+        if placed:
+            self.stage.GetRootLayer().Save()
         self.status = "laid out %d" % len(placed)
         self.reload()
         self.refresh(bodies=True)
@@ -889,17 +851,8 @@ class GraphView:
         self.refresh()
 
     def _nest_target(self):
-        """The chunk new chunks should be parented to: the group being shown, or None.
-
-        add_chunk parents to the scene's current context, which a dive does not set -- so
-        without this, creating a node while inside a group silently added it to the graph
-        OUTSIDE. Pushing and restoring is SceneSender.creating_in's job now; this only
-        answers which context.
-        """
-        chunk = self.chunks.get(self.context)
-        if chunk is not None and chunk_usd.is_group_chunk(chunk):
-            return chunk
-        return None
+        """The chunk new chunks should be parented to: the group being shown, or None."""
+        return chunk_graph.nest_target(self.chunks.get(self.context))
 
     # -- view slots --------------------------------------------------------
 
@@ -1124,19 +1077,8 @@ class GraphView:
     # -- creating nodes ----------------------------------------------------
 
     def menu_entries(self):
-        """Every chunk the registry offers, as the frontend-agnostic MenuEntry list.
-
-        Qt renders the same list. A module that declares ChunkConfig.variants therefore
-        gains them here too, without this file knowing variants exist.
-        """
-        try:
-            return chunk_registry.ChunkRegistry().get_menu_entries()
-        except (AttributeError, RuntimeError, OSError) as exc:
-            # Discovery walks the filesystem and imports arbitrary chunk modules, so it can
-            # fail for environmental reasons. Narrowed from bare Exception, which was also
-            # swallowing genuine bugs in the menu-building code itself.
-            self.status = f"no chunk menu ({type(exc).__name__})"
-            return []
+        """Every chunk the registry offers, as the frontend-agnostic MenuEntry list."""
+        return chunk_graph.menu_entries()
 
     def create_chunk(self, entry, x: float, y: float):
         """Create one menu entry's chunk(s) at a layout position.

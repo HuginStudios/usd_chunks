@@ -471,30 +471,13 @@ class ImGuiGraphView:
         self.status = f"cut {len(nodes)}"
 
     def _nest_target(self):
-        chunk = self.chunks.get(self.context)
-        if chunk is not None and chunk_usd.is_group_chunk(chunk):
-            return chunk
-        return None
+        return chunk_graph.nest_target(self.chunks.get(self.context))
 
     def _materialize(self, nodes, x: float, y: float) -> dict:
-        registry = chunk_registry.ChunkRegistry()
-        made = {}
-        for i, item in enumerate(nodes):
-            module = registry.get_chunk_module(item.module_name)
-            if module is None:
-                continue
-            chunks = module.create() if module.loaded else module.load()
-            if not chunks:
-                continue
-            primary = chunks[0]
-            chunk_graph.apply_list_sizes(primary, getattr(item, "list_sizes", []))
-            chunk_graph.apply_param_values(primary, item.values)
-            position = (x + item.rel_pos[0], -(y + item.rel_pos[1]))
-            with chunk_usd.creating_at(position):
-                for c in chunks:
-                    self.scene.add_chunk(c)
-            made[i] = primary
-        return made
+        """Create clipboard nodes at a canvas point. Returns {clipboard index: chunk}."""
+        return chunk_graph.materialize(
+            self.scene, nodes,
+            to_usd=lambda rel_x, rel_y: (x + rel_x, -(y + rel_y)))
 
     def paste_at(self, x: float, y: float, nodes=None, edges=None) -> None:
         nodes = chunk_graph.node_clipboard if nodes is None else nodes
@@ -579,10 +562,7 @@ class ImGuiGraphView:
         self.status = f"grouped {len(nodes)}"
 
     def menu_entries(self):
-        try:
-            return chunk_registry.ChunkRegistry().get_menu_entries()
-        except (AttributeError, RuntimeError, OSError):
-            return []
+        return chunk_graph.menu_entries()
 
     def create_chunk(self, entry, x: float, y: float) -> None:
         if self.scene is None:
@@ -702,33 +682,20 @@ class ImGuiGraphView:
         return (NODE_W * 1.6, 200.0)
 
     def auto_layout(self) -> None:
+        """L: lay out the selection's connected subgraph, or everything.
+
+        Computation shared with the other frontends; applying it means handing the editor
+        the new positions AND writing them to USD, since the editor owns them from then on.
+        """
         if not self.prims:
             return
-        up_of, down_of = chunk_graph.layout_adjacency(self.prims)
-        seeds = [p for p in self.selected_nodes if p in self.prims]
-        if seeds:
-            grown = chunk_graph_layout.grow_to_connected_subgraph(seeds, up_of, down_of)
-            node_ids = sorted(grown & set(self.prims))
-        else:
-            node_ids = sorted(self.prims)
-        if not node_ids:
-            return
-        wanted = set(node_ids)
         positions = self.positions
-        placed = chunk_graph_layout.layout_positions(
-            node_ids,
-            # The editor's measured size, not a guess. A node here is as wide as its
-            # widest param row and as tall as its content, and both vary a lot -- laying
-            # out against a nominal 220x120 packed the columns so tightly that node bodies
-            # overlapped the node to their right.
+        placed = chunk_graph.layout_graph(
+            self.prims,
             size_of=self._node_size,
-            is_locked=lambda n: False,
-            current_pos=lambda n: positions[n],
-            up_of={n: {u for u in up_of.get(n, ()) if u in wanted} for n in node_ids},
-            down_of={n: {d for d in down_of.get(n, ()) if d in wanted} for n in node_ids},
+            current_pos=lambda path: positions[path],
+            seeds=[p for p in self.selected_nodes if p in self.prims] or None,
         )
-        if self._editor is not None:
-            ed.set_current_editor(self._editor)
         for path, (x, y) in placed.items():
             if self._editor is not None:
                 ed.set_node_position(ed.NodeId(self.ids.get(path)),
@@ -740,8 +707,9 @@ class ImGuiGraphView:
                     attr = prim.CreateAttribute(chunk_graph.POS_ATTR,
                                                 Sdf.ValueTypeNames.Float2)
                 attr.Set(Gf.Vec2f(float(x), float(-y)))
-        self.stage.GetRootLayer().Save()
-        self.status = f"laid out {len(placed)}"
+        if placed:
+            self.stage.GetRootLayer().Save()
+        self.status = "laid out %d" % len(placed)
 
     # -- shell -------------------------------------------------------------
 
