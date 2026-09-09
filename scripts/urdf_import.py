@@ -655,6 +655,7 @@ def main():
 def config():
     return chunk.DefaulConfig(
         category="Robotics",
+        requirements=["numpy>=2,<3"],
         description="""
         Imports a URDF robot as UsdPhysics: links as rigid bodies with mass and inertia,
         collision shapes with an approximation, and revolute, prismatic and fixed joints
