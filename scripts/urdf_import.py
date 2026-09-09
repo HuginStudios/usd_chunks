@@ -222,10 +222,25 @@ def _author_geometry(stage, parent_path, element, index, kind, mesh_root, scale,
         extra_scale = Gf.Vec3d(scale, scale, scale)
     elif scale != 1.0:
         extra_scale = Gf.Vec3d(*[v * scale for v in extra_scale])
-    xform.AddTranslateOp().Set(position * scale)
-    xform.AddOrientOp().Set(_to_quat(rotation))
+    # Explicit CreateAttribute + SetXformOpOrder rather than AddTranslateOp/AddOrientOp/
+    # AddScaleOp -- same reason as author_link's link authoring: Add*Op composes against
+    # whatever xformOpOrder is CURRENTLY composed on the prim, and re-authoring the same
+    # geometry prim a second time within one load (e.g. a duplicate execute() during
+    # session restore) raises "already exists in xformOpOrder" instead of just overwriting
+    # cleanly. Explicit authoring always writes a fresh, self-contained order.
+    translate_attr = prim.GetPrim().CreateAttribute(
+        "xformOp:translate", Sdf.ValueTypeNames.Double3, custom=False)
+    translate_attr.Set(Gf.Vec3d(position * scale))
+    orient_attr = prim.GetPrim().CreateAttribute(
+        "xformOp:orient", Sdf.ValueTypeNames.Quatf, custom=False)
+    orient_attr.Set(_to_quat(rotation))
+    ops = [UsdGeom.XformOp(translate_attr), UsdGeom.XformOp(orient_attr)]
     if extra_scale is not None:
-        xform.AddScaleOp().Set(Gf.Vec3f(*[float(v) for v in extra_scale]))
+        scale_attr = prim.GetPrim().CreateAttribute(
+            "xformOp:scale", Sdf.ValueTypeNames.Float3, custom=False)
+        scale_attr.Set(Gf.Vec3f(*[float(v) for v in extra_scale]))
+        ops.append(UsdGeom.XformOp(scale_attr))
+    xform.SetXformOpOrder(ops)
     return prim.GetPrim()
 
 
