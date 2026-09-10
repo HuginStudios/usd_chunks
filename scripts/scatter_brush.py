@@ -11,7 +11,13 @@ scatters and Scatter Points stays what its docstring says it is: placement only.
 **The paint IS this chunk's output**, held in its own layer rather than rebuilt from params on
 every cook -- which is why `execute` deliberately does not clear that layer. A per-vertex array
 is not a slider, and reconstructing it from one would mean inventing a param type to hold a
-few thousand floats. It saves and loads with the scene like any other chunk layer.
+few thousand floats.
+
+That makes this the one chunk whose output cannot be recomputed from its params, and a saved
+scene is chunk prims and nothing else -- so the field is *also* recorded on this chunk's own
+prim, sparsely, and put back by `execute` when a reopened scene arrives with the surface bare.
+See `_PAINT_MESHES`. Claiming the layer itself round-tripped is what this docstring used to
+say, and it was not true: paint a surface, save, reopen, and it was gone.
 
 Requires: pxr (OpenUSD), usd_chunks, numpy (a stroke touches every vertex -- see `_stamp`).
 """
