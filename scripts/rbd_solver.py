@@ -6,6 +6,8 @@ Optional: scipy — smoother/denser heightfield colliders; falls back gracefully
 
 from __future__ import annotations
 
+import collections
+import hashlib
 import logging
 import math
 import random
@@ -119,7 +121,8 @@ def _step_until_at_rest(model, data, substeps: int, sub_dt: float, sim_t: float,
     return sim_t
 
 
-def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_cell: float = 0.0) -> dict | None:
+def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_cell: float = 0.0,
+                       geometry: tuple | None = None) -> dict | None:
     """Sample the top surface of *cprim*'s meshes into a MuJoCo heightfield.
 
     A bowl/plate/terrain inner surface is single-valued in height, so a
@@ -139,37 +142,16 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     Limitation: only the upper surface is captured (no overhangs) -- fine for a bowl/plate/
     terrain (single-valued height), wrong for a cup with a lip curling back over itself.
     Falls back to a box collider when None.
+
+    *geometry* is an already-extracted (verts, tris) for *cprim*, in world space -- exactly
+    what _collider_triangles returns, and exactly what this used to re-derive for itself.
+    The caller reads the collider once and hands the result to whichever collider this run
+    ends up building.
     """
     if _np is None:
         return None
 
-    xc = UsdGeom.XformCache()
-    pts_world = []
-    tris = []
-    for p in Usd.PrimRange(cprim):
-        mesh = UsdGeom.Mesh(p)
-        if not mesh:
-            continue
-        points = mesh.GetPointsAttr().Get()
-        if not points:
-            continue
-        wxf = xc.GetLocalToWorldTransform(p)
-        base = len(pts_world)
-        for pt in points:
-            w = wxf.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
-            pts_world.append((w[0], w[1], w[2]))
-        # Faces too, not just their corners -- see the rasterisation pass below.
-        counts = mesh.GetFaceVertexCountsAttr().Get()
-        indices = mesh.GetFaceVertexIndicesAttr().Get()
-        if counts and indices:
-            k = 0
-            for c in counts:
-                if c >= 3 and k + c <= len(indices):
-                    i0 = base + indices[k]
-                    for t in range(1, c - 1):
-                        tris.append((i0, base + indices[k + t], base + indices[k + t + 1]))
-                k += c
-
+    pts_world, tris = geometry if geometry is not None else _collider_triangles(cprim)
     if len(pts_world) < 16:
         return None
 
@@ -432,6 +414,7 @@ def _add_colliders(
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,
     tri_budget: int = 20000,
+    geometry: list | None = None,
 ) -> list[tuple[str, Usd.Prim]]:
     """Add static/kinematic collision bodies to *spec*.
 
@@ -446,9 +429,15 @@ def _add_colliders(
     * ``Auto`` (default) â€” Mesh while the collider's triangle count fits *tri_budget*,
       else Heightfield, else Box.
 
-    *dyn_radius* sizes the heightfield cell-size cap to the dynamic body.
+    *dyn_radius* sizes the heightfield cell-size cap to the dynamic body. *geometry* is
+    one already-extracted (verts, tris) per entry of *collision_prims*; every branch below
+    reads from it, so a collider's meshes are walked once per run however it ends up
+    being collided.
+
     Returns mocap_col_names: list of (body_name, prim) needing per-frame updates.
     """
+    if geometry is None:
+        geometry = [_collider_triangles(cp) for cp in (collision_prims or [])]
     mocap_col_names = []
 
     if not collision_prims:
@@ -502,8 +491,7 @@ def _add_colliders(
         # --- exact triangle-soup collider (the general case) ---
         soup = collider_mode in ("Auto", "Mesh")
         if soup and bounds is not None:
-            geometry = _collider_triangles(cp)
-            tris = geometry[1]
+            tris = geometry[i][1]
             if not tris or (collider_mode == "Auto" and len(tris) > tri_budget):
                 soup = False
             else:
@@ -542,7 +530,7 @@ def _add_colliders(
                     mocap_col_names.append((f"col_{i}", cp))
                 n = _add_triangle_soup(
                     spec, cbody, cp, f"col_{i}", thickness, friction, contact_tc, xform_inv,
-                    geometry=geometry,
+                    geometry=geometry[i],
                 )
                 if n:
                     continue
@@ -553,7 +541,9 @@ def _add_colliders(
         if collider_mode in ("Auto", "Heightfield") and not is_anim and up_idx != 0:
             # Keep hfield cells from getting much smaller than the body, or
             # the contact at the bowl bottom goes singular and explodes.
-            hf = _build_heightfield(cp, up_idx, hfield_res, min_cell=0.15 * dyn_radius)
+            hf = _build_heightfield(
+                cp, up_idx, hfield_res, min_cell=0.15 * dyn_radius, geometry=geometry[i]
+            )
 
         if hf is not None:
             hname = f"hf_{i}"
@@ -617,6 +607,138 @@ def _add_colliders(
             bg.condim = 3
 
     return mocap_col_names
+
+
+#: Built collider specs, keyed by the collider geometry and the settings that shape it.
+#: Small on purpose -- a handful of entries covers "the artist is re-running the same
+#: scene", which is the whole point, and each entry holds a full MjSpec.
+_COLLIDER_SPEC_CACHE: "collections.OrderedDict[bytes, tuple]" = collections.OrderedDict()
+_COLLIDER_SPEC_CACHE_MAX = 4
+
+
+def _collider_cache_key(geometry, *settings) -> bytes:
+    """A digest of the collider geometry plus everything that changes its shape.
+
+    Hashing the extracted triangles rather than watching USD for edits is what makes this
+    safe: the vertices are already in world space, so a moved collider, an edited mesh, a
+    swapped reference and a changed prototype all fall out as a different digest with no
+    invalidation logic to get wrong. Reading them costs ~0.3s on a 200k-triangle collider
+    against the ~60s of building it, and the read has to happen anyway.
+
+    What is deliberately NOT in here: friction and the contact timeconstant. They are the
+    two an artist re-runs to tune, they do not change a single vertex, and they are patched
+    onto the copy instead -- see _apply_contact_params.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    h.update(repr(settings).encode())
+    for verts, tris in geometry:
+        va = _np.asarray(verts, dtype=_np.float64)
+        ta = _np.asarray(tris, dtype=_np.int64)
+        h.update(_np.asarray(va.shape + ta.shape, dtype=_np.int64).tobytes())
+        h.update(va.tobytes())
+        h.update(ta.tobytes())
+    return h.digest()
+
+
+def _bounds_key(prim: Usd.Prim) -> tuple | None:
+    """The collider's world bounds as a plain tuple, for the cache key."""
+    rng = _geom_bounds(prim)
+    if rng is None:
+        return None
+    lo, hi = rng.GetMin(), rng.GetMax()
+    return tuple(float(v) for v in lo) + tuple(float(v) for v in hi)
+
+
+def _apply_contact_params(spec, friction: float, contact_tc: float) -> None:
+    """Set friction and contact stiffness on every geom of a collider-only spec.
+
+    Every collider geom the builder makes -- prism, heightfield, box, catch plane -- gets
+    exactly these two, so re-setting them on a cached copy reproduces a fresh build without
+    rebuilding it. Only ever called on a spec that holds nothing but colliders; the dynamic
+    bodies are added afterwards and set their own.
+    """
+    for g in spec.geoms:
+        g.friction = [friction, 0.005, 0.0001]
+        g.solref = [contact_tc, 1.0]
+
+
+def _collider_spec(
+    collision_prims: list[Usd.Prim] | None,
+    up_idx: int,
+    friction: float,
+    contact_tc: float,
+    dyn_radius: float,
+    hfield_res: int,
+    floor_drop: float = 0.0,
+    collider_mode: str = "Auto",
+    collider_thickness: float = 0.0,
+    tri_budget: int = 20000,
+) -> tuple:
+    """A fresh MjSpec holding this run's colliders, reusing a built one where possible.
+
+    Returns (spec, mocap_col_names). The caller sets its options on the returned spec and
+    adds its dynamic bodies to it -- so the colliders keep coming first, as the body-id
+    lookups downstream assume.
+
+    Why this exists: a Mesh collider is one MuJoCo geom per triangle, and MjSpec
+    construction is quadratic in element count (measured: 5k prisms 3.6s, 10k 14.5s, 20k
+    61s -- and MJCF XML measures the same, so it is MuJoCo's, not ours). Copying a built
+    spec is 0.02s and compiling the copy 0.08s, whatever its size. So the expensive build
+    happens once and every re-run after it -- a friction tweak, a longer frame range, a
+    different drop height -- copies.
+    """
+    prims = list(collision_prims or [])
+    if not prims:
+        # No colliders: an infinite ground plane, which costs nothing to build. Caching it
+        # would only add a digest of nothing to compare.
+        spec = _mj.MjSpec()
+        return spec, _add_colliders(
+            spec, prims, up_idx, friction, contact_tc, dyn_radius, hfield_res,
+            floor_drop, collider_mode, collider_thickness, tri_budget, geometry=[],
+        )
+
+    geometry = [_collider_triangles(cp) for cp in prims]
+    # Two things about a collider shape the spec without showing up in its triangles:
+    #
+    #  * whether it is animated, which decides between a mocap body and a static one. The
+    #    triangles are read at Default(), so keying a collider and then animating it in
+    #    place would otherwise hit the static entry it built the first time;
+    #  * its bounds, which position the catch-all ground plane and size the box fallback.
+    #    A collider with no Mesh under it at all -- a UsdGeom.Cube, say -- contributes no
+    #    triangles whatsoever, so its bounds are the only thing that distinguishes it.
+    shape_state = [
+        (
+            str(cp.GetPath()),
+            any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(cp).GetOrderedXformOps()),
+            _bounds_key(cp),
+        )
+        for cp in prims
+    ]
+    key = _collider_cache_key(
+        geometry, up_idx, dyn_radius, hfield_res, floor_drop, collider_mode,
+        collider_thickness, tri_budget, shape_state,
+    )
+
+    entry = _COLLIDER_SPEC_CACHE.pop(key, None)
+    if entry is None:
+        built = _mj.MjSpec()
+        mocap = _add_colliders(
+            built, prims, up_idx, friction, contact_tc, dyn_radius, hfield_res,
+            floor_drop, collider_mode, collider_thickness, tri_budget, geometry=geometry,
+        )
+        # Indices, not prims: a cached Usd.Prim handle expires with its stage, and the
+        # caller has the live prims anyway.
+        entry = (built, [prims.index(cp) for _, cp in mocap])
+    _COLLIDER_SPEC_CACHE[key] = entry
+    while len(_COLLIDER_SPEC_CACHE) > _COLLIDER_SPEC_CACHE_MAX:
+        _COLLIDER_SPEC_CACHE.popitem(last=False)
+
+    cached, mocap_idx = entry
+    # Always a copy, on the miss as well: the caller is about to add dynamic bodies to
+    # what it gets back, and the cached spec has to stay collider-only for the next run.
+    spec = cached.copy()
+    _apply_contact_params(spec, friction, contact_tc)
+    return spec, [(f"col_{i}", prims[i]) for i in mocap_idx]
 
 
 def _sim_prim_gen_mj(
@@ -728,17 +850,7 @@ def _sim_prim_gen_mj(
             logger.warning("Convex Hull: no mesh data, falling back to Box")
 
     # --- build MjSpec scene ---
-    spec = _mj.MjSpec()
     sub_dt = dt / substeps  # per-step timestep
-    spec.option.timestep = sub_dt
-    grav = [0.0, 0.0, 0.0]
-    grav[up_idx] = gravity
-    spec.option.gravity = grav
-    spec.option.iterations = solver_iters
-    spec.option.noslip_iterations = 3
-    # implicitfast integrates contacts/damping more stably than the default Euler.
-    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
-
     # Contact stiffness timeconst: must be >= 2*timestep for stability. A stiff
     # 0.01 floor keeps impact penetration tiny (~0.1cm vs ~1.4cm at 0.04), so
     # fast impacts at -981 don't visibly clip. Stability under pile-ups comes
@@ -746,9 +858,11 @@ def _sim_prim_gen_mj(
     contact_tc = max(2.0 * sub_dt, 0.01)
 
     # --- static / kinematic collision bodies ---
+    # The spec comes back with the colliders already in it, reused from the last run where
+    # nothing about them changed; the dynamic body is added below, so colliders still come
+    # first and the body-id lookups downstream still hold.
     dyn_radius = max(half_extents) + max(collision_margin, 0.0)
-    mocap_col_names = _add_colliders(
-        spec,
+    spec, mocap_col_names = _collider_spec(
         collision_prims,
         up_idx,
         friction,
@@ -759,6 +873,14 @@ def _sim_prim_gen_mj(
         collider_mode,
         collider_thickness,
     )
+    spec.option.timestep = sub_dt
+    grav = [0.0, 0.0, 0.0]
+    grav[up_idx] = gravity
+    spec.option.gravity = grav
+    spec.option.iterations = solver_iters
+    spec.option.noslip_iterations = 3
+    # implicitfast integrates contacts/damping more stably than the default Euler.
+    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
 
     # --- initial orientation (offset already applied above) ---
     gq = rot.GetQuat()
@@ -1412,23 +1534,13 @@ def simulate_mujoco_instancer(
     dt = 1.0 / fps
 
     # --- Build MjSpec ---
-    spec = _mj.MjSpec()
-    # Many piled bodies generate many contacts/constraints; the default solver
-    # arena (~16 MB) overflows. Scale the allocation with the instance count.
-    spec.memory = max(64 * 1024 * 1024, num_instances * 2 * 1024 * 1024)
     sub_dt = dt / substeps
-    spec.option.timestep = sub_dt
-    grav = [0.0, 0.0, 0.0]
-    grav[up_idx] = gravity
-    spec.option.gravity = grav
-    spec.option.iterations = solver_iters
-    spec.option.noslip_iterations = 3
-    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
     contact_tc = max(2.0 * sub_dt, 0.01)
 
-    # Same colliders as the single-prim path (bowl heightfield + backstop, etc.)
-    mocap_col_names = _add_colliders(
-        spec,
+    # Same colliders as the single-prim path (bowl heightfield + backstop, etc.), and the
+    # spec they come back in is the one the instances are then added to -- so the colliders
+    # still precede them, as the body-id lookups below assume.
+    spec, mocap_col_names = _collider_spec(
         collision_prims,
         up_idx,
         friction,
@@ -1440,6 +1552,16 @@ def simulate_mujoco_instancer(
         collider_thickness,
         tri_budget,
     )
+    # Many piled bodies generate many contacts/constraints; the default solver
+    # arena (~16 MB) overflows. Scale the allocation with the instance count.
+    spec.memory = max(64 * 1024 * 1024, num_instances * 2 * 1024 * 1024)
+    spec.option.timestep = sub_dt
+    grav = [0.0, 0.0, 0.0]
+    grav[up_idx] = gravity
+    spec.option.gravity = grav
+    spec.option.iterations = solver_iters
+    spec.option.noslip_iterations = 3
+    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
 
     dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
 
@@ -2387,25 +2509,24 @@ def build_articulated_spec(
     if not roots:
         return None
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
-    spec = _mj.MjSpec()
+    sub_dt = dt / substeps
+    contact_tc = max(2.0 * sub_dt, 0.01)
+
+    spec, _ = _collider_spec(
+        collision_prims, up_idx, friction, contact_tc,
+        1.0, hfield_res, floor_drop, collider_mode, collider_thickness,
+    )
     # MuJoCo's compiler defaults to interpreting angles as DEGREES. Joint limits are
     # converted to radians when the USD joint is parsed, so leaving this alone applies the
     # conversion twice and a 90-degree door limit compiles as 1.6 degrees -- a hinge that
     # is present, correctly placed, and barely moves.
     spec.compiler.degree = False
-    sub_dt = dt / substeps
     spec.option.timestep = sub_dt
     grav = [0.0, 0.0, 0.0]
     grav[up_idx] = gravity
     spec.option.gravity = grav
     spec.option.iterations = solver_iters
     spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
-    contact_tc = max(2.0 * sub_dt, 0.01)
-
-    _add_colliders(
-        spec, collision_prims, up_idx, friction, contact_tc,
-        1.0, hfield_res, floor_drop, collider_mode, collider_thickness,
-    )
 
     bodies = {}
     link_world = {}
