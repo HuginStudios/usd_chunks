@@ -696,8 +696,40 @@ def test_a_mesh_whose_subsets_cannot_be_rewritten_is_left_alone(monkeypatch) -> 
     _grid_with_subsets(stage)
     monkeypatch.setattr(pr, "collapse_mapping", lambda *a, **k: None)
 
-    plan = pr._plan_mesh(
-        stage.GetPrimAtPath("/Mesh"), True, pr.MODE_PERCENT, 20.0, 5000, 7.0, False
+    settings = pr._Settings(
+        mode=pr.MODE_PERCENT,
+        keep_percent=20.0,
+        target_tris=5000,
+        aggressiveness=7.0,
+        lock_boundary=False,
+        keep_uvs=True,
+        recurse=True,
     )
+    plan = pr._plan_mesh(stage.GetPrimAtPath("/Mesh"), settings)
 
     assert plan is None
+
+
+def test_an_unchanged_array_is_recognised_without_rereading_it() -> None:
+    """The skip-a-recook check is almost entirely the cost of checksumming the geometry,
+    and almost every time it confirms nothing moved. VtArray is copy-on-write, so an
+    unchanged attribute hands back the same buffer — a matching address is proof enough,
+    and holding the array we signed is what keeps that sound (nothing else can be allocated
+    at an address we still own)."""
+    stage = Usd.Stage.CreateInMemory()
+    points, counts, indices = _grid(20)
+    mesh = _define_mesh(stage, "/Mesh", points, counts, indices)
+    attr = mesh.GetPointsAttr()
+
+    first: dict = {}
+    signature = pr._checksum(attr.Get(), {}, first)
+    second: dict = {}
+    assert pr._checksum(attr.Get(), first, second) == signature
+    assert len(second) == 1  # carried over rather than recomputed
+
+    moved = points + np.array([0.0, 0.0, 3.0])
+    attr.Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(moved, dtype=np.float32)))
+    third: dict = {}
+
+    # Same length, same dtype, different contents — the signature has to move with them.
+    assert pr._checksum(attr.Get(), first, third) != signature

@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 import zlib
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
@@ -170,6 +171,11 @@ def component_codes(values) -> list:
     ]
 
 
+def _width(column) -> int:
+    """One past the largest label in a column — how many values it can take."""
+    return int(column.max()) + 1 if column.size else 1
+
+
 def _pack_key(columns):
     """One non-negative int64 per row, distinct rows getting distinct keys.
 
@@ -181,8 +187,8 @@ def _pack_key(columns):
     key = np.zeros(len(columns[0]), dtype=np.int64)
     span = 1
     for column in columns:
-        width = int(column.max()) + 1 if column.size else 1
-        if width <= 0 or span > _KEY_LIMIT // width:
+        width = _width(column)
+        if span > _KEY_LIMIT // width:
             return None
         key = key * width + column
         span *= width
@@ -193,10 +199,6 @@ def _densify(key) -> np.ndarray:
     """Renumber a key array so its labels run 0..n-1."""
     _, inverse = np.unique(key, return_inverse=True)
     return np.asarray(inverse, dtype=np.int64).reshape(-1)
-
-
-def _width(column) -> int:
-    return int(column.max()) + 1 if column.size else 1
 
 
 def combine_codes(*code_arrays) -> np.ndarray:
@@ -219,7 +221,7 @@ def combine_codes(*code_arrays) -> np.ndarray:
 
     key = columns[0]
     span = _width(key)
-    for index, column in enumerate(columns[1:], start=1):
+    for column in columns[1:]:
         width = _width(column)
         if span > _KEY_LIMIT // width:
             key = _densify(key)
@@ -235,6 +237,20 @@ def combine_codes(*code_arrays) -> np.ndarray:
 def _densify_rows(columns) -> np.ndarray:
     _, inverse = np.unique(np.stack(columns, axis=1), axis=0, return_inverse=True)
     return np.asarray(inverse, dtype=np.int64).reshape(-1)
+
+
+def _distinct_corners(triangles) -> np.ndarray:
+    """Which triangles still have three different vertices.
+
+    Both callers mean the same thing by it: a triangle two of whose corners have become the
+    same vertex is not a triangle any more. Welding can do that (a degenerate face in the
+    source), and so can an edge collapse — which is exactly when the decimator deletes one.
+    """
+    return (
+        (triangles[:, 0] != triangles[:, 1])
+        & (triangles[:, 1] != triangles[:, 2])
+        & (triangles[:, 0] != triangles[:, 2])
+    )
 
 
 def _weld(points, triangles, corners, split_codes):
@@ -259,14 +275,9 @@ def _weld(points, triangles, corners, split_codes):
     source_point = flat_point[first]
     source_corner = flat_corner[first]
 
-    # Welding can make two corners of a triangle the same vertex (a degenerate face in the
-    # original, or a sliver whose corners shared everything). The decimator's edge
+    # Welding can make two corners of a triangle the same vertex; the decimator's edge
     # bookkeeping has no meaningful collapse for those, so drop them and re-compact.
-    keep = (
-        (welded[:, 0] != welded[:, 1])
-        & (welded[:, 1] != welded[:, 2])
-        & (welded[:, 0] != welded[:, 2])
-    )
+    keep = _distinct_corners(welded)
     if not keep.all():
         welded = welded[keep]
         if welded.size == 0:
@@ -378,12 +389,7 @@ def collapse_mapping(triangles, collapses, n_points, n_reduced):
             return None
 
     rooted = parent[triangles]
-    kept = (
-        (rooted[:, 0] != rooted[:, 1])
-        & (rooted[:, 1] != rooted[:, 2])
-        & (rooted[:, 0] != rooted[:, 2])
-    )
-    survivors = np.unique(rooted[kept])
+    survivors = np.unique(rooted[_distinct_corners(rooted)])
     if len(survivors) != n_reduced:
         logger.debug(
             "derived %d surviving vertices but the decimation produced %d; "
@@ -393,10 +399,10 @@ def collapse_mapping(triangles, collapses, n_points, n_reduced):
         )
         return None
 
-    mapping = np.full(n_points, -1, dtype=np.int64)
-    alive = np.flatnonzero(np.isin(parent, survivors))
-    mapping[alive] = np.searchsorted(survivors, parent[alive])
-    return mapping
+    # One search over the sorted survivors, then confirm each hit: `np.isin` would sort
+    # the same array again to answer the very question this search already answers.
+    position = np.minimum(np.searchsorted(survivors, parent), len(survivors) - 1)
+    return np.where(survivors[position] == parent, position, -1)
 
 
 def target_triangle_count(mode, n_tris, keep_percent, target_tris) -> int | None:
@@ -487,6 +493,23 @@ def _remap(values, picks):
         return type(values)(picked.tolist())
 
 
+class _Settings(NamedTuple):
+    """The knobs one cook runs with.
+
+    One object rather than a tuple for the fingerprint and six positional arguments for the
+    planner: they described the same settings in a different order, which is a rename away
+    from silently reducing to the aggressiveness value.
+    """
+
+    mode: str
+    keep_percent: float
+    target_tris: int
+    aggressiveness: float
+    lock_boundary: bool
+    keep_uvs: bool
+    recurse: bool
+
+
 @dataclass
 class _Plan:
     """Everything one mesh's cook decided, held until every mesh has decided.
@@ -506,7 +529,7 @@ class _Plan:
     drop_subdivision: bool
 
 
-def _plan_mesh(prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, lock_boundary):
+def _plan_mesh(prim, settings: _Settings):
     """Work out what `prim` reduces to, without touching the stage."""
     mesh = UsdGeom.Mesh(prim)
     points = mesh.GetPointsAttr().Get()
@@ -517,7 +540,7 @@ def _plan_mesh(prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, 
 
     points = np.asarray(points, dtype=np.float64)
     counts = np.asarray(counts, dtype=np.int64)
-    triangles, corners, face_of_tri = fan_triangulate(counts, indices)
+    triangles, corners, _ = fan_triangulate(counts, indices)
     if len(triangles) <= _MIN_TRIANGLES:
         return None
 
@@ -547,7 +570,7 @@ def _plan_mesh(prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, 
         if interpolation == UsdGeom.Tokens.uniform:
             blocked.append(name)
         elif interpolation == UsdGeom.Tokens.faceVarying:
-            if keep_uvs and len(values) == n_corners:
+            if settings.keep_uvs and len(values) == n_corners:
                 face_varying.append((name, primvar.GetTypeName(), values))
                 split_columns.extend(component_codes(values))
             else:
@@ -564,10 +587,12 @@ def _plan_mesh(prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, 
         triangles,
         corners,
         split_codes,
-        target_count=target_triangle_count(mode, len(triangles), keep_percent, target_tris),
-        planar_only=mode == MODE_PLANAR,
-        aggressiveness=aggressiveness,
-        lock_boundary=lock_boundary,
+        target_count=target_triangle_count(
+            settings.mode, len(triangles), settings.keep_percent, settings.target_tris
+        ),
+        planar_only=settings.mode == MODE_PLANAR,
+        aggressiveness=settings.aggressiveness,
+        lock_boundary=settings.lock_boundary,
         carry_attributes=bool(face_varying or vertex_varying or subsets),
     )
     if reduced is None:
@@ -702,23 +727,55 @@ def _author(stage, plan: _Plan) -> None:
             attr.Block()
 
 
-# What the last cook of each chunk saw, keyed by that chunk's own layer identifier.
-# See `_fingerprint` for why this exists.
+class _CookRecord(NamedTuple):
+    """What the last cook of one chunk saw: its fingerprint, and the arrays it signed
+    (address -> (array, signature)) so the next one can recognise them without re-reading."""
+
+    fingerprint: tuple
+    arrays: dict
+
+
+# Keyed by the chunk's own layer identifier. See `_fingerprint` for why this exists.
 _LAST_COOK: dict = {}
 
 
-def _checksum(values):
-    """A cheap content signature for one USD array — its length and a CRC of its bytes."""
+def _checksum(values, previous: dict, current: dict):
+    """A content signature for one USD array — its length, dtype and a CRC of its bytes.
+
+    The CRC is the whole cost of deciding a recook can be skipped (~90ms of the ~94ms on a
+    4.2M-triangle mesh), and almost every time it is spent confirming that nothing moved.
+    VtArray is copy-on-write, so an attribute whose value has not changed hands back the
+    *same buffer* on every `Get()` — a matching address is therefore proof the contents
+    match, and no proof is needed beyond it. Holding a reference to the array we signed is
+    what makes that sound: the allocator cannot hand the same address to something else
+    while we still own it.
+
+    `previous` is the last cook's address book and `current` the one being built, so only
+    one generation of arrays is ever retained — and those are the arrays the stage is
+    holding anyway.
+    """
     if values is None:
         return None
-    array = np.ascontiguousarray(np.asarray(values))
+    array = np.asarray(values)
+    # Only a zero-copy *view* may be keyed by address: then the buffer belongs to `values`,
+    # which the entry holds, so nothing else can be allocated there while the entry lives.
+    # A dtype numpy has to copy (tokens, say) would hand back a temporary's address, freed
+    # the moment this returns and free for the next temporary to land on — a false hit.
+    shared = array.size and not array.flags.owndata
+    address = array.__array_interface__["data"][0] if shared else 0
+    if address and (cached := previous.get(address)) is not None:
+        current[address] = cached
+        return cached[1]
     try:
-        return len(array), zlib.crc32(array)
+        signature = (len(array), str(array.dtype), zlib.crc32(np.ascontiguousarray(array)))
     except (TypeError, ValueError):  # pragma: no cover - object dtypes have no buffer
-        return len(array), None
+        return len(array), str(array.dtype), None
+    if address:
+        current[address] = (values, signature)
+    return signature
 
 
-def _fingerprint(prims, settings) -> tuple:
+def _fingerprint(prims, settings, previous: dict, current: dict) -> tuple:
     """Everything this chunk's output depends on, cheaply.
 
     The graph re-runs a chunk far more often than its inputs actually change: switching the
@@ -732,12 +789,12 @@ def _fingerprint(prims, settings) -> tuple:
     because an upstream chunk editing a mesh in place is exactly the case that *must* still
     re-cook, and it usually leaves the array lengths alone.
     """
-    parts = [settings]
+    parts = [tuple(settings)]
     for prim in prims:
         mesh = UsdGeom.Mesh(prim)
         entry = [str(prim.GetPath())]
         entry += [
-            _checksum(attr.Get())
+            _checksum(attr.Get(), previous, current)
             for attr in (
                 mesh.GetPointsAttr(),
                 mesh.GetFaceVertexCountsAttr(),
@@ -745,11 +802,18 @@ def _fingerprint(prims, settings) -> tuple:
             )
         ]
         entry += [
-            (pv.GetPrimvarName(), pv.GetInterpolation(), _checksum(_primvar_values(pv)))
+            (
+                pv.GetPrimvarName(),
+                pv.GetInterpolation(),
+                _checksum(_primvar_values(pv), previous, current),
+            )
             for pv in UsdGeom.PrimvarsAPI(prim).GetPrimvars()
         ]
         entry += [
-            (str(subset.GetPrim().GetPath()), _checksum(subset.GetIndicesAttr().Get()))
+            (
+                str(subset.GetPrim().GetPath()),
+                _checksum(subset.GetIndicesAttr().Get(), previous, current),
+            )
             for subset in UsdGeom.Subset.GetAllGeomSubsets(UsdGeom.Imageable(prim))
         ]
         parts.append(tuple(entry))
@@ -833,13 +897,15 @@ def execute(node: chunk.Chunk) -> None:
     is_s = chunk.is_param_t(str)
     is_b = chunk.is_param_t(bool)
 
-    mode = node.get_param("reduce_mode", is_s).value
-    keep_percent = node.get_param("keep_percent", is_f).value
-    target_tris = node.get_param("target_tris", is_i).value
-    aggressiveness = node.get_param("aggressiveness", is_f).value
-    lock_boundary = node.get_param("lock_boundary", is_b).value
-    keep_uvs = node.get_param("preserve_uvs", is_b).value
-    recurse = node.get_param("recurse", is_b).value
+    settings = _Settings(
+        mode=node.get_param("reduce_mode", is_s).value,
+        keep_percent=node.get_param("keep_percent", is_f).value,
+        target_tris=node.get_param("target_tris", is_i).value,
+        aggressiveness=node.get_param("aggressiveness", is_f).value,
+        lock_boundary=node.get_param("lock_boundary", is_b).value,
+        keep_uvs=node.get_param("preserve_uvs", is_b).value,
+        recurse=node.get_param("recurse", is_b).value,
+    )
 
     paths = node.get_param("prim_path").resolve_paths()
     if not paths:
@@ -852,21 +918,21 @@ def execute(node: chunk.Chunk) -> None:
     upstream = chunk_usd.get_upstream_stage(stage, node.get_scene(), node)
 
     targets = [
-        prim for path in paths for prim in _mesh_prims(upstream.GetPrimAtPath(path), recurse)
+        prim
+        for path in paths
+        for prim in _mesh_prims(upstream.GetPrimAtPath(path), settings.recurse)
     ]
-    settings = (mode, keep_percent, target_tris, aggressiveness, lock_boundary, keep_uvs, recurse)
-    fingerprint = _fingerprint(targets, settings)
-    if _LAST_COOK.get(layer.identifier) == fingerprint and not layer.empty:
+    previous = _LAST_COOK.get(layer.identifier)
+    signed: dict = {}
+    fingerprint = _fingerprint(targets, settings, previous.arrays if previous else {}, signed)
+    record = _CookRecord(fingerprint, signed)
+    if previous is not None and previous.fingerprint == fingerprint and not layer.empty:
         # Same inputs, same settings, and the result of last time is still in our layer.
+        # The refreshed record drops the previous generation's array references.
+        _LAST_COOK[layer.identifier] = record
         return
 
-    plans = []
-    for prim in targets:
-        plan = _plan_mesh(
-            prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, lock_boundary
-        )
-        if plan is not None:
-            plans.append(plan)
+    plans = [plan for prim in targets if (plan := _plan_mesh(prim, settings)) is not None]
 
     # Only now, with every mesh decided, does the old output go away.
     _clear_layer(layer)
@@ -875,10 +941,10 @@ def execute(node: chunk.Chunk) -> None:
             _author(stage, plan)
 
     if len(_LAST_COOK) > 256:
-        # A deleted chunk leaves its entry behind; nothing looks them up again, so rather
-        # than track chunk lifetimes for a dict of small tuples, drop the lot occasionally.
+        # A deleted chunk leaves its entry behind, and each one holds references to the
+        # arrays it signed. Rather than track chunk lifetimes, drop the lot occasionally.
         _LAST_COOK.clear()
-    _LAST_COOK[layer.identifier] = fingerprint
+    _LAST_COOK[layer.identifier] = record
     _report(node, plans)
 
 
