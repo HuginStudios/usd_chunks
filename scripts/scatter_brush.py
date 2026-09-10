@@ -11,7 +11,13 @@ scatters and Scatter Points stays what its docstring says it is: placement only.
 **The paint IS this chunk's output**, held in its own layer rather than rebuilt from params on
 every cook -- which is why `execute` deliberately does not clear that layer. A per-vertex array
 is not a slider, and reconstructing it from one would mean inventing a param type to hold a
-few thousand floats. It saves and loads with the scene like any other chunk layer.
+few thousand floats.
+
+That makes this the one chunk whose output cannot be recomputed from its params, and a saved
+scene is chunk prims and nothing else -- so the field is *also* recorded on this chunk's own
+prim, sparsely, and put back by `execute` when a reopened scene arrives with the surface bare.
+See `_PAINT_MESHES`. Claiming the layer itself round-tripped is what this docstring used to
+say, and it was not true: paint a surface, save, reopen, and it was gone.
 
 Requires: pxr (OpenUSD), usd_chunks, numpy (a stroke touches every vertex -- see `_stamp`).
 """
@@ -165,6 +171,9 @@ def _stroke_finished(owner, notice, sender):
         # Nothing moved, so there is nothing for anyone downstream to redo.
         return
     setattr(owner, _STROKE_TOUCHED, False)
+    # Once per gesture, alongside the recook, for the same reason: this is the moment the
+    # paint has finished changing. See `_record_paint`.
+    _record_paint(owner)
     try:
         # A param write, deliberately, rather than dirtying the node by hand.
         #
@@ -701,6 +710,9 @@ def _bump_strokes(node, reset=False):
     `reset` is for Clear, which does not merely change the paint -- it takes it all away, and a
     number that survived having nothing left to count read as the button not having worked.
     """
+    # Fill and Clear change the field as much as a stroke does, so the saved copy follows them
+    # too -- including Clear, which has to record that there is now nothing.
+    _record_paint(node)
     try:
         counter = node.get_param("stroke_count")
         current = int(counter.value or 0)
@@ -775,12 +787,118 @@ def _fill_paint(owner, notice, sender):
     _set_everywhere(owner.get_chunk(), 1.0)
 
 
-def execute(node):
-    """Deliberately almost nothing.
+#: Where the paint is kept so it survives a save, on the chunk's own prim.
+#:
+#: Reported: paint a surface, save the scene, reopen, and the paint is gone -- with the
+#: chunk, its stroke count and everything downstream of it still there.
+#:
+#: A saved scene is chunk prims and nothing else, on the premise that reopening re-runs every
+#: chunk and so regenerates whatever it is responsible for (see chunk_usd.save_scene). Every
+#: other chunk holds to that: its output is a function of its params. This one does not and
+#: says so in its own docstring -- the paint *is* the output, it lives in a per-chunk layer,
+#: and that layer is not what gets written. Two documented designs, each correct alone.
+#:
+#: So the field is also recorded on the chunk prim, which `export_chunks` copies wholesale
+#: (Sdf.CopySpec, subtree and all). That puts this chunk back under the same rule as every
+#: other one: everything needed to rebuild its output is on its own prim.
+#:
+#: Sparse, because it has to go into a .usda as text. Paint is mostly zero -- the whole point
+#: of it is that it covers part of a surface -- so only the vertices that carry weight are
+#: written. A stroke on a 340k-vertex scan costs the few thousand it actually touched.
+_PAINT_MESHES = "chunk:paint:meshes"
+_PAINT_COUNTS = "chunk:paint:counts"
+_PAINT_SPANS = "chunk:paint:spans"
+_PAINT_INDICES = "chunk:paint:indices"
+_PAINT_WEIGHTS = "chunk:paint:weights"
 
-    The painted field is this chunk's output and already lives in its layer, so there is
-    nothing to re-author from params -- and clearing the layer the way most chunks do would
-    erase the paint on the next slider nudge.
+
+def _chunk_prim_path(node):
+    own = getattr(node, "_exec_prim_path", None) or getattr(node, "prim_path", None)
+    return Sdf.Path(str(own)) if own else None
+
+
+def _record_paint(node):
+    """Copy the whole painted field onto the chunk prim, so a save carries it.
+
+    Called when an edit finishes rather than per tick: a stroke re-authors weights on every
+    mouse-move, and re-flattening every painted mesh each time is the sticky drag `_stamp`
+    exists to avoid.
+    """
+    prim, stage = _surface_prim(node)
+    path = _chunk_prim_path(node)
+    if prim is None or path is None:
+        return
+
+    meshes, counts, spans, indices, weights = [], [], [], [], []
+    for mesh_prim, count in _paint_meshes(prim):
+        values = _current_weights(mesh_prim, count)
+        painted = np.flatnonzero(values > 0.0)
+        if not len(painted):
+            continue
+        meshes.append(str(mesh_prim.GetPath()))
+        counts.append(int(count))
+        spans.append(int(len(painted)))
+        indices.extend(int(i) for i in painted)
+        weights.extend(float(v) for v in values[painted])
+
+    layer = chunk_utils.get_bookkeeping_layer(stage, node)
+    with Usd.EditContext(stage, layer):
+        chunk_prim = stage.GetPrimAtPath(path)
+        if not chunk_prim or not chunk_prim.IsValid():
+            return
+        for name, kind, value in (
+            (_PAINT_MESHES, Sdf.ValueTypeNames.StringArray, Vt.StringArray(meshes)),
+            (_PAINT_COUNTS, Sdf.ValueTypeNames.IntArray, Vt.IntArray(counts)),
+            (_PAINT_SPANS, Sdf.ValueTypeNames.IntArray, Vt.IntArray(spans)),
+            (_PAINT_INDICES, Sdf.ValueTypeNames.IntArray, Vt.IntArray(indices)),
+            (_PAINT_WEIGHTS, Sdf.ValueTypeNames.FloatArray, Vt.FloatArray(weights)),
+        ):
+            chunk_prim.CreateAttribute(name, kind, custom=True).Set(value)
+
+
+def _recorded_paint(node, stage):
+    """`{mesh path: weights}` from the chunk prim, or an empty dict when nothing was recorded."""
+    path = _chunk_prim_path(node)
+    chunk_prim = stage.GetPrimAtPath(path) if path else None
+    if not chunk_prim or not chunk_prim.IsValid():
+        return {}
+
+    def read(name, default):
+        attr = chunk_prim.GetAttribute(name)
+        return attr.Get() if attr and attr.HasValue() else default
+
+    meshes = list(read(_PAINT_MESHES, []) or [])
+    counts = list(read(_PAINT_COUNTS, []) or [])
+    spans = list(read(_PAINT_SPANS, []) or [])
+    indices = np.asarray(read(_PAINT_INDICES, []) or [], dtype=np.int64)
+    weights = np.asarray(read(_PAINT_WEIGHTS, []) or [], dtype=np.float64)
+    if not meshes or len(meshes) != len(counts) or len(counts) != len(spans):
+        return {}
+
+    restored = {}
+    at = 0
+    for mesh_path, count, span in zip(meshes, counts, spans):
+        where = indices[at:at + span]
+        what = weights[at:at + span]
+        at += span
+        if len(where) != span or len(what) != span:
+            logger.warning("Painted field on %s is truncated; ignoring it", mesh_path)
+            return {}
+        values = np.zeros(int(count), dtype=np.float64)
+        # A mesh that changed resolution since the paint was recorded keeps whatever still
+        # lands on it, rather than throwing the stroke away entirely.
+        inside = where < len(values)
+        values[where[inside]] = what[inside]
+        restored[str(mesh_path)] = values
+    return restored
+
+
+def execute(node):
+    """Publish the output paths, and put the paint back after a reload.
+
+    Otherwise deliberately almost nothing. The painted field is this chunk's output and
+    already lives in its layer, so there is nothing to re-author from params -- and clearing
+    the layer the way most chunks do would erase the paint on the next slider nudge.
     """
     # Published whether or not anything has been painted, so the port has a value to carry
     # from the moment the chunk exists. It only appeared on the first write before, which
@@ -794,12 +912,25 @@ def execute(node):
     prim, stage = _surface_prim(node)
     if prim is None:
         return
-    # Only to make the attribute exist, so a scatter downstream resolves something rather
-    # than nothing the moment the two are wired together. Per mesh, because the surface a
-    # user picks is a hierarchy far more often than it is a single Mesh.
+
+    # After a reload this chunk's layer is empty, so the field it holds is simply not there
+    # yet; what was recorded on the chunk prim is put back. In a live session the primvar is
+    # already present and this does nothing, which is what keeps it out of the way of a
+    # stroke in progress.
+    saved = _recorded_paint(node, stage)
+
+    # Written whether or not anything was painted, so a scatter downstream resolves something
+    # rather than nothing the moment the two are wired together. Per mesh, because the surface
+    # a user picks is a hierarchy far more often than it is a single Mesh.
     for mesh_prim, count in _paint_meshes(prim):
-        if not UsdGeom.PrimvarsAPI(mesh_prim).GetPrimvar(DENSITY_PRIMVAR):
-            _write_weights(node, stage, mesh_prim, np.zeros(count, dtype=np.float64))
+        if UsdGeom.PrimvarsAPI(mesh_prim).GetPrimvar(DENSITY_PRIMVAR):
+            continue
+        weights = saved.get(str(mesh_prim.GetPath()))
+        if weights is None:
+            weights = np.zeros(count, dtype=np.float64)
+        elif len(weights) != count:
+            weights = np.resize(weights, count)
+        _write_weights(node, stage, mesh_prim, weights)
 
 
 def main():
