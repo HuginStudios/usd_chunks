@@ -1135,3 +1135,68 @@ def test_a_density_stroke_that_missed_does_not_recook() -> None:
     c.stop_gizmo()
 
     assert c.get_param("stroke_count").value == before
+
+
+# ---------------------------------------------------------------------------
+# the paint has to survive a save
+# ---------------------------------------------------------------------------
+
+def test_the_painted_field_is_recorded_on_the_chunks_own_prim() -> None:
+    """Reported: paint a surface, save the scene, reopen, and the paint is gone.
+
+    A saved scene is chunk prims and nothing else, on the premise that reopening re-runs every
+    chunk and so regenerates whatever it is responsible for. Every other chunk holds to that.
+    This one's output is a painted array in a per-chunk layer, and that layer is not what gets
+    written -- so the field is recorded on the chunk prim, which the exporter copies wholesale,
+    putting this chunk back under the same rule as the rest.
+    """
+
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=4.0, strength=1.0)
+    # A chunk prim to record onto -- the host gives every chunk one; the brush fixture does not.
+    c._exec_prim_path = "/chunks/ScatterBrush"
+    stage.DefinePrim("/chunks/ScatterBrush", "Chunk")
+
+    c.start_gizmo()
+    _stroke(c, (5.0, 5.0, 0.0))
+    c.stop_gizmo()
+
+    painted = [v for v in _weights(stage) if v > 0]
+    assert painted, "the stroke has to have painted something for this to mean anything"
+
+    recorded = brush_mod._recorded_paint(c, stage)
+    assert "/World/Floor" in recorded
+    assert sorted(v for v in recorded["/World/Floor"] if v > 0) == pytest.approx(sorted(painted))
+    # Sparse: only the vertices carrying weight, since this goes into a .usda as text.
+    chunk_prim = stage.GetPrimAtPath("/chunks/ScatterBrush")
+    stored = chunk_prim.GetAttribute(brush_mod._PAINT_INDICES).Get()
+    assert len(stored) == len(painted) < len(_weights(stage))
+
+
+def test_a_reloaded_brush_puts_its_paint_back_on_the_surface() -> None:
+    """The other half: with the record on the prim and the surface's own field gone -- which is
+    what a reopened scene looks like -- the cook restores it rather than authoring zeros."""
+    from pxr import Sdf
+
+    stage = _stage_with_floor()
+    c = _brush(stage, radius=4.0, strength=1.0)
+    c._exec_prim_path = "/chunks/ScatterBrush"
+    stage.DefinePrim("/chunks/ScatterBrush", "Chunk")
+
+    c.start_gizmo()
+    _stroke(c, (5.0, 5.0, 0.0))
+    c.stop_gizmo()
+    before = _weights(stage)
+
+    # What a reopen leaves: the chunk prim and its record, and a surface with no field on it —
+    # the per-chunk layer that held the paint is not part of a chunk-only save.
+    for spec_layer in stage.GetLayerStack():
+        prim_spec = spec_layer.GetPrimAtPath(Sdf.Path("/World/Floor"))
+        spec = prim_spec.properties.get("primvars:" + brush_mod.DENSITY_PRIMVAR) if prim_spec else None
+        if spec is not None:
+            prim_spec.RemoveProperty(spec)
+    assert _weights(stage) is None
+
+    brush_mod.execute(c)
+
+    assert _weights(stage) == pytest.approx(before)
