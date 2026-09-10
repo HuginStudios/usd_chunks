@@ -1223,17 +1223,17 @@ def simulate_mujoco_articulated(
     return results
 
 
-def _proto_hull_verts(stage: Usd.Stage, proto_targets, cap: int = 200) -> _np.ndarray | None:
-    """Prototype mesh vertices for a shared convex-hull collider (extracted once).
+def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarray | None:
+    """One prototype's mesh vertices, for its convex-hull collider (extracted once).
 
     Points are gathered in the prototype's world-bound space — the same space the
     caller measures proto extent/centre in — so per-instance scaling stays
     consistent with the sphere/box path. Subsampled to *cap* points to keep the
     per-asset hull build cheap. Returns None if the prototype has no mesh data.
     """
-    if _np is None or not proto_targets:
+    if _np is None or not proto_path:
         return None
-    proto_prim = stage.GetPrimAtPath(proto_targets[0])
+    proto_prim = stage.GetPrimAtPath(proto_path)
     if not proto_prim:
         return None
     xc = UsdGeom.XformCache()
@@ -1321,18 +1321,23 @@ def simulate_mujoco_instancer(
     inst_rot = world_xf.RemoveScaleShear().ExtractRotation()
     inst_rot_inv = inst_rot.GetInverse()
 
-    # Prototype's UNSCALED bound (extents + centre). The scatter tool clears the
-    # prototype's transform and bakes the real scale into per-instance scales, so
-    # the collider must multiply the proto extent by each instance's scale â€”
-    # otherwise the spheres are ~100x too small and the instances clip straight
-    # through everything.
+    # Each prototype's UNSCALED bound (extents + centre), measured once per prototype.
+    # The scatter tool clears the prototype's transform and bakes the real scale into
+    # per-instance scales, so the collider must multiply the proto extent by each
+    # instance's scale â€” otherwise the spheres are ~100x too small and the instances
+    # clip straight through everything.
+    #
+    # Per PROTOTYPE, not just the first one: a scatter of mixed assets (the usual case --
+    # a rock set, a leaf set) otherwise gives every instance the shape of prototype 0, so
+    # the big ones sink into the ground and the small ones hover above it.
     proto_targets = instancer.GetPrototypesRel().GetTargets()
-    proto_ext = Gf.Vec3d(1.0, 1.0, 1.0)
-    proto_ctr = Gf.Vec3d(0.0, 0.0, 0.0)
-    if proto_targets:
-        proto_prim = stage.GetPrimAtPath(proto_targets[0])
+    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    proto_exts: list[Gf.Vec3d] = []
+    proto_ctrs: list[Gf.Vec3d] = []
+    for tgt in proto_targets:
+        ext, ctr = Gf.Vec3d(1.0, 1.0, 1.0), Gf.Vec3d(0.0, 0.0, 0.0)
+        proto_prim = stage.GetPrimAtPath(tgt)
         if proto_prim:
-            bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
             # Local, NOT world: the instancer's world transform (e.g. a Transform node feeding it)
             # is already applied to the body positions via world_xf. Using ComputeWorldBound here
             # would double-count it in the collider centre/extent â€” offsetting and rescaling the
@@ -1340,10 +1345,24 @@ def simulate_mujoco_instancer(
             # the instancer is untransformed.
             rng = bbox_cache.ComputeLocalBound(proto_prim).ComputeAlignedRange()
             if not rng.IsEmpty():
-                proto_ext = rng.GetMax() - rng.GetMin()
-                proto_ctr = (rng.GetMin() + rng.GetMax()) * 0.5
+                ext = rng.GetMax() - rng.GetMin()
+                ctr = (rng.GetMin() + rng.GetMax()) * 0.5
+        proto_exts.append(ext)
+        proto_ctrs.append(ctr)
+    if not proto_exts:
+        proto_exts.append(Gf.Vec3d(1.0, 1.0, 1.0))
+        proto_ctrs.append(Gf.Vec3d(0.0, 0.0, 0.0))
 
     scales = instancer.GetScalesAttr().Get()
+    proto_indices = instancer.GetProtoIndicesAttr().Get()
+
+    def _proto_index(idx: int) -> int:
+        """Which prototype instance *idx* is. An out-of-range index falls back to 0 rather
+        than raising: a half-authored instancer is a state the graph passes through."""
+        if proto_indices is None or idx >= len(proto_indices):
+            return 0
+        pi = int(proto_indices[idx])
+        return pi if 0 <= pi < len(proto_exts) else 0
 
     def _instance_scale(idx: int) -> tuple[float, float, float]:
         if scales and idx < len(scales):
@@ -1351,16 +1370,20 @@ def simulate_mujoco_instancer(
             return float(s[0]), float(s[1]), float(s[2])
         return 1.0, 1.0, 1.0
 
-    def _instance_radius(idx: int) -> float:
+    def _instance_extent(idx: int) -> tuple[float, float, float]:
+        """The instance's world-size box: its own prototype's extent times its own scale."""
         sx, sy, sz = _instance_scale(idx)
-        return (
-            max(
-                float(proto_ext[0]) * sx,
-                float(proto_ext[1]) * sy,
-                float(proto_ext[2]) * sz,
-            )
-            / 2.0
-        )
+        ext = proto_exts[_proto_index(idx)]
+        return float(ext[0]) * sx, float(ext[1]) * sy, float(ext[2]) * sz
+
+    def _instance_centre(idx: int) -> Gf.Vec3d:
+        """Offset from the instance's origin to its own geometry centre, scaled."""
+        sx, sy, sz = _instance_scale(idx)
+        ctr = proto_ctrs[_proto_index(idx)]
+        return Gf.Vec3d(float(ctr[0]) * sx, float(ctr[1]) * sy, float(ctr[2]) * sz)
+
+    def _instance_radius(idx: int) -> float:
+        return max(_instance_extent(idx)) / 2.0
 
     # Representative radius (largest instance) for the heightfield cell-size cap.
     max_radius = max([0.5] + [_instance_radius(i) for i in range(num_instances)]) + max(collision_margin, 0.0)
@@ -1401,36 +1424,43 @@ def simulate_mujoco_instancer(
 
     off_rot = None  # no rotation offset on this chunk any more; see main()
 
-    # Convex hull: extract the shared prototype geometry once, then build one mesh
-    # asset per distinct instance scale (MuJoCo computes the hull per asset).
-    hull_base = None
+    # Convex hull: extract EACH prototype's geometry once, then build one mesh asset per
+    # (prototype, distinct instance scale) pair -- MuJoCo computes the hull per asset.
+    hull_bases: list = []
     if shape_type == "Convex Hull":
-        hull_base = _proto_hull_verts(stage, proto_targets)
-        if hull_base is None:
-            logger.warning("Convex Hull: no prototype mesh data, falling back to Sphere")
-        else:
-            # Recentre on the prototype's geometry centre: the body frame sits there, so the
-            # hull has to be expressed about it rather than about the prototype's origin.
-            hull_base = hull_base - _np.asarray(
-                [float(proto_ctr[0]), float(proto_ctr[1]), float(proto_ctr[2])], dtype=_np.float32
-            )
+        for pi, tgt in enumerate(proto_targets):
+            verts = _proto_hull_verts(stage, tgt)
+            if verts is None:
+                logger.warning(
+                    "Convex Hull: prototype %s has no mesh data, falling back to Sphere for it", tgt
+                )
+            else:
+                # Recentre on that prototype's geometry centre: the body frame sits there, so
+                # the hull has to be expressed about it rather than about the proto's origin.
+                ctr = proto_ctrs[pi]
+                verts = verts - _np.asarray(
+                    [float(ctr[0]), float(ctr[1]), float(ctr[2])], dtype=_np.float32
+                )
+            hull_bases.append(verts)
+    hull_bases += [None] * (len(proto_exts) - len(hull_bases))
 
-    hull_mesh_cache: dict[tuple[float, float, float], str] = {}
+    hull_mesh_cache: dict[tuple[int, float, float, float], str] = {}
 
-    def _hull_mesh_for_scale(sx: float, sy: float, sz: float) -> str:
-        key = (round(sx, 5), round(sy, 5), round(sz, 5))
+    def _hull_mesh_for(pi: int, sx: float, sy: float, sz: float) -> str:
+        key = (pi, round(sx, 5), round(sy, 5), round(sz, 5))
         name = hull_mesh_cache.get(key)
         if name is not None:
             return name
         name = f"hull{len(hull_mesh_cache)}"
         ma = spec.add_mesh()
         ma.name = name
-        ma.uservert = hull_base.flatten()
+        ma.uservert = hull_bases[pi].flatten()
         msx, msy, msz = sx, sy, sz
         if collision_margin != 0.0:
             # Grow the hull outward by ~collision_margin via a uniform scale bump
             # (same approximation the single-prim path uses).
-            max_ext = max(float(proto_ext[0]) * sx, float(proto_ext[1]) * sy, float(proto_ext[2]) * sz) / 2.0
+            ext = proto_exts[pi]
+            max_ext = max(float(ext[0]) * sx, float(ext[1]) * sy, float(ext[2]) * sz) / 2.0
             if max_ext > 1e-6:
                 mf = (max_ext + collision_margin) / max_ext
                 msx, msy, msz = sx * mf, sy * mf, sz * mf
@@ -1460,19 +1490,16 @@ def simulate_mujoco_instancer(
         wq = world_rot.GetQuat()
         wqi = wq.GetImaginary()
 
+        pi = _proto_index(i)
         sx, sy, sz = _instance_scale(i)
+        ext_x, ext_y, ext_z = _instance_extent(i)
         radius_i = max(_instance_radius(i) + collision_margin, 1e-4)
         # Offset from the instance's own origin to its geometry centre, scaled. The body
         # frame goes on the geometry (see the single-prim path): a prototype whose points are
         # authored away from its origin -- anything referenced out of a production asset --
         # otherwise gives every instance a long lever arm between its free joint and its mass,
         # and the pile detonates on first contact.
-        ctr_scaled = Gf.Vec3d(
-            float(proto_ctr[0]) * sx,
-            float(proto_ctr[1]) * sy,
-            float(proto_ctr[2]) * sz,
-        )
-        ctr_world = world_rot.TransformDir(ctr_scaled)
+        ctr_world = world_rot.TransformDir(_instance_centre(i))
 
         body = spec.worldbody.add_body()
         body.name = f"b{i}"
@@ -1481,16 +1508,16 @@ def simulate_mujoco_instancer(
         jnt = body.add_joint()
         jnt.type = _mj.mjtJoint.mjJNT_FREE
         g = body.add_geom()
-        if hull_base is not None:
-            # Shared prototype hull, recentred on the geometry, scaled per instance.
+        if hull_bases[pi] is not None:
+            # This instance's OWN prototype hull, recentred on the geometry, scaled per instance.
             g.type = _mj.mjtGeom.mjGEOM_MESH
-            g.meshname = _hull_mesh_for_scale(sx, sy, sz)
+            g.meshname = _hull_mesh_for(pi, sx, sy, sz)
         elif shape_type == "Box":
             g.type = _mj.mjtGeom.mjGEOM_BOX
             g.size = [
-                max(float(proto_ext[0]) * sx / 2.0 + collision_margin, 1e-4),
-                max(float(proto_ext[1]) * sy / 2.0 + collision_margin, 1e-4),
-                max(float(proto_ext[2]) * sz / 2.0 + collision_margin, 1e-4),
+                max(ext_x / 2.0 + collision_margin, 1e-4),
+                max(ext_y / 2.0 + collision_margin, 1e-4),
+                max(ext_z / 2.0 + collision_margin, 1e-4),
             ]
         else:
             g.type = _mj.mjtGeom.mjGEOM_SPHERE
@@ -1552,10 +1579,7 @@ def simulate_mujoco_instancer(
             body_rot = Gf.Rotation(wq)
             # The body frame is on the instance's geometry centre; the instancer wants the
             # instance ORIGIN, so undo that offset with the body's current rotation.
-            sx, sy, sz = _instance_scale(i)
-            ctr_now = body_rot.TransformDir(
-                Gf.Vec3d(float(proto_ctr[0]) * sx, float(proto_ctr[1]) * sy, float(proto_ctr[2]) * sz)
-            )
+            ctr_now = body_rot.TransformDir(_instance_centre(i))
             world_pos = Gf.Vec3d(
                 float(pos[0]) - float(ctr_now[0]),
                 float(pos[1]) - float(ctr_now[1]),
