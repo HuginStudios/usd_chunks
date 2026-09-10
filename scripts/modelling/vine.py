@@ -809,20 +809,33 @@ def _leaf_points(strands, positions, normals, radii, spacing):
 def _settings(node, surface):
     """Everything the growth needs, with the scale-relative params resolved to scene units.
 
-    Step is the unit the rest is measured in — influence, kill, width, lift, leaf spacing are
-    all multiples of it. That is what lets one set of defaults look the same on a doorway and on
-    a cliff face: the only figure tied to the scene is Step, and Auto Step derives even that
-    from the painted region's own size.
+    **Two units, not one.** How far apart the growth's decisions are (Step) and how thick the
+    result is (Thickness) are different questions, and measuring the second in multiples of the
+    first made a finer vine a thinner one. At the default resolution that put a stem at a
+    five-hundredth of the object it grew on — one pixel on screen, and a quarter of a pixel at
+    the tips. Reported as the chunk cooking and producing nothing you could see.
+
+    So the growth distances (influence, kill) are multiples of Step, which is the space
+    colonization papers' own convention and genuinely is about resolution; and every visible
+    size — width, lift off the wall, leaf spacing — hangs off Thickness, which is a share of
+    the painted region. Changing Step now changes how smoothly a vine curves and nothing else.
     """
     def number(name):
         return float(node.get_param(name).value or 0.0)
+
+    region = max(surface.diagonal(), 1e-6)
 
     step = number("step")
     if node.get_param("auto_step").value:
         # A hundred and fifty steps across the painted region: enough that a vine curves rather
         # than zig-zags, and few enough that a wall does not cost a hundred thousand nodes.
-        step = max(surface.diagonal() / 150.0, 1e-6)
+        step = region / 150.0
     step = max(step, 1e-6)
+
+    # A percentage of the painted region, so it means the same on a doorway and on a cliff
+    # face. One percent is a 5cm stem across a 5m wall — a mature ivy, and legible in a
+    # viewport, which the botanically honest figure is not.
+    base_width = max(region * number("thickness") / 100.0, 1e-9)
 
     return {
         "step": step,
@@ -834,14 +847,16 @@ def _settings(node, surface):
         "roots": max(1, int(number("root_count"))),
         "min_branch": max(1, int(number("min_branch"))),
         "max_nodes": max(2, min(_MAX_NODES, int(number("max_points")))),
-        "base_width": step * number("thickness"),
+        "base_width": base_width,
         "taper": number("taper"),
-        "lift": step * number("lift"),
+        # Off the wall in multiples of the vine's own width: what "sits on the surface rather
+        # than in it" means is a function of how fat the tube is, not of how finely it grew.
+        "lift": base_width * number("lift"),
         "smooth": max(0, int(number("smooth"))),
         "form": node.get_param("curve_form").value,
         "leaves": bool(node.get_param("leaves").value),
-        "leaf_spacing": step * number("leaf_spacing"),
-        "leaf_size": step * number("leaf_size"),
+        "leaf_spacing": base_width * number("leaf_spacing"),
+        "leaf_size": base_width * number("leaf_size"),
     }
 
 
@@ -1225,8 +1240,8 @@ def main():
         "Auto Step",
         default_value=True,
         flags=_PF.LABELED,
-        tooltip="Size the step from the painted region, so the defaults look the same on a\n"
-        "doorway and on a cliff face. Untick to set it in scene units.",
+        tooltip="Size the step from the painted region, so a vine is made of about the same\n"
+        "number of points whatever the scene scale. Untick to set it in scene units.",
     )
     auto.add_callback(_wiring_changed)
     grow.add_param(auto)
@@ -1238,8 +1253,9 @@ def main():
             max_value=100.0,
             default_value=1.0,
             flags=_PF.LABELED,
-            tooltip="Distance between points on a vine, in scene units. Everything else in this\n"
-            "chunk is measured in multiples of it.",
+            tooltip="Distance between points on a vine, in scene units — how far apart the\n"
+            "growth makes its decisions. It changes how smoothly a vine curves, not how thick\n"
+            "one is: that is Thickness, under Shape.",
         )
     )
     grow.add_param(
@@ -1331,13 +1347,14 @@ def main():
     shape.add_param(
         chunk.Slider(
             "thickness",
-            "Thickness",
-            min_value=0.01,
-            max_value=2.0,
-            default_value=0.25,
+            "Thickness %",
+            min_value=0.05,
+            max_value=5.0,
+            default_value=1.0,
             flags=_PF.LABELED,
-            tooltip="Width at the thickest part of a vine, as a multiple of Step. A branch is\n"
-            "only ever as thick as what it carries, so a young vine stays under this.",
+            tooltip="Width at the base of a vine, as a percentage of the painted region — so it\n"
+            "means the same on a doorway and on a cliff face. Everything else you can see (lift\n"
+            "off the wall, leaf spacing and size) is a multiple of this, not of Step.",
         )
     )
     shape.add_param(
@@ -1356,11 +1373,11 @@ def main():
             "lift",
             "Lift",
             min_value=0.0,
-            max_value=2.0,
-            default_value=0.15,
+            max_value=5.0,
+            default_value=0.6,
             flags=_PF.LABELED,
-            tooltip="How far off the skin the vine floats, as a multiple of Step. Enough to\n"
-            "keep it from z-fighting the wall it grew on.",
+            tooltip="How far off the skin the vine floats, as a multiple of its own width.\n"
+            "Below 0.5 the tube is half buried in the wall it grew on.",
         )
     )
     shape.add_param(
@@ -1393,23 +1410,24 @@ def main():
         chunk.Slider(
             "leaf_spacing",
             "Spacing",
-            min_value=0.25,
-            max_value=20.0,
-            default_value=2.0,
+            min_value=1.0,
+            max_value=40.0,
+            default_value=3.0,
             flags=_PF.LABELED,
-            tooltip="Distance along a vine between leaves, as a multiple of Step.",
+            tooltip="Distance along a vine between leaves, as a multiple of Thickness — about\n"
+            "three stem-widths apart by default, which is roughly how ivy sets them.",
         )
     )
     leaf.add_param(
         chunk.Slider(
             "leaf_size",
             "Point Size",
-            min_value=0.01,
-            max_value=10.0,
-            default_value=0.6,
+            min_value=0.25,
+            max_value=20.0,
+            default_value=1.5,
             flags=_PF.LABELED,
-            tooltip="How big the leaf points are drawn, as a multiple of Step. Display only —\n"
-            "the size of an instanced leaf is the Scatter Points chunk's business.",
+            tooltip="How big the leaf points are drawn, as a multiple of Thickness. Display\n"
+            "only — the size of an instanced leaf is the Scatter Points chunk's business.",
         )
     )
     chunk_api.add_param(leaf)
@@ -1495,15 +1513,16 @@ def config():
 
         Parameters:
           - Surface Mesh: the mesh the vines climb.
-          - Auto Step / Step: the length of one growth step. Every other
-            distance here is a multiple of it, so the defaults hold at any
-            scene scale.
+          - Auto Step / Step: the length of one growth step — how smoothly a
+            vine curves. It does not change how thick one is.
           - Density: how thickly the vines fill what was painted.
           - Climb: pull toward the up axis — the plant's phototropism.
           - Wander: randomness per step.
           - Roots: how many vines to start when no painted points are wired.
-          - Thickness / Taper: width at the base, and how thin a tip gets. A
-            branch is only as thick as what it carries.
+          - Thickness %: width at the base, as a share of the painted region,
+            so the defaults hold at any scene scale. Lift, leaf spacing and
+            leaf size are all multiples of it.
+          - Taper: how thin a tip gets, as a fraction of Thickness.
 
         Growth is space colonization (Runions et al., 2007) constrained to the
         surface, with the momentum, phototropism and randomness of Luft's ivy

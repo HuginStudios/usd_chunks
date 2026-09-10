@@ -399,15 +399,53 @@ def test_a_vine_is_thickest_at_its_base(host) -> None:
     assert min(widths) == pytest.approx(max(widths) * 0.1, rel=1e-3)
 
 
-def test_the_vines_lie_on_the_surface_they_grew_on(host) -> None:
-    """The wall is the plane y=0; a vine floats a little off it and never sinks into it."""
+def test_the_vines_sit_on_the_surface_rather_than_in_it(host) -> None:
+    """The wall is the plane y=0. A vine has to clear it — a tube lifted by less than its own
+    radius is half buried, and on a flat surface seen face-on that is z-fighting."""
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine()
 
     node.execute()
     off_wall = np.abs(host.points()[:, 1])
+    widest = max(host.curves().GetWidthsAttr().Get())
 
-    assert off_wall.max() < SIZE / 150.0 * 0.5  # well under one step
+    assert off_wall.max() > widest * 0.5
+    assert off_wall.max() < widest * 3.0
+
+
+def test_step_decides_how_smoothly_a_vine_curves_and_not_how_thick_it_is(host) -> None:
+    """Regression for the reported "cooks but nothing is visible".
+
+    Every visible size used to be a multiple of Step, and Step is a *resolution* — Auto Step is
+    the painted region over 150. So growing more finely grew a thinner vine, and at the default
+    the stem came out at a five-hundredth of the object: one pixel on screen, a quarter of one
+    at the tips. Width belongs to Thickness, which is a share of the region, and Step may not
+    touch it.
+    """
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine(auto_step=False, step=0.1)
+
+    node.execute()
+    fine = max(host.curves().GetWidthsAttr().Get())
+    node.get_param("step").value = 0.4
+    node.execute()
+    coarse = max(host.curves().GetWidthsAttr().Get())
+
+    assert fine == pytest.approx(coarse)
+
+
+def test_a_vine_is_a_visible_fraction_of_what_it_grew_on(host) -> None:
+    """The figure that was wrong when this could not be seen. A stem near a hundredth of the
+    painted region reads as a vine in a viewport; a five-hundredth is a sub-pixel line."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine()
+
+    node.execute()
+    points = host.points()
+    region = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+    widest = max(host.curves().GetWidthsAttr().Get())
+
+    assert 1 / 250.0 < widest / region < 1 / 30.0
 
 
 def test_a_recook_replaces_the_previous_vine_rather_than_adding_to_it(host) -> None:
