@@ -380,16 +380,23 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     attr.ClearConnections()
 
     def _expr_connections(self, prim: Usd.Prim, raw: str) -> list:
-        """Build Sdf.Path connection targets for an expression string, preferring outputs: over inputs:."""
+        """Build Sdf.Path connection targets for an expression string, preferring outputs: over inputs:.
+
+        The referenced node need not exist yet -- a connection is just a path, and USD
+        resolves it once the target is authored, same as any other forward reference within
+        a stage's own layers. GetAttribute on an invalid Usd.Prim raises rather than
+        returning an invalid attribute, so the target prim's own validity has to be checked
+        first: without this, a chunk load order where the referring chunk's expression gets
+        resolved before the node it names has been defined crashed the whole load.
+        """
         chunk_root = str(prim.GetParent().GetPath())
-        return [
-            Sdf.Path(
-                f"{chunk_root}/{node}.outputs:{attr_name}"
-                if self._stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}")).GetAttribute(f"outputs:{attr_name}").IsValid()
-                else f"{chunk_root}/{node}.inputs:{attr_name}"
-            )
-            for node, attr_name in chunk_utils.parse_expression(raw)
-        ]
+        targets = []
+        for node, attr_name in chunk_utils.parse_expression(raw):
+            target_prim = self._stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}"))
+            kind = ("outputs" if target_prim.IsValid()
+                    and target_prim.GetAttribute(f"outputs:{attr_name}").IsValid() else "inputs")
+            targets.append(Sdf.Path(f"{chunk_root}/{node}.{kind}:{attr_name}"))
+        return targets
 
     def _clear_driven_attr_value(self, driven_attr: Usd.Attribute) -> None:
         """Remove any authored default value from the driven attr in session/anonymous layers.
@@ -3930,7 +3937,16 @@ def _load_chunks(
             continue
         mod = chunk_registry.ChunkRegistry().get_chunk_module(str(chunk_type))
         if not mod:
-            logger.warning("load_chunks: no module for type %r", chunk_type)
+            # Names the prim, not just the type: a type can back several prims, and
+            # without a path there is no way to tell which node in the graph this warning
+            # is even about. The prim still loads as a placeholder (resolve_graph_nodes
+            # finds it by USD type alone, independent of whether a module backs it) with
+            # exec ports but none of its real params -- said here so that is not a
+            # surprise discovered later by clicking the node.
+            logger.warning(
+                "load_chunks: %s wants chunk type %r, but no module registers it "
+                "(missing/renamed/not on USD_CHUNK_DIRS?) -- loading as an empty placeholder",
+                prim.GetPath(), chunk_type)
             continue
         to_load.append((prim, mod))
 

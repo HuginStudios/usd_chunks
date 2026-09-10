@@ -290,7 +290,15 @@ def sync_to_node(node, chunk) -> None:
         key = id(param)
         _writing.add(key)
         try:
-            value = param.value
+            # raw_value, not value: chunk_widget_api.ChunkParamWidgetBase reads raw_value
+            # for exactly this (setup_chunk_widget, ATTRIBUTE_CHANGED) so Qt and Flet get
+            # it for free by subclassing it -- Blender has no widget objects to subclass
+            # (see the module docstring), so this hand-rolled sync has to ask for the same
+            # thing by hand. value alone is the fully-resolved result, which for an
+            # expression- or connection-driven param is not what belongs in the field: the
+            # field should show the "@Node.attr@" text (or connected indication), same as
+            # every other frontend, not a blank/resolved value that looks unconnected.
+            value = param.raw_value
             if value is None:
                 continue
             if hasattr(node, param.name):
@@ -343,20 +351,31 @@ def draw_param(node, layout, param, text: "str | None" = None) -> bool:
     # OUTPUT is computed, so it is shown but not editable. active=False greys it the way
     # Blender greys any driven value, which reads correctly to a Blender user.
     layout.active = not param.has_flag(_OUTPUT)
+    # A PRIM_SELECTION field gets a pin button beside it, same as Qt's -- pulling in
+    # whatever the viewport-click picker last found (chunk_blender_nodegraph.pin_prim /
+    # set_picked_prim_paths), which is this frontend's counterpart of the Qt/usdview
+    # viewport-selection pin.
+    pinnable = param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION)
+    row = layout.row(align=True) if pinnable else layout
+    drawn = False
     if hasattr(node, param.name):
         # No `text=` at all when the caller has no opinion: a declared property already
         # carries the param's label as its RNA name, and passing text="" would blank it.
         if text is None:
-            layout.prop(node, param.name)
+            row.prop(node, param.name)
         else:
-            layout.prop(node, param.name, text=text)
-        return True
-    if param.name in node.keys():
+            row.prop(node, param.name, text=text)
+        drawn = True
+    elif param.name in node.keys():
         # An ID property has no name of its own, so a label always has to be supplied.
-        layout.prop(node, '["%s"]' % param.name,
-                    text=(param.label or param.name) if text is None else text)
-        return True
-    return False
+        row.prop(node, '["%s"]' % param.name,
+                text=(param.label or param.name) if text is None else text)
+        drawn = True
+    if drawn and pinnable:
+        op = row.operator("usd_chunks.pin_prim", text="", icon="EYEDROPPER")
+        op.node_path = node.name
+        op.param_name = param.name
+    return drawn
 
 
 def draw_params(node, layout, chunk, skip=()) -> None:
@@ -412,11 +431,11 @@ class BlenderParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
     def get_value(self):
         if self._node is None:
-            return self.param.value
+            return self.param.raw_value
         name = self.param.name
         if hasattr(self._node, name):
             return getattr(self._node, name)
-        return self._node.get(name, self.param.value)
+        return self._node.get(name, self.param.raw_value)
 
     def set_value(self, value):
         """Only ever touches the node. Writing to the param here would be re-entered by
