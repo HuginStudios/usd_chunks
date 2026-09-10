@@ -21,10 +21,7 @@ These tests stay as the regression guard.
 """
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 
-import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry

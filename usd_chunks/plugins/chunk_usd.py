@@ -9,7 +9,6 @@ import contextlib
 import difflib
 import logging
 import math
-import re
 import weakref
 from pathlib import Path
 from typing import Generator, Iterable, Tuple
@@ -27,17 +26,22 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
 
+from usd_chunks import chunk_naming
+
 logger = logging.getLogger(__name__)
 
-_CHUNK_TYPE_ATTR = "info:chunkType"
+# The chunk vocabulary itself lives in chunk_naming, which imports nothing and can be read
+# without this module's machinery. Re-exported under the existing private names so every
+# call site here and elsewhere is unaffected -- one definition, two spellings.
+_CHUNK_TYPE_ATTR = chunk_naming.CHUNK_TYPE_ATTR
+_INPUTS_PREFIX = chunk_naming.INPUTS_PREFIX
 #: What a chunk with no module of its own is saved as, so it can be read back (scripts/runtime.py).
 _RUNTIME_CHUNK_TYPE = "runtime"
-_INPUTS_PREFIX = "inputs:"
 # The ObjectsChanged field name for a connection edit; a value write reports "default".
 _CONNECTION_PATHS_FIELD = "connectionPaths"
-_EXEC_OUTPUT = "outputs:chunk"
-_EXEC_INPUT = "inputs:chunk"
-_CHUNK_PRIM_TYPENAME = "Chunk"
+_EXEC_OUTPUT = chunk_naming.EXEC_OUTPUT
+_EXEC_INPUT = chunk_naming.EXEC_INPUT
+_CHUNK_PRIM_TYPENAME = chunk_naming.CHUNK_PRIM_TYPENAME
 # Usd.Stage.Traverse()'s default predicate skips INACTIVE prims, and a disabled chunk is
 # authored as exactly that (see _on_state_changed). Loading a file through the default
 # predicate therefore never saw a disabled chunk at all -- it was in the file, with
@@ -46,8 +50,8 @@ _LOAD_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 # /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
 # default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
 # scope look like a chunk prim to anything reading the stage back.
-_CHUNKS_ROOT_TYPENAME = "Scope"
-_CHUNKS_ROOT = "/chunks"
+_CHUNKS_ROOT_TYPENAME = chunk_naming.CHUNKS_ROOT_TYPENAME
+_CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
 
 # Merge chunks fan several exec branches into one node, so they need more than the single
 # inputs:chunk every other chunk has. Extra slots are numbered from 1 -- slot 0 deliberately
@@ -56,39 +60,12 @@ _CHUNKS_ROOT = "/chunks"
 # transparently sees the merge's PRIMARY input, which is the answer those consumers want
 # anyway. Only code that genuinely needs every branch (edge drawing, tail detection,
 # disconnect) has to iterate.
-_EXEC_INPUT_NUMBERED = re.compile(r"^inputs:chunk([1-9]\d*)$")
+_EXEC_INPUT_NUMBERED = chunk_naming.EXEC_INPUT_NUMBERED
 
-
-def is_exec_input_name(name: str) -> bool:
-    """Whether an attribute name is an exec input -- inputs:chunk, or a merge's
-    inputs:chunk<N> for N >= 1."""
-    return name == _EXEC_INPUT or bool(_EXEC_INPUT_NUMBERED.match(name))
-
-
-def exec_input_index(name: str) -> int:
-    """The slot number an exec input attribute name refers to (inputs:chunk -> 0)."""
-    match = _EXEC_INPUT_NUMBERED.match(name)
-    return int(match.group(1)) if match else 0
-
-
-def exec_input_name(index: int) -> str:
-    """The attribute name for exec slot `index`. Slot 0 is the plain inputs:chunk."""
-    return _EXEC_INPUT if index == 0 else f"{_EXEC_INPUT}{index}"
-
-
-def iter_exec_inputs(prim: "Usd.Prim") -> "list[Usd.Attribute]":
-    """A prim's exec input attributes, ordered by slot number -- strongest branch first.
-
-    Sorted by the PARSED index, never by attribute name: prim.GetAttributes() is
-    alphabetical, which puts inputs:chunk10 before inputs:chunk2. Slot order decides which
-    branch's opinion wins, so a string sort would silently mis-rank a merge with ten or
-    more inputs.
-    """
-    if not (prim and prim.IsValid()):
-        return []
-    attrs = [a for a in prim.GetAttributes() if is_exec_input_name(a.GetName())]
-    attrs.sort(key=lambda a: exec_input_index(a.GetName()))
-    return attrs
+is_exec_input_name = chunk_naming.is_exec_input_name
+exec_input_index = chunk_naming.exec_input_index
+exec_input_name = chunk_naming.exec_input_name
+iter_exec_inputs = chunk_naming.iter_exec_inputs
 
 
 def exec_input_connections(prim: "Usd.Prim") -> "list[Sdf.Path]":
@@ -129,6 +106,32 @@ _pin_new_chunks: "bool | None" = None
 # right-click / wire-drop point). _define_prim reads it for the node pos instead of the far-away
 # index default. None → use the default. Cleared by the caller after the create.
 _create_node_pos: "tuple[float, float] | None" = None
+
+
+@contextlib.contextmanager
+def creating_at(pos: "tuple[float, float] | None", pin: "bool | None" = None):
+    """Create chunks at `pos` (USD space) for the duration of the block.
+
+    The two globals above are how a caller passes a position and a pin preference down
+    into _define_prim, which is several frames below and has no argument for either.
+    Every caller used to save both, assign, and restore in a try/finally -- nine copies
+    of that between the two frontends, each an opportunity to forget the restore and
+    leave every later chunk landing at someone else's mouse position.
+
+    Nesting works: the previous values come back rather than being cleared, so grouping
+    (which creates a group, then materializes chunks inside it) does not lose the outer
+    position when the inner block ends.
+    """
+    global _create_node_pos, _pin_new_chunks
+    previous_pos, previous_pin = _create_node_pos, _pin_new_chunks
+    _create_node_pos = pos
+    if pin is not None:
+        _pin_new_chunks = pin
+    try:
+        yield
+    finally:
+        _create_node_pos = previous_pos
+        _pin_new_chunks = previous_pin
 
 # Just above float32's ~1e-7 relative precision. A param holds a Python float (64-bit) but
 # is stored in USD as a 32-bit float, so a value that made the round trip comes back

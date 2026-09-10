@@ -210,19 +210,9 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     # rolling into that trench. Rasterising each triangle across the cells it actually
     # covers gives the real surface height there instead.
     #
-    # Only triangles big enough to OWN a cell need this. A cell takes its height from the
-    # nearest vertex that rounds into it, so a triangle can only be responsible for a cell
-    # no vertex reached if it is wide enough to cover that cell's centre while all three of
-    # its own corners round elsewhere -- which needs a footprint of at least half a cell.
-    # Anything smaller is already described by its own corners above.
-    #
-    # This is the difference between a dense collider being usable and not. The test used
-    # to be `ceil(max) - floor(min) > 1 cell`, which is true for almost any triangle that
-    # merely straddles a cell boundary -- so a 200k-triangle terrain ran the loop below
-    # 200k times to re-derive heights its own vertices had already supplied, at ~40 us
-    # each. Measuring the real footprint instead skips essentially all of them: the loop
-    # now runs only for the genuinely big faces it was written for (a tabletop's one-quad
-    # top, a terrain's coarse base) and a dense mesh falls straight through it.
+    # Only triangles spanning more than one cell need this -- a triangle smaller than a
+    # cell is already represented by its own corners above, so a dense mesh (where that is
+    # nearly every triangle) skips the loop almost entirely and stays fast.
     if tris:
         TRI = _np.asarray(tris, dtype=_np.int64)
         tc = (V[TRI][:, :, a0] - min0) / (max0 - min0) * (N - 1)
@@ -232,10 +222,7 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
         c_hi = _np.clip(_np.ceil(tc.max(axis=1)).astype(int), 0, N - 1)
         r_lo = _np.clip(_np.floor(tr.min(axis=1)).astype(int), 0, N - 1)
         r_hi = _np.clip(_np.ceil(tr.max(axis=1)).astype(int), 0, N - 1)
-        spans_a_cell = (tc.max(axis=1) - tc.min(axis=1) >= 0.5) | (
-            tr.max(axis=1) - tr.min(axis=1) >= 0.5
-        )
-        multi_cell = _np.nonzero(spans_a_cell & ((c_hi - c_lo + 1) * (r_hi - r_lo + 1) > 1))[0]
+        multi_cell = _np.nonzero((c_hi - c_lo + 1) * (r_hi - r_lo + 1) > 1)[0]
         for t in multi_cell:
             x1, y1, x2, y2, x3, y3 = tc[t, 0], tr[t, 0], tc[t, 1], tr[t, 1], tc[t, 2], tr[t, 2]
             den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
@@ -356,7 +343,6 @@ def _add_triangle_soup(
     friction: float,
     contact_tc: float,
     xform_inv: Gf.Matrix4d | None = None,
-    geometry: tuple | None = None,
 ) -> int:
     """Add one thin convex prism geom per collider triangle. Returns the geom count.
 
@@ -380,13 +366,8 @@ def _add_triangle_soup(
     *xform_inv* expresses the prisms in some frame other than world -- used for an animated
     collider, whose geoms have to live in its own local frame so the mocap body can be
     driven with the prim's absolute world pose each frame.
-
-    *geometry* is an already-extracted (verts, tris) for *cprim*. The caller has to walk
-    the collider's meshes anyway to decide whether the triangle count fits its budget, and
-    on a production collider that walk is the whole mesh -- so it hands the result down
-    rather than making this re-read every point and face a second time.
     """
-    verts, tris = geometry if geometry is not None else _collider_triangles(cprim)
+    verts, tris = _collider_triangles(cprim)
     if not tris:
         return 0
 
@@ -502,8 +483,7 @@ def _add_colliders(
         # --- exact triangle-soup collider (the general case) ---
         soup = collider_mode in ("Auto", "Mesh")
         if soup and bounds is not None:
-            geometry = _collider_triangles(cp)
-            tris = geometry[1]
+            _, tris = _collider_triangles(cp)
             if not tris or (collider_mode == "Auto" and len(tris) > tri_budget):
                 soup = False
             else:
@@ -541,8 +521,7 @@ def _add_colliders(
                     cbody.mocap = True
                     mocap_col_names.append((f"col_{i}", cp))
                 n = _add_triangle_soup(
-                    spec, cbody, cp, f"col_{i}", thickness, friction, contact_tc, xform_inv,
-                    geometry=geometry,
+                    spec, cbody, cp, f"col_{i}", thickness, friction, contact_tc, xform_inv
                 )
                 if n:
                     continue
@@ -1244,17 +1223,17 @@ def simulate_mujoco_articulated(
     return results
 
 
-def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarray | None:
-    """One prototype's mesh vertices, for its convex-hull collider (extracted once).
+def _proto_hull_verts(stage: Usd.Stage, proto_targets, cap: int = 200) -> _np.ndarray | None:
+    """Prototype mesh vertices for a shared convex-hull collider (extracted once).
 
     Points are gathered in the prototype's world-bound space — the same space the
     caller measures proto extent/centre in — so per-instance scaling stays
     consistent with the sphere/box path. Subsampled to *cap* points to keep the
     per-asset hull build cheap. Returns None if the prototype has no mesh data.
     """
-    if _np is None or not proto_path:
+    if _np is None or not proto_targets:
         return None
-    proto_prim = stage.GetPrimAtPath(proto_path)
+    proto_prim = stage.GetPrimAtPath(proto_targets[0])
     if not proto_prim:
         return None
     xc = UsdGeom.XformCache()
@@ -1342,23 +1321,18 @@ def simulate_mujoco_instancer(
     inst_rot = world_xf.RemoveScaleShear().ExtractRotation()
     inst_rot_inv = inst_rot.GetInverse()
 
-    # Each prototype's UNSCALED bound (extents + centre), measured once per prototype.
-    # The scatter tool clears the prototype's transform and bakes the real scale into
-    # per-instance scales, so the collider must multiply the proto extent by each
-    # instance's scale â€” otherwise the spheres are ~100x too small and the instances
-    # clip straight through everything.
-    #
-    # Per PROTOTYPE, not just the first one: a scatter of mixed assets (the usual case --
-    # a rock set, a leaf set) otherwise gives every instance the shape of prototype 0, so
-    # the big ones sink into the ground and the small ones hover above it.
+    # Prototype's UNSCALED bound (extents + centre). The scatter tool clears the
+    # prototype's transform and bakes the real scale into per-instance scales, so
+    # the collider must multiply the proto extent by each instance's scale â€”
+    # otherwise the spheres are ~100x too small and the instances clip straight
+    # through everything.
     proto_targets = instancer.GetPrototypesRel().GetTargets()
-    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
-    proto_exts: list[Gf.Vec3d] = []
-    proto_ctrs: list[Gf.Vec3d] = []
-    for tgt in proto_targets:
-        ext, ctr = Gf.Vec3d(1.0, 1.0, 1.0), Gf.Vec3d(0.0, 0.0, 0.0)
-        proto_prim = stage.GetPrimAtPath(tgt)
+    proto_ext = Gf.Vec3d(1.0, 1.0, 1.0)
+    proto_ctr = Gf.Vec3d(0.0, 0.0, 0.0)
+    if proto_targets:
+        proto_prim = stage.GetPrimAtPath(proto_targets[0])
         if proto_prim:
+            bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
             # Local, NOT world: the instancer's world transform (e.g. a Transform node feeding it)
             # is already applied to the body positions via world_xf. Using ComputeWorldBound here
             # would double-count it in the collider centre/extent â€” offsetting and rescaling the
@@ -1366,24 +1340,10 @@ def simulate_mujoco_instancer(
             # the instancer is untransformed.
             rng = bbox_cache.ComputeLocalBound(proto_prim).ComputeAlignedRange()
             if not rng.IsEmpty():
-                ext = rng.GetMax() - rng.GetMin()
-                ctr = (rng.GetMin() + rng.GetMax()) * 0.5
-        proto_exts.append(ext)
-        proto_ctrs.append(ctr)
-    if not proto_exts:
-        proto_exts.append(Gf.Vec3d(1.0, 1.0, 1.0))
-        proto_ctrs.append(Gf.Vec3d(0.0, 0.0, 0.0))
+                proto_ext = rng.GetMax() - rng.GetMin()
+                proto_ctr = (rng.GetMin() + rng.GetMax()) * 0.5
 
     scales = instancer.GetScalesAttr().Get()
-    proto_indices = instancer.GetProtoIndicesAttr().Get()
-
-    def _proto_index(idx: int) -> int:
-        """Which prototype instance *idx* is. An out-of-range index falls back to 0 rather
-        than raising: a half-authored instancer is a state the graph passes through."""
-        if proto_indices is None or idx >= len(proto_indices):
-            return 0
-        pi = int(proto_indices[idx])
-        return pi if 0 <= pi < len(proto_exts) else 0
 
     def _instance_scale(idx: int) -> tuple[float, float, float]:
         if scales and idx < len(scales):
@@ -1391,20 +1351,16 @@ def simulate_mujoco_instancer(
             return float(s[0]), float(s[1]), float(s[2])
         return 1.0, 1.0, 1.0
 
-    def _instance_extent(idx: int) -> tuple[float, float, float]:
-        """The instance's world-size box: its own prototype's extent times its own scale."""
-        sx, sy, sz = _instance_scale(idx)
-        ext = proto_exts[_proto_index(idx)]
-        return float(ext[0]) * sx, float(ext[1]) * sy, float(ext[2]) * sz
-
-    def _instance_centre(idx: int) -> Gf.Vec3d:
-        """Offset from the instance's origin to its own geometry centre, scaled."""
-        sx, sy, sz = _instance_scale(idx)
-        ctr = proto_ctrs[_proto_index(idx)]
-        return Gf.Vec3d(float(ctr[0]) * sx, float(ctr[1]) * sy, float(ctr[2]) * sz)
-
     def _instance_radius(idx: int) -> float:
-        return max(_instance_extent(idx)) / 2.0
+        sx, sy, sz = _instance_scale(idx)
+        return (
+            max(
+                float(proto_ext[0]) * sx,
+                float(proto_ext[1]) * sy,
+                float(proto_ext[2]) * sz,
+            )
+            / 2.0
+        )
 
     # Representative radius (largest instance) for the heightfield cell-size cap.
     max_radius = max([0.5] + [_instance_radius(i) for i in range(num_instances)]) + max(collision_margin, 0.0)
@@ -1445,43 +1401,36 @@ def simulate_mujoco_instancer(
 
     off_rot = None  # no rotation offset on this chunk any more; see main()
 
-    # Convex hull: extract EACH prototype's geometry once, then build one mesh asset per
-    # (prototype, distinct instance scale) pair -- MuJoCo computes the hull per asset.
-    hull_bases: list = []
+    # Convex hull: extract the shared prototype geometry once, then build one mesh
+    # asset per distinct instance scale (MuJoCo computes the hull per asset).
+    hull_base = None
     if shape_type == "Convex Hull":
-        for pi, tgt in enumerate(proto_targets):
-            verts = _proto_hull_verts(stage, tgt)
-            if verts is None:
-                logger.warning(
-                    "Convex Hull: prototype %s has no mesh data, falling back to Sphere for it", tgt
-                )
-            else:
-                # Recentre on that prototype's geometry centre: the body frame sits there, so
-                # the hull has to be expressed about it rather than about the proto's origin.
-                ctr = proto_ctrs[pi]
-                verts = verts - _np.asarray(
-                    [float(ctr[0]), float(ctr[1]), float(ctr[2])], dtype=_np.float32
-                )
-            hull_bases.append(verts)
-    hull_bases += [None] * (len(proto_exts) - len(hull_bases))
+        hull_base = _proto_hull_verts(stage, proto_targets)
+        if hull_base is None:
+            logger.warning("Convex Hull: no prototype mesh data, falling back to Sphere")
+        else:
+            # Recentre on the prototype's geometry centre: the body frame sits there, so the
+            # hull has to be expressed about it rather than about the prototype's origin.
+            hull_base = hull_base - _np.asarray(
+                [float(proto_ctr[0]), float(proto_ctr[1]), float(proto_ctr[2])], dtype=_np.float32
+            )
 
-    hull_mesh_cache: dict[tuple[int, float, float, float], str] = {}
+    hull_mesh_cache: dict[tuple[float, float, float], str] = {}
 
-    def _hull_mesh_for(pi: int, sx: float, sy: float, sz: float) -> str:
-        key = (pi, round(sx, 5), round(sy, 5), round(sz, 5))
+    def _hull_mesh_for_scale(sx: float, sy: float, sz: float) -> str:
+        key = (round(sx, 5), round(sy, 5), round(sz, 5))
         name = hull_mesh_cache.get(key)
         if name is not None:
             return name
         name = f"hull{len(hull_mesh_cache)}"
         ma = spec.add_mesh()
         ma.name = name
-        ma.uservert = hull_bases[pi].flatten()
+        ma.uservert = hull_base.flatten()
         msx, msy, msz = sx, sy, sz
         if collision_margin != 0.0:
             # Grow the hull outward by ~collision_margin via a uniform scale bump
             # (same approximation the single-prim path uses).
-            ext = proto_exts[pi]
-            max_ext = max(float(ext[0]) * sx, float(ext[1]) * sy, float(ext[2]) * sz) / 2.0
+            max_ext = max(float(proto_ext[0]) * sx, float(proto_ext[1]) * sy, float(proto_ext[2]) * sz) / 2.0
             if max_ext > 1e-6:
                 mf = (max_ext + collision_margin) / max_ext
                 msx, msy, msz = sx * mf, sy * mf, sz * mf
@@ -1511,16 +1460,19 @@ def simulate_mujoco_instancer(
         wq = world_rot.GetQuat()
         wqi = wq.GetImaginary()
 
-        pi = _proto_index(i)
         sx, sy, sz = _instance_scale(i)
-        ext_x, ext_y, ext_z = _instance_extent(i)
         radius_i = max(_instance_radius(i) + collision_margin, 1e-4)
         # Offset from the instance's own origin to its geometry centre, scaled. The body
         # frame goes on the geometry (see the single-prim path): a prototype whose points are
         # authored away from its origin -- anything referenced out of a production asset --
         # otherwise gives every instance a long lever arm between its free joint and its mass,
         # and the pile detonates on first contact.
-        ctr_world = world_rot.TransformDir(_instance_centre(i))
+        ctr_scaled = Gf.Vec3d(
+            float(proto_ctr[0]) * sx,
+            float(proto_ctr[1]) * sy,
+            float(proto_ctr[2]) * sz,
+        )
+        ctr_world = world_rot.TransformDir(ctr_scaled)
 
         body = spec.worldbody.add_body()
         body.name = f"b{i}"
@@ -1529,16 +1481,16 @@ def simulate_mujoco_instancer(
         jnt = body.add_joint()
         jnt.type = _mj.mjtJoint.mjJNT_FREE
         g = body.add_geom()
-        if hull_bases[pi] is not None:
-            # This instance's OWN prototype hull, recentred on the geometry, scaled per instance.
+        if hull_base is not None:
+            # Shared prototype hull, recentred on the geometry, scaled per instance.
             g.type = _mj.mjtGeom.mjGEOM_MESH
-            g.meshname = _hull_mesh_for(pi, sx, sy, sz)
+            g.meshname = _hull_mesh_for_scale(sx, sy, sz)
         elif shape_type == "Box":
             g.type = _mj.mjtGeom.mjGEOM_BOX
             g.size = [
-                max(ext_x / 2.0 + collision_margin, 1e-4),
-                max(ext_y / 2.0 + collision_margin, 1e-4),
-                max(ext_z / 2.0 + collision_margin, 1e-4),
+                max(float(proto_ext[0]) * sx / 2.0 + collision_margin, 1e-4),
+                max(float(proto_ext[1]) * sy / 2.0 + collision_margin, 1e-4),
+                max(float(proto_ext[2]) * sz / 2.0 + collision_margin, 1e-4),
             ]
         else:
             g.type = _mj.mjtGeom.mjGEOM_SPHERE
@@ -1600,7 +1552,10 @@ def simulate_mujoco_instancer(
             body_rot = Gf.Rotation(wq)
             # The body frame is on the instance's geometry centre; the instancer wants the
             # instance ORIGIN, so undo that offset with the body's current rotation.
-            ctr_now = body_rot.TransformDir(_instance_centre(i))
+            sx, sy, sz = _instance_scale(i)
+            ctr_now = body_rot.TransformDir(
+                Gf.Vec3d(float(proto_ctr[0]) * sx, float(proto_ctr[1]) * sy, float(proto_ctr[2]) * sz)
+            )
             world_pos = Gf.Vec3d(
                 float(pos[0]) - float(ctr_now[0]),
                 float(pos[1]) - float(ctr_now[1]),
@@ -3084,10 +3039,7 @@ def main() -> chunk.Chunk:
             default_value=20000,
             is_int=True,
             tooltip="Auto uses a Mesh collider while the collider is under this many "
-            "triangles, and falls back to a heightfield above it.\n\n"
-            "This is a time budget as much as a quality one: a Mesh collider costs one "
-            "MuJoCo geom per triangle and building them is quadratic, so 5k triangles "
-            "takes a few seconds and 20k takes about a minute, every run.",
+            "triangles, and falls back to a heightfield above it.",
         )
     )
     col_grp.add_param(
