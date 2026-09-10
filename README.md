@@ -254,22 +254,15 @@ Most of the attrs interfacing has been abstracted away execpt for using attrs.fi
 ### Install
 
 ```
-pip install "usd-chunks[standalone]"
+pip install usd-chunks
 ```
 
-The `standalone` extra brings OpenUSD itself (`usd-core`), giving you the library plus the
-`usdchunks` command with no USD build required:
+This pulls in `usd-core` and gives you the library plus the `usdchunks` command, with
+no USD build required:
 
 ```
 usdchunks run my_setup.usda
 ```
-
-Ask for the extra only when running **outside** a DCC. Inside a host that already ships
-USD — usdview, Houdini, Maya, Blender — plain `pip install usd-chunks` into that host's
-interpreter is what you want: it uses the USD already there. Installing `usd-core`
-alongside a host's USD does not share anything with it. Hosts build USD under a private
-namespace (Blender's is `pxrBlender_v26_03__pxrReserved__`), so the two are different C++
-types and cannot exchange objects — you end up with two unrelated USDs in one process.
 
 Note that the `usd-core` wheels on PyPI do not include usdview — it is not part of that
 build. Using the usdview integration needs a full USD build that provides

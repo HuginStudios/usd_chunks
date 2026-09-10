@@ -6,22 +6,6 @@ from pathlib import Path
 from typing import Final
 
 try:
-    import pxr  # noqa: F401
-except ImportError as _exc:  # pragma: no cover - depends on the install, not the code
-    # usd-core is an optional extra rather than a dependency, so this is the one place
-    # that has to explain why. Inside a DCC the bindings are already present, and
-    # installing usd-core there would add a SECOND, non-interoperable USD (hosts namespace
-    # their builds -- Blender's is pxrBlender_v26_03__pxrReserved__), so the fix genuinely
-    # differs by where you are running.
-    raise ImportError(
-        "usd_chunks needs the OpenUSD Python bindings (pxr), which are not importable.\n"
-        "  Inside a DCC that ships USD (usdview, Houdini, Maya, Blender): they are "
-        "already there -- run usd_chunks under the host's interpreter rather than "
-        "installing usd-core, which would add a second, incompatible USD.\n"
-        "  Standalone: pip install 'usd-chunks[standalone]'"
-    ) from _exc
-
-try:
     __version__ = version("usd_chunks")
 except PackageNotFoundError:
     __version__ = "uninstalled"

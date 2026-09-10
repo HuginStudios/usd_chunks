@@ -8,6 +8,7 @@ import weakref
 
 import requests
 
+from usd_chunks import chunk_widget_api
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core
 from usd_chunks.plugins.chunk_usd import ChunkStageSync, connect_exec, get_chunk_prim_path
 from PySide6 import QtWidgets, QtCore, QtGui
@@ -193,7 +194,7 @@ class _MaterialTile(QtWidgets.QFrame):
 # Grid widget
 
 
-class MaterialGridWidget(chunk_core.ChunkParamWidgetBase, QtWidgets.QWidget):
+class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidget):
     _catalog_ready = QtCore.Signal(list)
 
     def __init__(self, param: chunk.Custom):

@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from usd_chunks.stores import StoreProvider, discovered_stores, resolve_across_stores
+from usd_chunks import chunk_naming
 
 #: Layer-level key holding the flat lock: {chunkType: "store:version"}.
 PINS_KEY = "usdchunks:pins"
@@ -208,7 +209,7 @@ def collect_specs(stage) -> Dict[str, Optional[str]]:
     specs: Dict[str, Optional[str]] = {}
     conflicts: Dict[str, set] = {}
     for prim in stage.Traverse():
-        if prim.GetTypeName() != "Chunk":
+        if prim.GetTypeName() != chunk_naming.CHUNK_PRIM_TYPENAME:
             continue
         ct_attr = prim.GetAttribute("info:chunkType")
         ct = ct_attr.Get() if ct_attr else None

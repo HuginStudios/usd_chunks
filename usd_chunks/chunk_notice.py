@@ -76,7 +76,7 @@ _T = TypeVar("_T")
 Predicate: TypeAlias = Callable[[Any], TypeGuard[_T]]
 
 if TYPE_CHECKING:
-    from usd_chunks import chunk_core
+    from usd_chunks import chunk_core, chunk_widget_api
 
 
 class ChunkNoticeAlias(IntEnum):
@@ -391,7 +391,7 @@ class MenuActionNotice(ChunkNotice):
 
 @chunk_notice(ChunkNoticeAlias.WIDGET_CHANGED)
 class WidgetChangedNotice(ChunkNotice):
-    data: "chunk_core.ChunkParamWidgetBase"
+    data: "chunk_widget_api.ChunkParamWidgetBase"
 
 
 ### UsdView selection notices

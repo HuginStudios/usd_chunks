@@ -11,7 +11,7 @@ There are some chunk-specifics though that will need to be considered when imple
 ## Params
 
 ### ChunkParamWidget
-Firstly, all 'widgets' representing a valued parameter (params subclassed from ChunkParamBase), should subclass chunk_core.ChunkParamWidgetBase. This class provide some basic param<->widget communication, meaning setters and getters of the parameter. Here's an example for taken from chunk_qt, implementing the chunk.Splinbox parameter:
+Firstly, all 'widgets' representing a valued parameter (params subclassed from ChunkParamBase), should subclass chunk_widget_api.ChunkParamWidgetBase. This class provide some basic param<->widget communication, meaning setters and getters of the parameter. Here's an example for taken from chunk_qt, implementing the chunk.Splinbox parameter:
 
 ``` py
 
@@ -44,16 +44,16 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
 
 ```
 
-the **setup_chunk_widget()** function is implemented by [ChunkParamWidgetBase][usd_chunks.chunk_core.ChunkParamWidgetBase] and will call **set_value(), set_label(), set_icon()** and **set_set_param_layout()** respectively, each with the corresponding arguments taken from the param.
+the **setup_chunk_widget()** function is implemented by [ChunkParamWidgetBase][usd_chunks.chunk_widget_api.ChunkParamWidgetBase] and will call **set_value(), set_label(), set_icon()** and **set_set_param_layout()** respectively, each with the corresponding arguments taken from the param.
 
 The get_* and set_* functions of a ChunkParamWidgetBase should set/get the value of the ui widget only. Any changes to the value of the widget should trigger **value_changed()** of ChunkParamWidgetBase. The **value_changed()** function is concrete and responsible for setting the value back to the actual parameter.
 
 The handle to the chunk param is a weakref.ref() object, meaning it may be set to None in case the param has beed deleted. Hence, it's adviced to check if the param is None prior to doing anything with it. 
 
 ### ChunkWidgetFactoryBase
-A ui implementation may want to create a subclass of [ChunkWidgetFactoryBase][usd_chunks.chunk_core.ChunkWidgetFactoryBase] for mapping various params to their respective ui widgets. An example from chunk_qt:
+A ui implementation may want to create a subclass of [ChunkWidgetFactoryBase][usd_chunks.chunk_widget_api.ChunkWidgetFactoryBase] for mapping various params to their respective ui widgets. An example from chunk_qt:
 ``` py
-class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
+class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
     widget_map: Dict[ChunkFlags.ParamType, type[QtWidgets.QWidget]] = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
@@ -130,7 +130,7 @@ In any case, using the chunks for any application require some initialization fr
     chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
 ```
 
-The UsdviewScene is an implementation of the abstract [SceneSender][usd_chunks.chunk_core.SceneSender] class, which provides access to the scene as well as sends notices upon selection changes. Any application plugin should provide a similar scene proxy. This is important as some chunks will rely on prim selections, or other scene specific functionality. The scene proxy also provide a handle to the UsdStage, which the underlying application usually provides.
+The UsdviewScene is an implementation of the abstract [SceneSender][usd_chunks.chunk_scene.SceneSender] class, which provides access to the scene as well as sends notices upon selection changes. Any application plugin should provide a similar scene proxy. This is important as some chunks will rely on prim selections, or other scene specific functionality. The scene proxy also provide a handle to the UsdStage, which the underlying application usually provides.
 
 The ChunkRegistry is responsible for finding and loading any chunks in the environment, and the ChunkLayerManager is responsible for managing the SdfLayers of the chunks. Both of these need to be initialized in order to get proper functionality
 

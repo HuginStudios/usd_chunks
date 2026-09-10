@@ -5,7 +5,9 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_utils
 import usd_chunks.chunk_flags
-from usd_chunks.chunk_core import ChunkParamWidgetBase
+from usd_chunks.chunk_widget_api import ChunkParamWidgetBase
+from usd_chunks import chunk_naming
+from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks.plugins import chunk_usd
 
@@ -584,25 +586,17 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         if not self.param:
             return
 
-        pattern = ""
-        if self.param.pattern:
-            pattern = self.param.pattern
-
-        if not pattern:
-            pattern = "*"
-
-        if self.param.extensions:
-            pattern = " ".join([pattern + x for x in self.param.extensions])
-
-        directory = self.param.has_flag(ChunkFlags.ParamFlags.DIRECTORY)
+        # What to ask for is chunk_widget_api.file_dialog_spec, shared with the Flet and
+        # ImGui frontends so all three honour the same pattern/extensions and the same
+        # DIRECTORY and FILE_EXISTING flags. Only turning it into a QFileDialog is local.
+        #
         # FILE_EXISTING unset (the default) means the file need not exist yet — an
-        # output/destination picker like Export ChunkGroup's Output File. Previously
-        # this only applied to DIRECTORY params; a plain FILE param always got
-        # create_new=False (an Open dialog requiring the file to already exist),
-        # regardless of the flag. file_dial() ignores create_new for directory=True
-        # anyway (always getExistingDirectory), so computing it unconditionally here
-        # only changes behavior for the FILE case.
-        create_new = not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
+        # output/destination picker like Export ChunkGroup's Output File. file_dial()
+        # ignores create_new for directory=True anyway (always getExistingDirectory).
+        spec = chunk_widget_api.file_dialog_spec(self.param)
+        pattern = " ".join(spec.patterns)
+        directory = spec.directory
+        create_new = not spec.must_exist
 
         if file := file_dial(pattern, create_new, directory):
             self.set_value(file)
@@ -870,7 +864,7 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
             self.value_changed((color.redF(), color.greenF(), color.blueF()))
 
 
-class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
+class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
     widget_map = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
@@ -1311,7 +1305,7 @@ class ContainerWidget(
         else:
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
 
-    def get_widget_factory(self) -> chunk_core.ChunkWidgetFactoryBase:
+    def get_widget_factory(self) -> chunk_widget_api.ChunkWidgetFactoryBase:
         if factory := self.group.widget_factory:
             return factory
         else:
@@ -1508,7 +1502,7 @@ class ContainerWidget(
 
         elif isinstance(widget, chunk_core.ChunkContainerWidgetBase):
             widget.group.request_delete()
-        elif isinstance(widget, chunk_core.ChunkParamWidgetBase):
+        elif isinstance(widget, chunk_widget_api.ChunkParamWidgetBase):
             widget.param.request_delete()
         self.remove_widget(widget)
 
@@ -1649,7 +1643,7 @@ class ViewSlotState(QtCore.QObject):
                 for p in stage.Traverse():
                     if p.GetAttribute("info:chunkType").Get() != "view":
                         continue
-                    exec_in = p.GetAttribute("inputs:chunk")
+                    exec_in = p.GetAttribute(chunk_naming.EXEC_INPUT)
                     if exec_in.IsValid():
                         for conn_path in exec_in.GetConnections():
                             if str(conn_path.GetPrimPath()) == prim_path:
