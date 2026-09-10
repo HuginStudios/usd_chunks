@@ -210,9 +210,19 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     # rolling into that trench. Rasterising each triangle across the cells it actually
     # covers gives the real surface height there instead.
     #
-    # Only triangles spanning more than one cell need this -- a triangle smaller than a
-    # cell is already represented by its own corners above, so a dense mesh (where that is
-    # nearly every triangle) skips the loop almost entirely and stays fast.
+    # Only triangles big enough to OWN a cell need this. A cell takes its height from the
+    # nearest vertex that rounds into it, so a triangle can only be responsible for a cell
+    # no vertex reached if it is wide enough to cover that cell's centre while all three of
+    # its own corners round elsewhere -- which needs a footprint of at least half a cell.
+    # Anything smaller is already described by its own corners above.
+    #
+    # This is the difference between a dense collider being usable and not. The test used
+    # to be `ceil(max) - floor(min) > 1 cell`, which is true for almost any triangle that
+    # merely straddles a cell boundary -- so a 200k-triangle terrain ran the loop below
+    # 200k times to re-derive heights its own vertices had already supplied, at ~40 us
+    # each. Measuring the real footprint instead skips essentially all of them: the loop
+    # now runs only for the genuinely big faces it was written for (a tabletop's one-quad
+    # top, a terrain's coarse base) and a dense mesh falls straight through it.
     if tris:
         TRI = _np.asarray(tris, dtype=_np.int64)
         tc = (V[TRI][:, :, a0] - min0) / (max0 - min0) * (N - 1)
@@ -222,7 +232,10 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
         c_hi = _np.clip(_np.ceil(tc.max(axis=1)).astype(int), 0, N - 1)
         r_lo = _np.clip(_np.floor(tr.min(axis=1)).astype(int), 0, N - 1)
         r_hi = _np.clip(_np.ceil(tr.max(axis=1)).astype(int), 0, N - 1)
-        multi_cell = _np.nonzero((c_hi - c_lo + 1) * (r_hi - r_lo + 1) > 1)[0]
+        spans_a_cell = (tc.max(axis=1) - tc.min(axis=1) >= 0.5) | (
+            tr.max(axis=1) - tr.min(axis=1) >= 0.5
+        )
+        multi_cell = _np.nonzero(spans_a_cell & ((c_hi - c_lo + 1) * (r_hi - r_lo + 1) > 1))[0]
         for t in multi_cell:
             x1, y1, x2, y2, x3, y3 = tc[t, 0], tr[t, 0], tc[t, 1], tr[t, 1], tc[t, 2], tr[t, 2]
             den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
@@ -343,6 +356,7 @@ def _add_triangle_soup(
     friction: float,
     contact_tc: float,
     xform_inv: Gf.Matrix4d | None = None,
+    geometry: tuple | None = None,
 ) -> int:
     """Add one thin convex prism geom per collider triangle. Returns the geom count.
 
@@ -366,8 +380,13 @@ def _add_triangle_soup(
     *xform_inv* expresses the prisms in some frame other than world -- used for an animated
     collider, whose geoms have to live in its own local frame so the mocap body can be
     driven with the prim's absolute world pose each frame.
+
+    *geometry* is an already-extracted (verts, tris) for *cprim*. The caller has to walk
+    the collider's meshes anyway to decide whether the triangle count fits its budget, and
+    on a production collider that walk is the whole mesh -- so it hands the result down
+    rather than making this re-read every point and face a second time.
     """
-    verts, tris = _collider_triangles(cprim)
+    verts, tris = geometry if geometry is not None else _collider_triangles(cprim)
     if not tris:
         return 0
 
@@ -483,7 +502,8 @@ def _add_colliders(
         # --- exact triangle-soup collider (the general case) ---
         soup = collider_mode in ("Auto", "Mesh")
         if soup and bounds is not None:
-            _, tris = _collider_triangles(cp)
+            geometry = _collider_triangles(cp)
+            tris = geometry[1]
             if not tris or (collider_mode == "Auto" and len(tris) > tri_budget):
                 soup = False
             else:
@@ -521,7 +541,8 @@ def _add_colliders(
                     cbody.mocap = True
                     mocap_col_names.append((f"col_{i}", cp))
                 n = _add_triangle_soup(
-                    spec, cbody, cp, f"col_{i}", thickness, friction, contact_tc, xform_inv
+                    spec, cbody, cp, f"col_{i}", thickness, friction, contact_tc, xform_inv,
+                    geometry=geometry,
                 )
                 if n:
                     continue
@@ -3039,7 +3060,10 @@ def main() -> chunk.Chunk:
             default_value=20000,
             is_int=True,
             tooltip="Auto uses a Mesh collider while the collider is under this many "
-            "triangles, and falls back to a heightfield above it.",
+            "triangles, and falls back to a heightfield above it.\n\n"
+            "This is a time budget as much as a quality one: a Mesh collider costs one "
+            "MuJoCo geom per triangle and building them is quadratic, so 5k triangles "
+            "takes a few seconds and 20k takes about a minute, every run.",
         )
     )
     col_grp.add_param(
