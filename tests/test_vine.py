@@ -596,6 +596,47 @@ def test_painted_points_become_the_roots(host) -> None:
         assert reach.min() < 0.2
 
 
+def test_the_leaf_cloud_drives_a_scatter_points_chunk(host) -> None:
+    """The whole reason the cloud has that shape.
+
+    Leaves are somebody's asset, so this chunk grows none — it publishes points with a normal,
+    which is exactly what a Scatter Brush publishes, and Scatter Points already knows how to
+    place one instance per point and lay it flat. That contract is two chunks wide and written
+    down nowhere but here, so it is worth a test that actually runs both.
+    """
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    leaf = UsdGeom.Mesh.Define(host.stage, "/Assets/Leaf")
+    leaf.GetPointsAttr().Set([
+        Gf.Vec3f(-0.15, -0.05, 0), Gf.Vec3f(0.15, -0.05, 0),
+        Gf.Vec3f(0.15, 0.25, 0), Gf.Vec3f(-0.15, 0.25, 0),
+    ])
+    leaf.GetFaceVertexCountsAttr().Set([4])
+    leaf.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+
+    node = host.vine()
+    node.execute()
+
+    scatter = host.chunk("scatter_points")
+    scatter.add_dependency(node)
+    scatter.get_param("points_prim").value = node.get_param("out_leaves").value
+    scatter.get_param("inst_path").value = "/LeafInstancer"
+    scatter.get_param("orient_mode").value = "Align to Normal"
+    rows = scatter.get_param("prototypes")
+    rows.size = 1
+    rows.get_indexed_param(rows.get_param("proto_path"), 0).value = "/Assets/Leaf"
+    scatter.execute()
+
+    cloud = np.asarray(host.leaves().GetPointsAttr().Get(), dtype=np.float64)
+    instancer = UsdGeom.PointInstancer(host.stage.GetPrimAtPath("/LeafInstancer"))
+    placed = np.asarray(instancer.GetPositionsAttr().Get(), dtype=np.float64)
+
+    assert len(cloud) > 0
+    assert len(placed) == len(cloud)
+    # One instance per leaf, standing exactly where the leaf was.
+    assert np.linalg.norm(placed[:, None, :] - cloud[None, :, :], axis=2).min(axis=1).max() < 1e-5
+    assert len(instancer.GetOrientationsAttr().Get()) == len(cloud)
+
+
 def test_wiring_painted_points_hides_the_root_count(host) -> None:
     """A control that cannot affect the result is worse than an absent one."""
     from usd_chunks import chunk

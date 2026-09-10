@@ -196,6 +196,35 @@ def _vertex_weights(prim, count, primvar_name):
     return values[:count]
 
 
+def _face_outward(mesh, prim, normals, fan, point_count):
+    """Point the winding normals the way the mesh says its outside is. Edits `normals` in place.
+
+    Which side of a face is "out" decides which way a vine is lifted, and a vine lifted the
+    wrong way is *inside* the wall — measured on a sphere wound inwards, the tube sat a full
+    radius under the surface and drew as nothing. A cross product cannot tell on its own: it
+    reports the winding, and the winding is only outward by convention.
+
+    So the two things USD does say are used. `orientation` is normative — leftHanded means the
+    winding runs the other way — and authored normals are the artist saying it outright, which
+    beats any convention. Only vertex-length normals are read; face-varying ones would have to
+    be unpacked through the same fan and are not worth it to answer a yes/no question.
+
+    A mesh that says neither keeps its winding, which is all anyone can do with it.
+    """
+    if UsdGeom.Mesh(prim).GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded:
+        normals *= -1.0
+
+    authored = mesh.GetNormalsAttr().Get()
+    if authored is None or len(authored) != point_count:
+        return
+    authored = np.asarray(authored, dtype=np.float64)
+    i0, i1, i2 = fan
+    # The face's own idea of out, from its three corners. Only the sign of the agreement is
+    # used, so it does not matter that the sum is not normalised.
+    said = authored[i0] + authored[i1] + authored[i2]
+    normals[_dot(normals, said) < 0.0] *= -1.0
+
+
 def _collect_surface(prim, primvar_name):
     """Every mesh under `prim` as one world-space triangle set, carrying the paint per corner.
 
@@ -228,6 +257,7 @@ def _collect_surface(prim, primvar_name):
         length = np.linalg.norm(n, axis=1)
         real = length > 1e-12
         n[real] /= length[real, None]
+        _face_outward(mesh, p, n, (i0, i1, i2), len(points))
         parts.append(_Surface(v0, v1, v2, n, weights[i0], weights[i1], weights[i2]))
 
     if not parts:
@@ -302,6 +332,10 @@ _KEY_OFFSETS = np.asarray(
 )
 
 
+#: Shared empty candidate list, for a cell whose neighbourhood holds no surface at all.
+_NO_TRIANGLES = np.zeros(0, dtype=np.int64)
+
+
 class _PointGrid:
     """Nearest-point lookup over a uniform cell hash.
 
@@ -327,36 +361,54 @@ class _PointGrid:
         cell = cell.astype(np.int64)
         return (cell[..., 0] * _KEY_STRIDE + cell[..., 1]) * _KEY_STRIDE + cell[..., 2]
 
-    def near(self, point):
-        """Indices of every sample in the 27 cells around `point`; may be empty."""
+    def keys_of(self, points):
+        """The cell id of each of an (N, 3) array of points."""
+        return self._keys(np.asarray(points, dtype=np.float64))
+
+    def near_key(self, key):
+        """Indices of every sample in the 27 cells around a cell id; may be empty."""
         if not len(self._points):
             return np.zeros(0, dtype=np.int64)
-        base = int(self._keys(np.asarray(point, dtype=np.float64).reshape(1, 3))[0])
-        found = [self._cells[key] for key in (base + _KEY_OFFSETS).tolist() if key in self._cells]
+        found = [self._cells[k] for k in (int(key) + _KEY_OFFSETS).tolist() if k in self._cells]
         if not found:
             return np.zeros(0, dtype=np.int64)
         return found[0] if len(found) == 1 else np.concatenate(found)
 
+    def near(self, point):
+        """Indices of every sample in the 27 cells around `point`; may be empty."""
+        if not len(self._points):
+            return np.zeros(0, dtype=np.int64)
+        return self.near_key(self._keys(np.asarray(point, dtype=np.float64).reshape(1, 3))[0])
+
+
+def _dot(a, b):
+    return np.sum(a * b, axis=-1)
+
 
 def _closest_on_triangles(point, v0, v1, v2):
-    """Closest point on each of M triangles to one point, as an (M, 3) array.
+    """Closest point on each triangle to the matching point, over any leading shape.
 
     Ericson's region test (*Real-Time Collision Detection*, §5.1.5) written over arrays: the
     barycentric interior solution is computed for every triangle and then overwritten wherever
     the point falls outside an edge or past a vertex. The regions are disjoint, so the order the
     overwrites happen in does not matter.
+
+    Shapes broadcast, which is what lets a whole growth iteration be answered in one call. One
+    point against M triangles is `(3,)` and `(M, 3)`; Q points against K candidates each is
+    `(Q, 1, 3)` and `(Q, K, 3)`. Per-call numpy overhead was 310us against a median of 21
+    triangles — the arithmetic was never the cost, the three thousand calls were.
     """
     ab = v1 - v0
     ac = v2 - v0
     ap = point - v0
-    d1 = np.einsum("ij,ij->i", ab, ap)
-    d2 = np.einsum("ij,ij->i", ac, ap)
+    d1 = _dot(ab, ap)
+    d2 = _dot(ac, ap)
     bp = point - v1
-    d3 = np.einsum("ij,ij->i", ab, bp)
-    d4 = np.einsum("ij,ij->i", ac, bp)
+    d3 = _dot(ab, bp)
+    d4 = _dot(ac, bp)
     cp = point - v2
-    d5 = np.einsum("ij,ij->i", ab, cp)
-    d6 = np.einsum("ij,ij->i", ac, cp)
+    d5 = _dot(ab, cp)
+    d6 = _dot(ac, cp)
 
     va = d3 * d6 - d5 * d4
     vb = d5 * d2 - d1 * d6
@@ -365,29 +417,27 @@ def _closest_on_triangles(point, v0, v1, v2):
 
     with np.errstate(divide="ignore", invalid="ignore"):
         inv = np.where(np.abs(denom) > 1e-20, 1.0 / denom, 0.0)
-    out = v0 + ab * (vb * inv)[:, None] + ac * (vc * inv)[:, None]
+    out = v0 + ab * (vb * inv)[..., None] + ac * (vc * inv)[..., None]
     # A degenerate triangle has no interior to land in; its first corner is as good as anything.
-    out[np.abs(denom) <= 1e-20] = v0[np.abs(denom) <= 1e-20]
+    degenerate = np.abs(denom) <= 1e-20
+    out = np.where(degenerate[..., None], v0, out)
 
     edge = (vc <= 0) & (d1 >= 0) & (d3 <= 0)
     if edge.any():
-        t = _safe_ratio(d1[edge], d1[edge] - d3[edge])
-        out[edge] = v0[edge] + ab[edge] * t[:, None]
+        t = _safe_ratio(d1, d1 - d3)
+        out = np.where(edge[..., None], v0 + ab * t[..., None], out)
     edge = (vb <= 0) & (d2 >= 0) & (d6 <= 0)
     if edge.any():
-        t = _safe_ratio(d2[edge], d2[edge] - d6[edge])
-        out[edge] = v0[edge] + ac[edge] * t[:, None]
+        t = _safe_ratio(d2, d2 - d6)
+        out = np.where(edge[..., None], v0 + ac * t[..., None], out)
     edge = (va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)
     if edge.any():
-        t = _safe_ratio(d4[edge] - d3[edge], (d4[edge] - d3[edge]) + (d5[edge] - d6[edge]))
-        out[edge] = v1[edge] + (v2[edge] - v1[edge]) * t[:, None]
+        t = _safe_ratio(d4 - d3, (d4 - d3) + (d5 - d6))
+        out = np.where(edge[..., None], v1 + (v2 - v1) * t[..., None], out)
 
-    corner = (d1 <= 0) & (d2 <= 0)
-    out[corner] = v0[corner]
-    corner = (d3 >= 0) & (d4 <= d3)
-    out[corner] = v1[corner]
-    corner = (d6 >= 0) & (d5 <= d6)
-    out[corner] = v2[corner]
+    out = np.where(((d1 <= 0) & (d2 <= 0))[..., None], v0, out)
+    out = np.where(((d3 >= 0) & (d4 <= d3))[..., None], v1, out)
+    out = np.where(((d6 >= 0) & (d5 <= d6))[..., None], v2, out)
     return out
 
 
@@ -410,20 +460,69 @@ class _Projector:
         self._surface = surface
         self._triangle_of = triangle_of
         self._grid = _PointGrid(samples, cell) if len(samples) else None
+        # Which triangles a cell's neighbourhood holds depends only on the cell, so it is
+        # answered once and kept. A vine walks the same neighbourhood for several steps
+        # running, and every node of every iteration was re-deriving it.
+        self._candidates: dict = {}
 
     def project(self, point):
         """(position, normal) on the surface, or (point, None) when it is out of reach."""
-        if self._grid is None:
-            return point, None
-        near = self._grid.near(point)
-        if not len(near):
-            return point, None
-        tris = np.unique(self._triangle_of[near])
+        landed, normals, found = self.project_many(np.asarray(point, dtype=np.float64)[None, :])
+        return (landed[0], normals[0]) if found[0] else (point, None)
+
+    def _cell_triangles(self, key):
+        tris = self._candidates.get(key)
+        if tris is None:
+            near = self._grid.near_key(key)
+            tris = np.unique(self._triangle_of[near]) if len(near) else _NO_TRIANGLES
+            self._candidates[key] = tris
+        return tris
+
+    def project_many(self, points):
+        """Put a whole batch back on the skin: (positions, normals, found).
+
+        One call per growth iteration instead of one per node. The arithmetic was never the
+        cost — a median query tests 21 triangles — but at 310us of numpy call overhead apiece,
+        three thousand of them were most of the cook.
+
+        Rows are padded out to the widest candidate list by repeating a candidate that is
+        already in the row, so padding can only ever tie with a real answer and never beat one.
+        The result is what the one-at-a-time version produced, triangle for triangle.
+        """
+        points = np.asarray(points, dtype=np.float64)
+        found = np.zeros(len(points), dtype=bool)
+        landed = points.copy()
+        normals = np.zeros_like(points)
+        if self._grid is None or not len(points):
+            return landed, normals, found
+
+        per_point = [self._cell_triangles(key) for key in self._grid.keys_of(points).tolist()]
+        lengths = np.asarray([len(t) for t in per_point])
+        live = np.flatnonzero(lengths)
+        if not len(live):
+            return landed, normals, found
+
+        # The ragged candidate lists as one (Q, K) block, by index arithmetic rather than a
+        # np.full per row: padding a row at a time was thousands of tiny allocations a cook.
+        # Short rows repeat their last entry, which is already a candidate of that row, so a
+        # padded column can only tie with a real answer and never beat one.
+        lengths = lengths[live]
+        width = int(lengths.max())
+        flat = np.concatenate([per_point[i] for i in live])
+        starts = np.concatenate(([0], np.cumsum(lengths)[:-1]))
+        column = np.minimum(np.arange(width)[None, :], (lengths - 1)[:, None])
+        index = flat[starts[:, None] + column]
+
         s = self._surface
-        candidates = _closest_on_triangles(point, s.v0[tris], s.v1[tris], s.v2[tris])
-        offset = candidates - point
-        best = int(np.argmin(np.einsum("ij,ij->i", offset, offset)))
-        return candidates[best], s.n[tris[best]]
+        query = points[live][:, None, :]
+        candidates = _closest_on_triangles(query, s.v0[index], s.v1[index], s.v2[index])
+        offset = candidates - query
+        best = np.argmin(_dot(offset, offset), axis=1)
+        rows = np.arange(len(live))
+        landed[live] = candidates[rows, best]
+        normals[live] = s.n[index[rows, best]]
+        found[live] = True
+        return landed, normals, found
 
 
 # ---------------------------------------------------------------------------
@@ -434,28 +533,76 @@ class _Projector:
 class _Nodes:
     """The vine skeleton as it is built: position, parent, surface normal, last direction.
 
-    Parallel lists rather than node objects, and appended in creation order — which makes a
-    parent's index always lower than its child's, so every bottom-up pass (widths, subtree
-    length) is one reversed loop with no sorting.
+    Appended in creation order, which makes a parent's index always lower than its child's, so
+    every bottom-up pass (widths, subtree length) is one reversed loop with no sorting.
+
+    The three vectors live in one growing (N, 3) buffer each rather than in a list of little
+    arrays, so a whole iteration's worth of nodes can be read and written by fancy indexing.
+    `nodes.position[some_indices]` was `np.asarray([nodes.position[i] for i in ...])`, once per
+    iteration over every attractor still pulling — a list comprehension in the hot loop.
+    `position`, `normal` and `direction` are views of the filled part, so indexed writes into
+    them (the lift does one) land in the buffer.
     """
 
-    __slots__ = ("position", "parent", "normal", "direction")
+    __slots__ = ("parent", "_position", "_normal", "_direction", "_count")
 
-    def __init__(self):
-        self.position = []
-        self.parent = []
-        self.normal = []
-        self.direction = []
+    def __init__(self, capacity=256):
+        capacity = max(int(capacity), 8)
+        self.parent: list[int] = []
+        self._position = np.zeros((capacity, 3), dtype=np.float64)
+        self._normal = np.zeros((capacity, 3), dtype=np.float64)
+        self._direction = np.zeros((capacity, 3), dtype=np.float64)
+        self._count = 0
+
+    @property
+    def position(self):
+        return self._position[: self._count]
+
+    @property
+    def normal(self):
+        return self._normal[: self._count]
+
+    @property
+    def direction(self):
+        return self._direction[: self._count]
+
+    def _reserve(self, extra):
+        capacity = len(self._position)
+        if self._count + extra <= capacity:
+            return
+        while capacity < self._count + extra:
+            capacity *= 2
+        for name in ("_position", "_normal", "_direction"):
+            grown = np.zeros((capacity, 3), dtype=np.float64)
+            grown[: self._count] = getattr(self, name)[: self._count]
+            setattr(self, name, grown)
 
     def add(self, position, parent, normal, direction):
-        self.position.append(np.asarray(position, dtype=np.float64))
-        self.parent.append(parent)
-        self.normal.append(np.asarray(normal, dtype=np.float64))
-        self.direction.append(np.asarray(direction, dtype=np.float64))
-        return len(self.position) - 1
+        self._reserve(1)
+        index = self._count
+        self._position[index] = position
+        self._normal[index] = normal
+        self._direction[index] = direction
+        self.parent.append(int(parent))
+        self._count += 1
+        return index
+
+    def add_many(self, positions, parents, normals, directions):
+        """Append a whole growth iteration at once; the indices they were given."""
+        count = len(positions)
+        if not count:
+            return np.zeros(0, dtype=np.int64)
+        self._reserve(count)
+        start = self._count
+        self._position[start:start + count] = positions
+        self._normal[start:start + count] = normals
+        self._direction[start:start + count] = directions
+        self.parent.extend(int(p) for p in parents)
+        self._count += count
+        return np.arange(start, start + count)
 
     def __len__(self):
-        return len(self.position)
+        return self._count
 
 
 def _tangent(direction, normal, rng):
@@ -478,6 +625,27 @@ def _tangent(direction, normal, rng):
     fallback = np.cross(normal, other)
     fallback = fallback + rng.normal(scale=1e-3, size=3)
     return fallback / max(float(np.linalg.norm(fallback)), 1e-9)
+
+
+def _tangents(directions, normals):
+    """`_tangent` for a whole iteration, and without the random nudge.
+
+    The nudge exists to give roots that have no pull yet somewhere to face; a growing node
+    always has one, so the only case this has to survive is a direction that happens to point
+    straight into the wall, and any tangent will do for that.
+    """
+    flat = directions - normals * _dot(directions, normals)[:, None]
+    length = np.linalg.norm(flat, axis=1)
+    stuck = length <= 1e-9
+    if stuck.any():
+        other = np.where(
+            np.abs(normals[stuck][:, 2:3]) < 0.9,
+            np.asarray([0.0, 0.0, 1.0]),
+            np.asarray([1.0, 0.0, 0.0]),
+        )
+        flat[stuck] = np.cross(normals[stuck], other)
+        length[stuck] = np.linalg.norm(flat[stuck], axis=1)
+    return flat / np.maximum(length, 1e-9)[:, None]
 
 
 def _choose_roots(points, up, count, spacing):
@@ -530,7 +698,8 @@ def _grow(roots, attractors, projector, settings, rng):
     alive = np.ones(len(attractors), dtype=bool)
     nearest = np.full(len(attractors), -1, dtype=np.int64)
     nearest_sq = np.full(len(attractors), np.inf)
-    pending = list(range(len(nodes)))
+    attractor_sq = _dot(attractors, attractors)
+    pending = np.arange(len(nodes))
 
     up = settings["up"]
     step = settings["step"]
@@ -539,21 +708,29 @@ def _grow(roots, attractors, projector, settings, rng):
     climb = settings["climb"]
     wander = settings["wander"]
 
-    while pending and len(nodes) < settings["max_nodes"]:
-        fresh = np.asarray([nodes.position[i] for i in pending], dtype=np.float64)
+    while len(pending) and len(nodes) < settings["max_nodes"]:
+        fresh = nodes.position[pending]
         live = np.flatnonzero(alive)
         if not len(live):
             break
 
-        offset = attractors[live][:, None, :] - fresh[None, :, :]
-        distance_sq = np.einsum("ijk,ijk->ij", offset, offset)
+        # |a - f|^2 expanded, so the distances are one matrix product rather than an
+        # (attractors x new nodes x 3) difference that has to be built before it is reduced.
+        # That temporary was the largest allocation in the cook and was made every iteration.
+        # Clipped at zero: the expansion can go a few ulps negative where a node sits exactly
+        # on an attractor, and a negative square would come back NaN from the sqrt nobody takes
+        # but would still lose the comparison against the kill distance.
+        distance_sq = np.maximum(
+            attractor_sq[live][:, None] - 2.0 * (attractors[live] @ fresh.T) + _dot(fresh, fresh),
+            0.0,
+        )
         closest = np.argmin(distance_sq, axis=1)
         best_sq = distance_sq[np.arange(len(live)), closest]
         better = best_sq < nearest_sq[live]
         if better.any():
             improved = live[better]
             nearest_sq[improved] = best_sq[better]
-            nearest[improved] = np.asarray(pending, dtype=np.int64)[closest[better]]
+            nearest[improved] = pending[closest[better]]
 
         # Reached: an attractor a node has come this close to has done its job.
         alive[live[nearest_sq[live] <= kill_sq]] = False
@@ -565,35 +742,37 @@ def _grow(roots, attractors, projector, settings, rng):
         # Sum of unit directions, accumulated per node. np.add.at rather than a loop: on a
         # filled region this runs over every attractor still alive, every iteration.
         pull = np.zeros((len(nodes), 3), dtype=np.float64)
-        towards = attractors[pulling] - np.asarray(
-            [nodes.position[i] for i in nearest[pulling]], dtype=np.float64
-        )
+        towards = attractors[pulling] - nodes.position[nearest[pulling]]
         length = np.linalg.norm(towards, axis=1)
         real = length > 1e-9
         towards[real] /= length[real, None]
         np.add.at(pull, nearest[pulling], towards)
 
-        pending = []
-        for index in np.unique(nearest[pulling]).tolist():
-            if len(nodes) >= settings["max_nodes"]:
-                break
-            direction = pull[index]
-            length = float(np.linalg.norm(direction))
-            if length < 1e-9:
-                continue
-            direction = direction / length
-            direction = direction + nodes.direction[index] * _MOMENTUM + up * climb
-            if wander > 0.0:
-                direction = direction + rng.normal(scale=wander, size=3)
+        # The whole iteration steps at once: one direction array, one projection, one append.
+        # Per node this was three numpy calls, an rng draw and a `project` -- 310us of call
+        # overhead each against a median of 21 candidate triangles, which was most of the cook.
+        owners = np.unique(nearest[pulling])[: settings["max_nodes"] - len(nodes)]
+        direction = pull[owners]
+        length = np.linalg.norm(direction, axis=1)
+        moving = length > 1e-9
+        owners, direction = owners[moving], direction[moving] / length[moving, None]
+        if not len(owners):
+            break
 
-            normal = nodes.normal[index]
-            direction = _tangent(direction, normal, rng)
-            landed, landed_normal = projector.project(nodes.position[index] + direction * step)
-            if landed_normal is None:
-                # Off the edge of what was painted. The branch simply ends there, which is what
-                # keeps the vines inside the paint without a separate boundary test.
-                continue
-            pending.append(nodes.add(landed, index, landed_normal, direction))
+        direction = direction + nodes.direction[owners] * _MOMENTUM + up * climb
+        if wander > 0.0:
+            direction = direction + rng.normal(scale=wander, size=direction.shape)
+        direction = _tangents(direction, nodes.normal[owners])
+
+        landed, landed_normals, found = projector.project_many(
+            nodes.position[owners] + direction * step
+        )
+        # Anything that did not land grew off the edge of what was painted, and that branch
+        # ends there -- which is what keeps the vines inside the paint with no boundary test.
+        reached = np.flatnonzero(found)
+        pending = nodes.add_many(
+            landed[reached], owners[reached], landed_normals[reached], direction[reached]
+        )
 
     return nodes
 
@@ -641,13 +820,22 @@ def _prune(nodes, min_length):
     return kept
 
 
-def _lift(nodes, amount):
-    """Float the whole skeleton off the skin, so the curve is not half-buried in the wall."""
-    if amount == 0.0:
+def _lift(nodes, radii, factor):
+    """Float each node off the skin by a multiple of *its own* radius.
+
+    Reported: turning Thickness up sent the vines flying off the mesh. Lift was one distance
+    for the whole network, taken from the base width — so a tip a quarter as thick as the trunk
+    was pushed out four times further than it needed, and every increase in Thickness translated
+    the entire vine away from the surface instead of fattening it in place.
+
+    Per node, `factor` is what the vine *rests* at rather than how far away it sits: at 1.0 the
+    tube is exactly tangent to the wall whatever it is carrying, so Thickness only ever changes
+    how thick it is. That is the same reason a fatter rope on a table has its centre higher and
+    still touches the table.
+    """
+    if factor == 0.0:
         return
-    for i, normal in enumerate(nodes.normal):
-        if normal is not None:
-            nodes.position[i] = nodes.position[i] + normal * amount
+    nodes.position[:] += nodes.normal * (np.asarray(radii, dtype=np.float64) * factor)[:, None]
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +922,39 @@ def _radii(nodes, base, tip):
     return [tip * 0.5 + (value - 1.0) * scale for value in pipe]
 
 
+def _smooth_nodes(nodes, strands, passes):
+    """Round the corners off every strand, in place on the skeleton.
+
+    Done here rather than at authoring time so the result can be put back on the surface
+    afterwards. Smoothing cuts corners, and on anything convex that cuts *into* the wall: on a
+    sphere it pulled control points up to half a radius under the surface, worst on thin vines,
+    because the correction it applies is a fraction of the step and has nothing to do with how
+    fat the tube is.
+
+    A fork node belongs to two strands — it ends one and begins the next — but `_smooth` pins
+    the ends it is given, so the second pass over it never moves it.
+    """
+    if passes <= 0:
+        return
+    for chain in strands:
+        nodes.position[chain] = _smooth(nodes.position[chain], passes)
+
+
+def _resurface(nodes, projector):
+    """Put every node back on the skin, and take the normal there.
+
+    Smoothing moved them off it. Re-reading the normal matters as much as the position: it is
+    what the lift and the leaves are measured along, and a node whose normal still describes
+    where it used to be tilts a leaf that is no longer there.
+    """
+    if not len(nodes):
+        return
+    landed, normals, found = projector.project_many(nodes.position)
+    reached = np.flatnonzero(found)
+    nodes.position[reached] = landed[reached]
+    nodes.normal[reached] = normals[reached]
+
+
 def _smooth(points, passes):
     """Laplacian smoothing with the ends pinned.
 
@@ -790,9 +1011,7 @@ def _leaf_points(strands, positions, normals, radii, spacing):
                 continue
             while next_leaf <= travelled + segment:
                 t = (next_leaf - travelled) / segment
-                normal = normals[b] if normals[b] is not None else normals[a]
-                if normal is None:
-                    normal = np.asarray([0.0, 0.0, 1.0])
+                normal = normals[b]
                 at = start + (end - start) * t
                 points.append(Gf.Vec3f(*(at + normal * radii[b])))
                 facing.append(Gf.Vec3f(*normal))
@@ -849,9 +1068,8 @@ def _settings(node, surface):
         "max_nodes": max(2, min(_MAX_NODES, int(number("max_points")))),
         "base_width": base_width,
         "taper": number("taper"),
-        # Off the wall in multiples of the vine's own width: what "sits on the surface rather
-        # than in it" means is a function of how fat the tube is, not of how finely it grew.
-        "lift": base_width * number("lift"),
+        # A multiple of each node's own radius, applied per node -- not a distance. See `_lift`.
+        "lift": number("lift"),
         "smooth": max(0, int(number("smooth"))),
         "form": node.get_param("curve_form").value,
         "leaves": bool(node.get_param("leaves").value),
@@ -994,13 +1212,19 @@ def execute(node):
     nodes = _grow(roots, attractors, projector, settings, rng)
     grown = len(nodes)
     nodes = _prune(nodes, settings["min_branch"])
-    _lift(nodes, settings["lift"])
     strands = _strands(nodes)
     if not strands:
         _bail(node, stage, layer, where, "nothing grew — try a larger Influence or more Density")
         return
 
+    # Smooth, put back on the surface, then lift — in that order, so every control point ends
+    # up exactly its own radius off the skin. Widths come first because the lift is measured in
+    # radii; see `_lift`.
     radii = _radii(nodes, settings["base_width"], settings["base_width"] * settings["taper"])
+    _smooth_nodes(nodes, strands, settings["smooth"])
+    _resurface(nodes, projector)
+    _lift(nodes, radii, settings["lift"])
+
     leaves = (
         _leaf_points(strands, nodes.position, nodes.normal, radii, settings["leaf_spacing"])
         if settings["leaves"]
@@ -1047,7 +1271,9 @@ def _author_curves(stage, path, strands, nodes, radii, settings, node):
     smooth = settings["form"] == "Smooth"
     counts, points, widths = [], [], []
     for chain in strands:
-        chain_points = _smooth([nodes.position[i] for i in chain], settings["smooth"])
+        # Already smoothed and re-seated on the surface, back when the normals could still be
+        # refreshed to match -- see `_smooth_nodes`.
+        chain_points = nodes.position[chain]
         chain_widths = np.asarray([radii[i] * 2.0 for i in chain], dtype=np.float64)
         if smooth:
             chain_points, chain_widths = _pin(chain_points, chain_widths)
@@ -1373,11 +1599,12 @@ def main():
             "lift",
             "Lift",
             min_value=0.0,
-            max_value=5.0,
-            default_value=0.6,
+            max_value=4.0,
+            default_value=1.1,
             flags=_PF.LABELED,
-            tooltip="How far off the skin the vine floats, as a multiple of its own width.\n"
-            "Below 0.5 the tube is half buried in the wall it grew on.",
+            tooltip="Where the vine rests, as a multiple of its own radius — so Thickness makes\n"
+            "it fatter in place rather than pushing it off the mesh. 1.0 sits the tube exactly\n"
+            "on the surface, below that it sinks in, above that it floats.",
         )
     )
     shape.add_param(
