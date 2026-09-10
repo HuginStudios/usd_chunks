@@ -12,7 +12,7 @@ import importlib
 
 import numpy as np
 import pytest
-from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
@@ -617,3 +617,87 @@ def test_the_readout_stays_short_enough_for_the_node_header() -> None:
     assert pr._compact(1_044_205) == "1.04M"
     assert pr._compact(90_989) == "91k"
     assert pr._compact(940) == "940"
+
+
+# ---------------------------------------------------------------------------
+# subsets and topology have to change together
+# ---------------------------------------------------------------------------
+
+
+def _subsets_out_of_range(stage, path="/Mesh"):
+    """Any face subset on `path` currently indexing past the end of the face list."""
+    mesh = UsdGeom.Mesh(stage.GetPrimAtPath(path))
+    counts = mesh.GetFaceVertexCountsAttr().Get()
+    n_faces = len(counts) if counts else 0
+    return [
+        subset.GetPrim().GetName()
+        for subset in UsdGeom.Subset.GetAllGeomSubsets(UsdGeom.Imageable(mesh))
+        if (indices := subset.GetIndicesAttr().Get()) and n_faces and max(indices) >= n_faces
+    ]
+
+
+def _grid_with_subsets(stage, path="/Mesh", n=30):
+    points, counts, indices = _grid(n)
+    mesh = _define_mesh(stage, path, points, counts, indices)
+    face_x = points[indices].reshape(len(counts), 4, 3)[:, :, 0].mean(axis=1)
+    for name, selected in (("left", face_x < 0.0), ("right", face_x >= 0.0)):
+        UsdGeom.Subset.CreateGeomSubset(
+            mesh,
+            name,
+            UsdGeom.Tokens.face,
+            Vt.IntArray.FromNumpy(np.flatnonzero(selected).astype(np.int32)),
+            "materialBind",
+        )
+    return mesh, counts
+
+
+@needs_simplify
+def test_a_cook_never_publishes_subsets_that_outrun_the_topology(wired) -> None:
+    """Live-reported as a wall of Hydra warnings on every recook:
+
+        Geom subset index 2107245 is larger than number of faces (1044205), removing.
+
+    Every `Set()` publishes its own change notice, so writing the new topology first and
+    the rewritten subset indices last left a window where the two disagreed — and a subset
+    indexing past the face list is not stale, it is invalid, so Hydra discards it. The
+    final state was always right, which is why it only ever showed up as noise. Watching
+    every intermediate state is the only way to catch it."""
+    stage, make = wired
+    _grid_with_subsets(stage)
+
+    seen = []
+
+    def watch(notice, sender):
+        seen.extend(_subsets_out_of_range(stage))
+
+    key = Tf.Notice.Register(Usd.Notice.ObjectsChanged, watch, stage)
+    try:
+        node = make()
+        node.get_param("keep_percent").value = 20.0
+        node.get_param("prim_path").value = "/Mesh"
+        assert _triangle_count(stage) < 100_000  # it really did reduce
+        assert seen == []
+
+        node.get_param("keep_percent").value = 40.0
+        assert seen == []
+    finally:
+        del key
+
+    assert _subsets_out_of_range(stage) == []
+
+
+@needs_simplify
+def test_a_mesh_whose_subsets_cannot_be_rewritten_is_left_alone(monkeypatch) -> None:
+    """The permanent version of the same fault. If the collapse history ever fails to
+    resolve, the subsets cannot be remapped — and authoring the reduced topology anyway
+    would leave them out of range for good. Not reducing is the lesser failure: visibly
+    un-reduced beats quietly missing its materials."""
+    stage = Usd.Stage.CreateInMemory()
+    _grid_with_subsets(stage)
+    monkeypatch.setattr(pr, "collapse_mapping", lambda *a, **k: None)
+
+    plan = pr._plan_mesh(
+        stage.GetPrimAtPath("/Mesh"), True, pr.MODE_PERCENT, 20.0, 5000, 7.0, False
+    )
+
+    assert plan is None

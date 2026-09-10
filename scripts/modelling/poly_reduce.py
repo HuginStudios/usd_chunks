@@ -574,6 +574,18 @@ def _plan_mesh(prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, 
         return None
 
     if reduced.source_corner is None:
+        if subsets:
+            # Without a mapping the subsets cannot be rewritten, and a subset left pointing
+            # at the old face list is not stale but *out of range* — Hydra drops it and says
+            # so once per index. Leaving the mesh at full resolution is the lesser failure:
+            # it is visibly not reduced, rather than quietly missing its materials.
+            logger.warning(
+                "%s: could not resolve the collapse history, so its %d face subsets cannot "
+                "be rewritten — leaving this mesh unreduced",
+                prim.GetPath(),
+                len(subsets),
+            )
+            return None
         # No usable mapping, so nothing per-vertex can be carried honestly. Block what the
         # old topology described rather than leaving arrays of the wrong length behind.
         carried = []
@@ -589,7 +601,7 @@ def _plan_mesh(prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, 
         ]
 
     subset_indices = []
-    if subsets and reduced.source_corner is not None:
+    if subsets:
         # A surviving triangle inherits the material region of any of its corners: no
         # collapse can cross a region boundary, because the weld above gave the two sides
         # separate vertices in the first place.
@@ -611,7 +623,24 @@ def _plan_mesh(prim, keep_uvs, mode, keep_percent, target_tris, aggressiveness, 
 
 
 def _author(stage, plan: _Plan) -> None:
-    """Write one plan into the current edit target."""
+    """Write one plan into the current edit target, as a single published change.
+
+    Split into resolve-then-write on purpose. The new topology and the rewritten
+    `GeomSubset` indices have to become visible together: a subset still holding indices
+    into the *old* face list is not merely stale, it is out of range, and Hydra reacts by
+    throwing the subset away —
+
+        Geom subset index 2107245 is larger than number of faces (1044205), removing.
+
+    — thousands of times, live-reported on a fir tree. Every `Set()` publishes its own
+    change notice, so writing points first and subsets last guaranteed a window where the
+    two disagreed. Batching the value writes into one `Sdf.ChangeBlock` closes it.
+
+    Everything that touches the stage's *structure* — looking prims up, creating primvar
+    attributes, asking whether an attribute has an authored value — happens before the
+    block opens. Composed reads and namespace edits inside a change block are exactly what
+    it is documented not to be safe for.
+    """
     prim = stage.GetPrimAtPath(plan.path)
     if not prim or not prim.IsValid():
         return
@@ -619,47 +648,58 @@ def _author(stage, plan: _Plan) -> None:
     reduced = plan.reduced
 
     points32 = np.ascontiguousarray(reduced.points, dtype=np.float32)
-    mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(points32))
-    mesh.GetFaceVertexIndicesAttr().Set(
-        Vt.IntArray.FromNumpy(np.ascontiguousarray(reduced.triangles.reshape(-1), dtype=np.int32))
-    )
-    mesh.GetFaceVertexCountsAttr().Set(
-        Vt.IntArray.FromNumpy(np.full(len(reduced.triangles), 3, dtype=np.int32))
-    )
-    # Straight from numpy: Gf.Vec3f refuses np.float32 scalars, so building the two corners
-    # component-by-component would raise here rather than at the obvious place.
-    mesh.GetExtentAttr().Set(
-        Vt.Vec3fArray.FromNumpy(
-            np.ascontiguousarray(np.stack([points32.min(axis=0), points32.max(axis=0)]))
-        )
-    )
+    writes = [
+        (mesh.GetPointsAttr(), Vt.Vec3fArray.FromNumpy(points32)),
+        (
+            mesh.GetFaceVertexIndicesAttr(),
+            Vt.IntArray.FromNumpy(np.ascontiguousarray(reduced.triangles.reshape(-1), dtype=np.int32)),
+        ),
+        (
+            mesh.GetFaceVertexCountsAttr(),
+            Vt.IntArray.FromNumpy(np.full(len(reduced.triangles), 3, dtype=np.int32)),
+        ),
+        # Straight from numpy: Gf.Vec3f refuses np.float32 scalars, so building the two
+        # corners component-by-component would raise here rather than at the obvious place.
+        (
+            mesh.GetExtentAttr(),
+            Vt.Vec3fArray.FromNumpy(
+                np.ascontiguousarray(np.stack([points32.min(axis=0), points32.max(axis=0)]))
+            ),
+        ),
+    ]
     if plan.drop_subdivision:
         # The reduction approximates the polygonal cage, not the limit surface. Leaving
         # subdivision on would smooth an already-approximate mesh a second time and shrink
         # it away from the shape the user was looking at.
-        mesh.GetSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+        writes.append((mesh.GetSubdivisionSchemeAttr(), UsdGeom.Tokens.none))
 
-    for name in _STALE_ATTRS:
-        attr = prim.GetAttribute(name)
-        if attr and attr.HasAuthoredValue():
-            attr.Block()
+    blocks = [
+        attr
+        for name in _STALE_ATTRS
+        if (attr := prim.GetAttribute(name)) and attr.HasAuthoredValue()
+    ]
 
     api = UsdGeom.PrimvarsAPI(prim)
-    for name in plan.blocked_primvars:
-        existing = api.GetPrimvar(name)
-        if existing:
-            existing.GetAttr().Block()
+    blocks += [
+        existing.GetAttr() for name in plan.blocked_primvars if (existing := api.GetPrimvar(name))
+    ]
     for name, type_name, values in plan.vertex_primvars:
         primvar = api.CreatePrimvar(name, type_name, UsdGeom.Tokens.vertex)
-        primvar.Set(values)
+        writes.append((primvar.GetAttr(), values))
         # A remapped primvar is already one value per reduced vertex; an inherited index
         # array from the source would re-scramble it.
-        primvar.BlockIndices()
+        blocks.append(primvar.CreateIndicesAttr())
 
     for subset_path, indices in plan.subset_indices:
         subset = UsdGeom.Subset(stage.GetPrimAtPath(subset_path))
         if subset:
-            subset.GetIndicesAttr().Set(indices)
+            writes.append((subset.GetIndicesAttr(), indices))
+
+    with Sdf.ChangeBlock():
+        for attr, value in writes:
+            attr.Set(value)
+        for attr in blocks:
+            attr.Block()
 
 
 # What the last cook of each chunk saw, keyed by that chunk's own layer identifier.
