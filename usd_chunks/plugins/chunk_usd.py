@@ -849,9 +849,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not isinstance(attr_sender, core.AttributeSender):
             return
 
-        if attr_sender.name == "value" and not chunk_notice._usd_write_active:
+        if attr_sender.name == "value":
             owner = attr_sender.get_owner()
-            if owner is not None:
+            if owner is not None and self._records_param_writes(owner):
                 self._sync_list_proxy_to_usd(owner)
                 if isinstance(owner, core.ChunkParamBase):
                     chunk = owner.get_chunk()
@@ -895,6 +895,43 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 self._rebase_descendant_paths(old_path, new_path)
         elif isinstance(owner, core.ChunkParamBase):
             self._handle_param_rename(owner, old_name, owner.name)
+
+    def _records_param_writes(self, owner) -> bool:
+        """Whether this param write should be recorded on its chunk prim.
+
+        Normally yes, and normally the question is only asked of a user edit. The exception is
+        chunk_notice._usd_write_active, set around our own USD writes so the synchronous
+        ObjectsChanged that follows doesn't come back through here as if it were an edit.
+
+        A chunk executing sets that same flag for the whole of module.execute(), which is
+        correct for its purpose -- a cook authors content, and none of it should bounce back
+        into params -- but it also silenced the chunk assigning its OWN params, which is a
+        real value and the only record of it. A saved scene is chunk prims and nothing else
+        (export_chunks), so a param that never gets an attr is a param that does not survive
+        a save.
+
+        Reported as a Camera not keeping where it was put: fly the viewport, tick Lock to
+        Free Camera, untick it to freeze the shot. Unticking is what hands the flown
+        placement into the transform params (camera.py's `_adopt_existing_transform`), and it
+        happens during a cook -- so the live camera was right, the file carried no placement
+        at all, and reopening put it back at the origin. Every chunk that renames its own
+        prim path mid-cook when the one it wanted was taken (camera, light, the render_*
+        chunks) was losing that the same way.
+
+        So a chunk writing its own params while it executes is recorded. Anything else
+        arriving mid-write still isn't -- including one chunk reaching into another's params
+        during its cook, which is a push, not a record of the writer's own state.
+        """
+        if not chunk_notice._usd_write_active:
+            return True
+        executing = chunk_notice._executing_chunk
+        if executing is None:
+            return False
+        # Not every owner that reaches here is a param with a chunk behind it -- a list-row
+        # proxy arrives too, and answering "whose is this" for one is what _sync_list_proxy_
+        # to_usd exists to do.
+        get_chunk = getattr(owner, "get_chunk", None)
+        return callable(get_chunk) and get_chunk() is executing
 
     def _handle_rename(self, old_path: str, new_path: str, old_name: str, new_name: str, chunk=None) -> None:
         """Rename a chunk prim and patch all references to it.
@@ -1044,6 +1081,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if sdf_type is None:
             return
         attr_name = f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{template_name}"
+        prev_write = chunk_notice._usd_write_active
         chunk_notice._usd_write_active = True
         try:
             # Rewritten wholesale on every change (not incrementally) — if it already
@@ -1056,7 +1094,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 attr.Set(usd_value)
         finally:
-            chunk_notice._usd_write_active = False
+            chunk_notice._usd_write_active = prev_write
 
     def _on_dependency_added(self, notice, sender):
         if not self.initialized or not self._stage:

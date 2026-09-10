@@ -1706,6 +1706,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
             val = notice.data.value
             if val is not None:
+                prev_write = chunk_notice._usd_write_active
                 chunk_notice._usd_write_active = True
                 try:
                     if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
@@ -1746,7 +1747,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                     usd_attr.Set(raw)
                     self._write_driven_attrs(stage, val)
                 finally:
-                    chunk_notice._usd_write_active = False
+                    chunk_notice._usd_write_active = prev_write
 
         return my_notice
 
@@ -1800,6 +1801,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 store_val = sender.value
             else:
                 store_val = raw if is_expr else sender.value
+            prev_write = chunk_notice._usd_write_active
             chunk_notice._usd_write_active = True
             try:
                 # notice.data here is always the chunk-prim's own storage attr (bound via
@@ -1833,7 +1835,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                     else:
                         chunk_utils.clear_expression_text(notice.data)
             finally:
-                chunk_notice._usd_write_active = False
+                chunk_notice._usd_write_active = prev_write
 
         elif isinstance(notice.data, Usd.Relationship) and sender.value is not None:
             # Currently just assume the string is a comma separated list of paths. This will likely
@@ -3288,6 +3290,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             # propagate normally during the loop (this doesn't use is_blocked()) so each
             # child's own widget refreshes live as it's set.
             if val is not None and not self._suppress_storage_write:
+                prev_write = chunk_notice._usd_write_active
                 chunk_notice._usd_write_active = True
                 try:
                     if self._param_attr_path and (usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path))):
@@ -3307,7 +3310,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                             ])
                     self._write_driven_attrs(stage, val)
                 finally:
-                    chunk_notice._usd_write_active = False
+                    chunk_notice._usd_write_active = prev_write
 
             # Forward on this vector's own "value" sender so anything depending on the
             # whole vector (e.g. a downstream @Node.vecParam@ expression) reacts too.
