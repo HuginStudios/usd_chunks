@@ -64,6 +64,11 @@ _PORT_COLOURS = {
 }
 _DEFAULT_COLOUR = (0.7, 0.7, 0.7, 1.0)
 
+#: Header colour every chunk node gets. Without it Blender falls back to its default
+#: colour for a custom Node subclass with no bl_color/use_custom_color, which reads as an
+#: unclassified pink -- distracting across a graph that is entirely chunk nodes.
+_NODE_HEADER_COLOR = (0.15, 0.15, 0.15)
+
 #: Default node width. Wider than Blender's 140 because an input socket row here draws the
 #: param's label and its control, not just a socket name.
 NODE_WIDTH = 260.0
@@ -86,6 +91,12 @@ def tag_redraw() -> None:
         for area in window.screen.areas:
             if area.type == "NODE_EDITOR":
                 area.tag_redraw()
+                # Also each region: area.tag_redraw() alone was not always enough to
+                # refresh a tree rebuilt from a bpy.app.timers callback rather than an
+                # operator (see _poll_new_trees in the Blender add-on) -- an operator's own
+                # redraw pump seems to cover the area/region gap that a timer's does not.
+                for region in area.regions:
+                    region.tag_redraw()
 
 
 def _port_name(attr_path: str) -> str:
@@ -104,11 +115,44 @@ def _port_name(attr_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 class UsdChunksNodeTree(bpy.types.NodeTree):
-    """The tree type. Its whole job is to exist, so the node editor has something to draw."""
+    """The tree type. Its whole job is to exist, so the node editor has something to draw --
+    except for update(), which exists because dragging a wire in Blender's OWN editor is
+    otherwise pure cosmetics: Blender creates the bpy.types.NodeLink itself, entirely
+    internally, and nothing else here ever hears about it. See update()'s docstring.
+    """
 
     bl_idname = TREE_ID
     bl_label = "USDChunks Editor"
     bl_icon = "NODETREE"
+
+    def update(self) -> None:
+        """Blender's own hook for "this tree's topology changed" -- a link or node added
+        or removed. Without this, a wire the user just dragged authored nothing: no USD
+        .connect, no @Node.attr@ expression text, so the destination param's displayed
+        value never followed the wire it now visually has -- reported as "doesn't trigger
+        on connection, still empty".
+
+        Reconciles every link on every call rather than diffing, because Blender's update()
+        does not say what changed, and chunk_graph.connect() re-authoring an already-correct
+        connection is a cheap no-op -- acceptable for the tens-of-nodes scale this editor
+        targets. Guarded against _rebuild_tree's own link.new() calls (see _rebuilding) and
+        against firing for a tree that is not the one currently open (Blender calls this
+        for any tree of this type, not only the visible one).
+        """
+        if _rebuilding:
+            return
+        view = active_view()
+        if view is None or view.tree is not self:
+            return
+        changed = False
+        for link in self.links:
+            a = _link_port_ref(view, link.from_node, link.from_socket, is_input=False)
+            b = _link_port_ref(view, link.to_node, link.to_socket, is_input=True)
+            if a is not None and b is not None and chunk_graph.connect(
+                    view.stage, a, b, view.chunks):
+                changed = True
+        if changed:
+            bpy.app.timers.register(lambda: _reload_after_connect(view), first_interval=0.0)
 
 
 def socket_param(socket, node):
@@ -265,6 +309,39 @@ class USDCHUNKS_OT_param_button(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
+    """Pull the viewport-picked prim(s) into a PRIM_SELECTION param.
+
+    Blender's counterpart of chunk_qt_widgets.py's pin_prim() -- same read
+    (SceneSender.get_selected_prims(), which chunk_blender_addon.BlenderScene answers from
+    set_picked_prim_paths below), same join-by-comma write. Nothing selected is a misfire,
+    not an instruction to erase: keeps whatever path was already there.
+    """
+
+    bl_idname = "usd_chunks.pin_prim"
+    bl_label = "Pin Picked Prim"
+    bl_options = {"REGISTER", "UNDO"}
+
+    node_path: bpy.props.StringProperty()
+    param_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        tree = getattr(context.space_data, "edit_tree", None)
+        node = tree.nodes.get(self.node_path) if tree else None
+        chunk = node.get_chunk() if node else None
+        param = chunk.get_param(self.param_name) if chunk else None
+        if param is None:
+            self.report({"WARNING"}, "no such param: %s" % self.param_name)
+            return {"CANCELLED"}
+        scene = param.get_scene()
+        prims = scene.get_selected_prims() if scene else []
+        if not prims:
+            self.report({"INFO"}, "nothing picked -- ctrl+click a prim in the viewport")
+            return {"CANCELLED"}
+        param.value = ",".join(str(p.GetPath()) for p in prims)
+        return {"FINISHED"}
+
+
 # ---------------------------------------------------------------------------
 # Generated node classes
 # ---------------------------------------------------------------------------
@@ -344,6 +421,13 @@ def unregister_chunk_types() -> None:
 
 _active_view = None
 
+#: Set for the duration of BlenderGraphView._rebuild_tree, which recreates links from USD
+#: via self.tree.links.new(...) -- each of those is itself a topology change, so without
+#: this guard UsdChunksNodeTree.update below would re-enter for every edge on every
+#: reload, re-authoring connections that were just read FROM the thing it would be writing
+#: them back TO.
+_rebuilding = False
+
 
 def active_view():
     """The view a node should ask for its chunk.
@@ -353,6 +437,56 @@ def active_view():
     a second tree would need this keyed by tree name.
     """
     return _active_view
+
+
+#: Prim paths the live-viewport picker (chunk_blender_addon.viewport, which owns the actual
+#: Hydra pick) has most recently found under the cursor. Lives in this module -- the one
+#: both viewport.py and chunk_blender_addon/__init__.py (BlenderScene.get_selected_prims())
+#: already import -- rather than in either of those two directly, so neither has to depend
+#: on the other.
+_picked_prim_paths: list = []
+
+
+def set_picked_prim_paths(paths) -> None:
+    _picked_prim_paths[:] = [str(p) for p in paths]
+
+
+def get_picked_prim_paths() -> list:
+    return list(_picked_prim_paths)
+
+
+def _link_port_ref(view, node, socket, is_input: bool):
+    """The chunk_graph PortRef a Blender socket mirrors.
+
+    Built the same way iter_ports built the socket in the first place (matched by
+    is_input + bare name), rather than reconstructed from node.chunk_path + socket.name by
+    hand -- that would have to re-derive the inputs:/outputs: naming, the merge multi-slot
+    case (chunk1, chunk2, ...) and the exec-vs-typed split all over again, and drift from
+    the one true naming the moment any of those changed.
+    """
+    path = getattr(node, "chunk_path", None)
+    prim = view.prims.get(path) if path else None
+    if prim is None:
+        return None
+    chunk = view.chunks.get(path)
+    for port in chunk_graph.iter_ports(prim, chunk):
+        if port.is_input == is_input and port.name == socket.name:
+            return port
+    return None
+
+
+def _reload_after_connect(view) -> None:
+    """Runs one tick after a link authored a connection -- see UsdChunksNodeTree.update.
+
+    Not called synchronously from update(): reload() rebuilds self.tree.nodes/links, and
+    doing that while still on Blender's own call stack for the very link.new() that is
+    reporting itself changed is the kind of mutate-the-tree-from-its-own-topology-callback
+    that Blender does not promise survives. One registered timer tick later, the callback
+    has fully returned and it is safe.
+    """
+    if active_view() is view:
+        view.reload()
+    return None
 
 
 class BlenderGraphView:
@@ -471,6 +605,14 @@ class BlenderGraphView:
         subtly wrong about any of them reintroduces exactly the drift this design exists to
         prevent. Graphs here are tens of nodes, not thousands.
         """
+        global _rebuilding
+        _rebuilding = True
+        try:
+            self._rebuild_tree_body()
+        finally:
+            _rebuilding = False
+
+    def _rebuild_tree_body(self) -> None:
         self.tree.nodes.clear()
         made = {}
         for path, prim in self.prims.items():
@@ -485,6 +627,8 @@ class BlenderGraphView:
             node.name = path
             node.label = chunk_graph.node_label(prim)
             node.chunk_path = path
+            node.use_custom_color = True
+            node.color = _NODE_HEADER_COLOR
             x, y = self.positions.get(path, (0.0, 0.0))
             node.location = (x * _SCALE, y * _SCALE)
             # Blender's own mute flag, so a disabled chunk reads as disabled to a Blender
@@ -936,7 +1080,7 @@ def _draw_add_menu(self, context) -> None:
 # ---------------------------------------------------------------------------
 
 _CLASSES = (UsdChunksNodeTree, UsdChunksSocket, USDCHUNKS_OT_param_button,
-            USDCHUNKS_OT_add_node)
+            USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_add_node)
 
 
 def _register_once(cls) -> None:

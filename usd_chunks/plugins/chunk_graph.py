@@ -377,8 +377,17 @@ def contexts(stage: Usd.Stage) -> "list[str]":
 
     A chunkgroup is both a node in its parent's graph and a graph of its own, so a file has
     several of these and they nest.
+
+    Seeded with CHUNKS_ROOT plus any Chunk prim sitting directly at the stage's own root: a
+    tab context's prim_path can be authored anywhere, and one set to a root-level path (say
+    "/Tab1") puts every chunk under it with NO /chunks intermediate at all -- CHUNKS_ROOT
+    alone as the only seed then finds nothing to BFS from, so contexts() (and everything
+    built on it, default_context included) never discovers that tab or anything in it.
     """
-    found, pending = [], [CHUNKS_ROOT]
+    root_level = [str(p.GetPath())
+                  for p in stage.GetPseudoRoot().GetFilteredChildren(INCLUDE_INACTIVE)
+                  if p.GetTypeName() == CHUNK_TYPENAME]
+    found, pending = [], [CHUNKS_ROOT] + root_level
     while pending:
         root = pending.pop(0)
         nodes = resolve_graph_nodes(stage, root)

@@ -37,6 +37,7 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.plugins import chunk_usd
 from usd_chunks.plugins import chunk_blender_nodegraph as bg
+from usd_chunks.plugins.chunk_blender_addon import viewport
 
 logger = logging.getLogger(__name__)
 
@@ -65,14 +66,23 @@ class BlenderScene(SceneSender):
         self._stage = stage
 
     def get_selected_prims(self):
-        """Blender's selection is of Blender objects, not USD prims.
+        """The prim(s) last Ctrl+Click-picked in the live Hydra viewport.
 
-        A USD prim imported into Blender becomes an object and loses the prim path, so
-        there is no honest mapping back. Empty rather than a guess -- a PRIM_SELECTION
-        param that silently filled itself with the wrong paths would be worse than one the
-        user types into.
+        NOT Blender's own object selection: a USD prim shown by the live draw handler
+        (viewport.py) has no Blender object at all to select in the first place, so that
+        road really is a dead end (which is what this docstring used to be about, before
+        viewport picking existed) -- this instead reads
+        chunk_blender_nodegraph.get_picked_prim_paths(), written by viewport.py's
+        USDCHUNKS_OT_pick_prim from its own UsdImagingGL.Engine.TestIntersection call.
         """
-        return []
+        if self._stage is None:
+            return []
+        prims = []
+        for path in bg.get_picked_prim_paths():
+            prim = self._stage.GetPrimAtPath(path)
+            if prim and prim.IsValid():
+                prims.append(prim)
+        return prims
 
     def get_selected_property(self):
         return None
@@ -125,8 +135,13 @@ def get_view():
     return bg.active_view()
 
 
-def _open_stage(stage, context_path=None) -> None:
-    """Point the session at `stage` and rebuild the tree from it."""
+def _open_stage(stage, context_path=None, tree=None) -> None:
+    """Point the session at `stage` and rebuild the tree from it.
+
+    `tree` overrides the usual `_active_tree()` guess -- needed by `_poll_new_trees`
+    below, whose caller already knows exactly which tree it found stale and cannot trust
+    `_active_tree()` (or `bpy.context.space_data` generally) to point at the same one.
+    """
     global _scene
     _scene = BlenderScene(stage)
     chunk_registry.ChunkRegistry().initialize(_scene, "blender")
@@ -141,7 +156,13 @@ def _open_stage(stage, context_path=None) -> None:
         logger.info("usd_chunks: %d chunk node type(s) registered", len(made))
     chunk_usd.load_chunks(stage, _scene)
 
-    tree = _active_tree()
+    if tree is None:
+        tree = _active_tree()
+    if tree is not None:
+        # Marks this tree as USD-backed, so _poll_new_trees below knows not to
+        # re-initialize it (which would replace whatever stage/content it already has)
+        # the next time the user merely switches back to looking at it.
+        tree.chunk_network_initialized = True
     chunks = {chunk_usd.get_chunk_prim_path(c): c for c in _scene.get_chunks()}
     # chunk_graph.default_context, not peek_root_context: after load_chunks the scene has
     # no root context to peek at, and CHUNKS_ROOT shows the default chunkgroup and none of
@@ -154,12 +175,75 @@ def _open_stage(stage, context_path=None) -> None:
     view.ensure_view()
 
 
+# ---------------------------------------------------------------------------
+# Catching Blender's own "+ New" (bpy.ops.node.new_node_tree)
+# ---------------------------------------------------------------------------
+#
+# Blender always draws its stock ID-template "+ New" / browse widget in a node editor's
+# header, for every registered tree type including ours -- there is no per-type opt-out,
+# and overriding NODE_HT_header.draw wholesale risks fighting Blender's own View/Select/
+# Add/Node menus across versions. That widget calls bpy.ops.node.new_node_tree(), which
+# knows nothing about USD: it leaves a blank tree with no stage, no scene, no view behind
+# it -- reported as "it doesn't seem to execute" (the Add menu comes from the registry,
+# which only a real _open_stage populates), and switching away and back "loses" the
+# ORIGINAL network's connections because active_view() is a single global and now points
+# at this second, empty view instead.
+#
+# Tried bpy.msgbus.subscribe_rna on SpaceNodeEditor.node_tree first -- it did not fire
+# reliably, because a msgbus callback runs with whatever bpy.context Blender happens to
+# have at notification time, which is not guaranteed to be the node editor whose property
+# actually changed. A timer callback's context has the same problem, so this does not
+# trust bpy.context.space_data either -- it scans every NODE_EDITOR area directly, the way
+# viewport.py's _redraw() already does for VIEW_3D areas.
+
+def _uninitialized_chunk_trees() -> list:
+    """Every ChunkNetwork tree currently shown in a node editor that _open_stage has never
+    touched -- i.e. created by Blender's own "+ New" rather than one of our operators."""
+    found = []
+    for window in getattr(bpy.context.window_manager, "windows", ()):
+        for area in window.screen.areas:
+            if area.type != "NODE_EDITOR":
+                continue
+            space = area.spaces.active
+            tree = getattr(space, "node_tree", None)
+            if (tree is not None and tree.bl_idname == bg.TREE_ID
+                    and not tree.chunk_network_initialized and tree not in found):
+                found.append(tree)
+    return found
+
+
+def _poll_new_trees() -> float:
+    for tree in _uninitialized_chunk_trees():
+        # A tree saved by a session before chunk_network_initialized existed defaults to
+        # False too -- but if it already names a file, it is not blank, it just has not
+        # been touched THIS session. Reopen the file rather than blanking a real network.
+        stage = Usd.Stage.Open(tree.chunk_network_path) if tree.chunk_network_path else None
+        _open_stage(stage if stage is not None else Usd.Stage.CreateInMemory(), tree=tree)
+    return 0.1  # reschedule in 0.1s -- this is the latency between "+ New" and Shift+A working
+
+
 def _active_tree():
     space = getattr(bpy.context, "space_data", None)
     tree = getattr(space, "edit_tree", None) if space else None
     if tree is not None and tree.bl_idname == bg.TREE_ID:
         return tree
     return next((t for t in bpy.data.node_groups if t.bl_idname == bg.TREE_ID), None)
+
+
+def _show_tree(context, tree) -> None:
+    """Pin the node editor to `tree`.
+
+    `space_data.edit_tree` (what `_active_tree` reads) is read-only -- it is derived from
+    `node_tree` plus any node-group diving depth. Without this, New/Open created or opened
+    a tree that nothing on screen ever pointed at: the editor kept showing whatever tree
+    (or nothing) it already had pinned, `_active_tree`'s fallback picked among however many
+    ChunkNetwork trees exist in the file by iteration order, and a graph could be built
+    into a tree the user was not looking at -- reported as "the grid is there but there are
+    no nodes on it".
+    """
+    space = getattr(context, "space_data", None)
+    if space is not None and hasattr(space, "node_tree"):
+        space.node_tree = tree
 
 
 # ---------------------------------------------------------------------------
@@ -189,36 +273,24 @@ class USDCHUNKS_OT_open_network(bpy.types.Operator):
         if tree is None:
             tree = bpy.data.node_groups.new("ChunkNetwork", bg.TREE_ID)
         tree.chunk_network_path = self.filepath
-        _open_stage(stage)
+        _show_tree(context, tree)
+        _open_stage(stage, tree=tree)
         self.report({"INFO"}, "opened %s" % self.filepath)
         return {"FINISHED"}
 
 
 class USDCHUNKS_OT_new_network(bpy.types.Operator):
-    """Start a new node tree seeded with one ChunkGroup.
-
-    An entirely empty stage has no chunk prim anywhere under it, so the graph opens with
-    nothing to select, dive into, or hang a view off -- every other way of starting a
-    network (open an existing file, or Shift+A into one already open) lands on a stage
-    that has at least one chunk. Seeding with scripts/chunkgroup.py's entry, the same
-    module Shift+A offers, keeps a brand new network on that same footing -- and gives the
-    user a ChunkGroup, which is what this button actually hands them.
-    """
+    """Start an empty chunk network in a new node tree."""
 
     bl_idname = "usd_chunks.new_network"
-    bl_label = "New ChunkGroup"
+    bl_label = "New Chunk Network"
     bl_options = {"REGISTER"}
 
     def execute(self, context):
-        bpy.data.node_groups.new("ChunkNetwork", bg.TREE_ID)
-        _open_stage(Usd.Stage.CreateInMemory())
-        view = get_view()
-        entry = next(
-            (e for e in bg.chunk_graph.menu_entries() if e.module.module_name == "chunkgroup"),
-            None)
-        if view is not None and entry is not None:
-            view.create_chunk(entry, 0.0, 0.0)
-        self.report({"INFO"}, "new chunkgroup")
+        tree = bpy.data.node_groups.new("ChunkNetwork", bg.TREE_ID)
+        _show_tree(context, tree)
+        _open_stage(Usd.Stage.CreateInMemory(), tree=tree)
+        self.report({"INFO"}, "new chunk network")
         return {"FINISHED"}
 
 
@@ -335,9 +407,20 @@ def register() -> None:
     # survive a .blend save so reopening the file knows what it was pointed at.
     bpy.types.NodeTree.chunk_network_path = bpy.props.StringProperty(
         name="Chunk Network", subtype="FILE_PATH", default="")
+    # Also per-tree: whether _open_stage has ever run for it. See _poll_new_trees.
+    bpy.types.NodeTree.chunk_network_initialized = bpy.props.BoolProperty(default=False)
+    if not bpy.app.timers.is_registered(_poll_new_trees):
+        # Short first interval: this is what stands between clicking "+ New" and the Add
+        # menu / registry actually being ready, so 0.5s read as "Shift+A does nothing,
+        # try again a moment later."
+        bpy.app.timers.register(_poll_new_trees, first_interval=0.05, persistent=True)
+    viewport.register()
 
 
 def unregister() -> None:
+    viewport.unregister()
+    if bpy.app.timers.is_registered(_poll_new_trees):
+        bpy.app.timers.unregister(_poll_new_trees)
     for cls in reversed(_CLASSES):
         try:
             bpy.utils.unregister_class(cls)
@@ -346,3 +429,5 @@ def unregister() -> None:
     bg.unregister()
     if hasattr(bpy.types.NodeTree, "chunk_network_path"):
         del bpy.types.NodeTree.chunk_network_path
+    if hasattr(bpy.types.NodeTree, "chunk_network_initialized"):
+        del bpy.types.NodeTree.chunk_network_initialized
