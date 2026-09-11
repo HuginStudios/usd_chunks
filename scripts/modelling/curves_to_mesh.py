@@ -42,9 +42,16 @@ _PF = chunk.ChunkFlags.ParamFlags
 _GF = chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED
 
 #: How v is laid out along a strand.
+#:
+#: Proportional is the default because the other two are traps at a vine's proportions. A
+#: strand 15 units long and 1.3 around gets the whole texture squeezed into its length by Per
+#: Strand -- stretched twelve to one, which reads as no texture at all rather than as a
+#: stretched one. Proportional measures v in circumferences, so one tile is square and a
+#: checker looks like a checker.
+_UV_PROPORTIONAL = "Proportional"
 _UV_PER_STRAND = "Per Strand"
 _UV_BY_LENGTH = "By Length"
-_UV_MODES = [_UV_PER_STRAND, _UV_BY_LENGTH]
+_UV_MODES = [_UV_PROPORTIONAL, _UV_PER_STRAND, _UV_BY_LENGTH]
 
 #: Below this a segment is a duplicated point, not a direction — vine pins its ends by
 #: tripling them, so every strand it writes has a few of these.
@@ -238,7 +245,8 @@ def _frames(points: np.ndarray):
 # the sweep
 # ---------------------------------------------------------------------------
 
-def _sweep(points, radii, sides: int, uv_mode: str, uv_tiling: float):
+def _sweep(points, radii, sides: int, uv_mode: str, tiles_along: float,
+           tiles_around: float):
     """One strand's ring vertices, normals, st and faces.
 
     The seam ring is duplicated -- `sides + 1` vertices rather than `sides` -- so u can run a
@@ -255,9 +263,14 @@ def _sweep(points, radii, sides: int, uv_mode: str, uv_tiling: float):
     arc = np.concatenate(([0.0], np.cumsum(step)))
     total = float(arc[-1])
     if uv_mode == _UV_PER_STRAND and total > _EPSILON:
-        v = (arc / total) * uv_tiling
+        v = (arc / total) * tiles_along
+    elif uv_mode == _UV_BY_LENGTH:
+        v = arc * tiles_along
     else:
-        v = arc * uv_tiling
+        # Proportional: v counts circumferences, so one tile covers a square patch of
+        # surface and a texture keeps its aspect whatever the strand's length or thickness.
+        circumference = 2.0 * np.pi * max(float(np.mean(radii)), _EPSILON)
+        v = (arc / circumference) * tiles_along
 
     angles = np.linspace(0.0, 2.0 * np.pi, sides + 1)
     cos, sin = np.cos(angles), np.sin(angles)
@@ -266,7 +279,7 @@ def _sweep(points, radii, sides: int, uv_mode: str, uv_tiling: float):
     radial = cos[None, :, None] * normals[:, None, :] + sin[None, :, None] * binormals[:, None, :]
     ring = points[:, None, :] + radial * radii[:, None, None]
 
-    u = angles / (2.0 * np.pi)
+    u = (angles / (2.0 * np.pi)) * tiles_around
     st = np.stack([
         np.broadcast_to(u[None, :], (len(points), sides + 1)),
         np.broadcast_to(v[:, None], (len(points), sides + 1)),
@@ -282,7 +295,8 @@ def _sweep(points, radii, sides: int, uv_mode: str, uv_tiling: float):
 
 
 def build_mesh(strands, kind, basis, sides: int, per_segment: int,
-               uv_mode: str, uv_tiling: float, width_scale: float):
+               uv_mode: str, tiles_along: float, width_scale: float,
+               tiles_around: float = 1.0):
     """Sweep every strand and concatenate them into one mesh.
 
     Returns (points, normals, st, face_counts, face_indices), or None when nothing swept.
@@ -293,7 +307,7 @@ def build_mesh(strands, kind, basis, sides: int, per_segment: int,
         if len(raw_points) < 2:
             continue
         line, radii = _centreline(raw_points, raw_radii * width_scale, kind, basis, per_segment)
-        swept = _sweep(line, radii, sides, uv_mode, uv_tiling)
+        swept = _sweep(line, radii, sides, uv_mode, tiles_along, tiles_around)
         if swept is None:
             continue
         ring, radial, st, faces = swept
@@ -402,7 +416,8 @@ def execute(node) -> None:
     sides = max(3, int(node.get_param("sides", is_i).value))
     per_segment = max(1, int(node.get_param("segments", is_i).value))
     uv_mode = node.get_param("uv_mode", is_s).value
-    uv_tiling = float(node.get_param("uv_tiling", is_f).value) or 1.0
+    tiles_along = float(node.get_param("tiles_along", is_f).value) or 1.0
+    tiles_around = float(node.get_param("tiles_around", is_f).value) or 1.0
     width_scale = float(node.get_param("width_scale", is_f).value)
 
     all_strands, kind, basis, first = [], UsdGeom.Tokens.linear, UsdGeom.Tokens.bspline, None
@@ -414,7 +429,7 @@ def execute(node) -> None:
 
     layer.Clear()
     built = build_mesh(all_strands, kind, basis, sides, per_segment,
-                       uv_mode, uv_tiling, width_scale)
+                       uv_mode, tiles_along, width_scale, tiles_around)
     if built is None:
         node.get_param("readout").value = "those curves have no sweepable strands"
         return

@@ -51,11 +51,11 @@ def _arc(n=24, radius=5.0):
 
 
 def _sweep_one(points, radius=0.5, sides=6, uv_mode=ctm._UV_PER_STRAND, tiling=1.0,
-               kind=UsdGeom.Tokens.linear):
+               kind=UsdGeom.Tokens.linear, around=1.0):
     # build_mesh takes radii; _read_strands is what halves authored widths into them.
     radii = np.full(len(points), radius)
     return ctm.build_mesh([(points, radii)], kind, UsdGeom.Tokens.bspline,
-                          sides, 4, uv_mode, tiling, 1.0)
+                          sides, 4, uv_mode, tiling, 1.0, around)
 
 
 def _curves_prim(stage, path="/World/Curves", points=None, widths=None,
@@ -153,6 +153,35 @@ def test_tiling_multiplies_the_repeats() -> None:
     thrice = _sweep_one(_line(), uv_mode=ctm._UV_PER_STRAND, tiling=3.0)[2][:, 1].max()
 
     assert thrice / once == pytest.approx(3.0)
+
+
+def test_proportional_keeps_one_tile_square() -> None:
+    """The default, and the reason it is the default: at a vine's proportions Per Strand
+    squeezes the whole texture into a strand twelve times longer than it is round, which
+    reads as no texture at all rather than as a stretched one. Proportional measures v in
+    circumferences, so a tile covers a square patch of surface.
+    """
+    radius, length = 0.2, 15.0
+    built = _sweep_one(_line(length=length), radius=radius, uv_mode=ctm._UV_PROPORTIONAL)
+    st = built[2]
+
+    circumference = 2.0 * math.pi * radius
+    # u spans one wrap (the circumference); v should span the length measured in those same
+    # circumferences, so the two axes share a scale.
+    assert st[:, 0].max() == pytest.approx(1.0)
+    assert st[:, 1].max() == pytest.approx(length / circumference, rel=1e-4)
+
+
+def test_proportional_is_the_default_the_chunk_offers() -> None:
+    assert ctm._UV_MODES[0] == ctm._UV_PROPORTIONAL
+
+
+def test_repeats_around_wraps_the_texture_more_than_once() -> None:
+    once = _sweep_one(_line(), around=1.0)[2][:, 0].max()
+    twice = _sweep_one(_line(), around=2.0)[2][:, 0].max()
+
+    assert once == pytest.approx(1.0)
+    assert twice == pytest.approx(2.0)
 
 
 def test_there_is_one_uv_per_point() -> None:
