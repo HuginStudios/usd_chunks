@@ -1269,6 +1269,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not prim_path:
             return
 
+        # Session state, deliberately never recorded: see ChunkFlags.ParamFlags.TRANSIENT.
+        if param.has_flag(ChunkFlags.ParamFlags.TRANSIENT):
+            return
+
         existing = getattr(param, '_param_attr_path', None)
         if existing and existing.startswith(prim_path):
             return  # already wired; data_changed already wrote the value
