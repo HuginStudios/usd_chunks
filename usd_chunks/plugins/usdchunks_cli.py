@@ -17,6 +17,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from pxr import Usd, UsdUtils
+from usd_chunks import chunk_naming
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
 from usd_chunks.plugins.chunk_usd import (
     ChunkLayerManager,
@@ -112,7 +113,7 @@ def _flatten_without_chunks(stage):
     flat = UsdUtils.FlattenLayerStack(stage)
     tmp = Usd.Stage.Open(flat)
     chunk_paths = sorted(
-        (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == "Chunk"),
+        (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME),
         key=lambda p: p.pathElementCount,
     )
     for path in chunk_paths:
@@ -183,7 +184,7 @@ def cmd_info(args):
     _INPUTS = "inputs:"
 
     for prim in stage.Traverse():
-        if prim.GetTypeName() != "Chunk":
+        if prim.GetTypeName() != chunk_naming.CHUNK_PRIM_TYPENAME:
             continue
         if prim.GetAttribute("info:chunkType").Get() != "chunkgroup":
             continue
@@ -238,7 +239,7 @@ def cmd_validate(args):
     passed = 0
     total = 0
     for prim in stage.Traverse():
-        if prim.GetTypeName() != "Chunk":
+        if prim.GetTypeName() != chunk_naming.CHUNK_PRIM_TYPENAME:
             continue
         chunk_type = prim.GetAttribute("info:chunkType").Get()
         if not chunk_type:
@@ -447,7 +448,7 @@ def _find_wedge(stage):
     to plan, once in the child that actually cooks.
     """
     for prim in stage.TraverseAll():
-        if prim.GetTypeName() != "Chunk":
+        if prim.GetTypeName() != chunk_naming.CHUNK_PRIM_TYPENAME:
             continue
         attr = prim.GetAttribute("info:chunkType")
         if attr and attr.Get() == WEDGE_CHUNK_TYPE:

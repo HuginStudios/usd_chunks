@@ -44,10 +44,16 @@ Issues = "https://github.com/HuginStudios/usd_chunks/issues"
 standalone = ["usd-core"]
 # For hosts that do not already supply Qt. usdview and Houdini bring their own.
 ui = ["PySide6"]
+# The standalone graph frontends. Neither is imported unless you ask for its module by
+# name -- plugins/__init__.py imports nothing -- so a missing toolkit is not fatal to the
+# rest of the package, but `usdchunks-flet`/`-imgui` need these.
+flet = ["flet>=0.28"]
+imgui = ["imgui-bundle>=1.6"]
 # `requests` is not a library dependency — the suite loads example chunks from scripts/
 # that import it. Chunks whose imports fail are skipped by the registry, so the heavier
 # example deps (numpy, opencv) are deliberately left out.
-dev = ["pytest", "pytest-xdist", "ruff", "build", "types-usd", "requests", "usd-core"]
+dev = ["pytest", "pytest-xdist", "ruff", "build", "types-usd", "requests", "usd-core",
+       "flet>=0.28", "imgui-bundle>=1.6"]
 docs = [
     "mkdocs",
     "mkdocs-material",
