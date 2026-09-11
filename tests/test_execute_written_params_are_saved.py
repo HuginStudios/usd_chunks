@@ -226,3 +226,45 @@ def test_a_transient_param_is_kept_out_of_the_saved_scene(tmp_path) -> None:
     for name in ("_new_layer_id", "_parent_layer_id", "_layer_name_used"):
         assert name not in written, f"{name} is session state and must not be saved"
     assert "inputs:layer_name" in written, "the name the user typed still has to be saved"
+
+
+# ---------------------------------------------------------------------------
+# the feedback loop this does not open
+# ---------------------------------------------------------------------------
+
+def test_a_chunk_that_writes_its_own_params_still_cooks_once_per_edit() -> None:
+    """Raised in review: recording a param written during a cook could feed back into the
+    DAG that scheduled the cook, and a chunk that assigns its own params every time would
+    then cook forever.
+
+    It does not, and the reason is structural rather than lucky: chunk_notice refuses to
+    re-enter a chunk's execute while `prop._executing` is set, and this change touches only
+    whether a USD attr gets authored -- not whether PARAM_CHANGED fires. A chunk assigning
+    its own params already sent that notice before.
+
+    Asserted over a run of edits rather than one, because a loop that settles need not run
+    away on the first: it would show as the cost per edit climbing.
+    """
+    stage = _new_stage()
+    scene = _scene_for(stage)
+    chunk_obj = _add(scene, "random_value")
+
+    module = chunk_registry.ChunkRegistry().get_chunk_module("random_value").module
+    original = module.execute
+    cooks = []
+
+    def counted(node):
+        cooks.append(node)
+        return original(node)
+
+    module.execute = counted
+    try:
+        per_edit = []
+        for i in range(10):
+            before = len(cooks)
+            chunk_obj.get_param("seed").value = float(i + 1)
+            per_edit.append(len(cooks) - before)
+    finally:
+        module.execute = original
+
+    assert per_edit == [1] * 10, f"cooks per edit drifted: {per_edit}"
