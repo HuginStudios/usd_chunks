@@ -228,6 +228,9 @@ class TestTheClipboardIsShared:
         assert nodegraph._edge_clipboard is chunk_graph.edge_clipboard
 
     def test_flet_and_qt_hold_the_same_lists(self):
+        # flet is an optional extra; the Qt half of this contract still has to be checked
+        # without it, so the skip is per-test rather than on the module.
+        pytest.importorskip("flet", reason="flet is an optional extra")
         from usd_chunks.plugins import chunk_flet_nodegraph  # noqa: F401
         assert chunk_graph.node_clipboard is nodegraph._node_clipboard
 

@@ -11,12 +11,19 @@ should find out from a red test, not from a user.
 """
 from __future__ import annotations
 
-import inspect
-
 import pytest
 
-from usd_chunks.plugins import chunk_graph
-from usd_chunks.plugins import chunk_flet_nodegraph as fg
+# flet is an optional extra (pyproject: [flet]), so this file steps aside rather than
+# erroring the whole collection when it is not installed -- which is what a module-level
+# `import flet` did. Every import below is deliberately after it.
+pytest.importorskip("flet", reason="flet is an optional extra")
+
+
+import inspect  # noqa: E402
+
+
+from usd_chunks.plugins import chunk_graph  # noqa: E402
+from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
 
 
 def frontends():
