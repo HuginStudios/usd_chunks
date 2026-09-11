@@ -378,3 +378,33 @@ def test_the_curves_colour_carries_over_so_the_tube_is_not_suddenly_grey() -> No
 
     colour = UsdGeom.Mesh(stage.GetPrimAtPath("/World/Mesh")).GetDisplayColorAttr().Get()
     assert colour and tuple(colour[0]) == pytest.approx((0.18, 0.42, 0.15))
+
+
+# ---------------------------------------------------------------------------
+# the chunk as the host builds it
+# ---------------------------------------------------------------------------
+
+def test_execute_can_find_every_param_it_reads() -> None:
+    """The sweep maths had tests from the start; main() did not, and a rename that landed in
+    execute() but not in main() left every cook raising AttributeError on a None param. The
+    unit tests all called build_mesh directly and saw none of it.
+
+    So: build the chunk the way the registry does, and check each name execute() asks for is
+    actually there.
+    """
+    module = chunk_registry.ChunkRegistry().get_chunk_module("modelling.curves_to_mesh")
+    chunk_obj = (module.create() if module.loaded else module.load())[0]
+
+    for name in ("curves_prim", "primpath_location", "readout", "out_mesh",
+                 "sides", "segments", "width_scale", "recurse",
+                 "uv_mode", "tiles_along", "tiles_around"):
+        assert chunk_obj.get_param(name) is not None, f"execute() reads {name!r}, main() has no such param"
+
+
+def test_a_cook_with_no_curves_picked_says_so_instead_of_raising() -> None:
+    """The first thing that happens to this chunk is being added with nothing wired in."""
+    module = chunk_registry.ChunkRegistry().get_chunk_module("modelling.curves_to_mesh")
+    chunk_obj = (module.create() if module.loaded else module.load())[0]
+
+    # No stage: execute has to bail on its own guard rather than reach for a param.
+    ctm.execute(chunk_obj)
