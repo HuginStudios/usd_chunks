@@ -2123,7 +2123,21 @@ def set_pin_filter_enabled(context: "core.ChunkBase", enabled: bool) -> None:
         prim = stage.GetPrimAtPath(Sdf.Path(path))
         if not prim.IsValid():
             prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        prim.CreateAttribute("filter:pinEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(enabled))
+        # An UPDATE goes where the attribute already lives; only a first write picks a
+        # layer. An Edit Target chunk moves the stage's target while the graph is live, so
+        # re-resolving it on every write scattered one attribute's opinions across layers
+        # and let the older, stronger one go on winning -- the toggle stopped responding
+        # mid-session while the widget went on reporting what was clicked.
+        #
+        # The first write deliberately still follows the ambient target rather than the
+        # bookkeeping layer set_chunk_pinned uses. A tab's filter state is part of the
+        # document and has to land somewhere that exports; the session layer does not.
+        # Pinning both halves to one answer breaks one of them in each direction.
+        existing = prim.GetAttribute("filter:pinEnabled")
+        home = chunk_utils.get_attr_home_layer(existing) if existing and existing.IsValid() else None
+        ctx = Usd.EditContext(stage, home) if home else contextlib.nullcontext()
+        with ctx:
+            prim.CreateAttribute("filter:pinEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(enabled))
     finally:
         chunk_notice._usd_write_active = prev_w
 
@@ -2156,7 +2170,21 @@ def set_search_query(context: "core.ChunkBase", query: str) -> None:
         prim = stage.GetPrimAtPath(Sdf.Path(path))
         if not prim.IsValid():
             prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        prim.CreateAttribute("filter:searchQuery", Sdf.ValueTypeNames.String, custom=True).Set(query)
+        # An UPDATE goes where the attribute already lives; only a first write picks a
+        # layer. An Edit Target chunk moves the stage's target while the graph is live, so
+        # re-resolving it on every write scattered one attribute's opinions across layers
+        # and let the older, stronger one go on winning -- the toggle stopped responding
+        # mid-session while the widget went on reporting what was clicked.
+        #
+        # The first write deliberately still follows the ambient target rather than the
+        # bookkeeping layer set_chunk_pinned uses. A tab's filter state is part of the
+        # document and has to land somewhere that exports; the session layer does not.
+        # Pinning both halves to one answer breaks one of them in each direction.
+        existing = prim.GetAttribute("filter:searchQuery")
+        home = chunk_utils.get_attr_home_layer(existing) if existing and existing.IsValid() else None
+        ctx = Usd.EditContext(stage, home) if home else contextlib.nullcontext()
+        with ctx:
+            prim.CreateAttribute("filter:searchQuery", Sdf.ValueTypeNames.String, custom=True).Set(query)
     finally:
         chunk_notice._usd_write_active = prev_w
 
@@ -2187,7 +2215,21 @@ def set_search_scope(context: "core.ChunkBase", scope: str) -> None:
         prim = stage.GetPrimAtPath(Sdf.Path(path))
         if not prim.IsValid():
             prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        prim.CreateAttribute("filter:searchScope", Sdf.ValueTypeNames.String, custom=True).Set(scope)
+        # An UPDATE goes where the attribute already lives; only a first write picks a
+        # layer. An Edit Target chunk moves the stage's target while the graph is live, so
+        # re-resolving it on every write scattered one attribute's opinions across layers
+        # and let the older, stronger one go on winning -- the toggle stopped responding
+        # mid-session while the widget went on reporting what was clicked.
+        #
+        # The first write deliberately still follows the ambient target rather than the
+        # bookkeeping layer set_chunk_pinned uses. A tab's filter state is part of the
+        # document and has to land somewhere that exports; the session layer does not.
+        # Pinning both halves to one answer breaks one of them in each direction.
+        existing = prim.GetAttribute("filter:searchScope")
+        home = chunk_utils.get_attr_home_layer(existing) if existing and existing.IsValid() else None
+        ctx = Usd.EditContext(stage, home) if home else contextlib.nullcontext()
+        with ctx:
+            prim.CreateAttribute("filter:searchScope", Sdf.ValueTypeNames.String, custom=True).Set(scope)
     finally:
         chunk_notice._usd_write_active = prev_w
 
