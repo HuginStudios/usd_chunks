@@ -11,7 +11,7 @@ from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
 from usd_chunks import chunk_registry, chunk_core
-from usd_chunks.plugins import chunk_qt, chunk_usd, chunk_window_state
+from usd_chunks.plugins import chunk_qt, chunk_usd, chunk_window_state, chunk_qt_layer_stack
 
 from typing import List
 
@@ -307,21 +307,8 @@ class ChunksPluginContainer(PluginContainer):
 
     def openLayerStack(self, usdviewApi):
         """Open the global Layer Stack inspector window."""
-        import importlib
-        try:
-            layer_stack = importlib.import_module("scripts.layer_stack")
-        except Exception:
-            import os
-            import importlib.util
-            path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "scripts", "layer_stack.py",
-            )
-            spec = importlib.util.spec_from_file_location("layer_stack", path)
-            layer_stack = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(layer_stack)
         # Keep a reference so the window isn't garbage-collected while open.
-        self._layerStackWin = layer_stack.open_window(usdviewApi)
+        self._layerStackWin = chunk_qt_layer_stack.open_window(usdviewApi)
 
     def registerPlugins(self, plugRegistry, plugCtx) -> None:
         """Register the UI Creator plugin with the plugin registry.

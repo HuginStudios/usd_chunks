@@ -754,12 +754,12 @@ class ChunkModule:
         if isinstance(cat, Enum):
             cat = cat.value
 
-        namespace = self.module_name.split(".")
-        if namespace[0].lower() == cat.lower():
-            namespace.pop(0)
-
-        if cat:
-            namespace.insert(0, cat)
+        import_path = self.module_name.split(".")
+        if not cat:
+            return import_path
+        else:
+            namespace = cat.split("/")
+            namespace.append(import_path[-1])
 
         return namespace
 
