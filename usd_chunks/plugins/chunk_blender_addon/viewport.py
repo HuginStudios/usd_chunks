@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 #: click, and the UsdImagingGL engine must outlive a frame (rebuilding it per draw throws
 #: away Hydra's whole cache and makes navigation crawl).
 _state = {"handle": None, "engine": None, "stage_id": None, "error": "",
-          "lighting": True, "draw_mode": "smooth", "renderer": None, "picking": True}
+          "lighting": True, "draw_mode": "smooth", "renderer": None, "picking": True,
+          "renderParams": None}
 
 #: The draw mode names the panel offers, and what each maps to on UsdImagingGL.RenderParams.
 #: Resolved lazily (inside _draw, not at import time) because UsdImagingGL.DrawMode needs
@@ -99,7 +100,8 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     confident in without a live Blender to verify Frustum.ComputeNarrowedFrustum's exact
     signature against.
     """
-    from pxr import Gf, Sdf, Tf, UsdImagingGL
+    from pxr import Gf, Sdf
+
 
     ndc_x = (mouse_x / region.width) * 2.0 - 1.0
     ndc_y = (mouse_y / region.height) * 2.0 - 1.0
@@ -113,7 +115,8 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
             * Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(1.0 / dx, 1.0 / dy, 1.0)))
     narrowed_proj = proj * pick
 
-    params = UsdImagingGL.RenderParams()
+    params = _state["renderParams"]
+
     # Tf.CatchAndRepostErrors, not try/except: TestIntersection posts the same HgiGL
     # "pending GL error" diagnostic _draw() already treats as noise (see the module
     # docstring), but unlike Render() this call's return value is the whole point -- a
@@ -123,9 +126,24 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     # raising call does not resume, but nothing propagates past the `with`, matching the
     # documented paintGL()-callback use case this API exists for) and reposts the error to
     # the thread's list instead of raising, which is a passive no-op here.
-    result = None
-    with Tf.CatchAndRepostErrors():
-        result = engine.TestIntersection(view, narrowed_proj, stage.GetPseudoRoot(), params)
+    print("BEFORE TestIntersection")
+
+    result = engine.TestIntersection(
+        view,
+        narrowed_proj,
+        stage.GetPseudoRoot(),
+        params,
+    )
+
+    print("AFTER TestIntersection:", repr(result))
+    # TEMPORARY debug printout -- remove once picking is confirmed working. Prints the
+    # exact shape TestIntersection returns on this Blender/USD build, since that arity is
+    # not something to trust from memory across versions (see the docstring above).
+    print("[usd_chunks pick] click=(%s, %s) ndc=(%.3f, %.3f) result=%r" %
+         (mouse_x, mouse_y, ndc_x, ndc_y, result))
+    if result:
+        for i, item in enumerate(result):
+            print("  [%d] %s = %r" % (i, type(item).__name__, item))
     if not result or not result[0]:
         return None
     # Scanned rather than indexed: TestIntersection's out-params (hit point, normal, prim
@@ -137,6 +155,18 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
             return str(item)
     return None
 
+def _test_intersection(engine, stage, view, proj, params):
+    print("=== TestIntersection from _draw ===")
+
+    result = engine.TestIntersection(
+        view,
+        proj,
+        stage.GetPseudoRoot(),
+        params,
+    )
+
+    print("RESULT:", repr(result))
+    return result
 
 def _draw():
     from pxr import Gf, UsdImagingGL
@@ -153,6 +183,7 @@ def _draw():
         # populated scene index would keep drawing the previous network.
         if _state["engine"] is None or _state["stage_id"] != id(stage):
             _state["engine"] = UsdImagingGL.Engine()
+            _state["renderParams"] = UsdImagingGL.RenderParams()
             _state["stage_id"] = id(stage)
             if _state["renderer"]:
                 try:
@@ -166,7 +197,7 @@ def _draw():
         view = Gf.Matrix4d(*[v for row in rv3d.view_matrix.transposed() for v in row])
         proj = Gf.Matrix4d(*[v for row in rv3d.window_matrix.transposed() for v in row])
 
-        params = UsdImagingGL.RenderParams()
+        params = _state["renderParams"]
         params.enableLighting = _state["lighting"]
         params.drawMode = getattr(UsdImagingGL.DrawMode,
                                   _DRAW_MODE_ATTRS[_state["draw_mode"]])
@@ -275,11 +306,19 @@ class USDCHUNKS_OT_pick_prim(bpy.types.Operator):
         return _state["picking"] and hydra_view_enabled()
 
     def invoke(self, context, event):
+        # TEMPORARY debug printout -- if this line never appears in the console on a
+        # Ctrl+Click, the keymap item itself is not firing (something else is consuming
+        # the event first), which is a different problem than anything below it.
+        print("[usd_chunks pick] invoke() called, picking=%s hydra_on=%s" %
+             (_state["picking"], hydra_view_enabled()))
         rv3d = getattr(context, "region_data", None)
         region = getattr(context, "region", None)
         stage = active_stage()
+        print(stage)
         engine = _state.get("engine")
         if rv3d is None or region is None or stage is None or engine is None:
+            print("[usd_chunks pick] bailing early: rv3d=%s region=%s stage=%s engine=%s" %
+                 (rv3d is not None, region is not None, stage is not None, engine is not None))
             return {"PASS_THROUGH"}
         try:
             path = _pick_prim_path(engine, stage, rv3d, region,
