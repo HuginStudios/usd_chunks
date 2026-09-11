@@ -300,13 +300,18 @@ def main():
         menu_items=["(none)"], default_value="(none)",
     )
 
-    new_layer_id = chunk.LineEdit("_new_layer_id")
+    # All three are bookkeeping for the layer this chunk owns *in this session*: two of them
+    # hold an anonymous layer's identifier, which names an in-memory object and nothing else.
+    # TRANSIENT keeps them off the chunk prim, so a saved scene does not come back holding the
+    # address of a layer that died with the session that made it -- a fresh one is created on
+    # reload, which is what the empty value means.
+    new_layer_id = chunk.LineEdit("_new_layer_id", flags=chunk.ChunkFlags.ParamFlags.TRANSIENT)
     new_layer_id.set_state(chunk.ChunkFlags.State.HIDDEN)
 
-    layer_name_used = chunk.LineEdit("_layer_name_used")
+    layer_name_used = chunk.LineEdit("_layer_name_used", flags=chunk.ChunkFlags.ParamFlags.TRANSIENT)
     layer_name_used.set_state(chunk.ChunkFlags.State.HIDDEN)
 
-    parent_layer_id = chunk.LineEdit("_parent_layer_id")
+    parent_layer_id = chunk.LineEdit("_parent_layer_id", flags=chunk.ChunkFlags.ParamFlags.TRANSIENT)
     parent_layer_id.set_state(chunk.ChunkFlags.State.HIDDEN)
 
     createLayerChunk.add_params([

@@ -73,11 +73,20 @@ class ChunkFlags:
             DIRECTORY: For FILE type params. Allows selection of folders
             PRIM_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdPrim selections
             PROP_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdProperty selections
+            TRANSIENT: The param holds session state, not a value. It is kept off the chunk prim,
+                    so it is not written into a saved scene and comes back empty on reload.
         """
 
         NONE = 0
         LABELED = auto()
         OUTPUT = auto()
+
+        # A handle to something that only exists in this session -- an anonymous layer's
+        # identifier is the case that asked for it. Saving one records an address that is
+        # already dead by the time anything reads it back, which is worse than recording
+        # nothing: the chunk reloads holding a plausible-looking value naming an object that
+        # no longer exists. Create Layer keeps three of these.
+        TRANSIENT = auto()
 
         # FILE
         FILE_EXISTING = auto()
