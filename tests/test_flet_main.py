@@ -13,8 +13,15 @@ from __future__ import annotations
 
 import pytest
 
-from graph_fixtures import make_network
-from usd_chunks.plugins import chunk_flet_nodegraph as fg
+# flet is an optional extra (pyproject: [flet]), so this file steps aside rather than
+# erroring the whole collection when it is not installed -- which is what a module-level
+# `import flet` did. Every import below is deliberately after it.
+pytest.importorskip("flet", reason="flet is an optional extra")
+
+
+
+from graph_fixtures import make_network  # noqa: E402
+from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
 
 
 class FakePage:

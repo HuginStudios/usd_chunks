@@ -9,13 +9,20 @@ Only the real class disagrees.
 """
 from __future__ import annotations
 
-import flet as ft
 import pytest
 
-from graph_fixtures import content_nodes, make_network
-from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_flet_nodegraph as fg
-from usd_chunks.plugins import chunk_graph
+# flet is an optional extra (pyproject: [flet]), so this file steps aside rather than
+# erroring the whole collection when it is not installed -- which is what a module-level
+# `import flet` did. Every import below is deliberately after it.
+pytest.importorskip("flet", reason="flet is an optional extra")
+
+
+import flet as ft  # noqa: E402
+
+from graph_fixtures import content_nodes, make_network  # noqa: E402
+from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
+from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
+from usd_chunks.plugins import chunk_graph  # noqa: E402
 
 
 

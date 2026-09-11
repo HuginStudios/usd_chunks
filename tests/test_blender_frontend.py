@@ -17,17 +17,25 @@ optional extra rather than a dependency.
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
 
-try:
-    import bpy
-except ImportError as exc:  # pragma: no cover - the usual case outside Blender
-    # Not `importorskip`: that skips only on ModuleNotFoundError, and the pip `bpy` wheel
-    # fails on Windows with "DLL load failed while importing bpy" when another extension
-    # module has already claimed a conflicting DLL -- which is an ImportError, so the file
-    # errored the whole collection instead of stepping aside. Inside Blender, where these
-    # tests are meant to run, bpy is native and neither case arises.
-    pytest.skip("bpy only exists inside Blender (%s)" % exc, allow_module_level=True)
+# Whether bpy is *already loaded*, not whether it can be imported. Those differ on any
+# machine with the pip `bpy` wheel installed beside a standalone USD, and the difference is
+# expensive: importing that wheel loads Blender's own USD libraries, which claim the DLLs
+# `pxr` needs, so every later `from pxr import ...` in the process dies with "DLL load
+# failed while importing _tf". pytest collects this file early (it sorts under "b"), so the
+# one import here took the rest of the suite down with it -- measured on Blender 5.2.1:
+# 1736 tests collected became 311 collected and 128 collection errors, none of them real.
+#
+# Inside Blender -- the only place these tests can actually run -- bpy is native and already
+# in sys.modules before any script runs, so this admits exactly the case it means to and
+# never performs the import that does the damage.
+if "bpy" not in sys.modules:  # pragma: no cover - the usual case outside Blender
+    pytest.skip("bpy only exists inside Blender", allow_module_level=True)
+
+import bpy  # noqa: E402
 
 from pxr import Usd  # noqa: E402
 

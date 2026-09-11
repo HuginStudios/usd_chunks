@@ -79,6 +79,9 @@ class TestEveryFrontendOffersBrowsing:
     """The gap this closes: two of the three had no browse affordance at all."""
 
     def test_flet_builds_a_file_widget_not_a_text_field(self):
+        # flet is an optional extra; the Qt half of this contract still has to be checked
+        # without it, so the skip is per-test rather than on the module.
+        pytest.importorskip("flet", reason="flet is an optional extra")
         from usd_chunks.plugins import chunk_flet
         factory = chunk_flet.ChunkFletWidgetFactory()
         param = browser()
@@ -90,6 +93,9 @@ class TestEveryFrontendOffersBrowsing:
     def test_flet_hands_its_pickers_back_for_the_page_overlay(self):
         """A FilePicker cannot open until it is in page.overlay, and only the view can put
         it there -- so the widgets have to surrender them."""
+        # flet is an optional extra; the Qt half of this contract still has to be checked
+        # without it, so the skip is per-test rather than on the module.
+        pytest.importorskip("flet", reason="flet is an optional extra")
         from usd_chunks.plugins import chunk_flet
         factory = chunk_flet.ChunkFletWidgetFactory()
         param = browser()
@@ -104,6 +110,9 @@ class TestEveryFrontendOffersBrowsing:
         (see the NoticeConnection lifetime rule), so letting it fall out of scope makes
         widget.param raise "reference to param is dead" rather than fail an assertion.
         """
+        # flet is an optional extra; the Qt half of this contract still has to be checked
+        # without it, so the skip is per-test rather than on the module.
+        pytest.importorskip("flet", reason="flet is an optional extra")
         from usd_chunks.plugins import chunk_flet
         factory = chunk_flet.ChunkFletWidgetFactory()
         param = browser()
