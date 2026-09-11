@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 _CHUNK_TYPE_ATTR = "info:chunkType"
 #: What a chunk with no module of its own is saved as, so it can be read back (scripts/runtime.py).
-_RUNTIME_CHUNK_TYPE = "runtime"
+_RUNTIME_CHUNK_TYPE = "core.runtime"
 _INPUTS_PREFIX = "inputs:"
 # The ObjectsChanged field name for a connection edit; a value write reports "default".
 _CONNECTION_PATHS_FIELD = "connectionPaths"
@@ -3357,7 +3357,7 @@ def recook_for_view(
                 recook_for_view(stage, scene, c, None)
             continue
         was_blocked = c.is_blocked()
-        c.set_blocked(c not in cook_set)
+        # c.set_blocked(c not in cook_set)
         if was_blocked and not c.is_blocked():
             # A blocked chunk's param value-changed notices are suppressed (see this
             # function's own docstring: blocking "stops it reacting to param changes"),
