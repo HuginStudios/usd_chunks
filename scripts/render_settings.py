@@ -390,8 +390,13 @@ def _resolve_targets(stage, param):
 def main():
     chunk_api = chunk.Chunk("Render Settings")
 
-    stage = chunk_api.get_stage()
-    prim_path = chunk_utils.get_unique_path(stage, "/Render/settings")
+    # A literal, not get_unique_path(stage, ...). A default computed from whatever the stage
+    # holds at construction is a value wearing a default's clothes: the save path leaves
+    # defaults out on the grounds that running main() again reproduces them, and running
+    # main() again does not reproduce this one -- on reload no prim exists yet, so every
+    # instance is handed the same path back. execute() does the uniquifying and records the
+    # result as a value, which is what survives a save.
+    prim_path = "/Render/settings"
 
     chunk_api.add_params([
         chunk.LineEdit(
@@ -453,6 +458,13 @@ def execute(node):
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
     if not var_selections and not chunk_notice._loading_stage:
         raw_path = chunk_utils.get_unique_path(stage, raw_path)
+        # Recorded as a value, not left as a local. This is the only thing telling this
+        # chunk apart from another of the same kind, and a saved scene carries chunk-prim
+        # values -- without it two cameras reopened both claiming /cameras/camera1 and
+        # authored over one prim. Guarded so a path that did not move is not written back
+        # on every cook.
+        if raw_path != node.get_param("primpath_location").value:
+            node.get_param("primpath_location").value = raw_path
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         settings = UsdRender.Settings.Define(stage, Sdf.Path(target_path))
