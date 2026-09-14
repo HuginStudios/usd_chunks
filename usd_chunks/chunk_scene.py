@@ -646,6 +646,15 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """Set the viewport to look through the given camera prim."""
         pass
 
+    def release_viewport_camera(self) -> None:
+        """The prim handed to set_viewport_camera no longer claims the viewport.
+
+        Called when a camera chunk's freecam lock comes off. A host that swapped state to
+        show the prim (usdview keeps the user's free-camera lens across it) undoes that here;
+        the default is nothing, matching set_viewport_camera.
+        """
+        pass
+
     # -- Gizmo capability -----------------------------------------------------------------
     #
     # Reserved shape only: nothing in v1 calls these. Activation is declarative -- a gizmo's

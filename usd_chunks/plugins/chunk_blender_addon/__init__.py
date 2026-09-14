@@ -349,6 +349,60 @@ class USDCHUNKS_OT_set_view_slot(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class USDCHUNKS_OT_dive_into(bpy.types.Operator):
+    """Open the selected chunkgroup as its own graph."""
+
+    bl_idname = "usd_chunks.dive_into"
+    bl_label = "Dive Into Group"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        # Only in our own editor. This shares Tab with Blender's node.group_edit, and a
+        # poll that said yes in a shader editor would hijack entering a shader group.
+        return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
+
+    def execute(self, context):
+        view = get_view()
+        if view is None:
+            return {"CANCELLED"}
+        view.pull_selection_from_tree()
+        targets = [p for p in view.selected_nodes if view.can_dive(p)]
+        if not targets:
+            # Nothing selected that can be dived, but the graph is one group and nothing
+            # else: that group is what is meant. It is the shape every saved network has
+            # at its top, and "select it first" is a step nobody should have to learn.
+            groups = [p for p in view.prims if view.can_dive(p)]
+            if len(groups) == 1 and len(view.prims) == 1:
+                targets = groups
+        if not targets:
+            self.report({"WARNING"}, "select a chunkgroup to dive into")
+            return {"CANCELLED"}
+        view.dive_into(targets[0])
+        self.report({"INFO"}, view.status)
+        return {"FINISHED"}
+
+
+class USDCHUNKS_OT_dive_out(bpy.types.Operator):
+    """Back up to the graph that holds this one."""
+
+    bl_idname = "usd_chunks.dive_out"
+    bl_label = "Dive Out"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
+
+    def execute(self, context):
+        view = get_view()
+        if view is None:
+            return {"CANCELLED"}
+        view.dive_out()
+        self.report({"INFO"}, view.status)
+        return {"FINISHED"}
+
+
 class USDCHUNKS_PT_panel(bpy.types.Panel):
     """The node editor sidebar."""
 
@@ -374,6 +428,15 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
 
         view = get_view()
         box = layout.box()
+        # Where you are. A network's top level is usually one group and nothing else, so
+        # without this line the editor looks empty-but-for-a-node and gives no hint that
+        # there is anywhere to go.
+        box.label(text=(view.context.rsplit("/", 1)[-1] if view else "-"), icon="NODETREE")
+        row = box.row(align=True)
+        row.operator(USDCHUNKS_OT_dive_into.bl_idname, text="Dive In", icon="FULLSCREEN_ENTER")
+        row.operator(USDCHUNKS_OT_dive_out.bl_idname, text="Dive Out", icon="FULLSCREEN_EXIT")
+
+        box = layout.box()
         box.label(text="Active view")
         row = box.row(align=True)
         active = view.active_slot() if view else 0
@@ -395,8 +458,31 @@ _CLASSES = (
     USDCHUNKS_OT_save_network,
     USDCHUNKS_OT_auto_layout,
     USDCHUNKS_OT_set_view_slot,
+    USDCHUNKS_OT_dive_into,
+    USDCHUNKS_OT_dive_out,
     USDCHUNKS_PT_panel,
 )
+
+#: (keymap, keymap_item) pairs, so unregister removes exactly what register added.
+_keymaps: list = []
+
+
+def _register_keymap() -> None:
+    """Tab dives in, Ctrl+Tab dives out -- the keys Blender's own node editor uses for
+    entering and leaving a node group, so the habit carries over. The operators poll on
+    our tree type, so in a shader editor Tab still means what it always did."""
+    kc = bpy.context.window_manager.keyconfigs.addon
+    if kc is None:
+        return  # background mode: no key configs, nothing to bind to
+    km = kc.keymaps.new(name="Node Editor", space_type="NODE_EDITOR")
+    _keymaps.append((km, km.keymap_items.new(USDCHUNKS_OT_dive_into.bl_idname, "TAB", "PRESS")))
+    _keymaps.append((km, km.keymap_items.new(USDCHUNKS_OT_dive_out.bl_idname, "TAB", "PRESS", ctrl=True)))
+
+
+def _unregister_keymap() -> None:
+    for km, kmi in _keymaps:
+        km.keymap_items.remove(kmi)
+    _keymaps.clear()
 
 
 def register() -> None:
@@ -414,11 +500,13 @@ def register() -> None:
         # menu / registry actually being ready, so 0.5s read as "Shift+A does nothing,
         # try again a moment later."
         bpy.app.timers.register(_poll_new_trees, first_interval=0.05, persistent=True)
+    _register_keymap()
     viewport.register()
 
 
 def unregister() -> None:
     viewport.unregister()
+    _unregister_keymap()
     if bpy.app.timers.is_registered(_poll_new_trees):
         bpy.app.timers.unregister(_poll_new_trees)
     for cls in reversed(_CLASSES):

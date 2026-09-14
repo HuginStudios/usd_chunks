@@ -487,3 +487,93 @@ class TestViewSlots:
     def test_a_missing_context_is_not_an_error(self, stage):
         assert chunk_graph.read_active_slot(stage, "/nope") == 0
         chunk_graph.write_active_slot(stage, "/nope", 1)
+
+
+# A saved network's top level is almost always one chunkgroup and nothing else -- that is
+# what add_chunk produces, and what a file like houses.usda looks like on disk.
+WRAPPED = """#usda 1.0
+
+def Scope "chunks"
+{
+    def Chunk "ChunkGroup"
+    {
+        uniform token info:chunkType = "chunkgroup"
+        uniform token outputs:chunk
+
+        def Chunk "A"
+        {
+            uniform token info:chunkType = "transform"
+            uniform token outputs:chunk
+        }
+
+        def Chunk "B"
+        {
+            uniform token info:chunkType = "transform"
+            token inputs:chunk.connect = </chunks/ChunkGroup/A.outputs:chunk>
+            uniform token outputs:chunk
+        }
+    }
+}
+"""
+
+SIDE_BY_SIDE = """#usda 1.0
+
+def Scope "chunks"
+{
+    def Chunk "ChunkGroup"
+    {
+        uniform token info:chunkType = "chunkgroup"
+        uniform token outputs:chunk
+
+        def Chunk "A"
+        {
+            uniform token info:chunkType = "transform"
+            uniform token outputs:chunk
+        }
+    }
+
+    def Chunk "Loose"
+    {
+        uniform token info:chunkType = "transform"
+        uniform token outputs:chunk
+    }
+}
+"""
+
+
+class TestDefaultContext:
+    """Which graph a frontend opens a file at.
+
+    Reported from Blender: a network opened and showed one node -- the group -- with no
+    way in. The engine's answer is `default_context`, and the Blender shell calls it; what
+    these pin is that the answer is the *inside* of a lone top-level group, so any
+    frontend that asks lands where the work is, and that a top level with more than the
+    group on it is left alone, because then the group really is one node among several.
+    """
+
+    def _open(self, tmp_path, text):
+        path = tmp_path / "net.usda"
+        path.write_text(text, encoding="utf-8")
+        return Usd.Stage.Open(str(path))
+
+    def test_a_lone_top_level_group_opens_inside_itself(self, tmp_path):
+        stage = self._open(tmp_path, WRAPPED)
+        assert chunk_graph.default_context(stage) == "/chunks/ChunkGroup"
+
+    def test_and_that_is_where_the_chunks_are(self, tmp_path):
+        stage = self._open(tmp_path, WRAPPED)
+        context = chunk_graph.default_context(stage)
+        names = sorted(p.GetName() for p in chunk_graph.resolve_graph_nodes(stage, context))
+        assert names == ["A", "B"]
+
+    def test_a_group_with_company_at_the_top_stays_at_the_top(self, tmp_path):
+        stage = self._open(tmp_path, SIDE_BY_SIDE)
+        assert chunk_graph.default_context(stage) == "/chunks"
+
+    def test_the_group_is_a_context_the_user_can_dive_to(self, tmp_path):
+        """Dive In in the Blender shell needs the group to be a context in its own right
+        -- that is what `contexts` lists and what `parent_context` walks back up through
+        -- or a user sitting at the root of a wrapped network has nowhere to go."""
+        stage = self._open(tmp_path, SIDE_BY_SIDE)
+        assert "/chunks/ChunkGroup" in chunk_graph.contexts(stage)
+        assert chunk_graph.parent_context("/chunks/ChunkGroup", chunk_graph.contexts(stage)) == "/chunks"

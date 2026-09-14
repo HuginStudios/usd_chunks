@@ -1,7 +1,7 @@
 import os
 import json
 import http.client
-from pxr import Gf, Sdf, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom
 from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_utils
 
 #: The shared op every chunk used to write, and what the freecam lock wrote until this chunk
@@ -66,11 +66,15 @@ def set_preset_values(owner, notice, sender):
 
 def _apply_freecam_transform(owner, notice, sender):
     _chunk = owner.get_chunk()
+    scene = _chunk.get_scene()
     do_lock = _chunk.get_param("lock_to_freecam").value
     if not do_lock:
+        # Also reached on every camera move while the lock is off, so the host's release
+        # must be (and is) idempotent. Here rather than only on the checkbox because the
+        # checkbox callback is this same function.
+        scene.release_viewport_camera()
         return
 
-    scene = _chunk.get_scene()
     gf_cam = scene.get_active_camera()
     if gf_cam is None:
         return
@@ -157,6 +161,65 @@ def _without_legacy_op(node, stage, prim, order):
     if legacy and legacy.IsValid():
         legacy.Clear()
     return [op for op in order if op != _LEGACY_OP]
+
+
+#: Purposes a selected prim's bound is measured with. Guides are left out: a light's or
+#: camera's own guide geometry is not what anyone focuses on.
+_FOCUS_PURPOSES = (UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy)
+
+
+def selection_focus_distance(stage, camera_path, prims, time=Usd.TimeCode.Default()):
+    """The focus distance that puts `prims` in focus for the camera at `camera_path`.
+
+    Depth along the camera's view axis, not the straight-line distance: focus is a plane
+    parallel to the sensor, so a prim off to the side of frame is as far away as the plane
+    through it, however far the ray to it is. Each prim counts from the centre of its world
+    bound (its origin when it has no extent -- a bare Xform, a light); several are averaged,
+    so a selection of two houses focuses between them. None when nothing measurable is
+    selected, so the caller leaves the value alone rather than zeroing it.
+    """
+    camera = stage.GetPrimAtPath(camera_path) if camera_path else None
+    if camera is None or not camera.IsValid():
+        return None
+    view = UsdGeom.Xformable(camera).ComputeLocalToWorldTransform(time)
+    eye = view.ExtractTranslation()
+    forward = view.TransformDir(Gf.Vec3d(0, 0, -1)).GetNormalized()
+
+    cache = UsdGeom.BBoxCache(time, list(_FOCUS_PURPOSES), useExtentsHint=True)
+    depths = []
+    for prim in prims:
+        if not prim or not prim.IsValid() or prim.GetPath() == camera.GetPath():
+            continue
+        bound = cache.ComputeWorldBound(prim)
+        if not bound.GetRange().IsEmpty():
+            target = bound.ComputeCentroid()
+        elif prim.IsA(UsdGeom.Xformable):
+            target = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(time).ExtractTranslation()
+        else:
+            continue
+        depths.append(Gf.Dot(target - eye, forward))
+    if not depths:
+        return None
+    return max(0.0, sum(depths) / len(depths))
+
+
+def _focus_on_selection(owner, notice, sender):
+    """Set focus distance from the viewport selection -- one prim, or the average of several."""
+    _chunk = owner.get_chunk()
+    stage = _chunk.get_stage()
+    scene = _chunk.get_scene()
+    if not stage or scene is None:
+        return
+    try:
+        time = Usd.TimeCode(scene.get_current_frame())
+    except NotImplementedError:
+        time = Usd.TimeCode.Default()
+    distance = selection_focus_distance(
+        stage, _chunk.get_param("primpath_location").value, scene.get_selected_prims(), time
+    )
+    if distance is None:
+        return
+    _chunk.get_param("focusDistance").value = distance
 
 
 def _set_as_viewport_camera(owner, notice, sender):
@@ -338,7 +401,13 @@ def main():
     chunk_api.add_param(chunk.Slider("verticalApertureOffset", "Vertical Aperture Offset", min_value=-50.0, max_value=50.0))
     chunk_api.add_param(chunk.Slider("fStop", "f-Stop", min_value=0.7, max_value=64.0))
     chunk_api.add_param(chunk.Slider("focusDistance", "Focus Distance", min_value=0.0, max_value=1000.0))
-    
+    focus_btn = chunk.Button(
+        "focus_on_selection", "Focus on Selection",
+        tooltip="Set Focus Distance to the selected prim -- to the average depth when several are selected.",
+    )
+    focus_btn.add_callback(_focus_on_selection, send_on_create=False)
+    chunk_api.add_param(focus_btn)
+
     default_cam = next((c for c in cameras if c.get("model") == menu.value), cameras[0])
     formats.menu_items = [f.get("format") for f in default_cam.get("sensorSize", [])]
 
