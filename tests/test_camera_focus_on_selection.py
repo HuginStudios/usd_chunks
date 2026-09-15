@@ -103,7 +103,7 @@ def test_nothing_measurable_leaves_the_value_alone() -> None:
     assert _module().selection_focus_distance(stage, "/nowhere", [cam]) is None
 
 
-def test_the_button_writes_the_param(qapp) -> None:
+def _camera_scene(qapp):
     stage = Usd.Stage.CreateInMemory()
     scene = _Scene(stage)
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
@@ -116,8 +116,79 @@ def test_the_button_writes_the_param(qapp) -> None:
     scene.add_chunk(camera)
     qapp.processEvents()
     assert stage.GetPrimAtPath(camera.get_param("primpath_location").value).IsValid()
+    return stage, scene, camera
+
+
+def test_the_button_writes_the_param(qapp) -> None:
+    stage, scene, camera = _camera_scene(qapp)
 
     scene.selected = [_cube(stage, "/world/a", (0, 0, -12)), _cube(stage, "/world/b", (0, 0, -18))]
     camera.get_param("focus_on_selection").click()
 
     assert camera.get_param("focusDistance").value == pytest.approx(15.0)
+
+
+# ---------------------------------------------------------------------------
+# autofocus: the point is remembered, and the distance follows the camera
+# ---------------------------------------------------------------------------
+
+def test_the_button_remembers_the_point_and_turns_autofocus_on(qapp) -> None:
+    stage, scene, camera = _camera_scene(qapp)
+    scene.selected = [_cube(stage, "/world/a", (0, 0, -12)), _cube(stage, "/world/b", (0, 0, -18))]
+
+    camera.get_param("focus_on_selection").click()
+
+    assert tuple(camera.get_param("focus_point").value) == pytest.approx((0.0, 0.0, -15.0))
+    assert camera.get_param("autofocus").value is True
+
+
+def test_moving_the_camera_refocuses_on_the_point(qapp) -> None:
+    """The reported ask: pull focus to a prim once, then fly -- the distance follows."""
+    stage, scene, camera = _camera_scene(qapp)
+    scene.selected = [_cube(stage, "/world/a", (0, 0, -15))]
+    camera.get_param("focus_on_selection").click()
+    assert camera.get_param("focusDistance").value == pytest.approx(15.0)
+
+    camera.get_param("tz").value = 5.0          # back away along the view axis
+    qapp.processEvents()
+    assert camera.get_param("focusDistance").value == pytest.approx(20.0)
+
+    camera.get_param("tx").value = 100.0        # sideways: the focal plane is unchanged
+    qapp.processEvents()
+    assert camera.get_param("focusDistance").value == pytest.approx(20.0)
+
+
+def test_the_point_stays_when_the_prim_moves(qapp) -> None:
+    """A place in the world was remembered, not the prim."""
+    stage, scene, camera = _camera_scene(qapp)
+    cube = _cube(stage, "/world/a", (0, 0, -15))
+    scene.selected = [cube]
+    camera.get_param("focus_on_selection").click()
+
+    UsdGeom.XformCommonAPI(cube).SetTranslate(Gf.Vec3d(0, 0, -40))
+    camera.get_param("tz").value = 1.0
+    qapp.processEvents()
+
+    assert camera.get_param("focusDistance").value == pytest.approx(16.0)
+
+
+def test_autofocus_off_leaves_the_distance_alone(qapp) -> None:
+    stage, scene, camera = _camera_scene(qapp)
+    scene.selected = [_cube(stage, "/world/a", (0, 0, -15))]
+    camera.get_param("focus_on_selection").click()
+    camera.get_param("autofocus").value = False
+    qapp.processEvents()
+
+    camera.get_param("tz").value = 5.0
+    qapp.processEvents()
+
+    assert camera.get_param("focusDistance").value == pytest.approx(15.0)
+
+
+def test_a_typed_focus_point_works_without_a_selection(qapp) -> None:
+    stage, scene, camera = _camera_scene(qapp)
+    camera.get_param("focus_point").value = (0.0, 0.0, -30.0)
+    camera.get_param("autofocus").value = True
+    qapp.processEvents()
+
+    assert camera.get_param("focusDistance").value == pytest.approx(30.0)
