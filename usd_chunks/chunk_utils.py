@@ -3,7 +3,7 @@ import hashlib
 import logging
 import re
 import uuid
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, nullcontext
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_naming
@@ -153,6 +153,13 @@ def resolve_prim_paths(stage, location_str):
     %name    → every prim in the UsdCollectionAPI named "name" (see find_collection),
                however it was authored (explicit includes/excludes, expansion rule, or
                a membership expression) — resolved via the collection's own query.
+
+    A glob may follow a variant selection: /asset{color=red}/**/*Body* matches under
+    /asset with "red" selected, and every match comes back carrying the selection --
+    /asset{color=red}/geo/Body_L -- so whatever authors to it lands inside that variant
+    (author_in_variant_context). The pattern is matched with the variant selected, since
+    a prim that only exists in "red" is not on the stage until "red" is; the selection
+    is put back afterwards. A glob cannot precede a selection: /a*{x=1}/b has no anchor.
     """
     def _to_re(pattern):
         parts = []
@@ -186,13 +193,29 @@ def resolve_prim_paths(stage, location_str):
         if "*" not in token and "?" not in token:
             paths.append(token)
             continue
-        rx = _to_re(token)
-        for prim in stage.Traverse():
-            if rx.match(prim.GetPath().pathString):
-                paths.append(prim.GetPath().pathString)
+        _anchor, pattern, selections = split_variant_path(token)
+        rx = _to_re(pattern)
+        matched = []
+        with author_in_variant_context(stage, token) if selections else nullcontext():
+            for prim in stage.Traverse():
+                if rx.match(prim.GetPath().pathString):
+                    matched.append(prim.GetPath().pathString)
+        paths.extend(_with_variant_selections(path, selections) for path in matched)
     # Order-preserving de-dup: a prim matched by both an explicit path and a
     # glob/collection should only be targeted once.
     return list(dict.fromkeys(paths))
+
+
+def _with_variant_selections(path: str, selections) -> str:
+    """Put a glob's variant selections back onto a path it matched.
+
+    /asset/geo/Body_L with [("/asset", "color", "red")] → /asset{color=red}/geo/Body_L.
+    Deepest anchor first, so an earlier insertion never shifts a later anchor.
+    """
+    for anchor, vset, variant in sorted(selections, key=lambda s: -len(s[0])):
+        if path == anchor or path.startswith(anchor.rstrip("/") + "/"):
+            path = f"{anchor}{{{vset}={variant}}}{path[len(anchor):]}"
+    return path
 
 
 def parse_expression(text: str) -> list[tuple[str, str]]:
@@ -593,6 +616,14 @@ def iter_prim_targets(stage, param):
     with:
         for target_path in iter_prim_targets(stage, param):
             ...
+
+    Author inside the loop body, never after it. The variant context is open only while
+    the generator is suspended at its yield: `list(iter_prim_targets(...))` walks every
+    path and leaves every context, so anything authored to those paths afterwards lands
+    outside the variant. Reading a prim after the loop is fine; binding, defining or
+    setting on it is not -- that is how Bind Material put "/asset{color=red}/geo" bindings
+    on /asset/geo for every colour. A caller that has to collect first re-enters with
+    author_in_variant_context per path string when it writes.
     """
     for path_str in param.resolve_paths():
         with author_in_variant_context(stage, path_str) as target_path:
