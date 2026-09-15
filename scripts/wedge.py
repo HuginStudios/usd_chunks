@@ -1,8 +1,8 @@
 """Wedge — one network, N variants, reproducible from the file.
 
-A chunk network produces one result. A wedge turns it into a family of them: each lofted
-OUTPUT param is a *range*, and cooking at `current_index` picks one value from each and
-drives whatever is wired to it. Scrub the index and the network changes; sweep the index
+A chunk network produces one result. A wedge turns it into a family of them: each row of
+the Ranges list lofts an OUTPUT param -- a *range* -- and cooking at `current_index` picks
+one value from each and drives whatever is wired to it. Scrub the index and the network changes; sweep the index
 from the CLI and you have a dataset or a product catalogue.
 
     Wedge
@@ -28,7 +28,6 @@ Requires: usd_chunks.
 
 from __future__ import annotations
 
-import colorsys
 import hashlib
 import logging
 
@@ -38,13 +37,23 @@ from usd_chunks import chunk, chunk_notice
 
 logger = logging.getLogger(__name__)
 
+#: The Kind a range row can be.
+KIND_NUMBER, KIND_COLOUR, KIND_VARIANTS = "Number", "Colour", "Variants"
+KINDS = [KIND_NUMBER, KIND_COLOUR, KIND_VARIANTS]
+
+#: The row fields of the Ranges list.
+_ROW_FIELDS = ("r_name", "r_kind", "r_min", "r_max", "r_int", "r_col_min", "r_col_max",
+               "r_prim", "r_set", "r_weights")
+
 #: Params the wedge always has. Everything else on it is a lofted range.
-_FIXED = frozenset({
-    "seed", "current_index", "count",
-    "new_name", "new_min", "new_max", "add_range",
-    "new_color_name", "add_color", "ranges", "mode",
-    "hue_min", "hue_max", "sat_min", "sat_max", "val_min", "val_max",
-})
+_FIXED = frozenset({"seed", "current_index", "count", "mode", "ranges", "range_rows", *_ROW_FIELDS})
+
+#: A Colour row's bounds when it does not say: the whole cube.
+_BLACK, _WHITE = (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+
+#: Set on the node while _sync_ranges is adding and removing params, so the cooks those
+#: edits trigger do not re-enter it.
+_SYNCING = "_wedge_syncing"
 
 
 def _unit(seed: int, index: int, name: str) -> float:
@@ -64,37 +73,6 @@ def _unit(seed: int, index: int, name: str) -> float:
     return int.from_bytes(digest[:8], "big") / float(1 << 64)
 
 
-def _srgb_to_linear(c: float) -> float:
-    """sRGB channel -> linear, the standard piecewise transfer.
-
-    colorsys works in sRGB-shaped values, but a MaterialX standard_surface's base_color is
-    *linear* -- porsche_configurator/variants.py authors Guards Red as (0.55, 0.010, 0.010),
-    the linear form of sRGB (204, 27, 27). Note how far the dark channels fall.
-
-    Handing sRGB numbers over as linear lifts every dark channel far above where it belongs
-    and the saturation collapses: a sheet of pastel cars that reads as a taste decision
-    rather than a transfer-function error, and that no amount of raising the saturation band
-    can fix.
-    """
-    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-
-
-def _hsv_bands(node):
-    """The shared HSV bands every colour range samples inside.
-
-    Shared rather than per-entry, which is a real limitation: two colour ranges on one
-    wedge cannot yet have different saturation bands. Per-entry option lists are issue 04.
-    The bands exist at all because sampling RGB uniformly gives garish, evenly-grey noise --
-    plausible paint is a free hue with saturation and value held in narrow ranges.
-    """
-    def band(lo_name, hi_name, lo_default, hi_default):
-        lo = float(node.get_param(lo_name).value if node.get_param(lo_name).value is not None else lo_default)
-        hi = float(node.get_param(hi_name).value if node.get_param(hi_name).value is not None else hi_default)
-        return (hi, lo) if lo > hi else (lo, hi)
-
-    return band("hue_min", "hue_max", 0.0, 1.0), band("sat_min", "sat_max", 0.0, 1.0), band("val_min", "val_max", 0.0, 1.0)
-
-
 def _parse_spec(text):
     """The ranges the chunk carries, as (name, kind, low, high) rows.
 
@@ -105,10 +83,12 @@ def _parse_spec(text):
         Paint variants /World/car color     one of a variantSet's variants, read off the stage
         Paint variants /World/car color 3,1,1   ...with the first picked three times as often
 
-    Text rather than params because the spec has to survive a save, and a string param does
-    while runtime-lofted params do not. Making the
-    text authoritative is also what the PRD asked for: the ranges are data in the .usda,
-    the lofted params are a view of it, and the file stays readable and diffable.
+    This was what the file stored, back when a range could only be typed: a string
+    survives a save and runtime-lofted params do not. The Ranges list does the storing now
+    -- its rows are what the file carries, and they can be edited after the fact, which
+    the text could not once it had become a slider. Text pasted into the hidden `ranges`
+    field is imported into rows (_import_spec) and then cleared, so an older file, and
+    anything that still writes the spec as text, keeps working.
     """
     rows = []
     for line in (text or "").splitlines():
@@ -141,42 +121,167 @@ def _parse_spec(text):
     return rows
 
 
-def _sync_ranges(node):
-    """Rebuild the lofted OUTPUT params so they match the spec.
+def _row_list(node):
+    return node.get_param("range_rows", chunk.is_inst(chunk.ListGroup)) if node.get_param("range_rows") else None
 
-    Called on load as well as on edit. A chunk does not own params it lofted at runtime --
-    they are gone by the time the file is reopened, so a wedge restored from disk arrives
-    with only _FIXED and drives nothing, and every variant of a sweep comes out identical
-    to variant 0. Same failure mtlx_shader's _chunk_loaded exists to prevent, and the same
-    cure: loft from the thing that did survive.
+
+def _rows(node):
+    """The ranges the chunk carries, as rows in the shape _parse_spec produces.
+
+    Read off the Ranges list, which is what the file stores. A row without a name, or one
+    whose name is taken by a control or an earlier row, is skipped -- it is a row being
+    typed, not a range. A Variants row needs its prim and set before it is one.
     """
-    wanted = {row["name"]: row for row in _parse_spec(
-        node.get_param("ranges").value if node.get_param("ranges") else ""
-    )}
-    have = {p.name: p for p in _ranges(node)}
+    rows_param = _row_list(node)
+    if rows_param is None:
+        return []
+    out, seen = [], set()
+    for i in range(min(rows_param.size, len(rows_param.get_my_params()))):
+        def field(name, i=i):
+            proxy = rows_param.get_indexed_param(rows_param.get_param(name), i)
+            return proxy.value if proxy is not None else None
 
-    for name, param in have.items():
-        if name not in wanted:
-            node.remove_param_or_group(param)
-
-    flags = chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED
-    for name, row in wanted.items():
-        if name in have:
+        name = (field("r_name") or "").strip()
+        if not name or name in _FIXED or name in seen:
             continue
-        if row["kind"] == "color":
-            node.add_param(chunk.ColorPicker(name, name, default_value=(0.5, 0.5, 0.5), flags=flags,
-                                             tooltip="Varies across the wedge's HSV bands."))
-        elif row["kind"] == "variants":
-            node.add_param(chunk.LineEdit(
-                name, name, flags=flags,
-                tooltip=f"One variant of {row['set']!r} on {row['prim']}"
-                        + (" (weighted)" if row.get("weights") else "")
-                        + ". Wire it to a Set Variant chunk's Variant Selection.",
-            ))
+        kind = field("r_kind") or KIND_NUMBER
+        if kind == KIND_COLOUR:
+            low = tuple(float(c) for c in (field("r_col_min") or _BLACK))
+            high = tuple(float(c) for c in (field("r_col_max") or _WHITE))
+            row = {"name": name, "kind": "color", "low": low, "high": high}
+        elif kind == KIND_VARIANTS:
+            prim, vset = (field("r_prim") or "").strip(), (field("r_set") or "").strip()
+            if not prim or not vset:
+                continue
+            row = {"name": name, "kind": "variants", "prim": prim, "set": vset}
+            if weights := (field("r_weights") or "").strip():
+                try:
+                    row["weights"] = [float(w) for w in weights.split(",")]
+                except ValueError:
+                    logger.warning("cannot read weights %r, using uniform", weights)
         else:
-            node.add_param(chunk.Slider(name, name, default_value=row["low"], min_value=row["low"],
-                                        max_value=row["high"], flags=flags,
-                                        tooltip=f"Varies between {row['low']:g} and {row['high']:g}."))
+            low, high = float(field("r_min") or 0.0), float(field("r_max") or 0.0)
+            row = {"name": name, "kind": "float", "low": min(low, high), "high": max(low, high),
+                   "int": bool(field("r_int"))}
+        seen.add(name)
+        out.append(row)
+    return out
+
+
+def _import_spec(node):
+    """Turn text in the legacy `ranges` field into rows, then clear it.
+
+    The field is hidden; it exists for files saved before the list, and for anything
+    that still sets the spec as text. A line naming a row that already exists updates
+    that row in place, so re-importing is idempotent.
+    """
+    spec = node.get_param("ranges")
+    text = (spec.value or "") if spec else ""
+    rows_param = _row_list(node)
+    if not text.strip() or rows_param is None:
+        return
+    for row in _parse_spec(text):
+        existing = next(
+            (i for i in range(rows_param.size)
+             if (rows_param.get_indexed_param(rows_param.get_param("r_name"), i).value or "").strip() == row["name"]),
+            None,
+        )
+        if existing is None:
+            rows_param.size += 1
+            existing = rows_param.size - 1
+
+        def put(field, value, i=existing):
+            proxy = rows_param.get_indexed_param(rows_param.get_param(field), i)
+            if proxy is not None and proxy.value != value:
+                proxy.value = value
+
+        put("r_name", row["name"])
+        if row["kind"] == "color":
+            put("r_kind", KIND_COLOUR)
+            put("r_col_min", _BLACK)
+            put("r_col_max", _WHITE)
+        elif row["kind"] == "variants":
+            put("r_kind", KIND_VARIANTS)
+            put("r_prim", row["prim"])
+            put("r_set", row["set"])
+            put("r_weights", ",".join(f"{w:g}" for w in row["weights"]) if row.get("weights") else "")
+        else:
+            put("r_kind", KIND_NUMBER)
+            put("r_min", row["low"])
+            put("r_max", row["high"])
+            put("r_int", bool(row.get("int")))
+    spec.value = ""
+
+
+def _slider_matches(param, row) -> bool:
+    return (
+        isinstance(param, chunk.Slider)
+        and bool(getattr(param, "is_int", False)) == bool(row.get("int"))
+    )
+
+
+def _sync_ranges(node):
+    """Make the lofted OUTPUT params match the Ranges rows.
+
+    Called on load as well as on every cook. A chunk does not own params it lofted at
+    runtime -- they are gone by the time the file is reopened, so a wedge restored from
+    disk arrives with only _FIXED and drives nothing, and every variant of a sweep comes
+    out identical to variant 0. Same failure mtlx_shader's _chunk_loaded exists to prevent,
+    and the same cure: loft from the thing that did survive, which is the rows.
+
+    A row edited after its param exists updates the param in place where it can -- a
+    Number's bounds -- so the wires on its outport survive the edit. A change of kind, or
+    of a Number between integer and float, is a different param type and has to be a new
+    param.
+    """
+    if getattr(node, _SYNCING, False):
+        return
+    setattr(node, _SYNCING, True)
+    try:
+        wanted = {row["name"]: row for row in _rows(node)}
+        have = {p.name: p for p in _ranges(node)}
+        flags = chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED
+
+        for name, param in have.items():
+            row = wanted.get(name)
+            stale = (
+                row is None
+                or (row["kind"] == "color" and not isinstance(param, chunk.ColorPicker))
+                or (row["kind"] == "variants" and not isinstance(param, chunk.LineEdit))
+                or (row["kind"] == "float" and not _slider_matches(param, row))
+            )
+            if stale:
+                node.remove_param_or_group(param)
+                continue
+            if row["kind"] == "float":
+                if param.min_value != row["low"]:
+                    param.min_value = row["low"]
+                if param.max_value != row["high"]:
+                    param.max_value = row["high"]
+
+        have = {p.name: p for p in _ranges(node)}
+        for name, row in wanted.items():
+            if name in have:
+                continue
+            if row["kind"] == "color":
+                node.add_param(chunk.ColorPicker(name, name, default_value=row["low"], flags=flags,
+                                                 tooltip="Each channel varies between the row's Min and Max colour."))
+            elif row["kind"] == "variants":
+                node.add_param(chunk.LineEdit(
+                    name, name, flags=flags,
+                    tooltip=f"One variant of {row['set']!r} on {row['prim']}"
+                            + (" (weighted)" if row.get("weights") else "")
+                            + ". Wire it to a Set Variant chunk's Variant Selection.",
+                ))
+            else:
+                low, high = row["low"], row["high"]
+                if row.get("int"):
+                    low, high = int(round(low)), int(round(high))
+                node.add_param(chunk.Slider(name, name, default_value=low, min_value=low, max_value=high,
+                                            is_int=bool(row.get("int")), flags=flags,
+                                            tooltip=f"Varies between {low:g} and {high:g}."))
+    finally:
+        setattr(node, _SYNCING, False)
 
 
 def _refresh_count(node):
@@ -198,7 +303,9 @@ def _refresh_count(node):
 
 
 def _spec_changed(owner, _notice, _sender):
+    """Text landed in the legacy field: import it as rows. The cook that follows lofts."""
     node = owner.get_chunk()
+    _import_spec(node)
     _sync_ranges(node)
     _refresh_count(node)
     execute(node)
@@ -213,10 +320,11 @@ def _mode_changed(owner, _notice, _sender):
 def _chunk_loaded(owner, _notice, _sender):
     """Loft the ranges back after a load.
 
-    The spec restores as a plain string value; the params it describes do not restore at
-    all. Without this the wedge reopens holding only its controls, and a sweep produces N
-    copies of one variant -- silently, from a file that looks intact.
+    The rows restore as values; the params they describe do not restore at all. Without
+    this the wedge reopens holding only its controls, and a sweep produces N copies of one
+    variant -- silently, from a file that looks intact.
     """
+    _import_spec(owner)
     _sync_ranges(owner)
     _refresh_count(owner)
 
@@ -304,7 +412,7 @@ def _discrete(node):
     asset offers, each with its own draw of the continuous parameters.
     """
     out = []
-    for row in _parse_spec(node.get_param("ranges").value if node.get_param("ranges") else ""):
+    for row in _rows(node):
         if row["kind"] != "variants":
             continue
         names = _variant_names(node, row["prim"], row["set"])
@@ -342,10 +450,7 @@ def sample(node, index: int) -> dict:
     without cooking anything.
     """
     seed = int(node.get_param("seed").value or 0)
-    hue, sat, val = _hsv_bands(node)
-    spec = {row["name"]: row for row in _parse_spec(
-        node.get_param("ranges").value if node.get_param("ranges") else ""
-    )}
+    spec = {row["name"]: row for row in _rows(node)}
     mode_param = node.get_param("mode")
     enumerating = bool(mode_param) and mode_param.value == ENUMERATE
     discrete = _discrete(node) if enumerating else []
@@ -378,13 +483,14 @@ def sample(node, index: int) -> dict:
             values[param.name] = names[pick]
             continue
         if isinstance(param, chunk.ColorPicker):
-            # Three independent draws, each keyed by a different name, so hue does not
-            # correlate with saturation across variants.
-            h = hue[0] + _unit(seed, index, param.name + ":h") * (hue[1] - hue[0])
-            s_ = sat[0] + _unit(seed, index, param.name + ":s") * (sat[1] - sat[0])
-            v = val[0] + _unit(seed, index, param.name + ":v") * (val[1] - val[0])
+            # One draw per channel, each keyed by its own name, so red does not track
+            # green across variants. Between the row's Min and Max colour, channel by
+            # channel: a range of (0.4, 0, 0)..(1, 0.1, 0.1) is every red, and a channel
+            # with Min == Max is held.
+            low, high = row.get("low", _BLACK), row.get("high", _WHITE)
             values[param.name] = tuple(
-                _srgb_to_linear(c) for c in colorsys.hsv_to_rgb(h % 1.0, s_, v)
+                min(lo, hi) + _unit(seed, index, f"{param.name}:{channel}") * abs(hi - lo)
+                for channel, lo, hi in zip("rgb", low, high)
             )
             continue
         low = param.min_value if param.min_value is not None else 0.0
@@ -397,56 +503,20 @@ def sample(node, index: int) -> dict:
 
 
 def execute(node):
+    """Cook variant `current_index`: sync the lofted params to the rows, then sample.
+
+    Syncing here rather than only from a callback is what makes the rows editable: every
+    edit to a row cooks the chunk (a param changed), and the cook is where the lofted
+    params catch up with it. _SYNCING keeps the adds and removes the sync itself makes
+    from re-entering.
+    """
+    if not getattr(node, _SYNCING, False):
+        _import_spec(node)
+        _sync_ranges(node)
+        _refresh_count(node)
     index = int(node.get_param("current_index").value or 0)
     for name, value in sample(node, index).items():
         node.get_param(name).value = value
-
-
-def _append_spec(node, line):
-    """Add a row to the spec. Assigning it fires _spec_changed, which lofts the param."""
-    existing = (node.get_param("ranges").value or "").rstrip()
-    node.get_param("ranges").value = f"{existing}\n{line}" if existing else line
-
-
-def add_range(owner, notice, sender) -> None:
-    """Loft one more range param from the staging fields.
-
-    The range is fixed at add time because the param it becomes carries OUTPUT, and an
-    OUTPUT param's widget is disabled (`chunk_core.py:307`) -- which is what stops the user
-    dragging a handle the wedge is computing, but also means the interval cannot be dragged
-    afterwards.
-    """
-    node = owner.get_chunk()
-    name = (node.get_param("new_name").value or "").strip()
-    if not name:
-        logger.warning("Name the range before adding it")
-        return
-    if name in _FIXED or any(p.name == name for p in _ranges(node)):
-        logger.warning("%r is already taken", name)
-        return
-
-    low = float(node.get_param("new_min").value or 0.0)
-    high = float(node.get_param("new_max").value or 1.0)
-    if low > high:
-        low, high = high, low
-
-    _append_spec(node, f"{name} {low:g} {high:g}")
-    node.get_param("new_name").value = ""
-
-
-def add_color(owner, notice, sender) -> None:
-    """Loft a colour range: an OUTPUT ColorPicker sampled in HSV inside the shared bands."""
-    node = owner.get_chunk()
-    name = (node.get_param("new_color_name").value or "").strip()
-    if not name:
-        logger.warning("Name the colour before adding it")
-        return
-    if name in _FIXED or any(p.name == name for p in _ranges(node)):
-        logger.warning("%r is already taken", name)
-        return
-
-    _append_spec(node, f"{name} color")
-    node.get_param("new_color_name").value = ""
 
 
 def main():
@@ -493,72 +563,61 @@ def main():
         ),
     ])
 
-    chunk_api.add_param(
-        chunk.TextEdit(
-            "ranges",
-            "Ranges",
-            flags=chunk.ChunkFlags.ParamFlags.LABELED,
-            tooltip="One range per line:\n"
-            "  height 1 9\n"
-            "  CarPaint color\n"
-            "  Paint variants /World/car color\n"
-            "  Paint variants /World/car color 3,1,1   (weights; default uniform)\n"
-            "This is what the file stores -- the sliders below are a view of it, and are "
-            "rebuilt from it every time the network loads.",
-        )
+    # The ranges, one row each. This is what the file stores; the OUTPUT params below the
+    # controls are lofted from it (and rebuilt from it on load) and are the outports the
+    # rest of the network wires to. A row stays editable after its param exists -- change
+    # the bounds and the slider follows; change the kind and it is re-lofted.
+    rows = chunk.ListGroup(
+        "range_rows",
+        "Ranges",
+        tooltip="One row per range. Name is the outport. Number samples between Min and Max "
+        "(Integer rounds); Colour samples each channel between Min Colour and Max Colour; "
+        "Variants picks one of a variantSet's variants read off Prim -- wire it to a Set "
+        "Variant chunk.",
     )
+    rows.add_param(chunk.LineEdit("r_name", "Name", flags=chunk.ChunkFlags.ParamFlags.LABELED,
+                                  tooltip="Name of the range. Shows on its outport."))
+    rows.add_param(chunk.Menu("r_kind", "Kind", menu_items=list(KINDS), default_value=KIND_NUMBER,
+                              flags=chunk.ChunkFlags.ParamFlags.LABELED))
+    rows.add_param(chunk.Slider("r_min", "Min", default_value=0.0, flags=chunk.ChunkFlags.ParamFlags.LABELED))
+    rows.add_param(chunk.Slider("r_max", "Max", default_value=1.0, flags=chunk.ChunkFlags.ParamFlags.LABELED))
+    rows.add_param(chunk.Checkbox("r_int", "Integer", default_value=False,
+                                  flags=chunk.ChunkFlags.ParamFlags.LABELED,
+                                  tooltip="Sample whole numbers: a floor count, a slot index, a seed."))
+    rows.add_param(chunk.ColorPicker("r_col_min", "Min Colour", default_value=_BLACK,
+                                     flags=chunk.ChunkFlags.ParamFlags.LABELED,
+                                     tooltip="Colour only: the low end of each channel's range."))
+    rows.add_param(chunk.ColorPicker("r_col_max", "Max Colour", default_value=_WHITE,
+                                     flags=chunk.ChunkFlags.ParamFlags.LABELED,
+                                     tooltip="Colour only: the high end of each channel's range. "
+                                     "A channel equal in Min and Max is held; make R wide and G, B "
+                                     "narrow for every shade of red."))
+    rows.add_param(chunk.LineEdit("r_prim", "Prim", flags=chunk.ChunkFlags.ParamFlags.LABELED,
+                                  tooltip="Variants only: the prim carrying the variantSet."))
+    rows.add_param(chunk.LineEdit("r_set", "Variant Set", flags=chunk.ChunkFlags.ParamFlags.LABELED,
+                                  tooltip="Variants only: which of the prim's variantSets."))
+    rows.add_param(chunk.LineEdit("r_weights", "Weights", flags=chunk.ChunkFlags.ParamFlags.LABELED,
+                                  tooltip="Variants only, optional: comma-separated, one per variant "
+                                  "in the set's order, e.g. 3,1,1. Empty is uniform."))
+    chunk_api.add_param(rows)
 
-    add_grp = chunk.Group(
-        "add",
-        "Add Range",
-        flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED,
+    # The spec as text, hidden: what files saved before the list carry, and an import
+    # channel -- text set here becomes rows and the field empties.
+    spec = chunk.TextEdit(
+        "ranges",
+        "Ranges (text)",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="One range per line, imported into the rows above:\n"
+        "  height 1 9\n"
+        "  CarPaint color\n"
+        "  Paint variants /World/car color 3,1,1",
     )
-    add_grp.add_param(
-        chunk.LineEdit("new_name", "Name", flags=chunk.ChunkFlags.ParamFlags.LABELED,
-                       tooltip="Name of the new range. Shows on its outport.")
-    )
-    add_grp.add_param(
-        chunk.Slider("new_min", "Min", default_value=0.0,
-                     flags=chunk.ChunkFlags.ParamFlags.LABELED)
-    )
-    add_grp.add_param(
-        chunk.Slider("new_max", "Max", default_value=1.0,
-                     flags=chunk.ChunkFlags.ParamFlags.LABELED)
-    )
-    button = chunk.Button("add_range", "Add", tooltip="Loft a range with these bounds.")
-    button.add_callback(add_range)
-    add_grp.add_param(button)
-    chunk_api.add_param(add_grp)
-
-    col_grp = chunk.Group(
-        "colour",
-        "Colour Ranges",
-        flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED,
-    )
-    for name, label, default, tip in (
-        ("hue_min", "Hue Min", 0.0, "Hue wraps, so Min > Max is a valid arc through red."),
-        ("hue_max", "Hue Max", 1.0, ""),
-        ("sat_min", "Sat Min", 0.15, "Hold saturation narrow -- uniform RGB gives garish paint."),
-        ("sat_max", "Sat Max", 0.85, ""),
-        ("val_min", "Val Min", 0.15, "Value below ~0.1 reads as black under any light."),
-        ("val_max", "Val Max", 0.85, ""),
-    ):
-        col_grp.add_param(
-            chunk.Slider(name, label, default_value=default, min_value=0.0, max_value=1.0,
-                         flags=chunk.ChunkFlags.ParamFlags.LABELED, tooltip=tip)
-        )
-    col_grp.add_param(
-        chunk.LineEdit("new_color_name", "Name", flags=chunk.ChunkFlags.ParamFlags.LABELED,
-                       tooltip="Name of the new colour range.")
-    )
-    col_btn = chunk.Button("add_color", "Add Colour", tooltip="Loft a colour range.")
-    col_btn.add_callback(add_color)
-    col_grp.add_param(col_btn)
-    chunk_api.add_param(col_grp)
+    spec.set_state(chunk.ChunkFlags.State.HIDDEN)
+    chunk_api.add_param(spec)
 
     chunk_api.add_callback(_spec_changed, sender=chunk_api.get_param("ranges"))
     chunk_api.add_callback(_mode_changed, sender=chunk_api.get_param("mode"))
-    # Runtime-lofted params do not survive a save; the spec does. Without this the wedge
+    # Runtime-lofted params do not survive a save; the rows do. Without this the wedge
     # reloads holding only its controls and a sweep yields N copies of variant 0.
     chunk_api.add_callback(_chunk_loaded, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
 

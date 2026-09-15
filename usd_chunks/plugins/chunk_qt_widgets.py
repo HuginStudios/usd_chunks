@@ -425,15 +425,25 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
         is_float = ChunkFlags.ParamType.FLOAT in param.evaluate_type()
         super().__init__(param, is_float=is_float)
 
-        min_val = param.min_value
-        max_val = param.max_value
-        min_int = int(min_val * self._step) if min_val is not None else 100 * (1 - self._step)
-        max_int = int(max_val * self._step) if max_val is not None else 100 * self._step
-        self.setRange(min_int, max_int)
+        self._apply_range()
 
         self.setup_chunk_widget()
         self.slider.valueChanged.connect(self.value_changed)
         self.spin_box.valueChanged.connect(lambda v: self.value_changed(int(v * self._step)))
+
+    def _apply_range(self) -> None:
+        min_val = self.param.min_value
+        max_val = self.param.max_value
+        min_int = int(min_val * self._step) if min_val is not None else 100 * (1 - self._step)
+        max_int = int(max_val * self._step) if max_val is not None else 100 * self._step
+        self.setRange(min_int, max_int)
+
+    def handle_param_changed(self, notice, sender):
+        # A range that moves after the widget exists -- a Wedge row's Min/Max edited once
+        # its slider is lofted -- would otherwise leave the slider spanning the old one.
+        if notice.data.name in ("min_value", "max_value"):
+            self._apply_range()
+        super().handle_param_changed(notice, sender)
 
     def get_value(self):
         return self.value() / self._step

@@ -1886,8 +1886,23 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self.get_or_create_layer(c)
 
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
+        """Adopt the stage whose edit target moved -- but only when there is none yet.
+
+        This listens globally, so it hears every stage in the process. It used to adopt
+        whichever one spoke last, which is right for the one case it exists for -- chunks
+        loaded before the host had a stage -- and wrong for every other: a second stage
+        in the same process (a test authoring an asset into a file it just exported,
+        a tool opening a scratch stage) changed its edit target, this manager switched
+        to it, and the next get_or_create_layer -- reached from any chunk's global
+        stage-change callback through get_edit_context -- sublayered every chunk's layer
+        under THAT stage's session. The chunks' opinions then composed over the foreign
+        stage: a variant selection authored by a Set Variant chunk overrode the one the
+        other stage had just set, and its variant edit context wrote into the wrong
+        variant. A stage the host replaces reaches this manager through initialize()
+        (chunk_usd.reload_for_stage), so an occupied slot never needs a notice to move.
+        """
         stage = notice.GetStage()
-        if stage:
+        if stage and not self.stage:
             self.stage = stage
 
     def _iter_sublayers(self, layer: Sdf.Layer, visited: set | None = None):

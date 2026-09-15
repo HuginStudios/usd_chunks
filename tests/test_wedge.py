@@ -115,14 +115,23 @@ class TestRanges:
         assert names.isdisjoint({"seed", "current_index", "count"})
 
 
+def _row(node, name, kind=wedge.KIND_NUMBER, low=0.0, high=1.0, is_int=False, prim="", vset="", weights=""):
+    """Add a row to the Ranges list, the way the UI's + button and its fields do."""
+    rows = node.get_param("range_rows")
+    node.set_blocked(True)
+    try:
+        rows.size += 1
+        i = rows.size - 1
+        for field, value in (("r_name", name), ("r_kind", kind), ("r_min", low), ("r_max", high),
+                             ("r_int", is_int), ("r_prim", prim), ("r_set", vset), ("r_weights", weights)):
+            rows.get_indexed_param(rows.get_param(field), i).value = value
+    finally:
+        node.set_blocked(False)
+    return i
+
+
 class TestColour:
-    def test_colours_are_returned_linear_not_srgb(self):
-        """base_color is linear. Handing sRGB values over as linear lifts every dark
-        channel and the paint goes pastel -- a wrong-looking render rather than a failure,
-        so nothing catches it but a test."""
-        assert wedge._srgb_to_linear(0.5) == pytest.approx(0.2140, abs=1e-3)
-        assert wedge._srgb_to_linear(0.0) == 0.0
-        assert wedge._srgb_to_linear(1.0) == pytest.approx(1.0)
+    """A Colour row samples each channel between its Min Colour and Max Colour."""
 
     def test_a_colour_is_three_channels_in_range(self):
         node = _wedge(colours=["CarPaint"])
@@ -130,36 +139,145 @@ class TestColour:
         assert len(rgb) == 3
         assert all(0.0 <= c <= 1.0 for c in rgb)
 
-    def test_hue_does_not_track_saturation(self):
-        """Each channel is keyed by a different name, so two colours on one wedge -- and the
-        h/s/v within one colour -- do not move together across variants."""
+    def test_channels_do_not_track_each_other(self):
+        """Each channel is keyed by its own name, so two colours on one wedge -- and the
+        r/g/b within one colour -- do not move together across variants."""
         node = _wedge(colours=["CarPaint", "Rim"])
         paint = [wedge.sample(node, i)["CarPaint"] for i in range(30)]
         rim = [wedge.sample(node, i)["Rim"] for i in range(30)]
         assert paint != rim
+        reds = [c[0] for c in paint]
+        greens = [c[1] for c in paint]
+        assert reds != greens
 
-    def test_the_bands_are_honoured(self):
-        node = _wedge(colours=["CarPaint"])
+    def test_the_per_channel_range_is_honoured(self):
+        """Every shade of red: R wide, G and B held narrow. A channel with Min == Max is
+        held exactly."""
+        node = _wedge()
+        _row(node, "CarPaint", kind=wedge.KIND_COLOUR)
+        rows = node.get_param("range_rows")
         node.set_blocked(True)
         try:
-            node.get_param("val_max").value = 0.25
-            node.get_param("sat_min").value = 0.0
-            node.get_param("sat_max").value = 0.0
+            rows.get_indexed_param(rows.get_param("r_col_min"), 0).value = (0.4, 0.0, 0.05)
+            rows.get_indexed_param(rows.get_param("r_col_max"), 0).value = (1.0, 0.1, 0.05)
         finally:
             node.set_blocked(False)
-        # Zero saturation makes r == g == b, so the band is directly checkable -- against
-        # the *linearised* ceiling, because base_color is linear and sample() converts.
-        ceiling = wedge._srgb_to_linear(0.25)
+        wedge._sync_ranges(node)
+
         for i in range(50):
             r, g, b = wedge.sample(node, i)["CarPaint"]
-            assert r == pytest.approx(g) == pytest.approx(b)
-            assert r <= ceiling + 1e-6
+            assert 0.4 <= r <= 1.0
+            assert 0.0 <= g <= 0.1
+            assert b == pytest.approx(0.05)
+
+    def test_inverted_channel_bounds_are_swapped_not_rejected(self):
+        node = _wedge()
+        _row(node, "Tint", kind=wedge.KIND_COLOUR)
+        rows = node.get_param("range_rows")
+        node.set_blocked(True)
+        try:
+            rows.get_indexed_param(rows.get_param("r_col_min"), 0).value = (1.0, 1.0, 1.0)
+            rows.get_indexed_param(rows.get_param("r_col_max"), 0).value = (0.5, 0.5, 0.5)
+        finally:
+            node.set_blocked(False)
+        wedge._sync_ranges(node)
+        for i in range(20):
+            assert all(0.5 <= c <= 1.0 for c in wedge.sample(node, i)["Tint"])
 
 
 def test_execute_writes_the_sample_onto_the_range_params():
-    node = _wedge(index=4, ranges=[("tz", 1.6, 2.9)])
+    node = _wedge(index=4)
+    _row(node, "tz", low=1.6, high=2.9)
     wedge.execute(node)
     assert node.get_param("tz").value == pytest.approx(wedge.sample(node, 4)["tz"])
+
+
+class TestRows:
+    """The Ranges list is the data; the lofted params are a view of it, and follow edits."""
+
+    def test_a_row_lofts_a_range_param(self):
+        node = _wedge()
+        _row(node, "tz", low=1.6, high=2.9)
+        wedge._sync_ranges(node)
+        tz = node.get_param("tz")
+        assert tz is not None and (tz.min_value, tz.max_value) == (1.6, 2.9)
+        assert tz.has_flag(chunk.ChunkFlags.ParamFlags.OUTPUT)
+
+    def test_editing_the_bounds_moves_the_same_param(self):
+        """In place, not re-lofted: the outport's wires must survive a bounds edit."""
+        node = _wedge()
+        i = _row(node, "tz", low=1.6, high=2.9)
+        wedge._sync_ranges(node)
+        before = node.get_param("tz")
+
+        rows = node.get_param("range_rows")
+        node.set_blocked(True)
+        rows.get_indexed_param(rows.get_param("r_max"), i).value = 5.0
+        node.set_blocked(False)
+        wedge._sync_ranges(node)
+
+        assert node.get_param("tz") is before
+        assert node.get_param("tz").max_value == 5.0
+        assert 1.6 <= wedge.sample(node, 3)["tz"] <= 5.0
+
+    def test_integer_rows_loft_int_sliders_and_sample_ints(self):
+        node = _wedge()
+        _row(node, "floors", low=1, high=6, is_int=True)
+        wedge._sync_ranges(node)
+        assert node.get_param("floors").is_int
+        for i in range(20):
+            v = wedge.sample(node, i)["floors"]
+            assert isinstance(v, int) and 1 <= v <= 6
+
+    def test_switching_integer_relofts_the_param(self):
+        node = _wedge()
+        i = _row(node, "n", low=0, high=10)
+        wedge._sync_ranges(node)
+        assert not node.get_param("n").is_int
+
+        rows = node.get_param("range_rows")
+        node.set_blocked(True)
+        rows.get_indexed_param(rows.get_param("r_int"), i).value = True
+        node.set_blocked(False)
+        wedge._sync_ranges(node)
+        assert node.get_param("n").is_int
+
+    def test_removing_a_row_removes_its_param(self):
+        node = _wedge()
+        _row(node, "a")
+        _row(node, "b")
+        wedge._sync_ranges(node)
+        assert {p.name for p in wedge._ranges(node)} == {"a", "b"}
+
+        node.get_param("range_rows").remove_index(0)
+        wedge._sync_ranges(node)
+        assert {p.name for p in wedge._ranges(node)} == {"b"}
+
+    def test_a_row_without_a_name_is_not_a_range_yet(self):
+        node = _wedge()
+        _row(node, "")
+        wedge._sync_ranges(node)
+        assert wedge._ranges(node) == []
+
+    def test_legacy_text_is_imported_into_rows(self):
+        """Files saved before the list carry the spec as text; setting it still works."""
+        node = _wedge()
+        node.set_blocked(True)
+        node.get_param("ranges").value = (
+            "height 1 9\nCarPaint color\nPaint variants /World/car color 3,1,1"
+        )
+        node.set_blocked(False)
+        wedge._import_spec(node)
+        wedge._sync_ranges(node)
+
+        rows = wedge._rows(node)
+        assert [r["name"] for r in rows] == ["height", "CarPaint", "Paint"]
+        assert rows[0] == {"name": "height", "kind": "float", "low": 1.0, "high": 9.0, "int": False}
+        assert rows[1]["kind"] == "color"
+        assert rows[2] == {"name": "Paint", "kind": "variants", "prim": "/World/car", "set": "color",
+                           "weights": [3.0, 1.0, 1.0]}
+        assert node.get_param("ranges").value == "", "imported, then emptied"
+        assert isinstance(node.get_param("CarPaint"), chunk.ColorPicker)
 
 
 def test_the_values_are_identical_in_a_separate_process():
