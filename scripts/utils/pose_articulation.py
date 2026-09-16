@@ -27,13 +27,25 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 from usd_chunks import chunk
 from usd_chunks import chunk_gizmo
 from usd_chunks import chunk_notice
+from usd_chunks import chunk_registry
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
 
-import scripts.dynamics.rbd_solver as rbd_solver
-
 logger = logging.getLogger(__name__)
+
+
+def _rbd_solver():
+    """The rbd_solver chunk, found by chunk name so it resolves wherever the two live.
+
+    A bare `import rbd_solver` worked only while every chunk sat in one folder on sys.path,
+    and `import scripts.dynamics.rbd_solver` only inside this repo.
+    """
+    mod = chunk_registry.ChunkRegistry().get_chunk_module("rbd_solver")
+    if mod.module is None:
+        mod._exec_module()
+    return mod.module
+
 
 #: Attributes on the chunk prim that are params of the chunk, not joints.
 _NOT_A_JOINT = ("inputs:chunk", "inputs:prim_path", "inputs:write_targets",
@@ -54,7 +66,7 @@ def _roots(node):
     prim = stage.GetPrimAtPath(path)
     if not prim or not prim.IsValid():
         return stage, []
-    return stage, rbd_solver.read_articulations(prim)
+    return stage, _rbd_solver().read_articulations(prim)
 
 
 def _posable(roots):

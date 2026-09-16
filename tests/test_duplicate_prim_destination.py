@@ -72,7 +72,7 @@ def reopened(qapp, tmp_path):
     UsdGeom.Xform.Define(stage, SOURCE)
     scene = _scene_for(stage)
 
-    dup = _mk(scene, "core_usd.duplicate_prim")
+    dup = _mk(scene, "duplicate_prim")
     dup.get_param("source_prim").set_prims([stage.GetPrimAtPath(SOURCE)])
     qapp.processEvents()
 
@@ -114,7 +114,7 @@ def test_an_empty_destination_is_still_filled_in_and_still_avoids_what_is_there(
     UsdGeom.Xform.Define(stage, SOURCE + "_copy")   # the obvious name is taken
     scene = _scene_for(stage)
 
-    dup = _mk(scene, "core_usd.duplicate_prim")
+    dup = _mk(scene, "duplicate_prim")
     dup.get_param("source_prim").set_prims([stage.GetPrimAtPath(SOURCE)])
     qapp.processEvents()
 

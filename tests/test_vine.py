@@ -106,7 +106,7 @@ class _Harness:
         return chunks[0]
 
     def vine(self, **params):
-        node = self.chunk("modelling.vine")
+        node = self.chunk("vine")
         node.get_param("surface_prim").value = WALL
         node.get_param("density_primvar").value = DENSITY
         for name, value in params.items():

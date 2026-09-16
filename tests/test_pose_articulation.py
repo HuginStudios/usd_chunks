@@ -29,7 +29,8 @@ from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.plugins import chunk_usd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "utils"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "dynamics"))
 pose_mod = importlib.import_module("pose_articulation")
 rbd_mod = importlib.import_module("rbd_solver")
 

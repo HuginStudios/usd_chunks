@@ -101,7 +101,7 @@ class TestMergeModule:
         assert len(self.mod.main().get_my_params()) == 0
 
     def test_config_category(self):
-        assert self.mod.config().category == chunk.StandardCategory.UTILS
+        assert self.mod.config().category == chunk.StandardCategory.CORE
 
     def test_execute_authors_nothing(self):
         """A merge is a pure topology marker — execute must not raise and must not leave an

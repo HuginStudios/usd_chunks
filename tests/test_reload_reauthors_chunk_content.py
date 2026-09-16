@@ -220,7 +220,7 @@ def test_add_mesh_reapplies_correct_type_on_reload(tmp_path) -> None:
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
 
-    c = _make(scene, "modelling.add_mesh")
+    c = _make(scene, "add_mesh")
     c.get_param("prim_path").value = "/mycube"
     c.get_param("mesh_type").value = "cube"
     c.get_param("dimx").value = 3  # touching a cube-group param is what actually triggers the build

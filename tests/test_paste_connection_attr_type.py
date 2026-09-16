@@ -101,7 +101,7 @@ def test_a_genuine_string_param_is_still_a_string(scene, qapp):
     """The fix reads the destination param, so a string destination stays a string."""
     s, stage = scene
     src = _mk(s, "script_runner")
-    dst = _mk(s, "core_usd.duplicate_prim")
+    dst = _mk(s, "duplicate_prim")
     qapp.processEvents()
 
     _wire(stage, dst, "inputs:dest_path", src, "outputs:result")

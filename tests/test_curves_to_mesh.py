@@ -392,7 +392,7 @@ def test_execute_can_find_every_param_it_reads() -> None:
     So: build the chunk the way the registry does, and check each name execute() asks for is
     actually there.
     """
-    module = chunk_registry.ChunkRegistry().get_chunk_module("modelling.curves_to_mesh")
+    module = chunk_registry.ChunkRegistry().get_chunk_module("curves_to_mesh")
     chunk_obj = (module.create() if module.loaded else module.load())[0]
 
     for name in ("curves_prim", "primpath_location", "readout", "out_mesh",
@@ -403,7 +403,7 @@ def test_execute_can_find_every_param_it_reads() -> None:
 
 def test_a_cook_with_no_curves_picked_says_so_instead_of_raising() -> None:
     """The first thing that happens to this chunk is being added with nothing wired in."""
-    module = chunk_registry.ChunkRegistry().get_chunk_module("modelling.curves_to_mesh")
+    module = chunk_registry.ChunkRegistry().get_chunk_module("curves_to_mesh")
     chunk_obj = (module.create() if module.loaded else module.load())[0]
 
     # No stage: execute has to bail on its own guard rather than reach for a param.

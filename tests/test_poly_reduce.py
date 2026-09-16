@@ -96,7 +96,7 @@ def wired():
     _chunk_usd_init(stage, scene)
 
     def make():
-        module = reg.get_chunk_module("modelling.poly_reduce")
+        module = reg.get_chunk_module("poly_reduce")
         chunks = module.create() if module.loaded else module.load()
         for c in chunks:
             scene.add_chunk(c)
@@ -543,7 +543,7 @@ def _live_module():
     different `sys.modules` key — with its own `_LAST_COOK` — so a test about cook state
     has to reach the registry's one.
     """
-    return chunk_registry.ChunkRegistry().get_chunk_module("modelling.poly_reduce").module
+    return chunk_registry.ChunkRegistry().get_chunk_module("poly_reduce").module
 
 
 @needs_simplify

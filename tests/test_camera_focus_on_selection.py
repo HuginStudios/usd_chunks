@@ -47,7 +47,7 @@ def _cube(stage, path, center, size=1.0):
 
 def _module():
     """scripts/ is not importable as a package; the chunk is loaded from its file."""
-    path = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "camera.py"
+    path = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "modelling" / "camera.py"
     spec = importlib.util.spec_from_file_location("camera_chunk_under_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
