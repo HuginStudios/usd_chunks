@@ -139,7 +139,7 @@ def test_the_amd_chunk_module_is_not_the_chunkgroup_type(graph):
     """Checked through the registry's config, which the lazy loader populates without
     executing the module body -- so this costs no network and no Qt."""
     _qapp, reg, _scene, _docker = graph
-    amd = reg.get_chunk_module("examples.AMDMaterialXLibrary")
+    amd = reg.get_chunk_module("AMDMaterialXLibrary")
     if amd is None:
         pytest.skip("AMDMaterialXLibrary not registered in this environment")
 

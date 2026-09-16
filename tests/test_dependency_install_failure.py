@@ -11,7 +11,7 @@ The on-disk fingerprint of the bug was a cache holding exactly one package at ve
 None (the optimistic add), next to a package dir that plainly did not contain it --
 whereas a cache built by update_cache() lists every package in the environment.
 
-Seen with scripts/examples/AMDMaterialXLibrary.py, which declares requirements=["requests"].
+Seen with scripts/materials/AMDMaterialXLibrary.py, which declares requirements=["requests"].
 """
 from __future__ import annotations
 

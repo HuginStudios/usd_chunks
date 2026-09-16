@@ -53,7 +53,7 @@ each is one module, and most are under a few hundred lines.
 Two of them show how far the declaration can be pushed. The MaterialX chunk builds its
 params from the shader definition in the registry, so choosing a `nodedef` reconfigures
 the node's own interface — the same self-description the UI is derived from, driven by
-data rather than written out. And `examples/AMDMaterialXLibrary` is a browser for AMD's
+data rather than written out. And `materials/AMDMaterialXLibrary` is a browser for AMD's
 GPUOpen material library, fetching and caching over the network, inside a chunk.
 
 The node graph, the parameter panels and the viewport gizmos are generated from the same

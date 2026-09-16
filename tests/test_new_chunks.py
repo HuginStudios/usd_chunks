@@ -180,7 +180,7 @@ class TestAMDMaterialXLibrary:
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
-        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
+        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
 
     def test_main_returns_context_chunk(self):
         c = self.mod.main()
@@ -199,7 +199,7 @@ class TestAMDMaterialXLibrary:
 
     def test_config_category(self):
         cfg = self.mod.config()
-        assert cfg.category == chunk.StandardCategory.EXAMPLES
+        assert cfg.category == chunk.StandardCategory.MATERIALS
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ class TestAMDMaterialXLibraryChildCreation:
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
-        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
+        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
         # Ensure the child chunk modules _create_child resolves are registered.
         _load("scripts.usd.reference")
         _load("scripts.materials.bind_material")
@@ -605,7 +605,7 @@ class TestAMDMaterialXCaching:
         """main() builds Qt widgets."""
 
     def setup_method(self):
-        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
+        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
         _load("scripts.usd.reference")
         _load("scripts.materials.bind_material")
 
@@ -675,7 +675,7 @@ class TestAMDMaterialXAsyncApply:
         """main() builds Qt widgets."""
 
     def setup_method(self):
-        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
+        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
         _load("scripts.usd.reference")
         _load("scripts.materials.bind_material")
 
