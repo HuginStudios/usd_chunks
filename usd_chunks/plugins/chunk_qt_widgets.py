@@ -11,6 +11,7 @@ from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks.plugins import chunk_usd
 
+import re
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
 
@@ -2529,26 +2530,139 @@ def source_code_dial(src: str, highlighter: chunk_core.SyntaxHighlightMapping):
     return dial.exec()
 
 
-#: Between a search result's name and its category path.
-_RESULT_DIVIDER = "   │   "
+#: Starts a search result's category column, so a divider runs down the list.
+_RESULT_DIVIDER = "│  "
+
+
+_MENU_SELECTED_RULE = re.compile(r"QMenu::item:selected\s*\{([^}]*)\}")
+
+
+def _host_menu_highlight() -> tuple:
+    """(background, color) a highlighted menu row has in this host, as stylesheet values.
+
+    Hosts colour menus in their application stylesheet -- usdview's is a tan
+    rgb(190, 156, 85) -- not in the palette, so a list inside the menu would highlight in
+    the palette's unrelated colour. Read the host's rule; fall back to the palette.
+    """
+    background, color = "palette(highlight)", "palette(highlighted-text)"
+    app = QtWidgets.QApplication.instance()
+    if app is not None and (rule := _MENU_SELECTED_RULE.search(app.styleSheet() or "")):
+        for prop in rule.group(1).split(";"):
+            name, _, value = prop.partition(":")
+            name, value = name.strip(), value.strip()
+            if name in ("background", "background-color") and value:
+                background = value
+            elif name == "color" and value:
+                color = value
+    return background, color
+
+
+class _SearchResults(QtWidgets.QTreeWidget):
+    """The ranked search results inside the chunk menu: name | category, one row each.
+
+    A list widget rather than menu rows: it scrolls, the category column starts at the same
+    x on every row, and refilling it is cheap. Refilling a QMenu meant re-inserting every
+    action on every keystroke (13s to type "materialx" with 200 results), and a QMenu capped
+    in height clips instead of scrolling under usdview's style.
+    """
+
+    #: Emitted with the MenuEntry that was clicked.
+    picked = QtCore.Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setColumnCount(2)
+        self.setHeaderHidden(True)
+        self.setRootIsDecorated(False)
+        self.setUniformRowHeights(True)
+        self.setIndentation(0)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)  # typing stays in the search field
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setMouseTracking(True)
+        # Sized to its columns, never the other way round: a stretched last section reports
+        # the stretched width, and sizing the widget from it widened the menu every search.
+        self.header().setStretchLastSection(False)
+        # The list never has focus (typing stays in the search field), so the highlight is
+        # stated for every state rather than left to the unfocused palette, which draws none.
+        background, color = _host_menu_highlight()
+        self.setStyleSheet(
+            "QTreeWidget { background: transparent; border: none; }"
+            "QTreeWidget::item { padding: 1px 4px; }"
+            "QTreeWidget::item:selected, QTreeWidget::item:selected:!active {"
+            f" background: {background}; color: {color}; }}"
+        )
+        # A menu highlights what the mouse is over; so does this.
+        self.itemEntered.connect(self.setCurrentItem)
+        self.itemClicked.connect(lambda item, _col: self.picked.emit(item.data(0, QtCore.Qt.ItemDataRole.UserRole)))
+
+    def show_entries(self, entries, visible_rows: int) -> None:
+        """Refill with entries, best first, and size to at most visible_rows rows."""
+        self.clear()
+        dim = self.palette().color(QtGui.QPalette.ColorRole.PlaceholderText)
+        for entry in entries:
+            item = QtWidgets.QTreeWidgetItem(
+                [entry.label, _RESULT_DIVIDER + " › ".join(entry.namespace[:-1])]
+            )
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, entry)
+            item.setForeground(1, dim)
+            if entry.tooltip:
+                item.setToolTip(0, entry.tooltip)
+            self.addTopLevelItem(item)
+        if entries:
+            self.setCurrentItem(self.topLevelItem(0))
+        for column in (0, 1):
+            self.setColumnWidth(column, self.sizeHintForColumn(column) if entries else 0)
+
+        row = self.sizeHintForRow(0) if entries else 0
+        self.setFixedHeight(row * min(len(entries), visible_rows) + 2)
+        scroll = self.verticalScrollBar().sizeHint().width() if len(entries) > visible_rows else 0
+        self.setFixedWidth(self.columnWidth(0) + self.columnWidth(1) + scroll + 4)
+
+    def current_entry(self):
+        item = self.currentItem()
+        return item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def step(self, key) -> None:
+        """Move the highlight the way a menu's arrow keys would."""
+        count = self.topLevelItemCount()
+        if not count:
+            return
+        row = self.indexOfTopLevelItem(self.currentItem()) if self.currentItem() else -1
+        page = max(1, self.viewport().height() // max(1, self.sizeHintForRow(0)) - 1)
+        moves = {
+            QtCore.Qt.Key.Key_Down: row + 1,
+            QtCore.Qt.Key.Key_Up: row - 1,
+            QtCore.Qt.Key.Key_PageDown: row + page,
+            QtCore.Qt.Key.Key_PageUp: row - page,
+            QtCore.Qt.Key.Key_Home: 0,
+            QtCore.Qt.Key.Key_End: count - 1,
+        }
+        target = max(0, min(count - 1, moves.get(key, row)))
+        self.setCurrentItem(self.topLevelItem(target))
 
 
 class FilterableChunkMenu(QtWidgets.QMenu):
     """The chunk-creation menu: a category tree, and a ranked list while searching.
 
-    Typing swaps the tree for one flat list ordered by chunk_registry.search_menu_entries,
-    closest match first and already highlighted, so "trans" + Enter creates Transform.
+    Typing swaps the tree for one scrollable list ordered by
+    chunk_registry.search_menu_entries, closest match first and already highlighted, so
+    "trans" + Enter creates Transform.
     """
 
-    #: Enough to see the likely picks; past that, typing another letter is quicker.
-    MAX_RESULTS = 12
+    #: Results kept; the rest of a broad search (a category name matches every chunk in it)
+    #: is a scroll away rather than cut off.
+    MAX_RESULTS = 200
 
-    #: Rows tighter than the host's menu padding while a search is showing -- a result list
-    #: is scanned top-down, not aimed at like a tree, so it needs far less room per row.
-    #: A menu stylesheet replaces the host's separator drawing too, so it is restated.
-    _COMPACT_STYLE = (
-        "QMenu::item { padding: 2px 12px 2px 12px; }"
-        "QMenu::separator { height: 1px; background: #555555; margin: 3px 6px; }"
+    #: Result rows on screen at once; more scroll.
+    VISIBLE_RESULTS = 12
+
+    _NAV_KEYS = (
+        QtCore.Qt.Key.Key_Down,
+        QtCore.Qt.Key.Key_Up,
+        QtCore.Qt.Key.Key_PageDown,
+        QtCore.Qt.Key.Key_PageUp,
     )
 
     def __init__(self):
@@ -2556,12 +2670,20 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         self.filter_widget = QtWidgets.QLineEdit(placeholderText="Search...")
         self.filter_widget.textChanged.connect(self._filter_actions)
         self.filter_widget.installEventFilter(self)
+        self.results = _SearchResults()
+        self.results.picked.connect(self._pick)
         self._entries: list = []
         self._tree_actions: list = []
-        self._flat_actions: dict = {}
-        self._results_end = None
+        self._results_action = None
         self._no_results = None
-        self._compact = False
+        self._picked = None
+
+    def _pick(self, entry) -> None:
+        """Take entry as the answer and close; exec_ then returns no action."""
+        if entry is None:
+            return
+        self._picked = entry
+        self.close()
 
     def _filter_actions(self, text: str):
         ranked = (
@@ -2569,33 +2691,30 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             if text.strip() else None
         )
         searching = ranked is not None
-        if searching != self._compact:
-            self._compact = searching
-            self.setStyleSheet(self._COMPACT_STYLE if searching else "")
         for action in self._tree_actions:
             action.setVisible(not searching)
-        for action in self._flat_actions.values():
-            action.setVisible(False)
+        if searching:
+            self.results.show_entries(ranked, self.VISIBLE_RESULTS)
         if self._no_results is not None:
             self._no_results.setVisible(searching and not ranked)
-        if not searching:
-            return
-
-        # Re-inserted in rank order: a QMenu lists actions in insertion order, and there is
-        # no other way to reorder them.
-        for entry in ranked:
-            action = self._flat_actions[id(entry)]
-            self.removeAction(action)
-            self.insertAction(self._results_end, action)
-            action.setVisible(True)
-        if ranked:
-            self.setActiveAction(self._flat_actions[id(ranked[0])])
+        if self._results_action is not None:
+            self._results_action.setVisible(bool(ranked))
+            # A QMenu measures a widget action once and caches it; changing the action's
+            # text is what makes it measure again after the list changes size.
+            self._results_action.setText(f"{len(ranked or ())}:{self.results.height()}")
 
     def eventFilter(self, obj, event):
         if obj is self.filter_widget:
             if event.type() == event.Type.KeyPress:
                 key = event.key()
                 if key == QtCore.Qt.Key.Key_Escape:
+                    return True
+                searching = bool(self.filter_widget.text().strip())
+                if searching and key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
+                    self._pick(self.results.current_entry())
+                    return True
+                if searching and key in self._NAV_KEYS:
+                    self.results.step(key)
                     return True
                 if key in (
                     QtCore.Qt.Key.Key_Return,
@@ -2645,6 +2764,15 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         items["menu"].addAction(filter_action)
         items["menu"].addSeparator()
 
+        # Search results, hidden until something is typed.
+        self._results_action = QtWidgets.QWidgetAction(self)
+        self._results_action.setDefaultWidget(self.results)
+        self._results_action.setVisible(False)
+        self.addAction(self._results_action)
+        self._no_results = self.addAction("No matching chunks")
+        self._no_results.setEnabled(False)
+        self._no_results.setVisible(False)
+
         self._entries = chunk_registry.ChunkRegistry().get_menu_entries(sort_result=True)
         for entry in self._entries:
             namespace = list(entry.namespace)
@@ -2669,20 +2797,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                     d[ns] = {"menu": submenu}
                 d = d[ns]
 
-            # Search result: the name, then where it lives, right beside it. A tab would push
-            # the path into the far shortcut column and widen the menu to hold it.
-            # Hidden until searching.
-            path = " › ".join(namespace[:-1])
-            flat_action = self.addAction(f"{entry.label}{_RESULT_DIVIDER}{path}" if path else entry.label)
-            flat_action.setData(entry)
-            flat_action.setToolTip(tooltip)
-            flat_action.setVisible(False)
-            self._flat_actions[id(entry)] = flat_action
-
-        self._no_results = self.addAction("No matching chunks")
-        self._no_results.setEnabled(False)
-        self._no_results.setVisible(False)
-        self._results_end = self.addSeparator()
+        self.addSeparator()
 
         import_action = QtGui.QAction("import")
         import_action.setData("import")
@@ -2692,6 +2807,9 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         QtWidgets.QApplication.instance().installEventFilter(self)
         exc = self.exec_(pos)
         QtWidgets.QApplication.instance().removeEventFilter(self)
+
+        if self._picked is not None:
+            return self._picked
 
         if not exc:
             return
