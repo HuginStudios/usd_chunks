@@ -583,11 +583,16 @@ def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None
                        expression_error=expression_error)
 
 
-def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None = None) -> GraphChange:
+def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None = None,
+               heal: bool = True) -> GraphChange:
     """Clear a port's connections, healing the exec chain across the gap.
 
     Detaching a node from the middle of an exec chain rewires its successor to its
     predecessor, so removing one node does not sever everything downstream of it.
+
+    heal=False cuts just the one wire. That is what dragging a wire off an input means:
+    healing there took A -> B -> View, rewired View to A and left B dangling, so the wire
+    the user pulled off looked like it had jumped onto the next node down the chain.
     """
     chunks = chunks or {}
     touched = {port.node_path}
@@ -595,7 +600,7 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
     if not (attr and attr.IsValid()):
         return GraphChange(edges_dirty=False, touched_nodes=set())
 
-    if port.port_type == PORT_EXEC:
+    if port.port_type == PORT_EXEC and heal:
         out_attr_path = f"{port.node_path}.{EXEC_OUTPUT}"
         for path, prim in prims.items():
             # Every exec slot, not only inputs:chunk -- a merge fed through slot 2 is just
