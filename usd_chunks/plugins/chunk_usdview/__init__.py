@@ -10,7 +10,7 @@ from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
-from usd_chunks import chunk_registry, chunk_core
+from usd_chunks import chunk_registry, chunk_core, shader_defs
 from usd_chunks.plugins import chunk_qt, chunk_usd, chunk_window_state, chunk_qt_layer_stack
 
 from typing import List
@@ -317,6 +317,8 @@ def launch_chunks(usdviewApi) -> None:
     chunk_window_state.install(usdviewApi.qMainWindow)
     chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
     chunk_usd.initialize(usdviewApi.stage, scene)
+    # The first chunk menu otherwise pays for building the shader registry (seconds).
+    shader_defs.warm_registry_in_background()
 
 
 class ChunksPluginContainer(PluginContainer):

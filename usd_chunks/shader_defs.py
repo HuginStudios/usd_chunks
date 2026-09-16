@@ -19,6 +19,7 @@ params = [param_for_prop(p) for p in d.inputs]
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Iterator, List, Optional
 
@@ -255,6 +256,58 @@ def iter_shader_defs(source_type: str = "") -> Iterator[ShaderDef]:
             yield _def_from_sdr(node)
         except Exception as e:  # noqa: BLE001 - one bad definition must not kill discovery
             logger.debug(f"Skipping shader definition {name}: {e}")
+
+
+#: Started once per process; see warm_registry_in_background.
+_warm_thread: Optional[threading.Thread] = None
+
+
+def warm_registry_in_background(source_type: str = "mtlx") -> Optional[threading.Thread]:
+    """Build the shader registry on a worker thread, so the first menu does not wait for it.
+
+    The first touch of Sdr.Registry() discovers every installed shader plugin -- ~2.7s in
+    a usdview with V-Ray loaded -- and the first chunk menu drawn is what touched it, so the
+    first right-click took seconds. Registry construction and parsing are USD's own
+    thread-safe C++ and release the GIL, so the UI keeps running meanwhile (measured: no
+    main-thread stall over 50ms), and a menu opened before the thread finishes simply waits
+    on the same singleton rather than paying twice.
+
+    Only the registry is warmed, not ChunkConfig.get_variants: that memo is plain Python
+    state the main thread reads, and computing it from here would race it. And only
+    source_type is parsed -- what the menu asks for. Parsing everything at once is not safe:
+    GetShaderNodesByFamily() took usdview down with V-Ray loaded, whose parser wants a live
+    renderer.
+
+    Args:
+        source_type (str): The shader source type to parse ahead of time.
+
+    Returns:
+        Optional[threading.Thread]: The warming thread, or None if one was already started.
+    """
+    global _warm_thread
+    if _warm_thread is not None:
+        return None
+
+    def warm():
+        for _ in range(2):
+            try:
+                reg = Sdr.Registry()
+                break
+            except Exception as e:  # noqa: BLE001 - see iter_shader_defs; warming is best-effort
+                # The first construction can raise on a bad advertised version and succeed
+                # when asked again, which is what the menu would do anyway.
+                logger.debug("Shader registry not ready while warming: %s", e)
+        else:
+            return
+        try:
+            for name in _first_attr(reg, _REGISTRY_METHODS["names"]) or ():
+                _first_attr(reg, _REGISTRY_METHODS["by_name_type"], str(name), source_type)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Warming shader definitions stopped early: %s", e)
+
+    _warm_thread = threading.Thread(target=warm, name="usd_chunks-sdr-warm", daemon=True)
+    _warm_thread.start()
+    return _warm_thread
 
 
 def get_shader_def(name: str, source_type: str = "") -> Optional[ShaderDef]:

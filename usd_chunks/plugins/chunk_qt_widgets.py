@@ -2530,79 +2530,50 @@ def source_code_dial(src: str, highlighter: chunk_core.SyntaxHighlightMapping):
 
 
 class FilterableChunkMenu(QtWidgets.QMenu):
+    """The chunk-creation menu: a category tree, and a ranked list while searching.
+
+    Typing swaps the tree for one flat list ordered by chunk_registry.search_menu_entries,
+    closest match first and already highlighted, so "trans" + Enter creates Transform.
+    """
+
+    #: A longer list is slower to draw than to refine the search.
+    MAX_RESULTS = 40
+
     def __init__(self):
         super().__init__("Chunks")
         self.filter_widget = QtWidgets.QLineEdit(placeholderText="Search...")
         self.filter_widget.textChanged.connect(self._filter_actions)
         self.filter_widget.installEventFilter(self)
-        self.filterable = dict()
-
-    def _filter_menus(self, menu: QtWidgets.QMenu):
-        c = 0
-        for a in menu.actions():
-            if not a.isVisible():
-                c += 1
-
-            if m := menu.menuInAction(a):
-                hide = self._filter_menus(m)
-                if hide:
-                    m.menuAction().setVisible(False)
-                else:
-                    m.menuAction().setVisible(True)
-
-        if c == len(menu.actions()):
-            return 1
-
-        return 0
+        self._entries: list = []
+        self._tree_actions: list = []
+        self._flat_actions: dict = {}
+        self._results_end = None
+        self._no_results = None
 
     def _filter_actions(self, text: str):
-        term = text.strip().lower()
-        normal_font = self.font()
-        bold_font = QtGui.QFont(normal_font)
-        bold_font.setBold(True)
-
-        if not term:
-            for action in self.filterable:
-                action.setVisible(True)
-                action.setFont(normal_font)
-            self._filter_menus(self)
+        ranked = (
+            chunk_registry.search_menu_entries(self._entries, text)[: self.MAX_RESULTS]
+            if text.strip() else None
+        )
+        searching = ranked is not None
+        for action in self._tree_actions:
+            action.setVisible(not searching)
+        for action in self._flat_actions.values():
+            action.setVisible(False)
+        if self._no_results is not None:
+            self._no_results.setVisible(searching and not ranked)
+        if not searching:
             return
 
-        for action, path_elems in self.filterable.items():
-            matches = any(term in x for x in path_elems)
-            action.setVisible(matches)
-            action.setFont(bold_font if matches else normal_font)
-
-        self._filter_menus(self)
-        QtCore.QTimer.singleShot(0, self, self._open_first_submenu)
-
-    def _open_first_submenu(self):
-        for action in self.actions():
-            if (
-                action.isVisible()
-                and not action.isSeparator()
-                and not isinstance(action, QtWidgets.QWidgetAction)
-            ):
-                self.setActiveAction(action)
-                submenu = action.menu()
-                if submenu:
-                    if not submenu.isVisible():
-                        QtWidgets.QApplication.postEvent(
-                            self,
-                            QtGui.QKeyEvent(
-                                QtCore.QEvent.Type.KeyPress,
-                                QtCore.Qt.Key.Key_Right,
-                                QtCore.Qt.KeyboardModifier.NoModifier,
-                            ),
-                        )
-                    QtCore.QTimer.singleShot(0, self, lambda m=submenu: self._highlight_submenu_leaf(m))
-                break
-
-    def _highlight_submenu_leaf(self, submenu: QtWidgets.QMenu):
-        for action in submenu.actions():
-            if action.isVisible() and not action.isSeparator():
-                submenu.setActiveAction(action)
-                break
+        # Re-inserted in rank order: a QMenu lists actions in insertion order, and there is
+        # no other way to reorder them.
+        for entry in ranked:
+            action = self._flat_actions[id(entry)]
+            self.removeAction(action)
+            self.insertAction(self._results_end, action)
+            action.setVisible(True)
+        if ranked:
+            self.setActiveAction(self._flat_actions[id(ranked[0])])
 
     def eventFilter(self, obj, event):
         if obj is self.filter_widget:
@@ -2637,8 +2608,9 @@ class FilterableChunkMenu(QtWidgets.QMenu):
     def select_module(self, pos):
         """Pop the chunk menu at pos and return what the user picked.
 
-        Renders chunk_registry.get_menu_entries() -- the entry list, its namespace nesting
-        and its search terms are all core, so this only turns them into QMenus and QActions.
+        Renders chunk_registry.get_menu_entries() and ranks searches with
+        chunk_registry.search_menu_entries -- the entries, their nesting and the ranking are
+        all core, so this only turns them into QMenus and QActions.
 
         Args:
             pos (QtCore.QPoint): Global position to pop the menu at
@@ -2650,7 +2622,6 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         items = dict()
         items["menu"] = self
         self.setToolTipsVisible(True)
-        self._flat_results: list = []
 
         filter_action = QtWidgets.QWidgetAction(items["menu"])
         filter_action.setDefaultWidget(self.filter_widget)
@@ -2658,9 +2629,9 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         items["menu"].addAction(filter_action)
         items["menu"].addSeparator()
 
-        for entry in chunk_registry.ChunkRegistry().get_menu_entries(sort_result=True):
+        self._entries = chunk_registry.ChunkRegistry().get_menu_entries(sort_result=True)
+        for entry in self._entries:
             namespace = list(entry.namespace)
-            search_term = entry.search_terms
             tooltip = entry.tooltip
 
             d = items
@@ -2671,23 +2642,29 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                         action = m.addAction(ns)
                         action.setData(entry)
                         action.setToolTip(tooltip)
-                        self.filterable[action] = search_term
+                        if m is self:
+                            self._tree_actions.append(action)
                     break
                 elif ns not in d:
                     submenu = d.get("menu").addMenu(ns)
                     submenu.setToolTipsVisible(True)
+                    if d is items:
+                        self._tree_actions.append(submenu.menuAction())
                     d[ns] = {"menu": submenu}
                 d = d[ns]
 
-            # Flat search result — full path label, hidden until search is active
-            label = " → ".join(namespace)
-            flat_action = self.addAction(label)
+            # Search result: the name, with where it lives in the right-hand column (the
+            # text after a tab is drawn where a shortcut would be). Hidden until searching.
+            flat_action = self.addAction(f"{entry.label}\t{' › '.join(namespace[:-1])}")
             flat_action.setData(entry)
             flat_action.setToolTip(tooltip)
             flat_action.setVisible(False)
-            self._flat_results.append((flat_action, search_term))
+            self._flat_actions[id(entry)] = flat_action
 
-        self.addSeparator()
+        self._no_results = self.addAction("No matching chunks")
+        self._no_results.setEnabled(False)
+        self._no_results.setVisible(False)
+        self._results_end = self.addSeparator()
 
         import_action = QtGui.QAction("import")
         import_action.setData("import")
@@ -2783,7 +2760,12 @@ class ChunkContextBreadcrumb(QtWidgets.QWidget):
         """Rebuild the row for ctx, root first."""
         while (item := self._layout.takeAt(0)) is not None:
             if (w := item.widget()) is not None:
-                w.setParent(None)
+                # Hidden, never unparented. deleteLater() waits for the event loop it was
+                # called from, so a popup opened straight after (the empty-panel Tab and
+                # file-drop paths) runs its nested loop with the old button still alive --
+                # and unparented it was a top-level window, which Windows showed and
+                # activated, closing the popup the instant it appeared.
+                w.hide()
                 w.deleteLater()
 
         entries = context_ancestry(ctx)

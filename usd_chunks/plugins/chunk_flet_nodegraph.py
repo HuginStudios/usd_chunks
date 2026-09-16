@@ -936,8 +936,8 @@ class GraphView:
         """A searchable list of chunks, landing the choice at (x, y).
 
         Flet has no context-menu primitive that can pop at an arbitrary point, so this is
-        a dialog. The search field matches MenuEntry.search_terms, the same terms Qt's
-        filterable menu matches, so typing "trans" finds the same entries in both.
+        a dialog. The search field ranks with chunk_registry.search_menu_entries, the same
+        ranking Qt's menu uses, so typing "trans" lists the same entries in the same order.
         """
         entries = self.menu_entries()
         if not entries or self.page is None:
@@ -946,15 +946,13 @@ class GraphView:
         results = ft.ListView(spacing=1, height=360)
 
         def show(term: str = ""):
-            term = term.strip().lower()
             results.controls = [
                 ft.TextButton(
                     " / ".join(e.namespace) or e.label,
                     tooltip=e.tooltip or None,
                     on_click=lambda _ev, entry=e: pick(entry),
                 )
-                for e in entries
-                if not term or any(term in t for t in e.search_terms)
+                for e in chunk_registry.search_menu_entries(entries, term)
             ][:200]  # a long list is a slow dialog; refine the search instead
             if self.live:
                 results.update()
