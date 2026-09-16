@@ -609,7 +609,7 @@ def test_the_camera_composes_transforms_the_same_way_transform_py_does() -> None
     """Both chunks must invert to the same decomposition, or one handle drifts and the other
     does not -- which would look like a gizmo bug rather than a chunk bug."""
     camera_mod, c, _stage = _camera_chunk_and_stage()
-    transform_mod = importlib.import_module("scripts.utils.transform")
+    transform_mod = importlib.import_module("scripts.transforms.transform")
 
     for name, value in [("tx", 1.0), ("ty", -2.0), ("rx", 30.0), ("ry", 15.0), ("sz", 2.0)]:
         c.get_param(name).value = value

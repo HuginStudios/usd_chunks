@@ -203,7 +203,7 @@ def _visible_children(group):
 def _inline_group(group, children, width: float) -> None:
     """A group of same-typed numbers on ONE row: `translate  [x][y][z]`.
 
-    scripts/utils/transform.py models a vector as a Group of three Sliders, not as a Vector
+    scripts/transforms/transform.py models a vector as a Group of three Sliders, not as a Vector
     param, so flattening gave twelve labelled rows and a node taller than the window. This
     is the whole reason that node was unreadable.
     """

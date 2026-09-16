@@ -90,7 +90,7 @@ def main():
 
 def config():
     return chunk.DefaulConfig(
-        category=chunk.StandardCategory.USD,
+        category=chunk.StandardCategory.MATERIALS,
         description="""
         Bind Material chunk — binds an existing material prim to one or more target prims.
 

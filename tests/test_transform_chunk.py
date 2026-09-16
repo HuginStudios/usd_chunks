@@ -37,7 +37,7 @@ def _make_transform(scene: SceneSender, prim_path: str = "/prim"):
 
 def test_translate_range_defaults_to_the_original_span_at_centimeter_scale() -> None:
     """Regression baseline: metersPerUnit=0.01 is USD's own default when unauthored, and is
-    what scripts/utils/transform.py's original flat -1000..1000 constant was implicitly tuned for
+    what scripts/transforms/transform.py's original flat -1000..1000 constant was implicitly tuned for
     (10 meters-equivalent / 0.01 == 1000) -- confirms the unit-aware rescale doesn't change
     behavior for the common case."""
     stage = Usd.Stage.CreateInMemory()

@@ -110,7 +110,7 @@ class TestBindMaterial:
 
     def test_config_category(self):
         cfg = self.mod.config()
-        assert cfg.category == chunk.StandardCategory.USD
+        assert cfg.category == chunk.StandardCategory.MATERIALS
 
     def test_execute_binds_material(self):
         stage = Usd.Stage.CreateInMemory()

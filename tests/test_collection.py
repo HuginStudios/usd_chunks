@@ -144,7 +144,7 @@ class TestCollectionTokenResolution:
         coll_chunk.get_param("include_pattern").value = "/geo/*"
         _exec(self.mod, coll_chunk)
 
-        transform_mod = importlib.import_module("scripts.utils.transform")
+        transform_mod = importlib.import_module("scripts.transforms.transform")
         t = transform_mod.main()
         t.name = "Xform1"
         t._config = ChunkConfig(module="transform")

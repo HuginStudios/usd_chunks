@@ -672,7 +672,7 @@ def main():
 
 def config():
     return chunk.DefaulConfig(
-        category=chunk.StandardCategory.UTILS + "/Robotics",
+        category=chunk.StandardCategory.RIGS,
         requirements=["numpy>=2,<3"],
         description="""
         Imports a URDF robot as UsdPhysics: links as rigid bodies with mass and inertia,

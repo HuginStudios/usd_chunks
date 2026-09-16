@@ -56,7 +56,7 @@ def main():
 
 def config():
     return chunk.DefaulConfig(
-        category=chunk.StandardCategory.UTILS,
+        category=chunk.StandardCategory.TRANSFORM,
         description=(
             "Clears all authored transform ops on the target prim, resetting it to its\n"
             "underlying composed transform. Authors in the chunk layer, so the prim's\n"

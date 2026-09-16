@@ -137,6 +137,7 @@ class Gizmo(_gizmo):
 class StandardCategory(str, Enum):
     MODELLING = "Modelling"
     DYNAMICS = "Dynamics"
+    TRANSFORM = "Transform"
     UTILS = "Utility"
     RIGS = "Rigs"
     USER = "User"
