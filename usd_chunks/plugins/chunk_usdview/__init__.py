@@ -5,7 +5,7 @@ This module provides a framework for dynamically loading and managing custom UI 
 
 import logging
 
-from pxr import Tf, Usd, Gf
+from pxr import Tf, Usd, Gf, Sdf
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
@@ -105,6 +105,22 @@ class UsdviewScene(chunk_core.SceneSender):
 
     def get_selected_prims(self) -> List[Usd.Prim]:
         return self.usdviewAPI.selectedPrims  # type: ignore
+
+    def select_prims(self, paths) -> bool:
+        stage = self.get_stage()
+        if not stage:
+            return False
+        # usdview's selection raises on a path with no prim behind it, so only real ones go in.
+        targets = [p for p in (Sdf.Path(str(p)) for p in paths) if stage.GetPrimAtPath(p)]
+        if not targets:
+            return False
+        selection = self.usdviewAPI.dataModel.selection  # type: ignore
+        # One selection-changed signal for the lot, not one per path.
+        with selection.batchPrimChanges:
+            selection.clearPrims()
+            for path in targets:
+                selection.addPrimPath(path)
+        return True
 
     def get_selected_property(self) -> Usd.Property:
         return self.usdviewAPI.property  # type: ignore

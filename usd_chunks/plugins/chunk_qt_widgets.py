@@ -448,6 +448,8 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
         self.text = QtWidgets.QLineEdit(self)
         self.text.editingFinished.connect(self.value_changed)
+        # Ctrl+click selects the prim(s) the field names -- see eventFilter.
+        self.text.installEventFilter(self)
         self.main_layout = QtWidgets.QHBoxLayout()
 
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -490,6 +492,56 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         # the template's default and left the row alone. Reported as the pin icon doing nothing
         # on a prototype row while typing into the same field worked.
         self.param.value = ",".join(str(p.GetPath()) for p in prims)
+
+    SELECT_HINT = "Ctrl+click to select in the viewport"
+
+    def scene_prim_paths(self) -> "list[Sdf.Path]":
+        """The prims this field names, if every entry in it is one that exists on the stage.
+
+        Any field holding prim paths qualifies, not just PRIM_SELECTION ones: a Reference's
+        "Insert to location" names a prim just as much as a Transform's target does. Anything
+        that is not wholly existing prims -- a name, a glob, a path not authored yet -- gives
+        nothing, so ctrl+click there stays an ordinary click.
+
+        Read from the param, not the text box: an expression field shows `@Other.param@`
+        while its value is the path it resolves to.
+        """
+        scene = self.param.get_scene()
+        stage = scene.get_stage() if scene else None
+        if not stage:
+            return []
+        entries = [e.strip() for e in str(self.param.value or "").split(",") if e.strip()]
+        paths = []
+        for entry in entries:
+            if not Sdf.Path.IsValidPathString(entry):
+                return []
+            path = Sdf.Path(entry).StripAllVariantSelections()
+            if not (path.IsAbsolutePath() and path.IsPrimPath()) or not stage.GetPrimAtPath(path):
+                return []
+            paths.append(path)
+        return paths
+
+    def select_in_scene(self) -> bool:
+        scene = self.param.get_scene()
+        paths = self.scene_prim_paths()
+        return bool(scene and paths and scene.select_prims(paths))
+
+    def eventFilter(self, watched, event):
+        if watched is self.text:
+            if (event.type() == QtCore.QEvent.Type.MouseButtonPress
+                    and event.button() == QtCore.Qt.MouseButton.LeftButton
+                    and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier):
+                # Consumed only when something was selected, so the click does not also
+                # place the text cursor; otherwise it behaves as it always did.
+                if self.select_in_scene():
+                    return True
+            elif event.type() == QtCore.QEvent.Type.ToolTip and self.scene_prim_paths():
+                # Only on fields that currently name a prim -- the hint on a name field
+                # would be noise. Everything else falls through to the param's own tooltip.
+                tip = f"{self.param.tooltip}\n\n{self.SELECT_HINT}" if self.param.tooltip else self.SELECT_HINT
+                QtWidgets.QToolTip.showText(event.globalPos(), tip, self.text)
+                return True
+        return super().eventFilter(watched, event)
 
     def get_value(self):
         return self.text.text()
