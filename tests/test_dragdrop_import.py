@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -634,3 +635,67 @@ def test_handle_dropped_file_prompts_for_chunkgroup_file(graph, tmp_path, monkey
     gv._handle_dropped_file(str(path), QtCore.QPointF(12000, 12000), QtCore.QPoint(0, 0))
     after = len(scene.get_chunks())
     assert after > before
+
+
+_SCRIPT = (
+    "stage.DefinePrim('/from_file_{tag}', 'Xform')\n"
+    "result = '{tag}'\n"
+)
+
+
+def _script_runners(scene):
+    return [c for c in scene.get_chunks() if c.get_config() and c.get_config().module == "script_runner"]
+
+
+def _write_script(path, tag, bump_ns=0):
+    path.write_text(_SCRIPT.format(tag=tag), encoding="utf-8")
+    if bump_ns:
+        # Two writes inside one timestamp tick would look like no save at all.
+        st = path.stat()
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + bump_ns))
+
+
+def _drop_script(graph, tmp_path, name, pos):
+    qapp, _reg, scene, _docker = graph
+    _, gv, _, _ = _make_nodes(graph)  # forces a tab (and its graph view) to exist
+    script = tmp_path / name
+    _write_script(script, "v1")
+    gv._handle_dropped_file(str(script), QtCore.QPointF(pos, pos), QtCore.QPoint(0, 0))
+    _pump(qapp, 0.3)
+    (runner,) = _script_runners(scene)
+    return gv, script, runner
+
+
+def test_dropping_a_python_file_creates_a_script_runner_running_it(graph, tmp_path) -> None:
+    gv, script, runner = _drop_script(graph, tmp_path, "tool.py", 22000)
+
+    assert runner.get_param("script_file").value == str(script)
+    assert runner.get_param("code").has_state(ChunkFlags.State.HIDDEN), "the file replaces the code box"
+    assert gv.scene()._stage.GetPrimAtPath("/from_file_v1").IsValid()
+    assert runner.get_param("result").value == "v1"
+
+
+def test_saving_the_script_file_runs_it_again(graph, tmp_path) -> None:
+    qapp = graph[0]
+    gv, script, runner = _drop_script(graph, tmp_path, "tool_live.py", 23000)
+    assert runner.get_param("result").value == "v1"
+
+    _write_script(script, "v2", bump_ns=2_000_000_000)
+    _pump(qapp, 1.5)
+
+    assert runner.get_param("result").value == "v2"
+    stage = gv.scene()._stage
+    assert stage.GetPrimAtPath("/from_file_v2").IsValid()
+    assert not stage.GetPrimAtPath("/from_file_v1").IsValid(), "the rerun replaces the old output"
+
+
+def test_a_script_file_is_not_rerun_after_its_node_is_deleted(graph, tmp_path) -> None:
+    qapp = graph[0]
+    gv, script, runner = _drop_script(graph, tmp_path, "tool_gone.py", 24000)
+    runner.request_delete()
+    _pump(qapp, 0.3)
+
+    _write_script(script, "v2", bump_ns=2_000_000_000)
+    _pump(qapp, 1.5)
+
+    assert not gv.scene()._stage.GetPrimAtPath("/from_file_v2").IsValid()

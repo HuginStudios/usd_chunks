@@ -359,8 +359,12 @@ def _author_raw_connection(
 # throwaway Usd.Stage instead of the live scene. Dropping a plain scene file instead spawns a
 # Sublayer chunk node with the path pre-filled (see ChunkGraphView._import_as_sublayer).
 
+#: A dropped file with this extension becomes a script_runner node running it.
+_SCRIPT_EXT = ".py"
+
+
 def droppable_paths(event) -> "list[str]":
-    """The USD file paths a drag carries, if any.
+    """The USD and Python file paths a drag carries, if any.
 
     Module-level because the tab panel needs the same answer before a graph view exists:
     with no context there is no ChunkGraphView to accept the drop at all, so the panel
@@ -368,7 +372,7 @@ def droppable_paths(event) -> "list[str]":
     """
     if not event.mimeData().hasUrls():
         return []
-    exts = (".usd", ".usda", ".usdc", ".usdz")
+    exts = (".usd", ".usda", ".usdc", ".usdz", _SCRIPT_EXT)
     return [
         url.toLocalFile() for url in event.mimeData().urls()
         if url.isLocalFile() and os.path.splitext(url.toLocalFile())[1].lower() in exts
@@ -4191,14 +4195,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._recook_active_view(touched or None)
 
     def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: "ChunkGraphScene") -> None:
-        """Clear a port, healing the exec chain, then redraw and recook.
+        """Cut the wire into a port, then redraw and recook.
+
+        Only that wire: the node it fed keeps its own downstream wiring (see
+        chunk_graph.disconnect's heal). Pulling a node out of the chain with healing is what
+        shake-to-disconnect and delete are for.
 
         `attr` is accepted for call-site compatibility and deliberately unused: the engine
         resolves the attribute itself, so both frontends read the same one.
         """
         prims, chunks = self._engine_context(graph_scene)
         change = chunk_graph.disconnect(graph_scene._stage, self._as_port_ref(port),
-                                        prims, chunks)
+                                        prims, chunks, heal=False)
         if not change.edges_dirty:
             return
 
@@ -4747,6 +4755,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _handle_dropped_file(
         self, path: str, scene_pos: QtCore.QPointF, global_pos: QtCore.QPoint
     ) -> None:
+        if os.path.splitext(path)[1].lower() == _SCRIPT_EXT:
+            self._import_as_script(path, scene_pos)
+            return
         kind = _detect_dropped_usd_kind(path)
         if kind is None:
             return
@@ -4954,6 +4965,35 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 scene.add_chunk(c)
 
         if file_param := primary.get_param("file_path"):
+            file_param.value = path
+
+        if view_exists:
+            self._recook_active_view()
+
+    def _import_as_script(self, path: str, scene_pos: QtCore.QPointF) -> None:
+        """Drop-a-.py-file: a script_runner node at the drop point, running that file.
+
+        Same shape as _import_as_reference. The script only runs once the node is wired
+        into the active view, like any other freshly created chunk, and from then on every
+        save of the file re-runs it (script_runner watches the file itself).
+        """
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
+            return
+        scene = _chunk.get_scene()
+        if not scene:
+            return
+        primary, chunks = self._instantiate_chunk_of_type("script_runner")
+        if primary is None:
+            return
+        context = self._graph_context()
+        view_exists = self._context_has_view(scene, context)
+        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
+            for c in chunks:
+                scene.add_chunk(c)
+
+        if file_param := primary.get_param("script_file"):
             file_param.value = path
 
         if view_exists:

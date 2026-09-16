@@ -16,11 +16,17 @@ The "Output Type" menu picks which one the script's `result` is coerced into and
 on; the other three are cleared. Wire the port whose type matches the downstream input --
 a numeric input silently drops a String value (a String into a non-String attr is a type
 mismatch USD refuses), which is exactly why the typed outputs exist.
+
+Script File, when set, is run instead of the code box, and re-run whenever the file is
+saved -- so the script can be written in a real editor. Dropping a .py file onto the node
+graph creates one of these with it filled in.
 """
 from __future__ import annotations
 
 import logging
+import os
 import traceback
+import weakref
 
 from usd_chunks import chunk
 from usd_chunks.chunk_flags import ChunkFlags
@@ -120,6 +126,106 @@ def _show_only_selected_output(chunk_obj):
             param.set_state(ChunkFlags.State.HIDDEN)
 
 
+def _show_code_or_file(chunk_obj):
+    """A script file replaces the code box, so the box is hidden while one is set."""
+    code_param = chunk_obj.get_param("code")
+    if code_param is None:
+        return
+    if _script_file(chunk_obj):
+        code_param.set_state(ChunkFlags.State.HIDDEN)
+    else:
+        code_param.unset_state(ChunkFlags.State.HIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# Script file
+#
+# Polled rather than watched: editors such as VS Code save by replacing the file, and
+# QFileSystemWatcher stops following a path once the file under it has been replaced.
+# ---------------------------------------------------------------------------
+
+_POLL_MS = 500
+
+# id(chunk) -> (weakref to the chunk, path, mtime when it was last read)
+_watched: dict = {}
+_timer = None
+
+
+def _script_file(chunk_obj):
+    param = chunk_obj.get_param("script_file")
+    return str(param.value).strip() if param is not None and param.value else ""
+
+
+def _mtime(path):
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def _watch(chunk_obj, path):
+    _watched[id(chunk_obj)] = (weakref.ref(chunk_obj), path, _mtime(path))
+    _ensure_timer()
+
+
+def _ensure_timer():
+    """One timer for every script file. Without a Qt application there is nothing to
+    drive it, and the file is still read fresh on every cook."""
+    global _timer
+    if _timer is not None:
+        return
+    try:
+        from PySide6 import QtCore
+    except ImportError:
+        return
+    app = QtCore.QCoreApplication.instance()
+    if app is None:
+        return
+    _timer = QtCore.QTimer(app)
+    _timer.setInterval(_POLL_MS)
+    _timer.timeout.connect(_poll)
+    _timer.start()
+
+
+def _poll():
+    for key, (ref, path, seen) in list(_watched.items()):
+        chunk_obj = ref()
+        if (chunk_obj is None or getattr(chunk_obj, "_deleting", False)
+                or _script_file(chunk_obj) != path):
+            _watched.pop(key, None)
+            continue
+        now = _mtime(path)
+        # None: mid-save, the file can briefly not exist. Keep the last stamp and catch
+        # the new one when it is back.
+        if now is None or now == seen:
+            continue
+        _watched[key] = (ref, path, now)
+        # Out of the active view. It reads the file fresh when it next cooks anyway.
+        if chunk_obj.is_blocked():
+            continue
+        _refresh(chunk_obj)
+
+
+def _read_script(chunk_obj):
+    """(code, filename) to run -- the script file if one is set, else the code box.
+
+    code is None when the file cannot be read. The filename goes to compile() so a
+    traceback names the real file and line.
+    """
+    path = _script_file(chunk_obj)
+    if not path:
+        _watched.pop(id(chunk_obj), None)
+        code_param = chunk_obj.get_param("code")
+        return (str(code_param.value) if code_param and code_param.value else ""), "<Python>"
+    _watch(chunk_obj, path)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read(), path
+    except OSError as err:
+        logger.error("Cannot read script file %s: %s", path, err)
+        return None, path
+
+
 def _run_script(chunk_obj):
     stage = chunk_obj.get_stage()
     if not stage:
@@ -131,8 +237,9 @@ def _run_script(chunk_obj):
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
 
-    code_param = chunk_obj.get_param("code")
-    code = str(code_param.value) if code_param and code_param.value else ""
+    code, filename = _read_script(chunk_obj)
+    if code is None:
+        return
 
     type_param = chunk_obj.get_param("output_type")
     out_type = str(type_param.value) if type_param and type_param.value else "string"
@@ -163,7 +270,7 @@ def _run_script(chunk_obj):
     }
 
     try:
-        exec(compile(code, "<Python>", "exec"), exec_globals)
+        exec(compile(code, filename, "exec"), exec_globals)
     except Exception:
         logger.error("Error:\n%s", traceback.format_exc())
         return
@@ -186,11 +293,16 @@ def _run_script(chunk_obj):
                 result_param.value = _empty_for(out_name)
 
 
-def execute(node):
+def _refresh(chunk_obj):
     # Also on the exec-chain cook, so a reopened scene shows the output matching its saved
     # output_type without anyone having to touch the menu first.
-    _show_only_selected_output(node)
-    _run_script(node)
+    _show_only_selected_output(chunk_obj)
+    _show_code_or_file(chunk_obj)
+    _run_script(chunk_obj)
+
+
+def execute(node):
+    _refresh(node)
 
 
 def _on_change(owner, notice, sender):
@@ -200,12 +312,22 @@ def _on_change(owner, notice, sender):
     chunk_obj = owner.get_chunk()
     if chunk_obj is None:
         return
-    _show_only_selected_output(chunk_obj)
-    _run_script(chunk_obj)
+    _refresh(chunk_obj)
 
 
 def main():
     chunk_api = chunk.Chunk("Python")
+
+    script_file = chunk.FileBrowser(
+        "script_file",
+        "Script File",
+        extensions=[".py"],
+        # An existing file: without this the browse button puts up a Save dialog.
+        flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.FILE_EXISTING,
+        tooltip="Run this .py file instead of the code below. Saving the file re-runs it.",
+    )
+    script_file.add_callback(_on_change)
+    chunk_api.add_param(script_file)
 
     prim_path = chunk.LineEdit(
         "prim_path",
@@ -285,6 +407,8 @@ def config():
         Python — runs a script with stage, prim, node, and usdviewApi in scope.
 
         Parameters:
+          - Script File: optional .py file, run instead of Code and re-run on
+            every save. Drop a .py file on the node graph to create one.
           - Prim: optional prim input (viewport picking or a wired-in path).
           - Code: the script to run. Set the `result` variable to expose a value.
           - Output Type: string | int | float | bool. Picks which output `result`

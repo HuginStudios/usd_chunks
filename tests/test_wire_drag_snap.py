@@ -13,7 +13,7 @@ from pxr import Usd
 from PySide6 import QtCore
 
 from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
 
@@ -105,3 +105,36 @@ def test_wire_drop_far_from_any_port_does_not_snap(graph) -> None:
 
     b_attr = gv.scene()._stage.GetAttributeAtPath(b_in.attr_path)
     assert not list(b_attr.GetConnections()), "dropping far from any port should disconnect, not snap"
+
+
+def test_pulling_an_exec_wire_off_cuts_only_that_wire(graph) -> None:
+    """A -> B -> C, drag B's exec input off into empty space.
+
+    Live-reported: the wire seemed to reconnect itself to the next node down the chain.
+    The disconnect healed as if B were being removed, rewiring C to A and dropping B -> C.
+    """
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("prim")
+    a, b, c = _mk(mod, scene), _mk(mod, scene), _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    nodes = gv.scene()._nodes
+    pa, pb, pc = (get_chunk_prim_path(x) for x in (a, b, c))
+    gv._author_connection(nodes[pa].get_port(f"{pa}.outputs:chunk"), nodes[pb].get_port(f"{pb}.inputs:chunk"))
+    gv._author_connection(nodes[pb].get_port(f"{pb}.outputs:chunk"), nodes[pc].get_port(f"{pc}.inputs:chunk"))
+    gv.scene()._build_edges()
+    stage = gv.scene()._stage
+    # In a scene opened from disk the wires live in the root layer, which is also the edit
+    # target. Recreate that here: wired live they land in a stronger layer, where a heal
+    # authored on the edit target is silently outvoted and the bug never shows.
+    home = chunk_utils.get_attr_home_layer(stage.GetAttributeAtPath(f"{pc}.inputs:chunk"))
+    stage.SetEditTarget(Usd.EditTarget(home))
+
+    b_in = gv.scene()._nodes[pb].get_port(f"{pb}.inputs:chunk")
+    gv._start_wire_drag(b_in, b_in.scenePos())
+    gv._finish_wire_drag(b_in.scenePos() + QtCore.QPointF(5000, 5000))
+
+    assert not stage.GetAttributeAtPath(f"{pb}.inputs:chunk").GetConnections()
+    assert [str(p) for p in stage.GetAttributeAtPath(f"{pc}.inputs:chunk").GetConnections()] == [
+        f"{pb}.outputs:chunk"
+    ], "C must stay wired to B, not be handed B's old input"

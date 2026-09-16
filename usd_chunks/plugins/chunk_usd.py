@@ -4557,6 +4557,32 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(stage))
 
     dst.Export(str(path))
+    _reload_cached_layer(path)
+
+
+def _reload_cached_layer(path: "str | Path") -> None:
+    """Bring Sdf's in-memory copy of a just-written file back in line with the disk.
+
+    Sdf keeps one layer per path for the whole process, and Export writes the file without
+    touching it. So saving over a file already open in this session -- most often the very
+    scene being worked on -- left the old contents cached: reopening it, dropping it back
+    into the graph, or anything else that goes through FindOrOpen got the scene as it was
+    BEFORE the save, and a later Save() of that layer would have written the old contents
+    back over the new file.
+
+    When the file is the live stage's own root layer, the reload is a composition no-op for
+    the chunks (the export is their composed state), but it still reports every chunk prim
+    as resynced -- suppressed, so it does not send the whole graph through a rescan.
+    """
+    layer = Sdf.Layer.Find(str(path))
+    if layer is None:
+        return
+    prev = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        layer.Reload(force=True)
+    finally:
+        chunk_notice._usd_write_active = prev
 
 
 def _carry_ancestor_specs(flat: "Sdf.Layer", dst: "Sdf.Layer", prim_path: "Sdf.Path") -> None:
