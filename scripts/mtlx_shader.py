@@ -485,8 +485,14 @@ def execute(node):
     _ensure_prim_path(node, sdef)
     path_param = node.get_param("prim_path")
 
+    # The Path may select a variant to author into: /asset{color=red}/materials/surface
+    # puts the material inside /asset's "red". Split the way every other chunk does --
+    # the selections are entered below, and the path is validated and authored without
+    # them. Validating the whole string returned False (Sdf spells a variant path with no
+    # slash after the brace), so a variant path made this chunk silently author nothing.
     home = (path_param.value or "").strip()
-    if not home or not Sdf.Path.IsValidPathString(home):
+    _anchor, home_target, var_selections = chunk_utils.split_variant_path(home)
+    if not home_target or not Sdf.Path.IsValidPathString(home_target):
         return
 
     # An intermediate belongs inside the network it feeds: a UsdShade Material is
@@ -502,7 +508,12 @@ def execute(node):
     # Passing the param (rather than its value) is what lets a re-cook keep its path:
     # get_unique_path clears this chunk's own procedural layer first, so it does not
     # collide with its own prim from last time and walk the suffix up on every execute.
-    if root:
+    #
+    # A variant path is taken as given: uniquifying would test the path against whatever
+    # variant is selected now, not the one being authored into (same as camera.py).
+    if var_selections:
+        prim_path = home_target
+    elif root:
         prim_path = chunk_utils.get_unique_path(stage, f"{root}/{Sdf.Path(home).name}")
     else:
         prim_path = chunk_utils.get_unique_path(stage, path_param)
@@ -514,13 +525,24 @@ def execute(node):
     # write re-cooks, the re-cook resolves the same path, and the second pass writes
     # nothing. Once it holds a resolved path, unwiring leaves the shader where it is
     # rather than moving it back out -- the param now says where it lives.
-    if home != prim_path:
+    if home_target != prim_path:
         path_param.value = prim_path
 
     # A terminal needs a Material to be bindable, and a Material cannot itself carry the
     # shader, so the shader becomes its child. Everything else IS the shader.
     shader_path = f"{prim_path}/{_SHADER_LEAF}" if sdef.is_terminal else prim_path
 
+    with chunk_utils.author_in_variant_context(stage, home):
+        _author_shader(node, stage, sdef, prim_path, shader_path)
+
+
+def _author_shader(node, stage, sdef, prim_path, shader_path) -> None:
+    """Define the shader (and, for a terminal, its Material and bindings) at `shader_path`.
+
+    Split out of execute so the whole of it runs inside the variant context a Path may
+    select -- the shader, its inputs and outputs, the Material and the bindings all land
+    in the same place.
+    """
     shader = UsdShade.Shader.Define(stage, shader_path)
     shader.CreateIdAttr(sdef.identifier)
 

@@ -4432,7 +4432,15 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     Only chunk prims themselves are copied — reopening regenerates everything a chunk
     drives by re-running load_chunks' cook pass, not by replaying a content snapshot.
     Content that isn't reproduced by re-execution (an RBD Solver's bake) or that never
-    went through a chunk at all does not round-trip through this — see save_scene.
+    went through a chunk at all does not round-trip through this.
+
+    The stage's up-axis and units are stamped onto the file as well. Sdf.CopySpec copies
+    prim specs and nothing else, and those two are not prim data: they are stage
+    metadata, resolved only from a stage's own root/session layer and never composed up
+    from anything underneath. Without an opinion of its own the exported file falls back
+    to USD's global default — reported live as a Z-up, centimetre scene that reopened
+    Y-up in metres, with every chunk-authored prim lying on its side at a hundredth of
+    its size.
     """
     stage = scene.get_stage()
     if not stage:
@@ -4454,6 +4462,13 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
             Sdf.CreatePrimInLayer(dst, parent)
         Sdf.CopySpec(flat, prim_path, dst, prim_path)
         _carry_ancestor_specs(flat, dst, prim_path)
+
+    # Onto the in-memory layer, before it is written: the same UsdGeom API the live stage
+    # answers with, pointed at a stage opened over `dst`, so the file carries the opinion
+    # from its first byte rather than being reopened and patched afterwards.
+    dst_stage = Usd.Stage.Open(dst)
+    UsdGeom.SetStageUpAxis(dst_stage, UsdGeom.GetStageUpAxis(stage))
+    UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(stage))
 
     dst.Export(str(path))
 
@@ -4485,41 +4500,26 @@ def _carry_ancestor_specs(flat: "Sdf.Layer", dst: "Sdf.Layer", prim_path: "Sdf.P
 
 
 def save_scene(scene: "core.SceneSender", chunkgroup_path: "str | Path") -> None:
-    """The "nice save flow": export_chunks, plus the stage metadata it doesn't carry.
+    """The "nice save flow". Now the same file export_chunks writes.
 
-    Previously wrote a bundled pair -- the chunk graph plus a flattened snapshot of
-    everything else the stage composed, so genuinely non-reproducible content (an RBD
-    bake) or content that never went through a chunk at all would still come back.
-    Dropped once every chunk that authors real content got a reserved execute() hook
-    (see the reload-reliability fixes this shipped alongside): reopening a chunk-only
-    export now correctly regenerates everything a chunk is responsible for by re-running
-    it, the same as any other reload, so the second file was carrying nothing that
-    isn't already reproduced this way -- except a bake, which is expected to need an
-    explicit re-run after reload, same as Houdini's File Cache model, and content that
-    was never a chunk's in the first place, which this flow was never meant to cover.
+    It has been two things in its time. First a bundled pair -- the chunk graph plus a
+    flattened snapshot of everything else the stage composed, so non-reproducible
+    content (an RBD bake) or content that never went through a chunk would still come
+    back. Dropped once every chunk that authors real content got a reserved execute()
+    hook: reopening a chunk-only export regenerates everything a chunk is responsible
+    for by re-running it, so the second file carried nothing not already reproduced --
+    bar a bake, which needs an explicit re-run after reload, same as Houdini's File Cache.
+
+    Then export_chunks plus the stage's up-axis and units, stamped onto the file after
+    the fact because export_chunks did not carry them. It does now -- a chunkgroup saved
+    from the plain Save ChunkGroup menu had been coming back Y-up in metres regardless of
+    the scene -- so this is export_chunks by another name. Kept as the entry point the
+    Save Scene menu and the existing tests call.
 
     Args:
         chunkgroup_path: Where the chunk graph is written -- the file to reopen.
     """
-    stage = scene.get_stage()
-    if not stage:
-        return
-
-    chunkgroup_path = Path(chunkgroup_path)
-    export_chunks(scene, chunkgroup_path)
-
-    # Live-confirmed: up-axis (and by the same rule, units) does NOT compose across
-    # sublayers the way ordinary metadata does -- it resolves only from a stage's own
-    # root/session layer, falling back to USD's global default (Y) otherwise. Sdf.CopySpec
-    # (export_chunks' own copy mechanism) only copies prim specs, so the exported file's
-    # own root layer has no opinion at all without this -- reopening it showed Y even
-    # though the live scene was Z. Stamp it directly onto the file that matters.
-    cg_layer = Sdf.Layer.FindOrOpen(str(chunkgroup_path))
-    if cg_layer is not None:
-        cg_stage = Usd.Stage.Open(cg_layer)
-        UsdGeom.SetStageUpAxis(cg_stage, UsdGeom.GetStageUpAxis(stage))
-        UsdGeom.SetStageMetersPerUnit(cg_stage, UsdGeom.GetStageMetersPerUnit(stage))
-        cg_layer.Save()
+    export_chunks(scene, Path(chunkgroup_path))
 
 
 def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | None") -> None:

@@ -111,3 +111,49 @@ def test_successful_install_is_recorded(manager, monkeypatch):
     manager.install_packages([PACKAGE])
 
     assert manager.package_in_cache(PACKAGE), "a successful install should not be repeated"
+
+
+# ---------------------------------------------------------------------------
+# A requirement declared as a range must be answered by the cache
+# ---------------------------------------------------------------------------
+#
+# package_in_cache went through package_info, which splits on "==" alone. A ranged
+# requirement -- the form chunks are meant to declare -- came back with the whole string
+# as its name, which nothing is keyed by, so every such chunk missed the cache on every
+# load: two `pip list` subprocesses each, and "numpy not installed" next to a numpy that
+# was. Blender loads every module at once to generate its node classes, so the first open
+# of a network paid that nine times over.
+
+
+def test_a_range_is_satisfied_by_a_cached_version_inside_it(manager):
+    manager._cache["numpy"] = {"2.4.2"}
+    assert manager.package_in_cache("numpy>=2,<3")
+    assert manager.package_in_cache("numpy")
+    assert not manager.package_in_cache("numpy>=3")
+    assert not manager.package_in_cache("numpy==2.4.1")
+    assert manager.package_in_cache("numpy==2.4.2")
+
+
+def test_cache_names_match_the_way_pip_spells_them(manager):
+    manager._cache["opencv-python"] = {"4.10.0.84"}
+    assert manager.package_in_cache("opencv_python>=4,<5")
+    assert manager.package_in_cache("OpenCV-Python")
+
+
+def test_a_satisfied_range_never_reaches_pip(manager, monkeypatch):
+    manager._cache["numpy"] = {"2.4.2"}
+    attempts = []
+    monkeypatch.setattr(chunk_registry.subprocess, "run", lambda args, **kw: attempts.append(args))
+    manager.install_packages(["numpy>=2,<3"])
+    assert not attempts, "an installed package must not be listed or installed again"
+
+
+def test_pip_is_listed_once_per_process_for_packages_that_stay_missing(manager, monkeypatch):
+    listed = []
+    monkeypatch.setattr(chunk_registry.ChunkDependencyManager, "update_cache", lambda self: listed.append(1))
+    monkeypatch.setattr(chunk_registry.subprocess, "run", _run_returning(1))
+    monkeypatch.setattr(chunk_registry.ChunkDependencyManager, "_listed", False)
+    manager.install_packages([PACKAGE])
+    manager.install_packages([PACKAGE + "-too"])
+    assert len(listed) == 1, "every chunk that misses used to shell out to pip list again"
+

@@ -31,12 +31,21 @@ def execute(node):
     # the mesh is muted -- which is precisely the case this guard exists to catch.
     if not UsdShade.Material(stage.GetPrimAtPath(mat_path)):
         return
-    target_paths = [
-        path
-        for path in chunk_utils.iter_prim_targets(stage, prim_path_param)
-        if (prim := stage.GetPrimAtPath(path)) and prim.IsDefined()
+    # The path STRINGS, variant selections and all -- not the stripped target paths
+    # iter_prim_targets yields. That generator yields from inside the variant edit context
+    # and leaves it as soon as the next path is pulled, so collecting its results into a
+    # list and binding afterwards authored every binding OUTSIDE the variant: a Prim Path of
+    # "/asset{color=red}/geo" put the binding on /asset/geo for every colour. Each path is
+    # re-entered below, at the moment its binding is written.
+    #
+    # Definedness is checked inside the context too: a prim that only exists in the
+    # selected variant is not defined until that variant is selected.
+    path_strs = [
+        path_str
+        for path_str in prim_path_param.resolve_paths()
+        if _target_defined(stage, path_str)
     ]
-    if not target_paths:
+    if not path_strs:
         return
 
     layer.Clear()
@@ -47,10 +56,17 @@ def execute(node):
     material = UsdShade.Material(stage.GetPrimAtPath(mat_path))
     if not material:
         return
-    for path in target_paths:
-        prim = stage.GetPrimAtPath(path)
-        if prim and prim.IsValid():
-            UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+    for path_str in path_strs:
+        with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
+            prim = stage.GetPrimAtPath(target_path)
+            if prim and prim.IsValid():
+                UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+
+
+def _target_defined(stage, path_str) -> bool:
+    with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
+        prim = stage.GetPrimAtPath(target_path)
+        return bool(prim) and prim.IsDefined()
 
 
 def main():

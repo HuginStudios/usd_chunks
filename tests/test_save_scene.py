@@ -1,5 +1,5 @@
-"""Tests for chunk_usd.save_scene -- the "nice save flow" (Dan's request): export_chunks
-plus the stage metadata (up-axis, units) it doesn't carry on its own.
+"""Tests for chunk_usd.save_scene -- the "nice save flow" (Dan's request) -- and for the
+stage metadata (up-axis, units) that export_chunks, which it wraps, now carries itself.
 
 Previously wrote a bundled pair (the chunk graph plus a flattened snapshot of everything
 else the stage composed). Dropped once every chunk that authors real content got a
@@ -15,6 +15,7 @@ from pxr import Usd, UsdGeom
 
 from usd_chunks.plugins.chunk_usd import (
     _CHUNK_PRIM_TYPENAME,
+    export_chunks,
     initialize as _chunk_usd_init,
     load_chunks,
     save_scene,
@@ -105,8 +106,8 @@ def test_save_scene_chunkgroup_file_itself_keeps_the_stage_up_axis(tmp_path) -> 
     and reopening. up-axis (and units) does not compose across sublayers the way ordinary
     metadata does: it resolves only from a stage's own root/session layer, falling back to
     USD's global default (Y) rather than falling through into anything underneath. export_
-    chunks' own Sdf.CopySpec-based copy only ever copies prim specs, so the exported file's
-    root layer has no stage-level opinion at all without save_scene stamping it separately."""
+    chunks' Sdf.CopySpec-based copy only ever copies prim specs, so the exported file's root
+    layer has no stage-level opinion at all unless it is stamped on."""
     stage, scene = _build_stage_with_a_chunk()
 
     out = tmp_path / "my_scene.usda"
@@ -115,3 +116,22 @@ def test_save_scene_chunkgroup_file_itself_keeps_the_stage_up_axis(tmp_path) -> 
     reopened = Usd.Stage.Open(str(out))
     assert UsdGeom.GetStageMetersPerUnit(reopened) == 0.01
     assert UsdGeom.GetStageUpAxis(reopened) == UsdGeom.Tokens.z
+
+
+def test_export_chunks_alone_keeps_the_stage_up_axis_and_units(tmp_path) -> None:
+    """The plain Save ChunkGroup menu goes straight to export_chunks, not through
+    save_scene, and used to lose the up-axis and units that only save_scene stamped on
+    afterwards -- so the "nice" save kept them and the ordinary one did not. The stamp
+    lives in export_chunks now, so there is one file format and both menus write it."""
+    stage, scene = _build_stage_with_a_chunk()
+
+    out = tmp_path / "my_chunkgroup.usda"
+    export_chunks(scene, out)
+
+    reopened = Usd.Stage.Open(str(out))
+    assert UsdGeom.GetStageMetersPerUnit(reopened) == 0.01
+    assert UsdGeom.GetStageUpAxis(reopened) == UsdGeom.Tokens.z
+    # And it is the file's own opinion, not something a reopen happens to default to.
+    assert reopened.GetRootLayer().pseudoRoot.GetInfo("upAxis") == UsdGeom.Tokens.z
+    assert reopened.GetRootLayer().pseudoRoot.GetInfo("metersPerUnit") == 0.01
+

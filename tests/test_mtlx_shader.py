@@ -226,6 +226,57 @@ def test_terminal_authors_material_and_intermediate_does_not(env):
     assert stage.GetPrimAtPath(node.get_param("prim_path").value).GetTypeName() == "Shader"
 
 
+def test_a_variant_path_authors_the_material_inside_that_variant(env):
+    """/asset{color=red}/materials/standard_surface: the Material, its shader and the
+    binding all land in /asset's "red" variant, and are only composed while it is
+    selected. Validating the whole string used to return False (Sdf spells a variant
+    path with no slash after the brace), and the chunk silently authored nothing."""
+    stage, _, _, module = env
+    # In the session layer, as test_variant_pattern_targeting does: a chunk created or
+    # edited outside _cook auto-executes against the ambient edit target, and execute()
+    # starts by clearing that layer -- so an asset defined in the root layer is gone by
+    # the time the cook runs.
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        asset = stage.DefinePrim("/asset", "Xform")
+        vset = asset.GetVariantSets().AddVariantSet("color")
+        for name in ("red", "blue"):
+            vset.AddVariant(name)
+        vset.SetVariantSelection("blue")
+        stage.DefinePrim("/asset/geo", "Cube")
+
+    # One layer for every cook this chunk does, including the auto-cooks that creating it
+    # and setting its params trigger: in the app each of those runs in the chunk's own
+    # layer and starts by clearing it, and here that layer is this one. Left to the
+    # ambient target, a first cook would author a Material outside the variant, and the
+    # cook under test would then find it already defined and author only overs.
+    layer = Sdf.Layer.CreateAnonymous("cook")
+    stage.GetRootLayer().subLayerPaths.append(layer.identifier)
+    with Usd.EditContext(stage, layer):
+        surf = _create(env, SURFACE)
+        surf.get_param("prim_path").value = "/asset{color=red}/materials/standard_surface"
+        surf.get_param("bind_to").value = "/asset/geo"
+        module.execute(surf)
+    vset = stage.GetPrimAtPath("/asset").GetVariantSets().GetVariantSet("color")
+
+    assert surf.get_param("prim_path").value == "/asset{color=red}/materials/standard_surface", (
+        "the path is the user's, selection included; nothing rewrote it"
+    )
+    inside = layer.GetPrimAtPath("/asset{color=red}materials/standard_surface")
+    assert inside is not None and inside.typeName == "Material", layer.ExportToString()
+    assert layer.GetPrimAtPath("/asset{color=red}materials/standard_surface/shader") is not None
+    assert layer.GetPrimAtPath("/asset/materials") is None, "nothing outside the variant"
+
+    assert vset.GetVariantSelection() == "blue", "authoring into red must not leave it selected"
+    outside = stage.GetPrimAtPath("/asset/materials/standard_surface")
+    assert not (outside and outside.IsDefined()), "blue is selected: the material is not composed"
+    with Usd.EditContext(stage, stage.GetSessionLayer()):   # where "blue" is authored
+        vset.SetVariantSelection("red")
+    material = stage.GetPrimAtPath("/asset/materials/standard_surface")
+    assert material and material.GetTypeName() == "Material"
+    bound = UsdShade.MaterialBindingAPI(stage.GetPrimAtPath("/asset/geo")).GetDirectBindingRel()
+    assert [str(t) for t in bound.GetTargets()] == ["/asset/materials/standard_surface"]
+
+
 @pytest.mark.xfail(
     reason="the upstream chunk's outputs:out is gone by the time the downstream cook "
     "reads it, so the second hop of the chain cannot be authored -- the wire between two "

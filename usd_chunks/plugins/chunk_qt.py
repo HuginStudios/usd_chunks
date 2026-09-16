@@ -50,8 +50,9 @@ from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView, droppable_path
 def save_chunkgroup_dialog(scene=None) -> None:
     """Export the current chunk graph as one clean, portable USD layer — every
     chunk's own bookkeeping freshly authored into a brand-new layer, with no
-    subLayerPaths at all. Same mechanism as the Export ChunkGroup chunk.
-    Shared by the DCC plugins' Save ChunkGroup menu entries."""
+    subLayerPaths at all, carrying the scene's up-axis and units. Same mechanism
+    as the Export ChunkGroup chunk. Shared by the DCC plugins' Save ChunkGroup
+    menu entries."""
     scene = scene or chunk_registry.ChunkRegistry().scene
 
     flt = "*.usda *.usd *.usdc *.usdz"
@@ -63,9 +64,9 @@ def save_chunkgroup_dialog(scene=None) -> None:
 
 
 def save_scene_dialog(scene=None) -> None:
-    """The "nice save flow" (Dan's request): export_chunks plus the stage metadata
-    (up-axis, units) it doesn't carry on its own -- see chunk_usd.save_scene. Unlike
-    Save ChunkGroup, the result reopens with the same up-axis/units as the live scene."""
+    """The "nice save flow" (Dan's request) -- see chunk_usd.save_scene. Writes the
+    same file Save ChunkGroup does now that export_chunks carries up-axis and units
+    itself; kept as its own menu entry."""
     scene = scene or chunk_registry.ChunkRegistry().scene
 
     flt = "*.usda *.usd *.usdc *.usdz"
