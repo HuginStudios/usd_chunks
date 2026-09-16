@@ -1047,6 +1047,105 @@ def clean_description(desc: str) -> str:
     return "" if cleaned == _PLACEHOLDER_DESC else cleaned
 
 
+_WORD_SPLIT = re.compile(r"[^0-9a-zA-Z]+|(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _words(text: str) -> List[str]:
+    """Lowercased words of a menu label: split on separators and camelCase humps."""
+    return [w.lower() for w in _WORD_SPLIT.split(text) if w]
+
+
+def _subsequence_gaps(token: str, text: str) -> Optional[int]:
+    """How many extra characters the tightest in-order match of token in text spans over
+    its own length, or None when token's letters do not all appear in order."""
+    best = None
+    for start in (i for i, ch in enumerate(text) if ch == token[0]):
+        pos = start
+        for ch in token[1:]:
+            pos = text.find(ch, pos + 1)
+            if pos < 0:
+                break
+        else:
+            gaps = pos - start + 1 - len(token)
+            best = gaps if best is None else min(best, gaps)
+    return best
+
+
+def _token_score(token: str, label: str, path: Tuple[str, ...]) -> int:
+    """How well one query word matches an entry; 0 for no match. Higher is closer.
+
+    The label is what you are looking for, so every way of matching it outranks matching
+    the category it sits in -- except a loose, letters-in-order match, which is a guess.
+    """
+    name = label.lower()
+    words = _words(label)
+    if name == token:
+        return 1000
+    if name.startswith(token):
+        return 900 - len(name)
+    if any(w.startswith(token) for w in words):
+        return 700 - len(name)
+    if (at := name.find(token)) >= 0:
+        return 600 - at - len(name)
+    if len(token) > 1 and "".join(w[0] for w in words).startswith(token):
+        return 550 - len(name)
+    for part in path:
+        part_words = _words(part)
+        if part.lower().startswith(token) or any(w.startswith(token) for w in part_words):
+            return 400
+        if token in part.lower():
+            return 350
+    compact = "".join(words)
+    if len(token) > 2 and (gaps := _subsequence_gaps(token, compact)) is not None and gaps <= len(token):
+        return 300 - 10 * gaps - len(name)
+    return 0
+
+
+#: Enough to settle a near-tie between a chunk and a variant, not to outrank a closer match.
+_BASE_ENTRY_BONUS = 60
+
+
+def search_menu_entries(entries: List["MenuEntry"], query: str) -> List["MenuEntry"]:
+    """The entries matching query, closest first -- the chunk menu's search.
+
+    Every word of the query must match the entry's name or its category path. A name that
+    starts with the query ranks first (shorter names ahead), then a name with a word that
+    starts with it, then the query anywhere in the name, then the name's initials ("vmo"
+    for vector_math_ops), then the category, then the query's letters in order with a few
+    missing in between ("tranform"). Shared by every frontend so "trans" lists the same
+    chunks in the same order everywhere.
+
+    Args:
+        entries (List[MenuEntry]): The entries to search, in menu order
+        query (str): What was typed; case and surrounding whitespace are ignored
+
+    Returns:
+        List[MenuEntry]: Matching entries, best first; all of entries, unchanged, for an
+        empty query.
+    """
+    tokens = query.lower().split()
+    if not tokens:
+        return list(entries)
+    scored = []
+    for index, entry in enumerate(entries):
+        label = entry.label
+        path = tuple(entry.namespace[:-1])
+        total = 0
+        for token in tokens:
+            if not (score := _token_score(token, label, path)):
+                break
+            total += score
+        else:
+            if entry.presets is None:
+                # A chunk ahead of a variant that matches about as well: one module can
+                # declare hundreds (every MaterialX node), and "ref" should reach Reference
+                # before the Reflect shader.
+                total += _BASE_ENTRY_BONUS
+            scored.append((-total, len(label), label.lower(), index, entry))
+    scored.sort(key=lambda s: s[:4])
+    return [s[-1] for s in scored]
+
+
 _FIRST_CATEGORY = "examples"
 
 

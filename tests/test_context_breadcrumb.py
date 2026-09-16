@@ -245,3 +245,26 @@ def test_it_stays_in_the_corner_when_the_graph_moves(nested):
     graph_view.resize(graph_view.width() - 120, graph_view.height() - 80)
     nested["settle"]()
     assert breadcrumb.pos() == corner, "resizing must not move it either"
+
+
+def test_a_replaced_entry_never_becomes_a_window_of_its_own(nested):
+    """Old entries wait for deleteLater, and until then they must stay inside the row.
+
+    deleteLater() only runs once control is back in the event loop that called it, so a
+    popup opened straight after a rebuild (Tab or a file drop on an empty panel) spins its
+    nested loop with the old buttons still alive. Unparented, each was a top-level window;
+    Windows showed and activated one, and that closed the popup the moment it appeared --
+    the menu never showed, and a dropped file was never imported.
+    """
+    docker = nested["docker"]
+    docker._on_dive_into(nested["inner"])
+    nested["settle"]()
+    breadcrumb = docker.tab_widget.get_current_graph_view()._breadcrumb
+    old = breadcrumb.findChildren(QtWidgets.QToolButton)
+    assert old, "precondition: the row has entries to replace"
+
+    breadcrumb.set_context(nested["outer"])  # no event processing: deletion is still pending
+
+    windows = [b.text() for b in old if b.isWindow()]
+    assert not windows, f"replaced entries became top-level windows: {windows}"
+    assert not any(b.isVisible() for b in old), "a replaced entry must not stay on screen"
