@@ -403,7 +403,7 @@ def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> No
 
 # ---------------------------------------------------------------------------
 # filter bar placement: a tinted "ParamsHeader" panel (prim path -> lofted own-
-# params, e.g. a chunkgroup's "doc" Description field from scripts/chunkgroup.py
+# params, e.g. a chunkgroup's "doc" Description field from scripts/core/chunkgroup.py
 # -> filter bar) -> an embossed separator -> the chunk list
 # ---------------------------------------------------------------------------
 
@@ -446,7 +446,7 @@ def test_filter_bar_follows_prim_path_in_the_header_panel_on_a_plain_tab(qapp) -
 
 
 def test_filter_bar_follows_lofted_description_in_the_header_panel_on_a_chunkgroup_tab(qapp) -> None:
-    """A chunkgroup's own top-level params (e.g. scripts/chunkgroup.py's "doc" Description
+    """A chunkgroup's own top-level params (e.g. scripts/core/chunkgroup.py's "doc" Description
     TextEdit) render lofted, above the filter bar — via ChunkWidget.add_widget's existing
     lofted-params branch for CONTEXT chunks, not anything the filter bar itself builds. Both
     live inside the same tinted header panel as the prim path field and the filter bar."""

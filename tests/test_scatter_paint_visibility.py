@@ -15,7 +15,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 from usd_chunks import chunk_gizmo, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 
-brush_mod = importlib.import_module("scripts.scatter_brush")
+brush_mod = importlib.import_module("scripts.modelling.scatter_brush")
 
 
 class _DummyScene(SceneSender):

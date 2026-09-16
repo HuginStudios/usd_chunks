@@ -649,7 +649,7 @@ def _quiet_introspection():
     that cannot import outside its host then raises from inside inspect, and the runner
     exits before opening a window with no traceback of its own.
 
-    scripts/displaymodes/display_modes.py is the one that bites here: it imports
+    scripts/utils/displaymodes/display_modes.py is the one that bites here: it imports
     pxr.Usdviewq, which only exists inside usdview. Returning None from getmodule costs
     the patch a filename it does not use and wakes nothing.
 

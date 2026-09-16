@@ -22,7 +22,7 @@ import time
 import pytest
 from pxr import Usd, UsdGeom, Vt
 
-import scripts.rbd_solver as rbd_mod
+import scripts.dynamics.rbd_solver as rbd_mod
 
 if not rbd_mod._HAS_MUJOCO:
     pytest.skip("mujoco not installed", allow_module_level=True)

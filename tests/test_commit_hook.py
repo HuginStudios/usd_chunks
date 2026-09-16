@@ -152,8 +152,8 @@ class TestExportUsdCommit:
     """Export USD's commit() and its Export button must be the same implementation."""
 
     def setup_method(self):
-        self.create_mod = importlib.import_module("scripts.create_layer")
-        self.export_mod = importlib.import_module("scripts.export_usd")
+        self.create_mod = importlib.import_module("scripts.usd.create_layer")
+        self.export_mod = importlib.import_module("scripts.core.export_usd")
 
     def _network(self, tmp_path, out_name="out"):
         scene, stage = _setup_stage()
@@ -224,8 +224,8 @@ class TestCliRunCommits:
     def _write_network(self, tmp_path):
         """Author a Light -> Export USD network and serialize it, returning the network
         file and the output path the Export USD chunk is configured to write."""
-        export_mod = importlib.import_module("scripts.export_usd")
-        light_mod = importlib.import_module("scripts.light")
+        export_mod = importlib.import_module("scripts.core.export_usd")
+        light_mod = importlib.import_module("scripts.modelling.light")
 
         scene, _stage = _setup_stage()
         light = _make(scene, light_mod, "light")

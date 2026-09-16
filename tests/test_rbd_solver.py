@@ -48,7 +48,7 @@ def test_rbd_run_does_not_reexecute_upstream_chunk() -> None:
     already-existing layers, so pressing "Run Simulation" must not execute any other chunk at
     all (no crash risk, and no more surprise re-scatters).
     """
-    import scripts.rbd_solver as rbd_mod_file
+    import scripts.dynamics.rbd_solver as rbd_mod_file
 
     if not rbd_mod_file._HAS_MUJOCO:
         import pytest

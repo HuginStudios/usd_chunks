@@ -91,7 +91,7 @@ def nested(qapp):
     settle()
 
     g2 = mk("chunkgroup", context=g1)
-    mk("core_usd.duplicate_prim", context=g2)
+    mk("duplicate_prim", context=g2)
     connect_exec(stage, reg.scene, get_chunk_prim_path(t1), get_chunk_prim_path(g2))
     settle()
 

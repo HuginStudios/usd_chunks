@@ -135,12 +135,20 @@ class Gizmo(_gizmo):
 
 
 class StandardCategory(str, Enum):
-    PROPERTIES = "Properties"
     MODELLING = "Modelling"
+    DYNAMICS = "Dynamics"
+    TRANSFORM = "Transform"
     UTILS = "Utility"
     RIGS = "Rigs"
     USER = "User"
     EXAMPLES = "Examples"
+    USD = "USD"
+    PROPERTIES = USD + "/Properties"
+    USD_RENDER = USD + "/Render"
+    USD_LAYER = USD + "/Layer"
+    CORE = "Core"
+    MATERIALS = "Materials"
+    MTLX = MATERIALS + "/MaterialX"
 
 
 ##############################################

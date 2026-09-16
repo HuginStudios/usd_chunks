@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # call site here and elsewhere is unaffected -- one definition, two spellings.
 _CHUNK_TYPE_ATTR = chunk_naming.CHUNK_TYPE_ATTR
 _INPUTS_PREFIX = chunk_naming.INPUTS_PREFIX
-#: What a chunk with no module of its own is saved as, so it can be read back (scripts/runtime.py).
+#: What a chunk with no module of its own is saved as, so it can be read back (scripts/core/runtime.py).
 _RUNTIME_CHUNK_TYPE = "runtime"
 # The ObjectsChanged field name for a connection edit; a value write reports "default".
 _CONNECTION_PATHS_FIELD = "connectionPaths"
@@ -1947,7 +1947,7 @@ def is_chunkgroup(chunk: "core.ChunkBase") -> bool:
 
 
 def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is a Merge chunk (scripts/merge.py) — the only chunk type that
+    """Return True if chunk is a Merge chunk (scripts/core/merge.py) — the only chunk type that
     takes more than one exec input."""
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "merge")
@@ -2605,7 +2605,7 @@ def normalize_merge_slots(stage: "Usd.Stage", prim: "Usd.Prim") -> bool:
 
 
 def is_edit_target_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is an Edit Target chunk (scripts/edit_target.py)."""
+    """Return True if chunk is an Edit Target chunk (scripts/usd/edit_target.py)."""
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "edit_target")
 

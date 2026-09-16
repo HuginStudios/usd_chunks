@@ -20,7 +20,7 @@ from usd_chunks import chunk_gizmo, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins import chunk_usd
 
-rbd_mod = importlib.import_module("scripts.rbd_solver")
+rbd_mod = importlib.import_module("scripts.dynamics.rbd_solver")
 
 
 class _Scene(SceneSender):

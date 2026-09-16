@@ -1809,7 +1809,7 @@ class NoticeConnection:
                         # way load_chunks's own explicit final execute() loop does for the
                         # reserved hook, so this would-be edit would just be lost. Call it
                         # without the EditContext wrapper instead -- a callback that (like
-                        # scripts/sublayer.py's) authors straight into its own
+                        # scripts/usd/sublayer.py's) authors straight into its own
                         # get_edit_context() layer object, not through the stage's ambient
                         # edit target, works fine either way.
                         meth(*args)

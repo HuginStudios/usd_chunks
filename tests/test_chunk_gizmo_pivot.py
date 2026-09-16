@@ -36,7 +36,7 @@ class _DummyScene(SceneSender):
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
-transform_mod = importlib.import_module("scripts.transform")
+transform_mod = importlib.import_module("scripts.transforms.transform")
 
 
 # ---------------------------------------------------------------------------

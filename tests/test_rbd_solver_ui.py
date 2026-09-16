@@ -8,7 +8,7 @@ from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
 
-import scripts.rbd_solver as rbd_mod
+import scripts.dynamics.rbd_solver as rbd_mod
 
 
 class _DummyScene(SceneSender):

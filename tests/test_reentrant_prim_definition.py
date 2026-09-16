@@ -55,8 +55,8 @@ def test_chaining_several_create_layer_edit_target_pairs_does_not_crash():
     Live-reproduced building a 3rd chained pair (crashed with "RuntimeError: Accessed
     invalid expired 'Chunk' prim"); this goes to 8 to stay well clear of that edge.
     """
-    create_mod = importlib.import_module("scripts.create_layer")
-    edit_mod = importlib.import_module("scripts.edit_target")
+    create_mod = importlib.import_module("scripts.usd.create_layer")
+    edit_mod = importlib.import_module("scripts.usd.edit_target")
 
     scene = _DummyScene()
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")

@@ -205,9 +205,9 @@ def test_a_chunk_inside_the_group_reads_the_upstream_group_when_naming(qapp):
         return cs[0]
 
     ga = mk("chunkgroup")
-    dupe_a = mk("core_usd.duplicate_prim", context=ga)
+    dupe_a = mk("duplicate_prim", context=ga)
     gb = mk("chunkgroup")
-    dupe_b = mk("core_usd.duplicate_prim", context=gb)
+    dupe_b = mk("duplicate_prim", context=gb)
     settle()
     view = next(c for c in scene.get_chunks() if chunk_usd.is_view_chunk(c))
     connect_exec(stage, scene, get_chunk_prim_path(ga), get_chunk_prim_path(gb))

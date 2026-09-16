@@ -7,7 +7,7 @@ param values -- restoring values themselves deliberately does NOT re-trigger add
 handlers (chunk_notice._loading_stage), so a chunk whose real authoring work lived only in
 an add_callback handler came back on reload with correct-looking param values but none of
 its actual authored content. Each chunk below got a matching reserved execute(node) hook,
-mirroring the fix scripts/sublayer.py already had.
+mirroring the fix scripts/usd/sublayer.py already had.
 
 Shared pattern: build the chunk live, confirm it authors correctly; export just the chunk
 graph (export_chunks -- never the target content); reload into a fresh stage with whatever
@@ -220,7 +220,7 @@ def test_add_mesh_reapplies_correct_type_on_reload(tmp_path) -> None:
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
 
-    c = _make(scene, "modelling.add_mesh")
+    c = _make(scene, "add_mesh")
     c.get_param("prim_path").value = "/mycube"
     c.get_param("mesh_type").value = "cube"
     c.get_param("dimx").value = 3  # touching a cube-group param is what actually triggers the build

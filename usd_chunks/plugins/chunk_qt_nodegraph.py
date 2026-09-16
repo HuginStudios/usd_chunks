@@ -424,7 +424,7 @@ def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: "tuple[float, float]")
     Blocked BEFORE _load_wire_inputs restores any values: ChunkBase.get_stage() always
     returns the real, live global stage regardless of whether THIS instance was ever added
     to any scene, so a module with real side-effecting reactive code (e.g.
-    scripts/create_layer.py's execute() authoring a genuine anon Sdf.Layer the instant its
+    scripts/usd/create_layer.py's execute() authoring a genuine anon Sdf.Layer the instant its
     layer_name value changes) runs for real even on a throwaway, never-added chunk -- live
     confirmed as an orphaned duplicate layer appearing after a drag-and-drop import."""
     module_name = prim.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get()
@@ -4864,7 +4864,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _import_as_sublayer(self, path: str, scene_pos: QtCore.QPointF) -> None:
         """Drop-a-scene-file: create a Sublayer chunk node at the drop point with its path
         pre-filled. Values are set AFTER add_chunk (unlike the paste path) because Sublayer's
-        own callback (scripts/sublayer.py) only does real work -- authoring subLayerPaths onto
+        own callback (scripts/usd/sublayer.py) only does real work -- authoring subLayerPaths onto
         the chunk's edit layer -- once the chunk has a live prim/edit_context, exactly matching
         how a hand-created Sublayer chunk picks up a path typed into its UI after creation.
 

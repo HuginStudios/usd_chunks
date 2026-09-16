@@ -37,7 +37,7 @@ chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 vine = importlib.import_module("scripts.modelling.vine")
 #: The field name is the brush's to define. Reading it from there rather than restating it
 #: is the point: if the two chunks ever stopped agreeing, these tests have to notice.
-brush_mod = importlib.import_module("scripts.scatter_brush")
+brush_mod = importlib.import_module("scripts.modelling.scatter_brush")
 DENSITY = brush_mod.DENSITY_PRIMVAR
 
 
@@ -106,7 +106,7 @@ class _Harness:
         return chunks[0]
 
     def vine(self, **params):
-        node = self.chunk("modelling.vine")
+        node = self.chunk("vine")
         node.get_param("surface_prim").value = WALL
         node.get_param("density_primvar").value = DENSITY
         for name, value in params.items():

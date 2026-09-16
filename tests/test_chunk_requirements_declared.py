@@ -71,7 +71,7 @@ def tracked_chunk_sources() -> list[Path]:
 @pytest.mark.parametrize(
     "relpath, package",
     [
-        ("scripts/rbd_solver.py", "mujoco"),
+        ("scripts/dynamics/rbd_solver.py", "mujoco"),
         ("scripts/modelling/add_mesh.py", "numpy"),
         ("scripts/modelling/add_curves.py", "numpy"),
     ],
@@ -88,7 +88,7 @@ def test_rbd_solver_does_not_claim_its_optional_dependency():
     Listing it would make an optional look mandatory, and would ask the user to install a
     large package for a fallback they already have.
     """
-    assert "scipy" not in declared_requirements(REPO / "scripts/rbd_solver.py")
+    assert "scipy" not in declared_requirements(REPO / "scripts/dynamics/rbd_solver.py")
 
 
 def test_no_tracked_chunk_imports_an_undeclared_package():
@@ -139,7 +139,7 @@ def test_the_scanner_sees_a_try_guarded_import():
         "except ImportError:\n"
         "    mujoco = None\n"
     )
-    path = REPO / "scripts/rbd_solver.py"
+    path = REPO / "scripts/dynamics/rbd_solver.py"
     assert "mujoco" in chunk_registry.top_level_imports(path), (
         "the real case: rbd_solver guards mujoco and numpy in a try/except"
     )
@@ -156,7 +156,7 @@ def test_the_scanner_still_ignores_a_function_body_import():
     """rbd_solver imports scipy where it is used, as an optional fallback. That is the
     house rule the scan actually depends on, and it must stay skipped -- listing scipy
     would make an optional look mandatory."""
-    assert "scipy" not in chunk_registry.top_level_imports(REPO / "scripts/rbd_solver.py")
+    assert "scipy" not in chunk_registry.top_level_imports(REPO / "scripts/dynamics/rbd_solver.py")
 
 
 def test_a_declared_requirement_reaches_the_installer(monkeypatch):
@@ -167,7 +167,7 @@ def test_a_declared_requirement_reaches_the_installer(monkeypatch):
     is covered in test_dependency_install_optin; all that matters here is that mujoco
     arrives somewhere the user can be told about it.
     """
-    path = REPO / "scripts/rbd_solver.py"
+    path = REPO / "scripts/dynamics/rbd_solver.py"
     module = chunk_registry.ChunkModule(module_name=path.stem, module_file=path)
     chunk_registry._pre_load_module(path.read_text(encoding="utf-8"), {}, module)
 

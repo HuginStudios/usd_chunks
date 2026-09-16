@@ -249,7 +249,7 @@ def test_anchor_infers_from_the_name_without_prim_selection() -> None:
 # ---------------------------------------------------------------------------
 
 def test_shipped_camera_declares_a_focus_distance_handle() -> None:
-    camera_mod = importlib.import_module("scripts.camera")
+    camera_mod = importlib.import_module("scripts.modelling.camera")
     gizmos = camera_mod.config().gizmos
 
     assert [g.name for g in gizmos] == ["zdist"]
@@ -261,7 +261,7 @@ def test_shipped_camera_pins_the_handle_to_the_cameras_view_direction() -> None:
     """Signed, and the sign matters: a camera looks down -Z, so an unsigned "Z" would put the
     focus handle out the back of the camera. Found by reconstructing the handle on paper from
     the authored USD alone -- exactly what that exercise is for."""
-    camera_mod = importlib.import_module("scripts.camera")
+    camera_mod = importlib.import_module("scripts.modelling.camera")
     assert camera_mod.config().gizmos[0].axis == "-Z"
 
 
@@ -492,7 +492,7 @@ def test_a_transform_declared_by_hand_must_drive_nine() -> None:
 
 def _camera_chunk_and_stage():
     """The real camera chunk, cooking against a stage of its own."""
-    camera_mod = importlib.import_module("scripts.camera")
+    camera_mod = importlib.import_module("scripts.modelling.camera")
     stage = Usd.Stage.CreateInMemory()
 
     class _StagedScene(_DummyScene):
@@ -609,7 +609,7 @@ def test_the_camera_composes_transforms_the_same_way_transform_py_does() -> None
     """Both chunks must invert to the same decomposition, or one handle drifts and the other
     does not -- which would look like a gizmo bug rather than a chunk bug."""
     camera_mod, c, _stage = _camera_chunk_and_stage()
-    transform_mod = importlib.import_module("scripts.transform")
+    transform_mod = importlib.import_module("scripts.transforms.transform")
 
     for name, value in [("tx", 1.0), ("ty", -2.0), ("rx", 30.0), ("ry", 15.0), ("sz", 2.0)]:
         c.get_param(name).value = value

@@ -49,7 +49,7 @@ def _make(mod, name: str):
 
 class TestTypedOutputs:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.script_runner")
+        self.mod = importlib.import_module("scripts.core.script_runner")
 
     def test_all_typed_outputs_exist(self, scene):
         node = _make(self.mod, "Python")
@@ -136,7 +136,7 @@ class TestOnlySelectedOutputShows:
     """
 
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.script_runner")
+        self.mod = importlib.import_module("scripts.core.script_runner")
 
     @pytest.mark.parametrize(
         "chosen, kept",
@@ -183,7 +183,7 @@ class TestBlankOutputsKeepTheirType:
     """
 
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.script_runner")
+        self.mod = importlib.import_module("scripts.core.script_runner")
 
     def test_clearing_leaves_a_float_holding_a_float(self, scene):
         node = _make(self.mod, "Python")

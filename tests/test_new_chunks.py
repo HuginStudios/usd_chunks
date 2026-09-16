@@ -45,7 +45,7 @@ def _load(module_path: str):
 
 class TestDot:
     def setup_method(self):
-        self.mod = _load("scripts.dot")
+        self.mod = _load("scripts.core.dot")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()
@@ -58,7 +58,7 @@ class TestDot:
 
     def test_config_category(self):
         cfg = self.mod.config()
-        assert cfg.category == chunk.StandardCategory.UTILS
+        assert cfg.category == chunk.StandardCategory.CORE
 
     def test_execute_is_noop(self):
         """execute clears the layer but doesn't raise."""
@@ -96,7 +96,7 @@ class TestDot:
 
 class TestBindMaterial:
     def setup_method(self):
-        self.mod = _load("scripts.bind_material")
+        self.mod = _load("scripts.materials.bind_material")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()
@@ -110,7 +110,7 @@ class TestBindMaterial:
 
     def test_config_category(self):
         cfg = self.mod.config()
-        assert cfg.category == chunk.StandardCategory.UTILS
+        assert cfg.category == chunk.StandardCategory.MATERIALS
 
     def test_execute_binds_material(self):
         stage = Usd.Stage.CreateInMemory()
@@ -180,7 +180,7 @@ class TestAMDMaterialXLibrary:
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
-        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
+        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
 
     def test_main_returns_context_chunk(self):
         c = self.mod.main()
@@ -199,7 +199,7 @@ class TestAMDMaterialXLibrary:
 
     def test_config_category(self):
         cfg = self.mod.config()
-        assert cfg.category == chunk.StandardCategory.EXAMPLES
+        assert cfg.category == chunk.StandardCategory.MATERIALS
 
 
 # ---------------------------------------------------------------------------
@@ -246,10 +246,10 @@ class TestAMDMaterialXLibraryChildCreation:
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
-        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
+        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
         # Ensure the child chunk modules _create_child resolves are registered.
-        _load("scripts.reference")
-        _load("scripts.bind_material")
+        _load("scripts.usd.reference")
+        _load("scripts.materials.bind_material")
 
     @staticmethod
     def _fake_zip_bytes() -> bytes:
@@ -270,7 +270,7 @@ class TestAMDMaterialXLibraryChildCreation:
         init_chunk_usd(stage, scene)  # wires ChunkLayerManager + ChunkStageSync, like the real app
 
         c = self.mod.main()
-        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c._config = ChunkConfig(module="AMDMaterialXLibrary")
         c.get_param("target_primpath").value = "/geo/mesh"
         c.get_param("mat_scope").value = "/materials"
         c.get_param("cache_dir").value = str(tmp_path)
@@ -344,7 +344,7 @@ class TestAMDMaterialXLibraryChildCreation:
         init_chunk_usd(stage, scene)
 
         c = self.mod.main()
-        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c._config = ChunkConfig(module="AMDMaterialXLibrary")
         c.get_param("target_primpath").value = "/geo/mesh"
         c.get_param("mat_scope").value = "/materials"
         c.get_param("cache_dir").value = str(tmp_path)
@@ -423,7 +423,7 @@ class TestAMDMaterialXLibraryChildCreation:
         init_chunk_usd(stage, scene)
 
         c = self.mod.main()
-        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c._config = ChunkConfig(module="AMDMaterialXLibrary")
         c.get_param("target_primpath").value = "/geo/mesh"
         c.get_param("mat_scope").value = "/materials"
         c.get_param("cache_dir").value = str(tmp_path)
@@ -464,13 +464,13 @@ class TestAMDMaterialXLibraryChildCreation:
         # so stand both down rather than mock the network two levels deep.
         #
         # self.mod is NOT the module load_chunks' reconstruction actually runs: the
-        # registry resolves chunk modules by the short config name ("examples.Foo"),
+        # registry resolves chunk modules by the short config name ("Foo"),
         # while this test file imported the same source under a different
         # sys.modules key ("scripts.examples.Foo") via _load(). Those are two
         # distinct module objects with independent globals, so patches on self.mod
         # are invisible to code executing as the registry's copy -- reach through
         # the registry to patch the module identity that will actually run.
-        registry_mod = chunk_registry.ChunkRegistry().get_chunk_module("examples.AMDMaterialXLibrary").module
+        registry_mod = chunk_registry.ChunkRegistry().get_chunk_module("AMDMaterialXLibrary").module
         monkeypatch.setattr(registry_mod, "_on_chunk_loaded", lambda owner, notice, sender: None)
         monkeypatch.setattr(registry_mod, "execute", lambda node: None)
         init_chunk_usd(stage2, scene2)
@@ -480,7 +480,7 @@ class TestAMDMaterialXLibraryChildCreation:
             (
                 ch
                 for ch in scene2.get_chunks()
-                if (cfg := ch.get_config()) and cfg.module == "examples.AMDMaterialXLibrary"
+                if (cfg := ch.get_config()) and cfg.module == "AMDMaterialXLibrary"
             ),
             None,
         )
@@ -503,7 +503,7 @@ class TestBindMaterialResilience:
     """
 
     def setup_method(self):
-        self.mod = _load("scripts.bind_material")
+        self.mod = _load("scripts.materials.bind_material")
 
     @staticmethod
     def _node(stage, chunk_obj):
@@ -605,9 +605,9 @@ class TestAMDMaterialXCaching:
         """main() builds Qt widgets."""
 
     def setup_method(self):
-        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
-        _load("scripts.reference")
-        _load("scripts.bind_material")
+        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
+        _load("scripts.usd.reference")
+        _load("scripts.materials.bind_material")
 
     def test_second_apply_hits_the_cache_and_makes_no_network_call(self, monkeypatch, tmp_path):
         stage = Usd.Stage.CreateInMemory()
@@ -621,7 +621,7 @@ class TestAMDMaterialXCaching:
         init_chunk_usd(stage, scene)
 
         c = self.mod.main()
-        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c._config = ChunkConfig(module="AMDMaterialXLibrary")
         c.get_param("target_primpath").value = "/geo/mesh"
         c.get_param("mat_scope").value = "/materials"
         c.get_param("cache_dir").value = str(tmp_path)
@@ -675,9 +675,9 @@ class TestAMDMaterialXAsyncApply:
         """main() builds Qt widgets."""
 
     def setup_method(self):
-        self.mod = _load("scripts.examples.AMDMaterialXLibrary")
-        _load("scripts.reference")
-        _load("scripts.bind_material")
+        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
+        _load("scripts.usd.reference")
+        _load("scripts.materials.bind_material")
 
     def test_apply_downloads_off_thread_and_assigns_on_the_main_thread(self, monkeypatch, tmp_path, qapp):
         import threading
@@ -693,7 +693,7 @@ class TestAMDMaterialXAsyncApply:
         init_chunk_usd(stage, scene)
 
         c = self.mod.main()
-        c._config = ChunkConfig(module="examples.AMDMaterialXLibrary")
+        c._config = ChunkConfig(module="AMDMaterialXLibrary")
         c.get_param("target_primpath").value = "/geo/mesh"
         c.get_param("mat_scope").value = "/materials"
         c.get_param("cache_dir").value = str(tmp_path)

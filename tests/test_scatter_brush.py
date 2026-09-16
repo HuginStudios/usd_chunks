@@ -30,8 +30,8 @@ class _DummyScene(SceneSender):
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
-brush_mod = importlib.import_module("scripts.scatter_brush")
-scatter_mod = importlib.import_module("scripts.scatter_points")
+brush_mod = importlib.import_module("scripts.modelling.scatter_brush")
+scatter_mod = importlib.import_module("scripts.modelling.scatter_points")
 
 
 # ---------------------------------------------------------------------------
@@ -946,7 +946,7 @@ def test_wiring_painted_points_hides_the_distribution_settings() -> None:
     import importlib
 
     from usd_chunks import chunk as chunk_api
-    scatter_points = importlib.import_module("scripts.scatter_points")
+    scatter_points = importlib.import_module("scripts.modelling.scatter_points")
     sc = scatter_points.main()
 
     def hidden(name):

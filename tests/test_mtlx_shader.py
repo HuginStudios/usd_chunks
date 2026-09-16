@@ -8,7 +8,7 @@ They do run against a USD built with usdMtlx (the usdbundle usdview environment)
 import pytest
 from pxr import Sdf, Usd, UsdShade
 
-from usd_chunks import chunk_registry, shader_defs
+from usd_chunks import chunk, chunk_registry, shader_defs
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins.chunk_usd import ChunkStageSync, export_chunks
@@ -50,10 +50,11 @@ def env():
     reg.initialize(scene, "pytest")
     ChunkStageSync().initialize(stage, scene)
 
+    depth = len(chunk.StandardCategory.MTLX.value.split("/"))
     entries = {
-        "/".join(e.namespace[1:]): e
+        "/".join(e.namespace[depth:]): e
         for e in reg.get_menu_entries()
-        if e.module.module_name == "mtlx_shader" and len(e.namespace) > 2
+        if e.module.module_name == "mtlx_shader" and len(e.namespace) > depth + 1
     }
     module = reg.get_chunk_module("mtlx_shader").module
     return stage, scene, entries, module

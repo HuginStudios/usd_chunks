@@ -802,12 +802,12 @@ class ChunkModule:
         if isinstance(cat, Enum):
             cat = cat.value
 
-        namespace = self.module_name.split(".")
-        if namespace[0].lower() == cat.lower():
-            namespace.pop(0)
-
-        if cat:
-            namespace.insert(0, cat)
+        import_path = self.module_name.split(".")
+        if not cat:
+            return import_path
+        else:
+            namespace = cat.split("/")
+            namespace.append(import_path[-1])
 
         return namespace
 
@@ -1047,6 +1047,18 @@ def clean_description(desc: str) -> str:
     return "" if cleaned == _PLACEHOLDER_DESC else cleaned
 
 
+_FIRST_CATEGORY = "examples"
+
+
+def _category_order(entry: "MenuEntry") -> tuple:
+    """Sort key placing a menu entry's category: Examples first, the rest A-Z, and
+    chunks with no category after every category."""
+    category = tuple(part.lower() for part in entry.module.get_menu_path()[:-1])
+    if not category:
+        return (2,)
+    return (0 if category[0] == _FIRST_CATEGORY else 1, category)
+
+
 @dataclass(frozen=True)
 class MenuEntry:
     """One selectable item in a chunk-creation menu, described without reference to any UI.
@@ -1208,8 +1220,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         for working_dir in paths:
             # Loop over all directories of the working_dirs directory
             for module_path in Path(working_dir).glob("**/*" + PY_MODULE_EXT):
-                rel = (module_path.parent / module_path.stem).relative_to(working_dir)
-                module_name = str(rel).replace(os.path.sep, ".")
+                # A chunk's name is its file name alone, never its folder: the name is what a
+                # scene saves as info:chunkType, so sorting chunks into category folders must
+                # not rename them (and break every scene saved before the move).
+                module_name = module_path.stem
 
                 for mod in self._discover_module(module_path, module_name):
                     self.register_module(mod)
@@ -1331,17 +1345,9 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             )
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
-        """Get the ChunkModule object in the registry where module_name matches the
-        stored name of the module. The module_name should typically be the name of the
-        python script, relative to USD_CHUNK_DIRS - as one would import the module. F.e:
-
-        A/B/C/foo.py
-
-        USD_CHUNK_DIRS = A
-        get_chunk_module('B.C.foo')
-
-        USD_CHUNK_DIRS = A/B
-        get_chunk_module('C.foo')
+        """Get the ChunkModule registered under module_name: the chunk's file name without
+        its folder or extension, e.g. A/B/C/foo.py is 'foo'. A folder-qualified name such as
+        'B.C.foo', as older scenes saved it, resolves to the same module.
 
         Args:
             module_name (str): The name of the module to find
@@ -1349,7 +1355,11 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         Returns:
             ChunkModule | None: A found ChunkModule object with name, or None if not found
         """
-        return self.registered_modules.get(module_name)
+        if found := self.registered_modules.get(module_name):
+            return found
+        # Scenes saved while chunks were named by folder ("modelling.box", "core_usd.prune_prim")
+        # still resolve: a chunk's name is now its file name alone.
+        return self.registered_modules.get(module_name.rpartition(".")[2])
 
     def get_chunk_modules(self, loaded=False, sort_result=False) -> List[ChunkModule]:
         v = list(self.registered_modules.values())
@@ -1404,6 +1414,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                         presets=dict(presets),
                     )
                 )
+
+        if sort_result:
+            # A menu nests submenus in the order it first meets them, so categories are
+            # ordered here, or they come out in the order of their alphabetically-first chunk.
+            # Stable, so chunks keep their name order (and variants their place) within one.
+            entries.sort(key=_category_order)
 
         return entries
 
@@ -1535,7 +1551,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # Which real layer each individual chunk's content currently resolves against (same
         # value as its graph_layer's entry above, but keyed per-chunk for easy lookup) — lets
         # export tooling group a chunk's own bookkeeping prim with whichever layer its driven
-        # content nests in (see scripts/export_usd.py's per-layer export mode).
+        # content nests in (see scripts/core/export_usd.py's per-layer export mode).
         self._chunk_target: Dict[core.ChunkHash, Sdf.Layer] = {}
         # Hashes of chunks whose layer has been torn down. Never served a layer again, so a
         # notice fired by the teardown itself can't resurrect one — see _chunk_deleted.
