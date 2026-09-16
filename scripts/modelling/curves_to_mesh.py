@@ -35,7 +35,7 @@ import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)
 
@@ -430,7 +430,7 @@ def execute(node) -> None:
 
     # Read from a composition that excludes this chunk's own layer: the mesh we author sits on
     # the same stage, and a cook that could see it would be reading its own output.
-    upstream = chunk_usd.get_upstream_stage(stage, node.get_scene(), node)
+    upstream = chunk_stage.get_upstream_stage(stage, node.get_scene(), node)
     recurse = node.get_param("recurse", is_b).value
     sources = [
         curve

@@ -25,6 +25,14 @@ from usd_chunks import chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
+# Implemented in chunk_stage now; still reachable from here, which most callers use.
+from usd_chunks.chunk_stage import (  # noqa: F401  re-exported
+    is_chunkgroup,
+    is_edit_target_chunk,
+    is_group_chunk,
+    is_merge_chunk,
+    is_view_chunk,
+)
 
 from usd_chunks import chunk_naming
 
@@ -1981,47 +1989,6 @@ def is_node_in_context(chunk: "core.ChunkBase", context: "core.ChunkBase | None"
     return str(Sdf.Path(get_chunk_prim_path(chunk)).GetParentPath()) == str(root)
 
 
-def is_view_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is a view-type chunk."""
-    cfg = chunk.get_config()
-    return bool(cfg and cfg.module == "view")
-
-
-def is_group_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk owns child chunks — a CONTEXT chunk with a module.
-
-    This is about *containment*: whose children are hidden until entered, cook as a unit,
-    and share a layer. It is true of a chunkgroup, and equally true of a chunk-in-chunk
-    like AMDMaterialXLibrary, whose children are an implementation detail. For the
-    narrower "is this a subnet the user may navigate into", see is_chunkgroup.
-    """
-    cfg = chunk.get_config()
-    return bool(chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module)
-
-
-def is_chunkgroup(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is a chunkgroup proper — the `chunkgroup` chunk type.
-
-    A chunkgroup is defined in USD and is a subnet you navigate into; a chunk is defined in
-    python, and one that owns children (AMDMaterialXLibrary creating `reference` and
-    `bind_material`) is reusing them as an implementation detail, not exposing a subnet to
-    edit. Both carry GroupFlags.CONTEXT, so CONTEXT cannot tell them apart — which is why
-    diving into the AMD node used to be offered at all.
-
-    Navigation, and the UI that advertises it, keys on this. Containment and cooking key on
-    is_group_chunk, so a chunk-in-chunk keeps hiding its children and running their code.
-    """
-    cfg = chunk.get_config()
-    return bool(cfg and cfg.module == "chunkgroup")
-
-
-def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is a Merge chunk (scripts/core/merge.py) — the only chunk type that
-    takes more than one exec input."""
-    cfg = chunk.get_config()
-    return bool(cfg and cfg.module == "merge")
-
-
 def exec_input_slots(chunk: "core.ChunkBase") -> int:
     """How many positional exec input ports this chunk has.
 
@@ -2672,11 +2639,6 @@ def normalize_merge_slots(stage: "Usd.Stage", prim: "Usd.Prim") -> bool:
     invalidate_edit_layer_memo()
     return True
 
-
-def is_edit_target_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is an Edit Target chunk (scripts/usd/edit_target.py)."""
-    cfg = chunk.get_config()
-    return bool(cfg and cfg.module == "edit_target")
 
 
 def _prim_edit_target_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.Layer | None":

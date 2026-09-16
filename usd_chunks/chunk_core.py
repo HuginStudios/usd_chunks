@@ -1614,6 +1614,18 @@ class ChunkCommon(AttributesBase):
     def can_delete(self):
         return not bool(list(self.get_dag_node().get_outputs()))
 
+    def is_deleting(self) -> bool:
+        """Whether request_delete has been called on this object.
+
+        True from the start of the teardown onwards, and never reset: a deleted object is
+        not reusable. Anything that holds on to a chunk past its own call -- a timer, a
+        file watcher -- should check this before acting on it.
+
+        Returns:
+            bool: True once deletion has started
+        """
+        return getattr(self, "_deleting", False)
+
     def request_delete(self):
         """Sends a notice for owners to delete this Chunk object. It's the owners responsibility to remove their reference to this object.
         If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.

@@ -37,7 +37,7 @@ import logging
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def _upstream(node, seen=None) -> set:
     if id(node) in {id(n) for n in seen}:
         return seen
     seen.add(node)
-    for dep in chunk_usd.exec_dependencies(node):
+    for dep in chunk_stage.exec_dependencies(node):
         _upstream(dep, seen)
     return seen
 
@@ -100,7 +100,7 @@ def _record(node, chunks) -> None:
     """
     param = node.get_param(_MUTED_PARAM)
     if param is not None:
-        param.value = "\n".join(sorted(chunk_usd.get_chunk_prim_path(c) for c in chunks))
+        param.value = "\n".join(sorted(chunk_stage.get_chunk_prim_path(c) for c in chunks))
 
 
 def _recorded(node) -> set:
@@ -114,7 +114,7 @@ def execute(node):
         # must not keep contributing whatever it authored before.
         edit_layer.Clear()
 
-    inputs = chunk_usd.exec_dependencies(node)
+    inputs = chunk_stage.exec_dependencies(node)
     if not inputs:
         return
 
@@ -149,10 +149,10 @@ def execute(node):
     # Switch, and searching only the slots found nothing beyond a one-chunk branch.
     # Everything deeper stayed blocked and muted for the rest of the session with no way
     # back, which is the exact case this record exists to prevent.
-    stranded = _recorded(node) - {chunk_usd.get_chunk_prim_path(c) for c in muted | keep}
+    stranded = _recorded(node) - {chunk_stage.get_chunk_prim_path(c) for c in muted | keep}
     if stranded:
         by_path = {
-            chunk_usd.get_chunk_prim_path(c): c
+            chunk_stage.get_chunk_prim_path(c): c
             for c in chunk_registry.ChunkRegistry().scene.get_chunks()
         }
         for path in stranded:

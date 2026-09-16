@@ -10,7 +10,7 @@ import requests
 
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core
-from usd_chunks.plugins.chunk_usd import ChunkStageSync, connect_exec, get_chunk_prim_path
+from usd_chunks.chunk_stage import chunk_prim_edit_context, connect_exec, get_chunk_prim_path
 from PySide6 import QtWidgets, QtCore, QtGui
 
 API_ROOT = "https://api.matlib.gpuopen.com/api"
@@ -365,11 +365,11 @@ def _pick_package(package_ids: list[str], resolution: str) -> dict | None:
 def _create_child(module_key: str, parent):
     """Create a child chunk and attach it to parent inside the user's edit context.
 
-    add_param is called inside ChunkStageSync._chunk_prim_edit_context() so that
+    add_param is called inside chunk_prim_edit_context() so that
     the Chunk prim authored by _define_prim lands on the user's persistent edit
     layer (session layer), not on the parent context's anonymous execute layer.
     """
-    with ChunkStageSync()._chunk_prim_edit_context():
+    with chunk_prim_edit_context():
         mod = chunk_registry.ChunkRegistry().get_chunk_module(module_key)
         if not mod:
             return None

@@ -11,7 +11,7 @@ import os
 import traceback
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.plugins.chunk_usd import export_chunks
+from usd_chunks.chunk_stage import export_chunks
 
 logger = logging.getLogger(__name__)
 

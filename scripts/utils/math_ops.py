@@ -1,7 +1,7 @@
 import math
 
 from usd_chunks import chunk, chunk_utils
-from usd_chunks.plugins.chunk_usd import ChunkStageSync
+from usd_chunks.chunk_stage import clear_attr_connections
 
 
 def _safe_div(a: float, b: float) -> float:
@@ -95,7 +95,7 @@ def _clear_connection(param: "chunk.ChunkParamBase") -> None:
         return
     param.value = param.default_value
     if attr := param.get_usd_prop():
-        ChunkStageSync().clear_attr_connections(attr)
+        clear_attr_connections(attr)
 
 
 def _update_inputs(owner: "chunk.Chunk", operation: str) -> None:

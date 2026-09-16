@@ -2,7 +2,7 @@ from pxr import Sdf, Tf, Usd, UsdShade
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils, shader_defs
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 SOURCE_TYPE = "mtlx"
 
@@ -203,7 +203,7 @@ def _chunk_prim_paths(c) -> set:
     paths = {
         getattr(c, "_exec_prim_path", None),
         getattr(c, "prim_path", None),
-        chunk_usd.get_chunk_prim_path(c),
+        chunk_stage.get_chunk_prim_path(c),
     }
     return {str(p) for p in paths if p}
 
@@ -379,13 +379,8 @@ def _author_outputs(owner, sdef) -> None:
     labelled port on the node's right edge. It also keeps the shader's real type (color3f
     rather than the float3 a Vector param would round it to).
     """
-    sync = chunk_usd.ChunkStageSync()
-    if not getattr(sync, "initialized", False) or not getattr(sync, "_stage", None):
-        return
-
-    prim_path = sync._chunk_prim_paths.get(id(owner))
-    prim = sync._stage.GetPrimAtPath(Sdf.Path(prim_path)) if prim_path else None
-    if not (prim and prim.IsValid()):
+    prim = chunk_stage.get_chunk_prim(owner)
+    if prim is None:
         return
 
     wanted = {}
@@ -401,13 +396,13 @@ def _author_outputs(owner, sdef) -> None:
         if not name.startswith("outputs:") or name == "outputs:chunk":
             continue
         if name not in wanted or attr.GetTypeName() != wanted[name]:
-            sync._delete_stale_attr_specs(prim, name)
+            chunk_stage.delete_attr_specs(prim, name)
 
     for name, sdf_type in wanted.items():
         existing = prim.GetAttribute(name)
         if existing and existing.IsValid() and existing.GetTypeName() == sdf_type:
             continue
-        with sync._chunk_prim_edit_context(owner):
+        with chunk_stage.chunk_prim_edit_context(owner):
             prim.CreateAttribute(name, sdf_type, custom=False)
 
 

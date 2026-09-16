@@ -49,7 +49,7 @@ import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 try:
     import fast_simplification
@@ -915,7 +915,7 @@ def execute(node: chunk.Chunk) -> None:
 
     # Read from a composition that excludes this chunk's own layer, so a cook never sees
     # (and re-reduces) the result of the last one. See the module docstring.
-    upstream = chunk_usd.get_upstream_stage(stage, node.get_scene(), node)
+    upstream = chunk_stage.get_upstream_stage(stage, node.get_scene(), node)
 
     targets = [
         prim

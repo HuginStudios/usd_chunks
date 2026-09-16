@@ -30,7 +30,7 @@ from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+from usd_chunks.chunk_stage import get_chunk_prim_path
 
 logger = logging.getLogger(__name__)
 
