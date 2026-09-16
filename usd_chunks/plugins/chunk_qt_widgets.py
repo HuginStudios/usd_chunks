@@ -2529,6 +2529,10 @@ def source_code_dial(src: str, highlighter: chunk_core.SyntaxHighlightMapping):
     return dial.exec()
 
 
+#: Between a search result's name and its category path.
+_RESULT_DIVIDER = "   │   "
+
+
 class FilterableChunkMenu(QtWidgets.QMenu):
     """The chunk-creation menu: a category tree, and a ranked list while searching.
 
@@ -2536,8 +2540,16 @@ class FilterableChunkMenu(QtWidgets.QMenu):
     closest match first and already highlighted, so "trans" + Enter creates Transform.
     """
 
-    #: A longer list is slower to draw than to refine the search.
-    MAX_RESULTS = 40
+    #: Enough to see the likely picks; past that, typing another letter is quicker.
+    MAX_RESULTS = 12
+
+    #: Rows tighter than the host's menu padding while a search is showing -- a result list
+    #: is scanned top-down, not aimed at like a tree, so it needs far less room per row.
+    #: A menu stylesheet replaces the host's separator drawing too, so it is restated.
+    _COMPACT_STYLE = (
+        "QMenu::item { padding: 2px 12px 2px 12px; }"
+        "QMenu::separator { height: 1px; background: #555555; margin: 3px 6px; }"
+    )
 
     def __init__(self):
         super().__init__("Chunks")
@@ -2549,6 +2561,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         self._flat_actions: dict = {}
         self._results_end = None
         self._no_results = None
+        self._compact = False
 
     def _filter_actions(self, text: str):
         ranked = (
@@ -2556,6 +2569,9 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             if text.strip() else None
         )
         searching = ranked is not None
+        if searching != self._compact:
+            self._compact = searching
+            self.setStyleSheet(self._COMPACT_STYLE if searching else "")
         for action in self._tree_actions:
             action.setVisible(not searching)
         for action in self._flat_actions.values():
@@ -2653,9 +2669,11 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                     d[ns] = {"menu": submenu}
                 d = d[ns]
 
-            # Search result: the name, with where it lives in the right-hand column (the
-            # text after a tab is drawn where a shortcut would be). Hidden until searching.
-            flat_action = self.addAction(f"{entry.label}\t{' › '.join(namespace[:-1])}")
+            # Search result: the name, then where it lives, right beside it. A tab would push
+            # the path into the far shortcut column and widen the menu to hold it.
+            # Hidden until searching.
+            path = " › ".join(namespace[:-1])
+            flat_action = self.addAction(f"{entry.label}{_RESULT_DIVIDER}{path}" if path else entry.label)
             flat_action.setData(entry)
             flat_action.setToolTip(tooltip)
             flat_action.setVisible(False)

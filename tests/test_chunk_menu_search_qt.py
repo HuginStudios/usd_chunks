@@ -11,7 +11,7 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt_widgets import FilterableChunkMenu
+from usd_chunks.plugins.chunk_qt_widgets import _RESULT_DIVIDER, FilterableChunkMenu
 
 
 class _Scene(SceneSender):
@@ -44,7 +44,7 @@ def menu(qapp):
 
 def _results(menu):
     flat = set(menu._flat_actions.values())
-    return [a.text().split("\t")[0] for a in menu.actions() if a in flat and a.isVisible()]
+    return [a.text().split(_RESULT_DIVIDER)[0] for a in menu.actions() if a in flat and a.isVisible()]
 
 
 def _tree_visible(menu):
@@ -66,7 +66,7 @@ def test_typing_lists_the_closest_first(menu):
 def test_the_best_match_is_already_highlighted(menu):
     menu.filter_widget.setText("trans")
     active = menu.activeAction()
-    assert active is not None and active.text().split("\t")[0] == "transform"
+    assert active is not None and active.text().split(_RESULT_DIVIDER)[0] == "transform"
     assert active.data().label == "transform", "Enter must create what is highlighted"
 
 
@@ -81,6 +81,18 @@ def test_results_follow_the_query_as_it_changes(menu):
 def test_the_list_is_capped(menu):
     menu.filter_widget.setText("a")
     assert len(_results(menu)) == FilterableChunkMenu.MAX_RESULTS
+
+
+def test_a_result_shows_its_category_after_a_divider(menu):
+    menu.filter_widget.setText("transform")
+    assert menu.activeAction().text() == f"transform{_RESULT_DIVIDER}Transform"
+
+
+def test_rows_are_compact_only_while_searching(menu):
+    menu.filter_widget.setText("trans")
+    assert menu.styleSheet() == FilterableChunkMenu._COMPACT_STYLE
+    menu.filter_widget.setText("")
+    assert menu.styleSheet() == ""
 
 
 def test_no_match_says_so(menu):
