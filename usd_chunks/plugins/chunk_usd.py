@@ -893,7 +893,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 # tracked path so /old/... becomes /new/...
                 owner.prim_path = new_path
                 self._rebase_descendant_paths(old_path, new_path)
-        elif isinstance(owner, core.ChunkParamBase):
+        elif isinstance(owner, (core.ChunkParamBase, core.ChunkVectorBase, core.ChunkGroupBase)):
+            # A param, a vector or a plain group -- ChunkBase is a ChunkGroupBase too, which
+            # is why the chunk case has to come first.
             self._handle_param_rename(owner, old_name, owner.name)
 
     def _records_param_writes(self, owner) -> bool:
@@ -1019,31 +1021,98 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     and c.prim_path.startswith(old_prefix)):
                 c.prim_path = rebase(c.prim_path)
 
-    def _handle_param_rename(self, param: "core.ChunkParamBase", old_name: str, new_name: str) -> None:
-        """Rename a param's USD attribute and patch expression strings."""
+    def _handle_param_rename(self, owner: "core.ChunkCommon", old_name: str, new_name: str) -> None:
+        """Rename the USD attributes behind a renamed param, vector or group, and rebind them.
+
+        An attribute is named by the whole path to its param -- inputs:group:param -- so a
+        rename at any depth has to rename the attribute, and a group's rename renames every
+        attribute under it. The params then have to be pointed at their new attributes: a
+        param writes its value to the attribute it was bound to, so leaving the binding on
+        the old name meant every later edit went nowhere and the next save wrote back the
+        value from before the rename.
+        """
         if not (self.initialized and self._stage):
             return
-        chunk = next(
-            (c for c in self._scene.get_chunks() if any(p is param for _, p in _iter_chunk_params(c))),
+        found = next(
+            (
+                (c, segments)
+                for c in self._scene.get_chunks()
+                if (segments := _param_object_path(c, owner)) is not None
+            ),
             None,
         )
-        if chunk is None:
+        if found is None:
             return
-        prim_path = f"{_resolve_chunk_root(chunk)}/{chunk.name}"
+        chunk, segments = found
+        new_ns = ":".join(segments)
+        old_ns = ":".join(segments[:-1] + [old_name])
+
+        prim_path = self._chunk_prim_paths.get(id(chunk)) or f"{_resolve_chunk_root(chunk)}/{chunk.name}"
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
         if not prim.IsValid():
             return
-        old_attr = f"{_INPUTS_PREFIX}{old_name}"
-        new_attr = f"{_INPUTS_PREFIX}{new_name}"
-        edit = Sdf.BatchNamespaceEdit()
-        edit.Add(Sdf.Path(f"{prim_path}.{old_attr}"), Sdf.Path(f"{prim_path}.{new_attr}"))
-        # Wherever the attr's spec currently lives — its Edit Target when first
-        # authored, not necessarily the session layer anymore.
-        for layer in self._stage.GetLayerStack(includeSessionLayers=True):
-            prim_spec = layer.GetPrimAtPath(Sdf.Path(prim_path))
-            if prim_spec and old_attr in prim_spec.properties:
-                layer.Apply(edit)
-        _patch_expressions(self._stage, f".{old_name}@", f".{new_name}@")
+
+        # A leaf names one attribute; a group (or vector) is also a namespace for the
+        # attributes of everything inside it.
+        is_leaf = isinstance(owner, core.ChunkParamBase)
+        old_attr = f"{_INPUTS_PREFIX}{old_ns}"
+        renames = {}
+        for name in prim.GetPropertyNames():
+            if name == old_attr:
+                renames[name] = f"{_INPUTS_PREFIX}{new_ns}"
+            elif not is_leaf and name.startswith(old_attr + ":"):
+                renames[name] = f"{_INPUTS_PREFIX}{new_ns}{name[len(old_attr):]}"
+
+        # Expressions can only name a top-level param (@node.param@). Patched whether or not
+        # the param has an attribute of its own: one still at its default has none, and other
+        # chunks can refer to it all the same.
+        if len(segments) == 1:
+            _patch_expressions(self._stage, f".{old_name}@", f".{new_name}@")
+        if not renames:
+            return
+
+        prev_write = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True
+        try:
+            # Wherever each attr's spec currently lives -- its Edit Target when first
+            # authored, not necessarily the session layer anymore. A batch edit only applies
+            # to a layer holding every one of its sources, so each layer gets its own.
+            for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+                prim_spec = layer.GetPrimAtPath(Sdf.Path(prim_path))
+                if not prim_spec:
+                    continue
+                edit = Sdf.BatchNamespaceEdit()
+                for old, new in renames.items():
+                    if old in prim_spec.properties:
+                        edit.Add(Sdf.Path(f"{prim_path}.{old}"), Sdf.Path(f"{prim_path}.{new}"))
+                if edit.edits:
+                    layer.Apply(edit)
+
+            # A namespace edit leaves connections to the old attributes dangling (a loft
+            # into this param, say); point them at the new names.
+            owner_prim = Sdf.Path(prim_path)
+            for other in self._stage.Traverse():
+                if other.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+                    continue
+                for attr in other.GetAttributes():
+                    conns = attr.GetConnections()
+                    if not conns:
+                        continue
+                    moved = [
+                        owner_prim.AppendProperty(renames[c.name])
+                        if c.GetPrimPath() == owner_prim and c.name in renames else c
+                        for c in conns
+                    ]
+                    if moved != list(conns):
+                        attr.SetConnections(moved)
+        finally:
+            chunk_notice._usd_write_active = prev_write
+
+        paths = {f"{prim_path}.{old}": f"{prim_path}.{new}" for old, new in renames.items()}
+        bound = [p for _, p in _iter_chunk_params(chunk)] + [v for _, v in _iter_chunk_vectors(chunk)]
+        for param in bound:
+            if (new_path := paths.get(getattr(param, "_param_attr_path", None))) is not None:
+                param._param_attr_path = new_path
 
     def _sync_list_proxy_to_usd(self, proxy_param) -> None:
         """Write the full array for a ListGroup template param when any proxy value changes."""
@@ -3881,6 +3950,23 @@ def _iter_chunk_params(
             yield from _iter_chunk_params(param, path)
 
 
+def _param_object_path(obj: "core.ChunkCommon", target, prefix: tuple = ()) -> "list[str] | None":
+    """The names from obj down to target (a param, vector or group in obj's own param tree),
+    or None when target is not in it. Walks get_my_params(), the logical tree -- a param's
+    owner chain runs through layout containers that are not part of its path.
+    """
+    for child in obj.get_my_params():
+        path = prefix + (child.name,)
+        if child is target:
+            return list(path)
+        if isinstance(child, core.ChunkBase):
+            continue  # a nested chunk's params are its own
+        if isinstance(child, core.ChunkGroupBase) and not isinstance(child, core.ChunkListGroupBase):
+            if (found := _param_object_path(child, target, path)) is not None:
+                return found
+    return None
+
+
 def _iter_chunk_vectors(
     obj: "core.ChunkCommon", prefix: str = ""
 ) -> Generator[Tuple[str, "core.ChunkVectorBase"], None, None]:
@@ -4909,21 +4995,38 @@ def _rebuild_runtime_params(prim: "Usd.Prim", chunk: "core.ChunkBase") -> None:
         # came back marked Exp.
         if is_exec_input_name(name):
             continue
-        param_name = name[len(_INPUTS_PREFIX):]
-        # A nested param (inputs:group:param) needs a group that the flat attribute list
-        # does not describe. Left alone rather than flattened into the wrong shape.
-        if ":" in param_name:
-            continue
-        if chunk.get_param(param_name) is not None:
+        *group_names, param_name = name[len(_INPUTS_PREFIX):].split(":")
+        if chunk.get_param(".".join(group_names + [param_name])) is not None:
             continue
         try:
             param = _chunk_mod.param_from_attr(attr, param_name)
         except Exception as e:  # noqa: BLE001 - one odd attribute must not stop the load
             logger.debug("runtime chunk %s: skipping %s (%s)", prim.GetPath(), name, e)
             continue
-        if param is not None:
-            param.set_flag(ChunkFlags.ParamFlags.LABELED)
-            chunk.add_param(param)
+        if param is None:
+            continue
+        param.set_flag(ChunkFlags.ParamFlags.LABELED)
+        # inputs:group:param -- the attribute's namespaces are the groups it sat in, so
+        # they are rebuilt from it. Only the groups that hold a param come back: an empty
+        # group writes no attribute, so the file has no record of it.
+        _runtime_group(chunk, group_names).add_param(param)
+
+
+def _runtime_group(chunk: "core.ChunkBase", names: "list[str]") -> "core.ChunkGroupBase":
+    """The group at names under chunk, creating any that do not exist yet."""
+    container = chunk
+    for name in names:
+        existing = next(
+            (
+                p for p in container.get_my_params()
+                if p.name == name
+                and isinstance(p, core.ChunkGroupBase)
+                and not isinstance(p, (core.ChunkBase, core.ChunkListGroupBase))
+            ),
+            None,
+        )
+        container = existing if existing is not None else container.add_param(_chunk_mod.Group(name))
+    return container
 
 
 def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:

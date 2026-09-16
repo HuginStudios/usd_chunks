@@ -1693,7 +1693,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
             notice
             and stage
             and self._param_attr_path
-            and not self.is_blocked()
+            # Not gated on is_blocked(): this writes the param's own storage attribute, a
+            # record of the value rather than a reaction to it. A blocked chunk still has to
+            # save what was typed into it. What IS a reaction -- pushing the value onto the
+            # real prims it drives -- is gated below.
             and isinstance(notice.data, AttributeSender)
             and notice.data.name == "value"
             and hasattr(self, 'raw_value')
@@ -1745,7 +1748,8 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                 usd_attr.SetConnections(conns)
                                 if usd_attr.GetTypeName() == Sdf.ValueTypeNames.String and usd_attr.Get(0) != raw:
                                     usd_attr.Set(raw)
-                    self._write_driven_attrs(stage, val)
+                    if not self.is_blocked():
+                        self._write_driven_attrs(stage, val)
                 finally:
                     chunk_notice._usd_write_active = prev_write
 
@@ -3275,7 +3279,8 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             and stage
             and isinstance(notice.data, AttributeSender)
             and notice.data.name == "value"
-            and not self.is_blocked()
+            # Recorded even while blocked; only the driven-attr push below is a reaction.
+            # See ChunkParamBase.data_changed.
         ):
             # notice.data is typically a *child's* AttributeSender (bubbled up through
             # the DAG), whose .value is a single scalar — not usable here. This vector's
@@ -3308,7 +3313,8 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                                 )
                                 for node, attr_name in chunk_utils.parse_expression(raw)
                             ])
-                    self._write_driven_attrs(stage, val)
+                    if not self.is_blocked():
+                        self._write_driven_attrs(stage, val)
                 finally:
                     chunk_notice._usd_write_active = prev_write
 

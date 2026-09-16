@@ -240,3 +240,72 @@ def test_a_param_left_at_its_default_still_survives(qapp):
     restored = next((c for c in reloaded_scene.get_chunks() if c.name == "hello"), None)
     assert restored is not None
     assert restored.get_param("untouched") is not None
+
+
+def _reload(qapp, stage):
+    reloaded_scene = _RuntimeScene(stage)
+    chunk_registry.ChunkRegistry().initialize(reloaded_scene, "pytest")
+    chunk_usd.load_chunks(stage, reloaded_scene, set())
+    qapp.processEvents()
+    return reloaded_scene
+
+
+class _RuntimeScene(_DummyScene):
+    def __init__(self, stage):
+        super().__init__()
+        self._stage = stage
+
+    def get_stage(self):
+        return self._stage
+
+
+def _fresh(qapp):
+    stage = Usd.Stage.CreateInMemory()
+    scene = _RuntimeScene(stage)
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    _chunk_usd_init(stage, scene)
+    return stage, scene
+
+
+def test_a_param_in_a_group_comes_back_in_its_group(qapp):
+    """Reported: the group was lost, and the param with it -- though inputs:myGroup:myParam
+    was right there on the prim."""
+    stage, scene = _fresh(qapp)
+    made = chunk.Chunk("myChunk")
+    scene.add_chunk(made)
+    group = made.add_param(chunk.Group("myGroup"))
+    param = group.add_param(chunk.Slider("myParam"))
+    qapp.processEvents()
+    param.value = 0.4
+    qapp.processEvents()
+
+    restored = next(c for c in _reload(qapp, stage).get_chunks() if c.name == "myChunk")
+
+    group = next((p for p in restored.get_my_params() if p.name == "myGroup"), None)
+    assert isinstance(group, chunk.Group), "the group must come back as a group"
+    param = restored.get_param("myGroup.myParam")
+    assert param is not None, "with its param inside it"
+    assert param.value == pytest.approx(0.4)
+
+
+def test_nested_groups_come_back_nested_and_shared(qapp):
+    stage, scene = _fresh(qapp)
+    made = chunk.Chunk("myChunk")
+    scene.add_chunk(made)
+    outer = made.add_param(chunk.Group("outer"))
+    inner = outer.add_param(chunk.Group("inner"))
+    a = inner.add_param(chunk.Slider("a"))
+    b = inner.add_param(chunk.Slider("b"))
+    top = outer.add_param(chunk.Slider("top"))
+    qapp.processEvents()
+    a.value, b.value, top.value = 0.1, 0.2, 0.3
+    qapp.processEvents()
+
+    restored = next(c for c in _reload(qapp, stage).get_chunks() if c.name == "myChunk")
+
+    groups = [p for p in restored.get_my_params() if isinstance(p, chunk.Group)]
+    assert [g.name for g in groups] == ["outer"], "one outer group, not one per param"
+    assert restored.get_param("outer.inner.a").value == pytest.approx(0.1)
+    assert restored.get_param("outer.inner.b").value == pytest.approx(0.2)
+    assert restored.get_param("outer.top").value == pytest.approx(0.3)

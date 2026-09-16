@@ -326,9 +326,12 @@ def test_a_value_set_while_blocked_is_not_lost_once_unblocked(qapp) -> None:
     _pump(0.2)
 
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(stray)))
-    assert not prim.GetAttribute("inputs:import_primpath").IsValid(), (
-        "sanity: while still blocked, the value must not have an attr yet -- otherwise "
-        "this test isn't exercising the gap it's named for"
+    # The gap is now closed where it opened: a blocked chunk still records its values (it
+    # only stops reacting to them -- see AttributeSender.is_blocked), so the attr exists
+    # before the chunk is ever wired. The unblock catch-up below remains as a backstop.
+    blocked_attr = prim.GetAttribute("inputs:import_primpath")
+    assert blocked_attr.IsValid() and blocked_attr.Get() == "/food_apple_01_4k", (
+        "a value set while blocked is recorded straight away"
     )
 
     _wire(scatter, stray)

@@ -191,6 +191,14 @@ _STRUCTURAL_ALIASES = frozenset({
 })
 
 
+#: Relayed through a blocked propagator as well. Structural changes, and ATTRIBUTE_CHANGED:
+#: an attribute's change is the record that something was renamed or set -- the widget
+#: showing it and the USD attribute storing it both follow it -- not a reaction to it.
+#: A blocked chunk still sends none of its own notices (send_self), so nothing that reacts
+#: to a param or chunk changing runs; see AttributeSender.is_blocked.
+_RECORD_ALIASES = _STRUCTURAL_ALIASES | {ChunkNoticeAlias.ATTRIBUTE_CHANGED}
+
+
 class RegistrySingleton(type):
     _instances = {}
 
@@ -1152,7 +1160,7 @@ class ChunkNoticePropagator:
             Optional[ChunkNotice]: The result from calling send_self
         """
 
-        if not notice or (notice and notice.alias not in _STRUCTURAL_ALIASES):
+        if not notice or (notice and notice.alias not in _RECORD_ALIASES):
             if self.is_blocked():
                 return None
         if notice:
@@ -1751,8 +1759,15 @@ class NoticeConnection:
         Uses ``co_argcount`` rather than ``inspect.signature`` because this runs on every
         dispatch. Callables without a ``__code__`` (builtins, ``functools.partial``,
         objects with ``__call__``) are assumed to take the (notice, sender) form.
+
+        A decorated callback is read through to the function it wraps. A decorator's
+        wrapper is usually ``(*args, **kwargs)``, whose ``co_argcount`` is 0, so an
+        (owner, notice, sender) callback under one was called with two arguments and
+        failed. ``functools.wraps`` records the original as ``__wrapped__``; without it
+        there is nothing to read, and the wrapper's own signature decides.
         """
         func = meth.__func__ if inspect.ismethod(meth) else meth
+        func = inspect.unwrap(func)
         code = getattr(func, "__code__", None)
         if code is None:
             return False

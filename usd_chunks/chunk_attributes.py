@@ -231,6 +231,17 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return self.alias
 
+    def is_blocked(self) -> bool:
+        """Only blocked if blocked itself -- never through its owner.
+
+        This notice is the record of a change: it is what renames the USD attribute, writes
+        a value into it and refreshes the widget showing it. Blocking a chunk is about it not
+        reacting -- not cooking, not running its callbacks -- and that is still enforced one
+        step up, where the owner sends its own notice (a blocked param sends no
+        PARAM_CHANGED). Inheriting the owner's block here dropped the record as well.
+        """
+        return self._blocked
+
     def is_presentation_change(self) -> bool:
         """
         A change to the state attribute is presentation only unless it moved DISABLED.
@@ -580,8 +591,12 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         if attrname in self._failed_converters:
             return
 
-        if self.is_blocked() and attrname != "state":
-            return
+        # No blocked check here. A blocked chunk (outside the active view's tree) must not
+        # react to a change, but the change itself still has to be recorded: dropping it at
+        # this point lost renames and values for good -- the UI kept the old name, and the
+        # prim kept the old attribute and value, so the next save wrote them back. Whether
+        # anything reacts is decided further on, by the owner's own notice (see
+        # AttributeSender.is_blocked).
 
         if chunk_notice._loading_stage:
             return
