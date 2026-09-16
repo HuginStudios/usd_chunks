@@ -688,6 +688,16 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return chunk_notice.ChunkNoticeAlias.NONE
 
     # Optional DCC capability with a no-op default so hosts that don't support
+    # it still work; usdview overrides it (ctrl+click on a prim path field).
+    def select_prims(self, paths) -> bool:
+        """Make `paths` the host's prim selection, replacing what was selected.
+
+        The other direction from get_selected_prims(). Returns False when the host has no
+        selection it can drive, so a caller can leave the click to do its normal job.
+        """
+        return False
+
+    # Optional DCC capability with a no-op default so hosts that don't support
     # it still work; usdview overrides it (used by the RBD solver after baking).
     def refresh_timeline(self, start: float, end: float) -> None:
         """Update the host timeline range."""
