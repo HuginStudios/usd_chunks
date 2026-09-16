@@ -5,7 +5,9 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_resources, chunk_utils
 import usd_chunks.chunk_flags
-from usd_chunks.chunk_core import ChunkParamWidgetBase
+from usd_chunks.chunk_widget_api import ChunkParamWidgetBase
+from usd_chunks import chunk_naming
+from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks.plugins import chunk_usd
 
@@ -223,21 +225,166 @@ class _FineDragSlider(QtWidgets.QSlider):
         super().mouseReleaseEvent(event)
 
 
+def caret_step(text: str, caret: int, point: str = ".") -> tuple:
+    """Which digit the caret is on, and the size of a step of that digit.
+
+    Returns (digit_index, step). The digit is the one just left of the caret, or the one
+    just right of it when what is on the left is not a digit -- the start of the field, a
+    sign, or the point: "12|.50" steps the 2, "12.|50" steps the 5. The step is the digit's
+    place value: 1 for the last integer digit, 10 for the one before it, 0.1 for the first
+    decimal. (-1, None) when there is no digit to step, which a blank field is.
+
+    Pure so it can be tested without a widget.
+    """
+    digit = -1
+    if 0 < caret <= len(text) and text[caret - 1].isdigit():
+        digit = caret - 1
+    elif caret < len(text) and text[caret].isdigit():
+        digit = caret
+    else:
+        # A caret past a trailing non-digit, or a text with nothing at the caret: fall
+        # back to the nearest digit to its left, then to its right.
+        left = next((i for i in range(min(caret, len(text)) - 1, -1, -1) if text[i].isdigit()), -1)
+        right = next((i for i in range(max(caret, 0), len(text)) if text[i].isdigit()), -1)
+        digit = left if left >= 0 else right
+    if digit < 0:
+        return -1, None
+    point_at = text.find(point)
+    if point_at < 0:
+        point_at = len(text)
+    place = (point_at - 1 - digit) if digit < point_at else (point_at - digit)
+    return digit, 10.0 ** place
+
+
+class NumberField(QtWidgets.QLineEdit):
+    """The slider's number field: a text field that only admits a number.
+
+    A QLineEdit, not a QAbstractSpinBox. The spin box wraps a line edit in a layer of its
+    own key handling and focus proxying, and inside usdview -- which reclaims native focus
+    and runs an application-wide filter that turns Left/Right into frame stepping whenever
+    the focused widget is not one it recognises as text -- that layer was where the caret
+    keys went missing. A line edit is the thing usdview's filter is built to leave alone,
+    and it needs no proxy to reach.
+
+    What is typed is validated as a number, not clamped: digits, one point, a leading
+    sign (float), digits and a sign (int). Up/Down step the digit under the caret (see
+    caret_step); PageUp/PageDown step ten of them. valueChanged fires for every edit that
+    reads as a number, so the slider and the param follow keystroke by keystroke, the way
+    the spin box did. An edit that does not read as one yet ("-", "1.", "") changes nothing
+    until it does.
+    """
+
+    valueChanged = QtCore.Signal(float)
+
+    _FLOAT = QtCore.QRegularExpression(r"^-?\d*\.?\d*$")
+    _INT = QtCore.QRegularExpression(r"^-?\d*$")
+
+    def __init__(self, is_float: bool = True, decimals: int = 3, parent=None):
+        super().__init__(parent)
+        self._is_float = is_float
+        self._decimals = decimals
+        self._value = 0.0 if is_float else 0
+        self.setValidator(QtGui.QRegularExpressionValidator(self._FLOAT if is_float else self._INT, self))
+        self.textEdited.connect(self._on_text_edited)
+        self.editingFinished.connect(self._normalise)
+
+    # -- value ---------------------------------------------------------------------------
+
+    def value(self):
+        return self._value
+
+    def setValue(self, value) -> None:
+        """Show `value`, keeping the caret on the same place value when the text changes
+        shape (9.9 -> 10.0 gains a digit on the left), so holding Up keeps stepping the
+        digit that was chosen. Emits valueChanged when the value actually changed."""
+        value = float(value) if self._is_float else int(round(value))
+        offset = self.cursorPosition() - self._point_at(self.text())
+        changed = value != self._value
+        self._value = value
+        text = self._format(value)
+        if text != self.text():
+            self.setText(text)
+            self.setCursorPosition(max(0, min(len(text), self._point_at(text) + offset)))
+        if changed:
+            self.valueChanged.emit(value)
+
+    def _format(self, value) -> str:
+        if not self._is_float:
+            return str(int(value))
+        text = f"{value:.{self._decimals}f}"
+        # Trailing zeros dropped, one decimal kept: "1.250" reads "1.25", "12.000" reads
+        # "12.0" so there is always a decimal digit to put the caret after.
+        if "." in text:
+            text = text.rstrip("0")
+            if text.endswith("."):
+                text += "0"
+        return text
+
+    def _point_at(self, text: str) -> int:
+        at = text.find(".")
+        return at if at >= 0 else len(text)
+
+    def _parse(self, text: str):
+        try:
+            return float(text) if self._is_float else int(text)
+        except ValueError:
+            return None
+
+    def _on_text_edited(self, text: str) -> None:
+        value = self._parse(text)
+        if value is None or value == self._value:
+            return
+        self._value = value
+        self.valueChanged.emit(value)
+
+    def _normalise(self) -> None:
+        """On leaving the field: show the value the way setValue would."""
+        text = self._format(self._value)
+        if text != self.text():
+            self.setText(text)
+
+    # -- keys ----------------------------------------------------------------------------
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        key = event.key()
+        steps = {
+            QtCore.Qt.Key.Key_Up: 1,
+            QtCore.Qt.Key.Key_Down: -1,
+            QtCore.Qt.Key.Key_PageUp: 10,
+            QtCore.Qt.Key.Key_PageDown: -10,
+        }.get(key)
+        if steps is None:
+            super().keyPressEvent(event)
+            return
+        self.stepBy(steps)
+        event.accept()
+
+    def stepBy(self, steps: int) -> None:
+        _digit, step = caret_step(self.text(), self.cursorPosition())
+        if step is None:
+            return
+        if not self._is_float:
+            step = int(step)
+        # Rounded to the field's own precision: 0.1 + 0.2 is 0.30000000000000004 in binary,
+        # and the caret would land in a text ten digits longer than the one it was in.
+        new = self._value + steps * step
+        if self._is_float:
+            new = round(new, self._decimals)
+        self.setValue(new)
+
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
+        # Same as the slider beside it: the wheel scrolls the panel, it does not edit.
+        event.ignore()
+
+
 class SpinSlider(QtWidgets.QWidget):
     def __init__(self, parent=None, is_float=False):
         super().__init__(parent)
         self._step = 1000 if is_float else 1
 
-        if is_float:
-            self.spin_box = QtWidgets.QDoubleSpinBox()
-            self.spin_box.setDecimals(2)
-            self.spin_box.setSingleStep(1.0 / self._step)
-            self.spin_box.setLocale(QtCore.QLocale.c())
-            self.spin_box.setRange(-1e300, 1e300)
-        else:
-            self.spin_box = QtWidgets.QSpinBox()
-            self.spin_box.setRange(-2147483648, 2147483647)
-        self.spin_box.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
+        # Three decimals, the slider's own resolution (1 / _step). At two, a value of 0.125
+        # read 0.13 and the thousandths could be set but never seen.
+        self.spin_box = NumberField(is_float=is_float, decimals=3)
         self.spin_box.setMaximumWidth(48)
 
         self.slider = _FineDragSlider(QtCore.Qt.Orientation.Horizontal)
@@ -278,15 +425,25 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
         is_float = ChunkFlags.ParamType.FLOAT in param.evaluate_type()
         super().__init__(param, is_float=is_float)
 
-        min_val = param.min_value
-        max_val = param.max_value
-        min_int = int(min_val * self._step) if min_val is not None else 100 * (1 - self._step)
-        max_int = int(max_val * self._step) if max_val is not None else 100 * self._step
-        self.setRange(min_int, max_int)
+        self._apply_range()
 
         self.setup_chunk_widget()
         self.slider.valueChanged.connect(self.value_changed)
         self.spin_box.valueChanged.connect(lambda v: self.value_changed(int(v * self._step)))
+
+    def _apply_range(self) -> None:
+        min_val = self.param.min_value
+        max_val = self.param.max_value
+        min_int = int(min_val * self._step) if min_val is not None else 100 * (1 - self._step)
+        max_int = int(max_val * self._step) if max_val is not None else 100 * self._step
+        self.setRange(min_int, max_int)
+
+    def handle_param_changed(self, notice, sender):
+        # A range that moves after the widget exists -- a Wedge row's Min/Max edited once
+        # its slider is lofted -- would otherwise leave the slider spanning the old one.
+        if notice.data.name in ("min_value", "max_value"):
+            self._apply_range()
+        super().handle_param_changed(notice, sender)
 
     def get_value(self):
         return self.value() / self._step
@@ -446,6 +603,8 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
         self.text = QtWidgets.QLineEdit(self)
         self.text.editingFinished.connect(self.value_changed)
+        # Ctrl+click selects the prim(s) the field names -- see eventFilter.
+        self.text.installEventFilter(self)
         self.main_layout = QtWidgets.QHBoxLayout()
 
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -488,6 +647,56 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         # the template's default and left the row alone. Reported as the pin icon doing nothing
         # on a prototype row while typing into the same field worked.
         self.param.value = ",".join(str(p.GetPath()) for p in prims)
+
+    SELECT_HINT = "Ctrl+click to select in the viewport"
+
+    def scene_prim_paths(self) -> "list[Sdf.Path]":
+        """The prims this field names, if every entry in it is one that exists on the stage.
+
+        Any field holding prim paths qualifies, not just PRIM_SELECTION ones: a Reference's
+        "Insert to location" names a prim just as much as a Transform's target does. Anything
+        that is not wholly existing prims -- a name, a glob, a path not authored yet -- gives
+        nothing, so ctrl+click there stays an ordinary click.
+
+        Read from the param, not the text box: an expression field shows `@Other.param@`
+        while its value is the path it resolves to.
+        """
+        scene = self.param.get_scene()
+        stage = scene.get_stage() if scene else None
+        if not stage:
+            return []
+        entries = [e.strip() for e in str(self.param.value or "").split(",") if e.strip()]
+        paths = []
+        for entry in entries:
+            if not Sdf.Path.IsValidPathString(entry):
+                return []
+            path = Sdf.Path(entry).StripAllVariantSelections()
+            if not (path.IsAbsolutePath() and path.IsPrimPath()) or not stage.GetPrimAtPath(path):
+                return []
+            paths.append(path)
+        return paths
+
+    def select_in_scene(self) -> bool:
+        scene = self.param.get_scene()
+        paths = self.scene_prim_paths()
+        return bool(scene and paths and scene.select_prims(paths))
+
+    def eventFilter(self, watched, event):
+        if watched is self.text:
+            if (event.type() == QtCore.QEvent.Type.MouseButtonPress
+                    and event.button() == QtCore.Qt.MouseButton.LeftButton
+                    and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier):
+                # Consumed only when something was selected, so the click does not also
+                # place the text cursor; otherwise it behaves as it always did.
+                if self.select_in_scene():
+                    return True
+            elif event.type() == QtCore.QEvent.Type.ToolTip and self.scene_prim_paths():
+                # Only on fields that currently name a prim -- the hint on a name field
+                # would be noise. Everything else falls through to the param's own tooltip.
+                tip = f"{self.param.tooltip}\n\n{self.SELECT_HINT}" if self.param.tooltip else self.SELECT_HINT
+                QtWidgets.QToolTip.showText(event.globalPos(), tip, self.text)
+                return True
+        return super().eventFilter(watched, event)
 
     def get_value(self):
         return self.text.text()
@@ -584,25 +793,17 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         if not self.param:
             return
 
-        pattern = ""
-        if self.param.pattern:
-            pattern = self.param.pattern
-
-        if not pattern:
-            pattern = "*"
-
-        if self.param.extensions:
-            pattern = " ".join([pattern + x for x in self.param.extensions])
-
-        directory = self.param.has_flag(ChunkFlags.ParamFlags.DIRECTORY)
+        # What to ask for is chunk_widget_api.file_dialog_spec, shared with the Flet and
+        # ImGui frontends so all three honour the same pattern/extensions and the same
+        # DIRECTORY and FILE_EXISTING flags. Only turning it into a QFileDialog is local.
+        #
         # FILE_EXISTING unset (the default) means the file need not exist yet — an
-        # output/destination picker like Export ChunkGroup's Output File. Previously
-        # this only applied to DIRECTORY params; a plain FILE param always got
-        # create_new=False (an Open dialog requiring the file to already exist),
-        # regardless of the flag. file_dial() ignores create_new for directory=True
-        # anyway (always getExistingDirectory), so computing it unconditionally here
-        # only changes behavior for the FILE case.
-        create_new = not self.param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
+        # output/destination picker like Export ChunkGroup's Output File. file_dial()
+        # ignores create_new for directory=True anyway (always getExistingDirectory).
+        spec = chunk_widget_api.file_dialog_spec(self.param)
+        pattern = " ".join(spec.patterns)
+        directory = spec.directory
+        create_new = not spec.must_exist
 
         if file := file_dial(pattern, create_new, directory):
             self.set_value(file)
@@ -870,7 +1071,7 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
             self.value_changed((color.redF(), color.greenF(), color.blueF()))
 
 
-class ChunkQTWidgetFactory(chunk_core.ChunkWidgetFactoryBase):
+class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
     widget_map = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
@@ -1311,7 +1512,7 @@ class ContainerWidget(
         else:
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
 
-    def get_widget_factory(self) -> chunk_core.ChunkWidgetFactoryBase:
+    def get_widget_factory(self) -> chunk_widget_api.ChunkWidgetFactoryBase:
         if factory := self.group.widget_factory:
             return factory
         else:
@@ -1508,7 +1709,7 @@ class ContainerWidget(
 
         elif isinstance(widget, chunk_core.ChunkContainerWidgetBase):
             widget.group.request_delete()
-        elif isinstance(widget, chunk_core.ChunkParamWidgetBase):
+        elif isinstance(widget, chunk_widget_api.ChunkParamWidgetBase):
             widget.param.request_delete()
         self.remove_widget(widget)
 
@@ -1649,7 +1850,7 @@ class ViewSlotState(QtCore.QObject):
                 for p in stage.Traverse():
                     if p.GetAttribute("info:chunkType").Get() != "view":
                         continue
-                    exec_in = p.GetAttribute("inputs:chunk")
+                    exec_in = p.GetAttribute(chunk_naming.EXEC_INPUT)
                     if exec_in.IsValid():
                         for conn_path in exec_in.GetConnections():
                             if str(conn_path.GetPrimPath()) == prim_path:
@@ -1998,7 +2199,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
             if self._is_tab_context_widget:
                 # A distinct "toolbar" panel — prim path, a context's own lofted top-level
-                # params (e.g. scripts/chunkgroup.py's "doc" Description TextEdit — the
+                # params (e.g. scripts/core/chunkgroup.py's "doc" Description TextEdit — the
                 # pre-existing description for a chunkgroup; empty/invisible for a plain tab,
                 # which has no own params), and the filter bar — visually separated from the
                 # chunk list below by a tinted background + embossed edge, not just a plain line.

@@ -40,6 +40,12 @@ from enum import Enum
 
 from pxr import Sdf, Usd, UsdUtils
 
+try:
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from packaging.version import InvalidVersion, Version
+except ImportError:  # pragma: no cover - packaging ships with pip
+    SpecifierSet = Version = InvalidSpecifier = InvalidVersion = None
+
 from usd_chunks import chunk_cache
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
@@ -165,6 +171,9 @@ def _is_truthy(value) -> bool:
 
 class ChunkDependencyManager(metaclass=RegistrySingleton):
     initialized = False
+    #: Whether `pip list` has run this process -- see install_packages. Not reset by
+    #: initialize(), which runs again on every stage reload.
+    _listed = False
 
     def initialize(self):
         self._cache = defaultdict(set)
@@ -228,15 +237,20 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             return
 
         missing = []
-        recache = True
 
         for package in requirements:
             if self.package_in_cache(package):
                 continue
 
-            if recache:
+            # One `pip list` per process, not one per chunk that misses. A package that is
+            # genuinely absent stays absent for every chunk that wants it, and each of those
+            # loads at once when a host generates its node classes -- Blender paid two
+            # subprocesses per such chunk on the first open of a network. Installing through
+            # this manager records what it installed, so nothing here goes stale short of an
+            # install made by hand mid-session, which a restart picks up.
+            if not self._listed:
                 self.update_cache()
-                recache = False
+                type(self)._listed = True
                 if self.package_in_cache(package):
                     continue
 
@@ -280,12 +294,16 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             )
             return
 
-        for package in packages:
-            n, v = self.package_info(package)
-            self._cache[n].add(v)
-
         if (pip_dir := self.package_dir) and pip_dir in sys.path_importer_cache:
             sys.path_importer_cache.pop(pip_dir)
+
+        # By the package's name, not the requirement string: "numpy>=2,<3" is what a chunk
+        # declares, and the cache is keyed the way `pip list` spells things. The version is
+        # the one that is importable now that pip has run; None when that cannot be told,
+        # which package_in_cache reads as satisfying whatever was asked for.
+        for package in packages:
+            name = split_requirement(package)[0]
+            self._cache[name].add(installed_version(name))
 
     def should_install_package(self, package):
         reg = ChunkRegistry()
@@ -322,14 +340,28 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             self._cache[pname].add(pversion)
 
     def package_in_cache(self, package):
+        """Whether `package` -- a requirement, range and all -- is satisfied by the cache.
+
+        Reads the ranges chunks declare ("numpy>=2,<3"), not only "==". This used to go
+        through package_info, which splits on "==" alone: a ranged requirement came back
+        with the whole string as its name, which no cache entry is ever keyed by, so every
+        chunk declaring a range missed the cache on every load -- two `pip list` subprocesses
+        each time, two thirds of a second, and a warning that numpy was not installed next
+        to a numpy that was. Blender loads every module at once to generate its node
+        classes, so that was most of the pause on the first open of a network.
+        """
         if not self.initialized:
             return False
 
-        name, version = self.package_info(package)
-        if pvs := self._cache.get(name):
-            if not version or version in pvs:
-                return True
-        return False
+        name, specifier = split_requirement(package)
+        wanted = _normalise_package(name)
+        versions: set = set()
+        for cached, pvs in self._cache.items():
+            if _normalise_package(cached) == wanted:
+                versions |= set(pvs)
+        if not versions:
+            return False
+        return any(_satisfies(v, specifier) for v in versions)
 
 
 class _ConfigTransformer(ast.NodeTransformer):
@@ -594,6 +626,22 @@ def split_requirement(requirement: str) -> tuple:
             head, _, _ = text.partition(op)
             return head.strip(), text[len(head):].strip()
     return text, ""
+
+
+def _satisfies(version, specifier: str) -> bool:
+    """Does an installed `version` meet `specifier` ("" for any)?
+
+    None is a version this manager could not determine after an install it made itself,
+    and counts as meeting anything -- the alternative is re-installing on every load. A
+    version or specifier packaging cannot parse falls back to the literal "==" match this
+    used to be.
+    """
+    if version is None or not specifier or SpecifierSet is None:
+        return True
+    try:
+        return Version(version) in SpecifierSet(specifier)
+    except (InvalidVersion, InvalidSpecifier):
+        return specifier == f"=={version}"
 
 
 def unconstrained_requirements(module: "ChunkModule") -> list:
@@ -1487,7 +1535,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # Which real layer each individual chunk's content currently resolves against (same
         # value as its graph_layer's entry above, but keyed per-chunk for easy lookup) — lets
         # export tooling group a chunk's own bookkeeping prim with whichever layer its driven
-        # content nests in (see scripts/export_usd.py's per-layer export mode).
+        # content nests in (see scripts/core/export_usd.py's per-layer export mode).
         self._chunk_target: Dict[core.ChunkHash, Sdf.Layer] = {}
         # Hashes of chunks whose layer has been torn down. Never served a layer again, so a
         # notice fired by the teardown itself can't resurrect one — see _chunk_deleted.
@@ -1838,8 +1886,23 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self.get_or_create_layer(c)
 
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
+        """Adopt the stage whose edit target moved -- but only when there is none yet.
+
+        This listens globally, so it hears every stage in the process. It used to adopt
+        whichever one spoke last, which is right for the one case it exists for -- chunks
+        loaded before the host had a stage -- and wrong for every other: a second stage
+        in the same process (a test authoring an asset into a file it just exported,
+        a tool opening a scratch stage) changed its edit target, this manager switched
+        to it, and the next get_or_create_layer -- reached from any chunk's global
+        stage-change callback through get_edit_context -- sublayered every chunk's layer
+        under THAT stage's session. The chunks' opinions then composed over the foreign
+        stage: a variant selection authored by a Set Variant chunk overrode the one the
+        other stage had just set, and its variant edit context wrote into the wrong
+        variant. A stage the host replaces reaches this manager through initialize()
+        (chunk_usd.reload_for_stage), so an occupied slot never needs a notice to move.
+        """
         stage = notice.GetStage()
-        if stage:
+        if stage and not self.stage:
             self.stage = stage
 
     def _iter_sublayers(self, layer: Sdf.Layer, visited: set | None = None):

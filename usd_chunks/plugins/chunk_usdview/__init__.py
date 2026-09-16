@@ -5,7 +5,7 @@ This module provides a framework for dynamically loading and managing custom UI 
 
 import logging
 
-from pxr import Tf, Usd, Gf
+from pxr import Tf, Usd, Gf, Sdf
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
@@ -48,6 +48,9 @@ class UsdviewScene(chunk_core.SceneSender):
         self._snap_prim = None
         #: The user's own free-camera field of view, held across usdview rebuilding it.
         self._free_camera_fov = None
+        #: Set by release_viewport_camera: the next free camera usdview builds is the first
+        #: one after our prim let go of the view, and gets the user's lens put back.
+        self._restore_lens = False
         self._camera_snap_timer = QtCore.QTimer()
         self._camera_snap_timer.setSingleShot(True)
         self._camera_snap_timer.timeout.connect(self._on_snap_timer)
@@ -105,6 +108,22 @@ class UsdviewScene(chunk_core.SceneSender):
 
     def get_selected_prims(self) -> List[Usd.Prim]:
         return self.usdviewAPI.selectedPrims  # type: ignore
+
+    def select_prims(self, paths) -> bool:
+        stage = self.get_stage()
+        if not stage:
+            return False
+        # usdview's selection raises on a path with no prim behind it, so only real ones go in.
+        targets = [p for p in (Sdf.Path(str(p)) for p in paths) if stage.GetPrimAtPath(p)]
+        if not targets:
+            return False
+        selection = self.usdviewAPI.dataModel.selection  # type: ignore
+        # One selection-changed signal for the lot, not one per path.
+        with selection.batchPrimChanges:
+            selection.clearPrims()
+            for path in targets:
+                selection.addPrimPath(path)
+        return True
 
     def get_selected_property(self) -> Usd.Property:
         return self.usdviewAPI.property  # type: ignore
@@ -189,8 +208,12 @@ class UsdviewScene(chunk_core.SceneSender):
         Skipped whenever a camera prim is already in view, because the free camera is then a
         copy of *that* camera and remembering it would bake the leak in permanently instead of
         undoing it -- the lock re-asserts the prim after every move, so this is called
-        repeatedly while a chunk camera is up.
+        repeatedly while a chunk camera is up. Skipped just the same mid-navigation while our
+        prim holds the lock: usdview has switched to a free camera for the drag, but that
+        camera was built from the prim and wears its lens, not the user's.
         """
+        if self._snap_prim is not None:
+            return
         try:
             if self.usdviewAPI.dataModel.viewSettings.cameraPrim is not None:
                 return
@@ -230,18 +253,43 @@ class UsdviewScene(chunk_core.SceneSender):
 
         Which way to go is decided by whether a prim of ours is being viewed. If none is, this
         free camera is the user's and its lens is the thing worth remembering. If one is, the
-        rebuild is a consequence of our own snapping and is ours to undo.
+        rebuild is a consequence of our own snapping, and the copied lens is left exactly as
+        usdview made it.
+
+        Left, not undone. This used to put the user's lens back on every rebuild, and that
+        is what made the lock pop: with the prim at 50mm and the user's free camera at 60
+        degrees, every navigation started by zooming out to the user's lens, and every
+        pause ended 150ms later with the snap zooming back in to the prim's. While the lock
+        holds, the free camera IS the chunk camera being flown -- seeing its lens is the
+        point -- so the two must agree, and the copy usdview makes is the agreement. The
+        user's own lens comes back once, on the first rebuild after release_viewport_camera.
         """
-        if self._snap_prim is None:
-            self._free_camera_fov = getattr(free_cam, "fov", None)
+        if self._snap_prim is not None:
             return
 
-        if self._free_camera_fov is None:
+        if self._restore_lens:
+            self._restore_lens = False
+            # Compared rather than set unconditionally: the setter emits regardless, and an
+            # unnecessary emit here is an unnecessary cook downstream.
+            if abs(getattr(free_cam, "fov", self._free_camera_fov) - self._free_camera_fov) > 1e-6:
+                free_cam.fov = self._free_camera_fov
             return
-        # Compared rather than set unconditionally: the setter emits regardless, and an
-        # unnecessary emit here is an unnecessary cook downstream.
-        if abs(getattr(free_cam, "fov", self._free_camera_fov) - self._free_camera_fov) > 1e-6:
-            free_cam.fov = self._free_camera_fov
+
+        self._free_camera_fov = getattr(free_cam, "fov", None)
+
+    def release_viewport_camera(self) -> None:
+        """Our prim stops asserting itself as the viewport camera.
+
+        The view is left where it is -- still through the prim, until the user navigates --
+        but from here on a free camera usdview builds is the user's again, so the lens
+        remembered at set_viewport_camera goes back on the first one. Idempotent: the
+        camera chunk calls this from a callback that also fires on every camera move.
+        """
+        if self._snap_prim is None:
+            return
+        self._camera_snap_timer.stop()
+        self._snap_prim = None
+        self._restore_lens = self._free_camera_fov is not None
 
     def _on_snap_timer(self):
         if self._snap_prim is not None:

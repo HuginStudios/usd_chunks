@@ -610,8 +610,11 @@ usd_type_map = {
     "float3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
     "float4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),
     "vector3f": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
-    "color3f": (Vector, {"param": Slider(), "suffixes": "rgb", "length": 3}),
-    "color4f": (Vector, {"param": Slider(), "suffixes": "rgba", "length": 4}),
+    # A colour channel is 0..1 by definition. Without the range the slider widget falls back
+    # to 0..100, so displayColor read off a prim by the Property Editor came up as three
+    # sliders on which the whole usable range sat in the first percent.
+    "color3f": (Vector, {"param": Slider(min_value=0.0, max_value=1.0), "suffixes": "rgb", "length": 3}),
+    "color4f": (Vector, {"param": Slider(min_value=0.0, max_value=1.0), "suffixes": "rgba", "length": 4}),
     "int2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
     "int3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),
     "int4": (Vector, {"param": Slider(), "suffixes": "xyzw", "length": 4}),

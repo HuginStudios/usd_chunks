@@ -45,7 +45,7 @@ def _load(module_path: str):
 
 class TestDot:
     def setup_method(self):
-        self.mod = _load("scripts.dot")
+        self.mod = _load("scripts.core.dot")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()
@@ -96,7 +96,7 @@ class TestDot:
 
 class TestBindMaterial:
     def setup_method(self):
-        self.mod = _load("scripts.bind_material")
+        self.mod = _load("scripts.materials.bind_material")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()
@@ -248,8 +248,8 @@ class TestAMDMaterialXLibraryChildCreation:
     def setup_method(self):
         self.mod = _load("scripts.examples.AMDMaterialXLibrary")
         # Ensure the child chunk modules _create_child resolves are registered.
-        _load("scripts.reference")
-        _load("scripts.bind_material")
+        _load("scripts.usd.reference")
+        _load("scripts.materials.bind_material")
 
     @staticmethod
     def _fake_zip_bytes() -> bytes:
@@ -503,7 +503,7 @@ class TestBindMaterialResilience:
     """
 
     def setup_method(self):
-        self.mod = _load("scripts.bind_material")
+        self.mod = _load("scripts.materials.bind_material")
 
     @staticmethod
     def _node(stage, chunk_obj):
@@ -606,8 +606,8 @@ class TestAMDMaterialXCaching:
 
     def setup_method(self):
         self.mod = _load("scripts.examples.AMDMaterialXLibrary")
-        _load("scripts.reference")
-        _load("scripts.bind_material")
+        _load("scripts.usd.reference")
+        _load("scripts.materials.bind_material")
 
     def test_second_apply_hits_the_cache_and_makes_no_network_call(self, monkeypatch, tmp_path):
         stage = Usd.Stage.CreateInMemory()
@@ -676,8 +676,8 @@ class TestAMDMaterialXAsyncApply:
 
     def setup_method(self):
         self.mod = _load("scripts.examples.AMDMaterialXLibrary")
-        _load("scripts.reference")
-        _load("scripts.bind_material")
+        _load("scripts.usd.reference")
+        _load("scripts.materials.bind_material")
 
     def test_apply_downloads_off_thread_and_assigns_on_the_main_thread(self, monkeypatch, tmp_path, qapp):
         import threading

@@ -70,9 +70,9 @@ def _reachable_layers(root: Sdf.Layer) -> set[str]:
 
 class TestEditTargetMigration:
     def setup_method(self):
-        self.create_mod = importlib.import_module("scripts.create_layer")
-        self.edit_mod = importlib.import_module("scripts.edit_target")
-        self.prim_mod = importlib.import_module("scripts.prim")
+        self.create_mod = importlib.import_module("scripts.usd.create_layer")
+        self.edit_mod = importlib.import_module("scripts.usd.edit_target")
+        self.prim_mod = importlib.import_module("scripts.usd.prim")
         self._scenes = []
 
     def teardown_method(self):
@@ -178,7 +178,7 @@ class TestEditTargetMigration:
         stored selections (which a Menu drops on load until its layer is recreated),
         upstream-first, from a pre-read snapshot so a cascade can't corrupt a sibling's value.
         """
-        export_cg = importlib.import_module("scripts.export_chunkgroup")
+        export_cg = importlib.import_module("scripts.core.export_chunkgroup")
         scene, stage = self._setup()
         # CreateLayer(A) -> EditTarget(->A) -> CreateLayer(B) -> EditTarget(->B) -> Prim.
         # Real module names (create_layer/edit_target/prim) so the registry can rebuild the
@@ -351,7 +351,7 @@ class TestFollowUpstreamUsesExecEdgesOnly:
     """
 
     def setup_method(self):
-        self.edit_mod = importlib.import_module("scripts.edit_target")
+        self.edit_mod = importlib.import_module("scripts.usd.edit_target")
         self._scenes = []
 
     def teardown_method(self):

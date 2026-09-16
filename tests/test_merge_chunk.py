@@ -90,7 +90,7 @@ class TestSlotNaming:
 
 class TestMergeModule:
     def setup_method(self):
-        self.mod = _load("scripts.merge")
+        self.mod = _load("scripts.core.merge")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()

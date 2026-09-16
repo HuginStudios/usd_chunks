@@ -213,7 +213,7 @@ def test_a_plain_value_is_untouched(scene) -> None:
 # ---------------------------------------------------------------------------
 
 def _stage_expression(scene, spec: str):
-    stage_expression = importlib.import_module("scripts.stage_expression")
+    stage_expression = importlib.import_module("scripts.utils.stage_expression")
 
     node = stage_expression.main()
     node._config = ChunkConfig(module="stage_expression")
@@ -286,7 +286,7 @@ def test_reserved_and_malformed_names_are_skipped(scene) -> None:
 
 def test_load_lofts_the_variables_back(scene) -> None:
     """The spec restores as a string; the params it declares do not restore at all."""
-    stage_expression = importlib.import_module("scripts.stage_expression")
+    stage_expression = importlib.import_module("scripts.utils.stage_expression")
 
     node = stage_expression.main()
     node._config = ChunkConfig(module="stage_expression")

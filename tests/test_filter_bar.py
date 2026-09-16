@@ -403,7 +403,7 @@ def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> No
 
 # ---------------------------------------------------------------------------
 # filter bar placement: a tinted "ParamsHeader" panel (prim path -> lofted own-
-# params, e.g. a chunkgroup's "doc" Description field from scripts/chunkgroup.py
+# params, e.g. a chunkgroup's "doc" Description field from scripts/core/chunkgroup.py
 # -> filter bar) -> an embossed separator -> the chunk list
 # ---------------------------------------------------------------------------
 
@@ -446,7 +446,7 @@ def test_filter_bar_follows_prim_path_in_the_header_panel_on_a_plain_tab(qapp) -
 
 
 def test_filter_bar_follows_lofted_description_in_the_header_panel_on_a_chunkgroup_tab(qapp) -> None:
-    """A chunkgroup's own top-level params (e.g. scripts/chunkgroup.py's "doc" Description
+    """A chunkgroup's own top-level params (e.g. scripts/core/chunkgroup.py's "doc" Description
     TextEdit) render lofted, above the filter bar — via ChunkWidget.add_widget's existing
     lofted-params branch for CONTEXT chunks, not anything the filter bar itself builds. Both
     live inside the same tinted header panel as the prim path field and the filter bar."""
@@ -511,3 +511,62 @@ def test_prim_path_and_lofted_container_match_header_panel_tint(qapp) -> None:
     for widget in (w._prim_path_field, w._lofted_container):
         assert _PARAMS_HEADER_BG in widget.styleSheet()
         assert widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground) is True
+
+
+# ---------------------------------------------------------------------------
+# the filter bar's own state, once an Edit Target chunk has moved the target
+# ---------------------------------------------------------------------------
+
+def test_toggling_the_pin_filter_still_works_after_the_edit_target_moves() -> None:
+    """Reported as the pin toggle going dead partway through a session.
+
+    These three setters wrote through the stage's *ambient* edit target, re-resolved on
+    every write. An Edit Target chunk moves that target while the graph is live, so a
+    toggle made before the move and one made after landed in two different layers -- and
+    the older, stronger opinion went on winning. The state stopped responding while the
+    widget went on reporting what the user clicked.
+
+    set_chunk_pinned next door had the right shape already: update an existing spec where
+    it already lives (chunk_utils.get_attr_home_layer), and only resolve a target for a
+    genuinely new one.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+
+    stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
+    chunk_usd.set_pin_filter_enabled(ctx, False)
+    assert chunk_usd.is_pin_filter_enabled(ctx) is False
+
+    stage.SetEditTarget(Usd.EditTarget(stage.GetRootLayer()))
+    chunk_usd.set_pin_filter_enabled(ctx, True)
+
+    assert chunk_usd.is_pin_filter_enabled(ctx) is True
+
+
+def test_the_search_query_still_updates_after_the_edit_target_moves() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+
+    stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
+    chunk_usd.set_search_query(ctx, "apple")
+    stage.SetEditTarget(Usd.EditTarget(stage.GetRootLayer()))
+    chunk_usd.set_search_query(ctx, "pear")
+
+    assert chunk_usd.get_search_query(ctx) == "pear"
+
+
+def test_the_search_scope_still_updates_after_the_edit_target_moves() -> None:
+    """The third setter of the same shape. Untested in the original report only because
+    the scope menu is reached less often than the other two, not because it behaves."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+
+    stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
+    chunk_usd.set_search_scope(ctx, "name")
+    stage.SetEditTarget(Usd.EditTarget(stage.GetRootLayer()))
+    chunk_usd.set_search_scope(ctx, "type")
+
+    assert chunk_usd.get_search_scope(ctx) == "type"

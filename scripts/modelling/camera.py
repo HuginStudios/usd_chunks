@@ -1,7 +1,7 @@
 import os
 import json
 import http.client
-from pxr import Gf, Sdf, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom
 from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_utils
 
 #: The shared op every chunk used to write, and what the freecam lock wrote until this chunk
@@ -66,11 +66,15 @@ def set_preset_values(owner, notice, sender):
 
 def _apply_freecam_transform(owner, notice, sender):
     _chunk = owner.get_chunk()
+    scene = _chunk.get_scene()
     do_lock = _chunk.get_param("lock_to_freecam").value
     if not do_lock:
+        # Also reached on every camera move while the lock is off, so the host's release
+        # must be (and is) idempotent. Here rather than only on the checkbox because the
+        # checkbox callback is this same function.
+        scene.release_viewport_camera()
         return
 
-    scene = _chunk.get_scene()
     gf_cam = scene.get_active_camera()
     if gf_cam is None:
         return
@@ -90,6 +94,8 @@ def _apply_freecam_transform(owner, notice, sender):
     _author_matrix(_chunk, stage, prim, _with_local_scale(_chunk, gf_cam.transform))
     if not prim.GetAttribute("focusDistance").Get():
         _chunk.get_param("focusDistance").value = gf_cam.focusDistance
+    # The camera just moved; the focus plane follows the point, not the camera.
+    _refocus(_chunk)
     scene.set_viewport_camera(prim)
 
 
@@ -157,6 +163,112 @@ def _without_legacy_op(node, stage, prim, order):
     if legacy and legacy.IsValid():
         legacy.Clear()
     return [op for op in order if op != _LEGACY_OP]
+
+
+#: Purposes a selected prim's bound is measured with. Guides are left out: a light's or
+#: camera's own guide geometry is not what anyone focuses on.
+_FOCUS_PURPOSES = (UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy)
+
+
+def focus_point_of(stage, prims, time=Usd.TimeCode.Default(), exclude=None):
+    """The world-space point `prims` focus on, or None when nothing is measurable.
+
+    Each prim counts from the centre of its world bound (its origin when it has no extent
+    -- a bare Xform, a light); several average, so a selection of two houses focuses
+    between them. `exclude` is the camera's own path: a camera is not its own subject.
+    """
+    cache = UsdGeom.BBoxCache(time, list(_FOCUS_PURPOSES), useExtentsHint=True)
+    points = []
+    for prim in prims:
+        if not prim or not prim.IsValid() or (exclude is not None and prim.GetPath() == exclude):
+            continue
+        bound = cache.ComputeWorldBound(prim)
+        if not bound.GetRange().IsEmpty():
+            points.append(bound.ComputeCentroid())
+        elif prim.IsA(UsdGeom.Xformable):
+            points.append(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(time).ExtractTranslation())
+    if not points:
+        return None
+    return sum(points, Gf.Vec3d(0, 0, 0)) / len(points)
+
+
+def focus_depth(stage, camera_path, point, time=Usd.TimeCode.Default()):
+    """The focus distance that puts world-space `point` in focus for the camera at `camera_path`.
+
+    Depth along the camera's view axis, not the straight-line distance: focus is a plane
+    parallel to the sensor, so a point off to the side of frame is as far away as the plane
+    through it, however far the ray to it is. None when there is no camera to measure from.
+    """
+    camera = stage.GetPrimAtPath(camera_path) if camera_path else None
+    if camera is None or not camera.IsValid():
+        return None
+    view = UsdGeom.Xformable(camera).ComputeLocalToWorldTransform(time)
+    eye = view.ExtractTranslation()
+    forward = view.TransformDir(Gf.Vec3d(0, 0, -1)).GetNormalized()
+    return max(0.0, Gf.Dot(Gf.Vec3d(*point) - eye, forward))
+
+
+def selection_focus_distance(stage, camera_path, prims, time=Usd.TimeCode.Default()):
+    """The focus distance for `prims` -- focus_depth of their focus_point_of. None when
+    nothing is measurable or there is no camera, so the caller leaves the value alone."""
+    camera = stage.GetPrimAtPath(camera_path) if camera_path else None
+    if camera is None or not camera.IsValid():
+        return None
+    point = focus_point_of(stage, prims, time, exclude=camera.GetPath())
+    return None if point is None else focus_depth(stage, camera_path, point, time)
+
+
+def _time(scene):
+    try:
+        return Usd.TimeCode(scene.get_current_frame())
+    except NotImplementedError:
+        return Usd.TimeCode.Default()
+
+
+def _focus_on_selection(owner, notice, sender):
+    """Remember the selection's focus point and start autofocusing on it.
+
+    The point is stored, not the prims: what the camera pulled focus to is a place in the
+    world, and it stays put if the prim is later moved, renamed or gone. Autofocus then
+    keeps Focus Distance on it as the camera moves -- flown with the freecam lock, dragged
+    with the handle, or typed. Untick Autofocus to freeze the distance where it is.
+    """
+    _chunk = owner.get_chunk()
+    stage = _chunk.get_stage()
+    scene = _chunk.get_scene()
+    if not stage or scene is None:
+        return
+    camera_path = _chunk.get_param("primpath_location").value
+    camera = stage.GetPrimAtPath(camera_path) if camera_path else None
+    if camera is None or not camera.IsValid():
+        return
+    point = focus_point_of(stage, scene.get_selected_prims(), _time(scene), exclude=camera.GetPath())
+    if point is None:
+        return
+    _chunk.get_param("focus_point").value = tuple(float(c) for c in point)
+    _chunk.get_param("autofocus").value = True
+    _refocus(_chunk)
+
+
+def _refocus(node) -> None:
+    """With Autofocus on, put Focus Distance back on the Focus Point from where the camera
+    is now. Called after every authoring of the camera's transform. Writes only on a
+    change: the write re-cooks the chunk, and the re-cook lands here again."""
+    autofocus = node.get_param("autofocus")
+    if autofocus is None or not autofocus.value:
+        return
+    stage = node.get_stage()
+    scene = node.get_scene()
+    if not stage or scene is None:
+        return
+    distance = focus_depth(
+        stage, node.get_param("primpath_location").value, node.get_param("focus_point").value, _time(scene)
+    )
+    if distance is None:
+        return
+    param = node.get_param("focusDistance")
+    if abs(float(param.value or 0.0) - distance) > 1e-6:
+        param.value = distance
 
 
 def _set_as_viewport_camera(owner, notice, sender):
@@ -303,8 +415,13 @@ def main():
     chunk_api = chunk.Chunk("Camera", gizmo="transform")
 
     # prim location
-    stage = chunk_api.get_stage()
-    prim_path = chunk_utils.get_unique_path(stage, "/cameras/camera1")
+    # A literal, not get_unique_path(stage, ...). A default computed from whatever the stage
+    # holds at construction is a value wearing a default's clothes: the save path leaves
+    # defaults out on the grounds that running main() again reproduces them, and running
+    # main() again does not reproduce this one -- on reload no prim exists yet, so every
+    # instance is handed the same path back. execute() does the uniquifying and records the
+    # result as a value, which is what survives a save.
+    prim_path = "/cameras/camera1"
     primpath = chunk.LineEdit(
         "primpath_location",
         "Prim Path",
@@ -333,7 +450,26 @@ def main():
     chunk_api.add_param(chunk.Slider("verticalApertureOffset", "Vertical Aperture Offset", min_value=-50.0, max_value=50.0))
     chunk_api.add_param(chunk.Slider("fStop", "f-Stop", min_value=0.7, max_value=64.0))
     chunk_api.add_param(chunk.Slider("focusDistance", "Focus Distance", min_value=0.0, max_value=1000.0))
-    
+    focus_btn = chunk.Button(
+        "focus_on_selection", "Focus on Selection",
+        tooltip="Remember the selected prim as the Focus Point (the average of several) and "
+        "turn Autofocus on, so Focus Distance follows it as the camera moves.",
+    )
+    focus_btn.add_callback(_focus_on_selection, send_on_create=False)
+    chunk_api.add_param(focus_btn)
+    chunk_api.add_param(chunk.Checkbox(
+        "autofocus", "Autofocus", default_value=False,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="Keep Focus Distance on the Focus Point from wherever the camera is -- flown, "
+        "dragged or typed. Off, the distance stays where it was last set.",
+    ))
+    chunk_api.add_param(chunk.Vector(
+        "focus_point", "Focus Point",
+        param=chunk.Slider(), length=3, suffixes="XYZ", default_value=(0.0, 0.0, 0.0),
+        flags=chunk.ChunkFlags.GroupFlags.LABELED | chunk.ChunkFlags.GroupFlags.COLLAPSABLE,
+        tooltip="World-space point Autofocus keeps in focus. Set by Focus on Selection, or type one.",
+    ))
+
     default_cam = next((c for c in cameras if c.get("model") == menu.value), cameras[0])
     formats.menu_items = [f.get("format") for f in default_cam.get("sensorSize", [])]
 
@@ -385,6 +521,7 @@ def execute(node):
     # transform handle appear to do nothing at all.
     if raw_path == getattr(node, '_last_camera_path', None):
         _author_camera_transform(node, stage)
+        _refocus(node)
         return
 
     chunk_layer = stage.GetEditTarget().GetLayer()
@@ -393,6 +530,13 @@ def execute(node):
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)
     if not var_selections and not chunk_notice._loading_stage:
         raw_path = chunk_utils.get_unique_path(stage, raw_path)
+        # Recorded as a value, not left as a local. This is the only thing telling this
+        # chunk apart from another of the same kind, and a saved scene carries chunk-prim
+        # values -- without it two cameras reopened both claiming /cameras/camera1 and
+        # authored over one prim. Guarded so a path that did not move is not written back
+        # on every cook.
+        if raw_path != node.get_param("primpath_location").value:
+            node.get_param("primpath_location").value = raw_path
 
     node._last_camera_path = raw_path
 
@@ -416,6 +560,7 @@ def execute(node):
 
     # After the prim exists, and after the Clear above -- authoring it earlier would be wiped.
     _author_camera_transform(node, stage)
+    _refocus(node)
 
     if node.get_param("lock_to_freecam").value:
         scene = node.get_scene()

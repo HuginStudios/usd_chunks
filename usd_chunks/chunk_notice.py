@@ -76,7 +76,7 @@ _T = TypeVar("_T")
 Predicate: TypeAlias = Callable[[Any], TypeGuard[_T]]
 
 if TYPE_CHECKING:
-    from usd_chunks import chunk_core
+    from usd_chunks import chunk_core, chunk_widget_api
 
 
 class ChunkNoticeAlias(IntEnum):
@@ -391,7 +391,7 @@ class MenuActionNotice(ChunkNotice):
 
 @chunk_notice(ChunkNoticeAlias.WIDGET_CHANGED)
 class WidgetChangedNotice(ChunkNotice):
-    data: "chunk_core.ChunkParamWidgetBase"
+    data: "chunk_widget_api.ChunkParamWidgetBase"
 
 
 ### UsdView selection notices
@@ -1286,6 +1286,7 @@ class ChunkNoticePropagator:
                         and not muted and not not_yet_in_stack and not prop.is_blocked()):
                     global _usd_write_active, _executing_chunk
                     prev_executing_chunk = _executing_chunk
+                    prev_usd_write_active = _usd_write_active
                     prop._executing = True
                     _usd_write_active = True
                     _executing_chunk = getattr(prop, "get_chunk", lambda: None)()
@@ -1297,7 +1298,10 @@ class ChunkNoticePropagator:
                             # No edit layer of its own — author into the stage's current target.
                             module.execute(prop)
                     finally:
-                        _usd_write_active = False
+                        # Restored, not cleared: a cook can be reached from inside a guarded
+                        # write (a rename triggers one), and clearing outright unsuppressed
+                        # that outer write for whatever it still had left to do.
+                        _usd_write_active = prev_usd_write_active
                         _executing_chunk = prev_executing_chunk
                         prop._executing = False
 
@@ -1805,7 +1809,7 @@ class NoticeConnection:
                         # way load_chunks's own explicit final execute() loop does for the
                         # reserved hook, so this would-be edit would just be lost. Call it
                         # without the EditContext wrapper instead -- a callback that (like
-                        # scripts/sublayer.py's) authors straight into its own
+                        # scripts/usd/sublayer.py's) authors straight into its own
                         # get_edit_context() layer object, not through the stage's ambient
                         # edit target, works fine either way.
                         meth(*args)

@@ -20,14 +20,31 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_core as core
+from usd_chunks import chunk_naming
+from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_registry
-from usd_chunks.plugins import chunk_graph_layout
+from usd_chunks.plugins import chunk_graph
 from usd_chunks import chunk_utils
 from usd_chunks.plugins import chunk_usd
-from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.plugins.chunk_qt_widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
+
+# The clipboard model and its snapshot helpers live in the engine now; these aliases keep
+# the rest of this file reading as it did, and keep the two frontends on one format.
+_ClipboardNode = chunk_graph.ClipboardNode
+_ClipboardEdge = chunk_graph.ClipboardEdge
+_iter_prim_connections = chunk_graph.iter_prim_connections
+_iter_group_children = chunk_graph.iter_group_children
+_snapshot_chunk_node = chunk_graph.snapshot_chunk_node
+_snapshot_list_sizes = chunk_graph.snapshot_list_sizes
+_apply_list_sizes = chunk_graph.apply_list_sizes
+_snapshot_param_values = chunk_graph.snapshot_param_values
+_apply_param_values = chunk_graph.apply_param_values
+_iter_copyable_params = chunk_graph.iter_copyable_params
+_iter_chunk_param_paths = chunk_graph.iter_chunk_param_paths
+_node_clipboard = chunk_graph.node_clipboard
+_edge_clipboard = chunk_graph.edge_clipboard
 
 _PORT_RADIUS = 5
 _PORT_SNAP_PIXELS = 20  # on-screen click-tolerance radius for dropping a dragged wire near a port
@@ -134,10 +151,10 @@ _COL_TEXT_PRIMARY = QtGui.QColor("#ffffff")
 _COL_TEXT_SECONDARY = QtGui.QColor("#aaaaaa")
 _COL_TEXT_LOCKED = QtGui.QColor("#888877")
 
-_CHUNKS_ROOT = "/chunks"
-_CHUNK_PRIM_TYPENAME = "Chunk"
-_EXEC_INPUT = "inputs:chunk"
-_EXEC_OUTPUT = "outputs:chunk"
+_CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
+_CHUNK_PRIM_TYPENAME = chunk_naming.CHUNK_PRIM_TYPENAME
+_EXEC_INPUT = chunk_naming.EXEC_INPUT
+_EXEC_OUTPUT = chunk_naming.EXEC_OUTPUT
 _UNBUILT = object()  # sentinel for ChunkGraphScene._built_context
 # Child predicate that keeps disabled chunks: disabling sets the chunk prim inactive
 # (prim.SetActive(False)), and the default GetChildren() skips inactive prims — which would
@@ -164,15 +181,19 @@ def _get_proxy_sink() -> QtWidgets.QWidget:
         _proxy_sink.show()
     return _proxy_sink
 
-_PORT_EXEC = "exec"
 #: Inset of the floating context path from the graph viewport's top-left corner.
 _BREADCRUMB_MARGIN = 6
-_PORT_FLOAT = "float"
-_PORT_INT = "int"
-_PORT_BOOL = "bool"
-_PORT_STRING = "string"
-_PORT_COLOR = "color"
-_PORT_VECTOR = "vector"
+
+# The port vocabulary lives in chunk_graph so every frontend names types the same way.
+# Aliased rather than re-exported by hand: ~40 references read _PORT_* already, and a
+# second definition here is the thing that lets Qt and a non-Qt view disagree.
+_PORT_EXEC = chunk_graph.PORT_EXEC
+_PORT_FLOAT = chunk_graph.PORT_FLOAT
+_PORT_INT = chunk_graph.PORT_INT
+_PORT_BOOL = chunk_graph.PORT_BOOL
+_PORT_STRING = chunk_graph.PORT_STRING
+_PORT_COLOR = chunk_graph.PORT_COLOR
+_PORT_VECTOR = chunk_graph.PORT_VECTOR
 
 _COL_PORT_COLOR = QtGui.QColor("#c87060")  # muted red
 
@@ -216,57 +237,12 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
 
 
 
-def _sdf_to_port_type(sdf_type_name) -> str:
-    if sdf_type_name in (Sdf.ValueTypeNames.Color3f, Sdf.ValueTypeNames.Color4f):
-        return _PORT_COLOR
-    if sdf_type_name in (Sdf.ValueTypeNames.Bool,):
-        return _PORT_BOOL
-    if sdf_type_name in (Sdf.ValueTypeNames.String, Sdf.ValueTypeNames.Token, Sdf.ValueTypeNames.Asset):
-        return _PORT_STRING
-    if sdf_type_name in (
-        Sdf.ValueTypeNames.Int, Sdf.ValueTypeNames.Int2,
-        Sdf.ValueTypeNames.Int3, Sdf.ValueTypeNames.Int4,
-    ):
-        return _PORT_INT
-    if sdf_type_name in (
-        Sdf.ValueTypeNames.Float2, Sdf.ValueTypeNames.Float3, Sdf.ValueTypeNames.Float4,
-    ):
-        return _PORT_VECTOR
-    return _PORT_FLOAT
-
-
-def _iter_connectable_params(obj: core.ChunkCommon):
-    """Recursively yield float/int/bool/string/menu/color params and vectors from a chunk or group."""
-    for param in obj.get_my_params():
-        if isinstance(param, (Slider, Spinbox, Checkbox, LineEdit, TextEdit, FileBrowser, ColorPicker, Menu)):
-            yield param
-        elif isinstance(param, core.ChunkVectorBase):
-            yield param  # vector as a single port — children are not connectable individually
-        elif not isinstance(param, core.ChunkParamBase):
-            yield from _iter_connectable_params(param)
-
-
-def _iter_all_vectors(obj: core.ChunkCommon):
-    """Recursively yield all ChunkVectorBase instances from a chunk or group."""
-    for param in obj.get_my_params():
-        if isinstance(param, core.ChunkVectorBase):
-            yield param
-        elif not isinstance(param, core.ChunkParamBase):
-            yield from _iter_all_vectors(param)
-
-
-def _param_port_type(param) -> str:
-    if isinstance(param, ColorPicker):
-        return _PORT_COLOR
-    if isinstance(param, core.ChunkVectorBase):
-        return _PORT_VECTOR
-    if isinstance(param, Checkbox):
-        return _PORT_BOOL
-    if isinstance(param, (LineEdit, TextEdit, FileBrowser, Menu)):
-        return _PORT_STRING
-    if param.value is not None and isinstance(param.value, int) and not isinstance(param.value, bool):
-        return _PORT_INT
-    return _PORT_FLOAT
+# Port typing and param traversal are pure functions over Sdf types and the param
+# classes -- no Qt in any of them -- so they live in the engine and the view borrows them.
+_sdf_to_port_type = chunk_graph.sdf_to_port_type
+_iter_connectable_params = chunk_graph.iter_connectable_params
+_iter_all_vectors = chunk_graph.iter_all_vectors
+_param_port_type = chunk_graph.param_port_type
 
 
 # ---------------------------------------------------------------------------
@@ -276,196 +252,28 @@ def _param_port_type(param) -> str:
 # paste is the only use case this needs to serve. Module-level so it's shared across every
 # ChunkGraphView/tab/chunkgroup in the process, matching how a real clipboard behaves.
 
-class _ClipboardNode:
-    __slots__ = (
-        "module_name", "values", "rel_pos", "children", "child_edges", "list_sizes", "lofts",
-    )
-
-    def __init__(
-        self, module_name: str, values: list, rel_pos: QtCore.QPointF,
-        children: "list[_ClipboardNode] | None" = None,
-        child_edges: "list[_ClipboardEdge] | None" = None,
-        list_sizes: "list[tuple[str, int]] | None" = None,
-        lofts: "list[tuple[int, str]] | None" = None,
-    ):
-        self.module_name = module_name
-        self.values = values
-        # How many rows each of the chunk's list groups held. Values alone are not enough:
-        # a freshly created chunk starts with zero rows, so there is nothing for the
-        # positional zip to pair them against and every row is silently dropped.
-        self.list_sizes = list_sizes or []
-        self.rel_pos = rel_pos  # position relative to the copied selection's top-left corner
-        # Only non-empty for a ChunkGroup: its nested sub-chunks and the wiring between them,
-        # so copying/duplicating/cutting a group recursively takes its whole contents along
-        # instead of pasting an empty group. rel_pos for a child is relative to the *group's
-        # own children's* top-left, not the top-level selection's.
-        self.children: list[_ClipboardNode] = children or []
-        self.child_edges: list[_ClipboardEdge] = child_edges or []
-        # Params this group publishes on its own interface, as (child index, the inner
-        # attribute lofted). A loft is not a wire between two children, so it is not a
-        # _ClipboardEdge: it points UP from a child to the group itself, and the copy has
-        # to re-loft rather than re-connect -- the pasted group has no such param until
-        # something lofts one.
-        self.lofts: list[tuple[int, str]] = lofts or []
 
 
-class _ClipboardEdge:
-    """A wire between two copied nodes, referenced by index into the node clipboard rather
-    than by prim path (paths don't exist yet at copy time for a not-yet-pasted node, and
-    change on every paste anyway). src_attr/dst_attr are ChunkPortItem-suffix form
-    ("outputs:chunk"/"inputs:tx", ...), not raw Sdf connection-target form -- see
-    `_iter_prim_connections`."""
-
-    __slots__ = ("src_index", "src_attr", "dst_index", "dst_attr")
-
-    def __init__(self, src_index: int, src_attr: str, dst_index: int, dst_attr: str):
-        self.src_index = src_index
-        self.src_attr = src_attr
-        self.dst_index = dst_index
-        self.dst_attr = dst_attr
 
 
-_node_clipboard: list[_ClipboardNode] = []
-_edge_clipboard: list[_ClipboardEdge] = []
+# The clipboard lives in chunk_graph (see the aliases at the top of this file). These
+# two names used to be rebound here, which silently gave Qt a clipboard of its own --
+# so a copy in one frontend was invisible to the other despite the shared format.
 
 
-def _iter_prim_connections(prim: Usd.Prim):
-    """Yield (dst_attr_suffix, src_prim_path, src_attr_suffix) for every real inputs:*
-    connection on this prim, in ChunkPortItem.attr_path suffix form for BOTH ends (e.g. dst
-    "inputs:tx", src "outputs:tx") -- independent of the "Show param connections" view toggle
-    (unlike ChunkGraphScene._build_edges, which only builds what's currently drawn), since
-    copy/paste needs every real connection, not just the visible ones. Takes a bare Usd.Prim
-    rather than a ChunkNodeItem so it also works for a ChunkGroup's children, which have no
-    live Qt node at all unless someone has dived into that group."""
-    if not prim.IsValid():
-        return
-    for attr in prim.GetAttributes():
-        attr_name = attr.GetName()
-        if not attr_name.startswith("inputs:"):
-            continue
-        for conn_path in attr.GetConnections():
-            src_prim_path = str(conn_path.GetPrimPath())
-            if chunk_usd.is_exec_input_name(attr_name):
-                # Exec connections point straight at the source's outputs:chunk already.
-                src_attr_suffix = conn_path.name
-            else:
-                # Typed connections normally point at the source's OWN inputs:param (see
-                # ChunkGraphView._author_connection), but an expression referencing an
-                # OUTPUT-flagged param authors the target as outputs:param directly (see
-                # ChunkBase.data_changed's use_out branch in chunk_core). Normalize BOTH to
-                # the ChunkPortItem-suffix "outputs:param" form used on both ends elsewhere
-                # -- strip whichever namespace prefix is actually present rather than
-                # assuming inputs: (blindly slicing len("inputs:") off an already-outputs:
-                # target left a stray leading colon -> "outputs::param" -> a malformed
-                # Sdf.Path that resolved to <>, crashing SetConnections on paste).
-                bare = conn_path.name.split(":", 1)[-1]
-                src_attr_suffix = "outputs:" + bare
-            yield attr_name, src_prim_path, src_attr_suffix
 
 
 def _prim_graph_pos(prim: "Usd.Prim | None") -> QtCore.QPointF:
-    """A prim's authored node-graph position (USD Y-up -> Qt Y-down), or the origin if
-    unauthored/invalid."""
-    if not prim or not prim.IsValid():
-        return QtCore.QPointF(0, 0)
-    ui_api = UsdUI.NodeGraphNodeAPI(prim)
-    pos_attr = ui_api.GetPosAttr()
-    if pos_attr and pos_attr.HasAuthoredValue():
-        p = pos_attr.Get()
-        return QtCore.QPointF(p[0], -p[1])
-    return QtCore.QPointF(0, 0)
+    """A prim's authored node-graph position as a QPointF.
+
+    The Y-up-to-Y-down flip is chunk_graph.graph_position's now -- both frontends draw on
+    a Y-down canvas, so the convention belongs in the engine rather than in each of them.
+    """
+    return QtCore.QPointF(*chunk_graph.graph_position(prim))
 
 
-def _iter_group_children(chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage):
-    """Yield the direct children of a ChunkGroup -- both plain leaf chunks (found via
-    get_context(), which walks the real Python ownership chain) and nested sub-groups (which
-    get_context() can NEVER find this way: it returns self for any CONTEXT-flagged chunk --
-    see ChunkGraphScene._rebuild_nodes's own "c is not context" guard for the same quirk --
-    and a sub-group is always added as a top-level scene entry, never actually owned by its
-    structural parent). Mirrors _rebuild_nodes's own combined lookup (get_context() equality
-    plus a get_context_for_prim_path() scan of the group's own USD children) exactly, so a
-    ChunkGroup nested inside another ChunkGroup is still found. View chunks are excluded --
-    not content worth duplicating, matching the top-level selection's own exclusion."""
-    by_path: dict[str, core.ChunkBase] = {
-        chunk_usd.get_chunk_prim_path(c): c
-        for c in scene_sender.get_chunks()
-        if c.get_context() == chunk and c is not chunk and not chunk_usd.is_view_chunk(c)
-    }
-    root_prim = stage.GetPrimAtPath(Sdf.Path(chunk.prim_path)) if chunk.prim_path else None
-    if root_prim is not None and root_prim.IsValid():
-        for prim in root_prim.GetFilteredChildren(_INCLUDE_INACTIVE):
-            path = str(prim.GetPath())
-            if path in by_path:
-                continue
-            ctx_chunk = scene_sender.get_context_for_prim_path(path)
-            if ctx_chunk is not None and not chunk_usd.is_view_chunk(ctx_chunk):
-                by_path[path] = ctx_chunk
-    return list(by_path.values())
 
 
-def _snapshot_chunk_node(
-    chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage, rel_pos: QtCore.QPointF
-) -> "_ClipboardNode | None":
-    """Build a _ClipboardNode for `chunk` at rel_pos, recursing into its own children (and
-    their internal wiring) if it's a ChunkGroup -- shared by the top-level selection snapshot
-    and by each recursive level of group contents. Returns None for a chunk with no module
-    (nothing to recreate it from -- e.g. a bare exec 'dot')."""
-    cfg = chunk.get_config()
-    module_name = cfg.module if cfg else None
-    if not module_name:
-        return None
-    clip_node = _ClipboardNode(
-        module_name, _snapshot_param_values(chunk), rel_pos,
-        list_sizes=_snapshot_list_sizes(chunk),
-    )
-    if not chunk_usd.is_group_chunk(chunk):
-        return clip_node
-
-    children = _iter_group_children(chunk, scene_sender, stage)
-    child_prims: dict[str, Usd.Prim] = {}
-    child_pos: dict[str, QtCore.QPointF] = {}
-    for child in children:
-        path = chunk_usd.get_chunk_prim_path(child)
-        prim = stage.GetPrimAtPath(Sdf.Path(path))
-        child_prims[path] = prim
-        child_pos[path] = _prim_graph_pos(prim)
-    if child_pos:
-        min_x = min(p.x() for p in child_pos.values())
-        min_y = min(p.y() for p in child_pos.values())
-    else:
-        min_x = min_y = 0.0
-
-    kept_index: dict[str, int] = {}
-    for child in children:
-        path = chunk_usd.get_chunk_prim_path(child)
-        pos = child_pos[path]
-        child_clip = _snapshot_chunk_node(
-            child, scene_sender, stage, QtCore.QPointF(pos.x() - min_x, pos.y() - min_y)
-        )
-        if child_clip is None:
-            continue
-        kept_index[path] = len(clip_node.children)
-        clip_node.children.append(child_clip)
-
-    for child in children:
-        path = chunk_usd.get_chunk_prim_path(child)
-        dst_index = kept_index.get(path)
-        prim = child_prims.get(path)
-        if dst_index is None or prim is None:
-            continue
-        for dst_attr, src_prim_path, src_attr in _iter_prim_connections(prim):
-            if src_prim_path == chunk.prim_path:
-                # A LOFT, not a wire to a sibling: the inner attr points up at the group's
-                # own interface. Dropping it as "outside the copied children" is what left a
-                # duplicated group with none of the params it published.
-                clip_node.lofts.append((dst_index, dst_attr))
-                continue
-            src_index = kept_index.get(src_prim_path)
-            if src_index is None:
-                continue  # source outside this group's copied children -- wire dropped
-            clip_node.child_edges.append(_ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
-
-    return clip_node
 
 
 def _author_raw_connection(
@@ -530,84 +338,16 @@ def _author_raw_connection(
             param.value = f"@{src_node_name}.{src_param_name}@"
 
 
-def _iter_copyable_params(chunk: core.ChunkCommon):
-    """`_iter_connectable_params`, minus anything flagged State.HIDDEN.
-
-    A HIDDEN param is a chunk module's own internal bookkeeping, never meant for a user to
-    see or set directly -- e.g. scripts/create_layer.py's _new_layer_id/_layer_name_used/
-    _parent_layer_id, which cache identifiers for the anon Sdf.Layer *that specific chunk
-    instance* created. Copying those verbatim onto a pasted chunk hands it the ORIGINAL
-    instance's cached identifier; since that layer is still alive (Sdf.Layer.Find succeeds
-    process-wide, not scoped to this chunk), the pasted chunk's own next execute() silently
-    adopts and reuses the original's real layer object instead of creating an independent one
-    of its own -- the two nodes end up secretly sharing state. Not scoped to
-    scripts/create_layer.py specifically -- any chunk module using a HIDDEN param the same way
-    has the identical hazard, so the exclusion lives at this shared, module-agnostic level
-    rather than as a create_layer-specific special case.
-
-    Deliberately a separate generator from `_iter_connectable_params` itself (used elsewhere
-    for port placement) rather than changing what that one yields -- copy/paste is the only
-    caller that needs this narrower set."""
-    for param in _iter_connectable_params(chunk):
-        if param.has_state(ChunkFlags.State.HIDDEN):
-            continue
-        yield param
 
 
-def _snapshot_list_sizes(chunk: core.ChunkCommon) -> "list[tuple[str, int]]":
-    """How many rows each list group on `chunk` holds, keyed by param path.
-
-    A list group's rows are created at runtime, so a pasted chunk has none of them and the
-    positional value snapshot has nothing to land on -- copying a Sublayer with a path set
-    produced one with an empty list and no path, and the same for every other chunk built
-    on a list group.
-    """
-    sizes: "list[tuple[str, int]]" = []
-    for path, param in _iter_chunk_param_paths(chunk):
-        if isinstance(param, core.ChunkListGroupBase):
-            sizes.append((path, param.size))
-    return sizes
 
 
-def _apply_list_sizes(chunk: core.ChunkCommon, sizes: "list[tuple[str, int]]") -> None:
-    """Grow each list group back before any value is applied, so the rows exist to take them."""
-    for path, size in sizes:
-        param = chunk.get_param(path)
-        if isinstance(param, core.ChunkListGroupBase) and param.size != size:
-            try:
-                param.size = size
-            except Exception:
-                # A list whose size cannot be set (driven by something else, or a module
-                # that has changed shape since the copy) should not abort the paste.
-                continue
 
 
-def _iter_chunk_param_paths(chunk: core.ChunkCommon, prefix: str = ""):
-    """(dotted path, param) for everything under `chunk`, groups included."""
-    for param in chunk.get_my_params():
-        path = f"{prefix}{param.name}"
-        yield path, param
-        if isinstance(param, core.ChunkGroupBase):
-            yield from _iter_chunk_param_paths(param, f"{path}.")
 
 
-def _snapshot_param_values(chunk: core.ChunkCommon) -> list:
-    """Positional snapshot of every copyable param's value, in `_iter_copyable_params`
-    order. Two instances of the same chunk module build their param tree in the same code
-    order, so a plain positional zip (see `_apply_param_values`) is enough to pair them back
-    up -- no param-path bookkeeping needed."""
-    return [p.value for p in _iter_copyable_params(chunk)]
 
 
-def _apply_param_values(chunk: core.ChunkCommon, values: list) -> None:
-    for param, value in zip(_iter_copyable_params(chunk), values):
-        try:
-            param.value = value
-        except Exception:
-            # A param whose value can't be re-applied as-is (e.g. a stale expression string
-            # for a wire that wasn't copied along with it) shouldn't abort the rest of the
-            # paste -- leave it at its default and move on.
-            continue
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +410,7 @@ def _detect_dropped_usd_kind(path: str) -> "str | None":
     return "chunks" if found else "scene"
 
 
-def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: QtCore.QPointF) -> "_ClipboardNode | None":
+def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: "tuple[float, float]") -> "_ClipboardNode | None":
     """Build a _ClipboardNode straight from a Usd.Prim on a throwaway, unregistered stage (a
     dropped file opened via Usd.Stage.Open) -- the drag-and-drop counterpart of
     _snapshot_chunk_node, which instead reads a *live* chunk already registered in the real
@@ -684,7 +424,7 @@ def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: QtCore.QPointF) -> "_C
     Blocked BEFORE _load_wire_inputs restores any values: ChunkBase.get_stage() always
     returns the real, live global stage regardless of whether THIS instance was ever added
     to any scene, so a module with real side-effecting reactive code (e.g.
-    scripts/create_layer.py's execute() authoring a genuine anon Sdf.Layer the instant its
+    scripts/usd/create_layer.py's execute() authoring a genuine anon Sdf.Layer the instant its
     layer_name value changes) runs for real even on a throwaway, never-added chunk -- live
     confirmed as an orphaned duplicate layer appearing after a drag-and-drop import."""
     module_name = prim.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get()
@@ -721,7 +461,7 @@ def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: QtCore.QPointF) -> "_C
         path = str(child.GetPath())
         pos = positions[path]
         child_clip = _build_clip_node_from_prim(
-            child, QtCore.QPointF(pos.x() - min_x, pos.y() - min_y)
+            child, (pos.x() - min_x, pos.y() - min_y)
         )
         if child_clip is None:
             continue
@@ -805,7 +545,7 @@ def _snapshot_layer_chunks(layer: "Sdf.Layer") -> "tuple[list[_ClipboardNode], l
         path = str(prim.GetPath())
         pos = positions[path]
         clip_node = _build_clip_node_from_prim(
-            prim, QtCore.QPointF(pos.x() - min_x, pos.y() - min_y)
+            prim, (pos.x() - min_x, pos.y() - min_y)
         )
         if clip_node is None:
             continue
@@ -1001,7 +741,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._exec_in_ports.append(port)
         self._exec_in_port = self._exec_in_ports[0]
 
-        if prim.HasAttribute("outputs:chunk"):
+        if prim.HasAttribute(chunk_naming.EXEC_OUTPUT):
             self._exec_out_port = ChunkPortItem(
                 f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
             )
@@ -1209,7 +949,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         attrs = [
             a for a in self.prim.GetAttributes()
             if a.GetName().startswith("outputs:")
-            and a.GetName() != "outputs:chunk"
+            and a.GetName() != chunk_naming.EXEC_OUTPUT
             and a.GetName() not in covered
         ]
         if not attrs:
@@ -1318,7 +1058,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         param_widgets = {
             w.param: w
             for w in chunk_widget.findChildren(QtWidgets.QWidget)
-            if isinstance(w, core.ChunkParamWidgetBase)
+            if isinstance(w, chunk_widget_api.ChunkParamWidgetBase)
         }
         containers_by_group = {
             w.group: w
@@ -2488,68 +2228,42 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
     # ------------------------------------------------------------------
     # Auto-layout (L key)
 
-    def _build_layout_adjacency(self):
-        """Prim-path-keyed up/down adjacency from ALL connections (exec + typed data),
-        independent of the "Show param connections" view toggle — layout should account for
-        every real connection, not just the ones currently drawn on screen."""
-        up_of: dict = {}
-        down_of: dict = {}
-        for path, node in self._nodes.items():
-            if not node.prim.IsValid():
-                continue
-            for attr in node.prim.GetAttributes():
-                if not attr.GetName().startswith("inputs:"):
-                    continue
-                for conn_path in attr.GetConnections():
-                    src_path = str(conn_path.GetPrimPath())
-                    if src_path == path or src_path not in self._nodes:
-                        continue
-                    up_of.setdefault(path, set()).add(src_path)
-                    down_of.setdefault(src_path, set()).add(path)
-        return up_of, down_of
-
     def layout_nodes(self, seed_paths: "list[str] | None" = None) -> None:
         """Auto-layout — see plugins/chunk_graph_layout.py for the algorithm itself.
 
         seed_paths: prim paths to grow into their full connected subgraph before laying out
         (the "Layout Selected" case). None lays out every node currently in this context.
+
+        The computation is chunk_graph.layout_graph, shared with the other frontends; what
+        stays here is applying it, because only this one has QGraphicsItems to move.
         """
         if not self._nodes:
             return
-        up_of, down_of = self._build_layout_adjacency()
+        prims = {path: node.prim for path, node in self._nodes.items() if node.prim.IsValid()}
 
-        if seed_paths:
-            grown = chunk_graph_layout.grow_to_connected_subgraph(list(seed_paths), up_of, down_of)
-            node_ids = sorted(grown & set(self._nodes))
-        else:
-            node_ids = sorted(self._nodes)
-        if not node_ids:
-            return
+        def size_of(path):
+            rect = self._nodes[path].boundingRect()
+            return rect.width(), rect.height()
 
-        node_id_set = set(node_ids)
-        scoped_up = {nid: {u for u in up_of.get(nid, ()) if u in node_id_set} for nid in node_ids}
-        scoped_down = {nid: {d for d in down_of.get(nid, ()) if d in node_id_set} for nid in node_ids}
+        def current_pos(path):
+            point = self._nodes[path].pos()
+            return point.x(), point.y()
 
-        def size_of(nid):
-            r = self._nodes[nid].boundingRect()
-            return r.width(), r.height()
-
-        def is_locked(nid):
-            return self._nodes[nid]._locked
-
-        def current_pos(nid):
-            p = self._nodes[nid].pos()
-            return p.x(), p.y()
-
-        positions = chunk_graph_layout.layout_positions(
-            node_ids, size_of, is_locked, current_pos, scoped_up, scoped_down
+        positions = chunk_graph.layout_graph(
+            prims, size_of, current_pos, seeds=seed_paths,
+            # Unlike the other frontends, this one knows about locked nodes: a prim from an
+            # external or referenced layer must not be moved, though it still acts as an
+            # obstacle.
+            is_locked=lambda path: self._nodes[path]._locked,
         )
 
         # Apply after the full layout is computed (not interleaved with computing it) — each
         # setPos triggers itemChange -> update_edges_for automatically, and _write_pos_to_usd
         # persists the same ui:nodegraph:node:pos attribute an interactive drag already writes.
-        for nid, (x, y) in positions.items():
-            node = self._nodes[nid]
+        for path, (x, y) in positions.items():
+            node = self._nodes.get(path)
+            if node is None:
+                continue
             node.setPos(x, y)
             node._write_pos_to_usd()
 
@@ -2996,33 +2710,9 @@ class _ProxyKeyRouter(QtCore.QObject):
 # ---------------------------------------------------------------------------
 # View
 
-def _set_param_visibly(chunk_obj, param, value) -> None:
-    """Set a param's value so its widget hears about it, even on a blocked chunk.
-
-    A chunk created by dropping a wire into empty space is blocked the moment it is made
-    (view-driven execution: nothing is wired to it yet), and a blocked chunk suppresses its
-    own param notices -- which is how the deferred connect could author the expression, have
-    it resolve correctly, and still leave the field on the node showing nothing at all.
-    Live-reported as "the wire works but the Prim Path param is empty".
-
-    Unblocking for the write is what makes the widget update, and `_executing` is what keeps
-    that from running the module: set_blocked suppresses per-param VALUE_CHANGED notices as
-    well as execution, while _executing suppresses only chunk_notice's reserved
-    module.execute() dispatch. Same pair _materialize_children uses when restoring pasted
-    values for exactly this reason.
-    """
-    was_blocked = chunk_obj.is_blocked()
-    if not was_blocked:
-        param.value = value
-        return
-    prev_executing = getattr(chunk_obj, "_executing", False)
-    chunk_obj._executing = True
-    chunk_obj.set_blocked(False)
-    try:
-        param.value = value
-    finally:
-        chunk_obj.set_blocked(True)
-        chunk_obj._executing = prev_executing
+# Moved to the engine when connect() took over writing the expression -- this was its
+# only caller. Aliased rather than deleted: same reason as _PORT_*, one definition.
+_set_param_visibly = chunk_graph.set_param_visibly
 
 
 class ChunkGraphView(QtWidgets.QGraphicsView):
@@ -3331,22 +3021,23 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     def _context_has_view(self, scene, context) -> bool:
         """True when this context (or the graph as a whole, if context is None) has a view chunk."""
-        return any(
-            chunk_usd.is_view_chunk(c) and (context is None or c.get_context() == context)
-            for c in scene.get_chunks()
-        )
+        return chunk_graph.context_has_view(scene, context)
 
-    def _push_nest_context(self, scene, context):
-        """When the graph is dived into a chunkgroup, make new chunks nest into it. add_chunk
-        uses scene._current_context, which isn't set for a dive — so without this, creating a
-        node inside a group silently added it to the tab instead. Returns (changed, previous) to
-        restore. No-op at the tab level (plain contexts have no module)."""
+    def _nest_target(self, context):
+        """The context new chunks should nest into, or None to leave them where they land.
+
+        When the graph is dived into a chunkgroup, add_chunk must parent into it -- it uses
+        the scene's current context, which isn't set for a dive, so without this creating a
+        node inside a group silently added it to the tab instead. No-op at the tab level
+        (plain contexts have no module).
+
+        Pushing and restoring is SceneSender.creating_in's job now; this only answers which
+        context, which is the half that differs between frontends.
+        """
         cfg = context.get_config() if context is not None else None
         if context is not None and context.has_flag(ChunkFlags.GroupFlags.CONTEXT) and cfg and cfg.module:
-            prev = scene._current_context
-            scene._current_context = weakref.ref(context)
-            return True, prev
-        return False, None
+            return context
+        return None
 
     # ------------------------------------------------------------------
     # Copy / Paste
@@ -3387,7 +3078,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         kept_index: dict[str, int] = {}
         clip_nodes: list[_ClipboardNode] = []
         for node in selected:
-            rel_pos = QtCore.QPointF(node.pos().x() - min_x, node.pos().y() - min_y)
+            rel_pos = (node.pos().x() - min_x, node.pos().y() - min_y)
             clip_node = _snapshot_chunk_node(node.chunk, graph_scene._scene_sender, graph_scene._stage, rel_pos)
             if clip_node is None:
                 continue
@@ -3480,7 +3171,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         """Create new chunk(s) from clip_nodes centered at scene_pos, wire clip_edges between
         them, and select the result -- nested into whatever context/tab this view is
         currently showing, same mechanism right-click "New Chunk" already uses
-        (_push_nest_context), which is what makes pasting/duplicating into a chunkgroup work
+        (scene.creating_in), which is what makes pasting/duplicating into a chunkgroup work
         for free, including a selection copied from a different context. Shared by both Paste
         (module clipboard) and Duplicate (clipboard-free, straight from the selection).
         Returns the list of newly created primary chunks."""
@@ -3494,10 +3185,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return []
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        nested, prev_ctx = self._push_nest_context(scene, context)
         new_chunks: list[core.ChunkBase] = []
         new_path_by_index: dict[int, str] = {}
-        try:
+        with scene.creating_in(self._nest_target(context)):
             for index, item in enumerate(clip_nodes):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
@@ -3539,11 +3229,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # have nowhere to land until the rows it had are back.
                 _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
-                pos = (scene_pos.x() + item.rel_pos.x(), scene_pos.y() + item.rel_pos.y())
+                pos = (scene_pos.x() + item.rel_pos[0], scene_pos.y() + item.rel_pos[1])
                 # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_usd in USD
                 # space (see chunk_usd._create_node_pos usage elsewhere in this file).
-                chunk_usd._create_node_pos = (pos[0], -pos[1])
-                try:
+                with chunk_usd.creating_at((pos[0], -pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
                     for c in blockable:
@@ -3562,17 +3251,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         # add_chunk so it runs with correct positioning/parenting in place.
                         for c in blockable:
                             c.execute()
-                finally:
-                    chunk_usd._create_node_pos = None
                 new_chunks.append(primary)
                 new_path_by_index[index] = chunk_usd.get_chunk_prim_path(primary)
                 if item.children:
                     self._materialize_children(
                         primary, item.children, item.child_edges, getattr(item, "lofts", []),
                     )
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
         if new_chunks and graph_scene._scene_sender:
             graph_scene._scene_sender.set_selected_chunks(new_chunks)
         if clip_edges:
@@ -3612,10 +3296,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         stage = scene.get_stage()
         if not stage:
             return
-        nested, prev_ctx = self._push_nest_context(scene, parent_chunk)
         child_path_by_index: dict[int, str] = {}
         child_chunk_by_index: dict[int, core.ChunkBase] = {}
-        try:
+        with scene.creating_in(self._nest_target(parent_chunk)):
             for index, item in enumerate(clip_children):
                 primary, chunks = self._instantiate_chunk_of_type(item.module_name)
                 if primary is None:
@@ -3655,15 +3338,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # have nowhere to land until the rows it had are back.
                 _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
-                chunk_usd._create_node_pos = (item.rel_pos.x(), -item.rel_pos.y())
-                try:
+                with chunk_usd.creating_at((item.rel_pos[0], -item.rel_pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
                     for c in blockable:
                         c._executing = False
                         c.set_blocked(True)
-                finally:
-                    chunk_usd._create_node_pos = None
                 path = chunk_usd.get_chunk_prim_path(primary)
                 child_path_by_index[index] = path
                 child_chunk_by_index[index] = primary
@@ -3671,9 +3351,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     self._materialize_children(
                         primary, item.children, item.child_edges, getattr(item, "lofts", []),
                     )
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
         for edge in clip_child_edges:
             src_path = child_path_by_index.get(edge.src_index)
             dst_path = child_path_by_index.get(edge.dst_index)
@@ -3737,19 +3414,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Read the boundary while it still exists. Cut heals the chain closed as it
         # removes the nodes, so afterwards nothing records what used to attach where.
         inside = {chunk_usd.get_chunk_prim_path(n.chunk) for n in selected}
-        feeds_selection: "list[str]" = []
-        fed_by_selection: "list[str]" = []
-        for prim in stage.TraverseAll():
-            if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
-                continue
-            path = str(prim.GetPath())
-            for attr in chunk_usd.iter_exec_inputs(prim):
-                for conn in attr.GetConnections():
-                    source = str(conn.GetPrimPath())
-                    if path in inside and source not in inside and source not in feeds_selection:
-                        feeds_selection.append(source)
-                    elif source in inside and path not in inside and path not in fed_by_selection:
-                        fed_by_selection.append(path)
+        feeds_selection, fed_by_selection = chunk_graph.exec_boundary(stage, inside)
 
         # Cut second, while the nodes are still here to be snapshotted.
         self._cut_selected_to_clipboard()
@@ -3766,12 +3431,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         group = created[0]
 
         context = self._graph_context()
-        prev_ctx = scene_sender._current_context
-        scene_sender._current_context = weakref.ref(context) if context is not None else None
-        try:
+        with scene_sender.creating_in(context):
             scene_sender.add_chunk(group)
-        finally:
-            scene_sender._current_context = prev_ctx
 
         group_prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(group)))
         if group_prim and group_prim.IsValid():
@@ -3785,13 +3446,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # group stands in as the built context for the duration.
         edges = list(_edge_clipboard)
         prev_built = graph_scene._built_context
-        prev_ctx = scene_sender._current_context
         graph_scene._built_context = group
-        scene_sender._current_context = weakref.ref(group)
         try:
-            pasted = self._paste_clipboard_at(QtCore.QPointF(centre_x, centre_y))
+            with scene_sender.creating_in(group):
+                pasted = self._paste_clipboard_at(QtCore.QPointF(centre_x, centre_y))
         finally:
-            scene_sender._current_context = prev_ctx
             graph_scene._built_context = prev_built
 
         # Wire the pasted chunks to each other here rather than leaving it to the paste's
@@ -4114,13 +3773,29 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # ------------------------------------------------------------------
     # Keyboard
 
+    def frontend(self, docker=None) -> "QtGraphFrontend":
+        """This view as a chunk_graph.GraphFrontend.
+
+        Cached, because the adapter is stateless but callers hold on to what they get and
+        identity comparisons are cheaper to reason about than a new object per call.
+
+        The keyboard handler below routes through this rather than calling the private
+        methods directly, so the contract is a real code path rather than a shape only the
+        tests ever exercise. That was a live review finding: an adapter nothing constructs
+        rots, and passing a conformance test is not evidence it works.
+        """
+        existing = getattr(self, "_frontend", None)
+        if existing is None or (docker is not None and existing.docker is not docker):
+            self._frontend = QtGraphFrontend(self, docker)
+        return self._frontend
+
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if event.key() == QtCore.Qt.Key.Key_Tab:
             self._open_tab_menu()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_F:
-            self._frame_nodes()
+            self.frontend().frame(self.frontend().selected_nodes or self.scene()._nodes)
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_Escape:
@@ -4132,24 +3807,24 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_Delete:
-            self._delete_selected()
+            self.frontend().delete_selected()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_D:
             # Ctrl+D duplicates; bare D (no modifier) toggles disable -- same disambiguation
             # as Ctrl+V/bare-V below.
             if event.modifiers() & QtCore.Qt.ControlModifier:
-                self._duplicate_selected()
+                self.frontend().duplicate_selection()
             else:
-                self._toggle_disable_selected()
+                self.frontend().toggle_disable_selected()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_C and (event.modifiers() & QtCore.Qt.ControlModifier):
-            self._copy_selected_to_clipboard()
+            self.frontend().copy_selection()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_X and (event.modifiers() & QtCore.Qt.ControlModifier):
-            self._cut_selected_to_clipboard()
+            self.frontend().cut_selection()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_V:
@@ -4199,8 +3874,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Capture relevance BEFORE request_delete() touches anything -- see
         # mark_pending_delete_relevance's docstring for why it can't be judged afterward.
         self.mark_pending_delete_relevance(selected)
-        for c in selected:
-            c.request_delete()
+        chunk_graph.delete_chunks(selected)
 
     def _toggle_disable_selected(self) -> None:
         graph_scene = self.scene()
@@ -4356,17 +4030,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
         # Create the node at the wire-drop point instead of the far-away index default.
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
+        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y())), \
+                scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
         new_chunk = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
         if new_chunk is None:
             return
@@ -4423,14 +4092,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._drag_detach_attr = None
         self._drag_detach_source_port = None
 
+    def _as_port_ref(self, item: ChunkPortItem) -> chunk_graph.PortRef:
+        """A Qt port item as the engine's plain description of it.
+
+        The three fields the graph logic ever reads -- which attribute, what type, which
+        direction -- which is why the logic was never really entangled with Qt at all.
+        """
+        return chunk_graph.PortRef(
+            node_path=str(Sdf.Path(item.attr_path).GetPrimPath()),
+            attr_path=item.attr_path,
+            port_type=item.port_type,
+            is_input=item.is_input,
+        )
+
     def _can_connect(self, a: ChunkPortItem, b: ChunkPortItem) -> bool:
-        if a.port_type != b.port_type:
-            return False
-        if a.is_input == b.is_input:
-            return False
-        if Sdf.Path(a.attr_path).GetPrimPath() == Sdf.Path(b.attr_path).GetPrimPath():
-            return False
-        return True
+        return chunk_graph.can_connect(self._as_port_ref(a), self._as_port_ref(b))
 
     def _drag_target_ok(self, hit: ChunkPortItem) -> bool:
         """Whether `hit` is a valid drop target for the wire currently being dragged."""
@@ -4464,116 +4140,82 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             attr_name = "outputs:" + attr_name[len("inputs:"):]
         return src_node.get_port(f"{src_prim_path}.{attr_name}")
 
+    def _engine_context(self, graph_scene: "ChunkGraphScene"):
+        """The prims and chunks the engine needs, keyed the way it keys them.
+
+        Not _graph_context: this class already has one of those, answering a different
+        question with a different signature, and the later definition simply wins.
+        """
+        prims = {path: node.prim for path, node in graph_scene._nodes.items()
+                 if node.prim.IsValid()}
+        chunks = {path: node.chunk for path, node in graph_scene._nodes.items()
+                  if getattr(node, "chunk", None) is not None}
+        return prims, chunks
+
     def _author_connection(self, a: ChunkPortItem, b: ChunkPortItem) -> None:
-        src, dst = (b, a) if a.is_input else (a, b)
+        """Wire two ports, then redraw and recook.
+
+        The authoring itself lives in chunk_graph, so this view and the Flet one perform
+        the same operation rather than two implementations that agree until one of them is
+        fixed. They had already drifted: disconnect was made to work without a live chunk
+        session, and connect learned to survive a param that refuses an expression, and
+        neither reached the copy that used to live here.
+        """
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage:
             return
-        dst_attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(dst.attr_path))
-        if not (dst_attr and dst_attr.IsValid()):
-            # Attribute doesn't exist yet (e.g. inputs:chunk on a not-yet-connected node).
-            prim = graph_scene._stage.GetPrimAtPath(Sdf.Path(dst.attr_path).GetPrimPath())
-            if not prim.IsValid():
-                return
-            sdf_type = Sdf.ValueTypeNames.Token if dst.port_type == _PORT_EXEC else Sdf.ValueTypeNames.String
-            dst_attr = prim.CreateAttribute(dst.attr_path.rsplit(".", 1)[-1], sdf_type, custom=False)
-            if not dst_attr.IsValid():
-                return
-        # Exec connections reference outputs:chunk; typed param connections reference inputs:param.
-        if src.port_type == _PORT_EXEC:
-            src_conn_path = Sdf.Path(src.attr_path)
-        else:
-            src_conn_path = Sdf.Path(src.attr_path.replace(".outputs:", ".inputs:", 1))
-        # Chunk-prim bookkeeping (this connection) follows Edit Target now — update in
-        # place if the attr already had a spec somewhere, else resolve where a brand
-        # new one should go, rather than relying on the stage's ambient edit target.
-        home = chunk_utils.get_attr_home_layer(dst_attr)
-        if home:
-            target = home
-        else:
-            dst_node = graph_scene._nodes.get(str(Sdf.Path(dst.attr_path).GetPrimPath()))
-            target = chunk_utils.get_bookkeeping_layer(graph_scene._stage, getattr(dst_node, "chunk", None))
-        with Usd.EditContext(graph_scene._stage, target):
-            dst_attr.SetConnections([src_conn_path])
+        _prims, chunks = self._engine_context(graph_scene)
+        change = chunk_graph.connect(graph_scene._stage, self._as_port_ref(a),
+                                     self._as_port_ref(b), chunks)
+        if change is None:
+            return
+        if change.expression_error:
+            # The wire stands; only the expression was refused. Worth saying so -- the
+            # value will not resolve through a connection that looks complete.
+            print(f"[ChunkGraph] wired, but the expression was refused: "
+                  f"{change.expression_error}")
 
-        # For typed params, also write an expression so the value resolves at runtime.
-        # The user can clear it from the QLineEdit to keep the wiring without expression eval.
-        # ChunkVectorBase supports this too (whole-vector references, e.g. @Node.vecParam@ —
-        # no per-component wiring).
-        dst_node = graph_scene._nodes.get(str(Sdf.Path(dst.attr_path).GetPrimPath()))
-        if src.port_type != _PORT_EXEC:
-            src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
-            src_param_name = src.attr_path.rsplit(":", 1)[-1]
-            dst_param_name = dst.attr_path.rsplit(":", 1)[-1]
-            if dst_node:
-                param = dst_node.chunk.get_param(dst_param_name)
-                if param is not None:
-                    _set_param_visibly(
-                        dst_node.chunk, param, f"@{src_node_name}.{src_param_name}@"
-                    )
-
-        # Wiring a new exec edge can put the node (and everything downstream) under a
-        # different Edit Target — re-home them to honor the target at their new position.
-        # (This drag-drop path authors inputs:chunk directly, so DEPENDENCY_ADDED — which
-        # ChunkStageSync._on_dependency_added also reconciles on — never fires here.)
-        if src.port_type == _PORT_EXEC:
+        # Everything below is the view's own work, which is why it stayed here. The
+        # expression write that used to sit here is chunk_graph.connect's job now, and it
+        # took set_param_visibly with it -- see that function.
+        if change.exec_changed:
+            # A new exec edge can move the node (and everything downstream) under a
+            # different Edit Target -- re-home them to honour the target at the new
+            # position. This path authors inputs:chunk directly, so DEPENDENCY_ADDED never
+            # fires and ChunkStageSync does not reconcile on its own.
             chunk_usd.reconcile_edit_targets(graph_scene._stage, chunk_usd.ChunkStageSync()._scene)
         graph_scene._build_edges()
-        # A new connection can only change the active view's cook set if its destination side
-        # is (or feeds) the view -- wiring two nodes off in an unrelated part of the graph can't
-        # add anything reachable from the view. Unresolvable dst_node (shouldn't happen once
-        # dst_attr validated above) falls back to an unconditional recook to stay safe.
-        self._recook_active_view({dst_node.chunk} if dst_node else None)
+        # A new connection can only change the active view's cook set if its destination
+        # is, or feeds, the view: wiring two nodes elsewhere cannot add anything reachable.
+        touched = {chunks[path] for path in change.touched_nodes if path in chunks}
+        self._recook_active_view(touched or None)
 
     def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: "ChunkGraphScene") -> None:
-        changed_nodes = set()
-        port_node = graph_scene._nodes.get(str(Sdf.Path(port.attr_path).GetPrimPath()))
-        if port_node:
-            changed_nodes.add(port_node)
-        # For exec ports: rewire predecessor → successor before clearing.
-        if port.port_type == _PORT_EXEC:
-            prim_path = Sdf.Path(port.attr_path).GetPrimPath()
-            out_attr_path = str(prim_path) + ".outputs:chunk"
-            # Find any successor whose exec input points to this node's outputs:chunk. Every
-            # slot, not just inputs:chunk: a merge fed through slot 2 is a successor too, and
-            # missing it would leave that slot wired to a node the user just detached.
-            for node in graph_scene._nodes.values():
-                for succ_attr in chunk_usd.iter_exec_inputs(node.prim):
-                    if not any(str(c) == out_attr_path for c in succ_attr.GetConnections()):
-                        continue
-                    # Rewire successor to this node's predecessor.
-                    pred_conns = attr.GetConnections()
-                    if pred_conns:
-                        succ_attr.SetConnections(list(pred_conns))
-                    else:
-                        succ_attr.ClearConnections()
-                    changed_nodes.add(node)
-                    break
-        chunk_usd.ChunkStageSync().clear_attr_connections(attr)
-        # For typed ports, re-execute the owning chunk so shader-level connections
-        # (e.g. UsdUVTexture.inputs:st) are cleared to match the disconnected chunk state.
-        # Resetting param.value to default_value also clears a ChunkVectorBase's
-        # expression string (its value setter treats a non-string Sequence as "not
-        # an expression"), same as it does for scalar params.
+        """Clear a port, healing the exec chain, then redraw and recook.
+
+        `attr` is accepted for call-site compatibility and deliberately unused: the engine
+        resolves the attribute itself, so both frontends read the same one.
+        """
+        prims, chunks = self._engine_context(graph_scene)
+        change = chunk_graph.disconnect(graph_scene._stage, self._as_port_ref(port),
+                                        prims, chunks)
+        if not change.edges_dirty:
+            return
+
+        # Re-execute the owning chunk so shader-level connections (a UsdUVTexture's
+        # inputs:st, say) clear to match. The engine resets the param; only the view knows
+        # a cook is wanted here.
         if port.port_type != _PORT_EXEC:
-            prim_path = str(Sdf.Path(port.attr_path).GetPrimPath())
-            node = graph_scene._nodes.get(prim_path)
-            if node and getattr(node, 'chunk', None):
-                if port.is_input:
-                    attr_local = port.attr_path.rsplit(".", 1)[-1]
-                    if attr_local.startswith("inputs:"):
-                        param_name = attr_local[len("inputs:"):].replace(":", ".")
-                        param = node.chunk.get_param(param_name)
-                        if param is not None:
-                            param.value = param.default_value
+            node = graph_scene._nodes.get(str(Sdf.Path(port.attr_path).GetPrimPath()))
+            if node and getattr(node, "chunk", None):
                 node.chunk.execute()
-        # Detaching an exec wire can change which Edit Target applies to the node (and its
-        # downstream) — re-home them to the target that survives at their new position.
+
+        # Detaching an exec wire can change which Edit Target applies to the node and its
+        # downstream -- re-home them to the target that survives at the new position.
         chunk_usd.reconcile_edit_targets(graph_scene._stage, chunk_usd.ChunkStageSync()._scene)
         graph_scene._build_edges()
-        # See _author_connection: a disconnect can only affect the view's cook set if the
-        # touched node(s) were themselves reachable from the view.
-        self._recook_active_view({n.chunk for n in changed_nodes} if changed_nodes else None)
+        touched = {chunks[path] for path in change.touched_nodes if path in chunks}
+        self._recook_active_view(touched or None)
 
     def _clear_input_connection(self, port: ChunkPortItem, graph_scene: "ChunkGraphScene") -> bool:
         """Clear one input port's connections (no exec chain-heal). For typed ports also reset
@@ -4731,100 +4373,25 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         QtCore.QTimer.singleShot(0, self, lambda s=slot: self._view_state.set_slot(s))
 
     def _create_view_node_for_prim(self, target_prim_path: str) -> None:
-        """Create a view node wired to target_prim_path using only USD stage data."""
+        """Create a view node wired to target_prim_path, then activate its slot.
+
+        The creation itself is chunk_graph.create_view_for, shared with the Flet and ImGui
+        frontends -- it was 75 lines of USD and registry work here and nothing at all
+        there, which is why the same file used to show a view node in this graph and none
+        in the others.
+        """
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
             return
         stage = registry.scene.get_stage()
-        if not stage:
+        scene = _chunk.get_scene()
+        if not (stage and scene):
             return
-
-        target_prim = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
-        if not target_prim.IsValid():
-            return
-        if target_prim.GetAttribute("info:chunkType").Get() == "view":
-            return
-
-        # If a view is already wired to this prim, activate it instead of creating a duplicate.
-        for prim in stage.Traverse():
-            if prim.GetAttribute("info:chunkType").Get() != "view":
-                continue
-            exec_in = prim.GetAttribute(_EXEC_INPUT)
-            if exec_in.IsValid():
-                for conn_path in exec_in.GetConnections():
-                    if str(conn_path.GetPrimPath()) == target_prim_path:
-                        existing_slot = prim.GetAttribute("view:slot").Get()
-                        if existing_slot is not None:
-                            self._view_state.set_slot(existing_slot)
-                        return
-
-        # Find an unused slot — scoped to the target's container (the view is created as a sibling
-        # of the target). Each graph (tab/group) has its own slots 1-3; a GLOBAL scan runs out of
-        # slots once views exist in a few contexts, so 'Set View' silently failed, and the View{slot}
-        # name incremented globally across contexts.
-        target_parent = str(Sdf.Path(target_prim_path).GetParentPath())
-        used_slots: set = set()
-        for prim in stage.Traverse():
-            if prim.GetAttribute("info:chunkType").Get() != "view":
-                continue
-            if str(prim.GetPath().GetParentPath()) != target_parent:
-                continue
-            s = prim.GetAttribute("view:slot").Get()
-            if s is not None:
-                used_slots.add(s)
-        slot = next((s for s in [1, 2, 3] if s not in used_slots), None)
+        slot = chunk_graph.create_view_for(stage, scene, target_prim_path)
         if slot is None:
             return
-
-        mod = registry.get_chunk_module("view")
-        if not mod:
-            return
-        chunks = mod.create() if mod.loaded else mod.load()
-        if not chunks:
-            return
-        view_chunk = chunks[0]
-        view_chunk.name = f"View{slot}"
-        view_chunk.set_state(ChunkFlags.State.COLLAPSED)
-
-        # Read target pos from USD before add_chunk fires CHUNK_LOADED and rebuilds the graph.
-        node_api = UsdUI.NodeGraphNodeAPI(target_prim)
-        pos_attr = node_api.GetPosAttr()
-        raw_pos = pos_attr.Get() if (pos_attr and pos_attr.IsValid()) else None
-        tx, ty = (float(raw_pos[0]), float(raw_pos[1])) if raw_pos is not None else (0.0, 0.0)
-
-        scene = _chunk.get_scene()
-        if not scene:
-            return
-        scene.add_chunk(view_chunk)
-
-        view_prim_path = f"{chunk_usd._resolve_chunk_root(view_chunk)}/{view_chunk.name}"
-        stage = registry.scene.get_stage()
-        if not stage:
-            return
-        view_prim = stage.GetPrimAtPath(Sdf.Path(view_prim_path))
-        if not view_prim.IsValid():
-            return
-
-        # This is all first-time bookkeeping for a freshly-created view_chunk — the
-        # chunk-prim's exec wiring, its view:slot marker, and its initial position —
-        # so it belongs wherever this chunk's Edit Target currently resolves to, not
-        # wherever the stage's ambient edit target happens to be.
-        with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, view_chunk)):
-            exec_in = view_prim.GetAttribute(_EXEC_INPUT)
-            if not exec_in.IsValid():
-                exec_in = view_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-            exec_in.SetConnections([Sdf.Path(f"{target_prim_path}.{_EXEC_OUTPUT}")])
-
-            slot_attr = view_prim.CreateAttribute("view:slot", Sdf.ValueTypeNames.Int, custom=True)
-            slot_attr.SetVariability(Sdf.VariabilityUniform)
-            slot_attr.Set(slot)
-
-            UsdUI.NodeGraphNodeAPI.Apply(view_prim).CreatePosAttr().Set(
-                Gf.Vec2f(tx + _NODE_WIDTH + 40, ty - 80)
-            )
-
-        # Context object, as above — the view can be gone before this fires.
-        QtCore.QTimer.singleShot(0, self, lambda: self._view_state.set_slot(slot))
+        # Context object, as elsewhere: the view can be gone before this fires.
+        QtCore.QTimer.singleShot(0, self, lambda s=slot: self._view_state.set_slot(s))
 
     def set_view_state(self, vs: ViewSlotState) -> None:
         self._view_state.slot_changed.disconnect(self._on_view_slot_changed)
@@ -5116,7 +4683,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         entry = FilterableChunkMenu().select_module(global_pos)
         if not entry:
             return
+        self.create_chunk_from_entry(entry, scene_pos)
 
+    def create_chunk_from_entry(self, entry, scene_pos: QtCore.QPointF):
+        """Create one MenuEntry's chunk(s) at scene_pos, with no UI of its own.
+
+        Split out of _create_chunk_at for the frontend contract: choosing the entry is the
+        frontend's business (a Qt menu here, a dialog in Flet), creating it is not.
+        """
         chunks = entry.create()
 
         scene = _chunk.get_scene()
@@ -5125,19 +4699,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        chunk_usd._pin_new_chunks = False
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
+        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
-            chunk_usd._pin_new_chunks = None
 
         menu_view = next((c for c in chunks if chunk_usd.is_view_chunk(c)), None)
         if menu_view is not None:
@@ -5297,7 +4864,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _import_as_sublayer(self, path: str, scene_pos: QtCore.QPointF) -> None:
         """Drop-a-scene-file: create a Sublayer chunk node at the drop point with its path
         pre-filled. Values are set AFTER add_chunk (unlike the paste path) because Sublayer's
-        own callback (scripts/sublayer.py) only does real work -- authoring subLayerPaths onto
+        own callback (scripts/usd/sublayer.py) only does real work -- authoring subLayerPaths onto
         the chunk's edit layer -- once the chunk has a live prim/edit_context, exactly matching
         how a hand-created Sublayer chunk picks up a path typed into its UI after creation.
 
@@ -5334,17 +4901,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        chunk_usd._pin_new_chunks = False
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
+        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
-            chunk_usd._pin_new_chunks = None
 
         list_group = primary.get_param("imports", _chunk.is_inst(_chunk.ListGroup))
         if list_group is not None:
@@ -5388,17 +4948,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        chunk_usd._create_node_pos = (scene_pos.x(), -scene_pos.y())
-        chunk_usd._pin_new_chunks = False
-        nested, prev_ctx = self._push_nest_context(scene, context)
-        try:
+        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)
-        finally:
-            if nested:
-                scene._current_context = prev_ctx
-            chunk_usd._create_node_pos = None
-            chunk_usd._pin_new_chunks = None
 
         if file_param := primary.get_param("file_path"):
             file_param.value = path
@@ -5461,3 +5014,163 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         event.accept()
 
 
+class QtGraphFrontend:
+    """chunk_graph.GraphFrontend, for Qt.
+
+    An adapter rather than a base class, for two reasons.
+
+    ABCMeta cannot be mixed into a PySide6 class -- the metaclasses conflict -- and the
+    combined-metaclass workaround constructs but silently skips the abstract check, so
+    inheritance would give the appearance of a contract without the substance.
+
+    And the Qt graph is not one object. It is a ChunkGraphScene, a ChunkGraphView and the
+    ChunkWidgetDocker that owns navigation between context tabs; Flet is a single
+    GraphView. A contract phrased as "subclass this" would have had to pick one of those
+    shapes and force the other to match. Delegation lets each keep its own.
+
+    Two verbs are genuinely structural rather than cosmetic differences:
+
+    dive_into is a Qt Signal, not a call -- the scene emits, the docker opens a tab for the
+    group. So diving here means emitting, and the navigation happens elsewhere.
+
+    dive_out has no counterpart at all: Qt navigates by tab, and "out" is the docker's
+    back step through its nav history. Without a docker this adapter cannot do it, and
+    says so rather than pretending.
+    """
+
+    def __init__(self, view: "ChunkGraphView", docker=None):
+        #: The ChunkGraphView. Its scene and scene_sender are reached through it, so the
+        #: adapter holds one reference rather than three that could drift apart.
+        self.view = view
+        #: ChunkWidgetDocker, which owns tab navigation. Optional: everything except
+        #: dive_out works without it.
+        self.docker = docker
+
+    # -- plumbing ----------------------------------------------------------
+
+    def _scene(self):
+        scene = self.view.scene()
+        return scene if isinstance(scene, ChunkGraphScene) else None
+
+    def _node(self, path: str):
+        scene = self._scene()
+        return scene._nodes.get(path) if scene is not None else None
+
+    def _chunk(self, path: str):
+        node = self._node(path)
+        return node.chunk if node is not None else None
+
+    @property
+    def context(self) -> str:
+        """The prim path of the graph being shown."""
+        context = self.view._graph_context()
+        return chunk_usd.get_chunk_prim_path(context) if context is not None else ""
+
+    @property
+    def selected_nodes(self) -> set:
+        scene = self._scene()
+        if scene is None:
+            return set()
+        return {
+            path for path, node in scene._nodes.items()
+            if node.chunk.has_state(ChunkFlags.State.SELECTED)
+        }
+
+    # -- selection ---------------------------------------------------------
+
+    def set_selection(self, paths, add: bool = False) -> None:
+        scene = self._scene()
+        if scene is None or scene._scene_sender is None:
+            return
+        chunks = [c for c in (self._chunk(p) for p in paths) if c is not None]
+        if add:
+            # Dedupe on identity: ChunkBase does not promise __hash__/__eq__ semantics
+            # that a set would use correctly here.
+            merged = {id(c): c for c in self.selected_chunks()}
+            merged.update({id(c): c for c in chunks})
+            chunks = list(merged.values())
+        scene._scene_sender.set_selected_chunks(chunks)
+
+    def selected_chunks(self) -> list:
+        return self.view.selected_chunks()
+
+    # -- editing -----------------------------------------------------------
+
+    def delete_selected(self) -> None:
+        self.view._delete_selected()
+
+    def toggle_disable_selected(self) -> None:
+        self.view._toggle_disable_selected()
+
+    def copy_selection(self) -> None:
+        self.view._copy_selected_to_clipboard()
+
+    def cut_selection(self) -> None:
+        self.view._cut_selected_to_clipboard()
+
+    def paste_at(self, x: float, y: float, nodes=None, edges=None) -> None:
+        position = QtCore.QPointF(x, y)
+        if nodes is None and edges is None:
+            self.view._paste_clipboard_at(position)
+            return
+        self.view._materialize_at(list(nodes or []), list(edges or []), position)
+
+    def duplicate_selection(self) -> None:
+        self.view._duplicate_selected()
+
+    def group_selection(self) -> None:
+        self.view._group_selected()
+
+    def create_chunk(self, entry, x: float, y: float) -> None:
+        self.view.create_chunk_from_entry(entry, QtCore.QPointF(x, y))
+
+    # -- navigation --------------------------------------------------------
+
+    def can_dive(self, path: str) -> bool:
+        chunk = self._chunk(path)
+        return chunk is not None and chunk_usd.is_chunkgroup(chunk)
+
+    def dive_into(self, path: str) -> None:
+        scene = self._scene()
+        chunk = self._chunk(path)
+        if scene is None or chunk is None or not self.can_dive(path):
+            return
+        scene.dive_into.emit(chunk)
+
+    def dive_out(self) -> None:
+        """Step back through the docker's navigation history.
+
+        Qt has no "leave this group" operation: it dives by opening a tab, so coming out
+        is a back step. With no docker there is nothing to step through.
+        """
+        if self.docker is None:
+            return
+        self.docker._nav_step(-1)
+
+    # -- views -------------------------------------------------------------
+
+    def active_slot(self) -> int:
+        return int(self.view._view_state.active_slot)
+
+    def set_active_slot(self, slot: int) -> None:
+        self.view._view_state.set_slot(int(slot))
+
+    # -- viewport ----------------------------------------------------------
+
+    def frame(self, paths) -> None:
+        """Fit those nodes.
+
+        Qt's own _frame_nodes always frames the selection-or-everything, so it cannot
+        honour an explicit list; this does the same union-and-fit against the nodes asked
+        for, and falls back to _frame_nodes when none of them are on screen.
+        """
+        items = [n for n in (self._node(p) for p in paths) if n is not None]
+        if not items:
+            self.view._frame_nodes()
+            return
+        rect = QtCore.QRectF()
+        for item in items:
+            rect = rect.united(item.sceneBoundingRect())
+        rect.adjust(-60, -60, 60, 60)
+        self.view.fitInView(rect, QtCore.Qt.KeepAspectRatio)
+        self.view._apply_lod()

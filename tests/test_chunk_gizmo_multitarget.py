@@ -31,7 +31,7 @@ class _DummyScene(SceneSender):
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
-transform_mod = importlib.import_module("scripts.transform")
+transform_mod = importlib.import_module("scripts.utils.transform")
 
 
 def _stage_with_cubes(*paths: str) -> Usd.Stage:

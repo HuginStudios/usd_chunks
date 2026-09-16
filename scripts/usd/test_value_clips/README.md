@@ -62,5 +62,5 @@ At each frame, USD resolves the template (e.g. frame 5 → `./clips/clip.005.usd
 
 If you want to tweak the animation, edit `generate_clips.py` and run:
 ```
-python scripts/core_usd/test_value_clips/generate_clips.py
+python scripts/usd/test_value_clips/generate_clips.py
 ```

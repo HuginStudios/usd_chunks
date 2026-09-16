@@ -21,7 +21,7 @@ from usd_chunks import chunk_gizmo, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.plugins import chunk_usd
 
-transform_mod = importlib.import_module("scripts.transform")
+transform_mod = importlib.import_module("scripts.utils.transform")
 
 MESH = "/apple/grp/mesh"
 PARENT = "/apple"

@@ -9,7 +9,6 @@ import contextlib
 import difflib
 import logging
 import math
-import re
 import weakref
 from pathlib import Path
 from typing import Generator, Iterable, Tuple
@@ -27,17 +26,22 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
 
+from usd_chunks import chunk_naming
+
 logger = logging.getLogger(__name__)
 
-_CHUNK_TYPE_ATTR = "info:chunkType"
-#: What a chunk with no module of its own is saved as, so it can be read back (scripts/runtime.py).
+# The chunk vocabulary itself lives in chunk_naming, which imports nothing and can be read
+# without this module's machinery. Re-exported under the existing private names so every
+# call site here and elsewhere is unaffected -- one definition, two spellings.
+_CHUNK_TYPE_ATTR = chunk_naming.CHUNK_TYPE_ATTR
+_INPUTS_PREFIX = chunk_naming.INPUTS_PREFIX
+#: What a chunk with no module of its own is saved as, so it can be read back (scripts/core/runtime.py).
 _RUNTIME_CHUNK_TYPE = "core.runtime"
-_INPUTS_PREFIX = "inputs:"
 # The ObjectsChanged field name for a connection edit; a value write reports "default".
 _CONNECTION_PATHS_FIELD = "connectionPaths"
-_EXEC_OUTPUT = "outputs:chunk"
-_EXEC_INPUT = "inputs:chunk"
-_CHUNK_PRIM_TYPENAME = "Chunk"
+_EXEC_OUTPUT = chunk_naming.EXEC_OUTPUT
+_EXEC_INPUT = chunk_naming.EXEC_INPUT
+_CHUNK_PRIM_TYPENAME = chunk_naming.CHUNK_PRIM_TYPENAME
 # Usd.Stage.Traverse()'s default predicate skips INACTIVE prims, and a disabled chunk is
 # authored as exactly that (see _on_state_changed). Loading a file through the default
 # predicate therefore never saw a disabled chunk at all -- it was in the file, with
@@ -46,8 +50,8 @@ _LOAD_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 # /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
 # default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
 # scope look like a chunk prim to anything reading the stage back.
-_CHUNKS_ROOT_TYPENAME = "Scope"
-_CHUNKS_ROOT = "/chunks"
+_CHUNKS_ROOT_TYPENAME = chunk_naming.CHUNKS_ROOT_TYPENAME
+_CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
 
 # Merge chunks fan several exec branches into one node, so they need more than the single
 # inputs:chunk every other chunk has. Extra slots are numbered from 1 -- slot 0 deliberately
@@ -56,39 +60,12 @@ _CHUNKS_ROOT = "/chunks"
 # transparently sees the merge's PRIMARY input, which is the answer those consumers want
 # anyway. Only code that genuinely needs every branch (edge drawing, tail detection,
 # disconnect) has to iterate.
-_EXEC_INPUT_NUMBERED = re.compile(r"^inputs:chunk([1-9]\d*)$")
+_EXEC_INPUT_NUMBERED = chunk_naming.EXEC_INPUT_NUMBERED
 
-
-def is_exec_input_name(name: str) -> bool:
-    """Whether an attribute name is an exec input -- inputs:chunk, or a merge's
-    inputs:chunk<N> for N >= 1."""
-    return name == _EXEC_INPUT or bool(_EXEC_INPUT_NUMBERED.match(name))
-
-
-def exec_input_index(name: str) -> int:
-    """The slot number an exec input attribute name refers to (inputs:chunk -> 0)."""
-    match = _EXEC_INPUT_NUMBERED.match(name)
-    return int(match.group(1)) if match else 0
-
-
-def exec_input_name(index: int) -> str:
-    """The attribute name for exec slot `index`. Slot 0 is the plain inputs:chunk."""
-    return _EXEC_INPUT if index == 0 else f"{_EXEC_INPUT}{index}"
-
-
-def iter_exec_inputs(prim: "Usd.Prim") -> "list[Usd.Attribute]":
-    """A prim's exec input attributes, ordered by slot number -- strongest branch first.
-
-    Sorted by the PARSED index, never by attribute name: prim.GetAttributes() is
-    alphabetical, which puts inputs:chunk10 before inputs:chunk2. Slot order decides which
-    branch's opinion wins, so a string sort would silently mis-rank a merge with ten or
-    more inputs.
-    """
-    if not (prim and prim.IsValid()):
-        return []
-    attrs = [a for a in prim.GetAttributes() if is_exec_input_name(a.GetName())]
-    attrs.sort(key=lambda a: exec_input_index(a.GetName()))
-    return attrs
+is_exec_input_name = chunk_naming.is_exec_input_name
+exec_input_index = chunk_naming.exec_input_index
+exec_input_name = chunk_naming.exec_input_name
+iter_exec_inputs = chunk_naming.iter_exec_inputs
 
 
 def exec_input_connections(prim: "Usd.Prim") -> "list[Sdf.Path]":
@@ -129,6 +106,32 @@ _pin_new_chunks: "bool | None" = None
 # right-click / wire-drop point). _define_prim reads it for the node pos instead of the far-away
 # index default. None → use the default. Cleared by the caller after the create.
 _create_node_pos: "tuple[float, float] | None" = None
+
+
+@contextlib.contextmanager
+def creating_at(pos: "tuple[float, float] | None", pin: "bool | None" = None):
+    """Create chunks at `pos` (USD space) for the duration of the block.
+
+    The two globals above are how a caller passes a position and a pin preference down
+    into _define_prim, which is several frames below and has no argument for either.
+    Every caller used to save both, assign, and restore in a try/finally -- nine copies
+    of that between the two frontends, each an opportunity to forget the restore and
+    leave every later chunk landing at someone else's mouse position.
+
+    Nesting works: the previous values come back rather than being cleared, so grouping
+    (which creates a group, then materializes chunks inside it) does not lose the outer
+    position when the inner block ends.
+    """
+    global _create_node_pos, _pin_new_chunks
+    previous_pos, previous_pin = _create_node_pos, _pin_new_chunks
+    _create_node_pos = pos
+    if pin is not None:
+        _pin_new_chunks = pin
+    try:
+        yield
+    finally:
+        _create_node_pos = previous_pos
+        _pin_new_chunks = previous_pin
 
 # Just above float32's ~1e-7 relative precision. A param holds a Python float (64-bit) but
 # is stored in USD as a 32-bit float, so a value that made the round trip comes back
@@ -377,16 +380,23 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     attr.ClearConnections()
 
     def _expr_connections(self, prim: Usd.Prim, raw: str) -> list:
-        """Build Sdf.Path connection targets for an expression string, preferring outputs: over inputs:."""
+        """Build Sdf.Path connection targets for an expression string, preferring outputs: over inputs:.
+
+        The referenced node need not exist yet -- a connection is just a path, and USD
+        resolves it once the target is authored, same as any other forward reference within
+        a stage's own layers. GetAttribute on an invalid Usd.Prim raises rather than
+        returning an invalid attribute, so the target prim's own validity has to be checked
+        first: without this, a chunk load order where the referring chunk's expression gets
+        resolved before the node it names has been defined crashed the whole load.
+        """
         chunk_root = str(prim.GetParent().GetPath())
-        return [
-            Sdf.Path(
-                f"{chunk_root}/{node}.outputs:{attr_name}"
-                if self._stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}")).GetAttribute(f"outputs:{attr_name}").IsValid()
-                else f"{chunk_root}/{node}.inputs:{attr_name}"
-            )
-            for node, attr_name in chunk_utils.parse_expression(raw)
-        ]
+        targets = []
+        for node, attr_name in chunk_utils.parse_expression(raw):
+            target_prim = self._stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}"))
+            kind = ("outputs" if target_prim.IsValid()
+                    and target_prim.GetAttribute(f"outputs:{attr_name}").IsValid() else "inputs")
+            targets.append(Sdf.Path(f"{chunk_root}/{node}.{kind}:{attr_name}"))
+        return targets
 
     def _clear_driven_attr_value(self, driven_attr: Usd.Attribute) -> None:
         """Remove any authored default value from the driven attr in session/anonymous layers.
@@ -839,9 +849,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not isinstance(attr_sender, core.AttributeSender):
             return
 
-        if attr_sender.name == "value" and not chunk_notice._usd_write_active:
+        if attr_sender.name == "value":
             owner = attr_sender.get_owner()
-            if owner is not None:
+            if owner is not None and self._records_param_writes(owner):
                 self._sync_list_proxy_to_usd(owner)
                 if isinstance(owner, core.ChunkParamBase):
                     chunk = owner.get_chunk()
@@ -885,6 +895,43 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 self._rebase_descendant_paths(old_path, new_path)
         elif isinstance(owner, core.ChunkParamBase):
             self._handle_param_rename(owner, old_name, owner.name)
+
+    def _records_param_writes(self, owner) -> bool:
+        """Whether this param write should be recorded on its chunk prim.
+
+        Normally yes, and normally the question is only asked of a user edit. The exception is
+        chunk_notice._usd_write_active, set around our own USD writes so the synchronous
+        ObjectsChanged that follows doesn't come back through here as if it were an edit.
+
+        A chunk executing sets that same flag for the whole of module.execute(), which is
+        correct for its purpose -- a cook authors content, and none of it should bounce back
+        into params -- but it also silenced the chunk assigning its OWN params, which is a
+        real value and the only record of it. A saved scene is chunk prims and nothing else
+        (export_chunks), so a param that never gets an attr is a param that does not survive
+        a save.
+
+        Reported as a Camera not keeping where it was put: fly the viewport, tick Lock to
+        Free Camera, untick it to freeze the shot. Unticking is what hands the flown
+        placement into the transform params (camera.py's `_adopt_existing_transform`), and it
+        happens during a cook -- so the live camera was right, the file carried no placement
+        at all, and reopening put it back at the origin. Every chunk that renames its own
+        prim path mid-cook when the one it wanted was taken (camera, light, the render_*
+        chunks) was losing that the same way.
+
+        So a chunk writing its own params while it executes is recorded. Anything else
+        arriving mid-write still isn't -- including one chunk reaching into another's params
+        during its cook, which is a push, not a record of the writer's own state.
+        """
+        if not chunk_notice._usd_write_active:
+            return True
+        executing = chunk_notice._executing_chunk
+        if executing is None:
+            return False
+        # Not every owner that reaches here is a param with a chunk behind it -- a list-row
+        # proxy arrives too, and answering "whose is this" for one is what _sync_list_proxy_
+        # to_usd exists to do.
+        get_chunk = getattr(owner, "get_chunk", None)
+        return callable(get_chunk) and get_chunk() is executing
 
     def _handle_rename(self, old_path: str, new_path: str, old_name: str, new_name: str, chunk=None) -> None:
         """Rename a chunk prim and patch all references to it.
@@ -1034,6 +1081,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if sdf_type is None:
             return
         attr_name = f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{template_name}"
+        prev_write = chunk_notice._usd_write_active
         chunk_notice._usd_write_active = True
         try:
             # Rewritten wholesale on every change (not incrementally) — if it already
@@ -1046,7 +1094,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 attr.Set(usd_value)
         finally:
-            chunk_notice._usd_write_active = False
+            chunk_notice._usd_write_active = prev_write
 
     def _on_dependency_added(self, notice, sender):
         if not self.initialized or not self._stage:
@@ -1229,6 +1277,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         """
         prim_path = self._chunk_prim_paths.get(id(chunk))
         if not prim_path:
+            return
+
+        # Session state, deliberately never recorded: see ChunkFlags.ParamFlags.TRANSIENT.
+        if param.has_flag(ChunkFlags.ParamFlags.TRANSIENT):
             return
 
         existing = getattr(param, '_param_attr_path', None)
@@ -1895,7 +1947,7 @@ def is_chunkgroup(chunk: "core.ChunkBase") -> bool:
 
 
 def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is a Merge chunk (scripts/merge.py) — the only chunk type that
+    """Return True if chunk is a Merge chunk (scripts/core/merge.py) — the only chunk type that
     takes more than one exec input."""
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "merge")
@@ -2113,7 +2165,21 @@ def set_pin_filter_enabled(context: "core.ChunkBase", enabled: bool) -> None:
         prim = stage.GetPrimAtPath(Sdf.Path(path))
         if not prim.IsValid():
             prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        prim.CreateAttribute("filter:pinEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(enabled))
+        # An UPDATE goes where the attribute already lives; only a first write picks a
+        # layer. An Edit Target chunk moves the stage's target while the graph is live, so
+        # re-resolving it on every write scattered one attribute's opinions across layers
+        # and let the older, stronger one go on winning -- the toggle stopped responding
+        # mid-session while the widget went on reporting what was clicked.
+        #
+        # The first write deliberately still follows the ambient target rather than the
+        # bookkeeping layer set_chunk_pinned uses. A tab's filter state is part of the
+        # document and has to land somewhere that exports; the session layer does not.
+        # Pinning both halves to one answer breaks one of them in each direction.
+        existing = prim.GetAttribute("filter:pinEnabled")
+        home = chunk_utils.get_attr_home_layer(existing) if existing and existing.IsValid() else None
+        ctx = Usd.EditContext(stage, home) if home else contextlib.nullcontext()
+        with ctx:
+            prim.CreateAttribute("filter:pinEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(enabled))
     finally:
         chunk_notice._usd_write_active = prev_w
 
@@ -2146,7 +2212,21 @@ def set_search_query(context: "core.ChunkBase", query: str) -> None:
         prim = stage.GetPrimAtPath(Sdf.Path(path))
         if not prim.IsValid():
             prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        prim.CreateAttribute("filter:searchQuery", Sdf.ValueTypeNames.String, custom=True).Set(query)
+        # An UPDATE goes where the attribute already lives; only a first write picks a
+        # layer. An Edit Target chunk moves the stage's target while the graph is live, so
+        # re-resolving it on every write scattered one attribute's opinions across layers
+        # and let the older, stronger one go on winning -- the toggle stopped responding
+        # mid-session while the widget went on reporting what was clicked.
+        #
+        # The first write deliberately still follows the ambient target rather than the
+        # bookkeeping layer set_chunk_pinned uses. A tab's filter state is part of the
+        # document and has to land somewhere that exports; the session layer does not.
+        # Pinning both halves to one answer breaks one of them in each direction.
+        existing = prim.GetAttribute("filter:searchQuery")
+        home = chunk_utils.get_attr_home_layer(existing) if existing and existing.IsValid() else None
+        ctx = Usd.EditContext(stage, home) if home else contextlib.nullcontext()
+        with ctx:
+            prim.CreateAttribute("filter:searchQuery", Sdf.ValueTypeNames.String, custom=True).Set(query)
     finally:
         chunk_notice._usd_write_active = prev_w
 
@@ -2177,7 +2257,21 @@ def set_search_scope(context: "core.ChunkBase", scope: str) -> None:
         prim = stage.GetPrimAtPath(Sdf.Path(path))
         if not prim.IsValid():
             prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        prim.CreateAttribute("filter:searchScope", Sdf.ValueTypeNames.String, custom=True).Set(scope)
+        # An UPDATE goes where the attribute already lives; only a first write picks a
+        # layer. An Edit Target chunk moves the stage's target while the graph is live, so
+        # re-resolving it on every write scattered one attribute's opinions across layers
+        # and let the older, stronger one go on winning -- the toggle stopped responding
+        # mid-session while the widget went on reporting what was clicked.
+        #
+        # The first write deliberately still follows the ambient target rather than the
+        # bookkeeping layer set_chunk_pinned uses. A tab's filter state is part of the
+        # document and has to land somewhere that exports; the session layer does not.
+        # Pinning both halves to one answer breaks one of them in each direction.
+        existing = prim.GetAttribute("filter:searchScope")
+        home = chunk_utils.get_attr_home_layer(existing) if existing and existing.IsValid() else None
+        ctx = Usd.EditContext(stage, home) if home else contextlib.nullcontext()
+        with ctx:
+            prim.CreateAttribute("filter:searchScope", Sdf.ValueTypeNames.String, custom=True).Set(scope)
     finally:
         chunk_notice._usd_write_active = prev_w
 
@@ -2511,7 +2605,7 @@ def normalize_merge_slots(stage: "Usd.Stage", prim: "Usd.Prim") -> bool:
 
 
 def is_edit_target_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is an Edit Target chunk (scripts/edit_target.py)."""
+    """Return True if chunk is an Edit Target chunk (scripts/usd/edit_target.py)."""
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "edit_target")
 
@@ -2909,13 +3003,24 @@ def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: s
     dst_prim = stage.GetPrimAtPath(Sdf.Path(dst_prim_path))
     if not dst_prim.IsValid():
         return None
+    src_conn_path = Sdf.Path(f"{src_prim_path}.{_EXEC_OUTPUT}")
     dst_attr = dst_prim.GetAttribute(_EXEC_INPUT)
+    if dst_attr and dst_attr.IsValid() and list(dst_attr.GetConnections()) == [src_conn_path]:
+        # Already wired exactly this way: nothing changed, so there is nothing to reconcile.
+        # A chunk module wiring its own children (AMD MaterialX Library) calls this on every
+        # cook, and the reconcile below is not free. On a scene just opened from disk it
+        # re-homes every chunk out of the file's root layer -- deleting the originals, from
+        # the layer Sdf hands to the next open or save of that path -- and re-executes each
+        # one it moves, which cascades a solve over everything downstream of it. That turned
+        # a 60-chunk load into 566 module runs and left 7 chunk definitions in the file.
+        # load_chunks guards its own reconcile against both (cook=False,
+        # protect_root_layer=True); a re-entrant one from inside a cook bypassed them.
+        return dst_attr
     if not (dst_attr and dst_attr.IsValid()):
         dst_attr = dst_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
         if not dst_attr.IsValid():
             return None
     dst_chunk = next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == dst_prim_path), None)
-    src_conn_path = Sdf.Path(f"{src_prim_path}.{_EXEC_OUTPUT}")
     home = chunk_utils.get_attr_home_layer(dst_attr)
     target = home or chunk_utils.get_bookkeeping_layer(stage, dst_chunk)
     with Usd.EditContext(stage, target):
@@ -3927,7 +4032,16 @@ def _load_chunks(
             continue
         mod = chunk_registry.ChunkRegistry().get_chunk_module(str(chunk_type))
         if not mod:
-            logger.warning("load_chunks: no module for type %r", chunk_type)
+            # Names the prim, not just the type: a type can back several prims, and
+            # without a path there is no way to tell which node in the graph this warning
+            # is even about. The prim still loads as a placeholder (resolve_graph_nodes
+            # finds it by USD type alone, independent of whether a module backs it) with
+            # exec ports but none of its real params -- said here so that is not a
+            # surprise discovered later by clicking the node.
+            logger.warning(
+                "load_chunks: %s wants chunk type %r, but no module registers it "
+                "(missing/renamed/not on USD_CHUNK_DIRS?) -- loading as an empty placeholder",
+                prim.GetPath(), chunk_type)
             continue
         to_load.append((prim, mod))
 
@@ -4318,7 +4432,15 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     Only chunk prims themselves are copied — reopening regenerates everything a chunk
     drives by re-running load_chunks' cook pass, not by replaying a content snapshot.
     Content that isn't reproduced by re-execution (an RBD Solver's bake) or that never
-    went through a chunk at all does not round-trip through this — see save_scene.
+    went through a chunk at all does not round-trip through this.
+
+    The stage's up-axis and units are stamped onto the file as well. Sdf.CopySpec copies
+    prim specs and nothing else, and those two are not prim data: they are stage
+    metadata, resolved only from a stage's own root/session layer and never composed up
+    from anything underneath. Without an opinion of its own the exported file falls back
+    to USD's global default — reported live as a Z-up, centimetre scene that reopened
+    Y-up in metres, with every chunk-authored prim lying on its side at a hundredth of
+    its size.
     """
     stage = scene.get_stage()
     if not stage:
@@ -4340,6 +4462,13 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
             Sdf.CreatePrimInLayer(dst, parent)
         Sdf.CopySpec(flat, prim_path, dst, prim_path)
         _carry_ancestor_specs(flat, dst, prim_path)
+
+    # Onto the in-memory layer, before it is written: the same UsdGeom API the live stage
+    # answers with, pointed at a stage opened over `dst`, so the file carries the opinion
+    # from its first byte rather than being reopened and patched afterwards.
+    dst_stage = Usd.Stage.Open(dst)
+    UsdGeom.SetStageUpAxis(dst_stage, UsdGeom.GetStageUpAxis(stage))
+    UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(stage))
 
     dst.Export(str(path))
 
@@ -4371,41 +4500,26 @@ def _carry_ancestor_specs(flat: "Sdf.Layer", dst: "Sdf.Layer", prim_path: "Sdf.P
 
 
 def save_scene(scene: "core.SceneSender", chunkgroup_path: "str | Path") -> None:
-    """The "nice save flow": export_chunks, plus the stage metadata it doesn't carry.
+    """The "nice save flow". Now the same file export_chunks writes.
 
-    Previously wrote a bundled pair -- the chunk graph plus a flattened snapshot of
-    everything else the stage composed, so genuinely non-reproducible content (an RBD
-    bake) or content that never went through a chunk at all would still come back.
-    Dropped once every chunk that authors real content got a reserved execute() hook
-    (see the reload-reliability fixes this shipped alongside): reopening a chunk-only
-    export now correctly regenerates everything a chunk is responsible for by re-running
-    it, the same as any other reload, so the second file was carrying nothing that
-    isn't already reproduced this way -- except a bake, which is expected to need an
-    explicit re-run after reload, same as Houdini's File Cache model, and content that
-    was never a chunk's in the first place, which this flow was never meant to cover.
+    It has been two things in its time. First a bundled pair -- the chunk graph plus a
+    flattened snapshot of everything else the stage composed, so non-reproducible
+    content (an RBD bake) or content that never went through a chunk would still come
+    back. Dropped once every chunk that authors real content got a reserved execute()
+    hook: reopening a chunk-only export regenerates everything a chunk is responsible
+    for by re-running it, so the second file carried nothing not already reproduced --
+    bar a bake, which needs an explicit re-run after reload, same as Houdini's File Cache.
+
+    Then export_chunks plus the stage's up-axis and units, stamped onto the file after
+    the fact because export_chunks did not carry them. It does now -- a chunkgroup saved
+    from the plain Save ChunkGroup menu had been coming back Y-up in metres regardless of
+    the scene -- so this is export_chunks by another name. Kept as the entry point the
+    Save Scene menu and the existing tests call.
 
     Args:
         chunkgroup_path: Where the chunk graph is written -- the file to reopen.
     """
-    stage = scene.get_stage()
-    if not stage:
-        return
-
-    chunkgroup_path = Path(chunkgroup_path)
-    export_chunks(scene, chunkgroup_path)
-
-    # Live-confirmed: up-axis (and by the same rule, units) does NOT compose across
-    # sublayers the way ordinary metadata does -- it resolves only from a stage's own
-    # root/session layer, falling back to USD's global default (Y) otherwise. Sdf.CopySpec
-    # (export_chunks' own copy mechanism) only copies prim specs, so the exported file's
-    # own root layer has no opinion at all without this -- reopening it showed Y even
-    # though the live scene was Z. Stamp it directly onto the file that matters.
-    cg_layer = Sdf.Layer.FindOrOpen(str(chunkgroup_path))
-    if cg_layer is not None:
-        cg_stage = Usd.Stage.Open(cg_layer)
-        UsdGeom.SetStageUpAxis(cg_stage, UsdGeom.GetStageUpAxis(stage))
-        UsdGeom.SetStageMetersPerUnit(cg_stage, UsdGeom.GetStageMetersPerUnit(stage))
-        cg_layer.Save()
+    export_chunks(scene, Path(chunkgroup_path))
 
 
 def rename_context_prim_path(context: "core.ChunkBase", new_prim_path: "str | None") -> None:

@@ -12,6 +12,8 @@ choosing among just the imported nodes. Paste now does the same.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 from pxr import Sdf, Usd
 from PySide6 import QtCore
@@ -70,8 +72,14 @@ def _view(d, qapp):
 
 
 def _settle(qapp):
-    """Let the paste's deferred wiring (80ms) and everything it triggers finish."""
-    for _ in range(30):
+    """Let the paste's deferred wiring (80ms) and everything it triggers finish.
+
+    By the clock, not by a count of processEvents() calls: 30 of those finish in well under
+    80ms on an idle machine, so whether the deferred wiring had even fired yet depended on
+    how busy the machine -- and every earlier test's leftover widgets -- happened to be.
+    """
+    deadline = time.monotonic() + 0.4
+    while time.monotonic() < deadline:
         qapp.processEvents()
         QtCore.QThread.msleep(10)
     qapp.processEvents()

@@ -45,7 +45,7 @@ def _make(mod, name: str):
 
 class TestScriptRunnerExecute:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.script_runner")
+        self.mod = importlib.import_module("scripts.core.script_runner")
 
     def test_no_run_button(self, scene):
         node = _make(self.mod, "Python")
@@ -91,7 +91,7 @@ class TestScriptRunnerExecute:
     def test_result_wires_into_downstream_chunk(self, scene):
         """The cross-chunk case the feature exists for: a computed name feeding another
         chunk's input via an @Node.param@ expression, auto-re-cooking on upstream change."""
-        dup_mod = importlib.import_module("scripts.core_usd.duplicate_prim")
+        dup_mod = importlib.import_module("scripts.usd.duplicate_prim")
 
         script_node = _make(self.mod, "Python")
         dup_node = _make(dup_mod, "Duplicate")

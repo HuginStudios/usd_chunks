@@ -7,7 +7,7 @@ param values -- restoring values themselves deliberately does NOT re-trigger add
 handlers (chunk_notice._loading_stage), so a chunk whose real authoring work lived only in
 an add_callback handler came back on reload with correct-looking param values but none of
 its actual authored content. Each chunk below got a matching reserved execute(node) hook,
-mirroring the fix scripts/sublayer.py already had.
+mirroring the fix scripts/usd/sublayer.py already had.
 
 Shared pattern: build the chunk live, confirm it authors correctly; export just the chunk
 graph (export_chunks -- never the target content); reload into a fresh stage with whatever
