@@ -1047,6 +1047,18 @@ def clean_description(desc: str) -> str:
     return "" if cleaned == _PLACEHOLDER_DESC else cleaned
 
 
+_FIRST_CATEGORY = "examples"
+
+
+def _category_order(entry: "MenuEntry") -> tuple:
+    """Sort key placing a menu entry's category: Examples first, the rest A-Z, and
+    chunks with no category after every category."""
+    category = tuple(part.lower() for part in entry.module.get_menu_path()[:-1])
+    if not category:
+        return (2,)
+    return (0 if category[0] == _FIRST_CATEGORY else 1, category)
+
+
 @dataclass(frozen=True)
 class MenuEntry:
     """One selectable item in a chunk-creation menu, described without reference to any UI.
@@ -1402,6 +1414,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                         presets=dict(presets),
                     )
                 )
+
+        if sort_result:
+            # A menu nests submenus in the order it first meets them, so categories are
+            # ordered here, or they come out in the order of their alphabetically-first chunk.
+            # Stable, so chunks keep their name order (and variants their place) within one.
+            entries.sort(key=_category_order)
 
         return entries
 
