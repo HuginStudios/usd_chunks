@@ -3003,13 +3003,24 @@ def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: s
     dst_prim = stage.GetPrimAtPath(Sdf.Path(dst_prim_path))
     if not dst_prim.IsValid():
         return None
+    src_conn_path = Sdf.Path(f"{src_prim_path}.{_EXEC_OUTPUT}")
     dst_attr = dst_prim.GetAttribute(_EXEC_INPUT)
+    if dst_attr and dst_attr.IsValid() and list(dst_attr.GetConnections()) == [src_conn_path]:
+        # Already wired exactly this way: nothing changed, so there is nothing to reconcile.
+        # A chunk module wiring its own children (AMD MaterialX Library) calls this on every
+        # cook, and the reconcile below is not free. On a scene just opened from disk it
+        # re-homes every chunk out of the file's root layer -- deleting the originals, from
+        # the layer Sdf hands to the next open or save of that path -- and re-executes each
+        # one it moves, which cascades a solve over everything downstream of it. That turned
+        # a 60-chunk load into 566 module runs and left 7 chunk definitions in the file.
+        # load_chunks guards its own reconcile against both (cook=False,
+        # protect_root_layer=True); a re-entrant one from inside a cook bypassed them.
+        return dst_attr
     if not (dst_attr and dst_attr.IsValid()):
         dst_attr = dst_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
         if not dst_attr.IsValid():
             return None
     dst_chunk = next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == dst_prim_path), None)
-    src_conn_path = Sdf.Path(f"{src_prim_path}.{_EXEC_OUTPUT}")
     home = chunk_utils.get_attr_home_layer(dst_attr)
     target = home or chunk_utils.get_bookkeeping_layer(stage, dst_chunk)
     with Usd.EditContext(stage, target):
