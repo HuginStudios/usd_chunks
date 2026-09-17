@@ -3509,45 +3509,18 @@ def recook_for_view(
     # to the view is recursed into last and so executes last) -- anything outside the cook
     # set isn't competing for layer strength at all, so its relative order doesn't matter.
     cook_rank = {id(c): i for i, c in enumerate(cook_list)}
+    deferred_groups: set = set()
     for c in sorted(scene.get_chunks(), key=lambda c: cook_rank.get(id(c), -1)):
         if is_view_chunk(c) or not in_context(c):
             continue
         if is_group_chunk(c):
             if c in cook_set:
-                inner_view = find_group_active_view(c, stage, scene)
-                synthetic = False
-                if inner_view is not None and not view_cook_list(inner_view, stage, scene):
-                    # A view wired to NOTHING is not an answer to "what does this group
-                    # output" -- it is a default view that never got pointed at anything,
-                    # or one left dangling when the chunk it watched was deleted (an exec
-                    # heal clears the connection when the deleted node had no predecessor
-                    # to inherit). Taken literally it means the group cooks nothing at all:
-                    # its contents go blocked and muted, it stops feeding everything
-                    # downstream of it, and there is no sign of why. Live-reported as a
-                    # chunkgroup's Duplicate Prim being invisible from the group wired after
-                    # it, with the copy simply absent from the stage.
-                    #
-                    # Fall through to the exec-tail fallback below, which is the same
-                    # question ("what is the end of this group's chain") asked of a group
-                    # whose view is missing rather than empty.
-                    inner_view = None
-                if inner_view is None:
-                    # No real inner view chunk -- the common case for a group whose
-                    # contents were never explicitly given one (view chunks are
-                    # deliberately excluded from group copy/paste, see
-                    # _iter_group_children). Without this fallback, a reachable group's
-                    # contents never actually cook via view-driven execution at all --
-                    # they only ever ran as an accidental side effect of the user diving
-                    # into the group, which auto-wires a default view as a UI action
-                    # (ChunkGraphView._ensure_default_view). That made execution order
-                    # (and therefore which sibling's self-managed layer, e.g. Create
-                    # Layer's, ends up strongest) depend on dive/rename order instead of
-                    # actual graph position. Cook through the group's own exec tail
-                    # instead, exactly as if a real inner view were pointed at it.
-                    tails = exec_tails(stage, scene, c)
-                    inner_view = tails[0] if tails else None
-                    synthetic = inner_view is not None
-                recook_for_view(stage, scene, c, inner_view, _synthetic_tail=synthetic)
+                # Cooked at its turn in the loop below, not here. Here is before any of
+                # the context's own chunks have been revealed and cooked, so a group cooked
+                # now read a stage its upstream was not on yet -- the kitchen layout's
+                # Materials script, moved into a group, found none of the appliances and
+                # converted 0 of 86 materials.
+                deferred_groups.add(id(c))
             else:
                 recook_for_view(stage, scene, c, None)
             continue
@@ -3591,7 +3564,12 @@ def recook_for_view(
         stage.MuteAndUnmuteLayers(mute_idents, [])
 
     for c in cook_list:
-        if not c.has_state(disabled) and not is_group_chunk(c):
+        if is_group_chunk(c):
+            if id(c) in deferred_groups:
+                inner_view, synthetic = _group_output_driver(stage, scene, c)
+                recook_for_view(stage, scene, c, inner_view, _synthetic_tail=synthetic)
+            continue
+        if not c.has_state(disabled):
             mute(lm.get_layer(c), False)
             c.execute()
 
@@ -3640,6 +3618,45 @@ def recook_for_view(
                 if layer is not None:
                     ident_rank.setdefault(layer.identifier, (rank[id(c)], 1))
     _reorder_graph_layers_by_rank(lm.graph_layers.values(), ident_rank)
+    _reorder_graph_layers_in_targets(lm, ident_rank)
+
+
+def _group_output_driver(stage: "Usd.Stage", scene: "core.SceneSender", group: "core.ChunkBase"):
+    """(what drives group's output, whether it is a stand-in exec tail rather than a view)."""
+    inner_view = find_group_active_view(group, stage, scene)
+    synthetic = False
+    if inner_view is not None and not view_cook_list(inner_view, stage, scene):
+        # A view wired to NOTHING is not an answer to "what does this group
+        # output" -- it is a default view that never got pointed at anything,
+        # or one left dangling when the chunk it watched was deleted (an exec
+        # heal clears the connection when the deleted node had no predecessor
+        # to inherit). Taken literally it means the group cooks nothing at all:
+        # its contents go blocked and muted, it stops feeding everything
+        # downstream of it, and there is no sign of why. Live-reported as a
+        # chunkgroup's Duplicate Prim being invisible from the group wired after
+        # it, with the copy simply absent from the stage.
+        #
+        # Fall through to the exec-tail fallback below, which is the same
+        # question ("what is the end of this group's chain") asked of a group
+        # whose view is missing rather than empty.
+        inner_view = None
+    if inner_view is None:
+        # No real inner view chunk -- the common case for a group whose
+        # contents were never explicitly given one (view chunks are
+        # deliberately excluded from group copy/paste, see
+        # _iter_group_children). Without this fallback, a reachable group's
+        # contents never actually cook via view-driven execution at all --
+        # they only ever ran as an accidental side effect of the user diving
+        # into the group, which auto-wires a default view as a UI action
+        # (ChunkGraphView._ensure_default_view). That made execution order
+        # (and therefore which sibling's self-managed layer, e.g. Create
+        # Layer's, ends up strongest) depend on dive/rename order instead of
+        # actual graph position. Cook through the group's own exec tail
+        # instead, exactly as if a real inner view were pointed at it.
+        tails = exec_tails(stage, scene, group)
+        inner_view = tails[0] if tails else None
+        synthetic = inner_view is not None
+    return inner_view, synthetic
 
 
 def _reorder_graph_layers_by_rank(graph_layers: "Iterable[Sdf.Layer]", ident_rank: dict) -> None:
@@ -3661,16 +3678,61 @@ def _reorder_graph_layers_by_rank(graph_layers: "Iterable[Sdf.Layer]", ident_ran
     stays exactly where a more specific call already put it.
     """
     for g_layer in graph_layers:
-        current = list(g_layer.subLayerPaths)
-        slots = [i for i, ident in enumerate(current) if ident in ident_rank]
-        if not slots:
+        _reorder_sublayers(g_layer, ident_rank)
+
+
+def _reorder_sublayers(layer: "Sdf.Layer", ident_rank: dict) -> None:
+    """Sort layer's ranked sublayers strongest first, within the slots they already hold."""
+    current = list(layer.subLayerPaths)
+    slots = [i for i, ident in enumerate(current) if ident in ident_rank]
+    if not slots:
+        return
+    ranked = sorted((current[i] for i in slots), key=lambda ident: ident_rank[ident], reverse=True)
+    ordered = list(current)
+    for slot, ident in zip(slots, ranked):
+        ordered[slot] = ident
+    if ordered != current:
+        layer.subLayerPaths = ordered  # type: ignore
+
+
+def _reorder_graph_layers_in_targets(lm: "ChunkLayerManager", ident_rank: dict) -> None:
+    """Order the graph layers themselves by the strongest chunk each one holds.
+
+    Ranking chunks only within their own graph layer left the graph layers in the order
+    they were made, newest on top. A graph layer is one DAG component, and a chunk that
+    builds its own children (AMD MaterialX Library) puts them in a component of their own
+    -- so the four material libraries in the kitchen layout sat above the tab's graph layer
+    and outranked AddMesh, the last chunk before the view (live-reported from the Layer
+    Stack window).
+
+    By the strongest member because a graph layer moves as a whole: one holding both the
+    chunk next to the view and one far up the chain cannot be split around another, and
+    the chunk next to the view is the one the rule is about. Only graph layers holding a
+    ranked chunk move, among the slots they already hold -- the same rule as within a graph
+    layer, so real sublayers on the target stay put and a nested group's order survives.
+    """
+    by_target: dict = {}
+    for gkey, g_layer in lm.graph_layers.items():
+        target = lm._graph_layer_target.get(gkey)
+        if target is None:
             continue
-        ranked = sorted((current[i] for i in slots), key=lambda ident: ident_rank[ident], reverse=True)
-        ordered = list(current)
-        for slot, ident in zip(slots, ranked):
-            ordered[slot] = ident
-        if ordered != current:
-            g_layer.subLayerPaths = ordered  # type: ignore
+        ranks = [ident_rank[i] for i in g_layer.subLayerPaths if i in ident_rank]
+        if ranks:
+            by_target.setdefault(target.identifier, (target, {}))[1][g_layer.identifier] = max(ranks)
+    if not by_target:
+        return
+    # Graph layers are internal: moving them changes no chunk's Edit Target, and a sublayer
+    # edit on the session layer must not send the stage through a rescan for new chunks.
+    prev_w = chunk_notice._usd_write_active
+    prev_internal = chunk_notice._internal_layer_write_active
+    chunk_notice._usd_write_active = True
+    chunk_notice._internal_layer_write_active = True
+    try:
+        for target, g_rank in by_target.values():
+            _reorder_sublayers(target, g_rank)
+    finally:
+        chunk_notice._usd_write_active = prev_w
+        chunk_notice._internal_layer_write_active = prev_internal
 
 
 def recook_focus(
