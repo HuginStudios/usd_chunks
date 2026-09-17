@@ -1,7 +1,7 @@
 import math
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.plugins.chunk_usd import ChunkStageSync
+from usd_chunks.chunk_stage import clear_attr_connections
 
 Vec3 = tuple
 
@@ -183,7 +183,7 @@ def _clear_connection(param: "chunk.ChunkParamBase") -> None:
         return
     param.value = param.default_value
     if attr := param.get_usd_prop():
-        ChunkStageSync().clear_attr_connections(attr)
+        clear_attr_connections(attr)
 
 
 def _clear_matching_params(obj, target: str) -> None:

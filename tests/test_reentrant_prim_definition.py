@@ -1,6 +1,6 @@
 """A new chunk's own prim can be invalidated mid-construction by a sibling chunk's
 reentrant re-execution, triggered by the very exec-chain connection being wired into it.
-See chunk_usd.py's _define_prim, the exec_in.SetConnections block."""
+See chunk_stage.py's _define_prim, the exec_in.SetConnections block."""
 from __future__ import annotations
 
 import importlib
@@ -9,8 +9,8 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
-import usd_chunks.plugins.chunk_usd as chunk_usd
+from usd_chunks.chunk_stage import initialize as init_chunk_usd
+import usd_chunks.chunk_stage as chunk_stage
 
 
 class _DummyScene(SceneSender):
@@ -32,12 +32,12 @@ def _make(scene, mod, module_name):
     # Auto-chain prev -> new (Params-tab behavior), same as a user repeatedly clicking
     # "add chunk" in the Params tab -- this is what wires each new chunk's inputs:chunk
     # connection to its predecessor, the trigger for the reentrancy below.
-    prev = chunk_usd._params_tab_create
-    chunk_usd._params_tab_create = True
+    prev = chunk_stage._params_tab_create
+    chunk_stage._params_tab_create = True
     try:
         scene.add_chunk(c)
     finally:
-        chunk_usd._params_tab_create = prev
+        chunk_stage._params_tab_create = prev
     return c
 
 

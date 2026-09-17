@@ -30,8 +30,9 @@ from pxr import Usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_graph, chunk_imgui, chunk_usd
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, load_chunks
+from usd_chunks.plugins import chunk_graph, chunk_imgui
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import get_chunk_prim_path, load_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,7 @@ class ImGuiGraphView:
             self.scene = _Scene(self.stage)
             chunk_registry.ChunkRegistry().initialize(self.scene, "imgui")
             ChunkLayerManager().initialize(self.stage)
-            chunk_usd.ChunkStageSync().initialize(self.stage, self.scene)
+            chunk_stage.ChunkStageSync().initialize(self.stage, self.scene)
             load_chunks(self.stage, self.scene)
             self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         except (AttributeError, KeyError, RuntimeError, OSError, ValueError) as exc:

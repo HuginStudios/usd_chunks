@@ -22,9 +22,9 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init,
 )
 
@@ -86,11 +86,11 @@ def dangling(qapp):
 
     inner_view = next(
         c for c in scene.get_chunks()
-        if chunk_usd.is_view_chunk(c)
+        if chunk_stage.is_view_chunk(c)
         and get_chunk_prim_path(c).startswith(get_chunk_prim_path(ga) + "/")
     )
     vp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(inner_view)))
-    chunk_usd.ChunkStageSync().clear_attr_connections(vp.GetAttribute("inputs:chunk"))
+    chunk_stage.ChunkStageSync().clear_attr_connections(vp.GetAttribute("inputs:chunk"))
     settle()
 
     docker.tab_widget.setCurrentIndex(0)
@@ -152,6 +152,6 @@ def test_an_empty_group_with_a_dangling_view_is_still_fine(qapp):
         qapp.processEvents()
         QtCore.QThread.msleep(10)
 
-    view = next(c for c in scene.get_chunks() if chunk_usd.is_view_chunk(c))
-    chunk_usd.recook_focus(stage, scene, scene.get_root_context(), view)
+    view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
+    chunk_stage.recook_focus(stage, scene, scene.get_root_context(), view)
     qapp.processEvents()

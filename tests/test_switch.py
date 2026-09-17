@@ -26,7 +26,7 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 switch_mod = importlib.import_module("switch")
@@ -57,7 +57,7 @@ def scene():
     sender = _Scene(stage)
     chunk_registry.ChunkRegistry().initialize(sender, "pytest")
     ChunkLayerManager().initialize(stage)
-    chunk_usd.ChunkStageSync().initialize(stage, sender)
+    chunk_stage.ChunkStageSync().initialize(stage, sender)
     return stage, sender
 
 
@@ -79,12 +79,12 @@ def _place(sender, name, prim_path, height):
 
 
 def _wire(stage, dst, *sources):
-    prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(dst)))
-    attr = prim.GetAttribute(chunk_usd._EXEC_INPUT) or prim.CreateAttribute(
-        chunk_usd._EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False
+    prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(dst)))
+    attr = prim.GetAttribute(chunk_stage._EXEC_INPUT) or prim.CreateAttribute(
+        chunk_stage._EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False
     )
     attr.SetConnections([
-        Sdf.Path(f"{chunk_usd.get_chunk_prim_path(s)}.{chunk_usd._EXEC_OUTPUT}")
+        Sdf.Path(f"{chunk_stage.get_chunk_prim_path(s)}.{chunk_stage._EXEC_OUTPUT}")
         for s in sources
     ])
 

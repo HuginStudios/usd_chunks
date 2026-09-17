@@ -27,7 +27,7 @@ from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 filter_mod = importlib.import_module("stage_expression_filter")
@@ -58,7 +58,7 @@ def scene():
     sender = _Scene(stage)
     chunk_registry.ChunkRegistry().initialize(sender, "pytest")
     ChunkLayerManager().initialize(stage)
-    chunk_usd.ChunkStageSync().initialize(stage, sender)
+    chunk_stage.ChunkStageSync().initialize(stage, sender)
     return stage, sender
 
 
@@ -85,14 +85,14 @@ def _wire(stage, dst, *sources):
     Which slot a branch landed in is the whole meaning here, unlike a Switch where every
     slot is interchangeable, so the test has to author them the way the ports do.
     """
-    prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(dst)))
+    prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(dst)))
     for i, src in enumerate(sources):
-        name = chunk_usd.exec_input_name(i)
+        name = chunk_stage.exec_input_name(i)
         attr = prim.GetAttribute(name) or prim.CreateAttribute(
             name, Sdf.ValueTypeNames.Token, custom=False
         )
         attr.SetConnections([
-            Sdf.Path(f"{chunk_usd.get_chunk_prim_path(src)}.{chunk_usd._EXEC_OUTPUT}")
+            Sdf.Path(f"{chunk_stage.get_chunk_prim_path(src)}.{chunk_stage._EXEC_OUTPUT}")
         ])
 
 
@@ -326,12 +326,12 @@ def test_add_dependency_fills_the_slots_in_order(scene):
     f.add_dependency(stream)
     f.add_dependency(gated)
 
-    prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(f)))
-    slot0 = prim.GetAttribute(chunk_usd.exec_input_name(0)).GetConnections()
-    slot1 = prim.GetAttribute(chunk_usd.exec_input_name(1)).GetConnections()
+    prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(f)))
+    slot0 = prim.GetAttribute(chunk_stage.exec_input_name(0)).GetConnections()
+    slot1 = prim.GetAttribute(chunk_stage.exec_input_name(1)).GetConnections()
     assert len(slot0) == 1 and len(slot1) == 1
-    assert chunk_usd.get_chunk_prim_path(stream) in str(slot0[0])
-    assert chunk_usd.get_chunk_prim_path(gated) in str(slot1[0])
+    assert chunk_stage.get_chunk_prim_path(stream) in str(slot0[0])
+    assert chunk_stage.get_chunk_prim_path(gated) in str(slot1[0])
 
 
 def test_an_unwired_branch_is_released_even_when_it_is_more_than_one_chunk_deep(scene):
@@ -358,8 +358,8 @@ def test_an_unwired_branch_is_released_even_when_it_is_more_than_one_chunk_deep(
 
     # The user unwires the gated branch from the filter entirely. _wire only rewrites the
     # slots it is given, so slot 1 has to be cleared rather than left pointing at it.
-    prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(node)))
-    prim.GetAttribute(chunk_usd.exec_input_name(1)).SetConnections([])
+    prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(node)))
+    prim.GetAttribute(chunk_stage.exec_input_name(1)).SetConnections([])
     node.execute()
 
     assert not inner.is_blocked(), (

@@ -9,7 +9,7 @@ from usd_chunks import chunk, chunk_notice, chunk_registry
 from usd_chunks import chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
 
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 from usd_chunks.plugins.chunk_qt_widgets import (
     ChunkWidget,
@@ -60,11 +60,11 @@ def save_chunkgroup_dialog(scene=None) -> None:
         return
     if not os.path.splitext(file)[1]:
         file += ".usda"
-    chunk_usd.export_chunks(scene, file)
+    chunk_stage.export_chunks(scene, file)
 
 
 def save_scene_dialog(scene=None) -> None:
-    """The "nice save flow" (Dan's request) -- see chunk_usd.save_scene. Writes the
+    """The "nice save flow" (Dan's request) -- see chunk_stage.save_scene. Writes the
     same file Save ChunkGroup does now that export_chunks carries up-axis and units
     itself; kept as its own menu entry."""
     scene = scene or chunk_registry.ChunkRegistry().scene
@@ -74,7 +74,7 @@ def save_scene_dialog(scene=None) -> None:
         return
     if not os.path.splitext(file)[1]:
         file += ".usda"
-    chunk_usd.save_scene(scene, file)
+    chunk_stage.save_scene(scene, file)
 
 
 class EditableTabBar(QtWidgets.QTabBar):
@@ -172,7 +172,7 @@ def _guarded_copy():
     focused = QtWidgets.QApplication.focusWidget()
     if focused and isinstance(focused, _TEXT_INPUT_TYPES):
         return
-    chunk_usd.copy_selected_chunks()
+    chunk_stage.copy_selected_chunks()
 
 
 def _focused_view_is_graph(focused: QtWidgets.QWidget | None) -> bool:
@@ -193,11 +193,11 @@ def _guarded_paste():
         return
     # Pasted chunks follow the active surface, same as a fresh create: pinned if pasted while
     # looking at Params, not pinned if pasted while looking at the Graph.
-    chunk_usd._pin_new_chunks = not _focused_view_is_graph(focused)
+    chunk_stage._pin_new_chunks = not _focused_view_is_graph(focused)
     try:
-        chunk_usd.paste_chunks()
+        chunk_stage.paste_chunks()
     finally:
-        chunk_usd._pin_new_chunks = None
+        chunk_stage._pin_new_chunks = None
 
 
 class ChunkTabContextStack(QtWidgets.QStackedWidget):
@@ -473,14 +473,14 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         # Flag the Params-tab origin so ChunkStageSync inserts the new chunk before the active
         # view (view-follows-tail) and auto-pins it — node-graph creates don't set either flag,
         # there wiring is manual and pin is opt-in via the node's right-click menu.
-        chunk_usd._params_tab_create = True
-        chunk_usd._pin_new_chunks = True
+        chunk_stage._params_tab_create = True
+        chunk_stage._pin_new_chunks = True
         try:
             for c in chunks:
                 self.add_chunk_to_tab(c)
         finally:
-            chunk_usd._params_tab_create = False
-            chunk_usd._pin_new_chunks = None
+            chunk_stage._params_tab_create = False
+            chunk_stage._pin_new_chunks = None
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
         w = self.widget(idx)
@@ -641,7 +641,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                     QtCore.QTimer.singleShot(0, self, self._flush_graph_rebuild)
             else:
                 self._rebuild_graph(changed_chunks={sender})
-        if chunk_usd.is_view_chunk(sender):
+        if chunk_stage.is_view_chunk(sender):
             self._reposition_view_chunk(sender)
         elif not chunk_notice._loading_stage:
             chunk_registry.ChunkRegistry().scene.set_selected_chunks([sender])
@@ -665,7 +665,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         stage = registry.scene.get_stage()
         if not stage:
             return
-        sources = chunk_usd.get_view_exec_sources(view_chunk, stage, registry.scene)
+        sources = chunk_stage.get_view_exec_sources(view_chunk, stage, registry.scene)
         if not sources:
             return
         ctx = view_chunk.get_context()

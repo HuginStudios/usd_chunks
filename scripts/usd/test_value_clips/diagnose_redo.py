@@ -22,7 +22,7 @@ Answers two questions that could not be reproduced outside a real session:
 from pxr import Sdf, Tf, Usd  # noqa: F401
 
 from usd_chunks import chunk_notice, chunk_registry
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 _listener = None
 _log = []
@@ -39,10 +39,10 @@ def _roots(scene):
     found = {}
     for c in scene.get_chunks():
         try:
-            found[str(chunk_usd._resolve_chunk_root(c))] = True
+            found[str(chunk_stage._resolve_chunk_root(c))] = True
         except Exception:  # noqa: BLE001
             pass
-    return sorted(found) or [chunk_usd._CHUNKS_ROOT]
+    return sorted(found) or [chunk_stage._CHUNKS_ROOT]
 
 
 def state():
@@ -54,7 +54,7 @@ def state():
         print("no stage -- is the chunks plugin loaded?")
         return
 
-    sync = chunk_usd.ChunkStageSync()
+    sync = chunk_stage.ChunkStageSync()
 
     print("\n=== chunk PRIMS ===")
     prim_paths = set()
@@ -64,7 +64,7 @@ def state():
             _line(root_path, "INVALID (no prim at this path)")
             continue
         for prim in root.GetChildren():
-            if prim.GetTypeName() != chunk_usd._CHUNK_PRIM_TYPENAME:
+            if prim.GetTypeName() != chunk_stage._CHUNK_PRIM_TYPENAME:
                 continue
             prim_paths.add(str(prim.GetPath()))
             layers = [s.layer.identifier.split(":")[-1] for s in prim.GetPrimStack()]
@@ -74,7 +74,7 @@ def state():
     chunk_paths = {}
     for c in scene.get_chunks():
         try:
-            key = f"{chunk_usd._resolve_chunk_root(c)}/{c.name}"
+            key = f"{chunk_stage._resolve_chunk_root(c)}/{c.name}"
         except Exception as exc:  # noqa: BLE001
             _line(getattr(c, "name", c), f"<root unresolved: {exc}>")
             continue
@@ -96,7 +96,7 @@ def state():
     print("\n=== params vs USD (the slider-not-undoing question) ===")
     mismatched = 0
     for c in scene.get_chunks():
-        for _, param in chunk_usd._iter_chunk_params(c):
+        for _, param in chunk_stage._iter_chunk_params(c):
             data_path = getattr(param, "_param_attr_path", None)
             if not data_path:
                 continue
@@ -107,7 +107,7 @@ def state():
             # Same tolerance the mirror uses. A param holds a 64-bit float and USD stores
             # 32, so an exact compare reports every round-tripped value as drifted -- which
             # it did on the first run here, for three values that were in fact fine.
-            if usd_val is not None and not chunk_usd._values_agree(usd_val, param.value):
+            if usd_val is not None and not chunk_stage._values_agree(usd_val, param.value):
                 mismatched += 1
                 _line(f"{c.name}.{param.name}", f"param={param.value}  USD={usd_val}  <-- DRIFTED")
     if not mismatched:
@@ -267,7 +267,7 @@ def audit():
         def _walk(spec):
             for child in spec.nameChildren:
                 path = str(child.path)
-                if child.typeName == chunk_usd._CHUNK_PRIM_TYPENAME:
+                if child.typeName == chunk_stage._CHUNK_PRIM_TYPENAME:
                     chunk_specs.append(path)
                 elif child.properties or child.nameChildren:
                     if not path.startswith("/chunks") and "/Tab" not in path:

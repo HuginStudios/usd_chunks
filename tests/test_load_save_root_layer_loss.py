@@ -16,7 +16,7 @@ a sibling case that fix did not cover.
 FIXED: publish_edit_target called reconcile_edit_targets without protect_root_layer, and a
 load takes that branch every single time -- the Edit Target marker stores a layer
 identifier, and an anonymous layer gets a new identifier in every process, so `old_ident !=
-ident` even when nothing changed. chunk_usd._loading now scopes the protection to a load.
+ident` even when nothing changed. chunk_stage._loading now scopes the protection to a load.
 These tests stay as the regression guard.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import export_chunks, initialize, load_chunks
+from usd_chunks.chunk_stage import export_chunks, initialize, load_chunks
 
 
 class _Scene(SceneSender):

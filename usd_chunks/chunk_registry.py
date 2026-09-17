@@ -2014,7 +2014,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         stage: a variant selection authored by a Set Variant chunk overrode the one the
         other stage had just set, and its variant edit context wrote into the wrong
         variant. A stage the host replaces reaches this manager through initialize()
-        (chunk_usd.reload_for_stage), so an occupied slot never needs a notice to move.
+        (chunk_stage.reload_for_stage), so an occupied slot never needs a notice to move.
         """
         stage = notice.GetStage()
         if stage and not self.stage:

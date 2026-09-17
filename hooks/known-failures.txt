@@ -19,9 +19,6 @@ tests/test_render_chunks.py::TestRendererMenu::test_falls_back_when_nothing_can_
 # A box collider is expected to be solid; the body falls through it.
 tests/test_rbd_general_colliders.py::test_a_box_collider_cannot_be_entered_but_a_mesh_collider_can
 
-# CLI run does not write the network's driven content.
-tests/test_commit_hook.py::TestCliRunCommits::test_run_writes_the_networks_driven_content
-
 # A flaky test belongs in NEITHER list: listed, it reports itself "fixed" on most runs and
 # nags you to delete it; unlisted, it blocks a push now and then. Put it in your local list
 # if that trade is worth it to you. Known flake today, order-dependent and exposed by

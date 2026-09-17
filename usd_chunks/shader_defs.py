@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Sdf type name -> how to build the param, overriding chunk.usd_type_map where a shader
 # input wants something better than the generic USD-attribute choice.
 #
-# color3f gets a swatch rather than usd_type_map's three sliders. This relies on chunk_usd
+# color3f gets a swatch rather than usd_type_map's three sliders. This relies on chunk_stage
 # resolving a ColorPicker to Color3f: its value is a tuple, and _SDF_TYPE_MAP is keyed by
 # Python type, so without that a colour param gets no chunk-prim attr and its value cannot
 # round-trip. color4f is left as a Vector -- a ColorPicker is rgb only.

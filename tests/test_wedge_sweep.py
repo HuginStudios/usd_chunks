@@ -18,7 +18,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
     export_chunks,
@@ -383,7 +383,7 @@ def test_an_expression_onto_a_lofted_param_updates_live(network):
         "from usd_chunks import chunk_registry;"
         "from usd_chunks.chunk_core import SceneSender;"
         "from usd_chunks.chunk_registry import ChunkLayerManager;"
-        "from usd_chunks.plugins.chunk_usd import load_chunks;"
+        "from usd_chunks.chunk_stage import load_chunks;"
         "from usd_chunks.plugins.usdchunks_cli import _all_chunks;"
         "stage = Usd.Stage.Open(sys.argv[1]);"
         "S = type('S', (SceneSender,), {"

@@ -18,7 +18,7 @@ def execute(node):
     # out when the material or the target prim could not be found -- which silently
     # destroyed a perfectly good binding whenever this ran at a moment when the stage did
     # not hold them. That is not a rare edge: view-driven execution deliberately mutes and
-    # unmutes layers one at a time while recooking (chunk_usd.recook_for_view), so the mesh
+    # unmutes layers one at a time while recooking (chunk_stage.recook_for_view), so the mesh
     # a binding targets, or the material itself, is routinely absent for part of a recook.
     # Nothing re-runs this chunk once the stage settles -- its own params never changed --
     # so the loss was permanent, and looked like the applied material randomly reverting to

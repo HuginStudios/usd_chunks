@@ -19,7 +19,7 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
     connect_exec,

@@ -1,6 +1,6 @@
 """A param a chunk assigns inside its own execute() has to reach the chunk prim.
 
-A saved scene is chunk prims and nothing else (chunk_usd.export_chunks), so a value that
+A saved scene is chunk prims and nothing else (chunk_stage.export_chunks), so a value that
 never gets an attr on the chunk prim is a value that does not survive a save. Params written
 by the user reach it through ChunkStageSync._on_attr_changed; params written by the chunk
 itself, during its cook, did not -- that handler skipped while chunk_notice._usd_write_active
@@ -22,7 +22,7 @@ from pxr import Gf, Usd, UsdGeom
 
 from usd_chunks import chunk_notice, chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     ChunkStageSync,
     initialize as chunk_usd_initialize,
     save_scene,
@@ -40,7 +40,7 @@ class _DummyScene(SceneSender):
 def _scene_for(stage: Usd.Stage) -> SceneSender:
     """A scene wired to `stage`, initialised the way opening a file does.
 
-    chunk_usd.initialize (not a bare load_chunks) because the cook pass that regenerates a
+    chunk_stage.initialize (not a bare load_chunks) because the cook pass that regenerates a
     reopened scene's content only runs when ChunkLayerManager owns this exact stage, which is
     what initialize arranges. Without it every chunk reloads with its params and authors
     nothing, and every assertion here would pass on an empty stage.

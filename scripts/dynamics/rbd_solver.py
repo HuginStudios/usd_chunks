@@ -17,7 +17,7 @@ from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 from usd_chunks import chunk, chunk_gizmo, chunk_registry, chunk_utils
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 try:
     import mujoco as _mj
@@ -2811,7 +2811,7 @@ def _run(owner, notice, sender) -> None:
     prim = stage.GetPrimAtPath(prim_paths[0])
     if not prim.IsValid() or prim.GetPath() == Sdf.Path("/"):
         return
-    scratch_stage = chunk_usd.get_upstream_stage(stage, owner.get_scene(), _chunk)
+    scratch_stage = chunk_stage.get_upstream_stage(stage, owner.get_scene(), _chunk)
     collision_prims = _parse_collision_prims(collision_path_value, scratch_stage)
 
     # A sim-ready asset states its own mass, contact properties and collider approximation.
@@ -2997,7 +2997,7 @@ def _on_any_chunk_changed(owner, notice, sender) -> None:
     stage = _chunk.get_stage()
     if not scene or not stage:
         return
-    if sender not in chunk_usd.view_cook_list(_chunk, stage, scene):
+    if sender not in chunk_stage.view_cook_list(_chunk, stage, scene):
         return
     if _only_presentation_changed(sender):
         return

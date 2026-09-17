@@ -40,7 +40,7 @@ import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)
 
@@ -1159,7 +1159,7 @@ def execute(node):
     # Read from a composition that excludes this chunk's own layer, the same way Scatter Points
     # does: a chunk wired *after* this one may be editing the same mesh, and its edit is not
     # part of what this cook is growing on.
-    upstream = chunk_usd.get_upstream_stage(stage, node.get_scene(), node)
+    upstream = chunk_stage.get_upstream_stage(stage, node.get_scene(), node)
     field = (node.get_param("density_primvar").value or "").strip()
     surface = _collect_surface(upstream.GetPrimAtPath(paths[0]), field).painted()
     if not surface:

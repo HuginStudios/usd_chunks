@@ -16,7 +16,7 @@ from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 pr = importlib.import_module("scripts.modelling.poly_reduce")
 

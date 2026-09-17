@@ -19,7 +19,7 @@ from pathlib import Path
 from pxr import Usd, UsdUtils
 from usd_chunks import chunk_naming
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     ChunkLayerManager,
     ChunkStageSync,
     commit_order_from_stage,

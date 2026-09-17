@@ -35,7 +35,7 @@ from pxr import Gf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins import chunk_blender_nodegraph as bg
 from usd_chunks.plugins.chunk_blender_addon import viewport
 
@@ -146,7 +146,7 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     _scene = BlenderScene(stage)
     chunk_registry.ChunkRegistry().initialize(_scene, "blender")
     chunk_registry.ChunkLayerManager().initialize(stage)
-    chunk_usd.ChunkStageSync().initialize(stage, _scene)
+    chunk_stage.ChunkStageSync().initialize(stage, _scene)
     # Node classes are generated from the registry, and the registry only discovers chunks
     # once a scene exists -- so this cannot happen in register(), where there is no scene
     # yet and every class would be generated from an empty library. Idempotent, so opening
@@ -154,7 +154,7 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     made = bg.register_chunk_types()
     if made:
         logger.info("usd_chunks: %d chunk node type(s) registered", len(made))
-    chunk_usd.load_chunks(stage, _scene)
+    chunk_stage.load_chunks(stage, _scene)
 
     if tree is None:
         tree = _active_tree()
@@ -163,7 +163,7 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
         # re-initialize it (which would replace whatever stage/content it already has)
         # the next time the user merely switches back to looking at it.
         tree.chunk_network_initialized = True
-    chunks = {chunk_usd.get_chunk_prim_path(c): c for c in _scene.get_chunks()}
+    chunks = {chunk_stage.get_chunk_prim_path(c): c for c in _scene.get_chunks()}
     # chunk_graph.default_context, not peek_root_context: after load_chunks the scene has
     # no root context to peek at, and CHUNKS_ROOT shows the default chunkgroup and none of
     # the work inside it. The engine already knows which graph a file wants opened.

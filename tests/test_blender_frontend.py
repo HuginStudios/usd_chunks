@@ -43,7 +43,8 @@ from usd_chunks import chunk_registry  # noqa: E402
 from usd_chunks.chunk_core import ChunkConfig  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
 from usd_chunks.chunk_scene import SceneSender  # noqa: E402
-from usd_chunks.plugins import chunk_blender, chunk_graph, chunk_usd  # noqa: E402
+from usd_chunks.plugins import chunk_blender, chunk_graph  # noqa: E402
+from usd_chunks import chunk_stage  # noqa: E402
 from usd_chunks.plugins import chunk_blender_nodegraph as bg  # noqa: E402
 
 
@@ -69,7 +70,7 @@ def view():
     scene = _Scene(stage)
     chunk_registry.ChunkRegistry().initialize(scene, "pytest-blender")
     chunk_registry.ChunkLayerManager().initialize(stage)
-    chunk_usd.ChunkStageSync().initialize(stage, scene)
+    chunk_stage.ChunkStageSync().initialize(stage, scene)
     bg.register()
 
     ref = reference.main()
@@ -85,10 +86,10 @@ def view():
 
     # add_chunk routes a context-less chunk into the scene's default chunkgroup, so the
     # graph to read is that group -- not CHUNKS_ROOT, where only the group itself lives.
-    context = chunk_usd.get_chunk_prim_path(scene.peek_root_context())
+    context = chunk_stage.get_chunk_prim_path(scene.peek_root_context())
     tree = bpy.data.node_groups.new("test", bg.TREE_ID)
     v = bg.BlenderGraphView(stage, scene, tree=tree, context=context)
-    v.chunks = {chunk_usd.get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    v.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in scene.get_chunks()}
     v.reload()
     chunk_graph.node_clipboard.clear()
     chunk_graph.edge_clipboard.clear()

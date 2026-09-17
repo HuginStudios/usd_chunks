@@ -17,7 +17,7 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import export_chunks, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import export_chunks, initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):
@@ -80,7 +80,7 @@ def test_reload_bounds_downstream_reexecution_across_the_full_chain(tmp_path) ->
     chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
     chunk_registry.ChunkLayerManager().initialize(stage2)
 
-    from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init2
+    from usd_chunks.chunk_stage import initialize as _chunk_usd_init2
 
     reg = chunk_registry.ChunkRegistry()
     mod_wrapper = reg.get_chunk_module("scatter_points")

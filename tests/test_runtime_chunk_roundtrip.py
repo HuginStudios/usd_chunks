@@ -21,8 +21,8 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):
@@ -119,7 +119,7 @@ def test_it_loads_back_with_its_params(qapp):
     # A fresh scene reading the same stage, as reopening the file does.
     reloaded_scene = _StageScene()
     reg.initialize(reloaded_scene, "pytest")
-    chunk_usd.load_chunks(stage, reloaded_scene, set())
+    chunk_stage.load_chunks(stage, reloaded_scene, set())
     qapp.processEvents()
 
     # By name, not by prim path: a second scene in the same process builds its own default
@@ -191,12 +191,12 @@ def test_the_exec_input_does_not_come_back_as_a_param(qapp):
     made.get_param("slider").value = 18.96
     qapp.processEvents()
     # Wired after the Prim chunk, exactly as the report describes.
-    chunk_usd.connect_exec(stage, scene, get_chunk_prim_path(upstream), get_chunk_prim_path(made))
+    chunk_stage.connect_exec(stage, scene, get_chunk_prim_path(upstream), get_chunk_prim_path(made))
     qapp.processEvents()
 
     reloaded_scene = _StageScene()
     reg.initialize(reloaded_scene, "pytest")
-    chunk_usd.load_chunks(stage, reloaded_scene, set())
+    chunk_stage.load_chunks(stage, reloaded_scene, set())
     qapp.processEvents()
 
     restored = next((c for c in reloaded_scene.get_chunks() if c.name == "hello"), None)
@@ -234,7 +234,7 @@ def test_a_param_left_at_its_default_still_survives(qapp):
 
     reloaded_scene = _StageScene()
     reg.initialize(reloaded_scene, "pytest")
-    chunk_usd.load_chunks(stage, reloaded_scene, set())
+    chunk_stage.load_chunks(stage, reloaded_scene, set())
     qapp.processEvents()
 
     restored = next((c for c in reloaded_scene.get_chunks() if c.name == "hello"), None)
@@ -245,7 +245,7 @@ def test_a_param_left_at_its_default_still_survives(qapp):
 def _reload(qapp, stage):
     reloaded_scene = _RuntimeScene(stage)
     chunk_registry.ChunkRegistry().initialize(reloaded_scene, "pytest")
-    chunk_usd.load_chunks(stage, reloaded_scene, set())
+    chunk_stage.load_chunks(stage, reloaded_scene, set())
     qapp.processEvents()
     return reloaded_scene
 

@@ -16,9 +16,9 @@ from PySide6 import QtCore, QtGui
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     _EXEC_OUTPUT, connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init,
 )
 
@@ -68,7 +68,7 @@ def _view(d, qapp):
 
 
 def _groups(scene):
-    return [c for c in scene.get_chunks() if chunk_usd.is_chunkgroup(c)]
+    return [c for c in scene.get_chunks() if chunk_stage.is_chunkgroup(c)]
 
 
 def _inputs(stage, chunk):
@@ -76,7 +76,7 @@ def _inputs(stage, chunk):
     if not (prim and prim.IsValid()):
         return None
     return [
-        str(conn) for attr in chunk_usd.iter_exec_inputs(prim) for conn in attr.GetConnections()
+        str(conn) for attr in chunk_stage.iter_exec_inputs(prim) for conn in attr.GetConnections()
     ]
 
 
@@ -204,7 +204,7 @@ def test_no_wire_is_left_pointing_at_a_prim_that_moved(graph):
     for prim in stage.TraverseAll():
         if prim.GetTypeName() != "Chunk":
             continue
-        for attr in chunk_usd.iter_exec_inputs(prim):
+        for attr in chunk_stage.iter_exec_inputs(prim):
             for conn in attr.GetConnections():
                 assert str(conn.GetPrimPath()) in live, (
                     f"{prim.GetPath()} points at {conn.GetPrimPath()}, which is not on the stage"

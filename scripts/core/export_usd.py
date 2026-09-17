@@ -11,8 +11,8 @@ import os
 from pxr import Sdf, Usd, UsdUtils
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import get_chunk_prim_path
 
 
 def _discover_export_layers(stage):
@@ -228,7 +228,7 @@ def _export_flattened(_chunk, stage) -> None:
       follows Edit Target, so it's scattered across whichever real layers were active
       when each chunk last authored — the session layer alone no longer holds the
       complete graph, so this delegates to the same rebuild-from-scratch mechanism as
-      the Export ChunkGroup chunk (plugins.chunk_usd.export_chunks) instead.
+      the Export ChunkGroup chunk (chunk_stage.export_chunks) instead.
     - Baked: a full flatten with every Chunk-typed prim stripped back out (a real
       layer's own composed content can carry chunk-graph prims mixed in with real
       content now — see _strip_chunk_prims).
@@ -254,7 +254,7 @@ def _export_flattened(_chunk, stage) -> None:
     mode = _chunk.get_param("export_mode", is_s).value
     if mode == "Procedural":
         scene = chunk_registry.ChunkRegistry().scene
-        chunk_usd.export_chunks(scene, output_path)
+        chunk_stage.export_chunks(scene, output_path)
         print(f"[ExportUSD] Chunk graph (Procedural) exported to {output_path}")
         return
 

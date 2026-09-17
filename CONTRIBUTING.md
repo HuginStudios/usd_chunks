@@ -94,10 +94,10 @@ rather than adding to it, so each hook here runs its `.git/hooks` counterpart fi
 ## Finding your way around
 
 - `usd_chunks/` — the core. `chunk_core.py` (the object model), `chunk_notice.py` (notices,
-  callbacks and the DAG), `chunk_registry.py` (discovery and loading), `chunk.py` (the
-  public API that chunk authors import).
-- `usd_chunks/plugins/` — everything that binds the core to a host: `chunk_usd.py` (stage
-  sync, Qt-free), `chunk_qt*.py` (widgets and node graph), `chunk_usdview/`,
+  callbacks and the DAG), `chunk_registry.py` (discovery and loading), `chunk_stage.py` (the chunk graph on
+  the USD stage: sync, wiring, view-driven cooking), `chunk.py` (the public API that chunk
+  authors import).
+- `usd_chunks/plugins/` — everything that binds the core to a host: `chunk_qt*.py` (widgets and node graph), `chunk_usdview/`,
   `chunk_houdini/`, `chunk_kraken/`, and `usdchunks_cli.py`.
 - `tests/` — run with `USD_CHUNK_DIRS=scripts`.
 - `scripts/` — example chunks, used heavily as test fixtures.

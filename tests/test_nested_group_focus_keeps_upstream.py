@@ -22,9 +22,9 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init,
 )
 
@@ -85,7 +85,7 @@ def nested(qapp):
     g1 = mk("chunkgroup")
     t1 = mk("transform", context=g1)
     settle()
-    view = next(c for c in reg.scene.get_chunks() if chunk_usd.is_view_chunk(c))
+    view = next(c for c in reg.scene.get_chunks() if chunk_stage.is_view_chunk(c))
     connect_exec(stage, reg.scene, get_chunk_prim_path(sub), get_chunk_prim_path(g1))
     connect_exec(stage, reg.scene, get_chunk_prim_path(g1), get_chunk_prim_path(view))
     settle()

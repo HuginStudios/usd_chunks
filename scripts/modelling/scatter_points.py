@@ -37,7 +37,7 @@ import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_utils
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)
 
@@ -1460,7 +1460,7 @@ def execute(node):
             if _spec := _lyr.GetAttributeAtPath(_pp):
                 _spec.ClearDefaultValue()
 
-    scratch_stage = chunk_usd.get_upstream_stage(stage, node.get_scene(), node)
+    scratch_stage = chunk_stage.get_upstream_stage(stage, node.get_scene(), node)
     surface_prim = scratch_stage.GetPrimAtPath(surface_paths[0]) if surface_paths else None
 
     _migrate_legacy_proto(node)

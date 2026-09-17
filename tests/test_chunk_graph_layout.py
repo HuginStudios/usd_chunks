@@ -8,7 +8,7 @@ from usd_chunks.plugins.chunk_graph_layout import (
     layout_positions,
     topo_depth,
 )
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 

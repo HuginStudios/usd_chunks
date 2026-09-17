@@ -18,9 +18,9 @@ from pxr import Usd
 
 from usd_chunks import chunk_core, chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 EXPRESSION = "@Prim.primpath_location@"
 
@@ -79,7 +79,7 @@ def dropped(qapp):
     chunks = mod.create() if mod.loaded else mod.load()
     new_chunk = chunks[0]
     for c in chunks:
-        if not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+        if not chunk_stage.is_view_chunk(c) and not chunk_stage.is_group_chunk(c):
             c.set_blocked(True)
         scene.add_chunk(c)
     settle()

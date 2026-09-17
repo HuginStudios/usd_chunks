@@ -1,4 +1,4 @@
-"""Tests for chunk_usd.save_scene -- the "nice save flow" (Dan's request) -- and for the
+"""Tests for chunk_stage.save_scene -- the "nice save flow" (Dan's request) -- and for the
 stage metadata (up-axis, units) that export_chunks, which it wraps, now carries itself.
 
 Previously wrote a bundled pair (the chunk graph plus a flattened snapshot of everything
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pxr import Usd, UsdGeom
 
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     _CHUNK_PRIM_TYPENAME,
     export_chunks,
     initialize as _chunk_usd_init,
@@ -83,7 +83,7 @@ def test_save_scene_reopen_reloads_as_a_real_chunk_scene(tmp_path) -> None:
         p.GetTypeName() == _CHUNK_PRIM_TYPENAME for p in reopened.TraverseAll()
     ), "the chunk graph itself must be there"
 
-    # Minimal setup here (not _make_scene's chunk_usd.initialize, which would auto-load
+    # Minimal setup here (not _make_scene's chunk_stage.initialize, which would auto-load
     # the already-composed chunk prim on its own) plus one explicit load_chunks call --
     # mirrors test_export_load_roundtrip's dst side in test_chunk_usd.py, avoiding a
     # double-load of the one real chunk on the reopened stage.

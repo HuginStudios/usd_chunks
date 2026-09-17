@@ -20,9 +20,9 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_scheduler
 from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import export_chunks
-from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import export_chunks
+from usd_chunks.chunk_stage import initialize as init_chunk_usd
 from usd_chunks.plugins.usdchunks_cli import cmd_run
 
 
@@ -54,12 +54,12 @@ def _make(scene, mod, module_name):
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
     c._module = mod
-    prev = chunk_usd._params_tab_create
-    chunk_usd._params_tab_create = True
+    prev = chunk_stage._params_tab_create
+    chunk_stage._params_tab_create = True
     try:
         scene.add_chunk(c)
     finally:
-        chunk_usd._params_tab_create = prev
+        chunk_stage._params_tab_create = prev
     return c
 
 
@@ -264,7 +264,9 @@ class TestCliRunCommits:
         repo_root = Path(__file__).resolve().parents[1]
         env = dict(os.environ)
         env["USD_CHUNK_DIRS"] = str(repo_root / "scripts")
-        env["PYTHONPATH"] = str(repo_root)
+        # Prepended, not assigned: USD's own bindings are often found through PYTHONPATH,
+        # and replacing it left the child unable to import pxr at all.
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(repo_root), os.environ.get("PYTHONPATH")]))
         proc = subprocess.run(
             [sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", str(net)],
             cwd=str(repo_root),
@@ -282,12 +284,12 @@ class TestCliRunCommits:
 
 
 class TestCommitOrderFromStage:
-    """chunk_usd.commit_order_from_stage — ordering read from USD connections.
+    """chunk_stage.commit_order_from_stage — ordering read from USD connections.
 
     Depth used to be blind to a param port: drag-to-connect authors an @Node.param@
     expression whose live link is a NoticeConnection, not a DAG edge, so both chunks sat at
     depth 0 and committed in arbitrary order. reconcile_exec_dependencies now mirrors param
-    wires into chunk-level DAG edges as well (see _live_chunk_dependencies), so depth sees
+    wires into chunk-level DAG edges as well (see _wired_dependencies), so depth sees
     them too and the two orderings agree.
 
     This function is still the one the CLI uses: it reads the stage directly, and
@@ -314,7 +316,7 @@ class TestCommitOrderFromStage:
         upstream.get_param("p").value = 2.0
         downstream.get_param("p").value = "@upstream.p@"
 
-        ordered = chunk_usd.commit_order_from_stage([downstream, upstream], stage)
+        ordered = chunk_stage.commit_order_from_stage([downstream, upstream], stage)
 
         assert ordered == [upstream, downstream]
         assert chunk_scheduler.commit_order([downstream, upstream]) == [upstream, downstream], (
@@ -338,8 +340,8 @@ class TestCommitOrderFromStage:
             dep is upstream for _, dep in downstream.get_dependencies()
         ), "precondition: the param wire was reconciled into a DAG edge"
 
-        prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(downstream)))
-        assert not chunk_usd.exec_input_connections(prim), (
+        prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(downstream)))
+        assert not chunk_stage.exec_input_connections(prim), (
             "a param wire must not surface as an exec connection"
         )
 
@@ -350,7 +352,7 @@ class TestCommitOrderFromStage:
         second = self._chunk(scene, "second", calls)
         second.add_dependency(first)  # authors inputs:chunk on second
 
-        ordered = chunk_usd.commit_order_from_stage([second, first], stage)
+        ordered = chunk_stage.commit_order_from_stage([second, first], stage)
 
         assert ordered == [first, second]
 
@@ -360,7 +362,7 @@ class TestCommitOrderFromStage:
         a = self._chunk(scene, "a", calls)
         b = self._chunk(scene, "b", calls)
 
-        assert chunk_usd.commit_order_from_stage([b, a], stage) == [b, a]
+        assert chunk_stage.commit_order_from_stage([b, a], stage) == [b, a]
 
     def test_cycle_keeps_every_chunk_exactly_once(self):
         """A cycle can't be ordered, but it must not drop or duplicate anyone.
@@ -379,13 +381,13 @@ class TestCommitOrderFromStage:
 
         for owner, other in ((a, b), (b, a)):
             attr = stage.GetAttributeAtPath(
-                Sdf.Path(f"{chunk_usd.get_chunk_prim_path(owner)}.inputs:p")
+                Sdf.Path(f"{chunk_stage.get_chunk_prim_path(owner)}.inputs:p")
             )
             attr.SetConnections(
-                [Sdf.Path(f"{chunk_usd.get_chunk_prim_path(other)}.inputs:p")]
+                [Sdf.Path(f"{chunk_stage.get_chunk_prim_path(other)}.inputs:p")]
             )
 
-        ordered = chunk_usd.commit_order_from_stage([a, b], stage)
+        ordered = chunk_stage.commit_order_from_stage([a, b], stage)
 
         assert sorted(c.name for c in ordered) == ["a", "b"]
         assert len(ordered) == 2
@@ -396,7 +398,7 @@ class TestCommitOrderFromStage:
         b = chunk.Chunk("b")
         b.add_dependency(a)
 
-        assert chunk_usd.commit_order_from_stage([b, a], None) == [a, b]
+        assert chunk_stage.commit_order_from_stage([b, a], None) == [a, b]
 
     def test_commit_all_honours_the_order_hook(self):
         """The CLI passes this hook; the dispatch must actually use it."""
@@ -409,7 +411,7 @@ class TestCommitOrderFromStage:
 
         chunk_scheduler.commit_all(
             [downstream, upstream],
-            order=lambda cs: chunk_usd.commit_order_from_stage(cs, stage),
+            order=lambda cs: chunk_stage.commit_order_from_stage(cs, stage),
         )
 
         assert calls == ["upstream", "downstream"]

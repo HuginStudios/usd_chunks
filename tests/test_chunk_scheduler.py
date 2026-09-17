@@ -122,7 +122,7 @@ class TestTopologicalOrder:
     def test_terminal_node_still_solves(self):
         # should_solve() reads as "dirty AND (has outputs OR has owner)", but
         # WeakValueDictionary.items() is a generator and so always truthy, which has
-        # always made it plain "dirty". Pinned here because chunk_usd's load path
+        # always made it plain "dirty". Pinned here because chunk_stage's load path
         # documents the opposite; changing it is a behaviour change, not a cleanup.
         lonely = Node("lonely")
 

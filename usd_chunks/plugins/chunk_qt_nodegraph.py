@@ -25,7 +25,7 @@ from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_registry
 from usd_chunks.plugins import chunk_graph
 from usd_chunks import chunk_utils
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.plugins.chunk_qt_widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
@@ -288,7 +288,7 @@ def _author_raw_connection(
     visible-port-suffix distinction for typed params, same expression-string write, same
     bookkeeping-layer resolution) without needing a graph_scene/ChunkPortItem to read it
     from."""
-    is_exec = chunk_usd.is_exec_input_name(dst_attr_suffix)
+    is_exec = chunk_stage.is_exec_input_name(dst_attr_suffix)
     dst_attr = stage.GetAttributeAtPath(Sdf.Path(f"{dst_prim_path}.{dst_attr_suffix}"))
     if not (dst_attr and dst_attr.IsValid()):
         prim = stage.GetPrimAtPath(Sdf.Path(dst_prim_path))
@@ -304,12 +304,12 @@ def _author_raw_connection(
             # fixed once created, so every later numeric write raised "expected 'string',
             # got 'double'" for the life of the scene.
             param_path = dst_attr_suffix
-            if param_path.startswith(chunk_usd._INPUTS_PREFIX):
-                param_path = param_path[len(chunk_usd._INPUTS_PREFIX):]
+            if param_path.startswith(chunk_stage._INPUTS_PREFIX):
+                param_path = param_path[len(chunk_stage._INPUTS_PREFIX):]
             param = dst_chunk.get_param(param_path.replace(":", ".")) if dst_chunk else None
             # String remains the fallback for a param we cannot resolve or map: it is what
             # this always did, and it is the one type that never loses information.
-            sdf_type = chunk_usd.sdf_type_for_param(param) or Sdf.ValueTypeNames.String
+            sdf_type = chunk_stage.sdf_type_for_param(param) or Sdf.ValueTypeNames.String
         dst_attr = prim.CreateAttribute(dst_attr_suffix, sdf_type, custom=False)
         if not dst_attr.IsValid():
             return
@@ -384,7 +384,7 @@ def _detect_dropped_usd_kind(path: str) -> "str | None":
     Chunk-typed prim ANYWHERE in it, 'scene' if it's a USD file with none, None if it isn't a
     recognized USD file at all. There's no fixed root to shortcut the check against -- a
     chunk's root is its tab/context's own prim_path (chunk_core.add_context names a new tab
-    "/" + the tab name, not a fixed "/chunks" convention -- /chunks is only chunk_usd.py's
+    "/" + the tab name, not a fixed "/chunks" convention -- /chunks is only chunk_stage.py's
     fallback for a context with no explicit prim_path), so a saved chunkgroup's chunks can
     live under any prim path depending on what its source tab was called. Sdf.Layer.FindOrOpen
     does a lightweight scene-description parse only (no composition, no schema/plugin loading,
@@ -421,7 +421,7 @@ def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: "tuple[float, float]")
     scene. Instantiates a throwaway chunk never added to any scene, purely to learn its
     module's canonical param order (same instantiate-without-adding pattern
     ChunkGraphView._instantiate_chunk_of_type already uses for paste), then restores its values
-    via the same chunk_usd._load_wire_inputs the real stage-load path uses -- so list groups,
+    via the same chunk_stage._load_wire_inputs the real stage-load path uses -- so list groups,
     dotted param paths and expression strings all resolve exactly the same way, without
     touching the ChunkRegistry/ChunkLayerManager singletons or the real stage at all.
 
@@ -431,7 +431,7 @@ def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: "tuple[float, float]")
     scripts/usd/create_layer.py's execute() authoring a genuine anon Sdf.Layer the instant its
     layer_name value changes) runs for real even on a throwaway, never-added chunk -- live
     confirmed as an orphaned duplicate layer appearing after a drag-and-drop import."""
-    module_name = prim.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get()
+    module_name = prim.GetAttribute(chunk_stage._CHUNK_TYPE_ATTR).Get()
     if not module_name:
         return None
     registry = chunk_registry.ChunkRegistry()
@@ -441,18 +441,18 @@ def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: "tuple[float, float]")
     if mod is None:
         return None
     chunks = mod.create() if mod.loaded else mod.load()
-    primary = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
+    primary = next((c for c in chunks if not chunk_stage.is_view_chunk(c)), None)
     if primary is None:
         return None
     primary.set_blocked(True)
-    chunk_usd._load_wire_inputs(prim, primary)
+    chunk_stage._load_wire_inputs(prim, primary)
     clip_node = _ClipboardNode(str(module_name), _snapshot_param_values(primary), rel_pos)
-    if not chunk_usd.is_group_chunk(primary):
+    if not chunk_stage.is_group_chunk(primary):
         return clip_node
 
     child_prims = [
         c for c in prim.GetFilteredChildren(_INCLUDE_INACTIVE)
-        if c.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get()
+        if c.GetAttribute(chunk_stage._CHUNK_TYPE_ATTR).Get()
     ]
     if not child_prims:
         return clip_node
@@ -511,7 +511,7 @@ def _snapshot_layer_chunks(layer: "Sdf.Layer") -> "tuple[list[_ClipboardNode], l
     for prim in stage.Traverse(_INCLUDE_INACTIVE):
         if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
             continue
-        if prim.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get():
+        if prim.GetAttribute(chunk_stage._CHUNK_TYPE_ATTR).Get():
             candidates[str(prim.GetPath())] = prim
 
     # A saved file's outermost chunkgroup -- the one sitting directly under the /chunks
@@ -520,11 +520,11 @@ def _snapshot_layer_chunks(layer: "Sdf.Layer") -> "tuple[list[_ClipboardNode], l
     # the file reads as its contents: dropping a two-chunk file imported one node.
     # Dropping it from candidates lets its children be top-level, which is what they were.
     # A group nested any deeper is real content and stays.
-    scope = Sdf.Path(chunk_usd._CHUNKS_ROOT)
+    scope = Sdf.Path(chunk_stage._CHUNKS_ROOT)
     for path in [
         path for path, prim in candidates.items()
         if prim.GetParent() and prim.GetParent().GetPath() == scope
-        and prim.GetAttribute(chunk_usd._CHUNK_TYPE_ATTR).Get() == "chunkgroup"
+        and prim.GetAttribute(chunk_stage._CHUNK_TYPE_ATTR).Get() == "chunkgroup"
     ]:
         del candidates[path]
 
@@ -582,13 +582,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self.chunk = chunk
         self.prim = prim
         self._locked = locked
-        self._pinned = chunk_usd.is_chunk_pinned(chunk)
+        self._pinned = chunk_stage.is_chunk_pinned(chunk)
         # Navigable subnet, not merely "owns children". A chunk-in-chunk such as
         # AMDMaterialXLibrary also carries GroupFlags.CONTEXT, but its children are an
         # implementation detail: it must not offer a dive, nor the group header and the
         # `▶` marker that advertise one. Containment still keys on
-        # chunk_usd.is_group_chunk, so its children stay hidden and keep cooking.
-        self._is_chunkgroup = chunk_usd.is_chunkgroup(chunk)
+        # chunk_stage.is_group_chunk, so its children stay hidden and keep cooking.
+        self._is_chunkgroup = chunk_stage.is_chunkgroup(chunk)
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
@@ -601,7 +601,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # Positional exec input slots (config.exec_inputs). >1 gives the node one port per
         # slot on a node that still has a body -- unlike a merge, which has no body at all
         # and grows its slots from what is wired in.
-        self._exec_slots = chunk_usd.exec_input_slots_for_prim(prim)
+        self._exec_slots = chunk_stage.exec_input_slots_for_prim(prim)
         # Every exec input port, in slot order. _exec_in_port stays the primary (slot 0),
         # which is what splice-on-drop and wire-drop targeting mean by "this node's input";
         # this list is what port rebuilds have to restore, and losing it is how a second
@@ -708,10 +708,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # attr_path, so an unconnected inputs:chunkN never has to be authored — and then
             # serialized into every saved file forever — just to give a wire somewhere to
             # land. Ports read top-to-bottom as strongest-to-weakest.
-            slots = len(chunk_usd.exec_input_connections(prim)) + 1
+            slots = len(chunk_stage.exec_input_connections(prim)) + 1
             for i in range(slots):
                 port = ChunkPortItem(
-                    f"{prim.GetPath()}.{chunk_usd.exec_input_name(i)}", _PORT_EXEC, parent=self
+                    f"{prim.GetPath()}.{chunk_stage.exec_input_name(i)}", _PORT_EXEC, parent=self
                 )
                 port.setPos(0, _MERGE_PORT_TOP + i * _MERGE_PORT_SPACING)
                 self._ports.append(port)
@@ -738,7 +738,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._exec_in_ports = []
         for i in range(self._exec_slots):
             port = ChunkPortItem(
-                f"{prim.GetPath()}.{chunk_usd.exec_input_name(i)}", _PORT_EXEC, parent=self
+                f"{prim.GetPath()}.{chunk_stage.exec_input_name(i)}", _PORT_EXEC, parent=self
             )
             port.setPos(0, _NODE_HEADER_H * (i + 1) / (self._exec_slots + 1))
             self._ports.append(port)
@@ -767,7 +767,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         """
         if not self._is_merge or not self.prim.IsValid():
             return False
-        want = len(chunk_usd.exec_input_connections(self.prim)) + 1
+        want = len(chunk_stage.exec_input_connections(self.prim)) + 1
         have = sum(1 for p in self._ports if p.is_input)
         if want == have:
             return False
@@ -1976,7 +1976,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         # Derive the prim root for this context
         if context is not None and getattr(context, "prim_path", None):
-            chunks_root_path = chunk_usd._resolve_chunk_root(context)
+            chunks_root_path = chunk_stage._resolve_chunk_root(context)
         else:
             chunks_root_path = Sdf.Path(_CHUNKS_ROOT)
 
@@ -2011,7 +2011,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._build_gen = getattr(self, "_build_gen", 0) + 1
 
         chunks_by_path = {
-            f"{chunk_usd._resolve_chunk_root(c)}/{c.name}": c
+            f"{chunk_stage._resolve_chunk_root(c)}/{c.name}": c
             for c in scene_sender.get_chunks()
             # Exclude the context chunk itself: get_context() returns self for a CONTEXT chunk,
             # so a group would otherwise map to "{its own prim}/{its name}" — the path of a child
@@ -2189,7 +2189,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 # live on inputs:chunk<N>, and treating those as typed param edges would hide
                 # them behind the "Show param connections" toggle and then fail to find a
                 # port for them at all.
-                is_exec = chunk_usd.is_exec_input_name(attr_name)
+                is_exec = chunk_stage.is_exec_input_name(attr_name)
                 if not is_exec and not self._show_param_edges:
                     continue
                 dst_attr_path = f"{node.prim.GetPath()}.{attr_name}"
@@ -2624,7 +2624,7 @@ class _ProxyKeyRouter(QtCore.QObject):
                     stage = registry.scene.get_stage() if registry.initialized else None
                     # Never toggle to "no view" (slot 0) if nothing exists for this slot in
                     # this graph's own context -- that would block the whole graph.
-                    if stage and chunk_usd.find_view_chunk_for_slot(
+                    if stage and chunk_stage.find_view_chunk_for_slot(
                         slot, stage, registry.scene, view._graph_context()
                     ):
                         view._view_state.set_slot(slot)
@@ -3058,7 +3058,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if mod is None:
             return None, []
         chunks = mod.create() if mod.loaded else mod.load()
-        primary = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
+        primary = next((c for c in chunks if not chunk_stage.is_view_chunk(c)), None)
         return primary, list(chunks)
 
     def _snapshot_selection(self):
@@ -3213,7 +3213,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # fire exactly as they would for live, interactive typing.
                 blockable = [
                     c for c in chunks
-                    if not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c)
+                    if not chunk_stage.is_view_chunk(c) and not chunk_stage.is_group_chunk(c)
                 ]
                 for c in blockable:
                     c._executing = True
@@ -3234,9 +3234,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
                 pos = (scene_pos.x() + item.rel_pos[0], scene_pos.y() + item.rel_pos[1])
-                # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_usd in USD
-                # space (see chunk_usd._create_node_pos usage elsewhere in this file).
-                with chunk_usd.creating_at((pos[0], -pos[1])):
+                # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_stage in USD
+                # space (see chunk_stage._create_node_pos usage elsewhere in this file).
+                with chunk_stage.creating_at((pos[0], -pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
                     for c in blockable:
@@ -3256,7 +3256,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         for c in blockable:
                             c.execute()
                 new_chunks.append(primary)
-                new_path_by_index[index] = chunk_usd.get_chunk_prim_path(primary)
+                new_path_by_index[index] = chunk_stage.get_chunk_prim_path(primary)
                 if item.children:
                     self._materialize_children(
                         primary, item.children, item.child_edges, getattr(item, "lofts", []),
@@ -3330,7 +3330,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # group's behavior.
                 blockable = [
                     c for c in chunks
-                    if not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c)
+                    if not chunk_stage.is_view_chunk(c) and not chunk_stage.is_group_chunk(c)
                 ]
                 for c in blockable:
                     c._executing = True
@@ -3342,13 +3342,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # have nowhere to land until the rows it had are back.
                 _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
-                with chunk_usd.creating_at((item.rel_pos[0], -item.rel_pos[1])):
+                with chunk_stage.creating_at((item.rel_pos[0], -item.rel_pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
                     for c in blockable:
                         c._executing = False
                         c.set_blocked(True)
-                path = chunk_usd.get_chunk_prim_path(primary)
+                path = chunk_stage.get_chunk_prim_path(primary)
                 child_path_by_index[index] = path
                 child_chunk_by_index[index] = primary
                 if item.children:
@@ -3377,7 +3377,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             name = inner_attr.split(":", 1)[-1].replace(":", ".")
             param = child.get_param(name)
             if param is not None:
-                chunk_usd.loft_param_to_context(param, parent_chunk)
+                chunk_stage.loft_param_to_context(param, parent_chunk)
 
     def _group_selected(self) -> None:
         """Ctrl+G: put the selected chunks in a new chunkgroup.
@@ -3417,7 +3417,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         # Read the boundary while it still exists. Cut heals the chain closed as it
         # removes the nodes, so afterwards nothing records what used to attach where.
-        inside = {chunk_usd.get_chunk_prim_path(n.chunk) for n in selected}
+        inside = {chunk_stage.get_chunk_prim_path(n.chunk) for n in selected}
         feeds_selection, fed_by_selection = chunk_graph.exec_boundary(stage, inside)
 
         # Cut second, while the nodes are still here to be snapshotted.
@@ -3438,7 +3438,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         with scene_sender.creating_in(context):
             scene_sender.add_chunk(group)
 
-        group_prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(group)))
+        group_prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(group)))
         if group_prim and group_prim.IsValid():
             UsdUI.NodeGraphNodeAPI.Apply(group_prim).CreatePosAttr().Set(
                 Gf.Vec2f(float(centre_x), float(centre_y))
@@ -3468,20 +3468,20 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if not (edge.src_attr.endswith(_EXEC_OUTPUT.split(":")[-1])
                     and edge.dst_attr.endswith(_EXEC_INPUT.split(":")[-1])):
                 continue  # a typed param wire; those go through ports and are left alone
-            chunk_usd.connect_exec(
+            chunk_stage.connect_exec(
                 stage, scene_sender,
-                chunk_usd.get_chunk_prim_path(pasted[edge.src_index]),
-                chunk_usd.get_chunk_prim_path(pasted[edge.dst_index]),
+                chunk_stage.get_chunk_prim_path(pasted[edge.src_index]),
+                chunk_stage.get_chunk_prim_path(pasted[edge.dst_index]),
             )
 
         # Put the group where the selection was in the chain. These are fresh connections
         # onto a prim that did not exist a moment ago, not edits to existing ones, which is
         # why connect_exec is enough on its own here.
-        group_path = chunk_usd.get_chunk_prim_path(group)
+        group_path = chunk_stage.get_chunk_prim_path(group)
         for source in feeds_selection:
-            chunk_usd.connect_exec(stage, scene_sender, source, group_path)
+            chunk_stage.connect_exec(stage, scene_sender, source, group_path)
         for consumer in fed_by_selection:
-            chunk_usd.connect_exec(stage, scene_sender, group_path, consumer)
+            chunk_stage.connect_exec(stage, scene_sender, group_path, consumer)
 
         scene_sender.set_selected_chunks([group])
 
@@ -3552,10 +3552,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # unblocks it — no need to re-cook here.
         if self._context_has_view(registry.scene, context):
             return
-        tails = chunk_usd.exec_tails(stage, registry.scene, context)
+        tails = chunk_stage.exec_tails(stage, registry.scene, context)
         if not tails:
             return
-        self._create_view_node_for_prim(chunk_usd.get_chunk_prim_path(tails[0]))
+        self._create_view_node_for_prim(chunk_stage.get_chunk_prim_path(tails[0]))
 
     # ------------------------------------------------------------------
     # Zoom
@@ -3857,7 +3857,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # Scope the check to THIS graph's context — slots are per-context now, so a global
             # scan would accept a slot that only exists in another tab/group, then recook
             # (context-scoped) finds no view here and mutes everything.
-            if stage and chunk_usd.find_view_chunk_for_slot(
+            if stage and chunk_stage.find_view_chunk_for_slot(
                 slot, stage, registry.scene, self._graph_context()
             ):
                 self._view_state.set_slot(slot)
@@ -4034,16 +4034,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
         # Create the node at the wire-drop point instead of the far-away index default.
-        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y())), \
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y())), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
-                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+                if view_exists and not chunk_stage.is_view_chunk(c) and not chunk_stage.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
-        new_chunk = next((c for c in chunks if not chunk_usd.is_view_chunk(c)), None)
+        new_chunk = next((c for c in chunks if not chunk_stage.is_view_chunk(c)), None)
         if new_chunk is None:
             return
-        new_prim = chunk_usd.get_chunk_prim_path(new_chunk)
+        new_prim = chunk_stage.get_chunk_prim_path(new_chunk)
         QtCore.QTimer.singleShot(
             80, self,
             lambda: self._connect_ports_by_path(src_attr_path, src_is_input, new_prim),
@@ -4187,7 +4187,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # different Edit Target -- re-home them to honour the target at the new
             # position. This path authors inputs:chunk directly, so DEPENDENCY_ADDED never
             # fires and ChunkStageSync does not reconcile on its own.
-            chunk_usd.reconcile_edit_targets(graph_scene._stage, chunk_usd.ChunkStageSync()._scene)
+            chunk_stage.reconcile_edit_targets(graph_scene._stage, chunk_stage.ChunkStageSync()._scene)
         graph_scene._build_edges()
         # A new connection can only change the active view's cook set if its destination
         # is, or feeds, the view: wiring two nodes elsewhere cannot add anything reachable.
@@ -4220,7 +4220,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         # Detaching an exec wire can change which Edit Target applies to the node and its
         # downstream -- re-home them to the target that survives at the new position.
-        chunk_usd.reconcile_edit_targets(graph_scene._stage, chunk_usd.ChunkStageSync()._scene)
+        chunk_stage.reconcile_edit_targets(graph_scene._stage, chunk_stage.ChunkStageSync()._scene)
         graph_scene._build_edges()
         touched = {chunks[path] for path in change.touched_nodes if path in chunks}
         self._recook_active_view(touched or None)
@@ -4231,7 +4231,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
         if not (attr and attr.IsValid()) or not attr.GetConnections():
             return False
-        chunk_usd.ChunkStageSync().clear_attr_connections(attr)
+        chunk_stage.ChunkStageSync().clear_attr_connections(attr)
         if port.port_type != _PORT_EXEC:
             prim_path = str(Sdf.Path(port.attr_path).GetPrimPath())
             node = graph_scene._nodes.get(prim_path)
@@ -4259,7 +4259,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Heal the exec chain: rewire each successor's exec input to this node's
         # predecessor(s). The predecessor is read from slot 0 only — a successor has one slot
         # to inherit into, so it can be handed exactly one branch, and slot 0 is the primary
-        # one (same choice as chunk_usd.heal_exec_chain_on_delete).
+        # one (same choice as chunk_stage.heal_exec_chain_on_delete).
         exec_in = stage.GetAttributeAtPath(Sdf.Path(node_prim + ".inputs:chunk"))
         pred_conns = list(exec_in.GetConnections()) if (exec_in and exec_in.IsValid()) else []
         out_chunk_path = node_prim + ".outputs:chunk"
@@ -4268,7 +4268,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 continue
             # Successors are matched across every slot, though: a merge fed through slot 2
             # would otherwise keep pointing at the node being shaken loose.
-            for succ in chunk_usd.iter_exec_inputs(other.prim):
+            for succ in chunk_stage.iter_exec_inputs(other.prim):
                 if not any(str(c) == out_chunk_path for c in succ.GetConnections()):
                     continue
                 # Write to succ's own home layer, not the stage's ambient edit target (root,
@@ -4276,7 +4276,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # connection almost always lives on the session layer, stronger than root,
                 # so healing on root left the original opinion (pointing at the node being
                 # shaken loose) in charge and the heal silently had no visible effect. Same
-                # fix as chunk_usd.heal_exec_chain_on_delete.
+                # fix as chunk_stage.heal_exec_chain_on_delete.
                 home = chunk_utils.get_attr_home_layer(succ) or chunk_utils.get_bookkeeping_layer(
                     stage, getattr(other, "chunk", None)
                 )
@@ -4305,7 +4305,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     if self._clear_input_connection(port, graph_scene):
                         changed = True
         if changed:
-            chunk_usd.reconcile_edit_targets(stage, chunk_usd.ChunkStageSync()._scene)
+            chunk_stage.reconcile_edit_targets(stage, chunk_stage.ChunkStageSync()._scene)
             graph_scene._build_edges()
             self._recook_active_view()
 
@@ -4345,17 +4345,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         """A view created from the chunk menu is inert — it has no view:slot and isn't active,
         so it does nothing. Assign it a free slot (scoped to this graph) on its prim and make it
         the active view, so it behaves like a view from 'Set View' (just unwired until connected)."""
-        vp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(view_chunk)))
+        vp = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(view_chunk)))
         if not vp.IsValid():
             return
         if vp.GetAttribute("view:slot").Get() is not None:
             return  # already set up
         used = set()
         for c in chunk_registry.ChunkRegistry().scene.get_chunks():
-            if not (chunk_usd.is_view_chunk(c) and c is not view_chunk
-                    and chunk_usd.is_node_in_context(c, context)):
+            if not (chunk_stage.is_view_chunk(c) and c is not view_chunk
+                    and chunk_stage.is_node_in_context(c, context)):
                 continue
-            p = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(c)))
+            p = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(c)))
             s = p.GetAttribute("view:slot").Get() if p.IsValid() else None
             if s is not None:
                 used.add(s)
@@ -4414,7 +4414,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
             return
-        node = graph_scene._nodes.get(chunk_usd.get_chunk_prim_path(target_chunk))
+        node = graph_scene._nodes.get(chunk_stage.get_chunk_prim_path(target_chunk))
         if node is not None:
             node.set_pinned(pinned)
 
@@ -4452,17 +4452,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         context = self._graph_context()
         slot = None
         if context is not None:
-            gp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(context)))
+            gp = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(context)))
             if gp and gp.IsValid():
                 a = gp.GetAttribute("chunk:activeView")
                 if a and a.IsValid():
                     slot = a.Get()
-        if not slot or not chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context):
+        if not slot or not chunk_stage.find_view_chunk_for_slot(slot, stage, registry.scene, context):
             slots = []
             for c in registry.scene.get_chunks():
-                if not (chunk_usd.is_view_chunk(c) and chunk_usd.is_node_in_context(c, context)):
+                if not (chunk_stage.is_view_chunk(c) and chunk_stage.is_node_in_context(c, context)):
                     continue
-                p = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(c)))
+                p = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(c)))
                 s = p.GetAttribute("view:slot").Get() if p.IsValid() else None
                 if s:
                     slots.append(int(s))
@@ -4520,7 +4520,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         context = self._graph_context()
         slot = self._view_state.active_slot
         view_chunk = (
-            chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
+            chunk_stage.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
         )
         if changed_chunks is not None and not self._could_affect_view_cook(
             changed_chunks, stage, registry.scene, view_chunk
@@ -4532,10 +4532,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # slot is written — 0 just means "not restored yet" and must not clobber the saved
         # value before the deferred restore has read it.
         if context is not None and slot:
-            gp = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(context)))
+            gp = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(context)))
             if gp and gp.IsValid():
-                prev_w = chunk_usd.chunk_notice._usd_write_active
-                chunk_usd.chunk_notice._usd_write_active = True
+                prev_w = chunk_stage.chunk_notice._usd_write_active
+                chunk_stage.chunk_notice._usd_write_active = True
                 try:
                     # Bookkeeping like any other chunk-prim attr — update in place if it
                     # already has a spec, else resolve fresh via the group's current Edit
@@ -4551,13 +4551,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     with Usd.EditContext(stage, target):
                         gp.CreateAttribute("chunk:activeView", Sdf.ValueTypeNames.Int, custom=True).Set(int(slot))
                 finally:
-                    chunk_usd.chunk_notice._usd_write_active = prev_w
+                    chunk_stage.chunk_notice._usd_write_active = prev_w
         if view_chunk is not None:
             for c in registry.scene.get_chunks():
                 if c.has_state(ChunkFlags.State.SELECTED):
                     c.set_selected(False)
             view_chunk.set_selected(True)
-        chunk_usd.recook_focus(stage, registry.scene, context, view_chunk)
+        chunk_stage.recook_focus(stage, registry.scene, context, view_chunk)
 
     @staticmethod
     def _could_affect_view_cook(changed_chunks, stage, scene, view_chunk) -> bool:
@@ -4572,7 +4572,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         """
         if view_chunk is None:
             return False
-        cook_set = set(chunk_usd.view_cook_list(view_chunk, stage, scene))
+        cook_set = set(chunk_stage.view_cook_list(view_chunk, stage, scene))
         if any(c is view_chunk or c in cook_set for c in changed_chunks):
             return True
         # A chunk created INSIDE a reachable group is not itself reachable -- nothing in the
@@ -4583,10 +4583,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # layers appended weakest, below the Sublayer feeding the group, so the material they
         # authored lost to the binding the referenced asset already carried and the assigned
         # material never appeared. Prim-path nesting is the same test the ranking pass uses.
-        prefixes = tuple(str(chunk_usd.get_chunk_prim_path(c)) + "/" for c in cook_set)
+        prefixes = tuple(str(chunk_stage.get_chunk_prim_path(c)) + "/" for c in cook_set)
         if not prefixes:
             return False
-        return any(str(chunk_usd.get_chunk_prim_path(c)).startswith(prefixes) for c in changed_chunks)
+        return any(str(chunk_stage.get_chunk_prim_path(c)).startswith(prefixes) for c in changed_chunks)
 
     @staticmethod
     def mark_pending_delete_relevance(chunks) -> None:
@@ -4618,7 +4618,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             context = w._graph_context()
             slot = w._view_state.active_slot
             view_chunk = (
-                chunk_usd.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
+                chunk_stage.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
             )
             if not w._could_affect_view_cook(chunks, stage, registry.scene, view_chunk):
                 w._recook_skip_next_delete = True
@@ -4707,14 +4707,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
-                if view_exists and not chunk_usd.is_view_chunk(c) and not chunk_usd.is_group_chunk(c):
+                if view_exists and not chunk_stage.is_view_chunk(c) and not chunk_stage.is_group_chunk(c):
                     c.set_blocked(True)
                 scene.add_chunk(c)
 
-        menu_view = next((c for c in chunks if chunk_usd.is_view_chunk(c)), None)
+        menu_view = next((c for c in chunks if chunk_stage.is_view_chunk(c)), None)
         if menu_view is not None:
             self._activate_menu_view(menu_view, context, scene.get_stage())
             return
@@ -4853,13 +4853,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         consumed.add(str(conn.GetPrimPath()))
             tails = [
                 c for c in imported_chunks
-                if not chunk_usd.is_view_chunk(c) and chunk_usd.get_chunk_prim_path(c) not in consumed
+                if not chunk_stage.is_view_chunk(c) and chunk_stage.get_chunk_prim_path(c) not in consumed
             ]
             if not tails:
                 return
 
             def _x(c: "core.ChunkBase") -> float:
-                node = graph_scene._nodes.get(chunk_usd.get_chunk_prim_path(c))
+                node = graph_scene._nodes.get(chunk_stage.get_chunk_prim_path(c))
                 return node.pos().x() if node is not None else float("-inf")
 
             # Among several disconnected tails within the imported set itself (a branching
@@ -4868,7 +4868,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # downstream", the closest cheap proxy for "the last node" without a full re-walk
             # of the exec graph's depth.
             target = max(tails, key=_x)
-            self._create_view_node_for_prim(chunk_usd.get_chunk_prim_path(target))
+            self._create_view_node_for_prim(chunk_stage.get_chunk_prim_path(target))
         finally:
             self._suppress_default_view = False
 
@@ -4912,7 +4912,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)
@@ -4959,7 +4959,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)
@@ -4988,7 +4988,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_usd.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)
@@ -5104,7 +5104,7 @@ class QtGraphFrontend:
     def context(self) -> str:
         """The prim path of the graph being shown."""
         context = self.view._graph_context()
-        return chunk_usd.get_chunk_prim_path(context) if context is not None else ""
+        return chunk_stage.get_chunk_prim_path(context) if context is not None else ""
 
     @property
     def selected_nodes(self) -> set:
@@ -5168,7 +5168,7 @@ class QtGraphFrontend:
 
     def can_dive(self, path: str) -> bool:
         chunk = self._chunk(path)
-        return chunk is not None and chunk_usd.is_chunkgroup(chunk)
+        return chunk is not None and chunk_stage.is_chunkgroup(chunk)
 
     def dive_into(self, path: str) -> None:
         scene = self._scene()

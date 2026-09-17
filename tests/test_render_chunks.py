@@ -15,9 +15,9 @@ from pxr import Usd, UsdGeom, UsdRender
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import export_chunks
-from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import export_chunks
+from usd_chunks.chunk_stage import initialize as init_chunk_usd
 from usd_chunks.plugins.usdchunks_cli import cmd_run
 
 
@@ -55,12 +55,12 @@ def _make(scene, mod, module_name):
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
     c._module = mod
-    prev = chunk_usd._params_tab_create
-    chunk_usd._params_tab_create = True
+    prev = chunk_stage._params_tab_create
+    chunk_stage._params_tab_create = True
     try:
         scene.add_chunk(c)
     finally:
-        chunk_usd._params_tab_create = prev
+        chunk_stage._params_tab_create = prev
     return c
 
 
@@ -443,7 +443,7 @@ class TestDelegateSettings:
         chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
         scene2._stage = stage2
         init_chunk_usd(stage2, scene2)
-        from usd_chunks.plugins.chunk_usd import load_chunks
+        from usd_chunks.chunk_stage import load_chunks
         load_chunks(stage2, scene2)
 
         from usd_chunks.plugins.usdchunks_cli import _all_chunks

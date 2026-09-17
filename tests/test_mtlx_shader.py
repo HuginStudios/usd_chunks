@@ -11,7 +11,7 @@ from pxr import Sdf, Usd, UsdShade
 from usd_chunks import chunk, chunk_registry, shader_defs
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins.chunk_usd import ChunkStageSync, export_chunks
+from usd_chunks.chunk_stage import ChunkStageSync, export_chunks
 from usd_chunks.plugins.usdchunks_cli import _all_chunks
 
 pytestmark = pytest.mark.skipif(

@@ -25,9 +25,9 @@ from PySide6 import QtWidgets
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 
 class _Scene(SceneSender):
@@ -74,7 +74,7 @@ def _inputs(prim):
 
 def _block_everything(env):
     """What a context with no active view does: block and mute every chunk in it."""
-    chunk_usd.recook_for_view(env["stage"], env["scene"], None, None)
+    chunk_stage.recook_for_view(env["stage"], env["scene"], None, None)
     assert env["chunk"].is_blocked(), "precondition: the chunk is blocked"
 
 

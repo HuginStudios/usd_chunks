@@ -5,7 +5,7 @@ with generated classes and a registered type, and nothing here defines one. "Con
 would be true of the eight names below and false of the four functions that parse and
 derive them -- iter_exec_inputs walks a prim.
 
-Split out of `plugins/chunk_usd` so the vocabulary can be read without the machinery. That
+Split out of `plugins/chunk_stage` so the vocabulary can be read without the machinery. That
 module is five thousand lines and pulls in two hundred and fifty others -- reasonable for
 something that owns stage sync, layer routing and load/export, and far too much to ask of
 anything that only wants to know whether an attribute is an exec input.
@@ -18,7 +18,7 @@ The callers that need exactly this and nothing else:
 - a marketplace listing advertising a chunk's interface at publish time;
 - a non-Qt host (Blender, an ImGui panel) that wants port identity without the session.
 
-Nothing here touches a stage, a layer or a session. `chunk_usd` re-exports every name, so
+Nothing here touches a stage, a layer or a session. `chunk_stage` re-exports every name, so
 existing code is unaffected and there is one definition rather than two.
 """
 from __future__ import annotations

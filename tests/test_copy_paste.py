@@ -6,7 +6,7 @@ import pytest
 from pxr import Sdf, Usd
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry, chunk_widget_api
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
@@ -706,7 +706,7 @@ def test_copying_a_group_recursively_duplicates_its_children(qapp) -> None:
     # exclude it explicitly, same as production's _iter_group_children does.
     new_children = [
         c for c in scene.get_chunks()
-        if c.get_context() is new_group and c is not new_group and not nodegraph.chunk_usd.is_view_chunk(c)
+        if c.get_context() is new_group and c is not new_group and not nodegraph.chunk_stage.is_view_chunk(c)
     ]
     assert len(new_children) == 2
     assert child_a not in new_children and child_b not in new_children
@@ -763,7 +763,7 @@ def test_duplicating_a_nested_group_in_group_produces_independent_copies_at_both
 
     new_inners = [
         c for c in nodegraph._iter_group_children(new_outer, scene, stage)
-        if nodegraph.chunk_usd.is_group_chunk(c)
+        if nodegraph.chunk_stage.is_group_chunk(c)
     ]
     assert len(new_inners) == 1
     new_inner = new_inners[0]
@@ -777,7 +777,7 @@ def test_duplicating_a_nested_group_in_group_produces_independent_copies_at_both
 def test_typed_param_connection_is_preserved_on_paste(qapp) -> None:
     # Deliberately NOT the shared module-scoped `graph` fixture, and deliberately the LAST
     # test in this file: ChunkRegistry/ChunkLayerManager are process-wide singletons, and
-    # this test's own chunk_usd.initialize()/ChunkLayerManager.initialize() calls repoint
+    # this test's own chunk_stage.initialize()/ChunkLayerManager.initialize() calls repoint
     # them at THIS test's isolated stage. conftest.py's autouse reset_chunk_layer_manager
     # fixture then resets ChunkLayerManager to uninitialized once this test function
     # returns -- which silently breaks prim/layer bookkeeping for any LATER test still using

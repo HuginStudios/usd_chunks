@@ -18,7 +18,7 @@ from pxr import Usd
 
 from usd_chunks import chunk, chunk_core, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins.chunk_usd import ChunkStageSync
+from usd_chunks.chunk_stage import ChunkStageSync
 
 _LOGGER = chunk_core.logger.name
 

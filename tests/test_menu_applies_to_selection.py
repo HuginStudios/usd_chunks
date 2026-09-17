@@ -14,9 +14,9 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):
@@ -79,7 +79,7 @@ def _select(qapp, scene, *chunks):
 
 def _open_menu_now(gv, chunk, qapp):
     """Right-click without draining first, so nothing queued can steal the selection."""
-    node = gv.scene()._nodes[chunk_usd.get_chunk_prim_path(chunk)]
+    node = gv.scene()._nodes[chunk_stage.get_chunk_prim_path(chunk)]
     gv._show_chunk_menu(node, QtCore.QPoint(0, 0))
     qapp.processEvents()
 
@@ -87,7 +87,7 @@ def _open_menu_now(gv, chunk, qapp):
 def _open_menu(gv, chunk, qapp):
     """Right-click `chunk`'s node, the way the graph does."""
     qapp.processEvents()
-    node = gv.scene()._nodes[chunk_usd.get_chunk_prim_path(chunk)]
+    node = gv.scene()._nodes[chunk_stage.get_chunk_prim_path(chunk)]
     gv._show_chunk_menu(node, QtCore.QPoint(0, 0))
     qapp.processEvents()
 
@@ -139,8 +139,8 @@ def test_pin_applies_to_the_whole_selection(graph, monkeypatch):
     monkeypatch.setattr(type(gv._view_state), "_exec_menu", _pick("Pin to Params"))
     _open_menu_now(gv, a, qapp)
 
-    assert chunk_usd.is_chunk_pinned(a)
-    assert chunk_usd.is_chunk_pinned(b), "the unclicked half of the selection was left behind"
+    assert chunk_stage.is_chunk_pinned(a)
+    assert chunk_stage.is_chunk_pinned(b), "the unclicked half of the selection was left behind"
 
 
 def test_remove_deletes_the_whole_selection(graph, monkeypatch):

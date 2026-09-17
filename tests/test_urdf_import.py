@@ -30,7 +30,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 urdf_import = importlib.import_module("urdf_import")
@@ -85,7 +85,7 @@ def scene():
     sender = _Scene(stage)
     chunk_registry.ChunkRegistry().initialize(sender, "pytest")
     ChunkLayerManager().initialize(stage)
-    chunk_usd.ChunkStageSync().initialize(stage, sender)
+    chunk_stage.ChunkStageSync().initialize(stage, sender)
     return stage, sender
 
 

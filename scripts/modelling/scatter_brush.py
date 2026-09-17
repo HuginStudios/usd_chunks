@@ -793,7 +793,7 @@ def _fill_paint(owner, notice, sender):
 #: chunk, its stroke count and everything downstream of it still there.
 #:
 #: A saved scene is chunk prims and nothing else, on the premise that reopening re-runs every
-#: chunk and so regenerates whatever it is responsible for (see chunk_usd.save_scene). Every
+#: chunk and so regenerates whatever it is responsible for (see chunk_stage.save_scene). Every
 #: other chunk holds to that: its output is a function of its params. This one does not and
 #: says so in its own docstring -- the paint *is* the output, it lives in a per-chunk layer,
 #: and that layer is not what gets written. Two documented designs, each correct alone.

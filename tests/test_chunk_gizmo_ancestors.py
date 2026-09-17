@@ -19,7 +19,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_gizmo, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 transform_mod = importlib.import_module("scripts.transforms.transform")
 
@@ -69,13 +69,13 @@ def hierarchy(monkeypatch):
     sender = _Scene(stage)
     registry.initialize(sender, "pytest")
     chunk_registry.ChunkLayerManager().initialize(stage)
-    chunk_usd.ChunkStageSync().initialize(stage, sender)
+    chunk_stage.ChunkStageSync().initialize(stage, sender)
 
     module = _StubModule()
     monkeypatch.setitem(registry.registered_modules, "transform", module)
-    monkeypatch.setattr(chunk_usd, "_params_tab_create", False, raising=False)
-    monkeypatch.setattr(chunk_usd, "_pin_new_chunks", None, raising=False)
-    monkeypatch.setattr(chunk_usd, "_create_node_pos", None, raising=False)
+    monkeypatch.setattr(chunk_stage, "_params_tab_create", False, raising=False)
+    monkeypatch.setattr(chunk_stage, "_pin_new_chunks", None, raising=False)
+    monkeypatch.setattr(chunk_stage, "_create_node_pos", None, raising=False)
     return stage, module
 
 

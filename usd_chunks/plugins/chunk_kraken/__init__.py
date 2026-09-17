@@ -7,7 +7,8 @@ from kraken.plugin import KrakenPluginContainer
 from kraken.scene import SceneManager, PrimSelectionNotice, StageLoadedNotice
 
 from usd_chunks import chunk_registry, chunk_core
-from usd_chunks.plugins import chunk_qt, chunk_usd
+from usd_chunks.plugins import chunk_qt
+from usd_chunks import chunk_stage
 
 
 class KrakenScene(chunk_core.SceneSender):
@@ -24,8 +25,8 @@ class KrakenScene(chunk_core.SceneSender):
         super().__init__()
 
     def stage_loaded(self, notice, sender=None):
-        chunk_usd.ChunkLayerManager().clear_all_layers()
-        chunk_usd.ChunkLayerManager().stage = notice.stage
+        chunk_stage.ChunkLayerManager().clear_all_layers()
+        chunk_stage.ChunkLayerManager().stage = notice.stage
         reg = chunk_registry.ChunkRegistry()
         reg.reload_modules()
 
@@ -55,7 +56,7 @@ def launch_chunks(scene: SceneManager) -> None:
     if not scene.stage:
         raise AttributeError("Stage not initialized")
 
-    chunk_usd.initialize(scene.stage, sceneSender)
+    chunk_stage.initialize(scene.stage, sceneSender)
     chunk_registry.ChunkRegistry().initialize(sceneSender, "chunk_kraken")
 
 
@@ -69,7 +70,7 @@ class ChunksPluginContainer(KrakenPluginContainer):
         dial.show()
 
     def saveLayers(self):
-        reg = chunk_usd.ChunkLayerManager()
+        reg = chunk_stage.ChunkLayerManager()
         for i in reg.chunk_layers.keys():
             layer = reg.get_layer(i)
             if not layer:

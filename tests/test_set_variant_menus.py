@@ -10,7 +10,7 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 
 class _Scene(SceneSender):
@@ -128,7 +128,7 @@ def test_a_saved_selection_survives_a_reload_ahead_of_its_variant_set(qapp, tmp_
     value before the Add Variants chunk upstream has cooked the set it names. An empty menu
     accepts any value, the refresh is held off while loading, and the menus fill in once
     the stage settles -- with the saved value still selected."""
-    from usd_chunks.plugins.chunk_usd import export_chunks
+    from usd_chunks.chunk_stage import export_chunks
 
     stage = Usd.Stage.CreateInMemory()
     sc = _Scene(stage)

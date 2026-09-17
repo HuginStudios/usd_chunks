@@ -1,7 +1,7 @@
 from pxr import Sdf
 
 from usd_chunks import chunk, chunk_utils
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 
 _INSERT_MODES = ["Append", "Prepend", "Index", "After Layer"]
@@ -118,7 +118,7 @@ def _view_ranked_index(node, stage, paths: "list") -> "int | None":
     container = node.get_context()
     ranking_unit = container if container is not None else node
     outer = ranking_unit.get_context()
-    view_chunk = chunk_usd.find_group_active_view(outer, stage, scene) if outer is not None else None
+    view_chunk = chunk_stage.find_group_active_view(outer, stage, scene) if outer is not None else None
     if view_chunk is None:
         # No enclosing group context to read a chunk:activeView slot from -- e.g. several
         # sibling ChunkGroups chained directly under a tab, not nested inside another
@@ -129,11 +129,11 @@ def _view_ranked_index(node, stage, paths: "list") -> "int | None":
         # output actually reaches downstream, and rank directly against that view's cook
         # list instead -- same "closer to the view wins" signal, just found a different
         # way.
-        downstream = chunk_usd.exec_downstream(ranking_unit, stage, scene)
-        view_chunk = next((c for c in downstream if chunk_usd.is_view_chunk(c)), None)
+        downstream = chunk_stage.exec_downstream(ranking_unit, stage, scene)
+        view_chunk = next((c for c in downstream if chunk_stage.is_view_chunk(c)), None)
     if view_chunk is None:
         return None
-    cook_list = chunk_usd.view_cook_list(view_chunk, stage, scene)
+    cook_list = chunk_stage.view_cook_list(view_chunk, stage, scene)
     if ranking_unit not in cook_list:
         return None
     my_rank = cook_list.index(ranking_unit)
