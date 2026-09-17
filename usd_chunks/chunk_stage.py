@@ -311,12 +311,13 @@ def push_chunk_values(stage: "Usd.Stage", chunk: "core.ChunkBase") -> None:
 
 
 def refresh_stage_expression_params(stage: "Usd.Stage", scene: "core.SceneSender") -> int:
-    """Re-push every ${VAR}-holding param's resolved value to the attrs it drives.
+    """Re-announce every ${VAR}-holding param, so what it resolves to now takes effect.
 
-    A param resolves its stage expression on read, but the USD attrs it drives (a Light's
-    inputs:intensity) were written once, when the param's text last changed. Changing the
-    variable changes no param text, so without this a shared light keeps the value of the
-    shot it was authored in. Called by whatever changes the variables.
+    A param resolves its stage expression on read, but nothing fires when a variable
+    changes -- the param's own text did not change. So the USD attrs it drives (a Light's
+    inputs:intensity) keep the value of the shot they were authored in, and every widget
+    showing one keeps displaying it. Re-announcing the value is what both of those listen
+    to. Called by whatever changes the variables.
 
     Returns:
         int: how many params were refreshed
@@ -328,16 +329,7 @@ def refresh_stage_expression_params(stage: "Usd.Stage", scene: "core.SceneSender
         for _, param in _iter_chunk_params(chunk):
             if not chunk_utils.has_stage_expression(getattr(param, "raw_value", None)):
                 continue
-            _push_driven_values(stage, param)
-            # The chunk-prim storage attr of a non-String param keeps the text in
-            # customData and a resolved value beside it -- keep that value current too.
-            storage = stage.GetAttributeAtPath(Sdf.Path(param._param_attr_path)) if param._param_attr_path else None
-            value = param.value
-            if (storage and storage.GetTypeName() != Sdf.ValueTypeNames.String
-                    and value is not None and not isinstance(value, str) and storage.Get(0) != value):
-                if home := chunk_utils.get_attr_home_layer(storage):
-                    with Usd.EditContext(stage, home):
-                        storage.Set(value)
+            param.refresh_expression_value()
             refreshed += 1
     return refreshed
 

@@ -111,6 +111,10 @@ QRangeSlider {
     border: 1px solid #cab46a;
     border-radius: 1px;
 }
+QLabel[chunkExpression="true"] {
+    color: #7fb2e5;
+    font-style: italic;
+}
 """
 
 # Marks a widget that carries CHUNK_STYLESHEET, so nothing below it applies it again.
@@ -1169,6 +1173,9 @@ class LabeledWidget(QtWidgets.QWidget):
         self._name_hint = ""
         self._label_hovered = False
         self.label.installEventFilter(self)
+        # A param built holding an expression is marked from the start, not only once it
+        # next changes.
+        self._sync_expression_mark()
 
         self.setMouseTracking(True)
 
@@ -1251,12 +1258,36 @@ class LabeledWidget(QtWidgets.QWidget):
         name = notice.data.name
         if name in ["label", "name"]:
             self.update_label(notice.data.value)
-        elif name == "value" and self.should_show_tooltip():
-            self.show_tooltip()
+        elif name == "value":
+            self._sync_expression_mark()
+            if self.should_show_tooltip():
+                self.show_tooltip()
 
     def update_label(self, text):
         self.label.setHidden(not bool(text))
         self.label.setText(text)
+        self._sync_expression_mark()
+
+    def _sync_expression_mark(self):
+        """Show on the label that this param's value comes from an expression.
+
+        Otherwise a field driven by `@Node.param@` or `${SHOT}` is indistinguishable from
+        one somebody typed a number into: the widget shows the resolved value, because that
+        is what the value IS, and the text behind it is nowhere on screen.
+        """
+        if not isinstance(self.widget, ChunkParamWidgetBase):
+            return
+        try:
+            raw = self.widget.param.raw_value
+        except ReferenceError:
+            return
+        expr = chunk_utils.is_expression_text(raw)
+        if self.label.property("chunkExpression") != expr:
+            self.label.setProperty("chunkExpression", expr)
+            # A property the stylesheet selects on only takes effect after a re-polish.
+            self.label.style().unpolish(self.label)
+            self.label.style().polish(self.label)
+        self.label.setToolTip(str(raw) if expr else "")
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         if self.should_show_tooltip():
@@ -1297,7 +1328,10 @@ class LabeledWidget(QtWidgets.QWidget):
             or ChunkFlags.ParamType.BOOL in t
         )
         raw = param.raw_value
-        has_expr = is_expr_capable and isinstance(raw, str) and chunk_utils.has_expression(raw)
+        # is_expression_text, not has_expression: a ${VAR} stage expression is just as much
+        # an expression to clear or edit, and the menu used to offer "Set Expression..." on
+        # a field that already had one.
+        has_expr = is_expr_capable and chunk_utils.is_expression_text(raw)
 
         menu = QtWidgets.QMenu()
         value_rect = QtCore.QRect(self.widget.pos(), self.widget.size())

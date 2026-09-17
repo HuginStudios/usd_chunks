@@ -2356,6 +2356,18 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
                 self.name, self.__dict__.get("value"),
             )
             return
+        self.refresh_expression_value()
+
+    def refresh_expression_value(self) -> None:
+        """Re-announce this param's value because what its expression reads has changed.
+
+        The raw text is untouched -- only what it resolves to moved -- so nothing would
+        otherwise fire: widgets keep showing the old number and the USD attrs this param
+        drives keep the old value. Used by an expression ref changing upstream and by a
+        Stage Expression changing a variable.
+        """
+        if self._resolving_ref:
+            return
         self._resolving_ref = True
         try:
             attr_sender = self.get_attribute_sender("value")
