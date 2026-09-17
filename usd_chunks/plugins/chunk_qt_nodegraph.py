@@ -1564,6 +1564,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if not isinstance(scene, ChunkGraphScene) or not scene.views():
             return
         view = scene.views()[0]
+        # A node already wired on both exec sides is just being moved: it is in the chain
+        # somewhere else, and splicing it here would silently re-point wires the user
+        # authored rather than fill a gap. Dragging one past a wire is ordinary tidying.
+        wired_in = wired_out = False
+        for edge in scene._edges:
+            if edge.dst_port in self._ports and edge.dst_port.port_type == _PORT_EXEC:
+                wired_in = True
+            if edge.src_port in self._ports and edge.src_port.port_type == _PORT_EXEC:
+                wired_out = True
+        if wired_in and wired_out:
+            return
         my_rect = self.sceneBoundingRect()
         for edge in list(scene._edges):
             # Skip edges already attached to this node.
