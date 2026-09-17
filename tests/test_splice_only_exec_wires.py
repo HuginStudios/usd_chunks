@@ -118,3 +118,31 @@ def test_an_exec_wire_still_splices(graph):
     assert c_in == [f"{get_chunk_prim_path(a)}.outputs:chunk"], (
         f"and fed by A itself, got {c_in}"
     )
+
+def test_a_node_already_in_the_chain_is_not_spliced(graph):
+    """Live-reported: dragging a node that is already wired in and out across another wire
+    grabbed that wire too. A node with both exec sides connected is being moved, not
+    inserted -- splicing it would rewrite connections the user made."""
+    qapp, scene, stage, gv, (a, b, c), (a_node, b_node, c_node) = _three_transforms(graph)
+    mod = chunk_registry.ChunkRegistry().get_chunk_module("transform")
+    d, e = _mk(mod, scene), _mk(mod, scene)
+    qapp.processEvents()
+    # The wire being dragged across: A -> B. The dragged node sits in its own chain D -> C -> E.
+    connect_exec(stage, scene, get_chunk_prim_path(a), get_chunk_prim_path(b))
+    connect_exec(stage, scene, get_chunk_prim_path(d), get_chunk_prim_path(c))
+    connect_exec(stage, scene, get_chunk_prim_path(c), get_chunk_prim_path(e))
+    gv.scene()._build_edges()
+    qapp.processEvents()
+    a_out = a_node.get_port(f"{a_node.prim.GetPath()}.outputs:chunk")
+    b_in = b_node.get_port(f"{b_node.prim.GetPath()}.inputs:chunk")
+    before = [str(x) for x in stage.GetAttributeAtPath(b_in.attr_path).GetConnections()]
+
+    _drop_onto(qapp, c_node, a_out, b_in)
+
+    after = [str(x) for x in stage.GetAttributeAtPath(b_in.attr_path).GetConnections()]
+    assert after == before, f"A -> B must be left alone: {before} -> {after}"
+    c_prim = stage.GetPrimAtPath(get_chunk_prim_path(c))
+    c_in = [str(x) for x in c_prim.GetAttribute("inputs:chunk").GetConnections()]
+    assert c_in == [f"{get_chunk_prim_path(d)}.outputs:chunk"], (
+        f"and the dragged node keeps its own input, got {c_in}"
+    )
