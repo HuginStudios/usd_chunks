@@ -3500,14 +3500,13 @@ def recook_for_view(
     seen_idents: set = set()
     # scene.get_chunks() is a DFS via stack.pop() (LIFO) over insertion order -- roughly
     # reverse creation order, with no relation to exec/view proximity. That's harmless for
-    # blocking/muting a chunk on its own, but a group recurses into recook_for_view here,
-    # which runs that group's OWN cook_list (including any Create Layer-style chunk that
-    # unconditionally reinserts itself at the front of a SHARED parent layer's subLayerPaths
-    # on every execute -- last to run wins strongest). Reversed order there meant the group
-    # FURTHEST from the view executed last and won, exactly backwards from "closer to view
-    # wins". Visit cook_list's own members in ITS order (roots-first, so the group closest
-    # to the view is recursed into last and so executes last) -- anything outside the cook
-    # set isn't competing for layer strength at all, so its relative order doesn't matter.
+    # blocking/muting a chunk on its own. Groups outside the cook set are muted from here
+    # (their own recook_for_view with no view); groups inside it are cooked later, in the
+    # execute loop, in cook_list order -- roots-first, so the group closest to the view runs
+    # last and a Create Layer-style chunk inside it, which reinserts itself at the front of a
+    # SHARED parent layer's subLayerPaths on every execute, ends up strongest. Visited in
+    # cook_list order here too; anything outside the cook set isn't competing for layer
+    # strength at all, so its relative order doesn't matter.
     cook_rank = {id(c): i for i, c in enumerate(cook_list)}
     deferred_groups: set = set()
     for c in sorted(scene.get_chunks(), key=lambda c: cook_rank.get(id(c), -1)):

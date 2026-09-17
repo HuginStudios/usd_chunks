@@ -350,15 +350,6 @@ def _author_raw_connection(
 
 
 
-# ---------------------------------------------------------------------------
-# Drag-and-drop file import
-#
-# Dropping a saved-chunkgroup .usda (chunk_qt.save_chunkgroup_dialog's output) reuses the
-# copy/paste clipboard machinery above via _snapshot_layer_chunks below, which builds the same
-# _ClipboardNode/_ClipboardEdge shape Ctrl+C does -- just read from a dropped file's own
-# throwaway Usd.Stage instead of the live scene. Dropping a plain scene file instead spawns a
-# Sublayer chunk node with the path pre-filled (see ChunkGraphView._import_as_sublayer).
-
 def _paste_guard_sets(chunks) -> "tuple[list, list]":
     """(guarded, self_building) for chunks about to be pasted.
 
@@ -378,6 +369,15 @@ def _paste_guard_sets(chunks) -> "tuple[list, list]":
                      if chunk_stage.is_group_chunk(c) and not chunk_stage.is_chunkgroup(c)]
     return guarded, self_building
 
+
+# ---------------------------------------------------------------------------
+# Drag-and-drop file import
+#
+# Dropping a saved-chunkgroup .usda (chunk_qt.save_chunkgroup_dialog's output) reuses the
+# copy/paste clipboard machinery above via _snapshot_layer_chunks below, which builds the same
+# _ClipboardNode/_ClipboardEdge shape Ctrl+C does -- just read from a dropped file's own
+# throwaway Usd.Stage instead of the live scene. Dropping a plain scene file instead spawns a
+# Sublayer chunk node with the path pre-filled (see ChunkGraphView._import_as_sublayer).
 
 #: A dropped file with this extension becomes a script_runner node running it.
 _SCRIPT_EXT = ".py"
