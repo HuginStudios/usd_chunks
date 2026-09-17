@@ -14,7 +14,7 @@ import pytest
 from pxr import Sdf, Usd
 from PySide6 import QtCore, QtGui
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
@@ -277,3 +277,140 @@ def test_ctrl_g_reaches_it(graph):
     qapp.processEvents()
 
     assert _groups(scene), "Ctrl+G should have made a group"
+
+
+# ---------------------------------------------------------------------------
+# Reported on the kitchen layout: grouping Materials and the four AMD MaterialX
+# Library nodes (the chain feeding a Merge's second slot) unplugged the Appliances
+# group from the Merge's first slot, and the walls lost their materials.
+# ---------------------------------------------------------------------------
+
+
+def _slot_sources(stage, chunk):
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    return {
+        attr.GetName(): [str(c.GetPrimPath()) for c in attr.GetConnections()]
+        for attr in chunk_stage.iter_exec_inputs(prim)
+    }
+
+
+def test_grouping_a_merge_branch_keeps_the_other_branch(graph):
+    """A -> Merge slot 0, B -> C -> Merge slot 1; group B and C.
+
+    The group went into slot 0 -- every consumer's plain inputs:chunk -- replacing A.
+    """
+    qapp, reg, scene, d, stage = graph
+    a, b, c = _mk(reg, scene, "prim"), _mk(reg, scene), _mk(reg, scene)
+    merge = _mk(reg, scene, "merge")
+    gv = _view(d, qapp)
+    _settle(qapp)
+    pa, pb, pc, pm = (get_chunk_prim_path(x) for x in (a, b, c, merge))
+    connect_exec(stage, reg.scene, pb, pc)
+    connect_exec(stage, reg.scene, pa, pm)
+    # Slot 1 by hand, on the layer the merge's bookkeeping lives in.
+    slot1 = stage.GetPrimAtPath(pm).CreateAttribute("inputs:chunk1", Sdf.ValueTypeNames.Token, custom=False)
+    with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, merge)):
+        slot1.SetConnections([Sdf.Path(f"{pc}.{_EXEC_OUTPUT}")])
+    _settle(qapp)
+    scene.set_selected_chunks([b, c])
+
+    gv._group_selected()
+    _settle(qapp)
+
+    (group,) = _groups(scene)
+    slots = _slot_sources(stage, merge)
+    assert slots.get("inputs:chunk") == [pa], f"slot 0 must still be A: {slots}"
+    assert slots.get("inputs:chunk1") == [get_chunk_prim_path(group)], (
+        f"the group takes the slot the selection fed: {slots}"
+    )
+
+
+def test_grouped_chunks_keep_their_names(graph):
+    qapp, reg, scene, d, stage = graph
+    a = _mk(reg, scene)
+    a.name = "Materials"
+    gv = _view(d, qapp)
+    _settle(qapp)
+    scene.set_selected_chunks([a])
+
+    gv._group_selected()
+    _settle(qapp)
+
+    (group,) = _groups(scene)
+    names = [get_chunk_prim_path(c).rsplit("/", 1)[-1] for c in _contents_of(scene, group)]
+    assert names == ["Materials"], names
+
+
+_PROBE = "_self_building_probe"
+
+_SELF_BUILDING_SRC = """
+import sys
+from usd_chunks import chunk, chunk_registry
+from usd_chunks.chunk_flags import ChunkFlags
+
+
+def execute(node):
+    probe = sys.modules.get(%r)
+    if not node.get_param("level").value:
+        return
+    scene = chunk_registry.ChunkRegistry().scene
+    if probe is not None and not any(c is node for c in scene.get_chunks()):
+        probe.outside += 1
+    if not any(isinstance(p, chunk.Chunk) for p in node.get_my_params()):
+        mod = chunk_registry.ChunkRegistry().get_chunk_module("prim")
+        node.add_param((mod.create() if mod.loaded else mod.load())[0])
+
+
+def main():
+    c = chunk.Chunk("SelfBuilder")
+    c.set_flag(ChunkFlags.GroupFlags.CONTEXT)
+    c.add_param(chunk.Slider("level", default_value=0.0))
+    return c
+
+
+def config():
+    return chunk.DefaulConfig(category="Test")
+""" % _PROBE
+
+
+@pytest.fixture
+def self_building(graph, tmp_path, monkeypatch):
+    """A chunk that makes its own child when it cooks, like AMD MaterialX Library."""
+    import sys
+    import types
+
+    qapp, reg, scene, d, stage = graph
+    src = tmp_path / "self_building_chunk.py"
+    src.write_text(_SELF_BUILDING_SRC)
+    (mod,) = reg._discover_module(src, "self_building_chunk")
+    monkeypatch.setitem(reg.registered_modules, "self_building_chunk", mod)
+    probe = types.SimpleNamespace(outside=0)
+    monkeypatch.setitem(sys.modules, _PROBE, probe)
+    return reg.get_chunk_module("self_building_chunk"), probe
+
+
+def test_a_self_building_chunk_is_not_cooked_outside_the_scene_or_doubled(graph, self_building):
+    """Paste set its values before adding it, and chunks that own children were left out
+    of the guard against cooking then. It built its child from outside the scene, and
+    again once added: the AMD nodes came out with every child twice."""
+    qapp, reg, scene, d, stage = graph
+    mod, probe = self_building
+    built = (mod.create() if mod.loaded else mod.load())[0]
+    scene.add_chunk(built)
+    built.get_param("level").value = 1.0
+    gv = _view(d, qapp)
+    _settle(qapp)
+    probe.outside = 0
+    scene.set_selected_chunks([built])
+
+    gv._group_selected()
+    _settle(qapp)
+
+    assert probe.outside == 0, "the pasted copy cooked before it was in the scene"
+    (group,) = _groups(scene)
+    moved = [c for c in _contents_of(scene, group)
+             if c.get_config() and c.get_config().module == "self_building_chunk"]
+    assert len(moved) == 1
+    kids = [p for p in moved[0].get_my_params() if isinstance(p, type(built))]
+    assert len(kids) == 1, f"expected one child, got {[k.name for k in kids]}"
+

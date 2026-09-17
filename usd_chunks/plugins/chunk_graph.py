@@ -680,7 +680,7 @@ def iter_chunk_param_paths(chunk: core.ChunkCommon, prefix: str = ""):
 
 class ClipboardNode:
     __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges", "list_sizes",
-                 "lofts")
+                 "lofts", "name")
 
     def __init__(
         self, module_name: str, values: list, rel_pos: tuple[float, float],
@@ -688,8 +688,12 @@ class ClipboardNode:
         child_edges: "list[ClipboardEdge] | None" = None,
         list_sizes: "list[tuple[str, int]] | None" = None,
         lofts: "list[tuple[int, str]] | None" = None,
+        name: str = "",
     ):
         self.module_name = module_name
+        # The name the chunk had. A paste keeps it (made unique by add_chunk if it is still
+        # taken), so moving nodes into a group does not turn "Materials" back into "Python".
+        self.name = name
         self.values = values
         # How many rows each of the chunk's list groups held. Values alone are not enough:
         # a freshly created chunk starts with zero rows, so there is nothing for the
@@ -800,9 +804,13 @@ def snapshot_chunk_node(
         return None
     clip_node = ClipboardNode(
         module_name, snapshot_param_values(chunk), rel_pos,
-        list_sizes=snapshot_list_sizes(chunk),
+        list_sizes=snapshot_list_sizes(chunk), name=chunk.name,
     )
-    if not chunk_stage.is_group_chunk(chunk):
+    # Children only for a chunkgroup. A chunk that builds its own children (AMD MaterialX
+    # Library's Reference and BindMaterial) makes them again when the copy cooks, so
+    # copying them as well pasted every one twice -- and the chunk, finding its own by
+    # name, drove one set while the other sat there fighting it.
+    if not chunk_stage.is_chunkgroup(chunk):
         return clip_node
 
     children = iter_group_children(chunk, scene_sender, stage)
@@ -878,6 +886,17 @@ def apply_list_sizes(chunk: core.ChunkCommon, sizes: "list[tuple[str, int]]") ->
                 # A list whose size cannot be set (driven by something else, or a module
                 # that has changed shape since the copy) should not abort the paste.
                 continue
+
+
+def apply_name(chunk: core.ChunkCommon, item: "ClipboardNode") -> None:
+    """Give a pasted chunk the name it was copied with, before it is added to a scene.
+
+    Before, not after: add_chunk is what makes a taken name unique, and renaming an added
+    chunk is a rename of its prim.
+    """
+    name = getattr(item, "name", "")
+    if name and chunk.name != name:
+        chunk.name = name
 
 
 def snapshot_param_values(chunk: core.ChunkCommon) -> list:
@@ -1069,8 +1088,12 @@ GRAPH_FRONTEND_METHODS = (
 # ---------------------------------------------------------------------------
 
 
-def exec_boundary(stage: Usd.Stage, inside: "set[str]") -> "tuple[list[str], list[str]]":
+def exec_boundary(stage: Usd.Stage, inside: "set[str]") -> "tuple[list[str], list[tuple[str, str]]]":
     """(feeds, consumers) -- the exec wires crossing into and out of `inside`.
+
+    A feed is a source prim path. A consumer is (prim path, exec input name): the slot
+    matters, because a merge fed by the selection through inputs:chunk1 must get its
+    replacement in inputs:chunk1, not in inputs:chunk where another branch already is.
 
     Read this BEFORE removing anything. Deleting a selection heals the exec chain closed
     as it goes, so afterwards nothing records what used to attach where, and a group put
@@ -1080,7 +1103,7 @@ def exec_boundary(stage: Usd.Stage, inside: "set[str]") -> "tuple[list[str], lis
     deterministic rather than set-ordered.
     """
     feeds: list[str] = []
-    consumers: list[str] = []
+    consumers: list[tuple[str, str]] = []
     for prim in stage.TraverseAll():
         if prim.GetTypeName() != CHUNK_TYPENAME:
             continue
@@ -1090,9 +1113,24 @@ def exec_boundary(stage: Usd.Stage, inside: "set[str]") -> "tuple[list[str], lis
                 source = str(conn.GetPrimPath())
                 if path in inside and source not in inside and source not in feeds:
                     feeds.append(source)
-                elif source in inside and path not in inside and path not in consumers:
-                    consumers.append(path)
+                elif source in inside and path not in inside:
+                    slot = (path, attr.GetName())
+                    if slot not in consumers:
+                        consumers.append(slot)
     return feeds, consumers
+
+
+def attach_group(stage: Usd.Stage, scene, group_path: str, feeds: "list[str]",
+                 consumers: "list[tuple[str, str]]") -> None:
+    """Wire a new group in where the selection it replaced used to be.
+
+    Every feed goes onto the group's one exec input, stacked rather than each replacing the
+    last. Every consumer gets the group in the same slot the selection fed.
+    """
+    for source in feeds:
+        chunk_stage.connect_exec(stage, scene, source, group_path, append=True)
+    for consumer, input_name in consumers:
+        chunk_stage.connect_exec(stage, scene, group_path, consumer, input_name=input_name)
 
 
 def snapshot_selection(chunks: dict, prims: dict, positions: dict, scene, stage,
@@ -1265,6 +1303,7 @@ def materialize(scene, nodes, to_usd) -> dict:
         if not chunks:
             continue
         primary = chunks[0]
+        apply_name(primary, item)
         # Rows before values: a list group starts empty on a fresh chunk, so its values
         # have nowhere to land until the rows it had are back.
         apply_list_sizes(primary, getattr(item, "list_sizes", []))
@@ -1519,15 +1558,13 @@ def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
         src, dst = pasted.get(edge.src_index), pasted.get(edge.dst_index)
         if src is None or dst is None:
             continue
-        if not (edge.src_attr.endswith("chunk") and edge.dst_attr.endswith("chunk")):
+        if not (edge.src_attr == EXEC_OUTPUT and chunk_naming.is_exec_input_name(edge.dst_attr)):
             continue  # a typed param wire, not an exec one
         chunk_stage.connect_exec(stage, scene, chunk_stage.get_chunk_prim_path(src),
-                               chunk_stage.get_chunk_prim_path(dst))
+                                 chunk_stage.get_chunk_prim_path(dst),
+                                 input_name=edge.dst_attr, append=True)
 
-    for source in feeds:
-        chunk_stage.connect_exec(stage, scene, source, group_path)
-    for consumer in consumers:
-        chunk_stage.connect_exec(stage, scene, group_path, consumer)
+    attach_group(stage, scene, group_path, feeds, consumers)
     return group_path, len(nodes)
 
 

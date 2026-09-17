@@ -350,6 +350,26 @@ def _author_raw_connection(
 
 
 
+def _paste_guard_sets(chunks) -> "tuple[list, list]":
+    """(guarded, self_building) for chunks about to be pasted.
+
+    guarded: every non-view chunk. Setting a copied value runs a chunk's module, and a
+    paste sets them before the chunk is in the scene. Chunks that own children used to be
+    left out of the guard, because they must not be *blocked* -- but a chunk that builds its
+    own children (AMD MaterialX Library) then built them from outside the scene: named
+    against nothing, with layers the stage never took, and again once it was added. The
+    children came out doubled, and the orphan layers made the next recook raise.
+
+    self_building: the ones among them that make their own children. Nothing else cooks
+    them -- recook_for_view never executes a group -- so each gets its one execute once it
+    is in place.
+    """
+    guarded = [c for c in chunks if not chunk_stage.is_view_chunk(c)]
+    self_building = [c for c in guarded
+                     if chunk_stage.is_group_chunk(c) and not chunk_stage.is_chunkgroup(c)]
+    return guarded, self_building
+
+
 # ---------------------------------------------------------------------------
 # Drag-and-drop file import
 #
@@ -446,8 +466,10 @@ def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: "tuple[float, float]")
         return None
     primary.set_blocked(True)
     chunk_stage._load_wire_inputs(prim, primary)
-    clip_node = _ClipboardNode(str(module_name), _snapshot_param_values(primary), rel_pos)
-    if not chunk_stage.is_group_chunk(primary):
+    clip_node = _ClipboardNode(str(module_name), _snapshot_param_values(primary), rel_pos,
+                               name=prim.GetName())
+    # Children only for a chunkgroup -- see chunk_graph.snapshot_chunk_node.
+    if not chunk_stage.is_chunkgroup(primary):
         return clip_node
 
     child_prims = [
@@ -2157,7 +2179,12 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             self._edge_timer.setSingleShot(True)
             self._edge_timer.setInterval(0)
             self._edge_timer.timeout.connect(self._build_edges)
-        self._edge_timer.start()
+        # Only when idle. The interval is zero, so restarting a running timer delays
+        # nothing -- but it is not free, and this is called for every stage change: grouping
+        # the kitchen layout's material chain restarted it half a million times, 100 s of a
+        # 183 s operation.
+        if not self._edge_timer.isActive():
+            self._edge_timer.start()
 
     def _build_edges(self):
         # A pending coalesced rebuild is redundant once we are rebuilding now.
@@ -3215,7 +3242,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     c for c in chunks
                     if not chunk_stage.is_view_chunk(c) and not chunk_stage.is_group_chunk(c)
                 ]
-                for c in blockable:
+                guarded, self_building = _paste_guard_sets(chunks)
+                for c in guarded:
                     c._executing = True
                 # Apply the copied values BEFORE add_chunk, not after: add_chunk's own
                 # CHUNK_LOADED/PARAM_ADDED notice dispatch can synchronously build this
@@ -3231,6 +3259,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # correct.
                 # Rows first: a list group starts empty on a fresh chunk, so its values
                 # have nowhere to land until the rows it had are back.
+                chunk_graph.apply_name(primary, item)
                 _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
                 pos = (scene_pos.x() + item.rel_pos[0], scene_pos.y() + item.rel_pos[1])
@@ -3239,7 +3268,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 with chunk_stage.creating_at((pos[0], -pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
-                    for c in blockable:
+                    for c in guarded:
                         c._executing = False
                     if view_exists:
                         # Stays inert (muted/uncooked) until manually wired into the view,
@@ -3255,6 +3284,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         # add_chunk so it runs with correct positioning/parenting in place.
                         for c in blockable:
                             c.execute()
+                    for c in self_building:
+                        c.execute()
                 new_chunks.append(primary)
                 new_path_by_index[index] = chunk_stage.get_chunk_prim_path(primary)
                 if item.children:
@@ -3332,7 +3363,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     c for c in chunks
                     if not chunk_stage.is_view_chunk(c) and not chunk_stage.is_group_chunk(c)
                 ]
-                for c in blockable:
+                guarded, self_building = _paste_guard_sets(chunks)
+                for c in guarded:
                     c._executing = True
                 # Apply values before add_chunk -- see the matching comment in
                 # _materialize_at for why (a widget can be built synchronously as a side
@@ -3340,14 +3372,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # once, at construction).
                 # Rows first: a list group starts empty on a fresh chunk, so its values
                 # have nowhere to land until the rows it had are back.
+                chunk_graph.apply_name(primary, item)
                 _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
                 _apply_param_values(primary, item.values)
                 with chunk_stage.creating_at((item.rel_pos[0], -item.rel_pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
-                    for c in blockable:
+                    for c in guarded:
                         c._executing = False
+                    for c in blockable:
                         c.set_blocked(True)
+                    for c in self_building:
+                        c.execute()
                 path = chunk_stage.get_chunk_prim_path(primary)
                 child_path_by_index[index] = path
                 child_chunk_by_index[index] = primary
@@ -3465,23 +3501,24 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         for edge in edges:
             if edge.src_index >= len(pasted) or edge.dst_index >= len(pasted):
                 continue
-            if not (edge.src_attr.endswith(_EXEC_OUTPUT.split(":")[-1])
-                    and edge.dst_attr.endswith(_EXEC_INPUT.split(":")[-1])):
+            if not (edge.src_attr == _EXEC_OUTPUT and chunk_stage.is_exec_input_name(edge.dst_attr)):
                 continue  # a typed param wire; those go through ports and are left alone
+            # Into the slot it came from, and stacked: a merge inside the selection keeps
+            # its branches in order.
             chunk_stage.connect_exec(
                 stage, scene_sender,
                 chunk_stage.get_chunk_prim_path(pasted[edge.src_index]),
                 chunk_stage.get_chunk_prim_path(pasted[edge.dst_index]),
+                input_name=edge.dst_attr, append=True,
             )
 
-        # Put the group where the selection was in the chain. These are fresh connections
-        # onto a prim that did not exist a moment ago, not edits to existing ones, which is
-        # why connect_exec is enough on its own here.
-        group_path = chunk_stage.get_chunk_prim_path(group)
-        for source in feeds_selection:
-            chunk_stage.connect_exec(stage, scene_sender, source, group_path)
-        for consumer in fed_by_selection:
-            chunk_stage.connect_exec(stage, scene_sender, group_path, consumer)
+        # Put the group where the selection was in the chain, each consumer in the slot the
+        # selection fed. Writing every consumer's plain inputs:chunk instead replaced the
+        # branch a merge already had there with the group.
+        chunk_graph.attach_group(
+            stage, scene_sender, chunk_stage.get_chunk_prim_path(group),
+            feeds_selection, fed_by_selection,
+        )
 
         scene_sender.set_selected_chunks([group])
 
