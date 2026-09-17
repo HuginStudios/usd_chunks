@@ -99,17 +99,31 @@ def _view_targets(scene, stage):
     return out
 
 
-def _drop_views(scene, qapp):
+def _drop_views(scene, qapp, gv, stage):
     """Clear the context's view, so a paste is what triggers the next one.
 
     Both the generic and the scoped auto-view refuse to steal an existing view -- so with
     one already in place a paste creates none at all, and a test that leaves it there is
     asserting about a view the paste had no hand in.
+
+    The generic auto-view is held off while the views go. On a busy machine its timer from
+    building the graph is already overdue by now, and the processEvents() below ran it: it
+    put a fresh view straight back on the original chain's tail, the paste then correctly
+    left that view alone, and the test failed about a view the paste never made. Settling
+    first lets anything already pending run while a view still exists.
     """
-    for c in list(scene.get_chunks()):
-        if chunk_stage.is_view_chunk(c):
-            c.request_delete()
-    qapp.processEvents()
+    _settle(qapp)
+    gv._suppress_default_view = True
+    try:
+        for c in list(scene.get_chunks()):
+            if chunk_stage.is_view_chunk(c):
+                c.request_delete()
+        qapp.processEvents()
+    finally:
+        gv._suppress_default_view = False
+    assert not any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()), (
+        "precondition: no view before the paste"
+    )
 
 
 def test_the_auto_view_is_held_until_the_pasted_chain_is_wired(graph):
@@ -153,7 +167,7 @@ def test_the_pasted_view_points_at_the_tail_not_the_head(graph):
 
     scene.set_selected_chunks([head, tail])
     gv._copy_selected_to_clipboard()
-    _drop_views(scene, qapp)
+    _drop_views(scene, qapp, gv, stage)
 
     pasted = gv._paste_clipboard_at(QtCore.QPointF(600, 600))
     _settle(qapp)
