@@ -3034,7 +3034,14 @@ def _chunks_downstream_of(roots: "list[core.ChunkBase]") -> "set[int]":
     return found
 
 
-def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: str, dst_prim_path: str) -> "Usd.Attribute | None":
+def connect_exec(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    src_prim_path: str,
+    dst_prim_path: str,
+    input_name: str = _EXEC_INPUT,
+    append: bool = False,
+) -> "Usd.Attribute | None":
     """Author a plain outputs:chunk -> inputs:chunk exec connection between two chunk
     prims, without going through the Qt node graph.
 
@@ -3044,7 +3051,14 @@ def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: s
     programmatically created chunk that's never wired into the exec chain gets hidden the
     first time its context recooks, even though it authored real content. Mirrors the
     exec-only path of ChunkGraphView._author_connection; does not handle typed param
-    connections or merge chunks' numbered inputs:chunkN slots, neither of which this needs.
+    connections.
+
+    input_name picks the exec slot on dst -- a merge's inputs:chunkN rather than the plain
+    inputs:chunk. Rewiring something into the slot it came out of needs it: writing slot 0
+    regardless replaced whatever branch was already there.
+
+    append adds src to the slot's existing wires instead of replacing them, for a slot
+    that several wires stack on.
 
     Deliberately does NOT also trigger a recook the way _author_connection does for a
     live drag-to-connect: figuring out which view (if any) is safe to recook through from
@@ -3063,8 +3077,13 @@ def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: s
     if not dst_prim.IsValid():
         return None
     src_conn_path = Sdf.Path(f"{src_prim_path}.{_EXEC_OUTPUT}")
-    dst_attr = dst_prim.GetAttribute(_EXEC_INPUT)
-    if dst_attr and dst_attr.IsValid() and list(dst_attr.GetConnections()) == [src_conn_path]:
+    dst_attr = dst_prim.GetAttribute(input_name)
+    existing = list(dst_attr.GetConnections()) if dst_attr and dst_attr.IsValid() else []
+    if append:
+        wanted = existing if src_conn_path in existing else existing + [src_conn_path]
+    else:
+        wanted = [src_conn_path]
+    if existing == wanted:
         # Already wired exactly this way: nothing changed, so there is nothing to reconcile.
         # A chunk module wiring its own children (AMD MaterialX Library) calls this on every
         # cook, and the reconcile below is not free. On a scene just opened from disk it
@@ -3076,14 +3095,14 @@ def connect_exec(stage: "Usd.Stage", scene: "core.SceneSender", src_prim_path: s
         # protect_root_layer=True); a re-entrant one from inside a cook bypassed them.
         return dst_attr
     if not (dst_attr and dst_attr.IsValid()):
-        dst_attr = dst_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        dst_attr = dst_prim.CreateAttribute(input_name, Sdf.ValueTypeNames.Token, custom=False)
         if not dst_attr.IsValid():
             return None
     dst_chunk = next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == dst_prim_path), None)
     home = chunk_utils.get_attr_home_layer(dst_attr)
     target = home or chunk_utils.get_bookkeeping_layer(stage, dst_chunk)
     with Usd.EditContext(stage, target):
-        dst_attr.SetConnections([src_conn_path])
+        dst_attr.SetConnections(wanted)
     reconcile_edit_targets(stage, scene)
     return dst_attr
 
@@ -3547,11 +3566,18 @@ def recook_for_view(
             # actually flips off — _sync_param_input is already idempotent (skips a
             # param already wired, or still at its default), so this is a no-op for
             # every param that didn't hit the gap.
+            # Per chunk and caught: this is a catch-up, and one chunk failing it must not
+            # abort the pass. It runs mid-pass, after the blocks and before the unmute and
+            # execute loop, so a raise here left every chunk in the context blocked and
+            # muted -- the whole scene gone -- over a param on one chunk.
             sync = ChunkStageSync()
-            for _, param in _iter_chunk_params(c):
-                sync._sync_param_input(c, param)
-            for _, vector in _iter_chunk_vectors(c):
-                sync._sync_vector_input(c, vector)
+            try:
+                for _, param in _iter_chunk_params(c):
+                    sync._sync_param_input(c, param)
+                for _, vector in _iter_chunk_vectors(c):
+                    sync._sync_vector_input(c, vector)
+            except Exception:
+                logger.exception("could not sync the inputs of %s", get_chunk_prim_path(c))
         layer = lm.get_layer(c)
         if layer is not None and layer.identifier not in seen_idents:
             seen_idents.add(layer.identifier)

@@ -201,6 +201,17 @@ class TestAMDMaterialXLibrary:
         cfg = self.mod.config()
         assert cfg.category == chunk.StandardCategory.MATERIALS
 
+    def test_children_are_found_by_type_not_by_name(self):
+        """A child is only called "Reference" if nothing had that name first. Looked up by
+        name, a renamed one was not found and a second was made next to it."""
+        c = self.mod.main()
+        ref = chunk.Chunk("Reference3")
+        ref._config = ChunkConfig(module="reference")
+        c.add_param(ref)
+
+        assert self.mod._child_of_type(c, "reference") is ref
+        assert self.mod._child_of_type(c, "bind_material") is None
+
 
 # ---------------------------------------------------------------------------
 # AMDMaterialXLibrary — child chunk creation (Reference / BindMaterial)

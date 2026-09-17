@@ -108,3 +108,49 @@ def test_exec_dependencies_ignore_param_wires_and_wired_dependencies_do_not(grap
     assert chunk_stage.exec_dependencies(b) == [a]
     assert chunk_stage._wired_dependencies(b) == [a]
     assert chunk_stage.exec_dependencies(a) == []
+
+
+def test_exec_boundary_reports_the_slot_each_consumer_used(graph):
+    from usd_chunks.plugins import chunk_graph
+
+    stage, scene, make, wire = graph
+    a, b = make(2)
+    mod = chunk_registry.ChunkRegistry().get_chunk_module("merge")
+    merge = (mod.create() if mod.loaded else mod.load())[0]
+    scene.add_chunk(merge)
+    wire(a, merge)
+    connect_exec(stage, scene, get_chunk_prim_path(b), get_chunk_prim_path(merge),
+                 input_name="inputs:chunk1")
+
+    feeds, consumers = chunk_graph.exec_boundary(stage, {get_chunk_prim_path(b)})
+
+    assert feeds == []
+    assert consumers == [(get_chunk_prim_path(merge), "inputs:chunk1")]
+
+
+def test_a_chunk_failing_its_input_sync_does_not_abort_the_recook(graph, monkeypatch):
+    """The catch-up sync runs mid-pass, after blocking and before cooking. One chunk raising
+    there left every chunk in the context blocked and muted."""
+    stage, scene, make, wire = graph
+    a, b = make(2)
+    mod = chunk_registry.ChunkRegistry().get_chunk_module("view")
+    view = next(c for c in (mod.create() if mod.loaded else mod.load()) if chunk_stage.is_view_chunk(c))
+    scene.add_chunk(view)
+    wire(a, b)
+    wire(b, view)
+    for c in (a, b):
+        c.set_blocked(True)
+
+    real = chunk_stage.ChunkStageSync._sync_param_input
+
+    def flaky(self, chunk, param):
+        if chunk is a:
+            raise RuntimeError("layer is not in the local LayerStack")
+        return real(self, chunk, param)
+
+    monkeypatch.setattr(chunk_stage.ChunkStageSync, "_sync_param_input", flaky)
+
+    chunk_stage.recook_for_view(stage, scene, None, view)
+
+    assert not b.is_blocked(), "the rest of the context must still cook"
+

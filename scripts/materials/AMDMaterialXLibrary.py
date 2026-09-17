@@ -362,6 +362,19 @@ def _pick_package(package_ids: list[str], resolution: str) -> dict | None:
     return None
 
 
+def _child_of_type(parent, module_key: str):
+    """parent's first child chunk of this module, whatever it ended up being called.
+
+    By type, not by name: a child is only called "Reference" if nothing else took that
+    name first, and looking it up by name made a second one whenever it had been renamed.
+    """
+    for param in parent.get_my_params():
+        cfg = param.get_config() if isinstance(param, chunk.Chunk) else None
+        if cfg is not None and cfg.module == module_key:
+            return param
+    return None
+
+
 def _create_child(module_key: str, parent):
     """Create a child chunk and attach it to parent inside the user's edit context.
 
@@ -480,7 +493,7 @@ def _download_and_apply(node, title: str) -> str:
     # CONTEXT branch is what creates. Setting values first leaves that Clear()
     # hitting whatever layer happens to be the edit target instead (e.g. the
     # parent's), wiping the child's own params before they're ever read back.
-    ref_chunk = node.get_param("Reference", chunk.is_inst(chunk.Chunk))
+    ref_chunk = _child_of_type(node, "reference")
     if not ref_chunk:
         ref_chunk = _create_child("reference", node)
     if ref_chunk:
@@ -492,7 +505,7 @@ def _download_and_apply(node, title: str) -> str:
         ref_chunk.get_param("prim_type").value = "Material"
         ref_chunk.get_param("primpath_location").value = mat_path
 
-    bind_chunk = node.get_param("BindMaterial", chunk.is_inst(chunk.Chunk))
+    bind_chunk = _child_of_type(node, "bind_material")
     if not bind_chunk:
         bind_chunk = _create_child("bind_material", node)
     if bind_chunk:
