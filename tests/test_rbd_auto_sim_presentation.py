@@ -173,7 +173,7 @@ def _solver_hearing(source, monkeypatch):
 
     # The wiring the listener exists for. Real graph connections are USD-level and not worth
     # standing up here; what matters is that the brush counts as upstream.
-    monkeypatch.setattr(chunk_usd, "get_exec_upstream_chunks", lambda *a, **k: [source])
+    monkeypatch.setattr(chunk_usd, "view_cook_list", lambda *a, **k: [source])
     scheduled = []
     monkeypatch.setattr(rbd, "_schedule_auto_run", lambda c: scheduled.append(c))
 

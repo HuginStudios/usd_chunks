@@ -113,19 +113,19 @@ def execute(node):
     # upstream would be muted along with the branch and take the stream down with it.
     keep = set()
     for dep in inputs[:1]:
-        keep |= chunk_usd.upstream_chunks(dep)
+        keep |= chunk_usd.exec_upstream(dep)
 
     muted = set()
     if not passed:
         for dep in gated:
-            for c in chunk_usd.upstream_chunks(dep):
+            for c in chunk_usd.exec_upstream(dep):
                 if c in keep:
                     continue
                 if chunk_usd.set_chunk_muted(stage, c, True):
                     muted.add(c)
     else:
         for dep in gated:
-            keep |= chunk_usd.upstream_chunks(dep)
+            keep |= chunk_usd.exec_upstream(dep)
 
     for c in keep:
         chunk_usd.set_chunk_muted(stage, c, False)
