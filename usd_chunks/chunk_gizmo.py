@@ -295,7 +295,7 @@ def _anchor_targets(chunk: "core.ChunkBase", gizmo, stage: Usd.Stage) -> list:
 def _iter_params(obj, prefix: str = ""):
     """(path, param) for every scalar param under obj, not crossing into a nested chunk.
 
-    A near-copy of chunk_usd._iter_chunk_params, duplicated deliberately: that module lives
+    A near-copy of chunk_stage._iter_chunk_params, duplicated deliberately: that module lives
     under plugins/ and this one must stay importable by a non-Qt, non-plugin host. Eight
     lines of walk is a cheaper price than inverting the dependency direction.
     """
@@ -710,7 +710,7 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
 
 def _exec_depth(stage: Usd.Stage, chunk_prim_path) -> int:
     """How far down the exec chain a chunk prim sits. Bigger is further downstream."""
-    from usd_chunks.plugins import chunk_usd
+    from usd_chunks import chunk_stage
 
     depth, path, seen = 0, Sdf.Path(str(chunk_prim_path)), set()
     while path not in seen:
@@ -718,7 +718,7 @@ def _exec_depth(stage: Usd.Stage, chunk_prim_path) -> int:
         prim = stage.GetPrimAtPath(path)
         if not (prim and prim.IsValid()):
             break
-        upstream = chunk_usd.exec_input_connections(prim)
+        upstream = chunk_stage.exec_input_connections(prim)
         if not upstream:
             break
         # The strongest branch, matching how the chain is read everywhere else. A merge
@@ -1371,29 +1371,29 @@ def _create_chunk_at_tail(module_name: str):
         return None
     chunk = created[0]
 
-    # Imported here, not at module scope: chunk_usd imports this module to author gizmos, so
+    # Imported here, not at module scope: chunk_stage imports this module to author gizmos, so
     # a top-level import would be circular.
-    from usd_chunks.plugins import chunk_usd
+    from usd_chunks import chunk_stage
 
     # Borrow the Params-tab create semantics -- chain onto the tail of the current context
     # and pull any view along with it. Without this the chunk is created unconnected, which
     # is right when a user places a node by hand and wrong here: nobody asked for a node, so
     # nobody is going to wire it up.
-    prev_create, prev_pin = chunk_usd._params_tab_create, chunk_usd._pin_new_chunks
-    prev_pos = chunk_usd._create_node_pos
-    chunk_usd._params_tab_create = True
-    chunk_usd._pin_new_chunks = True
+    prev_create, prev_pin = chunk_stage._params_tab_create, chunk_stage._pin_new_chunks
+    prev_pos = chunk_stage._create_node_pos
+    chunk_stage._params_tab_create = True
+    chunk_stage._pin_new_chunks = True
     # Where the node lands, read before the create so the tail is still the tail. The default
     # (child-count * step) counts a view as a child, so an auto-created node is placed by how
     # many prims happen to exist rather than by where it sits in the chain -- which is how it
     # ends up stacked behind the view instead of after the chunk it was wired onto.
-    chunk_usd._create_node_pos = _position_after_tail(scene)
+    chunk_stage._create_node_pos = _position_after_tail(scene)
     try:
         scene.add_chunk(chunk)
     finally:
-        chunk_usd._params_tab_create = prev_create
-        chunk_usd._pin_new_chunks = prev_pin
-        chunk_usd._create_node_pos = prev_pos
+        chunk_stage._params_tab_create = prev_create
+        chunk_stage._pin_new_chunks = prev_pin
+        chunk_stage._create_node_pos = prev_pos
 
     _nudge_downstream_views(chunk)
     return chunk
@@ -1420,9 +1420,9 @@ def _position_after_tail(scene) -> "tuple[float, float] | None":
     so `chunk.get_context()` is still None and the tail lookup silently finds nothing --
     which reads as "no tail" and falls back to the default placement being fixed here.
     """
-    from usd_chunks.plugins import chunk_usd
+    from usd_chunks import chunk_stage
 
-    sync = chunk_usd.ChunkStageSync()
+    sync = chunk_stage.ChunkStageSync()
     stage = getattr(sync, "_stage", None)
     if stage is None:
         return None
@@ -1440,7 +1440,7 @@ def _position_after_tail(scene) -> "tuple[float, float] | None":
     if tail is None:
         return None
     pos = _node_pos(_chunk_prim(stage, tail))
-    return None if pos is None else (pos[0] + chunk_usd._NODE_STEP, pos[1])
+    return None if pos is None else (pos[0] + chunk_stage._NODE_STEP, pos[1])
 
 
 def _nudge_downstream_views(chunk: "core.ChunkBase") -> None:
@@ -1449,9 +1449,9 @@ def _nudge_downstream_views(chunk: "core.ChunkBase") -> None:
     View-follows-tail rewires the view to consume the new chunk but leaves it where it was
     -- which is the slot the new node has just been placed in, so the two overlap.
     """
-    from usd_chunks.plugins import chunk_usd
+    from usd_chunks import chunk_stage
 
-    sync = chunk_usd.ChunkStageSync()
+    sync = chunk_stage.ChunkStageSync()
     stage = getattr(sync, "_stage", None)
     if stage is None:
         return
@@ -1463,14 +1463,14 @@ def _nudge_downstream_views(chunk: "core.ChunkBase") -> None:
     scene = getattr(ChunkRegistry(), "scene", None)
     if scene is None:
         return
-    target_x = pos[0] + chunk_usd._NODE_STEP
+    target_x = pos[0] + chunk_stage._NODE_STEP
     for candidate in scene.get_chunks():
-        if not chunk_usd.is_view_chunk(candidate):
+        if not chunk_stage.is_view_chunk(candidate):
             continue
         view_prim = _chunk_prim(stage, candidate)
         if view_prim is None:
             continue
-        exec_in = view_prim.GetAttribute(chunk_usd._EXEC_INPUT)
+        exec_in = view_prim.GetAttribute(chunk_stage._EXEC_INPUT)
         if not (exec_in and exec_in.IsValid()):
             continue
         if not any(c.GetPrimPath() == prim.GetPath() for c in exec_in.GetConnections()):

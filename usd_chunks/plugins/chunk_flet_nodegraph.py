@@ -34,8 +34,9 @@ from pxr import Usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_flet, chunk_graph, chunk_usd
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, load_chunks
+from usd_chunks.plugins import chunk_flet, chunk_graph
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import get_chunk_prim_path, load_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class GraphView:
             self.scene = _Scene(self.stage)
             chunk_registry.ChunkRegistry().initialize(self.scene, "flet")
             ChunkLayerManager().initialize(self.stage)
-            chunk_usd.ChunkStageSync().initialize(self.stage, self.scene)
+            chunk_stage.ChunkStageSync().initialize(self.stage, self.scene)
             load_chunks(self.stage, self.scene)
             self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         except (AttributeError, KeyError, RuntimeError, OSError, ValueError) as exc:
@@ -650,12 +651,12 @@ class GraphView:
             chunk_graph.disconnect(self.stage, port, self.prims, self.chunks)
         # Successors lose their feed when the node between them goes, so hand them the
         # node's own predecessor -- slot 0 only, since a successor has one slot to inherit
-        # into (the same choice chunk_usd.heal_exec_chain_on_delete makes).
+        # into (the same choice chunk_stage.heal_exec_chain_on_delete makes).
         if upstream:
             source = upstream[0]
             for edge in list(self.edges):
                 if edge.is_exec and edge.src_node_path == path:
-                    chunk_usd.connect_exec(self.stage, self.scene, source, edge.dst_node_path)
+                    chunk_stage.connect_exec(self.stage, self.scene, source, edge.dst_node_path)
         self.stage.GetRootLayer().Save()
         self.status = "disconnected %s" % path.rsplit("/", 1)[-1]
         self.reload()
@@ -754,7 +755,7 @@ class GraphView:
     def set_active_slot(self, slot: int):
         """Switch which view drives execution, and recook for it.
 
-        The cooking itself is chunk_usd.recook_for_view -- the same function the Qt graph
+        The cooking itself is chunk_stage.recook_for_view -- the same function the Qt graph
         calls. It blocks and mutes everything outside the active view's upstream tree, so
         this is a real execution switch rather than a highlight.
         """

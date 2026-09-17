@@ -4,7 +4,7 @@ import pytest
 from pxr import Usd
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
@@ -67,7 +67,7 @@ def _view_mouse(view, etype, view_pos, modifiers=QtCore.Qt.KeyboardModifier.NoMo
 def graph(qapp):
     """A stage/registry/docker per test.
 
-    This was module-scoped, on the stated grounds that chunk_usd.initialize() leaks a global
+    This was module-scoped, on the stated grounds that chunk_stage.initialize() leaks a global
     notice listener per call. It does not: calling it 20 times over fresh stages holds
     chunk_notice._global_dispatches at 11 subscribers total, flat from the first call.
     _GlobalDispatch keeps subscribers in a WeakSet and ChunkStageSync is a singleton, so each

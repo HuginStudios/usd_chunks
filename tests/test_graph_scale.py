@@ -37,8 +37,8 @@ from pxr import Usd
 from usd_chunks import chunk_registry, chunk_scheduler
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias, ChunkNoticePropagator
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import initialize as chunk_usd_init
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import initialize as chunk_usd_init
 
 # The scene/stage the last build_chunk_graph() ran against, so the reload tier can export
 # the graph it just built without build_chunk_graph having to return anything but timings.
@@ -175,7 +175,7 @@ def reload_chunk_graph(count: int, directory: str) -> List[Tuple[str, float]]:
     build_chunk_graph(count)
     scene = _ACTIVE["scene"]
     export_path = os.path.join(directory, f"chain_{count}.usda")
-    export, _ = _time(lambda: chunk_usd.export_chunks(scene, export_path))
+    export, _ = _time(lambda: chunk_stage.export_chunks(scene, export_path))
 
     # A brand-new stage and scene, as if the file were being opened cold.
     chunk_registry.ChunkLayerManager().reset()
@@ -185,7 +185,7 @@ def reload_chunk_graph(count: int, directory: str) -> List[Tuple[str, float]]:
     registry.initialize(fresh, "scale-bench")
     chunk_registry.ChunkLayerManager().initialize(stage)
 
-    # chunk_usd.initialize is what loads the file — it runs load_chunks against the sync's
+    # chunk_stage.initialize is what loads the file — it runs load_chunks against the sync's
     # own path bookkeeping. Calling load_chunks again afterwards with a fresh set does not
     # measure a second open, it builds a duplicate of every chunk already there.
     load, _ = _time(lambda: chunk_usd_init(stage, fresh))

@@ -1892,6 +1892,44 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         _load_wire_inputs(prim, chunk)
 
 
+# ---------------------------------------------------------------------------
+# Authoring on a chunk's own prim -- the public face of ChunkStageSync, for chunk scripts
+# ---------------------------------------------------------------------------
+
+
+def get_chunk_prim(chunk: "core.ChunkBase") -> "Usd.Prim | None":
+    """chunk's prim on the live stage, or None if the session has none for it yet."""
+    sync = ChunkStageSync()
+    if not sync.initialized or not sync._stage:
+        return None
+    prim_path = sync._chunk_prim_paths.get(id(chunk))
+    if not prim_path:
+        return None
+    prim = sync._stage.GetPrimAtPath(Sdf.Path(prim_path))
+    return prim if prim and prim.IsValid() else None
+
+
+def chunk_prim_edit_context(chunk: "core.ChunkBase | None" = None) -> "Usd.EditContext":
+    """An edit context for authoring on chunk's prim: ports, connections, new child chunks.
+
+    Targets the layer chunk's bookkeeping belongs in, not the layer its cooked output goes
+    to, so what is authored inside it is saved with the scene.
+    """
+    return ChunkStageSync()._chunk_prim_edit_context(chunk)
+
+
+def clear_attr_connections(attr: "Usd.Attribute") -> None:
+    """Remove attr's connections from every layer that has one, not just the edit target."""
+    ChunkStageSync().clear_attr_connections(attr)
+
+
+def delete_attr_specs(prim: "Usd.Prim", attr_name: str) -> None:
+    """Remove attr_name from prim in every layer that has it, not just the edit target."""
+    sync = ChunkStageSync()
+    if sync.initialized and sync._stage:
+        sync._delete_stale_attr_specs(prim, attr_name)
+
+
 def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
     """Replace all occurrences of old with new in string attributes across the stage.
 

@@ -7,7 +7,7 @@ is reusing them as an implementation detail. You are not meant to dive in and ed
 Both carry GroupFlags.CONTEXT, and the node item keyed its dive (plus the group header and
 the `▶` marker advertising it) on that flag alone, so the AMD node offered a dive into its
 own internals. Navigation now keys on being a chunkgroup; containment still keys on
-chunk_usd.is_group_chunk, so a chunk-in-chunk keeps hiding its children and running their
+chunk_stage.is_group_chunk, so a chunk-in-chunk keeps hiding its children and running their
 code.
 """
 from __future__ import annotations
@@ -19,9 +19,9 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):
@@ -115,8 +115,8 @@ def test_the_chunkgroup_type_is_a_chunkgroup(graph):
     _qapp, reg, scene, _docker = graph
     group = _mk(reg.get_chunk_module("chunkgroup"), scene)
 
-    assert chunk_usd.is_chunkgroup(group)
-    assert chunk_usd.is_group_chunk(group), "a chunkgroup owns children too"
+    assert chunk_stage.is_chunkgroup(group)
+    assert chunk_stage.is_group_chunk(group), "a chunkgroup owns children too"
 
 
 def test_a_chunk_in_chunk_owns_children_but_is_not_a_chunkgroup(graph):
@@ -129,10 +129,10 @@ def test_a_chunk_in_chunk_owns_children_but_is_not_a_chunkgroup(graph):
     inner = _mk(reg.get_chunk_module("transform"), scene, context=True)
 
     assert inner.has_flag(ChunkFlags.GroupFlags.CONTEXT)
-    assert chunk_usd.is_group_chunk(inner), (
+    assert chunk_stage.is_group_chunk(inner), (
         "containment must still hold -- children stay hidden and keep cooking"
     )
-    assert not chunk_usd.is_chunkgroup(inner), "but it is not a subnet to navigate into"
+    assert not chunk_stage.is_chunkgroup(inner), "but it is not a subnet to navigate into"
 
 
 def test_the_amd_chunk_module_is_not_the_chunkgroup_type(graph):
@@ -159,13 +159,13 @@ def test_the_node_takes_its_dive_gate_from_is_chunkgroup(graph, monkeypatch):
     predicate says, and this fails.
     """
     qapp, reg, scene, docker = graph
-    monkeypatch.setattr(chunk_usd, "is_chunkgroup", lambda c: True)
+    monkeypatch.setattr(chunk_stage, "is_chunkgroup", lambda c: True)
 
     chunk = _mk(reg.get_chunk_module("transform"), scene)
     node = _node_for(chunk, docker, qapp)
 
     assert node._is_chunkgroup is True, (
-        "the node reads chunk_usd.is_chunkgroup; it must not be keyed on the CONTEXT flag"
+        "the node reads chunk_stage.is_chunkgroup; it must not be keyed on the CONTEXT flag"
     )
 
 

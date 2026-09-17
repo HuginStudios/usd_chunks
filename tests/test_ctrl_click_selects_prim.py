@@ -16,7 +16,7 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.plugins.chunk_qt_widgets import ChunkLineEditWidget
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 CTRL = QtCore.Qt.KeyboardModifier.ControlModifier
 LEFT = QtCore.Qt.MouseButton.LeftButton
@@ -265,7 +265,7 @@ def test_ctrl_click_on_the_field_in_a_graph_node_selects_the_prim_not_the_node(q
 def _click_through_graph(qapp, scene, docker):
     import time
     from usd_chunks.chunk_flags import ChunkFlags as _Flags
-    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     xf = _mk(scene, "transform")
     xf.get_param("primpath_location").value = "/World/Kettle"

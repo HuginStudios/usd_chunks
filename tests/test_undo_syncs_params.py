@@ -28,7 +28,7 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import _values_agree, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import _values_agree, initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):

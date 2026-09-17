@@ -48,7 +48,7 @@ def scene():
 
     sc = _Scene(stage)
     chunk_registry.ChunkRegistry().initialize(sc, "pytest")
-    from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd
+    from usd_chunks.chunk_stage import initialize as init_chunk_usd
     init_chunk_usd(stage, sc)
     yield sc
 

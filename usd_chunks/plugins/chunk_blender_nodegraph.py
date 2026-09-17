@@ -36,7 +36,8 @@ import re
 import bpy
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_blender, chunk_graph, chunk_usd
+from usd_chunks.plugins import chunk_blender, chunk_graph
+from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)
 
@@ -572,7 +573,7 @@ class BlenderGraphView:
                 self.stage, self.scene, self.context, self.chunks.get(self.context))
             if slot is None:
                 return
-            self.chunks = {chunk_usd.get_chunk_prim_path(c): c
+            self.chunks = {chunk_stage.get_chunk_prim_path(c): c
                            for c in self.scene.get_chunks()}
             if activate:
                 self.set_active_slot(slot)
@@ -749,9 +750,9 @@ class BlenderGraphView:
             nest=chunk_graph.nest_target(self.chunks.get(self.context)),
             chunks=self.chunks)
 
-        self.chunks = {chunk_usd.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
-        self.set_selection({chunk_usd.get_chunk_prim_path(c) for c in made.values()})
+        self.set_selection({chunk_stage.get_chunk_prim_path(c) for c in made.values()})
         self.status = "pasted %d" % len(made)
 
     def duplicate_selection(self) -> None:
@@ -781,7 +782,7 @@ class BlenderGraphView:
         if not group_path:
             self.status = "nothing to group"
             return
-        self.chunks = {chunk_usd.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
         self.set_selection([group_path] if group_path in self.prims else ())
         self.status = "grouped %d" % count
@@ -799,10 +800,10 @@ class BlenderGraphView:
             self.status = error
         if not created:
             return
-        self.chunks = {chunk_usd.get_chunk_prim_path(c): c
+        self.chunks = {chunk_stage.get_chunk_prim_path(c): c
                        for c in self.scene.get_chunks()}
 
-        made = [chunk_usd.get_chunk_prim_path(c) for c in created]
+        made = [chunk_stage.get_chunk_prim_path(c) for c in created]
         # BEFORE the rebuild, not after it. add_chunk routes a context-less chunk into the
         # scene's default chunkgroup, which is not the graph being shown when a brand-new
         # network opens at CHUNKS_ROOT -- so follow the chunk to where it actually landed,

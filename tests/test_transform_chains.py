@@ -22,7 +22,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_gizmo, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 transform_mod = importlib.import_module("scripts.transforms.transform")
 
@@ -51,7 +51,7 @@ def scene():
     sender = _Scene(stage)
     registry.initialize(sender, "pytest")
     chunk_registry.ChunkLayerManager().initialize(stage)
-    chunk_usd.ChunkStageSync().initialize(stage, sender)
+    chunk_stage.ChunkStageSync().initialize(stage, sender)
     return stage, sender, scene_layer
 
 
@@ -64,7 +64,7 @@ def _chunk_path(name: str) -> str:
     """
     scene = chunk_registry.ChunkRegistry().scene
     ctx = scene.peek_root_context() if scene is not None else None
-    root = chunk_usd.get_chunk_prim_path(ctx) if ctx is not None else "/chunks"
+    root = chunk_stage.get_chunk_prim_path(ctx) if ctx is not None else "/chunks"
     return f"{root}/{name}"
 
 
@@ -186,7 +186,7 @@ def test_the_same_network_mints_the_same_op_name_twice(scene) -> None:
     rebuilt_sender = _Scene(rebuilt_stage)
     chunk_registry.ChunkRegistry().initialize(rebuilt_sender, "pytest")
     chunk_registry.ChunkLayerManager().initialize(rebuilt_stage)
-    chunk_usd.ChunkStageSync().initialize(rebuilt_stage, rebuilt_sender)
+    chunk_stage.ChunkStageSync().initialize(rebuilt_stage, rebuilt_sender)
 
     second = _mk(rebuilt_sender, transform_mod, "T1")
     second.get_param("ty").value = 5.0
@@ -263,7 +263,7 @@ def test_dragging_moves_the_prim_by_what_was_dragged(scene) -> None:
 
 def _wire(stage, downstream, upstream):
     """downstream consumes upstream, the way the graph chains chunks."""
-    from usd_chunks.plugins.chunk_usd import _EXEC_INPUT, _EXEC_OUTPUT
+    from usd_chunks.chunk_stage import _EXEC_INPUT, _EXEC_OUTPUT
 
     prim = stage.GetPrimAtPath(Sdf.Path(_chunk_path(downstream)))
     attr = prim.GetAttribute(_EXEC_INPUT)

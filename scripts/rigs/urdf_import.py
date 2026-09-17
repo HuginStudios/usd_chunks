@@ -491,7 +491,7 @@ def execute(node):
     want_collision = bool(node.get_param("import_collision").value)
 
     # view-driven execution re-runs every chunk upstream of the active view on EVERY recook
-    # (chunk_usd.recook_for_view, no per-node dirty tracking yet -- see the framework's own
+    # (chunk_stage.recook_for_view, no per-node dirty tracking yet -- see the framework's own
     # "STILL TODO: finer dirty/cache" note). For most chunks that is cheap; this one parses
     # STL meshes vertex-by-vertex in pure Python, so a 400k-face robot re-triangulates on
     # every unrelated downstream change -- a Pose Articulation slider drag two chunks

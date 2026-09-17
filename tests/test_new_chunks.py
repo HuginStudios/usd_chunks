@@ -11,7 +11,7 @@ from pxr import Usd, UsdShade, Sdf
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     _author_prim,
     _CHUNKS_ROOT,
     ChunkStageSync,
@@ -206,7 +206,7 @@ class TestAMDMaterialXLibrary:
 # AMDMaterialXLibrary — child chunk creation (Reference / BindMaterial)
 #
 # Reproduces the real-app wiring: a CONTEXT chunk attached to a live stage via
-# plugins.chunk_usd.initialize() (ChunkLayerManager + ChunkStageSync), then
+# chunk_stage.initialize() (ChunkLayerManager + ChunkStageSync), then
 # runs _download_and_apply/execute with the network calls stubbed out, to
 # verify the Reference and BindMaterial children actually get created and
 # stay reachable via get_param() on the context chunk.
@@ -233,7 +233,7 @@ def _chunk_path(name: str) -> str:
     parent is that group rather than the /chunks scope.
     """
     from usd_chunks import chunk_registry
-    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path
+    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     scene = chunk_registry.ChunkRegistry().scene
     ctx = scene.peek_root_context() if scene is not None else None
@@ -410,7 +410,7 @@ class TestAMDMaterialXLibraryChildCreation:
         to restore, which is what made this gap invisible for every OTHER CONTEXT
         chunk in the project.
         """
-        from usd_chunks.plugins.chunk_usd import load_chunks, save_scene
+        from usd_chunks.chunk_stage import load_chunks, save_scene
 
         stage = Usd.Stage.CreateInMemory()
 

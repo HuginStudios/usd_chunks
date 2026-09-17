@@ -11,7 +11,7 @@ import logging
 from pxr import Gf, Sdf, Usd, UsdRender
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils, render_defs
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 # Parented under "usd_chunks" so this module's messages reach the package handler and
 # its INFO level; a chunk module imported under its own file name otherwise logs from
@@ -72,7 +72,7 @@ def _authored_settings(owner):
     candidates = {
         getattr(owner, "_exec_prim_path", None),
         getattr(owner, "prim_path", None),
-        chunk_usd.get_chunk_prim_path(owner),
+        chunk_stage.get_chunk_prim_path(owner),
     }
 
     seen = set()

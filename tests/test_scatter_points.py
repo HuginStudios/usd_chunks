@@ -5,7 +5,7 @@ import time
 import pytest
 from pxr import Usd, UsdGeom
 
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 
@@ -215,7 +215,7 @@ def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -
     The unresolved reference used to leave ref_prim typeless and crash Set() on its
     xformOpOrder attr; it should fall back to the same default cube used when no prototype is
     set at all."""
-    from usd_chunks.plugins import chunk_usd as _chunk_usd
+    from usd_chunks import chunk_stage as _chunk_usd
 
     stage = Usd.Stage.CreateInMemory()
 

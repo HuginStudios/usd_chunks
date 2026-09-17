@@ -13,8 +13,8 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, SceneSender
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import (
     _CHUNKS_ROOT,
     _author_prim,
     exec_input_index,
@@ -26,7 +26,7 @@ from usd_chunks.plugins.chunk_usd import (
     iter_exec_inputs,
     normalize_merge_slots,
 )
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):
@@ -257,7 +257,7 @@ def wired_merge():
     authored straight onto the stage, and the Python DAG is expected to follow from it.
 
     That direction is deliberate — it is the primary authoring path (ChunkGraphView's
-    drag-to-connect never calls add_dependency; chunk_usd mirrors the stage into the DAG
+    drag-to-connect never calls add_dependency; chunk_stage mirrors the stage into the DAG
     instead), and it is the direction the numbered slots had to be taught.
     """
     stage = Usd.Stage.CreateInMemory()
@@ -281,7 +281,7 @@ def wired_merge():
     merge = _mk_chunk("merge")
     scene.add_chunk(merge)
 
-    prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(merge)))
+    prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(merge)))
     # Author into the session layer, where interactively wired connections actually live.
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         for i, branch in enumerate(branches):
@@ -289,9 +289,9 @@ def wired_merge():
                 exec_input_name(i), Sdf.ValueTypeNames.Token, custom=False
             )
             attr.SetConnections(
-                [Sdf.Path(f"{chunk_usd.get_chunk_prim_path(branch)}.outputs:chunk")]
+                [Sdf.Path(f"{chunk_stage.get_chunk_prim_path(branch)}.outputs:chunk")]
             )
-    chunk_usd.reconcile_dag_dependencies(merge)
+    chunk_stage.reconcile_dag_dependencies(merge)
 
     yield stage, scene, merge, branches, prim
 
@@ -303,7 +303,7 @@ class TestLiveWiring:
         assert names == ["inputs:chunk", "inputs:chunk1", "inputs:chunk2"]
         for attr, branch in zip(iter_exec_inputs(prim), branches):
             assert [str(c) for c in attr.GetConnections()] == [
-                f"{chunk_usd.get_chunk_prim_path(branch)}.outputs:chunk"
+                f"{chunk_stage.get_chunk_prim_path(branch)}.outputs:chunk"
             ]
 
     def test_every_branch_becomes_a_real_dag_dependency(self, wired_merge):
@@ -322,7 +322,7 @@ class TestLiveWiring:
         _stage, _scene, merge, branches, prim = wired_merge
         with Usd.EditContext(_stage, _stage.GetSessionLayer()):
             prim.GetAttribute("inputs:chunk1").ClearConnections()
-        chunk_usd.reconcile_dag_dependencies(merge)
+        chunk_stage.reconcile_dag_dependencies(merge)
 
         deps = {id(d) for _, d in merge.get_dependencies()}
         assert id(branches[0]) in deps
@@ -331,7 +331,7 @@ class TestLiveWiring:
 
     def test_live_dependencies_read_back_every_slot(self, wired_merge):
         _stage, _scene, merge, branches, _prim = wired_merge
-        live = chunk_usd.exec_dependencies(merge)
+        live = chunk_stage.exec_dependencies(merge)
         assert {id(c) for c in live} == {id(b) for b in branches}
 
     def test_first_input_is_cooked_last_so_it_wins(self, wired_merge):
@@ -353,11 +353,11 @@ class TestLiveWiring:
         """Every slot counts going forward too, not only slot 0."""
         stage, scene, merge, branches, _prim = wired_merge
         for branch in branches:
-            assert merge in chunk_usd.exec_downstream(branch, stage, scene)
+            assert merge in chunk_stage.exec_downstream(branch, stage, scene)
 
     def test_branches_are_not_exec_tails(self, wired_merge):
         """A chunk feeding slot 2 is as consumed as one feeding slot 0."""
         stage, scene, _merge, branches, _prim = wired_merge
-        tails = chunk_usd.exec_tails(stage, scene)
+        tails = chunk_stage.exec_tails(stage, scene)
         for branch in branches:
             assert branch not in tails

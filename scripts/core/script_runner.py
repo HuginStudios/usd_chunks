@@ -190,7 +190,7 @@ def _ensure_timer():
 def _poll():
     for key, (ref, path, seen) in list(_watched.items()):
         chunk_obj = ref()
-        if (chunk_obj is None or getattr(chunk_obj, "_deleting", False)
+        if (chunk_obj is None or chunk_obj.is_deleting()
                 or _script_file(chunk_obj) != path):
             _watched.pop(key, None)
             continue

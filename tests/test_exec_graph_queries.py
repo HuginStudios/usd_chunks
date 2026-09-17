@@ -1,4 +1,4 @@
-"""The exec-graph queries in chunk_usd, on a small real graph.
+"""The exec-graph queries in chunk_stage, on a small real graph.
 
 exec_downstream and exec_tails share one traversal of the stage. The downstream walk used
 to re-traverse the stage per level and only ever skipped its start, so a cycle further
@@ -11,8 +11,8 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import connect_exec, get_chunk_prim_path
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import connect_exec, get_chunk_prim_path
 
 
 class _DummyScene(SceneSender):
@@ -43,7 +43,7 @@ def graph(qapp):
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
     chunk_registry.ChunkLayerManager().reset()
     chunk_registry.ChunkLayerManager().initialize(stage)
-    chunk_usd.initialize(stage, scene)
+    chunk_stage.initialize(stage, scene)
     mod = chunk_registry.ChunkRegistry().get_chunk_module("prim")
 
     def make(n):
@@ -70,12 +70,12 @@ def test_a_diamond(graph):
     wire(b, d)
     stack(stage, d, b, c)
 
-    assert chunk_usd.exec_downstream(a, stage, scene) == {b, c, d}
-    assert chunk_usd.exec_downstream(c, stage, scene) == {d}
-    tails = chunk_usd.exec_tails(stage, scene, None)
+    assert chunk_stage.exec_downstream(a, stage, scene) == {b, c, d}
+    assert chunk_stage.exec_downstream(c, stage, scene) == {d}
+    tails = chunk_stage.exec_tails(stage, scene, None)
     assert d in tails
     assert not {a, b, c} & set(tails)
-    assert chunk_usd.exec_upstream(d) == {a, b, c, d}
+    assert chunk_stage.exec_upstream(d) == {a, b, c, d}
 
 
 def test_a_cycle_downstream_terminates(graph):
@@ -87,8 +87,8 @@ def test_a_cycle_downstream_terminates(graph):
     wire(b, c)
     stack(stage, b, a, c)
 
-    assert chunk_usd.exec_downstream(a, stage, scene) == {b, c}
-    assert chunk_usd.exec_upstream(c) == {a, b, c}
+    assert chunk_stage.exec_downstream(a, stage, scene) == {b, c}
+    assert chunk_stage.exec_upstream(c) == {a, b, c}
 
 
 def test_a_cycle_through_the_start_excludes_it(graph):
@@ -97,7 +97,7 @@ def test_a_cycle_through_the_start_excludes_it(graph):
     wire(a, b)
     wire(b, a)
 
-    assert chunk_usd.exec_downstream(a, stage, scene) == {b}
+    assert chunk_stage.exec_downstream(a, stage, scene) == {b}
 
 
 def test_exec_dependencies_ignore_param_wires_and_wired_dependencies_do_not(graph):
@@ -105,6 +105,6 @@ def test_exec_dependencies_ignore_param_wires_and_wired_dependencies_do_not(grap
     stage, scene, make, wire = graph
     a, b = make(2)
     wire(a, b)
-    assert chunk_usd.exec_dependencies(b) == [a]
-    assert chunk_usd._wired_dependencies(b) == [a]
-    assert chunk_usd.exec_dependencies(a) == []
+    assert chunk_stage.exec_dependencies(b) == [a]
+    assert chunk_stage._wired_dependencies(b) == [a]
+    assert chunk_stage.exec_dependencies(a) == []

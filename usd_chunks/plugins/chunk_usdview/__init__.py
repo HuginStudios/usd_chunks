@@ -11,7 +11,8 @@ from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
 from usd_chunks import chunk_registry, chunk_core, shader_defs
-from usd_chunks.plugins import chunk_qt, chunk_usd, chunk_window_state, chunk_qt_layer_stack
+from usd_chunks.plugins import chunk_qt, chunk_window_state, chunk_qt_layer_stack
+from usd_chunks import chunk_stage
 
 from typing import List
 
@@ -316,7 +317,7 @@ def launch_chunks(usdviewApi) -> None:
     # first thing drawn into it rather than after.
     chunk_window_state.install(usdviewApi.qMainWindow)
     chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
-    chunk_usd.initialize(usdviewApi.stage, scene)
+    chunk_stage.initialize(usdviewApi.stage, scene)
     # The first chunk menu otherwise pays for building the shader registry (seconds).
     shader_defs.warm_registry_in_background()
 
@@ -331,7 +332,7 @@ class ChunksPluginContainer(PluginContainer):
         reg.reload_modules()
 
     def saveLayers(self, usdviewApi):
-        reg = chunk_usd.ChunkLayerManager()
+        reg = chunk_stage.ChunkLayerManager()
         # flt = "*.usda *.usd *.usdc"
         if not (path := chunk_qt.file_dial(directory=True)):
             return

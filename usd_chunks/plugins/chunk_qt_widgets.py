@@ -9,7 +9,7 @@ from usd_chunks.chunk_widget_api import ChunkParamWidgetBase
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 import re
 from functools import partial
@@ -1317,7 +1317,7 @@ class LabeledWidget(QtWidgets.QWidget):
 
         if action := menu.exec_(event.globalPos()):
             if loft_action and action == loft_action:
-                chunk_usd.loft_param_to_context(param, context)
+                chunk_stage.loft_param_to_context(param, context)
             elif expr_action and action == expr_action:
                 current = str(raw) if isinstance(raw, str) else ""
                 # Parent the dialog to a real top-level window, not self: in the node graph this
@@ -1830,7 +1830,7 @@ class ViewSlotState(QtCore.QObject):
         inspect_action = menu.addAction("Inspect Layer")
         rename_action = menu.addAction("Rename…")
         pin_action = menu.addAction(
-            _label("Unpin from Params" if chunk_usd.is_chunk_pinned(grp) else "Pin to Params")
+            _label("Unpin from Params" if chunk_stage.is_chunk_pinned(grp) else "Pin to Params")
         )
         copy_action = cut_action = duplicate_action = None
         if graph_view is not None:
@@ -1885,9 +1885,9 @@ class ViewSlotState(QtCore.QObject):
         elif res == pin_action:
             # The clicked chunk decides the direction, so a mixed selection ends up in one
             # state rather than each chunk flipping to the opposite of whatever it was.
-            new_pinned = not chunk_usd.is_chunk_pinned(grp)
+            new_pinned = not chunk_stage.is_chunk_pinned(grp)
             for target in targets:
-                chunk_usd.set_chunk_pinned(target, new_pinned)
+                chunk_stage.set_chunk_pinned(target, new_pinned)
                 self.pin_changed.emit(target, new_pinned)
         elif view_action and res == view_action:
             if existing_view_slot is not None:
@@ -1921,7 +1921,7 @@ class ViewSlotState(QtCore.QObject):
 class ParamsFilterBar(QtWidgets.QWidget):
     """Per-tab filter bar shown at the top of a context's Params page: a pin-filter toggle plus
     a fuzzy search box with a Name/Type/Both scope combobox — two independent, AND'd filters
-    over the same Params page (see chunk_usd.chunk_matches_search /
+    over the same Params page (see chunk_stage.chunk_matches_search /
     ChunkWidget._is_hidden_by_params_filter).
     """
 
@@ -2027,15 +2027,15 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     def _on_pin_filter_toggled(self, enabled: bool) -> None:
         """The filter bar's pin-filter checkbox changed for this tab. Unlike a single chunk's
         pin toggle, this can change visibility for every chunk in the tab at once."""
-        chunk_usd.set_pin_filter_enabled(self.group, enabled)
+        chunk_stage.set_pin_filter_enabled(self.group, enabled)
         self._reconcile_all_children()
 
     def _on_search_changed(self, query: str, scope: str) -> None:
         """The filter bar's search box or a scope chip changed for this tab — live, on every
         keystroke, same as the create-menu's FilterableChunkMenu search. Can change visibility
         for every chunk in the tab at once."""
-        chunk_usd.set_search_query(self.group, query)
-        chunk_usd.set_search_scope(self.group, scope)
+        chunk_stage.set_search_query(self.group, query)
+        chunk_stage.set_search_scope(self.group, scope)
         self._reconcile_all_children()
 
     def _on_pin_changed(self, target_chunk: "chunk.ChunkBase", pinned: bool) -> None:
@@ -2075,7 +2075,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     def _show_chunk_widget(self, target_chunk: "chunk.ChunkBase") -> None:
         if target_chunk.get_hash() in self.group_widgets:
             return  # already shown
-        if chunk_usd.is_group_chunk(target_chunk):
+        if chunk_stage.is_group_chunk(target_chunk):
             self._add_group_widget(target_chunk)
         else:
             self._add_group_layout(target_chunk)
@@ -2225,9 +2225,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 header_layout.addWidget(self._lofted_container)
 
                 self._filter_bar = ParamsFilterBar(self)
-                self._filter_bar.set_pin_filter_checked(chunk_usd.is_pin_filter_enabled(self.group))
+                self._filter_bar.set_pin_filter_checked(chunk_stage.is_pin_filter_enabled(self.group))
                 self._filter_bar.set_search_state(
-                    chunk_usd.get_search_query(self.group), chunk_usd.get_search_scope(self.group)
+                    chunk_stage.get_search_query(self.group), chunk_stage.get_search_scope(self.group)
                 )
                 self._filter_bar.pin_filter_toggled.connect(self._on_pin_filter_toggled)
                 self._filter_bar.search_changed.connect(self._on_search_changed)
@@ -2287,11 +2287,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             return False
         if not isinstance(group_chunk, chunk.ChunkBase):
             return False
-        if chunk_usd.is_pin_filter_enabled(self.group) and not chunk_usd.is_chunk_pinned(group_chunk):
+        if chunk_stage.is_pin_filter_enabled(self.group) and not chunk_stage.is_chunk_pinned(group_chunk):
             return True
-        query = chunk_usd.get_search_query(self.group)
-        if query and not chunk_usd.chunk_matches_search(
-            group_chunk, query, chunk_usd.get_search_scope(self.group)
+        query = chunk_stage.get_search_query(self.group)
+        if query and not chunk_stage.chunk_matches_search(
+            group_chunk, query, chunk_stage.get_search_scope(self.group)
         ):
             return True
         return False
@@ -2386,7 +2386,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 if not p.IsPrimPath() or not p.IsAbsolutePath():
                     edit.setText(self.group.prim_path or "")
                     return
-            chunk_usd.rename_context_prim_path(self.group, val)
+            chunk_stage.rename_context_prim_path(self.group, val)
 
         edit.editingFinished.connect(_commit)
 

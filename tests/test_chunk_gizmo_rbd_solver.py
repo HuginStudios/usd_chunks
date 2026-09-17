@@ -18,7 +18,7 @@ from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_gizmo, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 rbd_mod = importlib.import_module("scripts.dynamics.rbd_solver")
 
@@ -47,7 +47,7 @@ def solver():
     sender = _Scene(stage)
     registry.initialize(sender, "pytest")
     chunk_registry.ChunkLayerManager().initialize(stage)
-    chunk_usd.ChunkStageSync().initialize(stage, sender)
+    chunk_stage.ChunkStageSync().initialize(stage, sender)
 
     node = rbd_mod.main()
     node._config = ChunkConfig(module="rbd_solver")

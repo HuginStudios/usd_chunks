@@ -5,7 +5,7 @@ from pxr import Usd
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import export_chunks, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import export_chunks, initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):
@@ -128,7 +128,7 @@ def test_reload_reauthors_sublayer_paths_without_repeated_execution(tmp_path) ->
     chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
     chunk_registry.ChunkLayerManager().initialize(stage2)
 
-    from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init2
+    from usd_chunks.chunk_stage import initialize as _chunk_usd_init2
 
     real_sublayer_module = chunk_registry.ChunkRegistry().get_chunk_module("sublayer").module
     call_count = {"n": 0}

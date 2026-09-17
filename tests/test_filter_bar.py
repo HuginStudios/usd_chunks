@@ -3,8 +3,8 @@ from __future__ import annotations
 from pxr import Usd
 from PySide6 import QtCore
 
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 
@@ -43,7 +43,7 @@ def test_pin_filter_defaults_enabled_when_attribute_absent() -> None:
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
 
-    assert chunk_usd.is_pin_filter_enabled(ctx) is True
+    assert chunk_stage.is_pin_filter_enabled(ctx) is True
 
 
 def test_set_pin_filter_enabled_roundtrips_and_defines_prim_on_demand() -> None:
@@ -56,12 +56,12 @@ def test_set_pin_filter_enabled_roundtrips_and_defines_prim_on_demand() -> None:
     ctx = scene.add_context("Tab1")
     assert not stage.GetPrimAtPath("/Tab1").IsValid()
 
-    chunk_usd.set_pin_filter_enabled(ctx, False)
-    assert chunk_usd.is_pin_filter_enabled(ctx) is False
+    chunk_stage.set_pin_filter_enabled(ctx, False)
+    assert chunk_stage.is_pin_filter_enabled(ctx) is False
     assert stage.GetPrimAtPath("/Tab1").IsValid()
 
-    chunk_usd.set_pin_filter_enabled(ctx, True)
-    assert chunk_usd.is_pin_filter_enabled(ctx) is True
+    chunk_stage.set_pin_filter_enabled(ctx, True)
+    assert chunk_stage.is_pin_filter_enabled(ctx) is True
 
 
 def test_pin_filter_enabled_uses_own_prim_path_not_get_chunk_prim_path() -> None:
@@ -74,8 +74,8 @@ def test_pin_filter_enabled_uses_own_prim_path_not_get_chunk_prim_path() -> None
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
 
-    assert chunk_usd.get_chunk_prim_path(ctx) == "/Tab1/Tab1"  # the trap, not what we want
-    chunk_usd.set_pin_filter_enabled(ctx, False)
+    assert chunk_stage.get_chunk_prim_path(ctx) == "/Tab1/Tab1"  # the trap, not what we want
+    chunk_stage.set_pin_filter_enabled(ctx, False)
     assert stage.GetPrimAtPath("/Tab1").GetAttribute("filter:pinEnabled").Get() is False
     assert not stage.GetPrimAtPath("/Tab1/Tab1").IsValid()
 
@@ -90,9 +90,9 @@ def test_pin_filter_enabled_works_for_chunkgroup_context_too() -> None:
     grp._config = ChunkConfig(module="group")
     scene.add_chunk(grp)
 
-    assert chunk_usd.is_pin_filter_enabled(grp) is True
-    chunk_usd.set_pin_filter_enabled(grp, False)
-    assert chunk_usd.is_pin_filter_enabled(grp) is False
+    assert chunk_stage.is_pin_filter_enabled(grp) is True
+    chunk_stage.set_pin_filter_enabled(grp, False)
+    assert chunk_stage.is_pin_filter_enabled(grp) is False
     assert stage.GetPrimAtPath("/Tab1/mygroup").GetAttribute("filter:pinEnabled").Get() is False
 
 
@@ -110,8 +110,8 @@ def test_pin_filter_on_shows_only_pinned(qapp) -> None:
     c_unpinned = _chunk_with_module("unpinned_chunk")
     scene.add_chunk(c_pinned)
     scene.add_chunk(c_unpinned)
-    chunk_usd.set_chunk_pinned(c_pinned, True)
-    chunk_usd.set_chunk_pinned(c_unpinned, False)
+    chunk_stage.set_chunk_pinned(c_pinned, True)
+    chunk_stage.set_chunk_pinned(c_unpinned, False)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     assert c_pinned.get_hash() in w.group_widgets
@@ -128,8 +128,8 @@ def test_toggling_pin_filter_off_reveals_every_chunk_live(qapp) -> None:
     c_unpinned = _chunk_with_module("unpinned_chunk")
     scene.add_chunk(c_pinned)
     scene.add_chunk(c_unpinned)
-    chunk_usd.set_chunk_pinned(c_pinned, True)
-    chunk_usd.set_chunk_pinned(c_unpinned, False)
+    chunk_stage.set_chunk_pinned(c_pinned, True)
+    chunk_stage.set_chunk_pinned(c_unpinned, False)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     assert c_unpinned.get_hash() not in w.group_widgets
@@ -137,11 +137,11 @@ def test_toggling_pin_filter_off_reveals_every_chunk_live(qapp) -> None:
     w._filter_bar.pin_filter_checkbox.setChecked(False)
     assert c_unpinned.get_hash() in w.group_widgets
     assert c_pinned.get_hash() in w.group_widgets  # unaffected
-    assert chunk_usd.is_pin_filter_enabled(ctx) is False
+    assert chunk_stage.is_pin_filter_enabled(ctx) is False
 
     w._filter_bar.pin_filter_checkbox.setChecked(True)
     assert c_unpinned.get_hash() not in w.group_widgets
-    assert chunk_usd.is_pin_filter_enabled(ctx) is True
+    assert chunk_stage.is_pin_filter_enabled(ctx) is True
 
 
 def test_pin_toggle_menu_action_respects_disabled_pin_filter(qapp) -> None:
@@ -154,7 +154,7 @@ def test_pin_toggle_menu_action_respects_disabled_pin_filter(qapp) -> None:
     ctx = scene.add_context("Tab1")
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
-    chunk_usd.set_chunk_pinned(c, True)
+    chunk_stage.set_chunk_pinned(c, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     vs = ViewSlotState()
@@ -162,7 +162,7 @@ def test_pin_toggle_menu_action_respects_disabled_pin_filter(qapp) -> None:
     w._filter_bar.pin_filter_checkbox.setChecked(False)
     assert c.get_hash() in w.group_widgets
 
-    chunk_usd.set_chunk_pinned(c, False)
+    chunk_stage.set_chunk_pinned(c, False)
     vs.pin_changed.emit(c, False)
     assert c.get_hash() in w.group_widgets  # still shown — filter is off
 
@@ -173,7 +173,7 @@ def test_pin_filter_toggle_persists_across_export_reload_cycle(qapp) -> None:
     ctx = scene.add_context("Tab1")
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
-    chunk_usd.set_pin_filter_enabled(ctx, False)
+    chunk_stage.set_pin_filter_enabled(ctx, False)
 
     usda = stage.GetRootLayer().ExportToString()
     reloaded = Usd.Stage.CreateInMemory()
@@ -191,7 +191,7 @@ def test_legacy_tab_with_no_filter_attribute_behaves_as_pin_filter_on(qapp) -> N
     ctx = scene.add_context("Tab1")
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
-    chunk_usd.set_chunk_pinned(c, False)
+    chunk_stage.set_chunk_pinned(c, False)
     # No filter:pinEnabled ever written for this tab — matches a scene from before issue 05.
 
     w = ChunkWidget(ctx, is_tab_context=True)
@@ -203,21 +203,21 @@ def test_legacy_tab_with_no_filter_attribute_behaves_as_pin_filter_on(qapp) -> N
 # ---------------------------------------------------------------------------
 
 def test_fuzzy_matches_exact_substring() -> None:
-    assert chunk_usd.fuzzy_matches("trans", "transform_scale") is True
-    assert chunk_usd.fuzzy_matches("VIEW", "View1") is True  # case-insensitive
+    assert chunk_stage.fuzzy_matches("trans", "transform_scale") is True
+    assert chunk_stage.fuzzy_matches("VIEW", "View1") is True  # case-insensitive
 
 
 def test_fuzzy_matches_empty_term_matches_everything() -> None:
-    assert chunk_usd.fuzzy_matches("", "anything") is True
-    assert chunk_usd.fuzzy_matches("   ", "anything") is True
+    assert chunk_stage.fuzzy_matches("", "anything") is True
+    assert chunk_stage.fuzzy_matches("   ", "anything") is True
 
 
 def test_fuzzy_matches_tolerates_a_small_typo() -> None:
-    assert chunk_usd.fuzzy_matches("transfrom", "transform") is True
+    assert chunk_stage.fuzzy_matches("transfrom", "transform") is True
 
 
 def test_fuzzy_matches_rejects_unrelated_term() -> None:
-    assert chunk_usd.fuzzy_matches("xyz123", "transform_scale") is False
+    assert chunk_stage.fuzzy_matches("xyz123", "transform_scale") is False
 
 
 def test_fuzzy_matches_rejects_a_shorter_name_that_merely_shares_a_prefix() -> None:
@@ -228,27 +228,27 @@ def test_fuzzy_matches_rejects_a_shorter_name_that_merely_shares_a_prefix() -> N
     by combined length, so the four shared characters carried "haha" to 0.73, over the
     typo threshold. The shorter name is not a misspelling of what was typed.
     """
-    assert chunk_usd.fuzzy_matches("haha222", "haha") is False
-    assert chunk_usd.fuzzy_matches("haha222", "haha222") is True
+    assert chunk_stage.fuzzy_matches("haha222", "haha") is False
+    assert chunk_stage.fuzzy_matches("haha222", "haha222") is True
 
 
 def test_fuzzy_matches_still_finds_longer_names_from_a_fragment() -> None:
     """The narrowing above is one-directional: typing a prefix still widens, as before."""
-    assert chunk_usd.fuzzy_matches("haha", "haha222") is True
+    assert chunk_stage.fuzzy_matches("haha", "haha222") is True
 
 
 def test_chunk_matches_search_scopes_to_name_or_type() -> None:
     c = _chunk_with_module("transform_a", module="xform")
-    assert chunk_usd.chunk_matches_search(c, "xform", scope="type") is True
-    assert chunk_usd.chunk_matches_search(c, "xform", scope="name") is False
-    assert chunk_usd.chunk_matches_search(c, "transform", scope="type") is False
-    assert chunk_usd.chunk_matches_search(c, "transform", scope="name") is True
-    assert chunk_usd.chunk_matches_search(c, "xform", scope="both") is True
+    assert chunk_stage.chunk_matches_search(c, "xform", scope="type") is True
+    assert chunk_stage.chunk_matches_search(c, "xform", scope="name") is False
+    assert chunk_stage.chunk_matches_search(c, "transform", scope="type") is False
+    assert chunk_stage.chunk_matches_search(c, "transform", scope="name") is True
+    assert chunk_stage.chunk_matches_search(c, "xform", scope="both") is True
 
 
 def test_chunk_matches_search_empty_query_matches_everything() -> None:
     c = _chunk_with_module("anything", module="whatever")
-    assert chunk_usd.chunk_matches_search(c, "", scope="name") is True
+    assert chunk_stage.chunk_matches_search(c, "", scope="name") is True
 
 
 # ---------------------------------------------------------------------------
@@ -260,16 +260,16 @@ def test_search_query_and_scope_default_when_absent() -> None:
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
 
-    assert chunk_usd.get_search_query(ctx) == ""
-    assert chunk_usd.get_search_scope(ctx) == "both"
+    assert chunk_stage.get_search_query(ctx) == ""
+    assert chunk_stage.get_search_scope(ctx) == "both"
 
 
 def test_search_query_and_scope_roundtrip_through_export_reload() -> None:
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
-    chunk_usd.set_search_query(ctx, "transform")
-    chunk_usd.set_search_scope(ctx, "type")
+    chunk_stage.set_search_query(ctx, "transform")
+    chunk_stage.set_search_scope(ctx, "type")
 
     usda = stage.GetRootLayer().ExportToString()
     reloaded = Usd.Stage.CreateInMemory()
@@ -283,8 +283,8 @@ def test_set_search_scope_rejects_unrecognized_value() -> None:
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
-    chunk_usd.set_search_scope(ctx, "bogus")
-    assert chunk_usd.get_search_scope(ctx) == "both"
+    chunk_stage.set_search_scope(ctx, "bogus")
+    assert chunk_stage.get_search_scope(ctx) == "both"
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +301,8 @@ def test_search_box_live_filters_by_name(qapp) -> None:
     c2 = _chunk_with_module("light_b", module="light")
     scene.add_chunk(c1)
     scene.add_chunk(c2)
-    chunk_usd.set_chunk_pinned(c1, True)
-    chunk_usd.set_chunk_pinned(c2, True)
+    chunk_stage.set_chunk_pinned(c1, True)
+    chunk_stage.set_chunk_pinned(c2, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     assert c1.get_hash() in w.group_widgets and c2.get_hash() in w.group_widgets
@@ -330,8 +330,8 @@ def test_scope_combo_narrows_search_to_type_only(qapp) -> None:
     c2 = _chunk_with_module("light_b", module="light")
     scene.add_chunk(c1)
     scene.add_chunk(c2)
-    chunk_usd.set_chunk_pinned(c1, True)
-    chunk_usd.set_chunk_pinned(c2, True)
+    chunk_stage.set_chunk_pinned(c1, True)
+    chunk_stage.set_chunk_pinned(c2, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     _set_scope(w._filter_bar, "type")
@@ -368,9 +368,9 @@ def test_search_filter_ands_with_pin_filter(qapp) -> None:
     scene.add_chunk(c_pinned_match)
     scene.add_chunk(c_unpinned_match)
     scene.add_chunk(c_pinned_nomatch)
-    chunk_usd.set_chunk_pinned(c_pinned_match, True)
-    chunk_usd.set_chunk_pinned(c_unpinned_match, False)
-    chunk_usd.set_chunk_pinned(c_pinned_nomatch, True)
+    chunk_stage.set_chunk_pinned(c_pinned_match, True)
+    chunk_stage.set_chunk_pinned(c_unpinned_match, False)
+    chunk_stage.set_chunk_pinned(c_pinned_nomatch, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     w._filter_bar.search_box.setText("transform")
@@ -535,13 +535,13 @@ def test_toggling_the_pin_filter_still_works_after_the_edit_target_moves() -> No
     ctx = scene.add_context("Tab1")
 
     stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
-    chunk_usd.set_pin_filter_enabled(ctx, False)
-    assert chunk_usd.is_pin_filter_enabled(ctx) is False
+    chunk_stage.set_pin_filter_enabled(ctx, False)
+    assert chunk_stage.is_pin_filter_enabled(ctx) is False
 
     stage.SetEditTarget(Usd.EditTarget(stage.GetRootLayer()))
-    chunk_usd.set_pin_filter_enabled(ctx, True)
+    chunk_stage.set_pin_filter_enabled(ctx, True)
 
-    assert chunk_usd.is_pin_filter_enabled(ctx) is True
+    assert chunk_stage.is_pin_filter_enabled(ctx) is True
 
 
 def test_the_search_query_still_updates_after_the_edit_target_moves() -> None:
@@ -550,11 +550,11 @@ def test_the_search_query_still_updates_after_the_edit_target_moves() -> None:
     ctx = scene.add_context("Tab1")
 
     stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
-    chunk_usd.set_search_query(ctx, "apple")
+    chunk_stage.set_search_query(ctx, "apple")
     stage.SetEditTarget(Usd.EditTarget(stage.GetRootLayer()))
-    chunk_usd.set_search_query(ctx, "pear")
+    chunk_stage.set_search_query(ctx, "pear")
 
-    assert chunk_usd.get_search_query(ctx) == "pear"
+    assert chunk_stage.get_search_query(ctx) == "pear"
 
 
 def test_the_search_scope_still_updates_after_the_edit_target_moves() -> None:
@@ -565,8 +565,8 @@ def test_the_search_scope_still_updates_after_the_edit_target_moves() -> None:
     ctx = scene.add_context("Tab1")
 
     stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
-    chunk_usd.set_search_scope(ctx, "name")
+    chunk_stage.set_search_scope(ctx, "name")
     stage.SetEditTarget(Usd.EditTarget(stage.GetRootLayer()))
-    chunk_usd.set_search_scope(ctx, "type")
+    chunk_stage.set_search_scope(ctx, "type")
 
-    assert chunk_usd.get_search_scope(ctx) == "type"
+    assert chunk_stage.get_search_scope(ctx) == "type"

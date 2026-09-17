@@ -496,7 +496,7 @@ def commit_order(chunks: Iterable["ChunkBase"]) -> List["ChunkBase"]:
     Depth only sees edges someone created with add_dependency, which is NOT how the node
     graph wires a param port: drag-to-connect authors an @Node.param@ expression, whose
     live link is a NoticeConnection rather than a DAG edge, so two chunks joined only by a
-    param wire both land at depth 0 here. Pass chunk_usd.commit_order_from_stage as the
+    param wire both land at depth 0 here. Pass chunk_stage.commit_order_from_stage as the
     `order` argument to commit_all to order from the stage's own connections instead --
     which is what the CLI does.
 
@@ -536,7 +536,7 @@ def commit_all(chunks: Iterable["ChunkBase"], order: "Callable[[List[ChunkBase]]
     Args:
         chunks (Iterable[ChunkBase]): The chunks to commit, in any order
         order (Callable | None): How to order them. Defaults to commit_order (DagNode
-            depth); pass chunk_usd.commit_order_from_stage bound to a stage to order from
+            depth); pass chunk_stage.commit_order_from_stage bound to a stage to order from
             USD connections instead, which is the only way to see a param-port wire.
 
     Returns:

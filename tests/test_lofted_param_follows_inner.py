@@ -20,9 +20,9 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 LOFTED = "Transform_tx"
 
@@ -77,7 +77,7 @@ def lofted(qapp):
     settle()
     inner.get_param("tx").value = 1.0
     settle()
-    chunk_usd.loft_param_to_context(inner.get_param("tx"), group)
+    chunk_stage.loft_param_to_context(inner.get_param("tx"), group)
     settle()
     assert group.get_param(LOFTED) is not None
     return dict(stage=stage, group=group, inner=inner, settle=settle)
@@ -125,7 +125,7 @@ def test_a_write_settles_rather_than_ping_ponging(lofted):
     group_param = group.get_param(LOFTED)
     group_param.add_callback(
         lambda *_a, **_k: seen.append(group_param.value),
-        notice_alias=chunk_usd.chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
+        notice_alias=chunk_stage.chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
         send_on_create=False,
     )
 

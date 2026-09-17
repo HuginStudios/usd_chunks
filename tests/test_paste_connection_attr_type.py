@@ -20,7 +20,7 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt_nodegraph import _author_raw_connection
 
 
@@ -40,7 +40,7 @@ def scene(qapp):
     chunk_registry.ChunkRegistry().initialize(s, "pytest")
     chunk_registry.ChunkLayerManager().reset()
     chunk_registry.ChunkLayerManager().initialize(stage)
-    chunk_usd.initialize(stage, s)
+    chunk_stage.initialize(stage, s)
     return s, stage
 
 
@@ -55,8 +55,8 @@ def _mk(scene_obj, key):
 def _wire(stage, dst_chunk, dst_suffix, src_chunk, src_suffix):
     _author_raw_connection(
         stage,
-        chunk_usd.get_chunk_prim_path(dst_chunk), dst_suffix, dst_chunk,
-        chunk_usd.get_chunk_prim_path(src_chunk), src_suffix,
+        chunk_stage.get_chunk_prim_path(dst_chunk), dst_suffix, dst_chunk,
+        chunk_stage.get_chunk_prim_path(src_chunk), src_suffix,
     )
 
 
@@ -66,7 +66,7 @@ def test_a_float_param_keeps_a_float_attribute(scene, qapp):
     dst = _mk(s, "transform")
     qapp.processEvents()
 
-    dst_prim = stage.GetPrimAtPath(Sdf.Path(chunk_usd.get_chunk_prim_path(dst)))
+    dst_prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(dst)))
     assert not dst_prim.GetAttribute("inputs:tx").IsValid(), (
         "precondition: tx must be unauthored, which is when the attribute gets created here"
     )
@@ -91,7 +91,7 @@ def test_the_new_attribute_accepts_the_value_the_param_will_write(scene, qapp):
     _wire(stage, dst, "inputs:tx", src, "outputs:tx")
 
     attr = stage.GetPrimAtPath(
-        Sdf.Path(chunk_usd.get_chunk_prim_path(dst))
+        Sdf.Path(chunk_stage.get_chunk_prim_path(dst))
     ).GetAttribute("inputs:tx")
     attr.Set(4.25)          # raised: expected 'string', got 'double'
     assert attr.Get() == pytest.approx(4.25)
@@ -107,7 +107,7 @@ def test_a_genuine_string_param_is_still_a_string(scene, qapp):
     _wire(stage, dst, "inputs:dest_path", src, "outputs:result")
 
     attr = stage.GetPrimAtPath(
-        Sdf.Path(chunk_usd.get_chunk_prim_path(dst))
+        Sdf.Path(chunk_stage.get_chunk_prim_path(dst))
     ).GetAttribute("inputs:dest_path")
     assert attr.IsValid()
     assert attr.GetTypeName() == Sdf.ValueTypeNames.String

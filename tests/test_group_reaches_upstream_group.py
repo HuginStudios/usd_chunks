@@ -21,9 +21,9 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init,
 )
 
@@ -101,13 +101,13 @@ def groups(qapp):
     # One tail per group, so each group's own cook reaches all of its content.
     connect_exec(stage, scene, get_chunk_prim_path(pa), get_chunk_prim_path(ga2))
     connect_exec(stage, scene, get_chunk_prim_path(pb), get_chunk_prim_path(gb2))
-    view = next(c for c in scene.get_chunks() if chunk_usd.is_view_chunk(c))
+    view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
     connect_exec(stage, scene, get_chunk_prim_path(ga), get_chunk_prim_path(gb))
     connect_exec(stage, scene, get_chunk_prim_path(gb), get_chunk_prim_path(view))
     settle()
     # The tab's settled cook -- connect_exec authors the wire, the graph widget is what
     # normally follows it with a recook.
-    chunk_usd.recook_focus(stage, scene, scene.get_root_context(), view)
+    chunk_stage.recook_focus(stage, scene, scene.get_root_context(), view)
     settle()
 
     return dict(
@@ -209,11 +209,11 @@ def test_a_chunk_inside_the_group_reads_the_upstream_group_when_naming(qapp):
     gb = mk("chunkgroup")
     dupe_b = mk("duplicate_prim", context=gb)
     settle()
-    view = next(c for c in scene.get_chunks() if chunk_usd.is_view_chunk(c))
+    view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
     connect_exec(stage, scene, get_chunk_prim_path(ga), get_chunk_prim_path(gb))
     connect_exec(stage, scene, get_chunk_prim_path(gb), get_chunk_prim_path(view))
     settle()
-    chunk_usd.recook_focus(stage, scene, scene.get_root_context(), view)
+    chunk_stage.recook_focus(stage, scene, scene.get_root_context(), view)
     settle()
 
     dupe_a.get_param("source_prim").value = src

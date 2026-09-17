@@ -3,10 +3,10 @@
 The Edit Target chunk publishes the layer it points at onto its own prim
 (chunk:editTargetLayer). A chunk's effective edit layer is the one published by the
 nearest Edit Target chunk reachable by walking inputs:chunk upstream (session layer if
-there is none) — see chunk_usd.nearest_upstream_edit_layer. When that resolved target
+there is none) — see chunk_stage.nearest_upstream_edit_layer. When that resolved target
 changes (an Edit Target repoints, or is removed), the downstream chunk's bookkeeping AND
 driven content move to the new layer, and its old edits are removed from the old one
-(chunk_usd.reconcile_edit_targets).
+(chunk_stage.reconcile_edit_targets).
 
 Chunks are wired into the exec chain the way the Params tab auto-chains them
 (prev -> new via inputs:chunk); the _make helper flips _params_tab_create to build that
@@ -21,8 +21,8 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins.chunk_usd import initialize as init_chunk_usd, get_chunk_prim_path
-import usd_chunks.plugins.chunk_usd as chunk_usd
+from usd_chunks.chunk_stage import initialize as init_chunk_usd, get_chunk_prim_path
+import usd_chunks.chunk_stage as chunk_stage
 
 
 class _DummyScene(SceneSender):
@@ -43,12 +43,12 @@ def _make(scene, mod, module_name):
     c._module = mod
     # Auto-chain prev -> new (Params-tab behavior) so the exec chain that resolution walks
     # actually exists.
-    prev = chunk_usd._params_tab_create
-    chunk_usd._params_tab_create = True
+    prev = chunk_stage._params_tab_create
+    chunk_stage._params_tab_create = True
     try:
         scene.add_chunk(c)
     finally:
-        chunk_usd._params_tab_create = prev
+        chunk_stage._params_tab_create = prev
     return c
 
 
@@ -209,12 +209,12 @@ class TestEditTargetMigration:
         stage2 = Usd.Stage.Open(str(graph_path))
         scene2._stage = stage2
         chunk_registry.ChunkLayerManager().initialize(stage2)
-        chunk_usd.ChunkStageSync().initialize(stage2, scene2)
+        chunk_stage.ChunkStageSync().initialize(stage2, scene2)
 
         chunks2 = list(scene2.get_chunks())
         et_values = {
             c.get_param("edit_target").value
-            for c in chunks2 if chunk_usd.is_edit_target_chunk(c)
+            for c in chunks2 if chunk_stage.is_edit_target_chunk(c)
         }
         assert et_values == {"A", "B"}  # both selections survived, not reset to Session Layer
 
@@ -285,7 +285,7 @@ class TestEditTargetMigration:
         Sdf.CreatePrimInLayer(layer_a, cpath)
         assert layer_a.GetPrimAtPath(cpath).specifier == Sdf.SpecifierOver
 
-        assert chunk_usd._migrate_chunk_bookkeeping(stage, str(cpath), layer_a) is True
+        assert chunk_stage._migrate_chunk_bookkeeping(stage, str(cpath), layer_a) is True
 
         spec = layer_a.GetPrimAtPath(cpath)
         assert spec.specifier == Sdf.SpecifierDef

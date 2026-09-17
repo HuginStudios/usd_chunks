@@ -17,8 +17,8 @@ from pxr import Usd, UsdGeom
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):
@@ -76,7 +76,7 @@ def test_a_muted_chunk_layer_is_not_resurrected_in_an_upstream_read():
         "sanity: muting the dormant chunk's layer must revive the prim on the REAL stage"
     )
 
-    up = chunk_usd.get_upstream_stage(stage, scene, reader)
+    up = chunk_stage.get_upstream_stage(stage, scene, reader)
     assert up.GetPrimAtPath("/apple").IsActive() is True, (
         "the dormant chunk's layer is muted -- invisible everywhere the user looks -- so it "
         "must not still be driving another chunk's upstream read"
@@ -88,7 +88,7 @@ def test_an_unmuted_chunk_layer_is_still_honoured():
     stage, scene, dormant, reader, layer = _setup()
 
     assert not stage.IsLayerMuted(layer.identifier)
-    up = chunk_usd.get_upstream_stage(stage, scene, reader)
+    up = chunk_stage.get_upstream_stage(stage, scene, reader)
     assert up.GetPrimAtPath("/apple").IsActive() is False, (
         "a live chunk's opinion must still reach another chunk's upstream read"
     )

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pxr import Usd, UsdUtils
 
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import initialize as _chunk_usd_init
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 
@@ -63,7 +63,7 @@ def test_is_chunk_pinned_defaults_true_when_attribute_absent() -> None:
     scene.add_chunk(c)
     _make_legacy(stage, "/Tab1/c1")
 
-    assert chunk_usd.is_chunk_pinned(c) is True
+    assert chunk_stage.is_chunk_pinned(c) is True
 
 
 def test_set_chunk_pinned_roundtrips_through_usd_attribute() -> None:
@@ -73,15 +73,15 @@ def test_set_chunk_pinned_roundtrips_through_usd_attribute() -> None:
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
 
-    chunk_usd.set_chunk_pinned(c, False)
-    assert chunk_usd.is_chunk_pinned(c) is False
+    chunk_stage.set_chunk_pinned(c, False)
+    assert chunk_stage.is_chunk_pinned(c) is False
 
     attr = stage.GetPrimAtPath("/Tab1/c1").GetAttribute("chunk:pinned")
     assert attr.IsValid()
     assert attr.Get() is False
 
-    chunk_usd.set_chunk_pinned(c, True)
-    assert chunk_usd.is_chunk_pinned(c) is True
+    chunk_stage.set_chunk_pinned(c, True)
+    assert chunk_stage.is_chunk_pinned(c) is True
     assert attr.Get() is True
 
 
@@ -101,7 +101,7 @@ def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
     scene.add_context("Tab1")
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
-    chunk_usd.set_chunk_pinned(c, False)
+    chunk_stage.set_chunk_pinned(c, False)
 
     usda = UsdUtils.FlattenLayerStack(stage).ExportToString()
 
@@ -126,8 +126,8 @@ def test_params_page_filters_unpinned_chunks(qapp) -> None:
     c_unpinned = _chunk_with_module("unpinned_chunk")
     scene.add_chunk(c_pinned)
     scene.add_chunk(c_unpinned)
-    chunk_usd.set_chunk_pinned(c_pinned, True)
-    chunk_usd.set_chunk_pinned(c_unpinned, False)
+    chunk_stage.set_chunk_pinned(c_pinned, True)
+    chunk_stage.set_chunk_pinned(c_unpinned, False)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     vs = ViewSlotState()
@@ -145,7 +145,7 @@ def test_pin_changed_signal_shows_and_hides_live(qapp) -> None:
     ctx = scene.add_context("Tab1")
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
-    chunk_usd.set_chunk_pinned(c, True)
+    chunk_stage.set_chunk_pinned(c, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     vs = ViewSlotState()
@@ -153,12 +153,12 @@ def test_pin_changed_signal_shows_and_hides_live(qapp) -> None:
     assert c.get_hash() in w.group_widgets
 
     # Unpin: widget must be removed live, without a rebuild.
-    chunk_usd.set_chunk_pinned(c, False)
+    chunk_stage.set_chunk_pinned(c, False)
     vs.pin_changed.emit(c, False)
     assert c.get_hash() not in w.group_widgets
 
     # Re-pin: widget must reappear live.
-    chunk_usd.set_chunk_pinned(c, True)
+    chunk_stage.set_chunk_pinned(c, True)
     vs.pin_changed.emit(c, True)
     assert c.get_hash() in w.group_widgets
 
@@ -197,7 +197,7 @@ def test_new_chunk_defaults_to_not_pinned() -> None:
     attr = stage.GetPrimAtPath("/Tab1/graph_created").GetAttribute("chunk:pinned")
     assert attr.IsValid()  # explicitly authored, not left absent
     assert attr.Get() is False
-    assert chunk_usd.is_chunk_pinned(c) is False
+    assert chunk_stage.is_chunk_pinned(c) is False
 
 
 def test_pin_new_chunks_flag_marks_creation_as_pinned() -> None:
@@ -207,18 +207,18 @@ def test_pin_new_chunks_flag_marks_creation_as_pinned() -> None:
     scene = _make_scene(stage)
     scene.add_context("Tab1")
 
-    chunk_usd._pin_new_chunks = True
+    chunk_stage._pin_new_chunks = True
     try:
         c = _chunk_with_module("params_created")
         scene.add_chunk(c)
     finally:
-        chunk_usd._pin_new_chunks = None
+        chunk_stage._pin_new_chunks = None
 
-    assert chunk_usd.is_chunk_pinned(c) is True
+    assert chunk_stage.is_chunk_pinned(c) is True
     # The flag must not leak into chunks created afterwards.
     c2 = _chunk_with_module("later_graph_created")
     scene.add_chunk(c2)
-    assert chunk_usd.is_chunk_pinned(c2) is False
+    assert chunk_stage.is_chunk_pinned(c2) is False
 
 
 # ---------------------------------------------------------------------------
@@ -246,12 +246,12 @@ def test_graph_surface_flag_resolves_the_race_to_unpinned(qapp) -> None:
     ctx = scene.add_context("Tab1")
     w = ChunkWidget(ctx, is_tab_context=True)
 
-    chunk_usd._pin_new_chunks = False
+    chunk_stage._pin_new_chunks = False
     try:
         c = _chunk_with_module("graph_created_explicit")
         scene.add_chunk(c)
     finally:
-        chunk_usd._pin_new_chunks = None
+        chunk_stage._pin_new_chunks = None
 
     assert c.get_hash() not in w.group_widgets
 
@@ -264,12 +264,12 @@ def test_params_surface_flag_resolves_the_race_to_pinned(qapp) -> None:
     ctx = scene.add_context("Tab1")
     w = ChunkWidget(ctx, is_tab_context=True)
 
-    chunk_usd._pin_new_chunks = True
+    chunk_stage._pin_new_chunks = True
     try:
         c = _chunk_with_module("params_created")
         scene.add_chunk(c)
     finally:
-        chunk_usd._pin_new_chunks = None
+        chunk_stage._pin_new_chunks = None
 
     assert c.get_hash() in w.group_widgets
 
@@ -292,13 +292,13 @@ def test_view_chunk_never_defaults_to_pinned(qapp) -> None:
     scene.add_chunk(v)
 
     assert stage.GetPrimAtPath("/Tab1/View1").GetAttribute("chunk:pinned").Get() is False
-    assert chunk_usd.is_chunk_pinned(v) is False
+    assert chunk_stage.is_chunk_pinned(v) is False
     assert v.get_hash() not in w.group_widgets
 
     # Even a genuinely legacy view (attribute stripped, as if saved before this feature
     # shipped) must not fall back to the migration pinned=true default.
     _make_legacy(stage, "/Tab1/View1")
-    assert chunk_usd.is_chunk_pinned(v) is False
+    assert chunk_stage.is_chunk_pinned(v) is False
 
 
 def test_view_chunk_pinned_still_overridable_via_explicit_menu_action(qapp) -> None:
@@ -311,8 +311,8 @@ def test_view_chunk_pinned_still_overridable_via_explicit_menu_action(qapp) -> N
     v._config = ChunkConfig(module="view")
     scene.add_chunk(v)
 
-    chunk_usd.set_chunk_pinned(v, True)
-    assert chunk_usd.is_chunk_pinned(v) is True
+    chunk_stage.set_chunk_pinned(v, True)
+    assert chunk_stage.is_chunk_pinned(v) is True
 
 
 def test_chunkgroup_member_created_via_graph_not_shown_in_dive_in_params(qapp) -> None:
@@ -337,12 +337,12 @@ def test_chunkgroup_member_created_via_graph_not_shown_in_dive_in_params(qapp) -
     prev_ctx = scene._current_context
     scene._current_context = weakref.ref(grp)
     try:
-        chunk_usd._pin_new_chunks = False  # what ChunkGraphView.contextMenuEvent sets now
+        chunk_stage._pin_new_chunks = False  # what ChunkGraphView.contextMenuEvent sets now
         try:
             member = _chunk_with_module("member1")
             scene.add_chunk(member)
         finally:
-            chunk_usd._pin_new_chunks = None
+            chunk_stage._pin_new_chunks = None
     finally:
         scene._current_context = prev_ctx
 

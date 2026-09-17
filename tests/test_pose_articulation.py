@@ -27,7 +27,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 from usd_chunks import chunk_gizmo, chunk_registry, chunk_utils
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "rigs"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "dynamics"))
@@ -93,7 +93,7 @@ def scene():
     sender = _Scene(stage)
     chunk_registry.ChunkRegistry().initialize(sender, "pytest")
     ChunkLayerManager().initialize(stage)
-    chunk_usd.ChunkStageSync().initialize(stage, sender)
+    chunk_stage.ChunkStageSync().initialize(stage, sender)
     return stage, sender
 
 
@@ -234,7 +234,7 @@ class TestPosingAlongsideADownstreamWriter:
         sender2 = _Scene(stage2)
         chunk_registry.ChunkRegistry().initialize(sender2, "pytest2")
         ChunkLayerManager().initialize(stage2)
-        chunk_usd.ChunkStageSync().initialize(stage2, sender2)
+        chunk_stage.ChunkStageSync().initialize(stage2, sender2)
         pose2 = _mk(sender2, pose_mod, "Pose", "pose_articulation")
         pose2.get_param("prim_path").value = "/root"
         pose2.execute()

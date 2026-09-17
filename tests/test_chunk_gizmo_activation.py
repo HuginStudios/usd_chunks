@@ -13,7 +13,7 @@ from pxr import Sdf, Usd, UsdGeom
 from usd_chunks import chunk, chunk_gizmo, chunk_notice, chunk_registry
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
-from usd_chunks.plugins.chunk_usd import _CHUNKS_ROOT, _author_prim
+from usd_chunks.chunk_stage import _CHUNKS_ROOT, _author_prim
 
 
 class _DummyScene(SceneSender):

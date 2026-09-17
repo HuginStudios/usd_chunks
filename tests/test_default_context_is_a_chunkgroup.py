@@ -17,8 +17,8 @@ from pxr import Usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 CHUNKS_SCOPE = "/chunks"
 
@@ -70,7 +70,7 @@ def test_the_default_context_is_a_chunkgroup(scene):
 
     ctxs = _contexts(s)
     assert len(ctxs) == 1, f"expected one default context, got {[c.name for c in ctxs]}"
-    assert chunk_usd.is_chunkgroup(ctxs[0]), (
+    assert chunk_stage.is_chunkgroup(ctxs[0]), (
         "context == chunkgroup; the default must be the real chunkgroup type, not a bare "
         "CONTEXT chunk standing in for one"
     )
@@ -154,7 +154,7 @@ def test_a_new_chunkgroup_nests_inside_the_root_container(scene):
 
     root = s.peek_root_context()
     assert get_chunk_prim_path(group).startswith(get_chunk_prim_path(root) + "/")
-    assert chunk_usd.is_node_in_context(group, root), (
+    assert chunk_stage.is_node_in_context(group, root), (
         "it must be a node in the root's graph, which is what makes it visible"
     )
 
@@ -212,7 +212,7 @@ def test_the_scope_survives_an_export_round_trip(scene, tmp_path):
     qapp.processEvents()
 
     out = tmp_path / "exported.usda"
-    chunk_usd.export_chunks(s, str(out))
+    chunk_stage.export_chunks(s, str(out))
 
     reopened = Usd.Stage.Open(str(out))
     root = reopened.GetPrimAtPath(CHUNKS_SCOPE)
@@ -231,7 +231,7 @@ def test_exported_chunks_keep_their_nesting(scene, tmp_path):
     qapp.processEvents()
 
     out = tmp_path / "exported.usda"
-    chunk_usd.export_chunks(s, str(out))
+    chunk_stage.export_chunks(s, str(out))
 
     reopened = Usd.Stage.Open(str(out))
     assert not reopened.GetRootLayer().subLayerPaths, "export is one self-contained layer"

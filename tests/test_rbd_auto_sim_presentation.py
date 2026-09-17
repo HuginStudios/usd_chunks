@@ -25,7 +25,7 @@ from pxr import Usd
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 
 class _DummyScene(SceneSender):
@@ -173,7 +173,7 @@ def _solver_hearing(source, monkeypatch):
 
     # The wiring the listener exists for. Real graph connections are USD-level and not worth
     # standing up here; what matters is that the brush counts as upstream.
-    monkeypatch.setattr(chunk_usd, "view_cook_list", lambda *a, **k: [source])
+    monkeypatch.setattr(chunk_stage, "view_cook_list", lambda *a, **k: [source])
     scheduled = []
     monkeypatch.setattr(rbd, "_schedule_auto_run", lambda c: scheduled.append(c))
 

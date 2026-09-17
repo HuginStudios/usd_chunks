@@ -4,8 +4,8 @@ import time
 
 from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
-from usd_chunks.plugins import chunk_usd
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks import chunk_stage
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 
@@ -240,9 +240,9 @@ def test_relevant_chunk_delete_still_recooks(qapp) -> None:
 
 def test_bulk_chunk_creation_burst_recooks_once(qapp) -> None:
     """Regression: a bulk file load fires CHUNK_LOADED once per chunk, synchronously and in
-    one call stack (see chunk_usd.load_chunks' _add_prim_mods). ChunkWidgetDocker rebuilt the
+    one call stack (see chunk_stage.load_chunks' _add_prim_mods). ChunkWidgetDocker rebuilt the
     graph tab on every single CHUNK_LOADED, and each rebuild's post-build step (build()'s own
-    100ms-later recook) re-ran chunk_usd.recook_for_view -- which re-executes its whole cook
+    100ms-later recook) re-ran chunk_stage.recook_for_view -- which re-executes its whole cook
     set every time it runs, not just what changed -- so an N-chunk load re-ran the entire
     upstream chain N times. Live-reported as repeated "Updated stage with sublayer" /
     "Scattered N instances" spam on every reload of a saved scene.
@@ -253,7 +253,7 @@ def test_bulk_chunk_creation_burst_recooks_once(qapp) -> None:
     node/widget creation) stays synchronous and undebounced, since several callers rely on a
     just-created node existing in scene()._nodes immediately.
 
-    Counts chunk_usd.recook_for_view calls specifically, not a downstream chunk's own
+    Counts chunk_stage.recook_for_view calls specifically, not a downstream chunk's own
     execute() -- wiring a new chunk into an already-cooking chain also triggers a real,
     separate DAG-level reactive execute() (chunk_notice's own dependency-changed dispatch,
     nothing to do with view-driven recook), which would conflate the two mechanisms and make
@@ -263,13 +263,13 @@ def test_bulk_chunk_creation_burst_recooks_once(qapp) -> None:
     transform_mod = reg.get_chunk_module("transform")
 
     call_count = {"n": 0}
-    orig_recook = chunk_usd.recook_for_view
+    orig_recook = chunk_stage.recook_for_view
 
     def traced_recook(*a, **kw):
         call_count["n"] += 1
         return orig_recook(*a, **kw)
 
-    chunk_usd.recook_for_view = traced_recook
+    chunk_stage.recook_for_view = traced_recook
     try:
         # Create several Transform chunks, then wire them into the view's cook set -- both
         # loops entirely synchronous, no qapp.processEvents() in between, matching how
@@ -292,7 +292,7 @@ def test_bulk_chunk_creation_burst_recooks_once(qapp) -> None:
             f"(got {call_count['n']})"
         )
     finally:
-        chunk_usd.recook_for_view = orig_recook
+        chunk_stage.recook_for_view = orig_recook
 
 
 def test_a_value_set_while_blocked_is_not_lost_once_unblocked(qapp) -> None:
@@ -317,7 +317,7 @@ def test_a_value_set_while_blocked_is_not_lost_once_unblocked(qapp) -> None:
     # blocked stays at its unset default until SOME recook runs, same as it would once any
     # other, unrelated change in the live session (e.g. wiring up Create Layer/Edit Target)
     # triggers one and iterates every chunk, this stray one included.
-    chunk_usd.recook_for_view(stage, scene, gv._graph_context(), view)
+    chunk_stage.recook_for_view(stage, scene, gv._graph_context(), view)
     qapp.processEvents()
     assert stray.is_blocked(), "setup must be faithful: a fresh, unwired chunk ends up blocked"
 
@@ -340,7 +340,7 @@ def test_a_value_set_while_blocked_is_not_lost_once_unblocked(qapp) -> None:
     # _wire (add_dependency alone) doesn't itself trigger a fresh recook in this harness --
     # the real UI drag-to-connect path does, through its own reactive cascade. Force the
     # recook explicitly rather than relying on that cascade being faithfully reproduced here.
-    chunk_usd.recook_for_view(stage, scene, gv._graph_context(), view)
+    chunk_stage.recook_for_view(stage, scene, gv._graph_context(), view)
     qapp.processEvents()
     _pump(0.3)
 

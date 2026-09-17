@@ -17,7 +17,7 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins.chunk_usd import ChunkStageSync
+from usd_chunks.chunk_stage import ChunkStageSync
 
 
 class _Scene(SceneSender):

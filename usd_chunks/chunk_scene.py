@@ -95,7 +95,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def add_stage_replaced_listener(self, callback) -> None:
         """Register a callback invoked when the DCC opens a new stage.
-        Called by chunk_usd.initialize so that reload_for_stage runs on file open."""
+        Called by chunk_stage.initialize so that reload_for_stage runs on file open."""
         self._stage_replaced_listeners.append(callback)
 
     def notify_stage_replaced(self, stage) -> None:

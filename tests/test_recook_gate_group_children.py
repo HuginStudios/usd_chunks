@@ -19,8 +19,8 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import (
     ChunkStageSync, connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init,
 )
 from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
@@ -85,7 +85,7 @@ def test_the_group_children_are_not_themselves_reachable(wired):
     """The precondition: this is why the gate used to skip them."""
     stage, scene, view, _group, ref, bind, _stray = wired
 
-    cook_set = set(chunk_usd.view_cook_list(view, stage, scene))
+    cook_set = set(chunk_stage.view_cook_list(view, stage, scene))
 
     assert ref not in cook_set
     assert bind not in cook_set
@@ -126,7 +126,7 @@ def test_a_groups_children_outrank_the_sublayer_feeding_it(wired, qapp):
     stage, scene, view, group, ref, bind, _stray = wired
     lm = chunk_registry.ChunkLayerManager()
 
-    chunk_usd.recook_for_view(stage, scene, None, view)
+    chunk_stage.recook_for_view(stage, scene, None, view)
     qapp.processEvents()
 
     def strength(chunk):
@@ -138,7 +138,7 @@ def test_a_groups_children_outrank_the_sublayer_feeding_it(wired, qapp):
                 return list(g.subLayerPaths).index(layer.identifier)
         raise AssertionError(f"{chunk.name}'s layer is in no graph layer")
 
-    sub = next(c for c in scene.get_chunks() if chunk_usd.get_chunk_prim_path(c).endswith("Sublayer"))
+    sub = next(c for c in scene.get_chunks() if chunk_stage.get_chunk_prim_path(c).endswith("Sublayer"))
 
     assert strength(ref) < strength(sub), "Reference must win over the sublayer it consumes"
     assert strength(bind) < strength(sub), "BindMaterial must win over the sublayer it consumes"

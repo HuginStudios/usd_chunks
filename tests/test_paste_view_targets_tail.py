@@ -20,9 +20,9 @@ from PySide6 import QtCore
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init,
 )
 
@@ -89,12 +89,12 @@ def _view_targets(scene, stage):
     """What each view chunk is pointed at."""
     out = []
     for c in scene.get_chunks():
-        if not chunk_usd.is_view_chunk(c):
+        if not chunk_stage.is_view_chunk(c):
             continue
         prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
         if not (prim and prim.IsValid()):
             continue
-        for attr in chunk_usd.iter_exec_inputs(prim):
+        for attr in chunk_stage.iter_exec_inputs(prim):
             out.extend(str(conn.GetPrimPath()) for conn in attr.GetConnections())
     return out
 
@@ -107,7 +107,7 @@ def _drop_views(scene, qapp):
     asserting about a view the paste had no hand in.
     """
     for c in list(scene.get_chunks()):
-        if chunk_usd.is_view_chunk(c):
+        if chunk_stage.is_view_chunk(c):
             c.request_delete()
     qapp.processEvents()
 
@@ -181,7 +181,7 @@ def _is_fed_by_another(stage, chunk, group):
     if not (prim and prim.IsValid()):
         return False
     others = {get_chunk_prim_path(c) for c in group if c is not chunk}
-    for attr in chunk_usd.iter_exec_inputs(prim):
+    for attr in chunk_stage.iter_exec_inputs(prim):
         if any(str(conn.GetPrimPath()) in others for conn in attr.GetConnections()):
             return True
     return False

@@ -28,8 +28,8 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import (
     connect_exec,
     get_chunk_prim_path,
     initialize as _chunk_usd_init,
@@ -109,7 +109,7 @@ def saved(qapp, tmp_path, probe):
     tail.get_param("code").value = f"import {_PROBE} as p\np.tail_runs += 1\n"
     rewire.get_param("code").value = (
         "from usd_chunks import chunk_registry\n"
-        "from usd_chunks.plugins.chunk_usd import connect_exec\n"
+        "from usd_chunks.chunk_stage import connect_exec\n"
         f"connect_exec(stage, chunk_registry.ChunkRegistry().scene, {pa!r}, {pb!r})\n"
     )
     qapp.processEvents()
@@ -191,8 +191,8 @@ def test_rewiring_to_a_different_source_still_reconciles(qapp, saved, probe, mon
     out, _on_disk, (pa, pb) = saved
     stage, scene = _reopen(qapp, out, probe)
     calls = []
-    real = chunk_usd.reconcile_edit_targets
-    monkeypatch.setattr(chunk_usd, "reconcile_edit_targets",
+    real = chunk_stage.reconcile_edit_targets
+    monkeypatch.setattr(chunk_stage, "reconcile_edit_targets",
                         lambda *a, **k: (calls.append(1), real(*a, **k))[1])
     c_path = next(get_chunk_prim_path(c) for c in scene.get_chunks()
                   if get_chunk_prim_path(c) not in (pa, pb)

@@ -17,7 +17,7 @@ from pxr import Sdf, Tf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import (
+from usd_chunks.chunk_stage import (
     _CHUNK_PRIM_TYPENAME,
     _CHUNK_TYPE_ATTR,
     _CHUNKS_ROOT,

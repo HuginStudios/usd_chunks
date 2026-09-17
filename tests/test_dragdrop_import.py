@@ -7,8 +7,8 @@ import pytest
 from pxr import Sdf, Usd, UsdUtils
 from PySide6 import QtCore
 
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
-from usd_chunks.plugins import chunk_usd
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks import chunk_stage
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
@@ -36,7 +36,7 @@ def graph(qapp):
     """A fresh stage per test (unlike tests/test_copy_paste.py's module-scoped `graph`) --
     the tests in this file export_chunks() the WHOLE stage to a file and re-import it, so
     leftover nodes from an earlier test in the same module would silently bleed into a later
-    test's exported file and its node counts. chunk_usd.initialize() leaks a global notice
+    test's exported file and its node counts. chunk_stage.initialize() leaks a global notice
     listener per call with no reset hook, same as noted there, but this file's small test
     count keeps that an acceptable tradeoff for isolation."""
     stage = Usd.Stage.CreateInMemory()
@@ -115,7 +115,7 @@ def _count_layers_named(stage, name: str) -> int:
 
 def _export_selected(scene, chunks, path) -> None:
     """Export only the given chunks' composed prim specs (with their real wiring) to path --
-    unlike chunk_usd.export_chunks, which always dumps the WHOLE stage. Used to build a
+    unlike chunk_stage.export_chunks, which always dumps the WHOLE stage. Used to build a
     dropped-file fixture that contains exactly one chain, isolated from unrelated chunks
     that may also exist live on the same test stage.
 
@@ -123,7 +123,7 @@ def _export_selected(scene, chunks, path) -> None:
     exists there, rather than Sdf.CreatePrimInLayer's synthesized stand-in -- that defaults
     to SpecifierOver, and an "over" with no "def" anywhere in a standalone single-layer file
     means the parent prim doesn't compose at all, silently hiding every child from a
-    default-predicate stage.Traverse() (confirmed: chunk_usd.export_chunks itself never hits
+    default-predicate stage.Traverse() (confirmed: chunk_stage.export_chunks itself never hits
     this because it always includes the real context prim's own spec, def and all, in
     exactly this situation)."""
     stage = scene.get_stage()
@@ -169,7 +169,7 @@ def test_import_as_chunks_does_not_duplicate_create_layer_side_effect(graph, tmp
     (two independent premature-execute sites, both now fixed):
 
       1. _build_clip_node_from_prim's throwaway, never-added-to-any-scene snapshot-reading
-         chunk instance -- restoring its value via chunk_usd._load_wire_inputs ran Create
+         chunk instance -- restoring its value via chunk_stage._load_wire_inputs ran Create
          Layer's REAL reactive execute(), because ChunkBase.get_stage() returns the real
          live stage regardless of scene membership, not None for an unregistered instance.
       2. _materialize_at applied copied/imported values to the newly materialized chunk
@@ -254,7 +254,7 @@ def test_import_as_chunks_restores_value_driven_widget_visibility(graph, tmp_pat
 def test_detect_dropped_usd_kind_classifies_chunkgroup_vs_scene(graph, tmp_path) -> None:
     scene, gv, chunks, nodes = _make_nodes(graph)
     chunks_path = tmp_path / "saved_chunkgroup.usda"
-    chunk_usd.export_chunks(scene, str(chunks_path))
+    chunk_stage.export_chunks(scene, str(chunks_path))
     assert nodegraph._detect_dropped_usd_kind(str(chunks_path)) == "chunks"
 
     scene_path = tmp_path / "plain_scene.usda"
@@ -283,7 +283,7 @@ def test_detect_and_snapshot_work_for_a_non_default_tab_root(graph, tmp_path) ->
     t.get_param("tx").value = 7.25
 
     path = tmp_path / "named_tab_chunkgroup.usda"
-    chunk_usd.export_chunks(scene, str(path))
+    chunk_stage.export_chunks(scene, str(path))
 
     assert nodegraph._detect_dropped_usd_kind(str(path)) == "chunks"
 
@@ -299,7 +299,7 @@ def test_snapshot_layer_chunks_recreates_node_with_same_param_value(graph, tmp_p
     a.chunk.get_param("tx").value = 5.5
 
     path = tmp_path / "one_chunk.usda"
-    chunk_usd.export_chunks(scene, str(path))
+    chunk_stage.export_chunks(scene, str(path))
 
     layer = Sdf.Layer.FindOrOpen(str(path))
     clip_nodes, clip_edges = nodegraph._snapshot_layer_chunks(layer)
@@ -327,7 +327,7 @@ def test_snapshot_layer_chunks_preserves_wiring(graph, tmp_path) -> None:
 
     scene.set_selected_chunks([a.chunk, b.chunk])
     path = tmp_path / "wired_chunks.usda"
-    chunk_usd.export_chunks(scene, str(path))
+    chunk_stage.export_chunks(scene, str(path))
 
     layer = Sdf.Layer.FindOrOpen(str(path))
     clip_nodes, clip_edges = nodegraph._snapshot_layer_chunks(layer)
@@ -568,7 +568,7 @@ def test_import_view_targets_imported_tail_not_unrelated_existing_node(graph) ->
     assert gv._suppress_default_view is False
 
     stage = gv.scene()._stage
-    views = [ch for ch in scene.get_chunks() if chunk_usd.is_view_chunk(ch)]
+    views = [ch for ch in scene.get_chunks() if chunk_stage.is_view_chunk(ch)]
     assert len(views) == 1
     view_path = get_chunk_prim_path(views[0])
     exec_in = stage.GetAttributeAtPath(Sdf.Path(f"{view_path}.inputs:chunk"))
@@ -614,7 +614,7 @@ def test_import_as_chunks_suppresses_generic_default_view_race(graph, tmp_path) 
 
     assert gv._context_has_view(scene, gv._graph_context())
     stage = gv.scene()._stage
-    views = [ch for ch in scene.get_chunks() if chunk_usd.is_view_chunk(ch)]
+    views = [ch for ch in scene.get_chunks() if chunk_stage.is_view_chunk(ch)]
     assert len(views) == 1
     view_path = get_chunk_prim_path(views[0])
     exec_in = stage.GetAttributeAtPath(Sdf.Path(f"{view_path}.inputs:chunk"))
@@ -628,7 +628,7 @@ def test_handle_dropped_file_prompts_for_chunkgroup_file(graph, tmp_path, monkey
     a.chunk.get_param("tx").value = 42.0
 
     path = tmp_path / "prompted_chunks.usda"
-    chunk_usd.export_chunks(scene, str(path))
+    chunk_stage.export_chunks(scene, str(path))
 
     monkeypatch.setattr(gv, "_exec_menu", _pick_action_by_text("Import as Chunks"))
     before = len(scene.get_chunks())

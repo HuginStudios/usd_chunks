@@ -1,13 +1,13 @@
 """The node graph as data: nodes, ports and edges, with no toolkit attached.
 
-It depends on `chunk_naming` for the chunk vocabulary and reaches for `chunk_usd` only
+It depends on `chunk_naming` for the chunk vocabulary and reaches for `chunk_stage` only
 inside the one function that needs a live session, so the reading and typing half runs with
 no stage machinery loaded at all.
 
 `chunk_qt_nodegraph` grew the graph *model* and the Qt *view* together, but only
 superficially -- the connection logic reads three fields off a port item, and the port
 typing is pure functions over `Sdf.ValueTypeNames` and the param classes. Everything this
-module needs (`chunk_usd`, `chunk_core`, `chunk`, `chunk_notice`, `chunk_registry`,
+module needs (`chunk_stage`, `chunk_core`, `chunk`, `chunk_notice`, `chunk_registry`,
 `chunk_flags`) imports zero Qt, so the model can be lifted out whole.
 
 What that buys, in the order it pays off:
@@ -38,7 +38,8 @@ from usd_chunks import chunk_utils
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks import chunk_naming, chunk_registry, chunk_scene
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_graph_layout, chunk_usd
+from usd_chunks.plugins import chunk_graph_layout
+from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ EXEC_INPUT = chunk_naming.EXEC_INPUT
 EXEC_OUTPUT = chunk_naming.EXEC_OUTPUT
 CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
 
-#: The prim type a chunk is, and the root scope, both taken from chunk_usd rather than
+#: The prim type a chunk is, and the root scope, both taken from chunk_stage rather than
 #: spelled out again -- renaming either there should not leave the graph quietly finding
 #: nothing. Bound directly, not via getattr with a fallback: a fallback would paper over
 #: exactly the rename it is supposed to catch.
@@ -474,12 +475,12 @@ def _clear_connections(stage: Usd.Stage, attr: Usd.Attribute) -> None:
     joining a session got a disconnect that reported success and changed nothing.
     """
     # Imported here, not at module scope: ChunkStageSync is the one thing in this file
-    # that belongs to a live session, and importing chunk_usd for it would put five
+    # that belongs to a live session, and importing chunk_stage for it would put five
     # thousand lines and two hundred and fifty modules behind every use of the engine --
     # including the offline ones that have no session and want none.
-    from usd_chunks.plugins import chunk_usd
+    from usd_chunks import chunk_stage
 
-    sync = chunk_usd.ChunkStageSync()
+    sync = chunk_stage.ChunkStageSync()
     if getattr(sync, "initialized", False) and getattr(sync, "_stage", None) is stage:
         sync.clear_attr_connections(attr)
         return
@@ -741,7 +742,7 @@ def iter_prim_connections(prim: Usd.Prim):
             continue
         for conn_path in attr.GetConnections():
             src_prim_path = str(conn_path.GetPrimPath())
-            if chunk_usd.is_exec_input_name(attr_name):
+            if chunk_stage.is_exec_input_name(attr_name):
                 # Exec connections point straight at the source's outputs:chunk already.
                 src_attr_suffix = conn_path.name
             else:
@@ -770,9 +771,9 @@ def iter_group_children(chunk: "core.ChunkBase", scene_sender: core.SceneSender,
     ChunkGroup nested inside another ChunkGroup is still found. View chunks are excluded --
     not content worth duplicating, matching the top-level selection's own exclusion."""
     by_path: dict[str, "core.ChunkBase"] = {
-        chunk_usd.get_chunk_prim_path(c): c
+        chunk_stage.get_chunk_prim_path(c): c
         for c in scene_sender.get_chunks()
-        if c.get_context() == chunk and c is not chunk and not chunk_usd.is_view_chunk(c)
+        if c.get_context() == chunk and c is not chunk and not chunk_stage.is_view_chunk(c)
     }
     root_prim = stage.GetPrimAtPath(Sdf.Path(chunk.prim_path)) if chunk.prim_path else None
     if root_prim is not None and root_prim.IsValid():
@@ -781,7 +782,7 @@ def iter_group_children(chunk: "core.ChunkBase", scene_sender: core.SceneSender,
             if path in by_path:
                 continue
             ctx_chunk = scene_sender.get_context_for_prim_path(path)
-            if ctx_chunk is not None and not chunk_usd.is_view_chunk(ctx_chunk):
+            if ctx_chunk is not None and not chunk_stage.is_view_chunk(ctx_chunk):
                 by_path[path] = ctx_chunk
     return list(by_path.values())
 
@@ -801,14 +802,14 @@ def snapshot_chunk_node(
         module_name, snapshot_param_values(chunk), rel_pos,
         list_sizes=snapshot_list_sizes(chunk),
     )
-    if not chunk_usd.is_group_chunk(chunk):
+    if not chunk_stage.is_group_chunk(chunk):
         return clip_node
 
     children = iter_group_children(chunk, scene_sender, stage)
     child_prims: dict[str, Usd.Prim] = {}
     child_pos: dict[str, tuple[float, float]] = {}
     for child in children:
-        path = chunk_usd.get_chunk_prim_path(child)
+        path = chunk_stage.get_chunk_prim_path(child)
         prim = stage.GetPrimAtPath(Sdf.Path(path))
         child_prims[path] = prim
         child_pos[path] = graph_position(prim)
@@ -820,7 +821,7 @@ def snapshot_chunk_node(
 
     kept_index: dict[str, int] = {}
     for child in children:
-        path = chunk_usd.get_chunk_prim_path(child)
+        path = chunk_stage.get_chunk_prim_path(child)
         pos = child_pos[path]
         child_clip = snapshot_chunk_node(
             child, scene_sender, stage, (pos[0] - min_x, pos[1] - min_y)
@@ -831,7 +832,7 @@ def snapshot_chunk_node(
         clip_node.children.append(child_clip)
 
     for child in children:
-        path = chunk_usd.get_chunk_prim_path(child)
+        path = chunk_stage.get_chunk_prim_path(child)
         dst_index = kept_index.get(path)
         prim = child_prims.get(path)
         if dst_index is None or prim is None:
@@ -1005,7 +1006,7 @@ class GraphFrontend(Protocol):
     def can_dive(self, path: str) -> bool:
         """Whether `path` is a subnet the user may navigate into.
 
-        Must key on chunk_usd.is_chunkgroup, not on the CONTEXT flag: a chunk-in-chunk
+        Must key on chunk_stage.is_chunkgroup, not on the CONTEXT flag: a chunk-in-chunk
         carries CONTEXT too and is an implementation detail, not a subnet.
         """
 
@@ -1028,7 +1029,7 @@ class GraphFrontend(Protocol):
     def set_active_slot(self, slot: int) -> None:
         """Switch the driving view and recook.
 
-        Must go through chunk_usd.recook_for_view -- a highlight is not a view switch --
+        Must go through chunk_stage.recook_for_view -- a highlight is not a view switch --
         and must persist to chunk:activeView on the context prim, clearing rather than
         writing a 0, so the choice survives a save and is seen by other frontends.
         """
@@ -1084,7 +1085,7 @@ def exec_boundary(stage: Usd.Stage, inside: "set[str]") -> "tuple[list[str], lis
         if prim.GetTypeName() != CHUNK_TYPENAME:
             continue
         path = str(prim.GetPath())
-        for attr in chunk_usd.iter_exec_inputs(prim):
+        for attr in chunk_stage.iter_exec_inputs(prim):
             for conn in attr.GetConnections():
                 source = str(conn.GetPrimPath())
                 if path in inside and source not in inside and source not in feeds:
@@ -1110,7 +1111,7 @@ def snapshot_selection(chunks: dict, prims: dict, positions: dict, scene, stage,
     """
     chosen = [p for p in selected if p in prims and p in positions]
     chosen = [p for p in chosen
-              if p not in chunks or not chunk_usd.is_view_chunk(chunks[p])]
+              if p not in chunks or not chunk_stage.is_view_chunk(chunks[p])]
     if not chosen:
         return [], []
 
@@ -1223,7 +1224,7 @@ def nest_target(chunk):
     Pushing and restoring is SceneSender.creating_in's job; this only answers WHICH, which
     is the half every frontend had written for itself.
     """
-    if chunk is not None and chunk_usd.is_group_chunk(chunk):
+    if chunk is not None and chunk_stage.is_group_chunk(chunk):
         return chunk
     return None
 
@@ -1268,7 +1269,7 @@ def materialize(scene, nodes, to_usd) -> dict:
         # have nowhere to land until the rows it had are back.
         apply_list_sizes(primary, getattr(item, "list_sizes", []))
         apply_param_values(primary, item.values)
-        with chunk_usd.creating_at(to_usd(item.rel_pos[0], item.rel_pos[1])):
+        with chunk_stage.creating_at(to_usd(item.rel_pos[0], item.rel_pos[1])):
             for chunk in chunks:
                 scene.add_chunk(chunk)
         made[index] = primary
@@ -1407,7 +1408,7 @@ def rewire_pasted(stage: Usd.Stage, created: dict, edges, chunks: dict | None = 
     merged = dict(chunks or {})
     ports: dict = {}
     for index, chunk in created.items():
-        path = chunk_usd.get_chunk_prim_path(chunk)
+        path = chunk_stage.get_chunk_prim_path(chunk)
         prim = stage.GetPrimAtPath(Sdf.Path(path))
         if not (prim and prim.IsValid()):
             continue
@@ -1445,7 +1446,7 @@ def paste_nodes(scene, stage: Usd.Stage, nodes, edges, to_usd, nest=None,
 def create_from_entry(scene, entry, usd_pos, nest=None) -> "tuple[list, str]":
     """Create one menu entry's chunk(s) at a USD position. Returns (created, error).
 
-    The sequence every frontend runs: set the position hook chunk_usd reads while a chunk
+    The sequence every frontend runs: set the position hook chunk_stage reads while a chunk
     is being added, add through the scene so the normal load path authors the prim, then
     clear it. Writing a prim directly would skip the registration the rest of the framework
     relies on.
@@ -1457,7 +1458,7 @@ def create_from_entry(scene, entry, usd_pos, nest=None) -> "tuple[list, str]":
     if scene is None:
         return [], "no chunk session; cannot create"
     try:
-        with chunk_usd.creating_at(usd_pos, pin=False), scene.creating_in(nest):
+        with chunk_stage.creating_at(usd_pos, pin=False), scene.creating_in(nest):
             created = entry.create()
             for chunk in created:
                 scene.add_chunk(chunk)
@@ -1503,9 +1504,9 @@ def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
         logger.error("no chunkgroup module registered; the selection has been deleted")
         return "", 0
     group = made[0]
-    with chunk_usd.creating_at(to_usd(centre_x, centre_y)):
+    with chunk_stage.creating_at(to_usd(centre_x, centre_y)):
         scene.add_chunk(group)
-    group_path = chunk_usd.get_chunk_prim_path(group)
+    group_path = chunk_stage.get_chunk_prim_path(group)
 
     # Pasting inside the group: pointing the scene's current context at it is what diving
     # in before a paste amounts to.
@@ -1520,13 +1521,13 @@ def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
             continue
         if not (edge.src_attr.endswith("chunk") and edge.dst_attr.endswith("chunk")):
             continue  # a typed param wire, not an exec one
-        chunk_usd.connect_exec(stage, scene, chunk_usd.get_chunk_prim_path(src),
-                               chunk_usd.get_chunk_prim_path(dst))
+        chunk_stage.connect_exec(stage, scene, chunk_stage.get_chunk_prim_path(src),
+                               chunk_stage.get_chunk_prim_path(dst))
 
     for source in feeds:
-        chunk_usd.connect_exec(stage, scene, source, group_path)
+        chunk_stage.connect_exec(stage, scene, source, group_path)
     for consumer in consumers:
-        chunk_usd.connect_exec(stage, scene, group_path, consumer)
+        chunk_stage.connect_exec(stage, scene, group_path, consumer)
     return group_path, len(nodes)
 
 
@@ -1544,7 +1545,7 @@ def can_dive(chunks: dict, path: str) -> bool:
     exactly why diving into the AMD node used to be offered and should not be.
     """
     chunk = chunks.get(path)
-    return chunk is not None and chunk_usd.is_chunkgroup(chunk)
+    return chunk is not None and chunk_stage.is_chunkgroup(chunk)
 
 
 def parent_context(context: str, available) -> "str | None":
@@ -1570,7 +1571,7 @@ def parent_context(context: str, available) -> "str | None":
 # ---------------------------------------------------------------------------
 # View nodes
 #
-# A view is what drives execution: chunk_usd.recook_for_view cooks the active view's
+# A view is what drives execution: chunk_stage.recook_for_view cooks the active view's
 # upstream tree and blocks everything else. A context with no view therefore cooks
 # NOTHING, which is why Qt has always made one on open -- and why the other two frontends
 # showing four nodes where Qt showed five was a real difference, not a cosmetic one.
@@ -1585,7 +1586,7 @@ VIEW_SLOTS = (1, 2, 3)
 def context_has_view(scene, context) -> bool:
     """True when this context -- or the whole graph, if context is None -- has a view."""
     return any(
-        chunk_usd.is_view_chunk(chunk) and (context is None or chunk.get_context() == context)
+        chunk_stage.is_view_chunk(chunk) and (context is None or chunk.get_context() == context)
         for chunk in scene.get_chunks()
     )
 
@@ -1664,7 +1665,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> "int | No
     target_x, target_y = node_position(target)
 
     scene.add_chunk(view_chunk)
-    view_path = "%s/%s" % (chunk_usd._resolve_chunk_root(view_chunk), view_chunk.name)
+    view_path = "%s/%s" % (chunk_stage._resolve_chunk_root(view_chunk), view_chunk.name)
     view_prim = stage.GetPrimAtPath(Sdf.Path(view_path))
     if not view_prim.IsValid():
         return None
@@ -1699,10 +1700,10 @@ def ensure_default_view(stage: Usd.Stage, scene, context) -> "int | None":
     """
     if context_has_view(scene, context):
         return None
-    tails = chunk_usd.exec_tails(stage, scene, context)
+    tails = chunk_stage.exec_tails(stage, scene, context)
     if not tails:
         return None
-    return create_view_for(stage, scene, chunk_usd.get_chunk_prim_path(tails[0]))
+    return create_view_for(stage, scene, chunk_stage.get_chunk_prim_path(tails[0]))
 
 
 def context_prim(stage: Usd.Stage, context: str) -> "Usd.Prim | None":
@@ -1751,7 +1752,7 @@ def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
                        slot: int) -> "tuple[bool, str]":
     """Switch which view drives execution, and recook. Returns (changed, status).
 
-    The cooking is chunk_usd.recook_for_view, the same call the Qt graph makes: it blocks
+    The cooking is chunk_stage.recook_for_view, the same call the Qt graph makes: it blocks
     and mutes everything outside the active view's upstream tree, so this is a real
     execution switch rather than a highlight.
 
@@ -1767,13 +1768,13 @@ def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
     context_chunk = chunks.get(context)
     view_chunk = None
     if slot:
-        view_chunk = chunk_usd.find_view_chunk_for_slot(slot, stage, scene, context_chunk)
+        view_chunk = chunk_stage.find_view_chunk_for_slot(slot, stage, scene, context_chunk)
         if view_chunk is None:
             return False, "no view in slot %d" % slot
 
     write_active_slot(stage, context, slot)
     try:
-        chunk_usd.recook_for_view(stage, scene, context_chunk, view_chunk)
+        chunk_stage.recook_for_view(stage, scene, context_chunk, view_chunk)
     except Exception as exc:  # noqa: BLE001
         # Deliberately wide, and one of the few left that is: a recook executes every chunk
         # upstream of the view, which is arbitrary user code and can raise anything. Losing

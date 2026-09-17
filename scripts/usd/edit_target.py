@@ -1,7 +1,7 @@
 from pxr import Sdf
 
 from usd_chunks import chunk, chunk_notice, chunk_utils
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 
 # Selecting this instead of a specific layer identifier follows whatever layer the
 # upstream Create Layer chunk (found via the exec-chain dependency already wiring the
@@ -15,7 +15,7 @@ def _find_upstream_create_layer(chunk_obj):
     Create Layer chunk), found via the exec-chain dependency graph — the same
     connection that already sequences the two nodes — or None if there isn't one.
 
-    Exec edges only, which is why this asks chunk_usd.exec_dependencies rather than
+    Exec edges only, which is why this asks chunk_stage.exec_dependencies rather than
     chunk_obj.get_dependencies(): the Python DAG also mirrors param wires, and a param
     wire means a value flows, not that one chunk precedes another. Following one here
     would let a Create Layer wired for some unrelated param silently decide where every
@@ -25,7 +25,7 @@ def _find_upstream_create_layer(chunk_obj):
     A Create Layer whose Layer Name port *is* wired into this chunk needs no walk at
     all: the param already holds the layer name, which is what _resolve_layer resolves.
     """
-    for dep in chunk_usd.exec_dependencies(chunk_obj):
+    for dep in chunk_stage.exec_dependencies(chunk_obj):
         if dep is not None and dep.get_param("_new_layer_id") is not None:
             return dep
     return None
@@ -173,14 +173,14 @@ def execute(node):
 
         if target_layer:
             # Publish the resolved layer onto this chunk's prim and re-home everything
-            # downstream to it (chunk_usd.publish_edit_target -> reconcile_edit_targets).
+            # downstream to it (chunk_stage.publish_edit_target -> reconcile_edit_targets).
             # There's no stage.SetEditTarget here: the effective target is resolved per
             # chunk from graph topology (nearest upstream Edit Target), not from the
             # stage's ambient edit target, which the exec dispatch loop rewrites on every
             # run anyway. Every chunk downstream of this one — its own bookkeeping
             # (inputs:/outputs:/exec connections, node position) and its driven content —
             # lands in target_layer, until another Edit Target chunk downstream changes it.
-            chunk_usd.publish_edit_target(node, stage, target_layer)
+            chunk_stage.publish_edit_target(node, stage, target_layer)
     finally:
         node._edit_target_executing = False
 

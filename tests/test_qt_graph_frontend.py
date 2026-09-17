@@ -17,7 +17,7 @@ from usd_chunks.chunk_core import SceneSender
 from usd_chunks.plugins import chunk_graph
 from usd_chunks.plugins import chunk_qt_nodegraph as nodegraph
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 
 class _DummyScene(SceneSender):

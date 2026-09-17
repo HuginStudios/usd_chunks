@@ -20,7 +20,7 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     published by the nearest Edit Target chunk reachable by walking the exec chain upstream
     from `owner`, or the session layer if there is no upstream Edit Target.
 
-    A pure function of graph topology (see chunk_usd.nearest_upstream_edit_layer) — this
+    A pure function of graph topology (see chunk_stage.nearest_upstream_edit_layer) — this
     replaces the old global ChunkStageSync._user_edit_layer state, so resolution no longer
     depends on which chunk happened to execute last.
 
@@ -43,7 +43,7 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     module execute() (e.g. reconcile_edit_targets) passes owner explicitly rather than
     relying on this fallback.
 
-    Local imports: plugins.chunk_usd imports this module at module scope, so importing it
+    Local imports: chunk_stage imports this module at module scope, so importing it
     back at module scope here would fail depending on which of the two loads first.
     """
     if stage is None:
@@ -53,7 +53,7 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
         owner = chunk_notice._executing_chunk
     if owner is None:
         return stage.GetSessionLayer()
-    from usd_chunks.plugins.chunk_usd import nearest_upstream_edit_layer, get_chunk_prim_path
+    from usd_chunks.chunk_stage import nearest_upstream_edit_layer, get_chunk_prim_path
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
     return nearest_upstream_edit_layer(stage, prim)
 

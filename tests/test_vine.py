@@ -21,7 +21,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk_gizmo, chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_usd import initialize as chunk_usd_init
+from usd_chunks.chunk_stage import initialize as chunk_usd_init
 
 
 class _DummyScene(SceneSender):

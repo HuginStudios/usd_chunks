@@ -19,9 +19,9 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_usd
+from usd_chunks import chunk_stage
 from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 LOFTED = "Transform_tx"
 INNER_ATTR = "inputs:translate_grp:tx"
@@ -77,7 +77,7 @@ def duplicated(qapp):
     settle()
     inner.get_param("tx").value = 3.5
     settle()
-    chunk_usd.loft_param_to_context(inner.get_param("tx"), group)
+    chunk_stage.loft_param_to_context(inner.get_param("tx"), group)
     settle()
 
     graph_view = docker.tab_widget.get_current_graph_view()
@@ -88,7 +88,7 @@ def duplicated(qapp):
     # get_context() returns self for a context chunk, so it cannot be used to tell the
     # duplicate from the original -- identity is the only thing that separates them.
     copy = next(
-        (c for c in scene.get_chunks() if chunk_usd.is_chunkgroup(c) and c is not group), None
+        (c for c in scene.get_chunks() if chunk_stage.is_chunkgroup(c) and c is not group), None
     )
     assert copy is not None, "the duplicate itself must exist"
     return dict(stage=stage, scene=scene, group=group, inner=inner, copy=copy)
