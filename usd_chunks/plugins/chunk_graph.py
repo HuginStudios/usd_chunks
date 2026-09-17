@@ -1699,7 +1699,7 @@ def ensure_default_view(stage: Usd.Stage, scene, context) -> "int | None":
     """
     if context_has_view(scene, context):
         return None
-    tails = chunk_usd.get_exec_tail_chunks(stage, scene, context)
+    tails = chunk_usd.exec_tails(stage, scene, context)
     if not tails:
         return None
     return create_view_for(stage, scene, chunk_usd.get_chunk_prim_path(tails[0]))

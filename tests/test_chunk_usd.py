@@ -642,7 +642,7 @@ def test_export_chunks_preserves_live_exec_order_not_scene_order(tmp_path) -> No
     )
     # The Python DAG now mirrors the connection the moment it is authored — the stage is the
     # authority for chunk-level exec wiring, and ChunkStageSync reconciles off ObjectsChanged
-    # (see reconcile_exec_dependencies). Before that, these were all still [] here and only
+    # (see reconcile_dag_dependencies). Before that, these were all still [] here and only
     # got reconstructed by a save+reload, which is what made the export fallback below matter.
     assert [d.name for _, d in b.get_dependencies()] == ["a"]
     assert [d.name for _, d in c.get_dependencies()] == ["b"]
@@ -2545,7 +2545,7 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     reproduce this (the live bug depends on state accumulated by the real view-activation
     path -- ChunkGraphView._activate_menu_view's view:slot attribute + _view_state.set_slot
     -- not just wiring the exec chain by hand)."""
-    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, get_exec_upstream_chunks
+    from usd_chunks.plugins.chunk_usd import get_chunk_prim_path, view_cook_list
     from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
@@ -2584,7 +2584,7 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
         # target -- the root layer -- and is doubly wrong here: the listener then sees the
         # connection already present, skips its own session-layer write, and the root-layer
         # opinion is later dropped, leaving inputs:chunk with no connections at all. The exec
-        # chain then reads as three unwired nodes, get_exec_upstream_chunks returns [], and the
+        # chain then reads as three unwired nodes, view_cook_list returns [], and the
         # whole cook set collapses to "nothing cooks" -- 0.0 instead of 99.0 at the
         # precondition below, before the behaviour under test is ever reached.
         dst.add_dependency(src)
@@ -2637,7 +2637,7 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     assert gv._view_state.active_slot == view_slot, (
         "our view must be the active one for this repro to be faithful"
     )
-    assert [c.name for c in get_exec_upstream_chunks(view, stage, scene)] == [
+    assert [c.name for c in view_cook_list(view, stage, scene)] == [
         t1.name, scatter.name, t2.name
     ], "the exec chain must be wired roots-first before the behaviour under test can be reached"
 

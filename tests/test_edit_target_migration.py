@@ -344,7 +344,7 @@ class TestEditTargetMigration:
 class TestFollowUpstreamUsesExecEdgesOnly:
     """Which Create Layer "Follow Upstream" means is decided by the exec chain alone.
 
-    reconcile_exec_dependencies mirrors param wires into the Python DAG as well, so
+    reconcile_dag_dependencies mirrors param wires into the Python DAG as well, so
     chunk.get_dependencies() no longer answers "what precedes me". A param wire means a
     value flows; letting one pick the Create Layer would silently change where every
     downstream chunk authors, on a signal the user never meant as ordering.

@@ -3552,7 +3552,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # unblocks it — no need to re-cook here.
         if self._context_has_view(registry.scene, context):
             return
-        tails = chunk_usd.get_exec_tail_chunks(stage, registry.scene, context)
+        tails = chunk_usd.exec_tails(stage, registry.scene, context)
         if not tails:
             return
         self._create_view_node_for_prim(chunk_usd.get_chunk_prim_path(tails[0]))
@@ -4563,7 +4563,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _could_affect_view_cook(changed_chunks, stage, scene, view_chunk) -> bool:
         """True if any of changed_chunks could plausibly change what view_chunk's recook
         computes -- i.e. one of them IS the view, or is already reachable from it. Cook-set
-        membership is exactly graph reachability from the view (get_exec_upstream_chunks), so
+        membership is exactly graph reachability from the view (view_cook_list), so
         a chunk that was never part of that reachable set can't affect it: a brand-new
         disconnected node can't be reachable (nothing points to/from it yet), and
         deleting/disconnecting something that was never reachable can't remove anything from
@@ -4572,7 +4572,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         """
         if view_chunk is None:
             return False
-        cook_set = set(chunk_usd.get_exec_upstream_chunks(view_chunk, stage, scene))
+        cook_set = set(chunk_usd.view_cook_list(view_chunk, stage, scene))
         if any(c is view_chunk or c in cook_set for c in changed_chunks):
             return True
         # A chunk created INSIDE a reachable group is not itself reachable -- nothing in the

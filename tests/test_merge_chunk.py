@@ -19,7 +19,7 @@ from usd_chunks.plugins.chunk_usd import (
     _author_prim,
     exec_input_index,
     exec_input_name,
-    get_exec_upstream_chunks,
+    view_cook_list,
     is_exec_input_name,
     is_merge_chunk,
     is_merge_prim,
@@ -291,7 +291,7 @@ def wired_merge():
             attr.SetConnections(
                 [Sdf.Path(f"{chunk_usd.get_chunk_prim_path(branch)}.outputs:chunk")]
             )
-    chunk_usd.reconcile_exec_dependencies(merge)
+    chunk_usd.reconcile_dag_dependencies(merge)
 
     yield stage, scene, merge, branches, prim
 
@@ -307,7 +307,7 @@ class TestLiveWiring:
             ]
 
     def test_every_branch_becomes_a_real_dag_dependency(self, wired_merge):
-        """The regression guard for the silent bug: _live_exec_dependencies read only
+        """The regression guard for the silent bug: exec_dependencies read only
         inputs:chunk, so a branch wired into slot 1 or 2 authored USD and drew an edge while
         the Python DAG never gained the edge — no INPUT_CHANGED, so editing that branch never
         recooked the merge."""
@@ -322,7 +322,7 @@ class TestLiveWiring:
         _stage, _scene, merge, branches, prim = wired_merge
         with Usd.EditContext(_stage, _stage.GetSessionLayer()):
             prim.GetAttribute("inputs:chunk1").ClearConnections()
-        chunk_usd.reconcile_exec_dependencies(merge)
+        chunk_usd.reconcile_dag_dependencies(merge)
 
         deps = {id(d) for _, d in merge.get_dependencies()}
         assert id(branches[0]) in deps
@@ -331,34 +331,33 @@ class TestLiveWiring:
 
     def test_live_dependencies_read_back_every_slot(self, wired_merge):
         _stage, _scene, merge, branches, _prim = wired_merge
-        live = chunk_usd._live_exec_dependencies(merge)
+        live = chunk_usd.exec_dependencies(merge)
         assert {id(c) for c in live} == {id(b) for b in branches}
 
     def test_first_input_is_cooked_last_so_it_wins(self, wired_merge):
         """Layer strength is cook_list position (recook_for_view ranks later = stronger), and
         visit() appends a node after its sources — so slot 0 must be visited LAST."""
         stage, scene, merge, branches, _prim = wired_merge
-        order = get_exec_upstream_chunks(merge, stage, scene)
+        order = view_cook_list(merge, stage, scene)
         positions = [order.index(b) for b in branches]
         # branches[0] is slot 0 and must rank highest of the three.
         assert positions[0] > positions[1] > positions[2]
 
     def test_all_branches_are_in_the_cook_set(self, wired_merge):
         stage, scene, merge, branches, _prim = wired_merge
-        order = get_exec_upstream_chunks(merge, stage, scene)
+        order = view_cook_list(merge, stage, scene)
         for branch in branches:
             assert branch in order
 
-    def test_merge_is_not_a_root(self, wired_merge):
-        """A merge fed only through numbered slots still has real inputs — calling it a root
-        would make it the start of a chain it is actually the end of."""
-        stage, scene, merge, _branches, _prim = wired_merge
-        roots = chunk_usd.get_exec_head_chunks(stage, scene)
-        assert merge not in roots
+    def test_every_slot_leads_downstream_to_the_merge(self, wired_merge):
+        """Every slot counts going forward too, not only slot 0."""
+        stage, scene, merge, branches, _prim = wired_merge
+        for branch in branches:
+            assert merge in chunk_usd.exec_downstream(branch, stage, scene)
 
     def test_branches_are_not_exec_tails(self, wired_merge):
         """A chunk feeding slot 2 is as consumed as one feeding slot 0."""
         stage, scene, _merge, branches, _prim = wired_merge
-        tails = chunk_usd.get_exec_tail_chunks(stage, scene)
+        tails = chunk_usd.exec_tails(stage, scene)
         for branch in branches:
             assert branch not in tails

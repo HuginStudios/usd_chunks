@@ -2986,7 +2986,7 @@ def _on_any_chunk_changed(owner, notice, sender) -> None:
     connection rather than DagNode.add_dependency(). Real graph wiring (_author_connection in
     chunk_qt_nodegraph.py) only authors the USD inputs:chunk/inputs:* connection -- it never
     calls add_dependency, so ChunkNoticeAlias.INPUT_CHANGED (which is purely a DagNode concept)
-    never fires between two chunks connected that way. get_exec_upstream_chunks walks the same
+    never fires between two chunks connected that way. view_cook_list walks the same
     real USD connections recook_for_view and get_upstream_stage already trust, so membership in
     it is the correct, already-battle-tested definition of "is this chunk really upstream of me".
     """
@@ -2997,7 +2997,7 @@ def _on_any_chunk_changed(owner, notice, sender) -> None:
     stage = _chunk.get_stage()
     if not scene or not stage:
         return
-    if sender not in chunk_usd.get_exec_upstream_chunks(_chunk, stage, scene):
+    if sender not in chunk_usd.view_cook_list(_chunk, stage, scene):
         return
     if _only_presentation_changed(sender):
         return

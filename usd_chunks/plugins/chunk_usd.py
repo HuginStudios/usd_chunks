@@ -285,7 +285,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     # _on_chunk_deleted, which must not touch USD during that window.
     _reloading: bool = False
 
-    # True while reconcile_exec_dependencies runs off an ObjectsChanged notice, i.e. while
+    # True while reconcile_dag_dependencies runs off an ObjectsChanged notice, i.e. while
     # the DAG is being mirrored FROM the stage. Stops the mirror writing back: adding the
     # edge fires DEPENDENCY_ADDED, whose handler would author inputs:chunk and re-home edit
     # targets, both of which edit the stage and notify straight back here.
@@ -752,7 +752,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 continue
             # Any inputs: connection, not only the exec slots: a param wire is a real
             # chunk-level dependency for ordering too, and drag-to-connect authors it the
-            # same way. _live_chunk_dependencies decides what actually counts.
+            # same way. _wired_dependencies decides what actually counts.
             if not is_exec_input_name(attr_name):
                 # But only when the *connection* moved. A param's stored value lives under
                 # this same inputs: prefix, so without this every keystroke into any param
@@ -780,7 +780,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 normalize_merge_slots(self._stage, self._stage.GetPrimAtPath(Sdf.Path(prim_path)))
             for chunk in self._scene.get_chunks():
                 if id(chunk) in wanted_ids:
-                    reconcile_exec_dependencies(chunk)
+                    reconcile_dag_dependencies(chunk)
         finally:
             self._reconciling_exec = False
 
@@ -2056,25 +2056,6 @@ def exec_input_slots_for_prim(prim: "Usd.Prim") -> int:
     return max(1, int(getattr(cfg, "exec_inputs", 1) or 1)) if cfg else 1
 
 
-def upstream_chunks(chunk: "core.ChunkBase", seen: "set | None" = None) -> set:
-    """`chunk` and everything upstream of it on the exec chain.
-
-    Transitive, because suppressing a branch has to suppress the whole branch and not
-    merely the chunk plugged into the slot -- the rest of it would carry on authoring into
-    the composed stage.
-
-    Guarded against revisiting: a diamond (two branches sharing a source) would otherwise
-    walk the shared part once per path, and a cycle would not terminate at all.
-    """
-    seen = set() if seen is None else seen
-    if any(c is chunk for c in seen):
-        return seen
-    seen.add(chunk)
-    for dep in exec_dependencies(chunk):
-        upstream_chunks(dep, seen)
-    return seen
-
-
 def set_chunk_muted(stage: "Usd.Stage", target: "core.ChunkBase", muted: bool) -> bool:
     """Block or unblock one chunk and mute or unmute its layer.
 
@@ -2450,35 +2431,6 @@ def get_view_exec_sources(
     ]
 
 
-def get_exec_downstream_chunks(
-    start: "core.ChunkBase",
-    stage: "Usd.Stage",
-    scene: "core.SceneSender",
-) -> "set[core.ChunkBase]":
-    """BFS forward through inputs:chunk connections from start.
-
-    Returns all downstream ChunkBase objects (start itself is excluded).
-    """
-    prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
-    start_path = get_chunk_prim_path(start)
-    downstream: set = set()
-    frontier = {start_path}
-    while frontier:
-        next_frontier: set = set()
-        for prim in stage.Traverse():
-            path = str(prim.GetPath())
-            if path in downstream or path == start_path:
-                continue
-            # Every slot — a merge fed through slot 2 is downstream of that branch just as
-            # much as one fed through slot 0.
-            if any(str(conn.GetPrimPath()) in frontier for conn in exec_input_connections(prim)):
-                next_frontier.add(path)
-                if c := prim_to_chunk.get(path):
-                    downstream.add(c)
-        frontier = next_frontier
-    return downstream
-
-
 def get_upstream_stage(stage: "Usd.Stage", scene: "core.SceneSender", chunk: "core.ChunkBase") -> "Usd.Stage":
     """A throwaway stage composing every chunk layer except `chunk` itself and its real
     downstream (plus the raw root layer), for a read that must never be influenced by a
@@ -2503,7 +2455,7 @@ def get_upstream_stage(stage: "Usd.Stage", scene: "core.SceneSender", chunk: "co
     rebuilding it from scratch here would silently pick a different, wrong winner.
     """
     lm = chunk_registry.ChunkLayerManager()
-    excluded = get_exec_downstream_chunks(chunk, stage, scene) | {chunk}
+    excluded = exec_downstream(chunk, stage, scene) | {chunk}
     excluded_ids = {layer.identifier for c in excluded if (layer := lm.get_layer(c)) is not None}
     layer_ids: list = []
     for g_layer in lm.graph_layers.values():
@@ -2709,7 +2661,7 @@ def _iter_exec_upstream(stage: "Usd.Stage", start: "Sdf.Path"):
     along the run instead of re-deriving it per node. It goes False for good at the first
     fork and never comes back.
 
-    Deliberately exec-only (inputs:chunk), NOT the exec+data walk get_exec_upstream_chunks
+    Deliberately exec-only (inputs:chunk), NOT the exec+data walk view_cook_list
     does: Edit Target resolution follows the execution chain that actually defines
     authoring position, and must ignore incidental data wiring — a chunk reading another's
     points shouldn't drag its Edit Target upstream. The two are separate on purpose."""
@@ -3337,7 +3289,18 @@ def publish_edit_target(chunk: "core.ChunkBase", stage: "Usd.Stage", layer: "Sdf
         reconcile_edit_targets(stage, _active_scene(), protect_root_layer=_loading)
 
 
-def get_exec_upstream_chunks(
+# ---------------------------------------------------------------------------
+# Exec graph: what is wired to what on the stage, and view-driven cooking
+#
+# Two readings of "upstream", on purpose, and they must not be merged:
+#   view_cook_list  every wire (exec, param, loft), ordered -- what cooks for a view
+#   exec_upstream   exec wires only, unordered -- which chunks make up a branch
+# Their answers differ exactly where it matters: a param-wired or lofted chunk is cooked
+# for the view but is not part of the exec branch.
+# ---------------------------------------------------------------------------
+
+
+def view_cook_list(
     view_chunk: "core.ChunkBase",
     stage: "Usd.Stage",
     scene: "core.SceneSender",
@@ -3345,6 +3308,7 @@ def get_exec_upstream_chunks(
     """Return the chunks feeding view_chunk, following ALL input connections backward.
 
     This is the *cook set* for a view: view-driven execution runs only these chunks.
+    For the exec-only branch, see exec_upstream.
     Follows both the exec wire (inputs:chunk) AND data connections (any inputs:* → a
     source prim), so a node feeding another purely via data (e.g. a Transform between a
     Scatter and an RBD solver that reads its points) is still cooked — otherwise it would
@@ -3423,7 +3387,7 @@ def recook_for_view(
 
     _synthetic_tail: True when view_chunk is a stand-in exec tail rather than a real view
     chunk (see the is_group_chunk branch below) — real view chunks are markers excluded
-    from their own cook_list by get_exec_upstream_chunks, but a synthetic tail is real
+    from their own cook_list by view_cook_list, but a synthetic tail is real
     content that must cook too, so it's appended back in rather than excluded.
     """
     lm = chunk_registry.ChunkLayerManager()
@@ -3455,7 +3419,7 @@ def recook_for_view(
         cook_list: "list[core.ChunkBase]" = []
         cook_set: set = set()
     else:
-        cook_list = get_exec_upstream_chunks(view_chunk, stage, scene)
+        cook_list = view_cook_list(view_chunk, stage, scene)
         if _synthetic_tail:
             cook_list.append(view_chunk)
         cook_set = set(cook_list)
@@ -3495,7 +3459,7 @@ def recook_for_view(
             if c in cook_set:
                 inner_view = find_group_active_view(c, stage, scene)
                 synthetic = False
-                if inner_view is not None and not get_exec_upstream_chunks(inner_view, stage, scene):
+                if inner_view is not None and not view_cook_list(inner_view, stage, scene):
                     # A view wired to NOTHING is not an answer to "what does this group
                     # output" -- it is a default view that never got pointed at anything,
                     # or one left dangling when the chunk it watched was deleted (an exec
@@ -3523,7 +3487,7 @@ def recook_for_view(
                     # Layer's, ends up strongest) depend on dive/rename order instead of
                     # actual graph position. Cook through the group's own exec tail
                     # instead, exactly as if a real inner view were pointed at it.
-                    tails = get_exec_tail_chunks(stage, scene, c)
+                    tails = exec_tails(stage, scene, c)
                     inner_view = tails[0] if tails else None
                     synthetic = inner_view is not None
                 recook_for_view(stage, scene, c, inner_view, _synthetic_tail=synthetic)
@@ -3696,7 +3660,7 @@ def recook_focus(
                 break  # a cycle would hang the focus; prim nesting should prevent it
             seen_ancestors.add(node_path)
             upstream_keep.update(
-                get_chunk_prim_path(u) for u in get_exec_upstream_chunks(node, stage, scene)
+                get_chunk_prim_path(u) for u in view_cook_list(node, stage, scene)
             )
             parent_path = str(Sdf.Path(node_path).GetParentPath())
             node = by_path.get(parent_path)
@@ -3707,7 +3671,7 @@ def recook_focus(
         # on. It looked like a group could only reach another group's stage through a data
         # wire, because lofting/connecting the group's Description authors a connection from
         # the group prim DOWN to an inner chunk -- which is exactly what put those inner
-        # chunks into get_exec_upstream_chunks' node-level answer in the first place.
+        # chunks into view_cook_list' node-level answer in the first place.
         keep_prefixes = tuple(u + "/" for u in upstream_keep)
         for c in scene.get_chunks():
             if is_view_chunk(c):
@@ -3734,55 +3698,38 @@ def recook_focus(
     recook_for_view(stage, scene, context, view_chunk)
 
 
-def get_exec_tail_chunks(
-    stage: "Usd.Stage",
-    scene: "core.SceneSender",
-    context: "core.ChunkBase | None" = None,
-) -> "list[core.ChunkBase]":
-    """Return non-view chunks whose outputs:chunk is not consumed by any inputs:chunk.
+def _exec_consumers(stage: "Usd.Stage") -> "dict[str, set[str]]":
+    """Source prim path -> the prim paths whose exec inputs take it, over the whole stage.
 
-    These are the downstream ends of the exec chains. Wiring a view to a tail makes the
-    view cook that tail's whole upstream chain. Used to auto-wire a default view.
+    Every slot: a chunk feeding a merge's slot 2 is as consumed as one feeding slot 0, and
+    calling it a tail would wire a view to the middle of a live branch. One traversal,
+    shared by exec_downstream and exec_tails -- each used to walk the stage itself, the
+    downstream walk once per level.
     """
-    candidates = [
-        c for c in scene.get_chunks()
-        if not is_view_chunk(c) and is_node_in_context(c, context)
-    ]
-    consumed: set = set()
+    consumers: "dict[str, set[str]]" = {}
     for prim in stage.Traverse():
-        # Every slot — a chunk feeding a merge's slot 2 is just as consumed as one feeding
-        # slot 0, and calling it a tail would wire a view to the middle of a live branch.
+        path = str(prim.GetPath())
         for conn in exec_input_connections(prim):
-            consumed.add(str(conn.GetPrimPath()))
-    return [c for c in candidates if get_chunk_prim_path(c) not in consumed]
+            consumers.setdefault(str(conn.GetPrimPath()), set()).add(path)
+    return consumers
 
 
-def get_exec_head_chunks(
+def exec_tails(
     stage: "Usd.Stage",
     scene: "core.SceneSender",
     context: "core.ChunkBase | None" = None,
 ) -> "list[core.ChunkBase]":
-    """Return non-view chunks with no non-view exec (inputs:chunk) input.
+    """Non-view chunks in context whose exec output nothing takes: the ends of the chains.
 
-    These are the roots of the exec chain — re-executing them propagates
-    through the full chain.  Pass context to restrict to one tab context.
+    Wiring a view to a tail makes the view cook that tail's whole upstream chain. Used to
+    auto-wire a default view.
     """
-    candidates = [
+    consumed = _exec_consumers(stage)
+    return [
         c for c in scene.get_chunks()
         if not is_view_chunk(c) and is_node_in_context(c, context)
+        and get_chunk_prim_path(c) not in consumed
     ]
-    candidate_paths = {get_chunk_prim_path(c) for c in candidates}
-    has_non_view_input: set = set()
-    for c in candidates:
-        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
-        if not prim.IsValid():
-            continue
-        # Every slot — a merge fed only through slot 2 still has a real input, and calling
-        # it a root would make it the start of a chain it is actually the end of.
-        for conn in exec_input_connections(prim):
-            if str(conn.GetPrimPath()) in candidate_paths:
-                has_non_view_input.add(get_chunk_prim_path(c))
-    return [c for c in candidates if get_chunk_prim_path(c) not in has_non_view_input]
 
 
 def _connected_source_paths(prim: "Usd.Prim") -> "set[str]":
@@ -3823,7 +3770,7 @@ def commit_order_from_stage(
     chunks joined only by a param wire both sit at depth 0 and commit in arbitrary order.
 
     The stage has both kinds of wire, and is already the authority the rest of the wiring
-    code trusts (see _live_exec_dependencies), so order from it instead.
+    code trusts (see exec_dependencies), so order from it instead.
 
     A cycle can't be topologically ordered and must not drop anyone: the first chunk still
     waiting is emitted and the sort continues, so the result always contains every input
@@ -3867,6 +3814,194 @@ def commit_order_from_stage(
         ready_ids = {id(c) for c in ready}
         waiting = [c for c in waiting if id(c) not in ready_ids]
     return result
+
+
+def exec_upstream(chunk: "core.ChunkBase", seen: "set | None" = None) -> set:
+    """`chunk` and everything upstream of it, following exec wires only.
+
+    Not view_cook_list, which follows param wires and lofts as well and answers "what has
+    to cook for this view". This answers "which chunks make up this branch": suppressing a
+    branch has to suppress the whole of it, not merely the chunk plugged into the slot --
+    the rest would carry on authoring into the composed stage.
+
+    Guarded against revisiting: a diamond (two branches sharing a source) would otherwise
+    walk the shared part once per path, and a cycle would not terminate at all.
+    """
+    seen = set() if seen is None else seen
+    if any(c is chunk for c in seen):
+        return seen
+    seen.add(chunk)
+    for dep in exec_dependencies(chunk):
+        exec_upstream(dep, seen)
+    return seen
+
+
+def exec_downstream(
+    start: "core.ChunkBase",
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+) -> "set[core.ChunkBase]":
+    """Every chunk start's exec output reaches, following exec wires forward.
+
+    start itself is excluded, even when a cycle leads back to it.
+    """
+    consumers = _exec_consumers(stage)
+    prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    start_path = get_chunk_prim_path(start)
+    seen = {start_path}
+    frontier = [start_path]
+    downstream: set = set()
+    while frontier:
+        for path in consumers.get(frontier.pop(), ()):
+            if path in seen:
+                continue
+            seen.add(path)
+            frontier.append(path)
+            if (c := prim_to_chunk.get(path)) is not None:
+                downstream.add(c)
+    return downstream
+
+
+def _live_prim(chunk: "core.ChunkBase") -> "Usd.Prim | None":
+    """chunk's prim on the live session's stage, if it has one."""
+    stage = chunk.get_stage()
+    if not stage:
+        return None
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    return prim if prim.IsValid() else None
+
+
+def _chunks_at(paths: "Iterable[str]") -> "list[core.ChunkBase]":
+    """The live chunks at paths, in order; a path that is not a chunk is skipped.
+
+    Resolved by prim path, not chunk name: names are scene-wide and can be uniquified or
+    renamed, so a name lookup can bind to the wrong chunk (same rationale as load_chunks'
+    dependency restore).
+    """
+    paths = list(paths)
+    if not paths:
+        return []
+    by_path = {
+        get_chunk_prim_path(c): c for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+    }
+    return [c for path in paths if (c := by_path.get(path)) is not None]
+
+
+def exec_dependencies(chunk: "core.ChunkBase") -> list:
+    """The chunks feeding this one's *exec* slots, read from the live stage.
+
+    The public way for a chunk module to ask "what is immediately upstream of me on the
+    exec chain". chunk.get_dependencies() is not that question: the Python DAG also
+    mirrors param wires, which mean a value flows rather than that one chunk precedes
+    another.
+
+    The stage is the authority here, not the DAG: the node graph's drag-to-connect authors
+    the USD connection directly and never calls add_dependency(). _author_prim relies on
+    this, or export would chain chunks in scene.get_chunks() order instead of their real
+    exec order. Every slot is read -- a merge's branches past the first are real inputs,
+    and reconcile_dag_dependencies would otherwise remove edges it cannot see.
+
+    Args:
+        chunk (core.ChunkBase): The chunk to read the exec inputs of
+
+    Returns:
+        list: The upstream chunks, one per connected exec slot
+    """
+    prim = _live_prim(chunk)
+    if prim is None:
+        return []
+    return _chunks_at(str(conn.GetPrimPath()) for conn in exec_input_connections(prim))
+
+
+def _param_wire_source_paths(prim: "Usd.Prim") -> "set[str]":
+    """The prim paths this chunk reads through a *param* wire, exec slots excluded."""
+    exec_sources = {str(conn.GetPrimPath()) for conn in exec_input_connections(prim)}
+    return _connected_source_paths(prim) - exec_sources
+
+
+def _wired_dependencies(chunk: "core.ChunkBase") -> list:
+    """Every chunk this one reads from on the live stage -- exec slots *and* param wires.
+
+    exec_dependencies answers the narrower question (which chunks feed my exec slots) and
+    stays that way: it is what authors inputs:chunk, and a param wire must never be written
+    out as an exec edge.
+
+    This is the wider one, for the Python DAG. A param wire already propagates change --
+    _on_ref_changed executes the destination param's own sender, which dirties its chunk
+    through the ownership chain -- but it carries no dependency edge, so two chunks joined
+    only that way both sit at depth 0: no INPUT_CHANGED between them, arbitrary commit
+    order (hence commit_order_from_stage), and no guarantee the downstream one solves after
+    the upstream one when a single propagation dirties both.
+
+    Source of truth is _connected_source_paths, the same reader commit_order_from_stage
+    orders by, so the two cannot drift -- and its carve-outs (a self-reference, and an
+    ancestor target, which is a loft into a group's interface rather than a sibling
+    dependency) apply here unchanged.
+    """
+    prim = _live_prim(chunk)
+    if prim is None:
+        return []
+    return _chunks_at(_connected_source_paths(prim))
+
+
+def _would_cycle(chunk: "core.ChunkBase", dep: "core.ChunkBase") -> bool:
+    """Whether making chunk depend on dep would close a loop.
+
+    Adding the edge means dep must solve before chunk, so it cycles exactly when dep is
+    already downstream of chunk.
+
+    Worth the check rather than letting topo_order raise: a param wire cycle currently
+    settles-and-warns (see _on_ref_changed, and _resolve_expression_string, both of which
+    run during widget paint where a raise is far worse than a stale value), and CONTEXT.md
+    records that tolerance as deliberate. Skipping the edge keeps cyclic wiring behaving
+    exactly as it does today while acyclic wiring — the overwhelming majority — gains the
+    ordering it was missing.
+    """
+    return dep.get_dag_node() in chunk_scheduler.downstream_closure(chunk.get_dag_node())
+
+
+def reconcile_dag_dependencies(chunk: "core.ChunkBase") -> bool:
+    """Make chunk's Python DAG dependencies match its live inputs:chunk connections.
+
+    The stage is the authority for chunk-level exec wiring: the node-graph UI's
+    drag-to-connect authors inputs:chunk directly and never calls add_dependency(), so
+    without this the Python DAG holds no edge at all for an interactively built graph and
+    INPUT_CHANGED never fires between two chunks the user visibly wired together.
+
+    Adding the edge here also dirties the dependent, so an edge change propagates downstream
+    exactly like a param change does.
+
+    Only chunk-level dependencies are touched. Param-level dependencies (added via the
+    c_param.add_dependency(a_param) API) have no inputs:chunk counterpart and are left alone.
+
+    Args:
+        chunk (core.ChunkBase): The chunk whose inputs:chunk connections changed
+
+    Returns:
+        bool: True if any dependency was added or removed
+    """
+    live = _wired_dependencies(chunk)
+    current = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
+
+    live_ids = {id(dep) for dep in live}
+    current_ids = {id(dep) for dep in current}
+
+    changed = False
+    for dep in current:
+        if id(dep) not in live_ids:
+            changed = chunk.remove_dependency(dep) or changed
+    for dep in live:
+        if id(dep) in current_ids:
+            continue
+        if _would_cycle(chunk, dep):
+            logger.debug(
+                "Skipping dependency %s -> %s: it would close a cycle, leaving the wire to "
+                "settle as it does today", dep.name, chunk.name,
+            )
+            continue
+        chunk.add_dependency(dep)
+        changed = True
+    return changed
 
 
 _chunk_clipboard: list[str] = []
@@ -5218,161 +5353,6 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             _forward_to_inner(None, None)
 
 
-def _live_exec_dependencies(chunk: "core.ChunkBase") -> list:
-    """Return the chunks chunk's *live* inputs:chunk connection currently points at,
-    read directly from the live session's stage.
-
-    This is the authoritative wiring for a graph built interactively — the node-graph
-    UI's drag-to-connect authors the USD-level connection directly, never calling
-    add_dependency(), so chunk.get_dependencies() (the Python DAG) stays empty until a
-    save+reload cycle reconstructs it (load_chunks does this same lookup). Without
-    this, _author_prim's prev_chunk fallback would chain chunks in scene.get_chunks()
-    iteration order instead of their real exec order — silently scrambling the graph
-    on export (and breaking anything, like an Edit Target chunk, whose correctness
-    depends on running in the right sequence relative to what it references).
-    """
-    stage = chunk.get_stage()
-    if not stage:
-        return []
-    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
-    if not prim.IsValid():
-        return []
-    # Every slot: a merge's branches past the first are real DAG dependencies, and missing
-    # them here would leave reconcile_exec_dependencies removing edges it cannot see.
-    exec_conns = exec_input_connections(prim)
-    if not exec_conns:
-        return []
-    # Resolve by prim path, not chunk name — names are scene-wide and can be
-    # uniquified/renamed, so a name lookup can bind to the wrong chunk (same
-    # rationale as load_chunks' dependency restore).
-    chunk_by_path = {
-        get_chunk_prim_path(c): c for c in chunk_registry.ChunkRegistry().scene.get_chunks()
-    }
-    deps = []
-    for conn_path in exec_conns:
-        if dep := chunk_by_path.get(str(conn_path.GetPrimPath())):
-            deps.append(dep)
-    return deps
-
-
-def _param_wire_source_paths(prim: "Usd.Prim") -> "set[str]":
-    """The prim paths this chunk reads through a *param* wire, exec slots excluded."""
-    exec_sources = {str(conn.GetPrimPath()) for conn in exec_input_connections(prim)}
-    return _connected_source_paths(prim) - exec_sources
-
-
-def _live_chunk_dependencies(chunk: "core.ChunkBase") -> list:
-    """Every chunk this one reads from on the live stage — exec slots *and* param wires.
-
-    _live_exec_dependencies answers the narrower question (which chunks feed my exec
-    slots) and stays that way: it is what authors inputs:chunk, and a param wire must
-    never be written out as an exec edge.
-
-    This is the wider one, for the Python DAG. A param wire already propagates change --
-    _on_ref_changed executes the destination param's own sender, which dirties its chunk
-    through the ownership chain -- but it carries no dependency edge, so two chunks joined
-    only that way both sit at depth 0: no INPUT_CHANGED between them, arbitrary commit
-    order (hence commit_order_from_stage), and no guarantee the downstream one solves after
-    the upstream one when a single propagation dirties both.
-
-    Source of truth is _connected_source_paths, the same reader commit_order_from_stage
-    orders by, so the two cannot drift — and its carve-outs (a self-reference, and an
-    ancestor target, which is a loft into a group's interface rather than a sibling
-    dependency) apply here unchanged.
-    """
-    stage = chunk.get_stage()
-    if not stage:
-        return []
-    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
-    if not prim.IsValid():
-        return []
-    sources = _connected_source_paths(prim)
-    if not sources:
-        return []
-    # Resolve by prim path, not chunk name — same rationale as _live_exec_dependencies.
-    chunk_by_path = {
-        get_chunk_prim_path(c): c for c in chunk_registry.ChunkRegistry().scene.get_chunks()
-    }
-    return [dep for path in sources if (dep := chunk_by_path.get(path)) is not None]
-
-
-def _would_cycle(chunk: "core.ChunkBase", dep: "core.ChunkBase") -> bool:
-    """Whether making chunk depend on dep would close a loop.
-
-    Adding the edge means dep must solve before chunk, so it cycles exactly when dep is
-    already downstream of chunk.
-
-    Worth the check rather than letting topo_order raise: a param wire cycle currently
-    settles-and-warns (see _on_ref_changed, and _resolve_expression_string, both of which
-    run during widget paint where a raise is far worse than a stale value), and CONTEXT.md
-    records that tolerance as deliberate. Skipping the edge keeps cyclic wiring behaving
-    exactly as it does today while acyclic wiring — the overwhelming majority — gains the
-    ordering it was missing.
-    """
-    return dep.get_dag_node() in chunk_scheduler.downstream_closure(chunk.get_dag_node())
-
-
-def exec_dependencies(chunk: "core.ChunkBase") -> list:
-    """The chunks feeding this one's *exec* slots, read from the live stage.
-
-    The public way for a chunk module to ask "what is immediately upstream of me on the
-    exec chain". chunk.get_dependencies() is not that question: the Python DAG also
-    mirrors param wires, which mean a value flows rather than that one chunk precedes
-    another.
-
-    Args:
-        chunk (core.ChunkBase): The chunk to read the exec inputs of
-
-    Returns:
-        list: The upstream chunks, one per connected exec slot
-    """
-    return _live_exec_dependencies(chunk)
-
-
-def reconcile_exec_dependencies(chunk: "core.ChunkBase") -> bool:
-    """Make chunk's Python DAG dependencies match its live inputs:chunk connections.
-
-    The stage is the authority for chunk-level exec wiring: the node-graph UI's
-    drag-to-connect authors inputs:chunk directly and never calls add_dependency(), so
-    without this the Python DAG holds no edge at all for an interactively built graph and
-    INPUT_CHANGED never fires between two chunks the user visibly wired together.
-
-    Adding the edge here also dirties the dependent, so an edge change propagates downstream
-    exactly like a param change does.
-
-    Only chunk-level dependencies are touched. Param-level dependencies (added via the
-    c_param.add_dependency(a_param) API) have no inputs:chunk counterpart and are left alone.
-
-    Args:
-        chunk (core.ChunkBase): The chunk whose inputs:chunk connections changed
-
-    Returns:
-        bool: True if any dependency was added or removed
-    """
-    live = _live_chunk_dependencies(chunk)
-    current = [dep for _, dep in chunk.get_dependencies() if isinstance(dep, core.ChunkBase)]
-
-    live_ids = {id(dep) for dep in live}
-    current_ids = {id(dep) for dep in current}
-
-    changed = False
-    for dep in current:
-        if id(dep) not in live_ids:
-            changed = chunk.remove_dependency(dep) or changed
-    for dep in live:
-        if id(dep) in current_ids:
-            continue
-        if _would_cycle(chunk, dep):
-            logger.debug(
-                "Skipping dependency %s -> %s: it would close a cycle, leaving the wire to "
-                "settle as it does today", dep.name, chunk.name,
-            )
-            continue
-        chunk.add_dependency(dep)
-        changed = True
-    return changed
-
-
 def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:
     chunk_root = _resolve_chunk_root(chunk)
     _define_chunk_parent(stage, chunk_root)
@@ -5403,9 +5383,9 @@ def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.Ch
 
     # The stage's exec wiring comes first, and the Python DAG is only the fallback for a
     # chunk that has none yet. The DAG now also holds edges reconciled from *param* wires
-    # (see _live_chunk_dependencies), and authoring one of those as inputs:chunk would
+    # (see _wired_dependencies), and authoring one of those as inputs:chunk would
     # invent an exec edge the user never drew -- so the fallback filters them back out.
-    deps = _live_exec_dependencies(chunk)
+    deps = exec_dependencies(chunk)
     if not deps:
         wired = _param_wire_source_paths(prim)
         deps = [

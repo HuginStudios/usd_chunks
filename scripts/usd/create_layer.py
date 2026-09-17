@@ -129,11 +129,11 @@ def _view_ranked_index(node, stage, paths: "list") -> "int | None":
         # output actually reaches downstream, and rank directly against that view's cook
         # list instead -- same "closer to the view wins" signal, just found a different
         # way.
-        downstream = chunk_usd.get_exec_downstream_chunks(ranking_unit, stage, scene)
+        downstream = chunk_usd.exec_downstream(ranking_unit, stage, scene)
         view_chunk = next((c for c in downstream if chunk_usd.is_view_chunk(c)), None)
     if view_chunk is None:
         return None
-    cook_list = chunk_usd.get_exec_upstream_chunks(view_chunk, stage, scene)
+    cook_list = chunk_usd.view_cook_list(view_chunk, stage, scene)
     if ranking_unit not in cook_list:
         return None
     my_rank = cook_list.index(ranking_unit)

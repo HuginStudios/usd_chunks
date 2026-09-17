@@ -85,7 +85,7 @@ def test_the_group_children_are_not_themselves_reachable(wired):
     """The precondition: this is why the gate used to skip them."""
     stage, scene, view, _group, ref, bind, _stray = wired
 
-    cook_set = set(chunk_usd.get_exec_upstream_chunks(view, stage, scene))
+    cook_set = set(chunk_usd.view_cook_list(view, stage, scene))
 
     assert ref not in cook_set
     assert bind not in cook_set
