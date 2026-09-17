@@ -66,29 +66,9 @@ def _upstream(node, seen=None) -> set:
 
 
 def _set_muted(node, target, muted: bool) -> bool:
-    """Block or unblock one chunk and mute or unmute its layer.
-
-    Never a context (a tab or group): is_blocked() climbs the owner chain, so blocking a
-    container would propagate down and block its whole subtree, including the branch that
-    was selected. Containers author nothing of their own -- their leaves are handled
-    individually by the caller's loop, exactly as recook_for_view does it.
-    """
-    if target.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-        return False
-
-    target.set_blocked(muted)
-    stage = node.get_stage()
-    layer = chunk_registry.ChunkLayerManager().get_layer(target)
-    if stage is None or layer is None:
-        return True
-    # stage.Mute/UnmuteLayer, not layer.SetMuted: SetMuted recomposes lazily and expires
-    # prims, which is the "chunk layers disappear" bug the rest of the codebase avoids the
-    # same way.
-    if muted:
-        stage.MuteLayer(layer.identifier)
-    else:
-        stage.UnmuteLayer(layer.identifier)
-    return True
+    """Block or unblock one chunk and mute or unmute its layer -- chunk_stage.set_chunk_muted,
+    the one lever the Switch, the Stage Expression Filter and the view system share."""
+    return chunk_stage.set_chunk_muted(node.get_stage(), target, muted)
 
 
 def _record(node, chunks) -> None:
@@ -135,11 +115,13 @@ def execute(node):
             if _set_muted(node, c, True):
                 muted.add(c)
 
-    # Un-mute the chosen branch. Blocking is this Switch's own lever rather than the user's
-    # DISABLED, so there is nothing of theirs to clobber -- but only chunks still reachable
-    # are un-muted, and the record below catches a branch that has since been unwired.
+    # Un-mute the chosen branch -- but only what this Switch muted itself. The chosen
+    # branch can hold another gate's suppressed branch (a Stage Expression Filter's slot 1
+    # upstream), and un-muting everything reachable switched that one back on.
+    mine = _recorded(node)
     for c in keep:
-        _set_muted(node, c, False)
+        if chunk_stage.get_chunk_prim_path(c) in mine:
+            _set_muted(node, c, False)
 
     # Muted by an earlier index and no longer upstream of this Switch at all: leaving it
     # blocked would strand a branch the user has already disconnected.

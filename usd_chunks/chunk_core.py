@@ -1734,7 +1734,15 @@ class ChunkUsdAttributeSupport(AttributesBase):
                         # which may have moved on since it was first authored.
                         home = chunk_utils.get_attr_home_layer(usd_attr) or stage.GetSessionLayer()
                         with Usd.EditContext(stage, home):
-                            if not is_expr:
+                            if not is_expr and chunk_utils.has_stage_expression(raw):
+                                # A ${VAR} is saved as its text, never as today's value --
+                                # see chunk_stage._author_stage_expression.
+                                is_string = usd_attr.GetTypeName() == Sdf.ValueTypeNames.String
+                                if not is_string and not isinstance(val, str) and usd_attr.Get(0) != val:
+                                    usd_attr.Set(val)
+                                if not is_string or usd_attr.Get(0) != raw:
+                                    chunk_utils.store_expression_text(usd_attr, raw)
+                            elif not is_expr:
                                 current = usd_attr.Get(0)
                                 # Don't write a string to a typed (non-String) attr — an unresolved
                                 # forwarded value can arrive as text and raise a type-mismatch.
@@ -1780,11 +1788,17 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if val is None or not self._driven_attr_paths:
             return
         chunk_layer = self.get_edit_context()
-        if not chunk_layer:
+        # USD refuses to author into a muted layer (a chunk gated off by a Switch or a
+        # filter); chunk_stage.set_chunk_muted re-pushes these values on un-mute.
+        if not chunk_layer or stage.IsLayerMuted(chunk_layer.identifier):
             return
         for path in self._driven_attr_paths:
             sdf_path = Sdf.Path(path)
             if driven_attr := stage.GetAttributeAtPath(sdf_path):
+                # An expression that did not resolve (a typo, an unset variable) stays
+                # text; a typed attr refuses it, and the raise took the whole edit down.
+                if isinstance(val, str) and driven_attr.GetTypeName() != Sdf.ValueTypeNames.String:
+                    continue
                 if driven_attr.Get(0) != val:
                     with Usd.EditContext(stage, chunk_layer):
                         driven_attr.Set(val)
@@ -1807,16 +1821,19 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if isinstance(notice.data, Usd.Attribute) and not isinstance(self, ChunkVectorBase):
             raw = getattr(self, 'raw_value', None)
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
+            # A ${VAR} is text to keep too: stored resolved, a saved "${SHOT}" came back
+            # as whatever shot was current and stopped following the variable.
+            is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
             # Only String-typed attrs can hold the raw expression text as their value
             # (needed so _patch_expressions can rewrite it on rename); other types (Float,
             # Float3, etc.) store the resolved value and keep the text in customData
             # instead (chunk_utils.store_expression_text) — rebuilding it from
             # SetConnections cannot work, since the connections name only the refs and
             # drop every operator between them.
-            if is_expr and notice.data.GetTypeName() != Sdf.ValueTypeNames.String:
+            if (is_expr or is_stage_expr) and notice.data.GetTypeName() != Sdf.ValueTypeNames.String:
                 store_val = sender.value
             else:
-                store_val = raw if is_expr else sender.value
+                store_val = raw if (is_expr or is_stage_expr) else sender.value
             prev_write = chunk_notice._usd_write_active
             chunk_notice._usd_write_active = True
             try:
@@ -1847,6 +1864,8 @@ class ChunkUsdAttributeSupport(AttributesBase):
                         ])
                         # The connections carry the refs; only this carries the operators
                         # and literals between them.
+                        chunk_utils.store_expression_text(notice.data, raw)
+                    elif is_stage_expr:
                         chunk_utils.store_expression_text(notice.data, raw)
                     else:
                         chunk_utils.clear_expression_text(notice.data)
@@ -2031,6 +2050,8 @@ class ChunkUsdAttributeSupport(AttributesBase):
         storage_path = Sdf.Path(self._param_attr_path)
         type_name = storage_attr.GetTypeName()
         chunk_layer = self.get_edit_context()
+        if chunk_layer and stage.IsLayerMuted(chunk_layer.identifier):
+            chunk_layer = None  # can't author into it; the connection is topology only
 
         for path in self._driven_attr_paths:
             sdf_path = Sdf.Path(path)

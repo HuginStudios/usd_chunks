@@ -365,3 +365,33 @@ def test_an_unwired_branch_is_released_even_when_it_is_more_than_one_chunk_deep(
     assert not inner.is_blocked(), (
         "nothing is gating inner any more -- it is not upstream of the filter at all"
     )
+
+
+def test_a_downstream_filter_does_not_reopen_an_upstream_gate(scene):
+    """Day then night, chained: NightOnly forwards DayOnly as its stream, and that stream
+    reaches DayOnly's gated branch. Un-muting everything in the stream switched the sun
+    back on in a night shot -- a filter may only release what it muted itself."""
+    stage, sender = scene
+    UsdGeom.Cube.Define(stage, "/c")
+    stream = _place(sender, "Stream", "/a", 5.0)
+    sun = _place(sender, "Sun", "/b", 7.0)
+    lamp = _place(sender, "Lamp", "/c", 9.0)
+
+    day = _filter(sender, "DayOnly")
+    _wire(stage, day, stream, sun)
+    day.get_param("pattern").value = "*_day"
+    night = _filter(sender, "NightOnly")
+    _wire(stage, night, day, lamp)
+    night.get_param("pattern").value = "*_night"
+
+    for shot, sun_on, lamp_on in (("sh030_night", False, True), ("sh010_day", True, False)):
+        day.get_param("value").value = shot
+        night.get_param("value").value = shot
+        day.execute()
+        night.execute()
+
+        assert _height(stage, "/a") == pytest.approx(5.0), shot
+        assert _height(stage, "/b") == pytest.approx(7.0 if sun_on else 0.0), shot
+        assert _height(stage, "/c") == pytest.approx(9.0 if lamp_on else 0.0), shot
+        assert sun.is_blocked() is not sun_on, shot
+        assert lamp.is_blocked() is not lamp_on, shot

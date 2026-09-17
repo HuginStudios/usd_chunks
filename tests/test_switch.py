@@ -281,3 +281,36 @@ def test_an_unwired_branch_is_released_even_when_it_is_more_than_one_chunk_deep(
         "nothing is suppressing b_inner any more -- it is not upstream of the Switch at all"
     )
     assert _height(stage, "/b") == 7.0 + 5.0, "and its edit composes again"
+
+
+def test_the_selected_branch_keeps_an_upstream_filters_gate_shut(scene):
+    """A Stage Expression Filter upstream of the chosen input has muted its own gated
+    branch; selecting that input must not un-mute it along with everything else."""
+    stage, sender = scene
+    filter_mod = importlib.import_module("stage_expression_filter")
+    stream = _place(sender, "Stream", "/a", 5.0)
+    gated = _place(sender, "Gated", "/b", 7.0)
+
+    f = filter_mod.main()
+    f._config = ChunkConfig(module="stage_expression_filter", exec_inputs=2)
+    f._module = filter_mod
+    f.name = "Filter"
+    sender.add_chunk(f)
+    prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(f)))
+    for i, src in enumerate((stream, gated)):
+        name = chunk_stage.exec_input_name(i)
+        attr = prim.GetAttribute(name) or prim.CreateAttribute(name, Sdf.ValueTypeNames.Token, custom=False)
+        attr.SetConnections([Sdf.Path(f"{chunk_stage.get_chunk_prim_path(src)}.{chunk_stage._EXEC_OUTPUT}")])
+    f.get_param("value").value = "sh020"
+    f.get_param("pattern").value = "sh01*"
+    f.execute()
+    assert gated.is_blocked()
+
+    sw = _mk(sender, switch_mod, "Switch", "switch")
+    _wire(stage, sw, f)
+    sw.get_param("index").value = 0
+    sw.execute()
+
+    assert gated.is_blocked(), "the filter's gate must stay shut"
+    assert _height(stage, "/b") == pytest.approx(0.0)
+    assert _height(stage, "/a") == pytest.approx(5.0)

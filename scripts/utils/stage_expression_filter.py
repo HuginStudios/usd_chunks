@@ -127,8 +127,13 @@ def execute(node):
         for dep in gated:
             keep |= chunk_stage.exec_upstream(dep)
 
+    # Only what this filter muted itself. The stream can carry another gate's suppressed
+    # branch -- two filters in a row, day then night -- and un-muting everything reachable
+    # switched the upstream filter's branch straight back on.
+    mine = _recorded(node)
     for c in keep:
-        chunk_stage.set_chunk_muted(stage, c, False)
+        if chunk_stage.get_chunk_prim_path(c) in mine:
+            chunk_stage.set_chunk_muted(stage, c, False)
 
     # Muted by an earlier evaluation and no longer upstream of this filter at all: leaving
     # it blocked would strand a branch the user has already disconnected.

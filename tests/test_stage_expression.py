@@ -196,6 +196,25 @@ def test_numeric_param_keeps_its_text_in_usd(scene) -> None:
     assert chunk_utils.read_expression_text(attr) == "${COUNT}"
 
 
+def test_string_param_keeps_its_text_in_usd(scene) -> None:
+    """A String attr holds the text itself -- and must keep holding it after the param is
+    bound, not the value the variable had at that moment. Saved resolved, a Stage Expression
+    Filter testing ${SHOT} reloaded comparing against a fixed shot name."""
+    stage = scene.get_stage()
+    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010"})
+    c = _mk("dst")
+    p = chunk.LineEdit("value", default_value="")
+    c.add_param(p)
+    scene.add_chunk(c)
+
+    p.value = "${SHOT}"
+    p.value = "${SHOT}_day"
+
+    attr = stage.GetAttributeAtPath(p._param_attr_path)
+    assert attr.Get() == "${SHOT}_day"
+    assert p.value == "sh010_day"
+
+
 def test_a_plain_value_is_untouched(scene) -> None:
     """No regression for the overwhelmingly common case of a field with no variable in it."""
     c = _mk("dst")
@@ -299,3 +318,31 @@ def test_load_lofts_the_variables_back(scene) -> None:
     stage_expression._chunk_loaded(node, None, None)
 
     assert node.get_param("SHOT") is not None
+
+
+def test_a_light_input_follows_the_variable(scene) -> None:
+    """A Light's attribute params bind to the light prim's float inputs. The expression text
+    must never be written there (type mismatch), and the resolved value has to be pushed
+    again when the variable changes -- the param's own text does not change."""
+    light_mod = importlib.import_module("scripts.modelling.light")
+    node, mod = _stage_expression(scene, "SHOT = sh010_day")
+
+    light = light_mod.main()
+    light._config = ChunkConfig(module="light")
+    light._module = light_mod
+    scene.add_chunk(light)
+    light.get_param("primpath_location").value = "/World/lights/hood"
+    light.get_param("light_type").value = "RectLight"
+    light_mod.execute(light)
+
+    intensity = light.get_param("attr_grp").get_param("inputs").get_param("intensity")
+    intensity.value = '`if(contains(${SHOT}, "night"), 60, 20)`'
+
+    attr = scene.get_stage().GetAttributeAtPath("/World/lights/hood.inputs:intensity")
+    assert attr.Get() == pytest.approx(20.0)
+
+    node.get_param("SHOT").value = "sh030_night"
+    mod.execute(node)
+
+    assert intensity.value == 60
+    assert attr.Get() == pytest.approx(60.0)

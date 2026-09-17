@@ -272,6 +272,76 @@ def _author_stage_expression(attr: "Usd.Attribute", raw: str, param) -> None:
             attr.Set(resolved)
 
 
+def _push_driven_values(stage: "Usd.Stage", param, layer: "Sdf.Layer | None" = None) -> None:
+    """Write param's resolved value onto every real prim attr it drives.
+
+    The chunk's own layer by default, where its execute() authors. Text is never written
+    onto a non-String attr -- an expression that did not resolve stays text.
+    """
+    paths = getattr(param, "_driven_attr_paths", None)
+    if not paths:
+        return
+    value = param.value
+    layer = layer or param.get_edit_context()
+    # USD refuses to author into a muted layer; set_chunk_muted re-pushes on un-mute.
+    if value is None or layer is None or stage.IsLayerMuted(layer.identifier):
+        return
+    for path in paths:
+        attr = stage.GetAttributeAtPath(Sdf.Path(path))
+        if not attr:
+            continue
+        if isinstance(value, str) and attr.GetTypeName() != Sdf.ValueTypeNames.String:
+            continue
+        if attr.Get(0) != value:
+            with Usd.EditContext(stage, layer):
+                attr.Set(value)
+
+
+def push_chunk_values(stage: "Usd.Stage", chunk: "core.ChunkBase") -> None:
+    """Re-author every value chunk's params drive, e.g. a Light's inputs.
+
+    Needed after a chunk's layer comes back from being muted: USD refuses to author into a
+    muted layer, so a value restored on load (or edited) while the chunk was gated off
+    never landed, and the light came back at its schema default.
+    """
+    for _, param in _iter_chunk_params(chunk):
+        _push_driven_values(stage, param)
+    for _, vector in _iter_chunk_vectors(chunk):
+        _push_driven_values(stage, vector)
+
+
+def refresh_stage_expression_params(stage: "Usd.Stage", scene: "core.SceneSender") -> int:
+    """Re-push every ${VAR}-holding param's resolved value to the attrs it drives.
+
+    A param resolves its stage expression on read, but the USD attrs it drives (a Light's
+    inputs:intensity) were written once, when the param's text last changed. Changing the
+    variable changes no param text, so without this a shared light keeps the value of the
+    shot it was authored in. Called by whatever changes the variables.
+
+    Returns:
+        int: how many params were refreshed
+    """
+    if stage is None or scene is None:
+        return 0
+    refreshed = 0
+    for chunk in scene.get_chunks():
+        for _, param in _iter_chunk_params(chunk):
+            if not chunk_utils.has_stage_expression(getattr(param, "raw_value", None)):
+                continue
+            _push_driven_values(stage, param)
+            # The chunk-prim storage attr of a non-String param keeps the text in
+            # customData and a resolved value beside it -- keep that value current too.
+            storage = stage.GetAttributeAtPath(Sdf.Path(param._param_attr_path)) if param._param_attr_path else None
+            value = param.value
+            if (storage and storage.GetTypeName() != Sdf.ValueTypeNames.String
+                    and value is not None and not isinstance(value, str) and storage.Get(0) != value):
+                if home := chunk_utils.get_attr_home_layer(storage):
+                    with Usd.EditContext(stage, home):
+                        storage.Set(value)
+            refreshed += 1
+    return refreshed
+
+
 class ChunkStageSync(metaclass=RegistrySingleton):
     """
     Singleton that authors a Chunk prim on the stage whenever a Python chunk
@@ -397,6 +467,17 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     and target_prim.GetAttribute(f"outputs:{attr_name}").IsValid() else "inputs")
             targets.append(Sdf.Path(f"{chunk_root}/{node}.{kind}:{attr_name}"))
         return targets
+
+    def _drive_from_storage(self, param, real_attr: Usd.Attribute) -> None:
+        """Turn the real prim attr param was bound to into one its storage attr drives.
+
+        The real attr takes the resolved value -- expression text is only storable on a
+        String attr, and a Light's float input handed `if(...)` raises -- in the chunk's
+        own layer, unless that layer is muted (re-pushed on un-mute).
+        """
+        param.connect_usd_attr(real_attr)
+        self._clear_driven_attr_value(real_attr)
+        _push_driven_values(self._stage, param)
 
     def _clear_driven_attr_value(self, driven_attr: Usd.Attribute) -> None:
         """Remove any authored default value from the driven attr in session/anonymous layers.
@@ -1423,14 +1504,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if existing and existing != str(attr.GetPath()):
             old_attr = self._stage.GetAttributeAtPath(Sdf.Path(existing))
             if old_attr and old_attr.IsValid():
-                param.connect_usd_attr(old_attr)
-                self._clear_driven_attr_value(old_attr)
-                chunk_layer = param.get_edit_context()
-                raw = getattr(param, 'raw_value', None)
-                if chunk_layer and raw is not None:
-                    with Usd.EditContext(self._stage, chunk_layer):
-                        if old_attr.Get(0) != raw:
-                            old_attr.Set(raw)
+                self._drive_from_storage(param, old_attr)
 
     def _delete_stale_attr_specs(self, prim: "Usd.Prim", attr_name: str) -> None:
         """Remove attr_name's spec from every layer in the stack where it's found.
@@ -1517,14 +1591,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if old_storage_path and old_storage_path != str(attr.GetPath()):
                 old_attr = self._stage.GetAttributeAtPath(Sdf.Path(old_storage_path))
                 if old_attr and old_attr.IsValid():
-                    param.connect_usd_attr(old_attr)
-                    self._clear_driven_attr_value(old_attr)
-                    chunk_layer = param.get_edit_context()
-                    raw = getattr(param, 'raw_value', None)
-                    if chunk_layer and raw is not None:
-                        with Usd.EditContext(self._stage, chunk_layer):
-                            if old_attr.Get(0) != raw:
-                                old_attr.Set(raw)
+                    self._drive_from_storage(param, old_attr)
 
         for _, vector in _iter_chunk_vectors(chunk):
             self._sync_vector_input(chunk, vector)
@@ -2123,8 +2190,9 @@ def set_chunk_muted(stage: "Usd.Stage", target: "core.ChunkBase", muted: bool) -
     # same way.
     if muted:
         stage.MuteLayer(layer.identifier)
-    else:
+    elif stage.IsLayerMuted(layer.identifier):
         stage.UnmuteLayer(layer.identifier)
+        push_chunk_values(stage, target)
     return True
 
 
@@ -4732,6 +4800,16 @@ def _load_chunks(
                 # were right while the UI never updated: the value was fine and only the
                 # notification was missing.
                 _resolve_pending_expressions(deferred, warn=True)
+
+                # Register every loaded chunk with the sync, as _on_param_added does for one
+                # created live. When a file is opened at startup the sync is not yet
+                # initialized during this load, so _on_param_added never ran for them -- and
+                # a param created after the load (a Stage Expression variable, a Light's
+                # attributes) found no prim to record its edits on and was saved without them.
+                sync = ChunkStageSync()
+                if getattr(sync, "_chunk_prim_paths", None) is not None:
+                    for prim, added in deferred:
+                        sync._chunk_prim_paths[id(added)] = str(prim.GetPath())
             finally:
                 chunk_notice._loading_stage = old_loading_stage
 
@@ -5363,10 +5441,30 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
         existing = getattr(param, "_param_attr_path", None)
         if existing and existing.startswith(prim_path):
             continue  # already wired to chunk storage from first _load_wire_inputs
-        val = attr.Get(0)
+        # A scalar is bound the way a live edit binds it: to its chunk-prim storage --
+        # `attr`, right here -- which _connect_param_attr reads the expression text or
+        # value back from. Unbound, a later edit is never recorded (a lofted Stage
+        # Expression variable saved without its value). Bound straight to the real prim
+        # attr, as show_attribute binds, writing the resolved value there fed back into the
+        # param and replaced a ${VAR} with a number -- so that attr becomes one the storage
+        # drives instead.
+        if isinstance(param, core.ChunkParamBase):
+            param._connect_param_attr(attr)
+            if existing:
+                # By path: a chunk gated off already has its layer muted, so the real prim
+                # is not on the stage to hand over as an attribute. set_chunk_muted pushes
+                # the value once it is.
+                if existing not in param._driven_attr_paths:
+                    param._driven_attr_paths.append(existing)
+                param._author_driven_connections()
+            continue
+
+        # A ${VAR} or @ref@ is restored as its text, not as the value it had at save time.
+        val = chunk_utils.read_expression_text(attr) or attr.Get(0)
         if val is None:
             continue
         param.value = val
+        val = param.value
 
         # Push the value to the real prim attribute by hand as well. Assigning the param
         # normally writes through on the ATTRIBUTE_CHANGED listener, but that dispatch is
@@ -5378,10 +5476,11 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
         # Authored through the chunk's own edit context so it lands in the chunk's layer,
         # the same place its execute() would have put it, and is rebuilt with the rest on
         # the next cook rather than lingering as an override nobody wrote.
-        if existing:
+        layer = param.get_edit_context()
+        if existing and layer is not None and not stage.IsLayerMuted(layer.identifier):
             bound = stage.GetAttributeAtPath(Sdf.Path(existing))
-            if bound:
-                with Usd.EditContext(stage, param.get_edit_context()):
+            if bound and not (isinstance(val, str) and bound.GetTypeName() != Sdf.ValueTypeNames.String):
+                with Usd.EditContext(stage, layer):
                     bound.Set(val)
 
 

@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 
-from usd_chunks import chunk, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_stage, chunk_utils
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +116,26 @@ def _sync_variables(node):
     for name, default in wanted.items():
         if name in have:
             continue
-        node.add_param(chunk.LineEdit(
+        param = chunk.LineEdit(
             name, name, default_value=default,
             flags=chunk.ChunkFlags.ParamFlags.LABELED,
             tooltip=f"Value of the {name} variable. Spell it as a ${{{name}}} reference in "
                     "any field, or wire something into this port to drive it.",
-        ))
+        )
+        # A value saved on the chunk prim beats the spec's default: the port is the
+        # control, and on a reopened file it was set to the shot the scene was saved on.
+        if (saved := _saved_value(node, name)) not in (None, ""):
+            param.value = saved
+        node.add_param(param)
+
+
+def _saved_value(node, name):
+    stage = node.get_stage()
+    path = chunk_stage.get_chunk_prim_path(node)
+    if stage is None or not path:
+        return None
+    attr = stage.GetAttributeAtPath(f"{path}.inputs:{name}")
+    return attr.Get() if attr else None
 
 
 def _recorded(node) -> set:
@@ -144,6 +158,10 @@ def execute(node):
         # a chunk retyped into one must not keep contributing whatever it authored before.
         edit_layer.Clear()
 
+    # Lofted here as well as on load. A reopened file cooks before CHUNK_LOADED lofts
+    # them, and a Stage Expression that declares nothing on that first cook leaves every
+    # ${SHOT} downstream unresolved -- a filter testing it shuts, and stays shut.
+    _sync_variables(node)
     mine = {p.name: p.value for p in _variables(node) if p.value not in (None, "")}
 
     # Start from what is already in the session layer rather than from scratch, so two
@@ -161,8 +179,13 @@ def execute(node):
         current.pop(stale, None)
 
     current.update(mine)
+    changed = current != dict(session.expressionVariables or {})
     chunk_utils.set_stage_expression_variables(stage, current)
     _record(node, mine)
+    if changed:
+        # Attrs driven by a ${VAR} param were written with the old value; nothing else
+        # rewrites them, since the param's own text did not change.
+        chunk_stage.refresh_stage_expression_params(stage, chunk_registry.ChunkRegistry().scene)
 
     if composed := node.get_param("composed"):
         # The full composed set, this chunk's contribution included -- and the studio's
