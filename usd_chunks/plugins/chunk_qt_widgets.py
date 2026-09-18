@@ -694,6 +694,10 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
                 # Consumed only when something was selected, so the click does not also
                 # place the text cursor; otherwise it behaves as it always did.
                 if self.select_in_scene():
+                    # And the field gives up the keyboard: ctrl+click is a selection
+                    # gesture, not an edit, so the `w` that follows it has to reach the
+                    # viewport's manipulator shortcut instead of being typed into the path.
+                    self.text.clearFocus()
                     return True
             elif event.type() == QtCore.QEvent.Type.ToolTip and self.scene_prim_paths():
                 # Only on fields that currently name a prim -- the hint on a name field

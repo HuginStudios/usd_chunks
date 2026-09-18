@@ -48,3 +48,46 @@ def define_ancestors(layer: Sdf.Layer) -> int:
             for spec in todo.values():
                 spec.specifier = Sdf.SpecifierDef
     return len(todo)
+
+
+def broken_property_specs(layer: Sdf.Layer) -> "list[Sdf.Path]":
+    """Property paths this layer lists but holds no usable spec for.
+
+    A spec whose type never got set is invisible to GetObjectAtPath while Traverse still
+    walks it, and UsdUtils.FlattenLayerStack refuses the whole layer stack over one of them
+    ("Unknown spec type SdfSpecTypeUnknown at ..."). Since flattening is how a scene is
+    saved, one stub anywhere costs the user everything they have done since the last save.
+
+    What creates one is not yet known -- see drop_broken_property_specs.
+    """
+    found: "list[Sdf.Path]" = []
+    layer.Traverse(Sdf.Path("/"), lambda path: found.append(path))
+    return [p for p in found if p.IsPropertyPath() and layer.GetObjectAtPath(p) is None]
+
+
+def drop_broken_property_specs(layers, logger=None) -> "list[str]":
+    """Remove every unusable property stub from layers, and say what was removed.
+
+    Deliberately loud rather than quiet: this is a rescue, not a repair. Something is
+    creating these and we have not found it yet -- reproducing it from the reported edits
+    (a light moved onto a new prim, values changed, a material chunk added) did not, so the
+    logged layer and path are the evidence for the next attempt. Dropping the stub is safe
+    in the meantime because it holds nothing: no value, no type, no connection.
+
+    Returns:
+        list[str]: "<layer>: <path>" for each stub removed
+    """
+    removed = []
+    for layer in layers:
+        for path in broken_property_specs(layer):
+            prim_spec = layer.GetPrimAtPath(path.GetPrimPath())
+            if prim_spec is not None and path.name in prim_spec.properties:
+                del prim_spec.properties[path.name]
+            removed.append(f"{layer.GetDisplayName() or layer.identifier}: {path}")
+    if removed and logger is not None:
+        logger.warning(
+            "Dropped %d unusable property spec(s) before flattening -- please report these, "
+            "they are a bug we have not reproduced yet: %s",
+            len(removed), "; ".join(removed),
+        )
+    return removed

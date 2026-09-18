@@ -56,3 +56,22 @@ def test_a_prim_defined_inside_a_variant_defines_the_ancestors_outside_it() -> N
 
     stage.MuteLayer(first.identifier)
     assert stage.GetPrimAtPath("/World/shots/cam").IsDefined()
+
+
+# ---------------------------------------------------------------------------
+# the flatten rescue
+# ---------------------------------------------------------------------------
+
+def test_a_healthy_layer_has_nothing_to_drop() -> None:
+    """The scan runs on every Save Scene, so it must not touch a well-formed layer."""
+    stage, first, _ = _stage_with_two_layers()
+    with Usd.EditContext(stage, first):
+        prim = stage.DefinePrim("/chunks/Light", "Chunk")
+        prim.CreateAttribute("inputs:intensity", Sdf.ValueTypeNames.Float, custom=False).Set(10.0)
+        prim.CreateAttribute("inputs:chunk", Sdf.ValueTypeNames.Token, custom=False).SetConnections(
+            [Sdf.Path("/chunks/Other.outputs:chunk")]
+        )
+
+    assert chunk_layers.broken_property_specs(first) == []
+    assert chunk_layers.drop_broken_property_specs([first]) == []
+    assert first.GetAttributeAtPath("/chunks/Light.inputs:intensity").default == 10.0

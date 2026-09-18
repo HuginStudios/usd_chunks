@@ -26,7 +26,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
 
-from usd_chunks import chunk_naming
+from usd_chunks import chunk_layers, chunk_naming
 
 logger = logging.getLogger(__name__)
 
@@ -4893,6 +4893,11 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     if not stage:
         return
 
+    # A property spec with no usable type makes FlattenLayerStack refuse the whole stack,
+    # which would mean Save Scene throwing away everything since the last save. Drop the
+    # stubs (they hold nothing) and say so loudly -- see chunk_layers for why this is a
+    # rescue rather than a fix.
+    chunk_layers.drop_broken_property_specs(stage.GetLayerStack(includeSessionLayers=True), logger)
     flat = UsdUtils.FlattenLayerStack(stage)
     tmp_stage = Usd.Stage.Open(flat)
     chunk_paths = sorted(
