@@ -2136,6 +2136,80 @@ def set_chunk_muted(stage: "Usd.Stage", target: "core.ChunkBase", muted: bool) -
     return True
 
 
+#: Hidden param a gating chunk keeps its record in: the chunks it muted last time, by prim
+#: path, so a branch that stops being upstream is released rather than left blocked forever.
+GATE_RECORD_PARAM = "muted"
+
+
+def _gate_record(node) -> set:
+    param = node.get_param(GATE_RECORD_PARAM)
+    return {line.strip() for line in (param.value or "").splitlines() if line.strip()} if param else set()
+
+
+def gate_to_branches(node: "core.ChunkBase", live: "set[int]") -> "tuple[set, set]":
+    """Let the branches at `live` reach the stage and suppress every other input's.
+
+    The one implementation behind both gating chunks -- the Switch, picking a branch by
+    index, and the Stage Expression Switch, picking it by what a variable says. They differ
+    only in how that set is chosen, and duplicating the muting either side of that meant
+    fixing the same bug twice.
+
+    Suppression is a **block** plus a layer mute, never the DISABLED state, which belongs to
+    the user: a chunk reaching in to set and clear it on chunks it does not own means every
+    flip risks undoing theirs. A branch contributes because its layers are in the stage, not
+    because it is wired, so cutting the connection instead would leave its prims composed
+    exactly as before and gate nothing.
+
+    Returns:
+        tuple[set, set]: the chunks kept live, and the chunks muted
+    """
+    stage = node.get_stage()
+    inputs = exec_dependencies(node)
+
+    # The live branches first, and they win: a chunk feeding two branches must stay live if
+    # either of the ones it feeds is chosen. Without this a shared upstream -- the part of
+    # the thread above the fork -- would be muted along with the branch not taken.
+    keep = set()
+    for i in live:
+        if 0 <= i < len(inputs):
+            keep |= exec_upstream(inputs[i])
+
+    muted = set()
+    for slot, dep in enumerate(inputs):
+        if slot in live:
+            continue
+        for c in exec_upstream(dep):
+            if c in keep:
+                continue
+            if set_chunk_muted(stage, c, True):
+                muted.add(c)
+
+    # Un-mute only what this chunk muted itself. A live branch can hold another gate's
+    # suppressed branch, and un-muting everything reachable switched that one back on.
+    mine = _gate_record(node)
+    for c in keep:
+        if get_chunk_prim_path(c) in mine:
+            set_chunk_muted(stage, c, False)
+
+    # Muted by an earlier evaluation and no longer upstream of this chunk at all: leaving it
+    # blocked would strand a branch the user has already disconnected. Resolved against the
+    # whole scene, since the record is transitive -- most of what it holds was never a
+    # direct input -- and by prim path, since a name is unique only within one context.
+    stranded = mine - {get_chunk_prim_path(c) for c in muted | keep}
+    if stranded:
+        by_path = {
+            get_chunk_prim_path(c): c
+            for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+        }
+        for path in stranded:
+            if (c := by_path.get(path)) is not None:
+                set_chunk_muted(stage, c, False)
+
+    if param := node.get_param(GATE_RECORD_PARAM):
+        param.value = "\n".join(sorted(get_chunk_prim_path(c) for c in muted))
+    return keep, muted
+
+
 def is_merge_prim(prim: "Usd.Prim") -> bool:
     """is_merge_chunk for a bare prim — used where only the stage is at hand (slot
     compaction, cook ordering) and there may be no live chunk object to ask."""

@@ -1,11 +1,11 @@
 """A day/night multishot network survives a save and keeps switching on the shot.
 
-    ShotContext (SHOT) -- Hood (shared) --+-- DayOnly --+-- NightOnly
-                          Sun ------------+             |
-                          Lamp ---------------------------+
+    ShotContext (SHOT) -- Hood --+-- Sun ---+ normal
+                                 |          ├-- ShotSwitch  (SHOT ~ "*_night")
+                                 +-- Lamp --+ matched
 
-The Hood is in every shot, the Sun is gated on *_day and the Lamp on *_night. Each
-assertion reads the composed light prims, not chunk state.
+The Hood feeds both paths so it is in every shot; the Sun is the normal path and the Lamp
+the matched one. Each assertion reads the composed light prims, not chunk state.
 
 What used to go wrong, in order: the Stage Expression declared nothing on the reopening
 cook, so both gates shut; a light gated off at load came back at its schema default when
@@ -95,22 +95,20 @@ def _build(tmp_path) -> pathlib.Path:
     rows.get_indexed_param("var_name", 0).value = "SHOT"
     rows.get_indexed_param("var_type", 0).value = "string"
     rows.get_indexed_param("var_value", 0).value = "sh010_day"
-    # The Sun first, so its layer is the one that defines /lights: gated off at night, it
-    # must not take the shared parent -- and every light under it -- along.
+    # The Sun first, so its layer is the one that defines /lights: muted at night, it must
+    # not take the shared parent -- and every light under it -- along.
     sun = _light(scene, "Sun", "/lights/sun", intensity=3.0)
     hood = _light(scene, "Hood", "/lights/hood", intensity=25.0)
     lamp = _light(scene, "Lamp", "/lights/lamp", intensity=30.0)
-    day = _add(scene, "stage_expression_filter", "DayOnly")
-    night = _add(scene, "stage_expression_filter", "NightOnly")
-    for f, pattern in ((day, "*_day"), (night, "*_night")):
-        f.get_param("variable").value = "SHOT"
-        f.get_param("pattern").value = pattern
+    switch = _add(scene, "stage_expression_switch", "ShotSwitch")
+    switch.get_param("variable").value = "SHOT"
+    switch.get_param("pattern").value = "*_night"
     hood.add_dependency(shot_ctx)
-    day.add_dependency(hood)
-    day.add_dependency(sun)
-    night.add_dependency(day)
-    night.add_dependency(lamp)
-    for c in (shot_ctx, hood, sun, lamp, day, night):
+    sun.add_dependency(hood)
+    lamp.add_dependency(hood)
+    switch.add_dependency(sun)
+    switch.add_dependency(lamp)
+    for c in (shot_ctx, hood, sun, lamp, switch):
         c.execute()
 
     _assert_shot(stage, night=False)
