@@ -16,7 +16,9 @@ from pxr import Gf, Sdf, Usd, UsdSkel, Vt
 
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_registry
+from usd_chunks import chunk_widget_api
 from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
@@ -266,3 +268,30 @@ class TestTemplate:
         assert value_clips._default_name("C:/x/HumanFemale.walk.usd") == "walk"
         assert value_clips._default_name("./clips/clip.###.usda") == "clip"
         assert value_clips._default_name("sim.####.usdc") == "sim"
+
+
+class TestClipPathBrowser:
+    """The Clip field is FILE_EXISTING, so its browse dialog opens in Open (not Save)
+    mode -- reported live as showing a Save button. That flag also gates whether a typed
+    value must exist on disk, which conflicts with this same field's other job: taking a
+    #-padded template path that, by construction, never exists as one literal file."""
+
+    def test_dialog_opens_in_open_mode(self):
+        node = value_clips.main()
+        rows = node.get_param("clip_sets", _chunk.is_inst(_chunk.ListGroup))
+        clip_param = rows.get_param("clip_path")
+        assert clip_param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
+        spec = chunk_widget_api.file_dialog_spec(clip_param)
+        assert spec.must_exist, "Clip must open a file picker in Open mode, not Save"
+
+    def test_typing_a_template_path_is_not_blocked_by_file_existing(self):
+        fb = _chunk.FileBrowser("clip_path", "Clip", extensions=[".usda"],
+                                flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.FILE_EXISTING)
+        fb.value = "C:/cache/sim.####.usdc"
+        assert fb.value == "C:/cache/sim.####.usdc"
+
+    def test_a_real_nonexistent_path_is_still_rejected(self):
+        fb = _chunk.FileBrowser("clip_path", "Clip", extensions=[".usda"],
+                                flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.FILE_EXISTING)
+        with pytest.raises(ValueError):
+            fb.value = "C:/definitely/not/a/real/path.usda"

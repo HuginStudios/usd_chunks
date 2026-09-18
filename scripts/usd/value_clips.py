@@ -308,6 +308,7 @@ def main():
         chunk.FileBrowser(
             "clip_path", "Clip",
             extensions=[".usd", ".usda", ".usdc", ".usdz"],
+            flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.FILE_EXISTING,
             tooltip=(
                 "One clip file, or a per-frame template with # padding:\n"
                 "./clips/points.###.usd, C:/cache/sim.####.usdc\n"
