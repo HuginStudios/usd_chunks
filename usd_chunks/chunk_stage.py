@@ -13,7 +13,7 @@ import weakref
 from pathlib import Path
 from typing import Generator, Iterable, Tuple
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
+from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
@@ -2205,9 +2205,44 @@ def gate_to_branches(node: "core.ChunkBase", live: "set[int]") -> "tuple[set, se
             if (c := by_path.get(path)) is not None:
                 set_chunk_muted(stage, c, False)
 
+    if muted:
+        _redefine_orphaned_ancestors(stage)
+
     if param := node.get_param(GATE_RECORD_PARAM):
         param.value = "\n".join(sorted(get_chunk_prim_path(c) for c in muted))
     return keep, muted
+
+
+def _redefine_orphaned_ancestors(stage: "Usd.Stage") -> None:
+    """Re-define the scopes that muting a branch just left defined by nobody.
+
+    UsdStage.DefinePrim gives a prim's ancestors a `def` only when nothing has defined them
+    yet, so whichever chunk cooks first owns `def "World"` and every later one holds a bare
+    `over`. That answer is right when it is given and wrong a moment later: a gate mutes
+    *after* its branches have cooked, so the layer holding the only `def` can leave while
+    the layers holding the `over`s stay. Their prims are then valid but not defined, Hydra
+    skips them, and a camera and every light in the room quietly leave the scene.
+
+    Nothing else in the engine has this problem. View-driven cooking mutes first and cooks
+    afterwards, so DefinePrim sees the final state and picks correctly on its own -- which
+    is why this repair belongs here, at the one place that mutes after the fact, rather than
+    on every cook of every chunk.
+
+    Only genuinely orphaned ancestors are touched: an ancestor still defined by anything --
+    another live chunk, a referenced asset, the file the user opened -- is left exactly as
+    USD authored it.
+    """
+    def still_defined(path) -> bool:
+        prim = stage.GetPrimAtPath(path)
+        return bool(prim) and prim.IsDefined()
+
+    manager = chunk_registry.ChunkLayerManager()
+    for chunk in chunk_registry.ChunkRegistry().scene.get_chunks():
+        if chunk.is_blocked():
+            continue  # muted: its own prims are out of the scene anyway
+        layer = manager.get_layer(chunk)
+        if layer is not None:
+            chunk_layers.define_ancestors(layer, still_defined)
 
 
 def is_merge_prim(prim: "Usd.Prim") -> bool:
@@ -4893,12 +4928,23 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     if not stage:
         return
 
-    # A property spec with no usable type makes FlattenLayerStack refuse the whole stack,
-    # which would mean Save Scene throwing away everything since the last save. Drop the
-    # stubs (they hold nothing) and say so loudly -- see chunk_layers for why this is a
-    # rescue rather than a fix.
-    chunk_layers.drop_broken_property_specs(stage.GetLayerStack(includeSessionLayers=True), logger)
-    flat = UsdUtils.FlattenLayerStack(stage)
+    try:
+        flat = UsdUtils.FlattenLayerStack(stage)
+    except Tf.ErrorException:
+        # One property spec with no usable type makes FlattenLayerStack refuse the whole
+        # layer stack, and flattening is how a scene is saved -- so a single stub costs the
+        # user everything they have done since the last save. Drop the stubs (they hold
+        # nothing: no value, no type, no connection) and try once more.
+        #
+        # Only on the failure path. What creates a stub is not known -- reproducing it from
+        # a reported session did not work -- so this is a rescue, not a fix, and a rescue
+        # has no business walking every layer on every ordinary save. If nothing was found,
+        # or flattening still fails, the original error is the honest answer.
+        if not chunk_layers.drop_broken_property_specs(
+            stage.GetLayerStack(includeSessionLayers=True), logger
+        ):
+            raise
+        flat = UsdUtils.FlattenLayerStack(stage)
     tmp_stage = Usd.Stage.Open(flat)
     chunk_paths = sorted(
         (p.GetPath() for p in tmp_stage.TraverseAll() if p.GetTypeName() == _CHUNK_PRIM_TYPENAME),

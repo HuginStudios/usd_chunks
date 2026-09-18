@@ -1,5 +1,9 @@
-"""A chunk's layer defines the ancestors of what it defines, so muting another chunk's layer
-never leaves a prim sitting under an undefined parent."""
+"""usd_chunks.chunk_layers -- Sdf layer surgery, free of any usd_chunks import.
+
+define_ancestors repairs the ancestors muting has orphaned (its caller is the gate in
+chunk_stage, which knows what is still defined); drop_broken_property_specs is the rescue
+that keeps one unusable spec from making Save Scene refuse the whole layer stack.
+"""
 
 from __future__ import annotations
 
