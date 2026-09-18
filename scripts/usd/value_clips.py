@@ -309,11 +309,11 @@ def main():
             ),
         ),
         chunk.Slider(
-            "start_frame", "Start", default_value=1, is_int=True, min_value=0, max_value=100000,
+            "start_frame", "Start", default_value=1, is_int=True, min_value=0, max_value=250,
             tooltip="Stage frame the clip begins on.",
         ),
         chunk.Slider(
-            "end_frame", "End", default_value=0, is_int=True, min_value=0, max_value=100000,
+            "end_frame", "End", default_value=0, is_int=True, min_value=0, max_value=250,
             tooltip=(
                 "Stage frame the clip set ends on. 0: the clip's own length\n"
                 "(for a template, whatever frames exist on disk)."
