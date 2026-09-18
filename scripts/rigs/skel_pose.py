@@ -47,6 +47,13 @@ class _Rig:
         self.root_prim = root_prim
         self.skel_query = skel_query
         self.anim_prim = anim_query.GetPrim()
+        # The handles live in the SkelRoot's space and the rest transforms in the
+        # skeleton's. They coincide for most rigs, but a Skeleton prim may carry a
+        # transform of its own, and then a drag about the root's X is not about the
+        # skeleton's X.
+        skel_to_world = UsdGeom.Xformable(skel_query.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        root_to_world = UsdGeom.Xformable(root_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        self.skel_to_root = skel_to_world * root_to_world.GetInverse()
         self.anim_index = {name: i for i, name in enumerate(anim_query.GetJointOrder())}
         skel_joints = list(skel_query.GetJointOrder())
         rest = skel_query.ComputeJointSkelTransforms(Usd.TimeCode.Default(), atRest=True)
@@ -63,11 +70,28 @@ class _Rig:
 
 
 def _rig(node) -> _Rig | None:
+    """The character, read once per target and kept on the node.
+
+    Kept because this is called from the gizmo_offset hook, which the framework calls
+    once per handle on every param change -- so a slider drag with N handles would
+    otherwise populate a fresh UsdSkel cache N+1 times a tick. _sync_joints drops the
+    cache whenever the target changes; a rig edited underneath (a variant switch that
+    changes the joint list) needs the joints re-named, which does the same.
+    """
     stage = node.get_stage()
     param = node.get_param("primpath_location")
     path = (param.value if param else "") or ""
     if stage is None or not path:
         return None
+    cached = getattr(node, "_rig_cache", None)
+    if cached is not None and cached[0] == (id(stage), path):
+        return cached[1]
+    rig = _read_rig(stage, path)
+    node._rig_cache = ((id(stage), path), rig)
+    return rig
+
+
+def _read_rig(stage, path) -> _Rig | None:
     prim = stage.GetPrimAtPath(path)
     if not prim or not prim.IsValid():
         return None
@@ -172,6 +196,7 @@ def _sync_joints(node) -> None:
     chunk prim is created, which is before any joint has been named, and nothing re-runs
     it for a param that arrives later.
     """
+    node._rig_cache = None
     rig = _rig(node)
     wanted = _wanted(node, rig) if rig else {}
     have = {p.name: p for p in _lofted(node)}
@@ -232,13 +257,16 @@ def _rotation_only(matrix: Gf.Matrix4d) -> Gf.Matrix4d:
 
 
 def _local_rotation(rig: _Rig, joint: str, delta: Gf.Matrix4d) -> Gf.Quatf:
-    """The joint's local rotation after `delta` is applied to it in skeleton space.
+    """The joint's local rotation after `delta`, given in the SkelRoot's space, is applied.
 
-    Row-vector maths, as Gf: skel = local * parent. Adding a rotation D after the joint's
-    own skeleton-space rotation R gives R*D, and taking the parent back out leaves
-    L * P * D * P^-1 -- the delta conjugated into the parent's frame. Rest transforms
-    rather than bind: rest is the pose the animation's own values are relative to.
+    Row-vector maths, as Gf: skel = local * parent. The delta is first taken from the
+    root's space into the skeleton's (S * D * S^-1, S being skel-to-root); adding it after
+    the joint's own skeleton-space rotation R gives R*D, and taking the parent back out
+    leaves L * P * D * P^-1 -- the delta conjugated into the parent's frame. Rest
+    transforms rather than bind: rest is the pose the animation's values are relative to.
     """
+    skel = _rotation_only(rig.skel_to_root)
+    delta = skel * delta * skel.GetInverse()
     r_joint = _rotation_only(rig.rest[joint])
     parent = rig.parent.get(joint)
     r_parent = _rotation_only(rig.rest[parent]) if parent else Gf.Matrix4d(1.0)
@@ -301,10 +329,7 @@ def gizmo_offset(node, gizmo):
     joint = getattr(node, "_joint_for", {}).get(gizmo)
     if rig is None or joint is None:
         return None
-    skel_to_world = UsdGeom.Xformable(rig.skel_query.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-    root_to_world = UsdGeom.Xformable(rig.root_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-    point = (skel_to_world * root_to_world.GetInverse()).Transform(rig.rest[joint].ExtractTranslation())
-    return tuple(point)
+    return tuple(rig.skel_to_root.Transform(rig.rest[joint].ExtractTranslation()))
 
 
 def _param_changed(owner, notice, _sender):

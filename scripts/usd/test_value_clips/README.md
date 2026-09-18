@@ -50,10 +50,9 @@ clips = {
         double templateEndTime = 10
         double templateStride = 1
         string primPath = "/CubeGeo"
-        double2[] active = [(1, 0), (10, 0)]
     }
 }
-clipSets = ["clip"]
+prepend clipSets = ["clip"]
 ```
 
 At each frame, USD resolves the template (e.g. frame 5 → `./clips/clip.005.usda`), opens that layer, and uses the `points` value from `/CubeGeo` in that clip file instead of the static value in `scene.usda`.
@@ -102,6 +101,9 @@ licence). It is not checked in.
    into the arm swing by 158. Swap the two rows and the wave disappears — the row order
    is the `clipSets` list-op, and the walk's full arrays then hide the wave's edits.
 
+   The same works as two chunks — one per clip set — since the list-op is prepended
+   rather than explicit: the downstream chunk's sets go on top of the upstream one's.
+
 What the chunk authors:
 
 ```
@@ -121,7 +123,7 @@ over "HumanFemale" {
                 double2[] times = [(101, 101), (158, 158)]
             }
         }
-        clipSets = ["wave", "walk"]
+        prepend clipSets = ["wave", "walk"]
     ) {}
 }
 ```

@@ -40,11 +40,17 @@ def _make_scene(stage: Usd.Stage) -> SceneSender:
     return scene
 
 
-def _build_character(stage: Usd.Stage) -> None:
-    """A SkelRoot at /Char, its skeleton's rest pose a straight arm out along +X."""
+def _build_character(stage: Usd.Stage, skel_rotate_x: float = 0.0) -> None:
+    """A SkelRoot at /Char, its skeleton's rest pose a straight arm out along +X.
+
+    `skel_rotate_x` puts a transform on the Skeleton prim itself, so skeleton space and
+    SkelRoot space stop coinciding.
+    """
     root = UsdSkel.Root.Define(stage, "/Char")
     UsdGeom.Xformable(root).AddTranslateOp().Set((100.0, 0.0, 0.0))
     skel = UsdSkel.Skeleton.Define(stage, "/Char/Skel")
+    if skel_rotate_x:
+        UsdGeom.Xformable(skel).AddRotateXOp().Set(skel_rotate_x)
     skel.GetJointsAttr().Set(JOINTS)
     rest = Vt.Matrix4dArray([
         Gf.Matrix4d(1.0),
@@ -166,6 +172,36 @@ class TestPose:
         xforms = query.ComputeJointSkelTransforms(Usd.TimeCode(0))
         hand = xforms[2].ExtractTranslation()
         assert hand == pytest.approx((10.0, 10.0, 0.0), abs=1e-4)
+
+
+    def test_rotation_is_in_the_roots_space_even_when_the_skeleton_is_not(self):
+        # The skeleton is turned 90 about X under the root, so its Z is the root's -Y. A
+        # 90 turn about the *root's* Z must still swing the hand from root +X to root +Y;
+        # applying the delta in skeleton space would swing it out of the XY plane.
+        stage = Usd.Stage.CreateInMemory()
+        _build_character(stage, skel_rotate_x=90.0)
+        scene = _make_scene(stage)
+        node, module = _make_chunk(scene)
+        node.get_param("primpath_location").value = "/Char"
+        node.get_param("joints").value = "arm"
+        node.get_param("arm").value = (0.0, 0.0, 90.0)
+        node.execute()
+        cache = UsdSkel.Cache()
+        root = UsdSkel.Root(stage.GetPrimAtPath("/Char"))
+        cache.Populate(root, Usd.PrimDefaultPredicate)
+        query = cache.GetSkelQuery(UsdSkel.Skeleton(stage.GetPrimAtPath("/Char/Skel")))
+        skel_to_root = UsdGeom.Xformable(stage.GetPrimAtPath("/Char/Skel")).GetLocalTransformation()
+        hand = skel_to_root.Transform(query.ComputeJointSkelTransforms(Usd.TimeCode(0))[2].ExtractTranslation())
+        assert hand == pytest.approx((10.0, 10.0, 0.0), abs=1e-4)
+        assert module.gizmo_offset(node, "arm") == pytest.approx((10.0, 0.0, 0.0), abs=1e-6)
+
+    def test_the_rig_is_read_once_per_target(self, posed):
+        _, node, module = posed
+        first = module._rig(node)
+        assert module._rig(node) is first
+        node.get_param("primpath_location").value = "/Char/Skel"
+        assert module._rig(node) is not first, "re-targeting drops the cache"
+        assert _vectors(node) == ["arm"], "and anything under the root finds the same rig"
 
 
 class TestReload:

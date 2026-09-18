@@ -17,6 +17,7 @@ from pxr import Gf, Sdf, Usd, UsdSkel, Vt
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
+from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 import scripts.usd.value_clips as value_clips
@@ -49,7 +50,14 @@ def _make_chunk(scene: SceneSender):
     mod = chunk_registry.ChunkRegistry().get_chunk_module("usd.value_clips")
     chunks = mod.create() if mod.loaded else mod.load()
     node = chunks[0]
-    scene.add_chunk(node)
+    # Chain the way the Params tab does (prev -> new via inputs:chunk), so a second chunk
+    # is downstream of the first and its layer is the stronger one.
+    prev = chunk_stage._params_tab_create
+    chunk_stage._params_tab_create = True
+    try:
+        scene.add_chunk(node)
+    finally:
+        chunk_stage._params_tab_create = prev
     return node
 
 
@@ -128,7 +136,25 @@ class TestStacking:
         rotations = stage.GetAttributeAtPath("/Char/Anim.rotations")
         assert _reals(rotations, 2) == [2, 2, 2], "walk on top hides the wave entirely"
         spec = node.get_edit_context().GetPrimAtPath("/Char/Anim")
-        assert list(spec.GetInfo("clipSets").explicitItems) == ["walk", "wave"]
+        assert list(spec.GetInfo("clipSets").prependedItems) == ["walk", "wave"]
+
+    def test_two_chunks_on_one_prim_compose(self, clips):
+        """One chunk per clip set -- a crowd rig adds gestures as chunks -- must stack, not
+        clobber: an explicit clipSets list in the stronger chunk's layer would replace the
+        weaker chunk's list and drop its sets from resolution entirely."""
+        walk, wave = clips
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/Char/Anim", "SkelAnimation")
+        scene = _make_scene(stage)
+        first = _make_chunk(scene)
+        first.get_param("target_prim").value = "/Char/Anim"
+        _set_rows(first, [{"clip_path": walk, "start_frame": 0}])
+        second = _make_chunk(scene)
+        second.get_param("target_prim").value = "/Char/Anim"
+        _set_rows(second, [{"clip_path": wave, "start_frame": 0}])
+
+        rotations = stage.GetAttributeAtPath("/Char/Anim.rotations")
+        assert _reals(rotations, 2) == [2, 2, 102], "the later (stronger) chunk's wave sits over the first chunk's walk"
 
     def test_names_come_from_the_file_and_everything_lands_on_the_chunk_layer(self, clips):
         walk, wave = clips
@@ -176,6 +202,18 @@ class TestTiming:
         assert _reals(rotations, 104) == [4, 4, 4]
         assert stage.GetStartTimeCode() == 100 and stage.GetEndTimeCode() == 104
 
+    def test_stage_range_widens_and_never_narrows(self, clips):
+        walk, _ = clips
+        stage = Usd.Stage.CreateInMemory()
+        stage.SetStartTimeCode(90)
+        stage.SetEndTimeCode(95)
+        stage.DefinePrim("/Char/Anim", "SkelAnimation")
+        scene = _make_scene(stage)
+        node = _make_chunk(scene)
+        node.get_param("target_prim").value = "/Char/Anim"
+        _set_rows(node, [{"clip_path": walk, "start_frame": 100}])
+        assert (stage.GetStartTimeCode(), stage.GetEndTimeCode()) == (90, 104)
+
     def test_loop_times_layout(self):
         assert value_clips._loop_times(0, 4, 0, 2) == [(0, 0), (2, 2), (2, 0), (4, 2)]
         assert value_clips._loop_times(101, 158, 101, 129)[-1] == (185, 129)
@@ -192,6 +230,7 @@ class TestTemplate:
 
         info = Usd.ClipsAPI(stage.GetPrimAtPath("/CubeGeo")).GetClips()["clip"]
         assert (info["templateStartTime"], info["templateEndTime"]) == (1.0, 10.0)
+        assert "active" not in info, "USD derives active from a template and ignores an authored one"
         points = stage.GetAttributeAtPath("/CubeGeo.points")
         assert points.Get(1)[4][1] == pytest.approx(0.5)
         assert points.Get(10)[4][1] == pytest.approx(3.0)

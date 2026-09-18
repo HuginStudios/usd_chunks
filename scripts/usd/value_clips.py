@@ -13,7 +13,9 @@ the next clip set down, so a layered performance can be exactly the joints it mo
 
 Everything is authored on the chunk's own layer: absolute asset paths resolve from an
 anonymous layer just fine, and two chunks on one prim then compose their clip sets
-instead of overwriting each other's `clips` dictionary.
+instead of overwriting each other's `clips` dictionary. The list-op is *prepended*, not
+explicit, for the same reason: an explicit list in the stronger chunk's layer would
+replace the weaker chunk's and drop its clip sets from resolution altogether.
 """
 
 from __future__ import annotations
@@ -168,7 +170,7 @@ def _author_template_set(clips: Usd.ClipsAPI, name: str, path: str, prim_path: s
     clips.SetClipTemplateEndTime(end, name)
     clips.SetClipTemplateStride(stride, name)
     clips.SetClipPrimPath(prim_path, name)
-    clips.SetClipActive([(start, 0), (end, 0)], name)
+    # No `active`: with template metadata USD derives it, and ignores an authored one.
     return start, end
 
 
@@ -197,13 +199,19 @@ def _rows(node):
 
 
 def _set_stage_frame_range(stage: Usd.Stage, start_frame: float, end_frame: float):
-    """Set the stage time code range on the session layer.
+    """Widen the stage time code range, on the session layer, to cover the clips.
+
+    Widen, never narrow: another Value Clips chunk or a solver bake may have set the
+    range too, and each cook of this chunk must not undo theirs.
 
     Note: usdview's timeline widget only reads the time range at stage-open
     time. If the scene doesn't already have startTimeCode/endTimeCode, the
     timeline won't appear until the scene is reopened. For scenes that already
     have a time range, this updates it correctly.
     """
+    if stage.HasAuthoredTimeCodeRange():
+        start_frame = min(start_frame, stage.GetStartTimeCode())
+        end_frame = max(end_frame, stage.GetEndTimeCode())
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         stage.SetStartTimeCode(start_frame)
         stage.SetEndTimeCode(end_frame)
@@ -247,10 +255,11 @@ def execute(node):
                 clips.SetClipManifestAssetPath(Sdf.AssetPath(_resolve_clip_path(stage, row["manifest"])), name)
             names.append(name)
             covered.append(span)
-        # Rows are strongest-first, and so is the list-op. Explicit, so a clip set that is
-        # authored but dropped from the list is out of value resolution altogether.
+        # Rows are strongest-first, and so is the list-op. Prepended rather than explicit:
+        # list-ops compose across layers, so a second chunk's sets on this prim slot in
+        # after (or before) these instead of being replaced wholesale.
         order = Sdf.StringListOp()
-        order.explicitItems = names
+        order.prependedItems = names
         clips.SetClipSets(order)
 
     if covered and node.get_param("set_stage_range").value:
@@ -359,9 +368,10 @@ def config():
 
         Authors, on the chunk's own layer, `clips[<name>]` per row (assetPaths /
         primPath / active / times for a file; templateAssetPath / templateStart /
-        End / Stride / active for a template) and an explicit `clipSets` list-op
-        in row order — that list-op is what puts the first row on top; without it
-        USD orders clip sets alphabetically.
+        End / Stride for a template) and a prepended `clipSets` list-op in row
+        order — that list-op is what puts the first row on top; without it USD
+        orders clip sets alphabetically. Prepended so that a second chunk's list
+        on the same prim composes with this one instead of replacing it.
 
         Within the layer stack, clips are weaker than local time samples and
         stronger than samples coming across references or variants. A clip set
