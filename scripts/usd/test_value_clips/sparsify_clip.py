@@ -24,6 +24,14 @@ A pose exported as a single frame comes out of Blender as a default value with n
 samples. Clips never consult defaults, so a pose is written as samples at the two `--hold`
 times; a clip set holds its edge value outside its range, so that covers any timeline.
 
+Also written: a full-array clip of the base pose itself (`<base>.clip.usda`, or
+`<character>.rest.usda` without `--base`), with real time samples regardless of how the
+DCC export shaped the original. Stack a sparse clip over *that* to preview it alone --
+over nothing at all, a sparse clip composes to an empty array (a `write` cannot grow a
+zero-length base), and a `--base` file is routinely a default value with no time samples
+of its own for clips to read, so neither an unloaded stack nor the raw `--base` file works
+as that stand-in.
+
 Also authored, directly into the character file: an animation prim with the skeleton's
 joint order (Blender's rest export declares only blend shapes there), bound to the
 skeleton. Reference the character alone and it is already a valid clip target -- no
@@ -97,6 +105,43 @@ def _samples(attr, hold):
     if value is None:
         return []
     return [(t, value) for t in hold]
+
+
+def write_rest_clip(skeleton, pose, out_dir, out_name, hold):
+    """A full-array clip holding one pose, safe to use as a Value Clips row on its own.
+
+    A sparse clip is a delta -- `edit [write q to [i]]` composes over whatever full array
+    is beneath it, and produces an empty array with nothing beneath it at all (a `write`
+    cannot grow a zero-length base; verified directly against Vt.QuatfArrayEditBuilder).
+    So previewing one sparse pose with no cycle loaded needs a full-array clip under it,
+    and the obvious candidate -- a `--base` file exported by the DCC for diffing against --
+    is usually the wrong shape for that job: a short, unvarying export often gets written
+    by the DCC as one default value with no time samples at all, and clips never consult a
+    clip file's default (symmetric to a stage never falling through to a clip for its own
+    default) -- so stacking a sparse clip over it *still* composes to empty. This writes
+    the same pose back out with real time samples at `hold`, which no DCC export shape can
+    get wrong, so any pose or rest state doubles as a working base for one-clip previews.
+    """
+    joints = skeleton.GetJointsAttr().Get()
+    out_path = os.path.join(out_dir, out_name)
+    layer = Sdf.Layer.CreateNew(out_path)
+    stage = Usd.Stage.Open(layer)
+    anim = UsdSkel.Animation.Define(stage, Sdf.Path("/Anim"))
+    anim.CreateJointsAttr().Set(joints)
+    for name, attr in (("rotations", anim.CreateRotationsAttr()),
+                       ("translations", anim.CreateTranslationsAttr()),
+                       ("scales", anim.CreateScalesAttr())):
+        if pose.get(name) is None:
+            continue
+        for t in hold:
+            attr.Set(pose[name], t)
+    stage.SetStartTimeCode(hold[0])
+    stage.SetEndTimeCode(hold[1])
+    stage.SetDefaultPrim(anim.GetPrim())
+    layer.Save()
+    print(f"{os.path.basename(out_path)}: a full-array clip of the base pose, "
+          f"{len(joints)} joints, safe under a sparse clip with nothing else loaded")
+    return out_path
 
 
 def sparsify(character, clip_path, out_dir, hold, base=None):
@@ -230,12 +275,16 @@ def main(argv=None):
         write_character_override(character, out_dir)
     else:
         bake_character_override(character, args.character)
-    base = None
+
+    skeleton, _ = _anim_target(character)
+    base = _base_pose(args.base, list(skeleton.GetJointsAttr().Get())) if args.base and skeleton else None
+    if skeleton is not None:
+        pose = base or _rest(skeleton)
+        rest_name = (os.path.splitext(os.path.basename(args.base))[0] + ".clip.usda" if args.base
+                    else os.path.splitext(os.path.basename(args.character))[0] + ".rest.usda")
+        write_rest_clip(skeleton, pose, out_dir, rest_name, args.hold)
+
     for clip in args.clips:
-        if base is None and args.base:
-            stage = Usd.Stage.Open(clip)
-            anims = _animations(stage)
-            base = _base_pose(args.base, list(anims[0].GetJointsAttr().Get() or [])) if anims else None
         sparsify(character, clip, out_dir, args.hold, base)
 
 
