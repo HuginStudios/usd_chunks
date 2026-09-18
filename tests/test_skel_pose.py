@@ -40,15 +40,15 @@ def _make_scene(stage: Usd.Stage) -> SceneSender:
     return scene
 
 
-def _build_character(stage: Usd.Stage, skel_rotate_x: float = 0.0) -> None:
+def _build_character(stage: Usd.Stage, skel_rotate_x: float = 0.0, root_path: str = "/Char") -> None:
     """A SkelRoot at /Char, its skeleton's rest pose a straight arm out along +X.
 
     `skel_rotate_x` puts a transform on the Skeleton prim itself, so skeleton space and
     SkelRoot space stop coinciding.
     """
-    root = UsdSkel.Root.Define(stage, "/Char")
+    root = UsdSkel.Root.Define(stage, root_path)
     UsdGeom.Xformable(root).AddTranslateOp().Set((100.0, 0.0, 0.0))
-    skel = UsdSkel.Skeleton.Define(stage, "/Char/Skel")
+    skel = UsdSkel.Skeleton.Define(stage, root_path + "/Skel")
     if skel_rotate_x:
         UsdGeom.Xformable(skel).AddRotateXOp().Set(skel_rotate_x)
     skel.GetJointsAttr().Set(JOINTS)
@@ -63,7 +63,7 @@ def _build_character(stage: Usd.Stage, skel_rotate_x: float = 0.0) -> None:
         Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(10, 0, 0)),
         Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(20, 0, 0)),
     ]))
-    anim = UsdSkel.Animation.Define(stage, "/Char/Anim")
+    anim = UsdSkel.Animation.Define(stage, root_path + "/Anim")
     anim.GetJointsAttr().Set(JOINTS)
     anim.GetTranslationsAttr().Set(Vt.Vec3fArray([(0, 0, 0), (10, 0, 0), (10, 0, 0)]))
     anim.GetScalesAttr().Set(Vt.Vec3hArray([(1, 1, 1)] * 3))
@@ -97,6 +97,20 @@ def posed():
     node.get_param("primpath_location").value = "/Char"
     node.get_param("joints").value = "arm"
     return stage, node, module
+
+
+class TestCharacterMenu:
+    def test_lists_the_stages_skelroots_and_keeps_a_value_the_stage_lacks(self):
+        stage = Usd.Stage.CreateInMemory()
+        _build_character(stage)
+        _build_character(stage, root_path="/Crowd/Extra")
+        scene = _make_scene(stage)
+        node, _ = _make_chunk(scene)
+        assert list(node.get_param("primpath_location").menu_items) == ["/Char", "/Crowd/Extra"]
+        node.get_param("primpath_location").value = "/Crowd/Extra"
+        stage.RemovePrim("/Crowd/Extra")
+        assert node.get_param("primpath_location").value == "/Crowd/Extra", "a value the stage lost is kept, not coerced"
+        assert list(node.get_param("primpath_location").menu_items) == ["/Char", "/Crowd/Extra"]
 
 
 class TestLofting:
@@ -196,12 +210,14 @@ class TestPose:
         assert module.gizmo_offset(node, "arm") == pytest.approx((10.0, 0.0, 0.0), abs=1e-6)
 
     def test_the_rig_is_read_once_per_target(self, posed):
-        _, node, module = posed
+        stage, node, module = posed
         first = module._rig(node)
         assert module._rig(node) is first
-        node.get_param("primpath_location").value = "/Char/Skel"
+        _build_character(stage, root_path="/Other")
+        assert list(node.get_param("primpath_location").menu_items) == ["/Char", "/Other"],             "a SkelRoot arriving on the stage shows up in the Character menu"
+        node.get_param("primpath_location").value = "/Other"
         assert module._rig(node) is not first, "re-targeting drops the cache"
-        assert _vectors(node) == ["arm"], "and anything under the root finds the same rig"
+        assert _vectors(node) == ["arm"]
 
     def test_the_cache_survives_the_chunks_own_cook_but_not_a_rig_edit(self, posed):
         stage, node, module = posed

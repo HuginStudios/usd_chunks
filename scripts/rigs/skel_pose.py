@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 #: Params the chunk always has. Everything else on it is a lofted joint handle.
 _FIXED = ("primpath_location", "joints")
 
+#: Set once CHUNK_LOADED has fired -- values are in, the character menu may fill.
+_IN_SCENE = "_skel_pose_in_scene"
+
 
 class _Rig:
     """What the chunk needs to know about the character under `primpath_location`.
@@ -380,6 +383,48 @@ def gizmo_offset(node, gizmo):
     return tuple(rig.skel_to_root.Transform(rig.rest[joint].ExtractTranslation()))
 
 
+def _skel_roots(stage) -> list:
+    """Every SkelRoot on the stage, as path strings. Nothing under one is visited."""
+    found = []
+    it = iter(Usd.PrimRange(stage.GetPseudoRoot()))
+    for prim in it:
+        if prim.IsA(UsdSkel.Root):
+            found.append(str(prim.GetPath()))
+            it.PruneChildren()
+    return found
+
+
+def _refresh_characters(owner, _notice=None, _sender=None):
+    """Fill the Character menu with the stage's SkelRoots.
+
+    Registered globally on stage content changes, since the character usually arrives
+    from a Reference chunk upstream, not from this chunk's own params. Held off until
+    CHUNK_LOADED: a Menu coerces a value the list does not hold, so filling it before a
+    saved value is restored would drop that value. The current value stays listed even
+    when the stage no longer offers it, for the same reason the other way round -- a
+    reload restores it before the upstream reference has cooked.
+
+    Only assigned on a change: writing menu_items cooks the chunk whether or not the
+    list differs.
+    """
+    node = owner.get_chunk() if hasattr(owner, "get_chunk") else owner
+    if node is None or node.is_blocked() or not getattr(node, _IN_SCENE, False):
+        return
+    if id(node) in _BUSY:
+        # The chunk's own cook is the stage change: it did not add a character.
+        return
+    menu = node.get_param("primpath_location")
+    stage = node.get_stage()
+    if menu is None or stage is None:
+        return
+    items = _skel_roots(stage)
+    current = menu.value or ""
+    if current and current not in items and not chunk_utils.has_expression(current):
+        items.append(current)
+    if list(menu.menu_items or []) != items:
+        menu.menu_items = items
+
+
 def _param_changed(owner, notice, _sender):
     """Re-loft the handles when the character or the joint list changes."""
     if id(owner) in _BUSY:
@@ -389,9 +434,11 @@ def _param_changed(owner, notice, _sender):
         _sync_joints(owner)
 
 
-def _chunk_loaded(owner, _notice, _sender):
+def _chunk_loaded(owner, notice, sender):
     # Neither the handles nor their values survive a load on their own: the handles are
     # created at runtime, and the loader restores values before they exist.
+    setattr(owner, _IN_SCENE, True)
+    _refresh_characters(owner, notice, sender)
     _sync_joints(owner)
     execute(owner)
 
@@ -399,11 +446,13 @@ def _chunk_loaded(owner, _notice, _sender):
 def main():
     chunk_api = chunk.Chunk("Skel Pose")
     chunk_api.add_params([
-        chunk.LineEdit(
+        # A Menu of the stage's SkelRoots rather than a typed path. Named
+        # primpath_location so the lofted handles find their anchor without declaring it.
+        chunk.Menu(
             "primpath_location", "Character",
-            flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.PRIM_SELECTION,
-            tooltip="A SkelRoot, or anything under one. Its skeleton must have an animation "
-                    "source: that is the prim the pose is written onto.",
+            flags=ChunkFlags.ParamFlags.LABELED,
+            tooltip="The SkelRoots on the stage. The chosen one's skeleton must have an "
+                    "animation source: that is the prim the pose is written onto.",
         ),
         chunk.LineEdit(
             "joints", "Joints",
@@ -416,6 +465,9 @@ def main():
                            notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
     chunk_api.add_callback(_chunk_loaded,
                            notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
+    chunk_api.add_callback(_refresh_characters,
+                           notice_alias=chunk_notice.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
+                           listen_globally=True)
     return chunk_api
 
 
@@ -438,8 +490,9 @@ def config():
         named ones hold. Clear the chunk's layer and the animation is untouched.
 
         Parameters:
-          - Character: a SkelRoot or a prim beneath one. The first skeleton binding
-            with an animation source is used.
+          - Character: a dropdown of the stage's SkelRoots, kept current as the
+            stage changes. The first skeleton under it with an animation source
+            is used.
           - Joints: comma or space separated names or globs, matched against the
             joint's leaf name and its full path in the animation's joint order.
           - <joint> (lofted): X, Y, Z in degrees, -180..180, with a rotate gizmo.
