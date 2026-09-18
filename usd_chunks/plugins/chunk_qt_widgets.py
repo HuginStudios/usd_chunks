@@ -1281,7 +1281,9 @@ class LabeledWidget(QtWidgets.QWidget):
             raw = self.widget.param.raw_value
         except ReferenceError:
             return
-        expr = chunk_utils.is_expression_text(raw)
+        # Either kind of driven value: a @Node.param@ wire, or a ${VAR} in an asset path
+        # that USD substitutes during composition. Both show a value nobody typed here.
+        expr = chunk_utils.is_expression_text(raw) or chunk_utils.has_stage_expression(raw)
         if self.label.property("chunkExpression") != expr:
             self.label.setProperty("chunkExpression", expr)
             # A property the stylesheet selects on only takes effect after a re-polish.

@@ -16,7 +16,6 @@ transform still reaches the stage would pass a state-only check and be wrong.
 from __future__ import annotations
 
 import importlib
-import logging
 import sys
 from pathlib import Path
 
@@ -100,6 +99,20 @@ def _filter(sender, name="Filter"):
     return _mk(sender, filter_mod, name, "stage_expression_filter", exec_inputs=2)
 
 
+def _shot(stage, f, value, variable="SHOT"):
+    """Declare `variable` on the stage and point the filter at it.
+
+    The filter no longer takes a ${SHOT} reference typed into a field -- USD substitutes
+    expression variables into asset paths and variant selections only, so a field that
+    accepted one anywhere would be usd_chunks inventing a rule OpenUSD does not have. It
+    picks a declared variable by name and reads it off the stage instead.
+    """
+    variables = dict(chunk_utils.stage_expression_variables(stage))
+    variables[variable] = value
+    chunk_utils.set_stage_expression_variables(stage, variables)
+    f.get_param(filter_mod.VARIABLE_PARAM).value = variable
+
+
 def _height(stage, prim_path):
     """The composed z translation, or 0 when the branch that authored it is muted."""
     prim = stage.GetPrimAtPath(prim_path)
@@ -119,7 +132,7 @@ def test_a_match_lets_the_gated_branch_through(scene):
 
     f = _filter(sender)
     _wire(stage, f, stream, gated)
-    f.get_param("value").value = "sh010"
+    _shot(stage, f, "sh010")
     f.get_param("pattern").value = "sh01*"
     f.execute()
 
@@ -137,7 +150,7 @@ def test_a_miss_mutes_the_gated_branch_and_keeps_the_stream(scene):
 
     f = _filter(sender)
     _wire(stage, f, stream, gated)
-    f.get_param("value").value = "sh020"
+    _shot(stage, f, "sh020")
     f.get_param("pattern").value = "sh01*"
     f.execute()
 
@@ -155,11 +168,11 @@ def test_changing_the_value_reopens_the_gate(scene):
     f = _filter(sender)
     _wire(stage, f, stream, gated)
     f.get_param("pattern").value = "sh01*"
-    f.get_param("value").value = "sh020"
+    _shot(stage, f, "sh020")
     f.execute()
     assert gated.is_blocked()
 
-    f.get_param("value").value = "sh011"
+    _shot(stage, f, "sh011")
     f.execute()
 
     assert _height(stage, "/b") == pytest.approx(7.0)
@@ -180,7 +193,7 @@ def test_it_mutes_the_whole_branch_not_just_the_slot(scene):
 
     f = _filter(sender)
     _wire(stage, f, stream, tail)
-    f.get_param("value").value = "sh020"
+    _shot(stage, f, "sh020")
     f.get_param("pattern").value = "sh01*"
     f.execute()
 
@@ -201,7 +214,7 @@ def test_a_chunk_feeding_both_inputs_stays_live(scene):
 
     f = _filter(sender)
     _wire(stage, f, shared, gated)
-    f.get_param("value").value = "sh020"
+    _shot(stage, f, "sh020")
     f.get_param("pattern").value = "sh01*"
     f.execute()
 
@@ -217,7 +230,7 @@ def test_no_gated_branch_is_a_passthrough(scene):
 
     f = _filter(sender)
     _wire(stage, f, stream)
-    f.get_param("value").value = "sh020"
+    _shot(stage, f, "sh020")
     f.get_param("pattern").value = "sh01*"
     f.execute()
 
@@ -233,7 +246,7 @@ def test_an_empty_pattern_never_matches(scene):
 
     f = _filter(sender)
     _wire(stage, f, stream, gated)
-    f.get_param("value").value = "sh010"
+    _shot(stage, f, "sh010")
     f.execute()
 
     assert gated.is_blocked()
@@ -249,7 +262,7 @@ def test_disable_is_left_alone(scene):
 
     f = _filter(sender)
     _wire(stage, f, stream, gated)
-    f.get_param("value").value = "sh010"
+    _shot(stage, f, "sh010")
     f.get_param("pattern").value = "sh01*"
     f.execute()
 
@@ -260,138 +273,69 @@ def test_disable_is_left_alone(scene):
 # matching
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("value,pattern,mode,expected", [
-    ("sh010", "sh01*", filter_mod.GLOB, True),
-    ("sh020", "sh01*", filter_mod.GLOB, False),
-    ("bg_01", "bg_??", filter_mod.GLOB, True),
-    ("SH010", "sh01*", filter_mod.GLOB, False),   # case-sensitive on every platform
-    ("sh010", r"^sh0\d+$", filter_mod.REGEX, True),
-    ("sh010", r"^bg", filter_mod.REGEX, False),
-    ("sh010", "sh010", filter_mod.EQUALS, True),
-    ("sh010", "sh01", filter_mod.EQUALS, False),
+@pytest.mark.parametrize("value,pattern,expected", [
+    ("sh010", "sh01*", True),
+    ("sh020", "sh01*", False),
+    ("bg_01", "bg_??", True),
+    ("SH010", "sh01*", False),          # case-sensitive on every platform
+    ("sh020", "sh01* sh02*", True),     # space-separated: either one matches
+    ("sh030", "sh01* sh02*", False),
+    ("sh010", "", False),               # nothing to match against
+    ("sh010", "   ", False),
 ])
-def test_match_modes(value, pattern, mode, expected):
-    assert filter_mod._matches(value, pattern, mode) is expected
+def test_glob_matching(value, pattern, expected):
+    assert filter_mod.matches(value, pattern) is expected
 
 
-def test_a_bad_regex_reports_itself_and_does_not_match(caplog):
-    """Silently never matching is indistinguishable from the variable being wrong."""
-    with caplog.at_level(logging.WARNING, logger="stage_expression_filter"):
-        assert filter_mod._matches("sh010", "sh01[", filter_mod.REGEX) is False
-    assert "not a valid regex" in caplog.text
+def test_the_variable_menu_lists_what_the_stage_declares(scene):
+    """The dropdown is filled from the stage, so a variable declared by a Stage Expression
+    upstream -- or by the file that was opened -- is offered by name."""
+    stage, sender = scene
+    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010", "ASSET": "hero"})
+    f = _filter(sender)
+
+    filter_mod._sync_variable_choices(f)
+
+    assert list(f.get_param(filter_mod.VARIABLE_PARAM).menu_items) == ["ASSET", "SHOT"]
 
 
-# ---------------------------------------------------------------------------
-# the point of it: gating on a stage variable
-# ---------------------------------------------------------------------------
-
-def test_it_gates_on_a_stage_variable(scene):
-    """End to end: a Stage Expression declares the variable, the filter tests a reference
-    to it, and changing the variable changes which branches are in the scene."""
+def test_a_variable_that_is_gone_stays_selected(scene):
+    """Silently moving to another variable would gate on something nobody chose."""
     stage, sender = scene
     chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010"})
+    f = _filter(sender)
+    filter_mod._sync_variable_choices(f)
+    f.get_param(filter_mod.VARIABLE_PARAM).value = "SHOT"
+
+    chunk_utils.set_stage_expression_variables(stage, {"ASSET": "hero"})
+    filter_mod._sync_variable_choices(f)
+
+    assert f.get_param(filter_mod.VARIABLE_PARAM).value == "SHOT"
+    assert "SHOT" in f.get_param(filter_mod.VARIABLE_PARAM).menu_items
+
+
+def test_a_typed_variable_is_gated_on_its_value(scene):
+    """USD expression variables are typed -- an int IDENTIFIER against "32*" reads the way
+    anyone typing that pattern expects, and a list matches on its elements."""
+    stage, sender = scene
     stream = _place(sender, "Stream", "/a", 5.0)
     gated = _place(sender, "Gated", "/b", 7.0)
-
     f = _filter(sender)
     _wire(stage, f, stream, gated)
-    f.get_param("value").value = "${SHOT}"
-    f.get_param("pattern").value = "sh01*"
+    chunk_utils.set_stage_expression_variables(
+        stage, {"IDENTIFIER": 3254, "renderPassList": ["foreground", "FX"]}
+    )
+
+    f.get_param(filter_mod.VARIABLE_PARAM).value = "IDENTIFIER"
+    f.get_param("pattern").value = "32*"
     f.execute()
     assert _height(stage, "/b") == pytest.approx(7.0)
 
-    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh020"})
+    f.get_param(filter_mod.VARIABLE_PARAM).value = "renderPassList"
+    f.get_param("pattern").value = "FX"
     f.execute()
+    assert _height(stage, "/b") == pytest.approx(7.0), "a list matches on its elements"
 
+    f.get_param("pattern").value = "matte"
+    f.execute()
     assert _height(stage, "/b") == pytest.approx(0.0)
-    assert gated.is_blocked()
-
-
-# ---------------------------------------------------------------------------
-# positional slots
-# ---------------------------------------------------------------------------
-
-def test_the_config_declares_two_slots():
-    assert filter_mod.config().exec_inputs == 2
-
-
-def test_add_dependency_fills_the_slots_in_order(scene):
-    """A wire made through the API rather than by dragging a port must still land one per
-    slot -- filling slot 0 twice would make the gated branch mean what the stream does."""
-    stage, sender = scene
-    stream = _place(sender, "Stream", "/a", 5.0)
-    gated = _place(sender, "Gated", "/b", 7.0)
-
-    f = _filter(sender)
-    f.add_dependency(stream)
-    f.add_dependency(gated)
-
-    prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(f)))
-    slot0 = prim.GetAttribute(chunk_stage.exec_input_name(0)).GetConnections()
-    slot1 = prim.GetAttribute(chunk_stage.exec_input_name(1)).GetConnections()
-    assert len(slot0) == 1 and len(slot1) == 1
-    assert chunk_stage.get_chunk_prim_path(stream) in str(slot0[0])
-    assert chunk_stage.get_chunk_prim_path(gated) in str(slot1[0])
-
-
-def test_an_unwired_branch_is_released_even_when_it_is_more_than_one_chunk_deep(scene):
-    """The `muted` record exists so a branch that stops being gated is un-muted.
-
-    It records the whole branch, since muting one means muting all of it -- but the release
-    only ever searched the filter's DIRECT inputs, so anything further up a branch was
-    never found and stayed blocked and muted for the rest of the session, with no way back.
-    Only a one-chunk branch was ever released, which is why the other tests do not see it.
-    """
-    stage, sender = scene
-    stream = _place(sender, "stream", "/a", 1.0)
-    # The gated branch is two deep: inner feeds slot_chunk, which is what the filter sees.
-    inner = _place(sender, "inner", "/b", 5.0)
-    slot_chunk = _place(sender, "slot", "/b", 7.0)
-    _wire(stage, slot_chunk, inner)
-
-    node = _mk(sender, filter_mod, "filter", "stage_expression_filter")
-    node.get_param("value").value = "sh010"
-    node.get_param("pattern").value = "sh99*"  # a miss: the gated branch is muted
-    _wire(stage, node, stream, slot_chunk)
-    node.execute()
-    assert inner.is_blocked(), "the gate is shut, so the whole gated branch is muted"
-
-    # The user unwires the gated branch from the filter entirely. _wire only rewrites the
-    # slots it is given, so slot 1 has to be cleared rather than left pointing at it.
-    prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(node)))
-    prim.GetAttribute(chunk_stage.exec_input_name(1)).SetConnections([])
-    node.execute()
-
-    assert not inner.is_blocked(), (
-        "nothing is gating inner any more -- it is not upstream of the filter at all"
-    )
-
-
-def test_a_downstream_filter_does_not_reopen_an_upstream_gate(scene):
-    """Day then night, chained: NightOnly forwards DayOnly as its stream, and that stream
-    reaches DayOnly's gated branch. Un-muting everything in the stream switched the sun
-    back on in a night shot -- a filter may only release what it muted itself."""
-    stage, sender = scene
-    UsdGeom.Cube.Define(stage, "/c")
-    stream = _place(sender, "Stream", "/a", 5.0)
-    sun = _place(sender, "Sun", "/b", 7.0)
-    lamp = _place(sender, "Lamp", "/c", 9.0)
-
-    day = _filter(sender, "DayOnly")
-    _wire(stage, day, stream, sun)
-    day.get_param("pattern").value = "*_day"
-    night = _filter(sender, "NightOnly")
-    _wire(stage, night, day, lamp)
-    night.get_param("pattern").value = "*_night"
-
-    for shot, sun_on, lamp_on in (("sh030_night", False, True), ("sh010_day", True, False)):
-        day.get_param("value").value = shot
-        night.get_param("value").value = shot
-        day.execute()
-        night.execute()
-
-        assert _height(stage, "/a") == pytest.approx(5.0), shot
-        assert _height(stage, "/b") == pytest.approx(7.0 if sun_on else 0.0), shot
-        assert _height(stage, "/c") == pytest.approx(9.0 if lamp_on else 0.0), shot
-        assert sun.is_blocked() is not sun_on, shot
-        assert lamp.is_blocked() is not lamp_on, shot

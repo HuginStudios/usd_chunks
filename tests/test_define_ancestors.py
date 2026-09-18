@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk_utils
+from usd_chunks import chunk_layers
 
 
 def _stage_with_two_layers():
@@ -23,7 +23,7 @@ def test_a_later_chunk_defines_the_parents_the_first_one_created() -> None:
         stage.DefinePrim("/World/lights/lamp", "SphereLight")
     assert second.GetPrimAtPath("/World").specifier == Sdf.SpecifierOver, "USD's own behaviour"
 
-    assert chunk_utils.define_ancestors(second) == 2
+    assert chunk_layers.define_ancestors(second) == 2
 
     stage.MuteLayer(first.identifier)
     assert stage.GetPrimAtPath("/World/lights/lamp").IsDefined()
@@ -36,7 +36,7 @@ def test_a_plain_override_stays_an_override() -> None:
     with Usd.EditContext(stage, second):
         stage.OverridePrim("/Kitchen_set/Props/Cup")
 
-    assert chunk_utils.define_ancestors(second) == 0
+    assert chunk_layers.define_ancestors(second) == 0
     assert not stage.GetPrimAtPath("/Kitchen_set").IsDefined()
 
 
@@ -52,7 +52,7 @@ def test_a_prim_defined_inside_a_variant_defines_the_ancestors_outside_it() -> N
         with vset.GetVariantEditContext():
             stage.DefinePrim("/World/shots/cam", "Camera")
 
-    chunk_utils.define_ancestors(second)
+    chunk_layers.define_ancestors(second)
 
     stage.MuteLayer(first.identifier)
     assert stage.GetPrimAtPath("/World/shots/cam").IsDefined()

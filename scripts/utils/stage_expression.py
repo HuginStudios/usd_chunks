@@ -1,4 +1,4 @@
-"""Stage Expression -- names a value once, and every field on the stage can spell it.
+"""Stage Expression -- declares the USD expression variables a scene composes against.
 
 USD already has this mechanism: a layer carries an `expressionVariables` dict, and
 composition substitutes ${NAME} out of it. A studio that has been shipping shot-driven
@@ -7,35 +7,35 @@ sit on top of what is already there rather than to replace it -- it reads the co
 adds to it, and leaves everything it did not author alone.
 
     Stage Expression
-      SHOT   = sh010          o--> (wire a Wedge in to sweep it)
-      ASSET  = hero
-      ------------------------------------------------------------
-      Reference.asset      `"./${ASSET}.usda"`     <- USD substitutes
-      Transform.primpath   /World/${SHOT}/geo      <- usd_chunks substitutes
+      SHOT            string     sh010
+      USE_LOW_POLY    bool       false
+      IDENTIFIER      int        3254
+      renderPassList  string[]   foreground, background, FX
 
-The two lines above resolve by different machinery, and knowing which is which is most of
-understanding this chunk. USD substitutes ${NAME} into **asset paths and variant selections
-only**. A prim path is not one of them and never will be -- so ${NAME} in a Prim Path field
-is expanded by usd_chunks at param-read time instead (chunk_utils.resolve_stage_expression,
-wired into every param's value read). Both spellings are accepted everywhere: the
-backtick-delimited form USD defines, evaluated by USD's own evaluator so studio syntax
-behaves exactly as it does in their files, and a bare ${NAME} anywhere inside a string,
-which is the form a path needs.
+**Where a variable applies is USD's rule, not ours.** Composition substitutes ${NAME} into
+**asset paths and variant selections**, and nowhere else:
+
+    references = @`if(${USE_LOW_POLY}, "assetsLow/hero.usda", "assets/hero.usda")`@
+
+A chunk param is not one of those places, so usd_chunks does not resolve ${NAME} in one --
+a Prim Path field holding one keeps the text, literally. Acting on a variable anywhere else
+in a chunk graph is the Stage Expression Filter's job: that is a usd_chunks mechanism,
+honestly named, rather than an extension of USD's that would appear to work in fields where
+OpenUSD says it does not.
 
 Variables are authored into the **session layer**, which is where usd_chunks already keeps
 its bookkeeping. Setting one therefore does not dirty the file the user opened, and because
 a session opinion is stronger than the root layer's, a variable set here overrides a
 studio-authored default of the same name rather than colliding with it.
 
-**A variable is stage-global; recooking is not.** Any chunk anywhere can read ${SHOT}, but
-only chunks downstream of this one on the exec chain re-execute when it changes. Wire this
+**A variable is stage-global; recooking is not.** Any chunk anywhere can be gated on
+${SHOT}, but only chunks downstream of this one re-execute when it changes. Wire this
 upstream of what should react to it.
 
 **Known limit:** changing a variable recomposes the stage live, but introducing one that
-did not exist when the stage was opened does not reach USD-native arcs -- Pcp records no
-dependency on a variable whose lookup failed, so a reference that was already unresolved
-stays unresolved until the stage is reopened. Params resolved by usd_chunks are unaffected;
-they read the variables on every access.
+did not exist when the stage was opened does not -- Pcp records no dependency on a variable
+whose lookup failed, so a reference that was already unresolved stays unresolved until the
+stage is reopened.
 
 Requires: usd_chunks.
 """
@@ -44,98 +44,73 @@ from __future__ import annotations
 
 import logging
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_stage, chunk_utils
+from usd_chunks import chunk, chunk_utils
 
 logger = logging.getLogger(__name__)
 
-#: Params the chunk always has. Everything else on it is a lofted variable.
-_FIXED = frozenset({"variables", "owned", "composed"})
+#: The list of declared variables, and the columns of one row.
+ROWS_PARAM = "variables"
+NAME_COLUMN = "var_name"
+TYPE_COLUMN = "var_type"
+VALUE_COLUMN = "var_value"
 
 #: Where the chunk records which variable names it authored last time, so a name deleted
-#: from the spec is removed from the stage rather than left behind forever. Hidden:
+#: from the list is removed from the stage rather than left behind forever. Hidden:
 #: bookkeeping, not a control -- the same shape as the Switch's `muted` record.
 _OWNED_PARAM = "owned"
 
+STRING = "string"
+INT = "int"
+BOOL = "bool"
+STRING_LIST = "string[]"
 
-def _parse_spec(text):
-    """The variables the chunk declares, as (name, default) rows.
+#: What a USD expression variable can hold. Sdf.VariableExpression evaluates strings, whole
+#: numbers, booleans and lists of those -- there is deliberately no float type.
+TYPES = (STRING, INT, BOOL, STRING_LIST)
 
-    One per line, `NAME = default` or `NAME default`; the default is optional. Text rather
-    than params because the declaration has to survive a save and a runtime-lofted param
-    does not -- the same trade the Wedge makes for its ranges, and for the same reason: the
-    file stays readable and the lofted params are a view of it.
+_TRUE = {"true", "yes", "on", "1"}
+
+
+def typed_value(value: str, type_name: str):
+    """One row's text as the type it declares, or None if it cannot be read as one.
+
+    A bad number is skipped with a warning rather than authored as its text: a variable
+    that silently changed type would make `if(${N}, ...)` behave differently from what the
+    row plainly says, which is much harder to spot than a log line.
     """
+    text = (value or "").strip()
+    if type_name == INT:
+        try:
+            return int(text)
+        except ValueError:
+            logger.warning("%r is not a whole number", text)
+            return None
+    if type_name == BOOL:
+        return text.lower() in _TRUE
+    if type_name == STRING_LIST:
+        return [part.strip() for part in text.split(",") if part.strip()]
+    return text
+
+
+def declared_variables(node):
+    """(name, typed value) for every usable row, in list order."""
+    group = node.get_param(ROWS_PARAM, chunk.is_inst(chunk.ListGroup))
+    if group is None:
+        return []
     rows = []
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+    for i in range(group.size):
+        name = (getattr(group.get_indexed_param(NAME_COLUMN, i), "value", "") or "").strip()
+        if not name:
             continue
-        name, sep, default = line.partition("=")
-        if not sep:
-            name, _, default = line.partition(" ")
-        name = name.strip()
         if not name.isidentifier():
             logger.warning("%r is not a usable variable name, skipping", name)
             continue
-        if name in _FIXED:
-            logger.warning("%r is reserved by the chunk, skipping", name)
+        type_name = getattr(group.get_indexed_param(TYPE_COLUMN, i), "value", STRING) or STRING
+        value = typed_value(getattr(group.get_indexed_param(VALUE_COLUMN, i), "value", ""), type_name)
+        if value is None:
             continue
-        rows.append((name, default.strip()))
+        rows.append((name, value))
     return rows
-
-
-def _variables(node):
-    """The lofted variable params, in author order.
-
-    Selected by excluding the fixed names rather than by a flag: unlike a Wedge range these
-    are ordinary input params -- connectable, editable, drivable by a wire -- so there is no
-    flag that distinguishes them. Groups are filtered by type because GroupFlags and
-    ParamFlags share bits, so a Group answers has_flag for things it does not have.
-    """
-    return [
-        p for p in node.get_my_params()
-        if not isinstance(p, chunk.Group) and p.name not in _FIXED
-    ]
-
-
-def _sync_variables(node):
-    """Rebuild the lofted params so they match the spec.
-
-    Called on load as well as on edit. A chunk does not own params it lofted at runtime --
-    they are gone by the time the file is reopened, so without this the chunk comes back
-    holding only its spec text and authors nothing at all.
-    """
-    spec = node.get_param("variables")
-    wanted = dict(_parse_spec(spec.value if spec else ""))
-    have = {p.name: p for p in _variables(node)}
-
-    for name, param in have.items():
-        if name not in wanted:
-            node.remove_param_or_group(param)
-
-    for name, default in wanted.items():
-        if name in have:
-            continue
-        param = chunk.LineEdit(
-            name, name, default_value=default,
-            flags=chunk.ChunkFlags.ParamFlags.LABELED,
-            tooltip=f"Value of the {name} variable. Spell it as a ${{{name}}} reference in "
-                    "any field, or wire something into this port to drive it.",
-        )
-        # A value saved on the chunk prim beats the spec's default: the port is the
-        # control, and on a reopened file it was set to the shot the scene was saved on.
-        if (saved := _saved_value(node, name)) not in (None, ""):
-            param.value = saved
-        node.add_param(param)
-
-
-def _saved_value(node, name):
-    stage = node.get_stage()
-    path = chunk_stage.get_chunk_prim_path(node)
-    if stage is None or not path:
-        return None
-    attr = stage.GetAttributeAtPath(f"{path}.inputs:{name}")
-    return attr.Get() if attr else None
 
 
 def _recorded(node) -> set:
@@ -158,11 +133,7 @@ def execute(node):
         # a chunk retyped into one must not keep contributing whatever it authored before.
         edit_layer.Clear()
 
-    # Lofted here as well as on load. A reopened file cooks before CHUNK_LOADED lofts
-    # them, and a Stage Expression that declares nothing on that first cook leaves every
-    # ${SHOT} downstream unresolved -- a filter testing it shuts, and stays shut.
-    _sync_variables(node)
-    mine = {p.name: p.value for p in _variables(node) if p.value not in (None, "")}
+    mine = dict(declared_variables(node))
 
     # Start from what is already in the session layer rather than from scratch, so two
     # Stage Expression chunks do not erase each other -- and so a variable some other part
@@ -174,25 +145,13 @@ def execute(node):
 
     # Names this chunk authored last time and no longer declares. Dropping them by name --
     # rather than by rewriting the whole dict from `mine` -- is what keeps another chunk's
-    # variables intact while still letting a deleted spec line actually delete something.
+    # variables intact while still letting a deleted row actually delete something.
     for stale in _recorded(node) - set(mine):
         current.pop(stale, None)
 
     current.update(mine)
-    changed = current != dict(session.expressionVariables or {})
     chunk_utils.set_stage_expression_variables(stage, current)
     _record(node, mine)
-    if changed:
-        # Attrs driven by a ${VAR} param were written with the old value; nothing else
-        # rewrites them, since the param's own text did not change.
-        chunk_stage.refresh_stage_expression_params(stage, chunk_registry.ChunkRegistry().scene)
-
-    if composed := node.get_param("composed"):
-        # The full composed set, this chunk's contribution included -- and the studio's
-        # root-layer variables alongside it, which is the whole point of showing it: the
-        # names available to type into a field are not only the ones declared here.
-        variables = chunk_utils.stage_expression_variables(stage)
-        composed.value = "\n".join(f"{k} = {v}" for k, v in sorted(variables.items()))
 
     if mine:
         logger.debug("%d variable(s): %s", len(mine), ", ".join(sorted(mine)))
@@ -200,50 +159,49 @@ def execute(node):
         logger.debug("no variables declared")
 
 
-def _spec_changed(owner, _notice, _sender):
-    node = owner.get_chunk()
-    _sync_variables(node)
-    execute(node)
+def _rows_changed(owner, notice, _sender):
+    """Re-author on any edit to the list -- a value typed, a row added or removed.
 
-
-def _chunk_loaded(owner, _notice, _sender):
-    """Loft the variables back after a load.
-
-    The spec restores as a plain string value; the params it declares do not restore at
-    all. Without this the chunk reopens holding only its text and every reference to its
-    variables goes unresolved -- silently, from a file that looks intact.
+    ATTRIBUTE_CHANGED on the whole chunk rather than a per-param callback, for the reason
+    the Sublayer chunk documents: removing a row renames the list's internal params, which
+    makes a per-param callback fire twice on a state that is only half updated.
     """
-    _sync_variables(owner)
+    if notice.data.name not in ("size", "value"):
+        return
+    execute(owner)
 
 
 def main():
     chunk_api = chunk.Chunk("StageExpression")
-    chunk_api.add_param(chunk.TextEdit(
-        "variables", "Variables",
-        default_value="",
-        rows=4,
-        tooltip="One variable per line, NAME = value. Each becomes a port you can wire "
-                "into, and a name you can spell as a ${...} reference in any other "
-                "chunk's field.",
+
+    rows = chunk.ListGroup(ROWS_PARAM, "Variables")
+    rows.add_param(chunk.LineEdit(
+        NAME_COLUMN, "Name",
+        tooltip="The variable name. Spell it ${NAME} in an asset path or a variant "
+                "selection -- the two places USD substitutes -- or gate a branch on it "
+                "with a Stage Expression Filter.",
     ))
+    rows.add_param(chunk.Menu(
+        TYPE_COLUMN, "Type",
+        default_value=STRING, menu_items=list(TYPES),
+        tooltip="USD expression variables hold strings, whole numbers, booleans or lists "
+                "of those. There is no float type.",
+    ))
+    rows.add_param(chunk.LineEdit(
+        VALUE_COLUMN, "Value",
+        tooltip="The value. A list is comma-separated; a boolean is true or false.",
+    ))
+    chunk_api.add_param(rows)
+
     owned = chunk.LineEdit(
         _OWNED_PARAM, "Owned",
         tooltip="Bookkeeping: the variable names this chunk authored, so one deleted from "
-                "the spec is removed from the stage rather than left behind.",
+                "the list is removed from the stage rather than left behind.",
     )
     owned.set_state(chunk.ChunkFlags.State.HIDDEN)
     chunk_api.add_param(owned)
-    chunk_api.add_param(chunk.TextEdit(
-        "composed", "In Effect",
-        flags=chunk.ChunkFlags.ParamFlags.OUTPUT | chunk.ChunkFlags.ParamFlags.LABELED,
-        rows=3,
-        tooltip="Every variable in effect on the stage, including ones authored by the "
-                "file that was opened rather than by this chunk.",
-    ))
 
-    chunk_api.add_callback(_spec_changed, sender=chunk_api.get_param("variables"))
-    # Runtime-lofted params do not survive a save; the spec does.
-    chunk_api.add_callback(_chunk_loaded, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
+    chunk_api.add_callback(_rows_changed, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
     return chunk_api
 
 
@@ -251,13 +209,16 @@ def config():
     return chunk.DefaulConfig(
         category=chunk.StandardCategory.UTILS,
         description=(
-            "Declares USD stage expression variables. Each line becomes a name usable as a "
-            "${...} reference in any chunk's field -- prim paths and asset paths alike -- "
-            "and a port a Wedge or any other chunk can drive.\n"
-            "Variables the opened file already declares are read and shown alongside these "
-            "rather than replaced; a name set here overrides a studio default of the same "
-            "name via the session layer, leaving their file untouched.\n"
+            "Declares USD stage expression variables -- a name, a type and a value per row.\n"
+            "USD substitutes ${NAME} into asset paths and variant selections and nowhere "
+            "else, so `if(${USE_LOW_POLY}, \"low/hero.usda\", \"hero.usda\")` in a file "
+            "field is evaluated by composition itself. A chunk param is not one of those "
+            "places and keeps the text literally -- gate on the variable with a Stage "
+            "Expression Filter instead.\n"
+            "Variables the opened file already declares are added to rather than replaced; "
+            "a name set here overrides a studio default of the same name via the session "
+            "layer, leaving their file untouched.\n"
             "A variable is visible stage-wide, but only chunks downstream of this one "
-            "re-execute when it changes -- wire it upstream of what should react."
+            "re-execute when it changes -- wire this upstream of what should react."
         ),
     )

@@ -47,7 +47,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self
-from usd_chunks import chunk_scheduler
+from usd_chunks import chunk_layers, chunk_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -1302,9 +1302,7 @@ class ChunkNoticePropagator:
                         if ctx:
                             with Usd.EditContext(stage, ctx):
                                 module.execute(prop)
-                            from usd_chunks import chunk_utils  # circular at import time
-
-                            chunk_utils.define_ancestors(ctx)
+                            chunk_layers.define_ancestors(ctx)
                         else:
                             # No edit layer of its own — author into the stage's current target.
                             module.execute(prop)

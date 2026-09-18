@@ -2,12 +2,18 @@
 
 Two inputs, and they mean different things. Slot 0 is the stream, and it is forwarded
 untouched whatever the test says. Slot 1 is the branch being gated: it contributes when the
-pattern matches the value, and is suppressed when it does not.
+variable matches one of the patterns, and is suppressed when it does not.
 
     stream  ──┐
-              ├── Filter  ${SHOT} ~ "sh01*"  ──▶  downstream
+              ├── Filter  SHOT ~ "sh01* sh02*"  ──▶  downstream
     branch  ──┘   match   : stream + branch
                   no match: stream only, branch muted
+
+The variable is picked from the ones declared on the stage, by name -- not typed as a
+${SHOT} reference. USD substitutes expression variables into asset paths and variant
+selections and nowhere else, so a field that appeared to accept one anywhere would be
+usd_chunks quietly inventing a rule OpenUSD does not have. This chunk reads the variable
+off the stage itself, which is a mechanism of ours and says so.
 
 A Switch picks one of N interchangeable branches by index. This picks by *fact*: the answer
 comes from the stage, so one network can carry work that only happens on some shots, some
@@ -20,6 +26,10 @@ layer mute, not the DISABLED state, which belongs to the user. A branch contribu
 its layers are in the stage, not because it is wired -- so cutting the connection instead
 would leave its prims composed exactly as before and gate nothing.
 
+Patterns are globs, space-separated: `sh01* sh02*` matches either. Case-sensitive on every
+platform (fnmatchcase, not fnmatch, which folds case on Windows and not on Linux -- the same
+scene would otherwise gate differently depending on which machine cooked it).
+
 **Known limit:** a layer is muted stage-wide, so a gated branch that also feeds a consumer
 *outside* this filter is suppressed for that consumer too. Inherent to layer muting -- the
 Switch and the view system both have it.
@@ -31,9 +41,8 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-import re
 
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk, chunk_registry, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks import chunk_stage
 
@@ -43,34 +52,32 @@ logger = logging.getLogger(__name__)
 #: un-muted rather than left blocked forever. Hidden: bookkeeping, not a control.
 _MUTED_PARAM = "muted"
 
-GLOB = "Glob"
-REGEX = "Regex"
-EQUALS = "Equals"
+#: The variable this filter tests, chosen from what the stage declares.
+VARIABLE_PARAM = "variable"
+PATTERN_PARAM = "pattern"
 
-_MODES = (GLOB, REGEX, EQUALS)
+#: Offered when the stage declares nothing yet, so the menu is never empty (an empty Menu
+#: has no value at all, and the field would read as broken rather than as unset).
+NO_VARIABLES = "<none>"
 
 
-def _matches(value: str, pattern: str, mode: str) -> bool:
-    """Whether value passes pattern under mode.
+def stage_variable_names(stage) -> list:
+    """Every expression variable in effect on the stage, the studio's included.
 
-    Glob is the default because it is what a shot or asset name is usually tested with --
-    `sh01*`, `*_hero`, `bg_??` -- and because it is the same vocabulary the prim-path
-    fields already use, so one syntax covers both. Regex is there for the cases glob cannot
-    reach (alternation, anchoring), and a bad pattern reports itself rather than silently
-    never matching, which is indistinguishable from a variable being wrong.
+    Read off the composed stage rather than from the Stage Expression chunks, so a variable
+    authored in the file the user opened is offered exactly like one declared here.
+    """
+    return sorted(chunk_utils.stage_expression_variables(stage))
+
+
+def matches(value: str, patterns: str) -> bool:
+    """Whether value matches any of the space-separated glob patterns.
 
     fnmatchcase, not fnmatch: fnmatch folds case on Windows and not on Linux, so the same
-    file would gate differently depending on which machine cooked it.
+    scene would gate differently depending on which machine cooked it. No patterns never
+    matches, so a half-built filter keeps its branch out rather than letting it in.
     """
-    if mode == EQUALS:
-        return value == pattern
-    if mode == REGEX:
-        try:
-            return re.search(pattern, value) is not None
-        except re.error as exc:
-            logger.warning("%r is not a valid regex: %s", pattern, exc)
-            return False
-    return fnmatch.fnmatchcase(value, pattern)
+    return any(fnmatch.fnmatchcase(value, p) for p in (patterns or "").split() if p)
 
 
 def _record(node, chunks) -> None:
@@ -95,14 +102,18 @@ def execute(node):
     stage = node.get_stage()
     inputs = chunk_stage.exec_dependencies(node)
 
-    # The value read is a param, so it has already been through the whole resolution chain:
-    # a ${SHOT} reference, a `${SHOT}` expression, a @Node.param@ wire, or a literal typed
-    # in. Reading it here rather than looking the variable up directly is what lets the
-    # filter test something that is not a stage variable at all.
-    value = str(node.get_param("value").value or "")
-    pattern = str(node.get_param("pattern").value or "")
-    mode = node.get_param("mode").value or GLOB
-    passed = bool(pattern) and _matches(value, pattern, mode)
+    _sync_variable_choices(node)
+    name = node.get_param(VARIABLE_PARAM).value or ""
+    variables = chunk_utils.stage_expression_variables(stage)
+    # str() so a variable of any type the expression syntax allows can be gated on: an int
+    # IDENTIFIER against "32*" reads the way anyone typing that pattern expects, and a
+    # string[] renderPassList matches on its elements rather than on Python's repr.
+    if isinstance(variables.get(name), (list, tuple)):
+        value = " ".join(str(v) for v in variables[name])
+        passed = any(matches(str(v), node.get_param(PATTERN_PARAM).value) for v in variables[name])
+    else:
+        value = str(variables.get(name, ""))
+        passed = name in variables and matches(value, node.get_param(PATTERN_PARAM).value)
 
     # Slot 1 is the gated branch. With nothing wired there this is a passthrough, which is
     # the right behaviour for a filter still being built rather than an error to report.
@@ -158,34 +169,57 @@ def execute(node):
     _record(node, muted)
     verdict = "passes" if passed else "blocked"
     logger.debug(
-        "%r %s %r -> %s%s", value, mode.lower(), pattern, verdict,
+        "%s=%r ~ %r -> %s%s", name, value, node.get_param(PATTERN_PARAM).value, verdict,
         f", muted {len(muted)} chunk(s)" if muted else "",
     )
+
+
+def _sync_variable_choices(node) -> None:
+    """Offer exactly the variables the stage declares, keeping the current choice.
+
+    The menu is rebuilt on every cook rather than once at creation: a Stage Expression
+    upstream is usually edited after the filter exists, and a dropdown that only ever
+    listed what was declared the moment this node was made would be permanently empty.
+    A name that has since gone is kept in the list while it is the current selection, so
+    the field shows what it is still gating on instead of silently moving to another
+    variable.
+    """
+    param = node.get_param(VARIABLE_PARAM)
+    if param is None:
+        return
+    names = stage_variable_names(node.get_stage())
+    current = param.value
+    if current and current not in names and current != NO_VARIABLES:
+        names.append(current)
+    items = names or [NO_VARIABLES]
+    if list(param.menu_items) != items:
+        param.menu_items = items
+
+
+def _chunk_loaded(owner, _notice, _sender):
+    _sync_variable_choices(owner)
 
 
 def main():
     chunk_api = chunk.Chunk("StageExpressionFilter")
     chunk_api.add_params([
-        chunk.LineEdit(
-            "value", "Value",
-            flags=ChunkFlags.ParamFlags.LABELED,
-            tooltip="What to test. Usually a reference to a stage variable -- type it the "
-                    "way you would in any other field -- but any resolved value works, "
-                    "including one arriving through a wire.",
-        ),
-        chunk.LineEdit(
-            "pattern", "Pattern",
-            flags=ChunkFlags.ParamFlags.LABELED,
-            tooltip="The pattern Value must match for the gated branch to contribute. An "
-                    "empty pattern never matches, so the branch stays out until this is "
-                    "filled in.",
-        ),
         chunk.Menu(
-            "mode", "Match",
-            default_value=GLOB, menu_items=list(_MODES),
+            VARIABLE_PARAM, "Variable",
+            menu_items=[NO_VARIABLES],
+            # The list is rebuilt from the stage, so a saved choice must survive being
+            # restored before that has happened.
+            dynamic_items=True,
             flags=ChunkFlags.ParamFlags.LABELED,
-            tooltip="Glob (* ? [seq], case-sensitive on every platform), a regular "
-                    "expression searched anywhere in the value, or an exact comparison.",
+            tooltip="Which stage expression variable to test, from those declared on the "
+                    "stage -- by a Stage Expression chunk upstream or by the file that was "
+                    "opened.",
+        ),
+        chunk.LineEdit(
+            PATTERN_PARAM, "Pattern",
+            flags=ChunkFlags.ParamFlags.LABELED,
+            tooltip="Glob patterns the variable must match for the gated branch to "
+                    "contribute, space-separated: `sh01* sh02*` matches either. Empty "
+                    "never matches, so the branch stays out until this is filled in.",
         ),
     ])
     muted = chunk.TextEdit(
@@ -195,6 +229,7 @@ def main():
     )
     muted.set_state(ChunkFlags.State.HIDDEN)
     chunk_api.add_param(muted)
+    chunk_api.add_callback(_chunk_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
     return chunk_api
 
 
@@ -205,11 +240,13 @@ def config():
         # gated. Positional, so they get a port each rather than stacking on one.
         exec_inputs=2,
         description="Gates a branch on what the stage says. The top input is forwarded "
-        "whatever happens; the bottom one contributes only when Value matches Pattern, and "
-        "is muted -- the whole branch, not just the chunk in the slot -- when it does not.\n"
-        "Value is usually a stage variable reference, so one network can carry work that "
-        "only happens on some shots or some asset variants, and cooking it against a "
-        "different Stage Expression produces a different scene with nothing rewired.\n"
+        "whatever happens; the bottom one contributes only when the chosen variable matches "
+        "one of the patterns, and is muted -- the whole branch, not just the chunk in the "
+        "slot -- when it does not.\n"
+        "Variable lists what the stage declares, so one network can carry work that only "
+        "happens on some shots or some asset variants, and cooking it against a different "
+        "Stage Expression produces a different scene with nothing rewired.\n"
+        "Patterns are globs, space-separated: `sh01* sh02*` matches either.\n"
         "A chunk feeding both inputs stays live: the forwarded stream wins.\n"
         "Muting is stage-wide, so a gated branch that also feeds something outside this "
         "filter is suppressed for that consumer too.",

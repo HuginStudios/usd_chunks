@@ -314,15 +314,14 @@ def read_expression_text(attr: Usd.Attribute) -> "str | None":
 
 
 def is_expression_text(value) -> bool:
-    """True if value is text that must be preserved verbatim rather than stored as a
-    typed value -- either a @Node.param@ wire or a ${VAR} stage expression.
+    """True if value is a @Node.param@ wire, whose text must be preserved verbatim rather
+    than stored as the typed value it resolves to.
 
-    The question this answers is about *storage*, not about wiring: it is what decides
-    whether a param's USD attr takes its type from the raw string (no) or from the param's
-    default (yes). Sites that need to know specifically whether a param wire is involved --
-    the ones authoring connections -- ask has_expression instead, and must keep doing so.
+    A ${VAR} does not need this and no longer counts: it only ever sits in an asset path,
+    which is a string param, so its text IS its stored value -- and usd_chunks never
+    resolves it in the first place. USD does, during composition.
     """
-    return isinstance(value, str) and (has_expression(value) or has_stage_expression(value))
+    return isinstance(value, str) and has_expression(value)
 
 
 def clear_expression_text(attr: Usd.Attribute) -> None:
@@ -449,46 +448,6 @@ def set_stage_expression_variables(stage: Usd.Stage, variables: dict) -> None:
         session.expressionVariables = dict(variables)
     elif session.HasExpressionVariables():
         session.ClearExpressionVariables()
-
-
-def define_ancestors(layer: Sdf.Layer) -> int:
-    """Make every ancestor of a prim this layer defines a `def` in this layer too.
-
-    UsdStage.DefinePrim writes `def` only for ancestors not yet defined anywhere, so the
-    first chunk to cook owns `def "World"` and every later one holds a mere `over`. Mute the
-    first -- a Stage Expression Filter or Switch gating it off -- and /World is defined by
-    nobody: the camera and every light under it silently leave the scene. A chunk's layer
-    has to stand on its own. Only ancestors of a `def` are touched, so an `over` that just
-    overrides someone else's prim stays one.
-
-    Returns:
-        int: how many specs were changed
-    """
-    changed = []
-
-    def walk(spec, overs):
-        if spec.specifier == Sdf.SpecifierDef:
-            changed.extend(overs)
-            overs = []
-        elif spec.specifier == Sdf.SpecifierOver:
-            overs = overs + [spec]
-        else:
-            overs = []  # a class is its own root; nothing above it is being defined
-        for child in spec.nameChildren:
-            walk(child, overs)
-        for vset in spec.variantSets:
-            for variant in vset.variants:
-                for child in variant.primSpec.nameChildren:
-                    walk(child, overs)
-
-    for root in layer.rootPrims:
-        walk(root, [])
-    todo = {s.path: s for s in changed if s.specifier == Sdf.SpecifierOver}
-    if todo:
-        with Sdf.ChangeBlock():
-            for spec in todo.values():
-                spec.specifier = Sdf.SpecifierDef
-    return len(todo)
 
 
 def get_unique_path(stage, prim_path):

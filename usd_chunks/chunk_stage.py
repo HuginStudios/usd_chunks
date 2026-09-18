@@ -252,26 +252,6 @@ def sdf_type_for_param(param) -> "Sdf.ValueTypeName | None":
     return sdf_type
 
 
-def _author_stage_expression(attr: "Usd.Attribute", raw: str, param) -> None:
-    """Store a ${VAR} stage expression on attr, keeping both the text and a usable value.
-
-    store_expression_text already splits by attr type: a String attr holds the text as its
-    own value (so the field reloads showing ${SHOT}, which is what the user typed), and
-    every other type keeps it in customData. Only the latter needs the resolved value
-    written alongside -- a Float attr reading back as the literal "${COUNT}" is not a
-    number to anything downstream, and param.value is where the substitution has already
-    happened.
-
-    Unlike a @Node.param@ wire there are no connections to author: a stage variable is a
-    value on the stage, not another param, so there is nothing on the graph to point at.
-    """
-    chunk_utils.store_expression_text(attr, raw)
-    if attr.GetTypeName() != Sdf.ValueTypeNames.String:
-        resolved = getattr(param, "value", None)
-        if resolved is not None and not isinstance(resolved, str):
-            attr.Set(resolved)
-
-
 def _push_driven_values(stage: "Usd.Stage", param, layer: "Sdf.Layer | None" = None) -> None:
     """Write param's resolved value onto every real prim attr it drives.
 
@@ -308,30 +288,6 @@ def push_chunk_values(stage: "Usd.Stage", chunk: "core.ChunkBase") -> None:
         _push_driven_values(stage, param)
     for _, vector in _iter_chunk_vectors(chunk):
         _push_driven_values(stage, vector)
-
-
-def refresh_stage_expression_params(stage: "Usd.Stage", scene: "core.SceneSender") -> int:
-    """Re-announce every ${VAR}-holding param, so what it resolves to now takes effect.
-
-    A param resolves its stage expression on read, but nothing fires when a variable
-    changes -- the param's own text did not change. So the USD attrs it drives (a Light's
-    inputs:intensity) keep the value of the shot they were authored in, and every widget
-    showing one keeps displaying it. Re-announcing the value is what both of those listen
-    to. Called by whatever changes the variables.
-
-    Returns:
-        int: how many params were refreshed
-    """
-    if stage is None or scene is None:
-        return 0
-    refreshed = 0
-    for chunk in scene.get_chunks():
-        for _, param in _iter_chunk_params(chunk):
-            if not chunk_utils.has_stage_expression(getattr(param, "raw_value", None)):
-                continue
-            param.refresh_expression_value()
-            refreshed += 1
-    return refreshed
 
 
 class ChunkStageSync(metaclass=RegistrySingleton):
@@ -1433,9 +1389,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if raw is None:
             return
         is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-        # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
-        is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
-        type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
+        type_source = getattr(param, 'default_value', None) if is_expr else raw
         sdf_type = _SDF_TYPE_MAP.get(type(type_source))
         # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
         # type — there is no tuple entry, so without this a colour param resolves to no
@@ -1452,7 +1406,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # means the param is gone on reload -- not merely reset. Author it.
         cfg = chunk.get_config()
         module_less = not (cfg and cfg.module)
-        if not force and not module_less and not is_expr and not is_stage_expr and raw == default:
+        if not force and not module_less and not is_expr and raw == default:
             return  # still at default — don't create attr
 
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
@@ -1487,8 +1441,6 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
-                elif is_stage_expr:
-                    _author_stage_expression(attr, raw, param)
                 else:
                     attr.Set(raw)
         param._connect_param_attr(attr)
@@ -1527,9 +1479,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if raw is None:
                 continue
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
-            is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
-            type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
+            type_source = getattr(param, 'default_value', None) if is_expr else raw
             sdf_type = _SDF_TYPE_MAP.get(type(type_source))
             if sdf_type is None:
                 continue
@@ -1551,7 +1501,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 attr = saved
             else:
                 backing_path = getattr(param, '_param_attr_path', None)
-                if not is_expr and not is_stage_expr:
+                if not is_expr:
                     if backing_path:
                         # param_from_attr: only store if the real USD attr has been authored
                         backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
@@ -1572,8 +1522,6 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     if is_expr:
                         attr.SetConnections(self._expr_connections(prim, raw))
                         chunk_utils.store_expression_text(attr, raw)
-                    elif is_stage_expr:
-                        _author_stage_expression(attr, raw, param)
                     else:
                         attr.Set(raw)
 
@@ -1847,12 +1795,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if not attr.Get():
                     attr.Set(module_name or fallback)
 
-            pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
-            pinned_attr.SetVariability(Sdf.VariabilityUniform)
-            if not pinned_attr.HasAuthoredValue():
-                # Views are never auto-pinned, regardless of which surface/flow created them —
-                # see is_chunk_pinned's matching unconditional view special case.
-                pinned_attr.Set(False if is_view_chunk(chunk) else bool(_pin_new_chunks))
+            # Only a pinned chunk writes anything: unpinned is the default (see
+            # is_chunk_pinned), and authoring it on every prim put a chunk:pinned = 0 line
+            # in every chunk of every saved file for no information at all.
+            # Views are never auto-pinned, regardless of which surface/flow created them —
+            # see is_chunk_pinned's matching unconditional view special case.
+            if bool(_pin_new_chunks) and not is_view_chunk(chunk):
+                pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
+                pinned_attr.SetVariability(Sdf.VariabilityUniform)
+                if not pinned_attr.HasAuthoredValue():
+                    pinned_attr.Set(True)
 
             config = chunk.get_config()
             if not (config and config.terminal):
@@ -1901,14 +1853,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if raw is None:
                     continue
                 is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-                # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
-                is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
-                type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
+                type_source = getattr(param, 'default_value', None) if is_expr else raw
                 sdf_type = _SDF_TYPE_MAP.get(type(type_source))
                 if sdf_type is None:
                     continue
                 backing_path = getattr(param, '_param_attr_path', None)
-                if not is_expr and not is_stage_expr:
+                if not is_expr:
                     if backing_path:
                         backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
                         if not (backing and backing.HasAuthoredValue()):
@@ -1923,8 +1873,6 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
-                elif is_stage_expr:
-                    _author_stage_expression(attr, raw, param)
                 elif not attr.Get():
                     attr.Set(raw)
 
@@ -2215,11 +2163,11 @@ def is_chunk_pinned(chunk: "core.ChunkBase") -> bool:
        ChunkStageSync both react to the same PARAM_ADDED notice for a newly-created chunk, and
        delivery order between two independent listeners on one notice isn't guaranteed — the
        widget's listener can run (and call this) before ChunkStageSync's has even started
-       _define_prim, let alone authored the attribute. Falling back to the migration default
-       in that window would show a freshly Graph-created chunk in Params for a moment, and
-       permanently, since nothing re-checks after _define_prim's write lands right after.
-    3. Migration default: pinned=true, so a genuinely legacy chunk (no creation flow involved
-       at all — e.g. a scene saved before this feature shipped) doesn't lose Params visibility.
+       _define_prim, let alone authored the attribute.
+    3. Absent means unpinned. Pinning is the exception a user asks for, so it is the only
+       state worth a line in the file — the alternative wrote chunk:pinned = 0 onto every
+       chunk prim in every scene to say nothing at all. A scene saved before pinning existed
+       therefore opens with an unfiltered Params page rather than everything pinned.
     """
     stage = chunk.get_stage()
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))) if stage else None
@@ -2231,7 +2179,7 @@ def is_chunk_pinned(chunk: "core.ChunkBase") -> bool:
         return False
     if _pin_new_chunks is not None:
         return _pin_new_chunks
-    return True
+    return False
 
 
 def set_chunk_pinned(chunk: "core.ChunkBase", pinned: bool) -> None:
@@ -2256,10 +2204,19 @@ def set_chunk_pinned(chunk: "core.ChunkBase", pinned: bool) -> None:
     chunk_notice._usd_write_active = True
     try:
         attr = prim.GetAttribute("chunk:pinned")
+        if not pinned:
+            # Unpinned is the default, so unpinning removes the opinion rather than writing
+            # a false one -- wherever it was authored, since a stale stronger opinion in
+            # another layer would otherwise shadow its absence here.
+            for layer in stage.GetLayerStack(includeSessionLayers=True):
+                spec = layer.GetPrimAtPath(prim.GetPath())
+                if spec and "chunk:pinned" in spec.properties:
+                    del spec.properties["chunk:pinned"]
+            return
         home = chunk_utils.get_attr_home_layer(attr) if attr and attr.IsValid() else None
         target = home or chunk_utils.get_bookkeeping_layer(stage, chunk)
         with Usd.EditContext(stage, target):
-            prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(pinned))
+            prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
     finally:
         chunk_notice._usd_write_active = prev_w
 

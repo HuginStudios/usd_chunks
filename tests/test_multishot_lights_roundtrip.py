@@ -4,16 +4,14 @@
                           Sun ------------+             |
                           Lamp ---------------------------+
 
-The Hood's intensity is a USD variable expression on the shot, the Sun is gated on *_day
-and the Lamp on *_night. Each assertion reads the composed light prims, not chunk state.
+The Hood is in every shot, the Sun is gated on *_day and the Lamp on *_night. Each
+assertion reads the composed light prims, not chunk state.
 
-What used to go wrong, in order: the filters' ${SHOT} was saved already resolved; the
-Stage Expression declared nothing on the reopening cook, so both gates shut; a light
-gated off at load came back at its schema default when its gate opened (USD will not
-author into a muted layer); the Hood's expression came back as a plain number; and a
-variable changed after reopening was saved without its value. And a shared parent prim
-(/lights) was defined only by whichever light cooked first, so gating that one off took
-every light with it.
+What used to go wrong, in order: the Stage Expression declared nothing on the reopening
+cook, so both gates shut; a light gated off at load came back at its schema default when
+its gate opened (USD will not author into a muted layer); a variable changed after
+reopening was saved without its value; and a shared parent prim (/lights) was defined only
+by whichever light cooked first, so gating that one off took every light with it.
 """
 
 from __future__ import annotations
@@ -27,7 +25,6 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_stage import initialize as chunk_stage_initialize, save_scene
 
-NIGHT_60_DAY_20 = '`if(contains(${SHOT}, "night"), 60, 20)`'
 
 
 class _Staged(SceneSender):
@@ -76,11 +73,13 @@ def _intensity(stage, path):
 
 def _set_shot(scene, shot):
     shot_ctx = next(c for c in scene.get_chunks() if c.name == "ShotContext")
-    shot_ctx.get_param("SHOT").value = shot
+    rows = shot_ctx.get_param("variables")
+    rows.get_indexed_param("var_value", 0).value = shot
+    shot_ctx.execute()
 
 
 def _assert_shot(stage, night):
-    assert _intensity(stage, "/lights/hood") == pytest.approx(60.0 if night else 20.0)
+    assert _intensity(stage, "/lights/hood") == pytest.approx(25.0), "the shared light is in every shot"
     assert _intensity(stage, "/lights/sun") == (None if night else pytest.approx(3.0))
     assert _intensity(stage, "/lights/lamp") == (pytest.approx(30.0) if night else None)
 
@@ -91,16 +90,20 @@ def _build(tmp_path) -> pathlib.Path:
     scene = _scene_for(stage)
 
     shot_ctx = _add(scene, "stage_expression", "ShotContext")
-    shot_ctx.get_param("variables").value = "SHOT = sh010_day"
+    rows = shot_ctx.get_param("variables")
+    rows.size = 1
+    rows.get_indexed_param("var_name", 0).value = "SHOT"
+    rows.get_indexed_param("var_type", 0).value = "string"
+    rows.get_indexed_param("var_value", 0).value = "sh010_day"
     # The Sun first, so its layer is the one that defines /lights: gated off at night, it
     # must not take the shared parent -- and every light under it -- along.
     sun = _light(scene, "Sun", "/lights/sun", intensity=3.0)
-    hood = _light(scene, "Hood", "/lights/hood", intensity=NIGHT_60_DAY_20)
+    hood = _light(scene, "Hood", "/lights/hood", intensity=25.0)
     lamp = _light(scene, "Lamp", "/lights/lamp", intensity=30.0)
     day = _add(scene, "stage_expression_filter", "DayOnly")
     night = _add(scene, "stage_expression_filter", "NightOnly")
     for f, pattern in ((day, "*_day"), (night, "*_night")):
-        f.get_param("value").value = "${SHOT}"
+        f.get_param("variable").value = "SHOT"
         f.get_param("pattern").value = pattern
     hood.add_dependency(shot_ctx)
     day.add_dependency(hood)

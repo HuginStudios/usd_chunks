@@ -1734,15 +1734,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                         # which may have moved on since it was first authored.
                         home = chunk_utils.get_attr_home_layer(usd_attr) or stage.GetSessionLayer()
                         with Usd.EditContext(stage, home):
-                            if not is_expr and chunk_utils.has_stage_expression(raw):
-                                # A ${VAR} is saved as its text, never as today's value --
-                                # see chunk_stage._author_stage_expression.
-                                is_string = usd_attr.GetTypeName() == Sdf.ValueTypeNames.String
-                                if not is_string and not isinstance(val, str) and usd_attr.Get(0) != val:
-                                    usd_attr.Set(val)
-                                if not is_string or usd_attr.Get(0) != raw:
-                                    chunk_utils.store_expression_text(usd_attr, raw)
-                            elif not is_expr:
+                            if not is_expr:
                                 current = usd_attr.Get(0)
                                 # Don't write a string to a typed (non-String) attr — an unresolved
                                 # forwarded value can arrive as text and raise a type-mismatch.
@@ -1821,19 +1813,16 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if isinstance(notice.data, Usd.Attribute) and not isinstance(self, ChunkVectorBase):
             raw = getattr(self, 'raw_value', None)
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            # A ${VAR} is text to keep too: stored resolved, a saved "${SHOT}" came back
-            # as whatever shot was current and stopped following the variable.
-            is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
             # Only String-typed attrs can hold the raw expression text as their value
             # (needed so _patch_expressions can rewrite it on rename); other types (Float,
             # Float3, etc.) store the resolved value and keep the text in customData
             # instead (chunk_utils.store_expression_text) — rebuilding it from
             # SetConnections cannot work, since the connections name only the refs and
             # drop every operator between them.
-            if (is_expr or is_stage_expr) and notice.data.GetTypeName() != Sdf.ValueTypeNames.String:
+            if is_expr and notice.data.GetTypeName() != Sdf.ValueTypeNames.String:
                 store_val = sender.value
             else:
-                store_val = raw if (is_expr or is_stage_expr) else sender.value
+                store_val = raw if is_expr else sender.value
             prev_write = chunk_notice._usd_write_active
             chunk_notice._usd_write_active = True
             try:
@@ -1864,8 +1853,6 @@ class ChunkUsdAttributeSupport(AttributesBase):
                         ])
                         # The connections carry the refs; only this carries the operators
                         # and literals between them.
-                        chunk_utils.store_expression_text(notice.data, raw)
-                    elif is_stage_expr:
                         chunk_utils.store_expression_text(notice.data, raw)
                     else:
                         chunk_utils.clear_expression_text(notice.data)
@@ -2313,11 +2300,30 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             idx = self.add_dependency(other)
         self.set_function("value", lambda x, _: x.get_dependency(idx, is_inst(type(other))).value)
 
+    #: Param types whose value USD itself evaluates expression variables in: an asset path.
+    #: A variant selection is the other place USD substitutes, and chunks author those as
+    #: text from a chunk module rather than from a param (see scripts/usd/set_variant.py).
+    _STAGE_EXPRESSION_TYPES = ChunkFlags.ParamType.FILE
+
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         if attrname == "default_value" and hasattr(self, "value") and (self.value is None or self.value == old_value):
             self.value = value
 
         if attrname == "value":
+            if isinstance(value, str) and chunk_utils.has_stage_expression(value):
+                # `in`, not `&`: ParamType packs a widget variant beside its value type, so
+                # FILE and LINEEDIT share the STRING bit and a mask test is true for both.
+                if self._STAGE_EXPRESSION_TYPES not in self.evaluate_type():
+                    # Not an error and not rewritten -- the text is kept exactly as typed --
+                    # but it will never resolve, and silently reading back as the literal
+                    # "${SHOT}" is worse than saying so. USD substitutes expression variables
+                    # into asset paths and variant selections only; a Stage Expression Filter
+                    # is how a chunk graph acts on one anywhere else.
+                    logger.warning(
+                        "%s: expression variables only resolve in asset paths, so %r stays "
+                        "literal here. Gate on it with a Stage Expression Filter instead.",
+                        self.name, value,
+                    )
             self._expression_connections = []
             if isinstance(value, str) and chunk_utils.has_expression(value):
                 for node_name, param_name in chunk_utils.parse_expression(value):
@@ -2386,35 +2392,13 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             raw = self.__dict__["value"]
             if isinstance(raw, str) and chunk_utils.has_expression(raw):
                 raw = self._resolve_expression_string(raw)
-            # Second, and in this order: a param wire can deliver a string that itself
-            # carries a ${VAR}, so the @refs@ have to be substituted before the stage
-            # variables are. The reverse order would leave a variable arriving through a
-            # wire unexpanded.
-            if isinstance(raw, str) and chunk_utils.has_stage_expression(raw):
-                return self._resolve_stage_expression(raw)
+            # A ${VAR} is deliberately NOT substituted here. USD evaluates expression
+            # variables in asset paths and variant selections and nowhere else, so a param
+            # carrying one hands the text through untouched and lets composition do it --
+            # the one thing usd_chunks must not do is make them work in places OpenUSD says
+            # they do not. See ChunkParamBase.value_changed for the warning on misuse.
             return raw
         return super().__getattribute__(name)
-
-    def _resolve_stage_expression(self, expr: str) -> Any:
-        """Substitute the stage's expression variables into expr.
-
-        Separate from the @Node.param@ machinery above and deliberately much simpler: a
-        stage variable is a value on the stage, not a param, so there is no ref to resolve,
-        no NoticeConnection to install and no cycle to guard against. The dict is read on
-        every access rather than cached, which is what makes changing a variable take
-        effect everywhere at once without anything having to be invalidated.
-
-        A numeric param gets the same arithmetic treatment an expression does: USD hands
-        back a typed value for a fully-delimited expression, but the loose ${VAR} form
-        substitutes text, and "${COUNT}" on a Slider has to read back as a number or every
-        consumer downstream -- the USD attr write included -- gets a str.
-        """
-        resolved = chunk_utils.resolve_stage_expression(expr, self.get_stage())
-        if isinstance(resolved, str) and self._expression_is_numeric():
-            if (number := chunk_utils.eval_arithmetic(resolved)) is not None:
-                types = ChunkFlags.ParamTypeToTypes(self.evaluate_type())
-                return int(number) if types and types[0] is int else float(number)
-        return resolved
 
     def _resolve_expression_string(self, expr: str) -> Any:
         if self._resolving_expr:

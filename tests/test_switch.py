@@ -301,7 +301,9 @@ def test_the_selected_branch_keeps_an_upstream_filters_gate_shut(scene):
         name = chunk_stage.exec_input_name(i)
         attr = prim.GetAttribute(name) or prim.CreateAttribute(name, Sdf.ValueTypeNames.Token, custom=False)
         attr.SetConnections([Sdf.Path(f"{chunk_stage.get_chunk_prim_path(src)}.{chunk_stage._EXEC_OUTPUT}")])
-    f.get_param("value").value = "sh020"
+    from usd_chunks import chunk_utils
+    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh020"})
+    f.get_param(filter_mod.VARIABLE_PARAM).value = "SHOT"
     f.get_param("pattern").value = "sh01*"
     f.execute()
     assert gated.is_blocked()

@@ -1,12 +1,9 @@
-"""A param driven by an expression says so, and follows what it reads.
+"""A param whose value comes from somewhere else says so.
 
-A field holding `@Node.param@` or `${SHOT}` shows the resolved value, because that is what
-the value IS -- so on screen it is indistinguishable from a number somebody typed in, and
-the text behind it is nowhere. Its label is marked instead.
-
-The second half is the one that bit in the kitchen scene: changing a Stage Expression
-variable changes no param text, so nothing fired, and a slider kept showing the value from
-the shot it was authored in while the viewport had already moved on.
+A field holding `@Node.param@` shows the resolved value, because that is what the value IS
+-- so on screen it is indistinguishable from a number somebody typed in, and the text
+behind it is nowhere. An asset path holding `${SHOT}` is the same story with USD doing the
+resolving. Either way the row's label is marked and carries the text as its tooltip.
 """
 
 from __future__ import annotations
@@ -70,30 +67,32 @@ def test_a_plain_value_is_not_marked(qapp) -> None:
     assert label.toolTip() == ""
 
 
-def test_a_stage_expression_marks_its_label_and_shows_the_text(qapp) -> None:
-    stage, scene = _scene()
-    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010_day"})
-    c, slider = _chunk_with_slider(scene, "${SHOT}")
+def test_a_param_wire_marks_its_label_and_shows_the_text(qapp) -> None:
+    _, scene = _scene()
+    src, src_param = _chunk_with_slider(scene, 12.5)
+    src.name = "src"
+    src_param.name = "intensity"
+    dst, slider = _chunk_with_slider(scene, "@src.intensity@")
 
-    label = _label_for(ChunkWidget(c), slider)
+    label = _label_for(ChunkWidget(dst), slider)
 
     assert label.property("chunkExpression"), "the label must say the value is driven"
-    assert label.toolTip() == "${SHOT}", "and hovering it must show the text behind the value"
+    assert label.toolTip() == "@src.intensity@"
 
 
-def test_the_widget_follows_a_variable_change(qapp) -> None:
-    """Nothing fires on its own: the param's own text does not change when SHOT does."""
+def test_an_asset_path_expression_marks_its_label(qapp) -> None:
+    """USD resolves ${ASSET} in an asset path during composition, so the field shows one
+    thing and holds another -- the one place a stage expression legitimately lives."""
     stage, scene = _scene()
-    chunk_utils.set_stage_expression_variables(stage, {"LEVEL": "20"})
-    c, slider = _chunk_with_slider(scene, "${LEVEL}")
-    widget = ChunkWidget(c)
-    qapp.processEvents()
-    param_widget = _label_for(widget, slider).parent().widget
-    assert param_widget.get_value() == 20.0
+    chunk_utils.set_stage_expression_variables(stage, {"ASSET": "hero"})
+    c = chunk.Chunk("Reference")
+    path = chunk.FileBrowser("file_path", "File", default_value="",
+                             flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    c.add_param(path)
+    scene.add_chunk(c)
+    path.value = '`"./${ASSET}.usda"`'
 
-    chunk_utils.set_stage_expression_variables(stage, {"LEVEL": "40"})
-    chunk_stage.refresh_stage_expression_params(stage, scene)
-    qapp.processEvents()
+    label = _label_for(ChunkWidget(c), path)
 
-    assert slider.value == 40.0
-    assert param_widget.get_value() == 40.0, "the slider still showed the old value"
+    assert label.property("chunkExpression")
+    assert label.toolTip() == '`"./${ASSET}.usda"`'
