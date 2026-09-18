@@ -21,8 +21,9 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
+import weakref
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdSkel, Vt
+from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdSkel, Vt
 
 from usd_chunks import chunk, chunk_gizmo, chunk_notice, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
@@ -74,9 +75,10 @@ def _rig(node) -> _Rig | None:
 
     Kept because this is called from the gizmo_offset hook, which the framework calls
     once per handle on every param change -- so a slider drag with N handles would
-    otherwise populate a fresh UsdSkel cache N+1 times a tick. _sync_joints drops the
-    cache whenever the target changes; a rig edited underneath (a variant switch that
-    changes the joint list) needs the joints re-named, which does the same.
+    otherwise populate a fresh UsdSkel cache N+1 times a tick. Dropped when the target
+    changes (_sync_joints) and when the stage changes under the character (_watch), so
+    a variant switch, a new animation source or an edited rest pose is read on the next
+    call rather than posed against a rig that is no longer there.
     """
     stage = node.get_stage()
     param = node.get_param("primpath_location")
@@ -87,8 +89,54 @@ def _rig(node) -> _Rig | None:
     if cached is not None and cached[0] == (id(stage), path):
         return cached[1]
     rig = _read_rig(stage, path)
-    node._rig_cache = ((id(stage), path), rig)
+    if rig is not None:
+        node._rig_cache = ((id(stage), path), rig)
+        _watch(node, stage)
     return rig
+
+
+def _watch(node, stage) -> None:
+    """Drop the rig cache when the stage changes under the character.
+
+    Ignores what the chunk's own cook does to the stage: it clears and re-authors its
+    `over` on the animation prim, which the stage reports as a resync of `<anim>.rotations`
+    and info-only changes on the root and animation *prim* paths. Anything else at or
+    beneath the root -- a variant selection (a resync of the root), a rebound animation
+    source, edited rest transforms, a Skeleton transform, a changed joint list -- is a
+    property or a resync elsewhere, and means the rig has to be read again.
+
+    The listener holds the node weakly: a Tf listener that owned its chunk would keep a
+    deleted chunk alive, and posing, for as long as the stage lived. The node in turn
+    holds the callback strongly, because Tf.Notice.Register does not -- a closure kept
+    nowhere else expires the moment this function returns, and Tf then warns about an
+    expired callback instead of calling it.
+    """
+    if getattr(node, "_rig_watch_stage", None) is stage:
+        return
+    ref = weakref.ref(node)
+
+    def changed(notice, _sender):
+        owner = ref()
+        cached = getattr(owner, "_rig_cache", None) if owner is not None else None
+        if cached is None:
+            return
+        rig = cached[1]
+        root = rig.root_prim.GetPath()
+        anim = rig.anim_prim.GetPath()
+        own_prims = (root, anim)
+        own_property = anim.AppendProperty("rotations")
+        for path in notice.GetResyncedPaths():
+            if path != own_property and (path.HasPrefix(root) or root.HasPrefix(path)):
+                owner._rig_cache = None
+                return
+        for path in notice.GetChangedInfoOnlyPaths():
+            if path not in own_prims and path != own_property and path.HasPrefix(root):
+                owner._rig_cache = None
+                return
+
+    node._rig_watch_callback = changed
+    node._rig_watch = Tf.Notice.Register(Usd.Notice.ObjectsChanged, changed, stage)
+    node._rig_watch_stage = stage
 
 
 def _read_rig(stage, path) -> _Rig | None:

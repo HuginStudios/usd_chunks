@@ -203,6 +203,33 @@ class TestPose:
         assert module._rig(node) is not first, "re-targeting drops the cache"
         assert _vectors(node) == ["arm"], "and anything under the root finds the same rig"
 
+    def test_the_cache_survives_the_chunks_own_cook_but_not_a_rig_edit(self, posed):
+        stage, node, module = posed
+        node.get_param("arm").value = (0.0, 0.0, 30.0)
+        node.execute()
+        rig = module._rig(node)
+        node.get_param("arm").value = (0.0, 0.0, 60.0)
+        node.execute()
+        assert module._rig(node) is rig, "the cook's own writes must not evict the rig"
+
+        # Rebind the character to an animation with a different joint order: the arm is
+        # now element 0, and a stale rig would keep writing element 1.
+        anim2 = UsdSkel.Animation.Define(stage, "/Char/Anim2")
+        anim2.GetJointsAttr().Set(["hips/arm", "hips", "hips/arm/hand"])
+        anim2.GetRotationsAttr().Set(Vt.QuatfArray([Gf.Quatf(1, 0, 0, 0)] * 3))
+        UsdSkel.BindingAPI(stage.GetPrimAtPath("/Char")).GetAnimationSourceRel().SetTargets([anim2.GetPath()])
+        assert module._rig(node) is not rig
+        node.execute()
+        assert "to [0]]" in node.get_edit_context().ExportToString()
+        assert node.get_edit_context().GetPrimAtPath("/Char/Anim2") is not None
+
+        # And a variant switch on the root, which arrives as a resync of the root itself.
+        rig = module._rig(node)
+        vset = stage.GetPrimAtPath("/Char").GetVariantSets().AddVariantSet("look")
+        vset.AddVariant("a")
+        vset.SetVariantSelection("a")
+        assert module._rig(node) is not rig
+
 
 class TestReload:
     def test_pose_survives_a_save_and_reload(self, posed, tmp_path):
