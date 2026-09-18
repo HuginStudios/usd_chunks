@@ -10,15 +10,25 @@ from __future__ import annotations
 from pxr import Sdf
 
 
-def define_ancestors(layer: Sdf.Layer) -> int:
+def define_ancestors(layer: Sdf.Layer, defined_elsewhere=None) -> int:
     """Make every ancestor of a prim this layer defines a `def` in this layer too.
 
     UsdStage.DefinePrim writes `def` only for ancestors not yet defined anywhere, so the
     first chunk to cook owns `def "World"` and every later one holds a mere `over`. Mute the
-    first -- a Stage Expression Filter or Switch gating it off -- and /World is defined by
+    first -- a Switch or a Stage Expression Switch gating it off -- and /World is defined by
     nobody: the camera and every light under it silently leave the scene. A chunk's layer
     has to stand on its own. Only ancestors of a `def` are touched, so an `over` that just
     overrides someone else's prim stays one.
+
+    `defined_elsewhere(path)` is the caller's veto: return True for an ancestor that is
+    fine as it is and must keep the specifier USD gave it. The gate that needs this asks
+    the composed stage whether the ancestor is still defined at all, so a scope another
+    live chunk or a referenced asset defines is never claimed -- only the ones muting has
+    just orphaned. Without the callback everything is promoted.
+
+    Args:
+        layer (Sdf.Layer): The layer to fix up -- the chunk's own
+        defined_elsewhere (callable | None): path -> bool, True to leave it alone
 
     Returns:
         int: how many specs were changed
@@ -42,7 +52,11 @@ def define_ancestors(layer: Sdf.Layer) -> int:
 
     for root in layer.rootPrims:
         walk(root, [])
-    todo = {s.path: s for s in changed if s.specifier == Sdf.SpecifierOver}
+    todo = {
+        s.path: s for s in changed
+        if s.specifier == Sdf.SpecifierOver
+        and not (defined_elsewhere is not None and defined_elsewhere(s.path))
+    }
     if todo:
         with Sdf.ChangeBlock():
             for spec in todo.values():

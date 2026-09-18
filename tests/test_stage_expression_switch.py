@@ -352,3 +352,45 @@ def test_a_variable_that_is_gone_stays_selected(scene):
 
     assert sw.get_param(switch_mod.VARIABLE_PARAM).value == "SHOT"
     assert "SHOT" in sw.get_param(switch_mod.VARIABLE_PARAM).menu_items
+
+
+# ---------------------------------------------------------------------------
+# what muting does to a shared parent
+# ---------------------------------------------------------------------------
+
+def test_muting_a_branch_does_not_orphan_the_other_ones_prims(scene):
+    """Both branches author under one parent, and whichever chunk cooked first owns its
+    `def` -- UsdStage.DefinePrim gives every later one a bare `over`. Mute the first and
+    the parent is defined by nobody, so the *other* branch's prim is valid but not defined:
+    Hydra skips it, and a chunk nobody gated disappears. Live-reported as a night shot
+    rendering a flat grey frame, camera and all.
+
+    The gate repairs that when it mutes, because it is the only thing in the engine that
+    mutes after its branches have cooked -- view-driven cooking mutes first, so DefinePrim
+    already sees the final state there.
+    """
+    stage, sender = scene
+    prim_mod = importlib.import_module("prim")
+
+    def prim_chunk(name, path):
+        node = _mk(sender, prim_mod, name, "prim")
+        node.get_param("primpath_location").value = path
+        node.get_param("prim_type").value = "Xform"
+        node.execute()
+        return node
+
+    first = prim_chunk("First", "/shared/first")    # cooks first, so it owns `def /shared`
+    second = prim_chunk("Second", "/shared/second")  # gets a bare `over /shared`
+    _declare(stage, SHOT="sh030_night")
+
+    sw = _switch(sender, "*_night")
+    _wire(stage, sw, first, second)   # normal path, matched path
+    sw.execute()
+
+    def defined(path):
+        prim = stage.GetPrimAtPath(path)
+        return bool(prim) and prim.IsDefined()
+
+    assert defined("/shared/second"), "the live branch's prim must survive the mute"
+    assert defined("/shared"), "and so must the parent they share"
+    assert not defined("/shared/first"), "the muted branch is gone"
