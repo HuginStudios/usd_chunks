@@ -25,7 +25,7 @@ import logging
 import os
 import re
 
-from pxr import Sdf, Usd
+from pxr import Sdf, Usd, UsdSkel
 
 from usd_chunks import chunk, chunk_utils
 
@@ -80,12 +80,26 @@ def _default_name(path: str) -> str:
     return re.sub(r"\W+", "_", stem.rsplit(".", 1)[-1]) or "clips"
 
 
-def _clip_default_prim(path: str) -> str:
-    """The clip file's defaultPrim as a path, when it names one."""
+def _clip_default_prim(path: str, target: Usd.Prim) -> str:
+    """The prim in the clip that maps onto `target` when the row does not say.
+
+    For a SkelAnimation target, the clip's own SkelAnimation if it has exactly one: a DCC
+    names that prim after the action (`.../Sprite_Walk`, `.../Sprite_hand_fist`), so the
+    file's defaultPrim -- the character root -- is never the right answer there.
+    Otherwise the defaultPrim, when the file names one.
+    """
     if _is_template(path):
         return ""
     layer = Sdf.Layer.FindOrOpen(path)
-    if layer and layer.defaultPrim:
+    if not layer:
+        return ""
+    if target and target.IsA(UsdSkel.Animation):
+        found = []
+        layer.Traverse(Sdf.Path.absoluteRootPath,
+                       lambda p: found.append(p) if p.IsPrimPath() and layer.GetPrimAtPath(p).typeName == "SkelAnimation" else None)
+        if len(found) == 1:
+            return str(found[0])
+    if layer.defaultPrim:
         return "/" + layer.defaultPrim
     return ""
 
@@ -242,7 +256,7 @@ def execute(node):
             while name in names:
                 name += "_"
             path = _resolve_clip_path(stage, row["path"])
-            prim_path = row["prim_path"] or _clip_default_prim(path) or str(target_path)
+            prim_path = row["prim_path"] or _clip_default_prim(path, prim) or str(target_path)
             if _is_template(path):
                 span = _author_template_set(clips, name, path, prim_path,
                                             row["start"], row["end"], row["stride"])
@@ -357,8 +371,9 @@ def config():
           - Clip Sets (list, first row strongest):
               - Name: clip set name; empty derives it from the file name.
               - Clip: one file, or a `#`-padded per-frame template.
-              - Clip Prim Path: prim inside the clip; empty uses the clip's
-                defaultPrim, else the target path.
+              - Clip Prim Path: prim inside the clip. Empty: for a SkelAnimation
+                target, the clip's single SkelAnimation; else the clip's
+                defaultPrim; else the target path.
               - Start / End: stage frames. End 0 means the clip's own length
                 (a template's: the frames found on disk).
               - Loop: repeat a single-file clip until End, as jump

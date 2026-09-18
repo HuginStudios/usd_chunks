@@ -169,7 +169,34 @@ class TestStacking:
         spec = layer.GetPrimAtPath("/Char/Anim")
         assert spec is not None and set(spec.GetInfo("clips").keys()) == {"walk", "wave"}
         assert stage.GetSessionLayer().GetPrimAtPath("/Char/Anim") is None
-        assert spec.GetInfo("clips")["walk"]["primPath"] == "/Anim", "empty prim path falls back to the clip's defaultPrim"
+        assert spec.GetInfo("clips")["walk"]["primPath"] == "/Anim", "a SkelAnimation target takes the clip's single SkelAnimation"
+
+    def test_a_skel_target_finds_the_clips_animation_prim_wherever_it_is(self, tmp_path):
+        """A DCC names the animation prim after the action, under the character -- so the
+        defaultPrim (the character root) is the wrong answer and typing the path per row
+        was the only way. A SkelAnimation target now takes the clip's one SkelAnimation."""
+        layer = Sdf.Layer.CreateNew(str(tmp_path / "cycle.usda"))
+        st = Usd.Stage.Open(layer)
+        anim = UsdSkel.Animation.Define(st, "/root/RIG/Skel/Sprite_Walk")
+        anim.GetRotationsAttr().Set(Vt.QuatfArray([Gf.Quatf(1, 0, 0, 0)]), 0)
+        anim.GetRotationsAttr().Set(Vt.QuatfArray([Gf.Quatf(1, 0, 0, 0)]), 1)
+        st.SetDefaultPrim(st.GetPrimAtPath("/root"))
+        layer.Save()
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/Char/Anim", "SkelAnimation")
+        stage.DefinePrim("/Char/Mesh", "Mesh")
+        scene = _make_scene(stage)
+        node = _make_chunk(scene)
+        node.get_param("target_prim").value = "/Char/Anim"
+        _set_rows(node, [{"clip_path": str(tmp_path / "cycle.usda").replace("\\", "/"), "start_frame": 0}])
+        clips = node.get_edit_context().GetPrimAtPath("/Char/Anim").GetInfo("clips")
+        assert clips["cycle"]["primPath"] == "/root/RIG/Skel/Sprite_Walk"
+
+        node.get_param("target_prim").value = "/Char/Mesh"
+        node.execute()
+        clips = node.get_edit_context().GetPrimAtPath("/Char/Mesh").GetInfo("clips")
+        assert clips["cycle"]["primPath"] == "/root", "any other target still takes the defaultPrim"
 
 
 class TestTiming:
