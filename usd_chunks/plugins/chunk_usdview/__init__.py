@@ -5,7 +5,7 @@ This module provides a framework for dynamically loading and managing custom UI 
 
 import logging
 
-from pxr import Tf, Usd, Gf, Sdf
+from pxr import Tf, Usd, Gf, Sdf, UsdGeom
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
@@ -17,6 +17,36 @@ from usd_chunks import chunk_stage
 from typing import List
 
 logger = logging.getLogger(__name__)
+
+
+def _prim_clipping(prim):
+    """`(near, far)` of a camera prim, or None when there is no such camera to read."""
+    try:
+        clip = UsdGeom.Camera(prim).GetClippingRangeAttr().Get()
+    except Exception:  # noqa: BLE001 - a stand-in, a dead prim: nothing to put on
+        return None
+    if clip is None:
+        return None
+    return (float(clip[0]), float(clip[1]))
+
+
+def _clip_overrides(free_cam):
+    """The free camera's near/far overrides as `(near, far)`, None each where it has none."""
+    return (getattr(free_cam, "overrideNear", None), getattr(free_cam, "overrideFar", None))
+
+
+def _set_clip_overrides(free_cam, clip):
+    """Put `(near, far)` on the free camera as its overrides; None clears them both.
+
+    Straight onto the FreeCamera, like the fov: its override setters emit nothing, so this
+    is never mistaken for a camera move.
+    """
+    near, far = clip if clip is not None else (None, None)
+    if not hasattr(free_cam, "overrideNear"):
+        return
+    if _clip_overrides(free_cam) != (near, far):
+        free_cam.overrideNear = near
+        free_cam.overrideFar = far
 
 
 class UsdviewScene(chunk_core.SceneSender):
@@ -49,6 +79,9 @@ class UsdviewScene(chunk_core.SceneSender):
         self._snap_prim = None
         #: The user's own free-camera field of view, held across usdview rebuilding it.
         self._free_camera_fov = None
+        #: The user's own free-camera near/far overrides (None each when usdview's defaults),
+        #: held for the same reason; while our prim is viewed the free camera wears the prim's.
+        self._free_camera_clip = None
         #: Set by release_viewport_camera: the next free camera usdview builds is the first
         #: one after our prim let go of the view, and gets the user's lens put back.
         self._restore_lens = False
@@ -218,11 +251,13 @@ class UsdviewScene(chunk_core.SceneSender):
         try:
             if self.usdviewAPI.dataModel.viewSettings.cameraPrim is not None:
                 return
-            fov = getattr(self._get_free_camera(), "fov", None)
+            free_cam = self._get_free_camera()
+            fov = getattr(free_cam, "fov", None)
         except Exception:  # noqa: BLE001 - a lens is never worth raising into the host over
             return
         if fov is not None:
             self._free_camera_fov = fov
+        self._free_camera_clip = _clip_overrides(free_cam)
 
     def _on_view_settings_changed(self):
         current_cam = self._get_free_camera()
@@ -264,19 +299,31 @@ class UsdviewScene(chunk_core.SceneSender):
         holds, the free camera IS the chunk camera being flown -- seeing its lens is the
         point -- so the two must agree, and the copy usdview makes is the agreement. The
         user's own lens comes back once, on the first rebuild after release_viewport_camera.
+
+        Clipping is the one thing the copy does *not* carry, so it is put on here. FromGfCamera
+        takes the prim's clippingRange along, but the very next computeGfCamera resets near and
+        far to usdview's defaults unless the free camera holds an override -- so a camera
+        clipped at 0.1..50 in the prim was flown at 1..2000000 the moment the user dragged.
+        The prim's range goes on as the override, and the user's own overrides (the Camera >
+        Set Clipping dialog) come back with their lens on release.
         """
         if self._snap_prim is not None:
+            _set_clip_overrides(free_cam, _prim_clipping(self._snap_prim))
             return
 
         if self._restore_lens:
             self._restore_lens = False
             # Compared rather than set unconditionally: the setter emits regardless, and an
             # unnecessary emit here is an unnecessary cook downstream.
-            if abs(getattr(free_cam, "fov", self._free_camera_fov) - self._free_camera_fov) > 1e-6:
+            if self._free_camera_fov is not None and (
+                abs(getattr(free_cam, "fov", self._free_camera_fov) - self._free_camera_fov) > 1e-6
+            ):
                 free_cam.fov = self._free_camera_fov
+            _set_clip_overrides(free_cam, self._free_camera_clip)
             return
 
         self._free_camera_fov = getattr(free_cam, "fov", None)
+        self._free_camera_clip = _clip_overrides(free_cam)
 
     def release_viewport_camera(self) -> None:
         """Our prim stops asserting itself as the viewport camera.
@@ -290,7 +337,10 @@ class UsdviewScene(chunk_core.SceneSender):
             return
         self._camera_snap_timer.stop()
         self._snap_prim = None
-        self._restore_lens = self._free_camera_fov is not None
+        # Unconditional, where this used to wait on a remembered fov: the prim's clipping was
+        # put on by us, so even a user whose lens was never learned needs it taken off again.
+        # A fov never learned is still left alone -- see _reconcile_free_camera_lens.
+        self._restore_lens = True
 
     def _on_snap_timer(self):
         # IsValid: the stage can be closed between the snap being queued and this firing

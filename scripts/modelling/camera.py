@@ -450,6 +450,17 @@ def main():
     chunk_api.add_param(chunk.Slider("verticalApertureOffset", "Vertical Aperture Offset", min_value=-50.0, max_value=50.0))
     chunk_api.add_param(chunk.Slider("fStop", "f-Stop", min_value=0.7, max_value=64.0))
     chunk_api.add_param(chunk.Slider("focusDistance", "Focus Distance", min_value=0.0, max_value=1000.0))
+    # One Vector, not two Sliders: UsdGeom.Camera keeps near and far together as the float2
+    # `clippingRange`, and a Vector is the one param shape connect_usd_attr binds to a float2
+    # whole. Two scalar sliders would each need their own write-half-the-tuple callback.
+    # Defaults are the schema's own (1, 1000000) so an untouched camera clips as USD would.
+    chunk_api.add_param(chunk.Vector(
+        "clippingRange", "Clipping Range",
+        param=chunk.Slider(min_value=0.001, max_value=100000.0), length=2, suffixes=("Near", "Far"),
+        default_value=(1.0, 1000000.0),
+        tooltip="Near and far clipping planes, in scene units. Geometry closer than Near or "
+        "further than Far is not drawn.",
+    ))
     focus_btn = chunk.Button(
         "focus_on_selection", "Focus on Selection",
         tooltip="Remember the selected prim as the Focus Point (the average of several) and "
@@ -550,6 +561,7 @@ def execute(node):
         node.get_param("verticalApertureOffset").connect_usd_attr(prim.GetAttribute("verticalApertureOffset"))
         node.get_param("fStop").connect_usd_attr(prim.GetAttribute("fStop"))
         node.get_param("focusDistance").connect_usd_attr(prim.GetAttribute("focusDistance"))
+        node.get_param("clippingRange").connect_usd_attr(prim.GetAttribute("clippingRange"))
 
         attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
         attr.Set(UsdGeom.Tokens.inherited)
@@ -606,6 +618,8 @@ def config():
           - Focal Length / Apertures / Offsets / f-Stop / Focus Distance: USD
             camera attributes wired as live sliders via connect_usd_attr, so
             slider changes write directly to the prim attribute.
+          - Clipping Range: Near and Far sliders driving the camera's float2
+            `clippingRange` attribute, wired the same way.
           - Lock to Free Camera: when checked, the chunk subscribes to the
             scene's active-camera-changed signal and continuously syncs the
             prim's transform and focus distance from the DCC freecam. The
