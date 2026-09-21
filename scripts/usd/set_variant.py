@@ -59,8 +59,17 @@ def _refresh_menus(owner, _notice=None, _sender=None):
     Registered on the prim-path and variant-set params, and globally on stage content
     changes -- the sets a prim carries usually come from a chunk upstream, so they appear
     (and change) as the graph cooks, not when this chunk's own params move. Global means
-    it fires for every Set Variant instance on every stage edit, hence the guard: a
-    blocked chunk cannot usefully act on fresh menus.
+    it fires for every Set Variant instance on every stage edit.
+
+    Deliberately NOT gated on is_blocked(). A node created in the graph while the context
+    has a view is blocked until it is wired into that view, and blocking suppresses the
+    params' VALUE_CHANGED notices -- so the prim-path callback above never fires for a
+    path typed into a fresh node. The value is still recorded on the chunk prim, and that
+    write is a stage edit, so this global handler is what fills the menus for it. It only
+    reads the stage and writes menu_items, which reaches the widget through the
+    ATTRIBUTE_CHANGED sender that blocking leaves alone, and the execute() a menu_items
+    write would otherwise trigger is already gated on the blocked state by chunk_notice.
+    Gating here too left every new Set Variant node with empty dropdowns until wired.
 
     Held off only until this chunk is in the scene (CHUNK_LOADED), not for the whole of a
     load. Two things pull in opposite directions there. A saved value is restored before
@@ -74,7 +83,7 @@ def _refresh_menus(owner, _notice=None, _sender=None):
     up with it.
     """
     _chunk = owner.get_chunk()
-    if _chunk is None or _chunk.is_blocked() or not getattr(_chunk, _IN_SCENE, False):
+    if _chunk is None or not getattr(_chunk, _IN_SCENE, False):
         return
     vs_menu = _chunk.get_param("variant_set")
     sel_menu = _chunk.get_param("variant_selection")
