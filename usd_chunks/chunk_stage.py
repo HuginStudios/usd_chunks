@@ -854,7 +854,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # layers existed), then consolidate any chunk whose saved home doesn't match its
         # topology-resolved target (e.g. a file authored before Edit Target became position-based).
         restore_edit_target_selections(stage, self._scene, saved_targets)
-        reconcile_edit_targets(stage, self._scene)
+        # protect_root_layer, exactly as initialize() above: opening a file must not rewrite
+        # it. This is the path a host that hands over its stage after the plugin is up
+        # (usdview, via signalStageReplaced) loads through, and unprotected it migrated
+        # every chunk's bookkeeping out of the file's own root layer -- 34 Chunk specs down
+        # to 6 on a measured open -- and re-cooked each one it moved, 36 executes for 8.
+        # The file on disk survives until something saves that layer; the Sdf cache hands
+        # the gutted layer to the next open of the same path in the same process either way.
+        reconcile_edit_targets(stage, self._scene, protect_root_layer=True)
 
     def _on_attr_changed(self, notice, sender):
         if not self.initialized or not self._stage:
