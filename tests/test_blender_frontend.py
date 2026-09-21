@@ -60,25 +60,32 @@ class _Scene(SceneSender):
         return []
 
 
+def _make(module):
+    """One chunk from a registry module, the way the frontends make them."""
+    chunks = module.create() if module.loaded else module.load()
+    chunk = chunks[0]
+    chunk._config = ChunkConfig(module=module.module_name)
+    return chunk
+
+
 @pytest.fixture
 def view():
     """A two-chunk network -- Reference feeding Transform -- mirrored into a node tree."""
-    import reference
-    import transform
-
     stage = Usd.Stage.CreateInMemory()
     scene = _Scene(stage)
-    chunk_registry.ChunkRegistry().initialize(scene, "pytest-blender")
+    registry = chunk_registry.ChunkRegistry()
+    registry.initialize(scene, "pytest-blender")
     chunk_registry.ChunkLayerManager().initialize(stage)
     chunk_stage.ChunkStageSync().initialize(stage, scene)
     bg.register()
 
-    ref = reference.main()
-    ref._config = ChunkConfig(module="reference")
+    # Through the registry, which is what puts scripts/ on sys.path. A bare
+    # `import reference` here only worked when some earlier test file had already
+    # initialised a registry, so this file errored out when run on its own.
+    ref = _make(registry.get_chunk_module("reference"))
     ref.name = "Ref"
     scene.add_chunk(ref)
-    move = transform.main()
-    move._config = ChunkConfig(module="transform")
+    move = _make(registry.get_chunk_module("transform"))
     move.name = "Move"
     scene.add_chunk(move)
     move.add_dependency(ref)
@@ -100,13 +107,31 @@ def _node(view, label):
     return next(n for n in view.tree.nodes if n.label == label)
 
 
+def _chunk_nodes(view):
+    """The nodes that are chunks the fixture made -- not the view that reload() wires to
+    the end of the chain so the context cooks (see BlenderGraphView.ensure_view)."""
+    return [n for n in view.tree.nodes if n.bl_idname != bg.node_class_id("view")]
+
+
+def _flush(view):
+    """What the one-tick timer does in Blender proper; headless there is no event loop."""
+    view.flush()
+
+
 # ---------------------------------------------------------------------------
 # the tree is a view of USD
 # ---------------------------------------------------------------------------
 
 def test_the_tree_is_rebuilt_from_usd(view):
-    labels = sorted(n.label for n in view.tree.nodes)
+    labels = sorted(n.label for n in _chunk_nodes(view))
     assert labels == ["Move", "Ref"]
+
+
+def test_opening_gives_the_context_a_view(view):
+    """A context with no view cooks nothing, so reload wires one to the chain's tail and
+    makes it the active slot -- as every other frontend does on open."""
+    assert [n.label for n in view.tree.nodes if n not in _chunk_nodes(view)] == ["View1"]
+    assert view.active_slot() == 1
 
 
 def test_each_node_gets_its_chunk_type(view):
@@ -116,7 +141,7 @@ def test_each_node_gets_its_chunk_type(view):
 def test_the_exec_wire_becomes_a_link(view):
     links = [(link.from_node.label, link.to_node.label, link.to_socket.name)
              for link in view.tree.links]
-    assert links == [("Ref", "Move", "chunk")]
+    assert ("Ref", "Move", "chunk") in links
 
 
 def test_ports_are_named_for_their_usd_attributes(view):
@@ -201,7 +226,7 @@ def test_copy_uses_the_shared_clipboard(view):
 def test_delete_removes_the_chunk(view):
     view.set_selection({_node(view, "Move").name})
     view.delete_selected()
-    assert [n.label for n in view.tree.nodes] == ["Ref"]
+    assert [n.label for n in _chunk_nodes(view)] == ["Ref"]
 
 
 def test_dive_refuses_a_plain_chunk(view):
@@ -211,6 +236,7 @@ def test_dive_refuses_a_plain_chunk(view):
 
 
 def test_no_active_view_reads_as_zero(view):
+    view.set_active_slot(0)
     assert view.active_slot() == 0
 
 
@@ -307,5 +333,214 @@ def test_a_pasted_param_wire_is_not_forced_to_exec(view):
     view.set_selection({_node(view, "Ref").name, _node(view, "Move").name})
     view.copy_selection()
     view.paste_at(0.0, -300.0)
-    labels = [n.label for n in view.tree.nodes]
+    labels = [n.label for n in _chunk_nodes(view)]
     assert len(labels) == 4, labels
+
+
+# ---------------------------------------------------------------------------
+# the tree stays honest between reloads
+# ---------------------------------------------------------------------------
+
+def _exec_input(view, label):
+    prim = view.prims[_node(view, label).name]
+    return prim.GetAttribute("inputs:chunk")
+
+
+def _wire(view, src, dst):
+    return next(link for link in view.tree.links
+                if link.from_node.label == src and link.to_node.label == dst)
+
+
+def test_a_cut_wire_disconnects_in_usd(view):
+    """NodeTree.update reconciled links in one direction only: a link present was
+    connected, a link gone was nothing -- so a wire cut in the editor kept its USD
+    connection and came back on the next reload."""
+    view.tree.links.remove(_wire(view, "Ref", "Move"))
+    view.tree.update()
+    assert _exec_input(view, "Move").GetConnections() == []
+    view.reload()
+    assert not any(link.from_node.label == "Ref" and link.to_node.label == "Move"
+                   for link in view.tree.links), "the wire came back"
+
+
+def test_a_cut_wire_does_not_heal_the_chain(view):
+    """A wire the user cut is one wire. Healing would rewire the view past Move to Ref,
+    which is what detaching a NODE means, not cutting a wire."""
+    view_node = _node(view, "View1")
+    before = list(view.prims[view_node.name].GetAttribute("inputs:chunk").GetConnections())
+    view.tree.links.remove(_wire(view, "Ref", "Move"))
+    view.tree.update()
+    after = list(view.prims[view_node.name].GetAttribute("inputs:chunk").GetConnections())
+    assert after == before
+
+
+def test_a_native_duplicate_never_aliases_the_original(view):
+    """Blender's duplicate copies every RNA property, chunk_path included, so the copy
+    edited and wired the ORIGINAL prim. copy() blanks it; the chunk verbs (Shift+D is
+    bound to duplicate_selection) are how a real duplicate is made."""
+    original = _node(view, "Move")
+    dup = view.tree.nodes.new(original.bl_idname)
+    dup.copy(original)
+    assert dup.chunk_path == ""
+    assert dup.get_chunk() is None
+
+
+def test_a_param_change_reaches_the_node_without_a_reload(view):
+    """sync_to_node ran only inside a rebuild, so an output a cook filled in -- or any
+    value changed from the chunk side -- sat stale on the node until something else
+    happened to reload the whole graph."""
+    move = view.chunks[_node(view, "Move").name]
+    move.get_param("tz").value = 5.0
+    assert _node(view, "Move").tz == pytest.approx(3.0), "not yet: flush is one tick later"
+    _flush(view)
+    assert _node(view, "Move").tz == pytest.approx(5.0)
+
+
+def test_a_stale_chunk_gets_the_amber_header(view):
+    move = view.chunks[_node(view, "Move").name]
+    assert tuple(_node(view, "Move").color) == pytest.approx(bg._NODE_HEADER_COLOR)
+    move.set_state(ChunkFlags.State.STALE)
+    _flush(view)
+    assert tuple(_node(view, "Move").color) == pytest.approx(bg._STALE_HEADER_COLOR)
+    move.unset_state(ChunkFlags.State.STALE)
+    _flush(view)
+    assert tuple(_node(view, "Move").color) == pytest.approx(bg._NODE_HEADER_COLOR)
+
+
+def test_collapse_is_the_state_bit_shown_as_blenders_hide(view):
+    """One direction for the lot, groups and views skipped; node.hide follows the bit so a
+    collapse survives a reload and one made in Qt shows here."""
+    # A view is created collapsed (it has no body), so Blender draws it hidden from the
+    # start; what matters is that a sweep leaves it exactly as it was.
+    view_hidden = _node(view, "View1").hide
+    view.set_selection(set())
+    view.collapse_selected_or_all()
+    for label in ("Ref", "Move"):
+        assert view.chunks[_node(view, label).name].has_state(ChunkFlags.State.COLLAPSED)
+        assert _node(view, label).hide
+    assert _node(view, "View1").hide == view_hidden
+    view.reload()
+    assert _node(view, "Move").hide
+    view.collapse_selected_or_all()
+    assert not _node(view, "Move").hide
+
+
+def test_a_chunk_deleted_behind_the_frontends_back_leaves_the_tree(view):
+    """The CLI, another frontend, undo: none of them go through delete_selected. The
+    CHUNK_DELETED notice schedules the rebuild instead."""
+    move = view.chunks[_node(view, "Move").name]
+    chunk_graph.delete_chunks([move])
+    assert view._reload_pending
+    _flush(view)
+    assert [n.label for n in _chunk_nodes(view)] == ["Ref"]
+
+
+def test_a_replaced_view_ignores_notices(view):
+    """The notice connections are global. A view that another network replaced must not
+    keep rebuilding a tree nobody is looking at -- id() reuse means its chunk table can
+    match chunks that are not its own."""
+    other = bg.BlenderGraphView(view.stage, view.scene, tree=None, context=view.context)
+    assert bg.active_view() is other
+    move = view.chunks[_node(view, "Move").name]
+    move.get_param("tz").value = 9.0
+    assert not view._dirty
+
+
+# ---------------------------------------------------------------------------
+# views, groups, locks: what Qt shows, shown here
+# ---------------------------------------------------------------------------
+
+def test_the_active_view_is_orange_and_an_inactive_one_dim(view):
+    assert tuple(_node(view, "View1").color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
+    view.set_active_slot(0)
+    assert tuple(_node(view, "View1").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
+
+
+def test_create_view_node_wires_the_selection_and_activates_it(view):
+    # The path, not the node: create_view_node rebuilds the tree, and a bpy node held
+    # across a rebuild is a wrapper over memory Blender reuses for a different node.
+    ref_path = _node(view, "Ref").name
+    view.set_selection({ref_path})
+    view.create_view_node()
+    views = [n for n in view.tree.nodes if n.bl_idname == bg.node_class_id("view")]
+    assert len(views) == 2
+    made = next(n for n in views if n.label != "View1")
+    src = view.prims[made.name].GetAttribute("inputs:chunk").GetConnections()
+    assert [str(c.GetPrimPath()) for c in src] == [ref_path]
+    assert view.active_slot() == 2
+    assert tuple(made.color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
+    assert tuple(_node(view, "View1").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
+
+
+def test_a_chunkgroup_gets_the_group_header(view):
+    view.set_selection({_node(view, "Move").name})
+    view.group_selection()
+    group = next(n for n in view.tree.nodes if n.bl_idname == bg.node_class_id("chunkgroup"))
+    assert tuple(group.color) == pytest.approx(bg._GROUP_HEADER_COLOR)
+
+
+def test_locked_is_an_opinion_from_a_layer_that_is_not_the_edit_target(tmp_path):
+    """Qt's rule, verbatim. A prim whose strongest non-anonymous opinion is a sublayer is
+    locked while the edit target is the root, and not once the target is that layer."""
+    from pxr import Sdf
+    stage = Usd.Stage.CreateInMemory()
+    layer = Sdf.Layer.CreateNew(str(tmp_path / "referenced.usda"))
+    Sdf.CreatePrimInLayer(layer, "/chunks/Ref")
+    layer.Save()
+    stage.GetRootLayer().subLayerPaths.append(layer.identifier)
+    prim = stage.GetPrimAtPath("/chunks/Ref")
+    assert bg._is_locked(stage, prim)
+    stage.SetEditTarget(Usd.EditTarget(layer))
+    assert not bg._is_locked(stage, prim)
+
+
+def test_a_locked_node_is_amber_and_keeps_its_position(view):
+    """Blender cannot refuse a drag, so a locked node's dragged position is dropped on
+    write-back and auto-layout is told not to move it."""
+    ref = _node(view, "Ref")
+    view.locked = {ref.name}
+    view.apply_node_state(ref, view.prims[ref.name], view.chunks[ref.name])
+    assert tuple(ref.color) == pytest.approx(bg._LOCKED_HEADER_COLOR)
+    before = chunk_graph.node_position(view.prims[ref.name])
+    ref.location = (999.0, 999.0)
+    view.pull_positions_from_tree()
+    assert chunk_graph.node_position(view.prims[ref.name]) == before
+    view.set_selection(set())
+    view.auto_layout()
+    assert chunk_graph.node_position(view.prims[ref.name]) == before
+
+
+# ---------------------------------------------------------------------------
+# the add-on: keys route to the chunk verbs, undo re-derives the tree
+# ---------------------------------------------------------------------------
+
+def test_every_bound_key_is_a_registered_chunk_operator():
+    """X, Shift+D, Ctrl+C/X/V and M have stock node operators that edit only the bpy
+    tree. The add-on binds the same keys to the chunk verbs, so the model moves too."""
+    from usd_chunks.plugins import chunk_blender_addon as addon
+    registered = set(addon._CLASSES) | set(bg._CLASSES)
+    bound = {op for op, _key, _mods, _props in addon._KEYS}
+    assert all(op in registered for op in bound)
+    idnames = {op.bl_idname for op in bound}
+    for verb in ("delete", "duplicate", "copy", "cut", "paste", "toggle_disable",
+                 "collapse", "group", "create_view", "auto_layout", "set_view_slot"):
+        assert "usd_chunks." + verb in idnames, verb
+
+
+def test_no_chunk_operator_pushes_an_undo_step():
+    """Blender's undo restores the .blend and knows nothing about the stage, so an
+    operator that pushed a step only ever half-undid. None of them do; undo_post
+    rebuilds from USD instead."""
+    from usd_chunks.plugins import chunk_blender_addon as addon
+    for cls in addon._CLASSES + bg._CLASSES:
+        assert "UNDO" not in getattr(cls, "bl_options", set()), cls.__name__
+
+
+def test_undo_re_derives_the_tree_from_usd(view):
+    """What Blender's undo does to the tree -- here, a node it takes away -- is not what
+    the model says, and the model wins."""
+    from usd_chunks.plugins import chunk_blender_addon as addon
+    view.tree.nodes.remove(_node(view, "Move"))
+    assert "Move" not in [n.label for n in view.tree.nodes]
+    addon._on_undo(None)
+    assert "Move" in [n.label for n in view.tree.nodes]

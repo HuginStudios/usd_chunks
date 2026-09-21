@@ -18,6 +18,14 @@ want it to, so a tree treated as authoritative would fork from the USD the momen
 was saved in both -- two sources of truth that drift silently. `chunk_graph` is the
 reconciler; `_NODE_PATH` on each node is the only link, and it holds a prim path.
 
+Between reloads the tree is kept honest from both sides. What Blender does to the tree on
+its own -- a wire cut, a node deleted, an undo -- is caught (`UsdChunksNodeTree.update`
+diffs links against the model; the add-on shadows the stock node operators inside this
+tree type and rebuilds after undo) and written to the model or discarded. What the model
+does on its own -- a cook filling an output, a param lofted, a chunk going stale -- arrives
+as chunk notices and is mirrored onto the touched nodes one tick later (`flush`), so an
+output shows its value without anyone reloading the graph.
+
 **Node classes are generated per chunk type**, from `main()`, because Blender fixes RNA
 properties at class registration. Params lofted later (a Wedge's ranges, a Stage
 Expression's variables) cannot be RNA and become per-instance ID properties instead -- see
@@ -34,8 +42,10 @@ import logging
 import re
 
 import bpy
+from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.plugins import chunk_blender, chunk_graph
 from usd_chunks import chunk_stage
 
@@ -69,6 +79,18 @@ _DEFAULT_COLOUR = (0.7, 0.7, 0.7, 1.0)
 #: colour for a custom Node subclass with no bl_color/use_custom_color, which reads as an
 #: unclassified pink -- distracting across a graph that is entirely chunk nodes.
 _NODE_HEADER_COLOR = (0.15, 0.15, 0.15)
+
+#: The other header colours, matching what Qt paints so a graph reads the same in both:
+#: a chunkgroup is near-black, the ACTIVE view is warm orange and an inactive one dim
+#: grey-brown, a locked node (authored in a layer that is not the edit target) is dark
+#: amber, and a stale one -- inputs changed since it last cooked -- is bright amber. Only
+#: `node.color` is available to a custom node, so the header carries all of it: Blender
+#: offers no border, badge or opacity for a Python node.
+_GROUP_HEADER_COLOR = (0.08, 0.08, 0.08)
+_VIEW_ACTIVE_COLOR = (0.78, 0.47, 0.19)
+_VIEW_INACTIVE_COLOR = (0.29, 0.27, 0.24)
+_LOCKED_HEADER_COLOR = (0.23, 0.19, 0.13)
+_STALE_HEADER_COLOR = (0.88, 0.56, 0.16)
 
 #: Default node width. Wider than Blender's 140 because an input socket row here draws the
 #: param's label and its control, not just a socket name.
@@ -133,12 +155,25 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
         value never followed the wire it now visually has -- reported as "doesn't trigger
         on connection, still empty".
 
-        Reconciles every link on every call rather than diffing, because Blender's update()
-        does not say what changed, and chunk_graph.connect() re-authoring an already-correct
-        connection is a cheap no-op -- acceptable for the tens-of-nodes scale this editor
-        targets. Guarded against _rebuild_tree's own link.new() calls (see _rebuilding) and
-        against firing for a tree that is not the one currently open (Blender calls this
-        for any tree of this type, not only the visible one).
+        Blender's update() does not say what changed, so this reconciles in both
+        directions on every call: every link present is connected (chunk_graph.connect()
+        re-authoring an already-correct connection is a cheap no-op, acceptable at the
+        tens-of-nodes scale this editor targets), and every edge the model has that the
+        tree no longer shows is disconnected. That second half is what makes Ctrl+RMB
+        link-cut, and re-dragging a wire from one source to another, mean anything: without
+        it the USD connection survived and the wire came back on the next reload.
+
+        Removed edges go first. Re-dragging an input's wire is a remove plus an add on the
+        SAME socket, and disconnect clears that socket's attribute -- run after the connect
+        it would clear the wire the user just made.
+
+        heal=False, because a wire the user cut in the editor is one wire. Healing is for
+        detaching a whole node from a chain (delete does that); here it took A -> B -> View,
+        cut B's input, and rewired View to A, which is not what a cut wire means.
+
+        Guarded against _rebuild_tree's own link.new() calls (see _rebuilding) and against
+        firing for a tree that is not the one currently open (Blender calls this for any
+        tree of this type, not only the visible one).
         """
         if _rebuilding:
             return
@@ -146,6 +181,26 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
         if view is None or view.tree is not self:
             return
         changed = False
+        present = {(link.from_node.name, link.from_socket.name,
+                    link.to_node.name, link.to_socket.name) for link in self.links}
+        for edge in view.edges:
+            key = (edge.src_node_path, _port_name(edge.src_attr_path),
+                   edge.dst_node_path, _port_name(edge.dst_attr_path))
+            if key in present:
+                continue
+            # Only a wire the tree COULD have shown counts as cut. An edge whose node
+            # never got a class, or whose socket never got made, was never on screen, and
+            # clearing it from USD would punish the model for the view's gap. A node
+            # removed from the tree behind the frontend's back is the same case: the
+            # model wins, and the next reload brings node and wires back together.
+            src, dst = self.nodes.get(key[0]), self.nodes.get(key[2])
+            if src is None or dst is None or key[1] not in src.outputs or key[3] not in dst.inputs:
+                continue
+            port = _port_ref_named(view, edge.dst_node_path, key[3], is_input=True)
+            if port is None:
+                continue
+            chunk_graph.disconnect(view.stage, port, view.prims, view.chunks, heal=False)
+            changed = True
         for link in self.links:
             a = _link_port_ref(view, link.from_node, link.from_socket, is_input=False)
             b = _link_port_ref(view, link.to_node, link.to_socket, is_input=True)
@@ -278,10 +333,26 @@ class UsdChunksNodeBase(bpy.types.Node):
             return None
         return view.chunks.get(self.chunk_path)
 
+    def copy(self, node) -> None:
+        """Blender's hook for a node made by duplicating `node` -- Shift+D, Ctrl+C/V, or
+        the Node menu. It copies every RNA property, `chunk_path` included, so the copy
+        pointed at the ORIGINAL prim: its fields wrote into the original chunk and its
+        wires were authored onto the original's attributes. The chunk operators shadow
+        those keys inside this tree type (see the add-on's keymap) and go through
+        `duplicate_selection`/`paste_at`, which make a real chunk; a copy that still
+        arrives here is a node with no chunk behind it, and blanking the path makes it
+        exactly that -- it draws "<no chunk>" and the next reload drops it.
+        """
+        self.chunk_path = ""
+
     def draw_buttons(self, context, layout):
+        chunk = self.get_chunk()
+        if chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
+            # Qt draws an amber badge with this as its tooltip. The header is amber here
+            # too (see apply_node_state), but a colour alone does not say what to do.
+            layout.label(text="Needs recook", icon="ERROR")
         # Params with an input socket are drawn by that socket instead, beside their port.
-        chunk_blender.draw_params(self, layout, self.get_chunk(),
-                                  skip=socket_drawn_params(self))
+        chunk_blender.draw_params(self, layout, chunk, skip=socket_drawn_params(self))
 
 
 class USDCHUNKS_OT_param_button(bpy.types.Operator):
@@ -293,7 +364,7 @@ class USDCHUNKS_OT_param_button(bpy.types.Operator):
 
     bl_idname = "usd_chunks.param_button"
     bl_label = "Chunk Action"
-    bl_options = {"REGISTER", "UNDO"}
+    bl_options = {"REGISTER"}
 
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
@@ -321,7 +392,7 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
 
     bl_idname = "usd_chunks.pin_prim"
     bl_label = "Pin Picked Prim"
-    bl_options = {"REGISTER", "UNDO"}
+    bl_options = {"REGISTER"}
 
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
@@ -466,14 +537,60 @@ def _link_port_ref(view, node, socket, is_input: bool):
     the one true naming the moment any of those changed.
     """
     path = getattr(node, "chunk_path", None)
-    prim = view.prims.get(path) if path else None
+    return _port_ref_named(view, path, socket.name, is_input) if path else None
+
+
+def _port_ref_named(view, path: str, name: str, is_input: bool):
+    """The PortRef for socket `name` on the node at prim path `path`, or None.
+
+    Resolved from the prim rather than the Blender node so it still answers for a node
+    the editor no longer has -- which is exactly the case when an edge is being
+    disconnected because its node or wire was removed in the editor.
+    """
+    prim = view.prims.get(path)
     if prim is None:
         return None
     chunk = view.chunks.get(path)
     for port in chunk_graph.iter_ports(prim, chunk):
-        if port.is_input == is_input and port.name == socket.name:
+        if port.is_input == is_input and port.name == name:
             return port
     return None
+
+
+def _chunk_of(sender):
+    """The chunk a notice's sender belongs to, or None.
+
+    A value change is sent by the param's AttributeSender, a state change by the chunk's or
+    a param's, PARAM_ADDED by the chunk itself -- so the sender is anywhere from zero to two
+    owners away from something with get_chunk. Walk up until one answers; a bounded walk,
+    because an owner chain is a tree and a malformed one should cost a missed refresh, not
+    a hang inside notice dispatch.
+    """
+    obj = sender
+    for _ in range(6):
+        if obj is None:
+            return None
+        # By type, not by attribute: the walk can reach the SceneSender, whose
+        # get_chunk(chunk) is a lookup with a different signature altogether.
+        if isinstance(obj, core.ChunkCommon):
+            return obj.get_chunk()
+        get_owner = getattr(obj, "get_owner", None)
+        obj = get_owner() if get_owner is not None else None
+    return None
+
+
+def _is_locked(stage, prim) -> bool:
+    """Qt's rule: a prim is locked when its strongest non-anonymous, non-root opinion
+    comes from a layer that is not the current edit target -- a referenced or sublayered
+    network, which edits here would not reach."""
+    root_id = stage.GetRootLayer().identifier
+    edit_id = stage.GetEditTarget().GetLayer().identifier
+    src_layer = next(
+        (spec.layer for spec in prim.GetPrimStack()
+         if not spec.layer.anonymous and spec.layer.identifier != root_id),
+        None,
+    )
+    return src_layer is not None and src_layer.identifier != edit_id
 
 
 def _reload_after_connect(view) -> None:
@@ -509,9 +626,43 @@ class BlenderGraphView:
         self.edges: list = []
         self.positions: dict = {}
         self.selected_nodes: set = set()
+        #: Prim paths authored in a layer that is not the edit target -- Qt's "locked".
+        #: Read at reload, shown as a dark-amber header, and handed to layout_graph so
+        #: they stay put and are routed around.
+        self.locked: set = set()
         self.status = ""
         #: Guards ensure_view against the reload it can trigger through itself.
         self._ensuring_view = False
+        #: What changed since the last flush -- node paths whose values or state moved,
+        #: and whether the node SET did (which needs a rebuild, not a re-sync). Drained
+        #: by `flush`, one tick later, so a cook that touches two hundred params costs one
+        #: pass over the nodes it reached rather than two hundred redraws.
+        self._dirty: set = set()
+        self._reload_pending = False
+        self._flush_scheduled = False
+        #: {id(chunk): prim path}, so a notice's sender resolves to a node without a
+        #: get_chunk_prim_path per notice. Rebuilt in reload with the chunks dict.
+        self._path_of: dict = {}
+        # The connections that keep the tree honest between reloads. Held on the instance
+        # because NoticeConnection weakrefs its method: a connection left as a local dies
+        # with the frame, and a bound method is only as alive as the object holding it.
+        # Global rather than per chunk, because the chunk objects are rebuilt under this
+        # view on every load and per-object connections would die with them. Each handler
+        # filters by whether the sender's chunk is one this graph shows.
+        self._notice_conns = [
+            NoticeConnection(self._on_attribute_changed,
+                             ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True),
+            NoticeConnection(self._on_attribute_changed,
+                             ChunkNoticeAlias.STATE_CHANGED, globally=True),
+            NoticeConnection(self._on_params_changed,
+                             ChunkNoticeAlias.PARAM_ADDED, globally=True),
+            NoticeConnection(self._on_params_changed,
+                             ChunkNoticeAlias.PARAM_REMOVED, globally=True),
+            NoticeConnection(self._on_chunk_deleted,
+                             ChunkNoticeAlias.CHUNK_DELETED, globally=True),
+            NoticeConnection(self._on_objects_changed,
+                             ChunkNoticeAlias.OBJECT_CHANGED, globally=True),
+        ]
         global _active_view
         _active_view = self
 
@@ -595,8 +746,16 @@ class BlenderGraphView:
             self.stage, self.context, self.chunks)
         self.positions = {p: chunk_graph.node_position(prim)
                           for p, prim in self.prims.items()}
+        self.locked = {p for p, prim in self.prims.items() if _is_locked(self.stage, prim)}
+        self._path_of = {id(c): p for p, c in self.chunks.items()}
         if self.tree is not None:
             self._rebuild_tree()
+        # A rebuild mirrored every node, so anything the notices queued before or during
+        # it is already on screen. Dropping it here is also what keeps the reload that a
+        # notice schedules from re-running once the operation that raised it has already
+        # reloaded on its own -- create_chunk, delete_selected and the rest all do.
+        self._dirty.clear()
+        self._reload_pending = False
 
     def _rebuild_tree(self) -> None:
         """Discard and re-make the nodes.
@@ -629,14 +788,11 @@ class BlenderGraphView:
             node.label = chunk_graph.node_label(prim)
             node.chunk_path = path
             node.use_custom_color = True
-            node.color = _NODE_HEADER_COLOR
             x, y = self.positions.get(path, (0.0, 0.0))
             node.location = (x * _SCALE, y * _SCALE)
-            # Blender's own mute flag, so a disabled chunk reads as disabled to a Blender
-            # user without inventing a second convention for it.
-            node.mute = chunk_graph.is_disabled(prim)
             if chunk is not None:
                 chunk_blender.sync_to_node(node, chunk)
+            self.apply_node_state(node, prim, chunk)
             made[path] = node
 
         # `ports` is {node path: [PortRef]}, not a flat list -- read_graph keys it so a
@@ -663,6 +819,141 @@ class BlenderGraphView:
             if out is not None and inp is not None:
                 self.tree.links.new(out, inp)
 
+        tag_redraw()
+
+    # -- keeping the tree honest between reloads ---------------------------
+
+    def apply_node_state(self, node, prim, chunk) -> None:
+        """Show on the node what Qt paints: disabled, collapsed, stale, locked, group,
+        active view.
+
+        Disabled is Blender's own mute flag and collapsed its own hide flag, so both read
+        as what they are to a Blender user without inventing a second convention -- and
+        both survive a reload, because the chunk's state bits are what is read, not what
+        the tree happened to show. Everything else is the header
+        colour, in the order Qt resolves it -- a view's colour says whether it is driving,
+        a group is a group, a locked node is locked -- with stale on top of all of them,
+        because "this result is out of date" is the one that asks for an action.
+        """
+        node.mute = chunk_graph.is_disabled(prim)
+        if chunk is not None:
+            node.hide = chunk.has_state(ChunkFlags.State.COLLAPSED)
+        kind = chunk_graph.node_kind(prim)
+        if kind == chunk_graph.VIEW_MODULE:
+            slot = prim.GetAttribute(chunk_graph.VIEW_SLOT_ATTR).Get()
+            active = bool(slot) and slot == self.active_slot()
+            colour = _VIEW_ACTIVE_COLOR if active else _VIEW_INACTIVE_COLOR
+        elif chunk is not None and chunk_stage.is_chunkgroup(chunk):
+            colour = _GROUP_HEADER_COLOR
+        elif node.name in self.locked:
+            colour = _LOCKED_HEADER_COLOR
+        else:
+            colour = _NODE_HEADER_COLOR
+        if chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
+            colour = _STALE_HEADER_COLOR
+        node.color = colour
+
+    def _is_current(self) -> bool:
+        """Whether this view is the one open. The connections are global and outlive a
+        view that was replaced (opening another network makes a new one), and a replaced
+        view answering notices for chunks it no longer shows -- id() reuse makes that
+        possible -- would rebuild a tree nobody is looking at."""
+        return active_view() is self
+
+    def _mark_dirty(self, sender) -> None:
+        if not self._is_current():
+            return
+        chunk = _chunk_of(sender)
+        path = self._path_of.get(id(chunk)) if chunk is not None else None
+        if path is not None:
+            self._dirty.add(path)
+            self._schedule_flush()
+
+    def _on_attribute_changed(self, notice, sender) -> None:
+        """A param's value or a chunk's/param's state moved. Re-sync that one node."""
+        self._mark_dirty(sender)
+
+    def _on_params_changed(self, notice, sender) -> None:
+        """A param was lofted onto or removed from a chunk: its PORTS changed, and sockets
+        are only made in _rebuild_tree_body -- so this is a rebuild, not a re-sync."""
+        self._request_reload_for(sender)
+
+    def _on_chunk_deleted(self, notice, sender) -> None:
+        self._request_reload_for(sender)
+
+    def _request_reload_for(self, sender) -> None:
+        if not self._is_current():
+            return
+        chunk = _chunk_of(sender)
+        if chunk is not None and id(chunk) in self._path_of:
+            self._request_reload()
+
+    def _on_objects_changed(self, notice, sender) -> None:
+        """A prim-level resync under the context is a chunk added, removed, enabled or
+        disabled by something other than this frontend -- the CLI, undo, another
+        frontend on the same stage. Property-level changes are the hot path (a cook
+        emits hundreds) and every one of them that matters here arrives as a chunk notice
+        too, so those fall through.
+        """
+        if not sender or self.stage is None or not self._is_current():
+            return
+        try:
+            if sender.GetRootLayer().identifier != self.stage.GetRootLayer().identifier:
+                return
+            resynced = notice.GetResyncedPaths()
+        except (AttributeError, RuntimeError):
+            return
+        if any(p.IsPrimPath() and p.HasPrefix(self.context) for p in resynced):
+            self._request_reload()
+
+    def _request_reload(self) -> None:
+        self._reload_pending = True
+        self._schedule_flush()
+
+    def _schedule_flush(self) -> None:
+        """One flush, next tick. Never synchronous: the notice that gets here is being
+        dispatched from inside a param write or a cook, and rebuilding the tree -- or even
+        assigning a node's RNA property, whose update callback writes a param -- from
+        inside that is the re-entrancy every frontend guards against.
+        """
+        if self._flush_scheduled:
+            return
+        self._flush_scheduled = True
+        try:
+            bpy.app.timers.register(self._timer_flush, first_interval=0.0)
+        except Exception:  # pragma: no cover - no timer system (a bare bpy module)
+            self._flush_scheduled = False
+
+    def _timer_flush(self):
+        self._flush_scheduled = False
+        if active_view() is self:
+            self.flush()
+        return None
+
+    def flush(self) -> None:
+        """Bring the tree up to date with everything the notices reported.
+
+        A pending rebuild takes precedence and covers the rest; otherwise each touched
+        node is re-mirrored in place (values, lofted ID properties, header colour) and the
+        editor is asked to repaint. Callable directly -- a test, or a headless view with
+        no event loop to run the timer, drives it by hand.
+        """
+        self._flush_scheduled = False
+        if self._reload_pending:
+            self.reload()
+            return
+        dirty, self._dirty = self._dirty, set()
+        if not dirty:
+            return
+        tree = self.tree
+        for path in dirty:
+            prim, chunk = self.prims.get(path), self.chunks.get(path)
+            node = tree.nodes.get(path) if tree is not None else None
+            if node is None or prim is None or not prim.IsValid():
+                continue
+            if chunk is not None:
+                chunk_blender.sync_to_node(node, chunk)
+            self.apply_node_state(node, prim, chunk)
         tag_redraw()
 
     # -- selection ---------------------------------------------------------
@@ -705,6 +996,34 @@ class BlenderGraphView:
         """Flip DISABLED. A disabled chunk stays visible -- muted, in Blender's terms."""
         chunk_graph.toggle_disabled(self.selected_chunks())
         self.reload()
+
+    def collapse_selected_or_all(self) -> None:
+        """Collapse the selection, or the whole graph when nothing is selected -- Qt's C.
+
+        One direction for the lot, as Qt: if anything in the set is still expanded they
+        all collapse, and only a set that is already entirely collapsed expands again.
+        Chunkgroups and views are left alone for Qt's reasons (a collapsed group hides
+        the control that expands it; a view has no body and is what happens to be
+        selected after the graph auto-creates one).
+
+        The state bit is what is written; `node.hide` -- Blender's own collapse, the one
+        its H key toggles -- follows it in apply_node_state, so a collapse made here
+        survives a reload and one made in Qt shows up here.
+        """
+        candidates = [(p, c) for p, c in self.chunks.items()
+                      if p in self.prims and not chunk_stage.is_chunkgroup(c)
+                      and not chunk_stage.is_view_chunk(c)]
+        selected = [(p, c) for p, c in candidates if p in self.selected_nodes]
+        targets = selected or candidates
+        if not targets:
+            return
+        collapse = any(not c.has_state(ChunkFlags.State.COLLAPSED) for _p, c in targets)
+        for _p, chunk in targets:
+            if collapse:
+                chunk.set_state(ChunkFlags.State.COLLAPSED)
+            else:
+                chunk.unset_state(ChunkFlags.State.COLLAPSED)
+        self.flush()
 
     def snapshot_selection(self):
         return chunk_graph.snapshot_selection(
@@ -872,6 +1191,29 @@ class BlenderGraphView:
         if changed:
             self.reload()
 
+    def create_view_node(self) -> None:
+        """Wire a view to the selected node, or to the end of the chain -- Qt's V.
+
+        Creation is chunk_graph.new_view_slot, shared with the other frontends: slot
+        allocation is scoped to the container, and a view already wired to the target is
+        reused rather than duplicated. The new view becomes the active one, as it does
+        everywhere else -- pressing V means "show me this".
+        """
+        if self.scene is None:
+            self.status = "no chunk session"
+            return
+        chosen = [p for p in self.selected_nodes if p in self.prims]
+        slot = chunk_graph.new_view_slot(self.stage, self.scene,
+                                         self.chunks.get(self.context),
+                                         chosen[0] if chosen else None)
+        if slot is None:
+            self.status = "no view created"
+            return
+        self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self.reload()
+        self.set_active_slot(slot)
+        self.status = "view %d" % slot
+
     # -- layout ------------------------------------------------------------
 
     def _write_position(self, path: str, x: float, y: float) -> None:
@@ -892,7 +1234,10 @@ class BlenderGraphView:
         if self.tree is None:
             return
         for node in self.tree.nodes:
-            if node.name in self.prims:
+            # A locked node's position belongs to the layer it came from. Qt refuses the
+            # drag; Blender cannot, so the drag is dropped here instead and the next
+            # reload puts the node back where its file has it.
+            if node.name in self.prims and node.name not in self.locked:
                 self._write_position(node.name, node.location[0] / _SCALE,
                                      node.location[1] / _SCALE)
 
@@ -911,6 +1256,9 @@ class BlenderGraphView:
             size_of=lambda path: chunk_graph.node_size(self.prims[path]),
             current_pos=lambda path: self.positions.get(path, (0.0, 0.0)),
             seeds=[p for p in self.selected_nodes if p in self.prims] or None,
+            # As Qt: a node from a referenced layer stays where its file put it and the
+            # rest are laid out around it.
+            is_locked=lambda path: path in self.locked,
         )
         for path, (x, y) in placed.items():
             self.positions[path] = (x, y)
@@ -990,7 +1338,7 @@ class USDCHUNKS_OT_add_node(bpy.types.Operator):
 
     bl_idname = "usd_chunks.add_node"
     bl_label = "Add Chunk"
-    bl_options = {"REGISTER", "UNDO"}
+    bl_options = {"REGISTER"}
 
     entry_index: bpy.props.IntProperty(default=-1)
 
