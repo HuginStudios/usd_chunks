@@ -1209,9 +1209,23 @@ class MenuEntry:
 
         if self.presets:
             for c in chunks or []:
-                for param_name, value in self.presets.items():
-                    if param := c.get_param(param_name):
-                        param.value = value
+                # Values only, no cook. Setting a param runs the chunk's module, and here
+                # the chunk is not in any context yet: it cooked into a layer the stage
+                # had not adopted, and when the real cook came on CHUNK_LOADED a module
+                # that remembers what it last authored (light.py's _last_light_type)
+                # saw nothing new and returned -- a "Dome Light" entry created the chunk
+                # with the right menu value and no prim. Same guard the Qt paste path
+                # sets before applying copied values (_paste_guard_sets): execute()
+                # still solves and notifies, so the widgets built on add see the preset,
+                # but skips module.execute while _executing is set.
+                prev = getattr(c, "_executing", False)
+                c._executing = True
+                try:
+                    for param_name, value in self.presets.items():
+                        if param := c.get_param(param_name):
+                            param.value = value
+                finally:
+                    c._executing = prev
 
         return chunks
 

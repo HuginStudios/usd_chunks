@@ -1,6 +1,19 @@
 from usd_chunks import chunk, chunk_utils
 from pxr import UsdGeom
 
+# The UsdLux schemas this chunk can define. Module-level so config() can build one menu
+# entry per type from the same list main() fills the menu from.
+_LIGHT_TYPES = ["DiskLight", "RectLight", "DomeLight", "DistantLight", "SphereLight", "CylinderLight"]
+
+
+def _label(light_type: str) -> str:
+    """'DomeLight' -> 'Dome Light', the name the menu shows for a variant.
+
+    Builtins only: config() also runs at registry discovery, where a module's own imports
+    (other than usd_chunks) have not been executed, so `re` would not be there.
+    """
+    return "".join(f" {c}" if c.isupper() and i else c for i, c in enumerate(light_type))
+
 
 def main():
     chunk_api = chunk.Chunk("Light")
@@ -24,7 +37,7 @@ def main():
     light_type = chunk.Menu(
         "light_type",
         "Light type",
-        menu_items=["DiskLight", "RectLight", "DomeLight", "DistantLight", "SphereLight", "CylinderLight"],
+        menu_items=list(_LIGHT_TYPES),
     )
     chunk_api.add_param(light_type)
 
@@ -74,6 +87,10 @@ def execute(node):
 def config():
     return chunk.DefaulConfig(
         category=chunk.StandardCategory.MODELLING,
+        # One searchable menu entry per light type -- "Dome Light" is found and created
+        # directly rather than by creating Light and re-picking the type. Each still
+        # creates this one chunk; the entry just presets light_type.
+        variants=[(_label(t), {"light_type": t}) for t in _LIGHT_TYPES],
         description="""
         Light chunk — creates a USD light prim of a chosen type at a given path
         on the active stage.
