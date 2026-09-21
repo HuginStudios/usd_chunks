@@ -15,23 +15,34 @@ def build(myChunk: chunk.Chunk, notice, sender):
     """Rebuild the attribute widgets when the prim selection changes."""
     dynGrp = myChunk.get_param("dyn_grp", chunk.is_group)
     ppParm = myChunk.get_param("prim", chunk.is_inst(chunk.LineEdit))
+    stage = myChunk.get_stage()
 
-    prims = ppParm.get_prims()
-
-    if not prims:
-        # Clear existing params when no prim selected
-        for grp in dynGrp.get_my_params():
-            grp.request_delete()
-        return
-
-    # Clear and rebuild for each selected prim
+    # Clear and rebuild regardless of what's selected now.
     for grp in dynGrp.get_my_params():
         grp.request_delete()
 
-    for prim in prims:
-        prim_grp = chunk.Group(prim.GetName())
-        dynGrp.add_param(prim_grp)
-        chunk_utils.show_attribute(prim, prim_grp, collapse_non_inputs=True)
+    if not stage:
+        return
+
+    # resolve_paths(), not get_prims(): a selection inside a variant comes back as
+    # /asset{color=red}/geo, and Usd.Stage.GetPrimAtPath doesn't understand that syntax
+    # (it's a chunk_utils-only DSL) -- get_prims() would resolve it to nothing and the
+    # panel would silently show no attributes at all.
+    for path_str in ppParm.resolve_paths():
+        # Enters the stage's active variant selection for the path (a no-op for a plain
+        # one), so both the attribute defaults read below and target_path itself resolve
+        # against the intended variant rather than whatever selection happened to already
+        # be active.
+        with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
+            prim = stage.GetPrimAtPath(target_path)
+            if not prim.IsValid():
+                continue
+            _, _, var_selections = chunk_utils.split_variant_path(path_str)
+            prim_grp = chunk.Group(prim.GetName())
+            dynGrp.add_param(prim_grp)
+            # var_selections is recorded on every generated param, so a later edit from its
+            # slider/menu re-enters this same variant instead of authoring outside it.
+            chunk_utils.show_attribute(prim, prim_grp, collapse_non_inputs=True, var_selections=var_selections)
 
 
 def main():
@@ -67,13 +78,16 @@ def config():
         attributes and relationships.
 
         Parameters:
-          - Prim: select one or more prims (supports viewport picking, globs).
-            The attribute panel rebuilds automatically on selection change.
+          - Prim: select one or more prims (supports viewport picking, globs, and a
+            variant selection embedded in the path, e.g. /asset{color=red}/geo). The
+            attribute panel rebuilds automatically on selection change.
 
         For each selected prim, a collapsible group appears containing typed
         widgets for every attribute (Slider for float, Menu for token, LineEdit
         for string, Vector for float3, etc.) and relationships. Changes write
-        directly to the USD attribute via the chunk's notice system.
+        directly to the USD attribute via the chunk's notice system -- inside the
+        selected variant's own edit context when the Prim path named one, so an edit
+        never leaks out to override every variant at once.
 
         Namespace groups (inputs:, xformOp:, etc.) are organized into
         collapsible sub-groups. The 'inputs' namespace is expanded by default.

@@ -1682,10 +1682,37 @@ class ChunkUsdAttributeSupport(AttributesBase):
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
 
+    # (anchor_prim_path, vs_name, variant) tuples active when this param was bound to
+    # _param_attr_path -- set only for a param bound to a REAL prim's attribute via
+    # chunk_utils.show_attribute (the Property Editor, Light, ...), never for the ordinary
+    # chunk-storage-attr binding. data_changed's write re-enters these via
+    # chunk_utils.author_in_variant_selections instead of get_attr_home_layer, which cannot
+    # see inside a variant. Empty for a param bound outside any variant context.
+    _var_selections: tuple = attrs.field(
+        default=(),
+        init=False,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
+
     # Real prim attr paths this storage attr drives via USD native connections.
     # Connections are re-authored whenever _param_attr_path is set.
     _driven_attr_paths: List[str] = attrs.field(
         factory=list,
+        init=False,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
+
+    # {driven attr path: (anchor_prim_path, vs_name, variant) tuples} for a driven attr
+    # connect_usd_attr registered from inside a variant context -- a param that started as
+    # a direct real-attr binding (show_attribute) before _sync_chunk_inputs promoted it into
+    # one the chunk's own storage attr drives (see chunk_stage._drive_from_storage). Keyed
+    # per path, not a single param-wide field: _driven_attr_paths is itself a list, and one
+    # param could in principle drive several real attrs with different variant scopes.
+    # _write_driven_attrs / _author_driven_connections re-enter the recorded selections
+    # (chunk_utils.author_in_variant_selections) instead of the chunk's plain edit layer,
+    # which cannot see inside a variant. Empty/missing for a path bound outside any variant.
+    _driven_var_selections: Dict[str, tuple] = attrs.field(
+        factory=dict,
         init=False,
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
@@ -1725,15 +1752,23 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 chunk_notice._usd_write_active = True
                 try:
                     if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
-                        # self._param_attr_path is always the chunk-prim's own storage attr —
+                        # self._param_attr_path is usually the chunk-prim's own storage attr —
                         # bookkeeping, independent of the stage's ambient/Edit-Target-driven
                         # edit target (which _write_driven_attrs below correctly targets
                         # separately via get_edit_context()). It already exists (that's what
                         # having a _param_attr_path means), so update it wherever its spec
                         # already lives — not wherever Edit Target currently resolves to,
                         # which may have moved on since it was first authored.
-                        home = chunk_utils.get_attr_home_layer(usd_attr) or stage.GetSessionLayer()
-                        with Usd.EditContext(stage, home):
+                        #
+                        # A param bound straight to a real prim's attribute from inside a
+                        # variant (show_attribute, from the Property Editor or Light) is the
+                        # exception: get_attr_home_layer walks the stage's plain layer stack,
+                        # which cannot see a spec keyed under a variant's own internal path,
+                        # so it always comes back empty there and the edit would otherwise
+                        # fall through to the session layer -- outside the variant entirely.
+                        # Re-enter the selections recorded at bind time instead.
+                        fallback = chunk_utils.get_attr_home_layer(usd_attr) or stage.GetSessionLayer()
+                        with chunk_utils.edit_context_for(stage, self._var_selections, fallback):
                             if not is_expr:
                                 current = usd_attr.Get(0)
                                 # Don't write a string to a typed (non-String) attr — an unresolved
@@ -1776,6 +1811,11 @@ class ChunkUsdAttributeSupport(AttributesBase):
         and the storage attr are topology only — USD Get() on the driven attr doesn't
         follow them, so the resolved value must be copied explicitly for any GUI
         reading that attr directly to see it.
+
+        A path connect_usd_attr recorded a variant scope for (show_attribute, from inside a
+        variant) is the exception: get_edit_context()'s plain layer would author the value
+        outside the variant, applying it to every variant equally, so that path re-enters
+        the recorded selections (chunk_utils.author_in_variant_selections) instead.
         """
         if val is None or not self._driven_attr_paths:
             return
@@ -1792,7 +1832,8 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 if isinstance(val, str) and driven_attr.GetTypeName() != Sdf.ValueTypeNames.String:
                     continue
                 if driven_attr.Get(0) != val:
-                    with Usd.EditContext(stage, chunk_layer):
+                    var_selections = self._driven_var_selections.get(path, ())
+                    with chunk_utils.edit_context_for(stage, var_selections, chunk_layer):
                         driven_attr.Set(val)
 
     @abstractmethod
@@ -1912,7 +1953,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if stage and self._param_attr_path:
             return stage.GetPropertyAtPath(self._param_attr_path)
 
-    def _connect_param_attr(self, attr: Usd.Property) -> None:
+    def _connect_param_attr(self, attr: Usd.Property, var_selections: Optional[tuple] = None) -> None:
         """
         Internal: bind this param to its storage attribute for UI↔USD sync.
         After binding, re-authors any pending USD connections to driven real attrs.
@@ -1920,7 +1961,16 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
         Args:
             attr (Usd.Property): The storage attribute (/chunks/<name>/inputs:<param>).
+            var_selections: See _var_selections. None (the default) leaves whatever is
+                already recorded untouched -- _sync_chunk_inputs rebinds every param to its
+                own chunk-prim storage attr on every load/sync, and passes nothing here, so
+                that generic rebind must not clobber what from_usd_attr recorded when this
+                param was first built from a real prim's attribute (show_attribute). Only a
+                caller that actually knows the answer -- from_usd_attr -- passes a tuple,
+                even () for "bound outside any variant".
         """
+        if var_selections is not None:
+            self._var_selections = tuple(var_selections)
         path = str(attr.GetPath())
         if self._param_attr_path == path:
             return
@@ -1996,7 +2046,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         except Exception:
             return None
 
-    def connect_usd_attr(self, attr: Usd.Property) -> None:
+    def connect_usd_attr(self, attr: Usd.Property, var_selections: tuple = ()) -> None:
         """
         Drive a real prim attribute from this param's storage attribute via a USD native
         connection. The storage attr becomes the connection source; the real attr is the target.
@@ -2008,11 +2058,18 @@ class ChunkUsdAttributeSupport(AttributesBase):
             attr (Usd.Property): The real prim attribute to drive (e.g. /cameras/Cam.focalLength).
                                  May be an invalid/non-existent attribute — the path is stored and
                                  the attribute is created on demand.
+            var_selections: The (anchor_prim_path, vs_name, variant) tuples active when attr was
+                resolved, if any -- see _driven_var_selections. chunk_stage._drive_from_storage
+                passes the param's own _var_selections through here when it promotes a direct
+                real-attr binding (show_attribute) into one the storage attr drives.
         """
         path = str(attr.GetPath())
-        if path in self._driven_attr_paths:
-            return
-        self._driven_attr_paths.append(path)
+        if path not in self._driven_attr_paths:
+            self._driven_attr_paths.append(path)
+        if var_selections:
+            self._driven_var_selections[path] = tuple(var_selections)
+        elif path in self._driven_var_selections:
+            del self._driven_var_selections[path]
         if self._param_attr_path:
             self._author_driven_connections()
 
@@ -2024,7 +2081,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
         Always writes into the chunk's own layer (anonymous for procedural, file for
         interactive) so these connections never land in the session layer and can be
-        overridden in the same layer by wire_shader_input after connect_usd_attr.
+        overridden in the same layer by wire_shader_input after connect_usd_attr -- unless
+        connect_usd_attr recorded a variant scope for that path (show_attribute, from inside
+        a variant), in which case the connection is authored inside that variant instead, so
+        it doesn't leak into every variant equally.
         """
         if not self._param_attr_path:
             return
@@ -2049,10 +2109,8 @@ class ChunkUsdAttributeSupport(AttributesBase):
                     continue
                 real_attr = prim.CreateAttribute(sdf_path.name, type_name, custom=False)
             if real_attr and real_attr.IsValid():
-                if chunk_layer:
-                    with Usd.EditContext(stage, chunk_layer):
-                        real_attr.SetConnections([storage_path])
-                else:
+                var_selections = self._driven_var_selections.get(path, ())
+                with chunk_utils.edit_context_for(stage, var_selections, chunk_layer):
                     real_attr.SetConnections([storage_path])
 
         # SetConnections only authors topology — Get() on the driven attr doesn't follow
@@ -2069,10 +2127,14 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
         Args:
             attr (Usd.Attribute): The attribute to represent as a param
+            var_selections: See ChunkUsdAttributeSupport._var_selections. Popped out of
+                kwargs before construction -- it is never a param constructor argument, only
+                something _connect_param_attr records afterward.
 
         Returns:
             ChunkUsdAttributeSupport: A parameter that implements the ChunkUsdAttributeSupport interface
         """
+        var_selections = kwargs.pop("var_selections", ())
         attr_name = attr.GetName()
 
         if (args and isinstance(args[0], str)) or kwargs.get("name"):
@@ -2089,7 +2151,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
             param.default_value = default_value  # type: ignore
 
-        param._connect_param_attr(attr)
+        param._connect_param_attr(attr, var_selections=var_selections)
 
         return param
 
@@ -3328,20 +3390,28 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                 chunk_notice._usd_write_active = True
                 try:
                     if self._param_attr_path and (usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path))):
-                        if not is_expr:
-                            current = usd_attr.Get(0)
-                            if current != val:
-                                usd_attr.Set(val)
-                        else:
-                            chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
-                            usd_attr.SetConnections([
-                                Sdf.Path(
-                                    f"{chunk_root}/{node}.outputs:{attr_name}"
-                                    if stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}")).GetAttribute(f"outputs:{attr_name}").IsValid()
-                                    else f"{chunk_root}/{node}.inputs:{attr_name}"
-                                )
-                                for node, attr_name in chunk_utils.parse_expression(raw)
-                            ])
+                        # See ChunkParamBase.data_changed for why a param bound from inside a
+                        # variant (show_attribute) must re-enter it here rather than rely on
+                        # the ambient edit target -- that is the ordinary case for a ChunkVectorBase
+                        # too (displayColor, extent, ... are common on a variant-scoped prim).
+                        # fallback_layer=None preserves the ambient edit target this always
+                        # used before the variant carve-out, unlike its scalar counterpart's
+                        # get_attr_home_layer fallback -- ChunkVectorBase never resolved one.
+                        with chunk_utils.edit_context_for(stage, self._var_selections, None):
+                            if not is_expr:
+                                current = usd_attr.Get(0)
+                                if current != val:
+                                    usd_attr.Set(val)
+                            else:
+                                chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
+                                usd_attr.SetConnections([
+                                    Sdf.Path(
+                                        f"{chunk_root}/{node}.outputs:{attr_name}"
+                                        if stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}")).GetAttribute(f"outputs:{attr_name}").IsValid()
+                                        else f"{chunk_root}/{node}.inputs:{attr_name}"
+                                    )
+                                    for node, attr_name in chunk_utils.parse_expression(raw)
+                                ])
                     if not self.is_blocked():
                         self._write_driven_attrs(stage, val)
                 finally:

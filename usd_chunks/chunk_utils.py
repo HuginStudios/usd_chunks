@@ -640,12 +640,63 @@ def author_in_variant_context(stage, path_str):
         stage.DefinePrim(t, 'Xform')  # authored inside both variant contexts
     """
     _, target_path, var_selections = split_variant_path(path_str)
+    with author_in_variant_selections(stage, var_selections):
+        yield target_path
 
+
+#: The variant scopes this process currently holds an edit context open for, as
+#: {(id(stage), anchor_prim_path, vs_name): variant}.
+#:
+#: GetVariantEditContext() builds its path mapping on top of whichever edit target is
+#: already active, so entering {color=Black} while already inside it maps /Porsche_911 to
+#: /Porsche_911{color=Black}{color=Black}/... -- a spec path nothing composes, so the edit
+#: silently goes nowhere and the file grows a variantSet nested inside its own variant.
+#:
+#: Re-entry is the normal case here, not an exotic one: the Property Editor holds one scope
+#: open across show_attribute, and the PARAM_ADDED that add_param fires SYNCHRONOUSLY runs
+#: the whole _sync_chunk_inputs -> _drive_from_storage -> connect_usd_attr ->
+#: _author_driven_connections path, which re-enters the same recorded selections to author
+#: its connection. Every entry is popped in the ExitStack teardown below, so an id(stage)
+#: key cannot outlive its stage and be wrongly reused.
+_ACTIVE_VARIANT_SCOPES: dict = {}
+
+
+@contextmanager
+def author_in_variant_selections(stage, var_selections):
+    """The lower half of author_in_variant_context, split out for a caller that already
+    holds a parsed selections list -- (anchor_prim_path, vs_name, variant) tuples, as
+    split_variant_path returns them -- rather than a path string to parse.
+
+    A param bound to a real prim's attribute while a variant was selected (show_attribute,
+    called from inside author_in_variant_context) is the case that needs this directly: it
+    remembers the selections active when it was built, and re-enters them here on every
+    later edit. get_attr_home_layer cannot stand in for this -- a variant's content is
+    keyed by a different internal Sdf path, invisible to a plain layer-stack walk for the
+    attribute's composed path, so it never finds a spec there and the edit falls through to
+    the session layer, landing outside the variant entirely.
+
+    Re-entrant: a scope already open (_ACTIVE_VARIANT_SCOPES) is left alone rather than
+    entered twice, which would nest the variant inside itself and send the write nowhere.
+    """
     edit_layer = get_edit_layer(stage)
     edit_target = Usd.EditTarget(edit_layer)
 
     with ExitStack() as stack:
         for anchor_prim_path, vs_name, variant in var_selections:
+            scope = (id(stage), str(anchor_prim_path), vs_name)
+            if scope in _ACTIVE_VARIANT_SCOPES:
+                if _ACTIVE_VARIANT_SCOPES[scope] != variant:
+                    # Authoring into a DIFFERENT variant of a set an enclosing scope already
+                    # holds open. Nesting it would write nowhere and skipping it writes into
+                    # the enclosing variant instead -- both wrong, so say so rather than let
+                    # one of them look like it worked.
+                    logger.warning(
+                        "Variant scope %s{%s=%s} is already open as %r; authoring inside the "
+                        "open one instead of nesting",
+                        anchor_prim_path, vs_name, variant, _ACTIVE_VARIANT_SCOPES[scope],
+                    )
+                continue
+
             anchor_prim = stage.GetPrimAtPath(anchor_prim_path)
             if not anchor_prim.IsValid():
                 anchor_prim = stage.OverridePrim(anchor_prim_path)
@@ -670,12 +721,44 @@ def author_in_variant_context(stage, path_str):
                     else:
                         v.ClearVariantSelection()
 
+            _ACTIVE_VARIANT_SCOPES[scope] = variant
+            # LIFO teardown: leave the variant edit context, restore the selection, then
+            # drop the scope -- so a nested re-entry still sees it open until we are out.
+            stack.callback(_ACTIVE_VARIANT_SCOPES.pop, scope, None)
             stack.callback(_restore)
             stack.enter_context(vset.GetVariantEditContext())
-        yield target_path
+        yield
 
 
-def show_attribute(prim, target_group, collapse_non_inputs=True):
+def edit_context_for(stage, var_selections, fallback_layer=None):
+    """The one edit context for authoring an attribute's value: inside var_selections if
+    given (re-entering the recorded variant via author_in_variant_selections), otherwise
+    fallback_layer -- or the ambient edit target if fallback_layer is None.
+
+    var_selections cannot be resolved from the attribute alone the way get_attr_home_layer
+    resolves a plain layer: composition only shows the CURRENTLY selected variant's specs,
+    so by the time a later edit fires the stage's active selection has usually already
+    moved on (author_in_variant_context restores it on exit, same as a param built from one
+    variant is often edited while a different one is showing) -- walking the attribute's
+    live composition at write time would silently resolve the wrong variant, or a variant
+    that isn't the one this write is supposed to land in. var_selections is what a caller
+    recorded at the moment it resolved the RIGHT one (chunk_utils.split_variant_path /
+    show_attribute), and carrying it forward explicitly is the only way to still have it.
+
+    This is the shared shape behind every "inside a variant, or the ordinary case" branch
+    the chunk-prim/driven-attr write paths need (ChunkUsdAttributeSupport.data_changed,
+    _write_driven_attrs, _author_driven_connections, ChunkVectorBase.data_changed,
+    chunk_stage._push_driven_values) -- collapsing them into one call is what keeps a future
+    write site's fallback from quietly drifting from the others'.
+    """
+    if var_selections:
+        return author_in_variant_selections(stage, var_selections)
+    if fallback_layer is None:
+        return nullcontext()
+    return Usd.EditContext(stage, fallback_layer)
+
+
+def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=()):
     """Populate a group with typed editable params for all attributes and relationships on a prim.
 
     This is the shared utility for dynamically building attribute editor UIs.
@@ -688,6 +771,12 @@ def show_attribute(prim, target_group, collapse_non_inputs=True):
             are cleared before populating.
         collapse_non_inputs: If True, namespace groups other than 'inputs' start
             collapsed. Keeps the UI tidy for prims with many attributes.
+        var_selections: The (anchor_prim_path, vs_name, variant) tuples active when `prim`
+            was resolved (split_variant_path / author_in_variant_context), if any. Recorded
+            on each generated attribute param so a later edit re-enters the same variant
+            (author_in_variant_selections) instead of authoring outside it -- see
+            ChunkUsdAttributeSupport.data_changed. Pass () for a prim reached outside any
+            variant context, which is the ordinary case and costs nothing extra.
     """
     # Late imports to avoid circular dependency (chunk imports chunk_utils)
     from usd_chunks import chunk
@@ -704,7 +793,7 @@ def show_attribute(prim, target_group, collapse_non_inputs=True):
     attributes = prim.GetAttributes()
     groups = {}
     for attr in attributes:
-        if not (param := chunk.param_from_attr(attr)):
+        if not (param := chunk.param_from_attr(attr, var_selections=var_selections)):
             continue
 
         if not isinstance(param, chunk.ChunkGroupBase):
