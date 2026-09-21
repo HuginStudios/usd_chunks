@@ -293,7 +293,10 @@ class UsdviewScene(chunk_core.SceneSender):
         self._restore_lens = self._free_camera_fov is not None
 
     def _on_snap_timer(self):
-        if self._snap_prim is not None:
+        # IsValid: the stage can be closed between the snap being queued and this firing
+        # (File > Open, or usdview's --quitAfterStartup), and usdview raises on an expired
+        # prim -- which, from a timer slot, takes the application down with it.
+        if self._snap_prim is not None and self._snap_prim.IsValid():
             self._set_viewport_camera(self._snap_prim)
 
     def _on_stage_replaced(self):

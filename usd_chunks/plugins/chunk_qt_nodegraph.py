@@ -87,6 +87,13 @@ _PORT_REBUILD_MS = 60
 _HEIGHT_SETTLE_MS = 250
 _DOT_R = 10  # dot node circle radius
 
+# Proxy widgets wait for the host to finish whatever it is busy with -- see
+# ChunkGraphScene._create_proxies_batch. How often to look again, and how long to keep
+# waiting before building anyway: a host may hold its busy cursor across a long, legitimate
+# operation, and a graph that never appears is worse than one that appears slowly.
+_PROXY_BUSY_RETRY_MS = 50
+_PROXY_BUSY_WAIT_MAX_S = 15.0
+
 # Merge node slot ports: vertical gap between stacked exec inputs, and the y of the first
 # one. The first slot sits at the header centre so it lines up with the output port, which
 # keeps a one-input merge looking like every other node.
@@ -1893,6 +1900,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._built_context: object = _UNBUILT  # sentinel — tracks what context is currently rendered
         self._dirty: bool = True  # set by invalidate(); cleared by a (re)build
         self._edge_timer: Optional[QtCore.QTimer] = None
+        self._proxy_busy_wait_since: Optional[float] = None  # see _create_proxies_batch
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
@@ -2131,6 +2139,29 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
     def _create_proxies_batch(self, remaining: list, gen: int):
         if gen != getattr(self, "_build_gen", gen):
             return  # a newer rebuild superseded this batch — don't touch its stale nodes
+        # Not while the host is busy. usdview holds a busy override cursor from early in its
+        # start-up until its first image is drawn, and drains every pending zero-timer -- so
+        # this whole batch chain -- inside a processEvents() call it makes on the way. A
+        # ChunkWidget built in there costs 10-15x what the same one costs a moment later:
+        # measured on a 21-node scene, RenderSettings 16s vs 1.4s, Camera 4.5s vs 0.3s,
+        # PropertyEditor 4.4s vs 0.4s, for 50s of start-up against 15s. Not the GIL (no
+        # worker thread alive at the time), not window visibility, not the event-loop
+        # level; the plain Qt calls (setLayout, addWidget, setStyleSheet) are simply that
+        # much slower inside the host's start-up pass. The override cursor is the host's own
+        # signal that it is mid-operation, and it means the same thing during File > Open.
+        #
+        # Bounded (_PROXY_BUSY_WAIT_MAX_S): a host that holds the cursor for a long operation
+        # gets its graph anyway, at the slow price, rather than never.
+        if QtWidgets.QApplication.overrideCursor() is not None:
+            now = time.monotonic()
+            if self._proxy_busy_wait_since is None:
+                self._proxy_busy_wait_since = now
+            if now - self._proxy_busy_wait_since < _PROXY_BUSY_WAIT_MAX_S:
+                QtCore.QTimer.singleShot(
+                    _PROXY_BUSY_RETRY_MS, self, lambda: self._create_proxies_batch(remaining, gen)
+                )
+                return
+        self._proxy_busy_wait_since = None
         batch, rest = remaining[:self._PROXY_BATCH_SIZE], remaining[self._PROXY_BATCH_SIZE:]
         for node in batch:
             # Never let one bad proxy abort the whole batch (which would leave every remaining
