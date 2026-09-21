@@ -573,6 +573,80 @@ def test_layout_uses_the_drawn_size_when_there_is_one(view):
 
 
 # ---------------------------------------------------------------------------
+# hidden groups hide, list rows edit
+# ---------------------------------------------------------------------------
+
+def _add(view, module_name):
+    """Add one more chunk of `module_name` to the fixture scene; return its node."""
+    chunk = _make(chunk_registry.ChunkRegistry().get_chunk_module(module_name))
+    view.scene.add_chunk(chunk)
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.reload()
+    return view.tree.nodes[chunk_stage.get_chunk_prim_path(chunk)]
+
+
+def test_a_hidden_groups_params_are_hidden_with_it(view):
+    """add_mesh keeps cube, tube and grid groups and shows the one its menu names. The
+    params inside carry no HIDDEN bit of their own, so reading only theirs drew every
+    group's fields at once and the Mesh Type menu visibly did nothing."""
+    node = _add(view, "add_mesh")
+    chunk = node.get_chunk()
+    shown = [p.name for p in chunk_blender.iter_drawable(chunk)]
+    assert shown == ["prim_path", "mesh_type"], shown
+    assert node.inputs["dimx1"].hide and node.inputs["dimx"].hide
+    node.mesh_type = "grid"
+    _flush(view)
+    assert chunk.get_param("mesh_type").value == "grid"
+    assert not node.inputs["dimx1"].hide, "the grid group's socket stays folded"
+    assert node.inputs["dimx"].hide, "the cube group's socket unfolded"
+    assert "dimx1" in [p.name for p in chunk_blender.iter_drawable(chunk)]
+
+
+def test_the_write_guard_is_released_after_a_mirror(view):
+    """sync_to_node takes the guard per param and must give it back: a leaked entry
+    silently blocks every later edit of that param from the node."""
+    _add(view, "add_mesh")
+    assert not chunk_blender._writing
+
+
+def test_list_rows_are_per_row_properties(view):
+    """A ListGroup's rows share the template's param NAMES, so one RNA property per name
+    reached the template and no row -- a Scatter's prototype could never be set. Rows
+    are ID properties keyed list.row.param, resolved through get_indexed_param."""
+    node = _add(view, "scatter_points")
+    chunk = node.get_chunk()
+    assert not hasattr(node, "proto_path"), "the template must not be an RNA property"
+    assert "prototypes.0.proto_path" in node.keys()
+    node["prototypes.0.proto_path"] = "/House"
+    chunk_blender.sync_lofted(node, chunk)  # what the next draw does
+    protos = chunk.get_param("prototypes")
+    assert protos.get_indexed_param("proto_path", 0).value == "/House"
+    assert chunk_blender.resolve_key(chunk, "prototypes.0.proto_path") is \
+        protos.get_indexed_param("proto_path", 0)
+    assert chunk_blender.prop_key(protos.get_indexed_param("proto_scale", 0)) == \
+        "prototypes.0.proto_scale"
+
+
+def test_growing_a_list_seeds_the_new_rows_properties(view):
+    node = _add(view, "scatter_points")
+    path = node.name
+    node.get_chunk().get_param("prototypes").size = 2
+    _flush(view)  # PARAM_ADDED asked for a rebuild
+    node = view.tree.nodes[path]
+    assert "prototypes.1.proto_path" in node.keys()
+
+
+def test_a_list_rows_socket_labels_rather_than_edits(view):
+    """The row's field lives in its row box with the row's other fields, not up on the
+    socket where only row 0 could ever be shown."""
+    node = _add(view, "scatter_points")
+    socket = node.inputs["proto_path"]
+    param = bg.socket_param(socket, node)
+    assert param is not None
+    assert not bg.socket_draws_value(socket, param)
+
+
+# ---------------------------------------------------------------------------
 # the add-on: keys route to the chunk verbs, undo re-derives the tree
 # ---------------------------------------------------------------------------
 

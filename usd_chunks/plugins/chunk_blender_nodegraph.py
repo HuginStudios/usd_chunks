@@ -257,7 +257,12 @@ def socket_draws_value(socket, param) -> bool:
     """
     if param is None or socket.is_output or socket.is_linked:
         return False
-    return not param.has_state(ChunkFlags.State.HIDDEN)
+    if chunk_blender.list_row_of(param) is not None:
+        # A list row's field belongs in its row box in the body, beside the row's other
+        # fields; drawn on the socket it would sit above the body with row 0's value
+        # and the box would show a row with one field missing.
+        return False
+    return not chunk_blender.is_hidden(param)
 
 
 def socket_drawn_params(node) -> set:
@@ -272,10 +277,29 @@ def socket_drawn_params(node) -> set:
         if not socket_draws_value(socket, param):
             continue
         if hasattr(param, "get_type"):
-            names.add(param.name)
+            names.add(chunk_blender.prop_key(param))
         else:
-            names.update(p.name for p in chunk_blender.iter_drawable(param))
+            names.update(chunk_blender.prop_key(p) for p in chunk_blender.iter_drawable(param))
     return names
+
+
+def sync_socket_visibility(node) -> None:
+    """Hide the sockets of hidden params, so the node shrinks to what the chunk shows.
+
+    Qt rebuilds its typed ports when a param's HIDDEN bit flips and the hidden ones go
+    away; Blender's equivalent is socket.hide, which folds an unlinked socket out of the
+    node (a linked one stays, as Blender always keeps a wired socket visible). Without
+    this a chunk that shows one of several groups -- add_mesh's cube/tube/grid -- drew
+    every group's rows at once and the menu that picks one visibly did nothing.
+    """
+    for collection in (node.inputs, node.outputs):
+        for socket in collection:
+            if socket.port_type == chunk_graph.PORT_EXEC:
+                continue
+            param = socket_param(socket, node)
+            hidden = param is not None and chunk_blender.is_hidden(param)
+            if socket.hide != hidden:
+                socket.hide = hidden
 
 
 class UsdChunksSocket(bpy.types.NodeSocket):
@@ -391,7 +415,7 @@ class USDCHUNKS_OT_param_button(bpy.types.Operator):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
         chunk = node.get_chunk() if node else None
-        param = chunk.get_param(self.param_name) if chunk else None
+        param = chunk_blender.resolve_key(chunk, self.param_name) if chunk else None
         if param is None:
             self.report({"WARNING"}, "no such param: %s" % self.param_name)
             return {"CANCELLED"}
@@ -419,7 +443,8 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
         chunk = node.get_chunk() if node else None
-        param = chunk.get_param(self.param_name) if chunk else None
+        # A key, not a name: a prototype row's field is `prototypes.0.proto_path`.
+        param = chunk_blender.resolve_key(chunk, self.param_name) if chunk else None
         if param is None:
             self.report({"WARNING"}, "no such param: %s" % self.param_name)
             return {"CANCELLED"}
@@ -429,6 +454,34 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
             self.report({"INFO"}, "nothing picked -- ctrl+click a prim in the viewport")
             return {"CANCELLED"}
         param.value = ",".join(str(p.GetPath()) for p in prims)
+        return {"FINISHED"}
+
+
+class USDCHUNKS_OT_list_resize(bpy.types.Operator):
+    """Add or remove a row of a ListGroup -- the +/- beside its header."""
+
+    bl_idname = "usd_chunks.list_resize"
+    bl_label = "Resize List"
+    bl_options = {"REGISTER"}
+
+    node_path: bpy.props.StringProperty()
+    list_name: bpy.props.StringProperty()
+    delta: bpy.props.IntProperty(default=1)
+
+    def execute(self, context):
+        tree = getattr(context.space_data, "edit_tree", None)
+        node = tree.nodes.get(self.node_path) if tree else None
+        chunk = node.get_chunk() if node else None
+        group = chunk.get_param(self.list_name) if chunk else None
+        if not isinstance(group, core.ChunkListGroupBase):
+            self.report({"WARNING"}, "no such list: %s" % self.list_name)
+            return {"CANCELLED"}
+        size = max(0, group.size + self.delta)
+        if size == group.size:
+            return {"CANCELLED"}
+        # Growing sends PARAM_ADDED, shrinking deletes the row's params: either way the
+        # view hears it and rebuilds, which is what seeds the new row's ID properties.
+        group.size = size
         return {"FINISHED"}
 
 
@@ -839,6 +892,7 @@ class BlenderGraphView:
                     continue
                 sock = collection.new(SOCKET_ID, port.name)
                 sock.port_type = port.port_type
+            sync_socket_visibility(node)
 
         for edge in self.edges:
             src, dst = made.get(edge.src_node_path), made.get(edge.dst_node_path)
@@ -986,6 +1040,7 @@ class BlenderGraphView:
             if chunk is not None:
                 chunk_blender.sync_to_node(node, chunk)
             self.apply_node_state(node, prim, chunk)
+            sync_socket_visibility(node)
         tag_redraw()
 
     # -- selection ---------------------------------------------------------
@@ -1476,7 +1531,7 @@ def _draw_add_menu(self, context) -> None:
 # ---------------------------------------------------------------------------
 
 _CLASSES = (UsdChunksNodeTree, UsdChunksSocket, USDCHUNKS_OT_param_button,
-            USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_add_node)
+            USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_list_resize, USDCHUNKS_OT_add_node)
 
 
 def _register_once(cls) -> None:
