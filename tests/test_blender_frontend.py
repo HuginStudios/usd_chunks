@@ -37,14 +37,16 @@ if "bpy" not in sys.modules:  # pragma: no cover - the usual case outside Blende
 
 import bpy  # noqa: E402
 
-from pxr import Usd  # noqa: E402
+from pxr import Sdf, Usd  # noqa: E402
 
+from graph_fixtures import chunk_prims, make_network  # noqa: E402
 from usd_chunks import chunk_registry  # noqa: E402
 from usd_chunks.chunk_core import ChunkConfig  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
 from usd_chunks.chunk_scene import SceneSender  # noqa: E402
 from usd_chunks.plugins import chunk_blender, chunk_graph  # noqa: E402
 from usd_chunks import chunk_stage  # noqa: E402
+from usd_chunks.plugins import chunk_blender_addon as addon  # noqa: E402
 from usd_chunks.plugins import chunk_blender_nodegraph as bg  # noqa: E402
 
 
@@ -520,7 +522,6 @@ def test_a_chunkgroup_gets_the_group_header(view):
 def test_locked_is_an_opinion_from_a_layer_that_is_not_the_edit_target(tmp_path):
     """Qt's rule, verbatim. A prim whose strongest non-anonymous opinion is a sublayer is
     locked while the edit target is the root, and not once the target is that layer."""
-    from pxr import Sdf
     stage = Usd.Stage.CreateInMemory()
     layer = Sdf.Layer.CreateNew(str(tmp_path / "referenced.usda"))
     Sdf.CreatePrimInLayer(layer, "/chunks/Ref")
@@ -549,13 +550,46 @@ def test_a_locked_node_is_amber_and_keeps_its_position(view):
 
 
 # ---------------------------------------------------------------------------
+# positions: USD units, scaled for Blender's bigger nodes
+# ---------------------------------------------------------------------------
+
+def test_positions_are_scaled_in_and_unscaled_on_the_way_out(view):
+    """A position in USD is a Qt scene pixel. Blender's nodes are bigger, so the tree
+    shows them _SCALE apart -- and writes them back divided, so Qt sees Qt spacing."""
+    ref = _node(view, "Ref")
+    usd_x, usd_y = chunk_graph.node_position(view.prims[ref.name])
+    assert tuple(ref.location) == pytest.approx((usd_x * bg._SCALE, usd_y * bg._SCALE))
+    ref.location = (500.0, -250.0)
+    view.pull_positions_from_tree()
+    assert chunk_graph.node_position(view.prims[ref.name]) == pytest.approx(
+        (500.0 / bg._SCALE, -250.0 / bg._SCALE))
+
+
+def test_layout_uses_the_drawn_size_when_there_is_one(view):
+    """node.dimensions is zero until the editor draws the node (always, headless), so the
+    engine default stands in; once drawn, the real size is what the layout spaces by."""
+    ref = _node(view, "Ref")
+    assert view._node_size(ref.name) == chunk_graph.node_size(view.prims[ref.name])
+
+
+# ---------------------------------------------------------------------------
 # the add-on: keys route to the chunk verbs, undo re-derives the tree
 # ---------------------------------------------------------------------------
+
+def test_opening_a_file_through_the_addon_loads_each_chunk_once(tmp_path):
+    """ChunkStageSync.initialize loads the file itself; the second load_chunks that
+    followed it made a copy of every chunk (Reference -> Reference8, View1 -> View11),
+    laid out in a row off to the right -- reported as "the file's positions are wrong"."""
+    path, context = make_network(tmp_path / "addon.usda")
+    tree = bpy.data.node_groups.new("addon", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.Open(path), context_path=context, tree=tree)
+    view = addon.get_view()
+    assert len(chunk_prims(view.stage)) == 4, chunk_prims(view.stage)
+    assert len(view.tree.nodes) == 3  # two transforms and the view
 
 def test_every_bound_key_is_a_registered_chunk_operator():
     """X, Shift+D, Ctrl+C/X/V and M have stock node operators that edit only the bpy
     tree. The add-on binds the same keys to the chunk verbs, so the model moves too."""
-    from usd_chunks.plugins import chunk_blender_addon as addon
     registered = set(addon._CLASSES) | set(bg._CLASSES)
     bound = {op for op, _key, _mods, _props in addon._KEYS}
     assert all(op in registered for op in bound)
@@ -569,7 +603,6 @@ def test_no_chunk_operator_pushes_an_undo_step():
     """Blender's undo restores the .blend and knows nothing about the stage, so an
     operator that pushed a step only ever half-undid. None of them do; undo_post
     rebuilds from USD instead."""
-    from usd_chunks.plugins import chunk_blender_addon as addon
     for cls in addon._CLASSES + bg._CLASSES:
         assert "UNDO" not in getattr(cls, "bl_options", set()), cls.__name__
 
@@ -577,7 +610,6 @@ def test_no_chunk_operator_pushes_an_undo_step():
 def test_undo_re_derives_the_tree_from_usd(view):
     """What Blender's undo does to the tree -- here, a node it takes away -- is not what
     the model says, and the model wins."""
-    from usd_chunks.plugins import chunk_blender_addon as addon
     view.tree.nodes.remove(_node(view, "Move"))
     assert "Move" not in [n.label for n in view.tree.nodes]
     addon._on_undo(None)

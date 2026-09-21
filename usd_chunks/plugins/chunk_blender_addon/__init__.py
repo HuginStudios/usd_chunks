@@ -146,6 +146,11 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     _scene = BlenderScene(stage)
     chunk_registry.ChunkRegistry().initialize(_scene, "blender")
     chunk_registry.ChunkLayerManager().initialize(stage)
+    # ChunkStageSync.initialize loads the file's chunks itself, with the dedup set that
+    # stops a prim loading twice. A second load_chunks after it -- which stood here --
+    # had no such set and loaded every chunk again: each got a fresh prim (Reference ->
+    # Reference8, View1 -> View11) laid out in a row off to the right of the real
+    # network, which read as "the file's positions are wrong".
     chunk_stage.ChunkStageSync().initialize(stage, _scene)
     # Node classes are generated from the registry, and the registry only discovers chunks
     # once a scene exists -- so this cannot happen in register(), where there is no scene
@@ -154,7 +159,6 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     made = bg.register_chunk_types()
     if made:
         logger.info("usd_chunks: %d chunk node type(s) registered", len(made))
-    chunk_stage.load_chunks(stage, _scene)
 
     if tree is None:
         tree = _active_tree()

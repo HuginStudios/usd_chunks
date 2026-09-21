@@ -62,7 +62,15 @@ _NODE_PATH = "chunk_path"
 #: Blender's node editor is Y-up like USD, unlike the Qt and Flet canvases which are Y-down
 #: and negate. So positions pass through unflipped -- and must, or a graph laid out in
 #: Blender opens mirrored in the other two.
-_SCALE = 1.0
+#:
+#: They do pass through SCALED. A position in USD is a Qt scene pixel, where a node is 220
+#: wide and its body is the compact ChunkWidget; a Blender node is NODE_WIDTH wide and
+#: gives every socket its own row, so it is bigger in both directions (measured on a
+#: Transform: 260 x 671 here against roughly 220 x 330 in Qt). A chain Qt laid out at 260
+#: per column opened here with nodes touching edge to edge. 1.25 opens that to a 65px gap
+#: at the same layout; it divides back out on write (pull_positions_from_tree, the Add
+#: cursor), so a graph arranged here lands in Qt at Qt's own spacing.
+_SCALE = 1.25
 
 #: Port colours by the engine's port-type vocabulary. Blender wants RGBA 0-1.
 _PORT_COLOURS = {
@@ -1265,6 +1273,21 @@ class BlenderGraphView:
                 self._write_position(node.name, node.location[0] / _SCALE,
                                      node.location[1] / _SCALE)
 
+    def _node_size(self, path: str) -> "tuple[float, float]":
+        """A node's size in USD (layout) units.
+
+        Blender's drawn size when it has one -- node.dimensions is filled in by the draw
+        and is zero until then (headless, or a node the editor has not shown yet), where
+        the engine's default stands in. Qt measures its items the same way; the default
+        is 200 x 90 and a Transform here draws at 260 x 671, so laying out from the
+        default stacked nodes through each other. Read back through _SCALE, since the
+        layout is computed in USD units and the result is scaled up on the way out.
+        """
+        node = self.tree.nodes.get(path) if self.tree is not None else None
+        if node is not None and node.dimensions.x > 0 and node.dimensions.y > 0:
+            return node.dimensions.x / _SCALE, node.dimensions.y / _SCALE
+        return chunk_graph.node_size(self.prims[path])
+
     def auto_layout(self) -> None:
         """Lay out the selection's connected subgraph, or everything.
 
@@ -1277,7 +1300,7 @@ class BlenderGraphView:
             return
         placed = chunk_graph.layout_graph(
             self.prims,
-            size_of=lambda path: chunk_graph.node_size(self.prims[path]),
+            size_of=self._node_size,
             current_pos=lambda path: self.positions.get(path, (0.0, 0.0)),
             seeds=[p for p in self.selected_nodes if p in self.prims] or None,
             # As Qt: a node from a referenced layer stays where its file put it and the
