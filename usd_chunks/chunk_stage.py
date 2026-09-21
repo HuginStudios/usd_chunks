@@ -622,6 +622,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prim_path = f"{chunk_root}/{sender.name}"
         disabled = sender.has_state(ChunkFlags.State.DISABLED)
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
+        if prim.IsValid():
+            self._write_expansion_state(sender, prim)
         if not prim.IsValid():
             # A chunk under a deactivated ancestor is not in the composed scene at all, so
             # there is no prim to ask -- and a group re-enables its children before its own
@@ -660,6 +662,41 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 prim.SetActive(not disabled)
             finally:
                 chunk_notice._usd_write_active = prev_w
+
+    def _write_expansion_state(self, chunk: "core.ChunkBase", prim: "Usd.Prim") -> None:
+        """Record whether this node is collapsed, so a reopened scene looks as it was left.
+
+        USD already has the attribute for it: UsdUINodeGraphNodeAPI's expansionState, the
+        same schema the node's position is authored through, so a graph collapsed here reads
+        as collapsed to anything else that speaks that schema rather than only to us.
+
+        Authored only when closed. Open is the state a chunk is born in, so writing it would
+        put a line on every chunk prim in every scene to say nothing -- the same reasoning
+        chunk:pinned follows.
+        """
+        collapsed = chunk.has_state(ChunkFlags.State.COLLAPSED)
+        attr = prim.GetAttribute(UsdUI.Tokens.uiNodegraphNodeExpansionState)
+        current = attr.Get() if (attr and attr.IsValid()) else None
+        if collapsed == (current == UsdUI.Tokens.closed):
+            return
+
+        prev_w = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True
+        try:
+            if not collapsed:
+                # Back to the default: drop the opinion rather than author "open" over it,
+                # wherever it was written.
+                for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+                    spec = layer.GetPrimAtPath(prim.GetPath())
+                    name = UsdUI.Tokens.uiNodegraphNodeExpansionState
+                    if spec and name in spec.properties:
+                        del spec.properties[name]
+                return
+            home = chunk_utils.get_attr_home_layer(attr) if (attr and attr.IsValid()) else None
+            with Usd.EditContext(self._stage, home or chunk_utils.get_bookkeeping_layer(self._stage, chunk)):
+                UsdUI.NodeGraphNodeAPI.Apply(prim).CreateExpansionStateAttr(UsdUI.Tokens.closed)
+        finally:
+            chunk_notice._usd_write_active = prev_w
 
     def _on_objects_changed(self, notice: Usd.Notice.ObjectsChanged, sender):
         # Before the guards, since a prim appearing or an inputs:chunk connection changing
@@ -4620,6 +4657,18 @@ def _restore_disabled_state(prim: "Usd.Prim", chunk: "core.ChunkBase") -> None:
         chunk.set_state(ChunkFlags.State.DISABLED)
 
 
+def _restore_collapsed_state(prim: "Usd.Prim", chunk: "core.ChunkBase") -> None:
+    """Carry a node's authored expansionState back onto the chunk it belongs to.
+
+    Collapsing a node authors ui:nodegraph:node:expansionState = closed, so the file records
+    it -- but a freshly built chunk starts open, and without this the graph came back fully
+    expanded however it was saved.
+    """
+    attr = prim.GetAttribute(UsdUI.Tokens.uiNodegraphNodeExpansionState)
+    if attr and attr.IsValid() and attr.Get() == UsdUI.Tokens.closed:
+        chunk.set_state(ChunkFlags.State.COLLAPSED)
+
+
 def load_chunks(
     stage: Usd.Stage,
     scene: "core.SceneSender",
@@ -4798,6 +4847,7 @@ def _load_chunks(
                             # missing).
                             _load_wire_inputs(prim, c)
                             _restore_disabled_state(prim, c)
+                            _restore_collapsed_state(prim, c)
                             c.prim_path = str(prim.GetPath())
                             object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                             if ancestor_group is not None:
@@ -4859,6 +4909,7 @@ def _load_chunks(
                             # add_param so PARAM_ADDED widgets see the correct values.
                             _load_wire_inputs(prim, c)
                             _restore_disabled_state(prim, c)
+                            _restore_collapsed_state(prim, c)
                             ancestor_group.add_param(c, notify=False)
                             object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                             deferred.append((prim, c))
@@ -4867,6 +4918,7 @@ def _load_chunks(
                             # PARAM_ADDED widget sees the correct values on creation.
                             _load_wire_inputs(prim, c)
                             _restore_disabled_state(prim, c)
+                            _restore_collapsed_state(prim, c)
                             if added := scene.add_chunk(c, notify=False):
                                 object.__setattr__(added, '_exec_prim_path', str(prim.GetPath()))
                                 deferred.append((prim, added))
