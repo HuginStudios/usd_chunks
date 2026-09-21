@@ -108,4 +108,5 @@ def config():
         "Wire the Input to a Wedge range to sweep configurations that differ in structure "
         "rather than in value. Use [0, number-of-slots) -- the index truncates and a wedge "
         "range is half-open.",
+        dynamic_exec_inputs=True,
     )

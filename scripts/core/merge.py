@@ -27,4 +27,5 @@ def config():
         "author the same prim, the one in the topmost slot takes precedence (same convention "
         "as Houdini's Merge LOP). Slots stay dense: clearing one shifts the rest up, and the "
         "trailing empty slot is where a new branch attaches.",
+        dynamic_exec_inputs=True,
     )

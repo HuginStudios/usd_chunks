@@ -56,16 +56,6 @@ def execute(node):
     prim_type = node.get_param("prim_type").value or "Xform"
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
         prim = stage.GetPrimAtPath(target_path)
-        # IsDefined, not IsValid -- and the emptiness check first, because IsDefined
-        # raises on a null prim while IsValid is safe on one.
-        #
-        # A prim that only ever appears as an `over` -- which is
-        # what every other chunk authoring to this path leaves behind -- is perfectly
-        # valid: it exists in the namespace. It is not *defined*, and USD does not compose
-        # children onto an undefined prim, so the reference resolves, lands in the prim
-        # stack, and contributes nothing. Guarding on IsValid skips the DefinePrim that
-        # would have made it real, and the failure is silent: a referenced asset that is
-        # simply, inexplicably empty.
         if not prim or not prim.IsDefined():
             prim = stage.DefinePrim(target_path, prim_type)
         prim.GetReferences().AddReference(ref)
@@ -74,19 +64,16 @@ def execute(node):
 def main():
     referenceChunk = chunk.Chunk("Reference")
 
-    # import
     reference_fb = chunk.FileBrowser("file_path", extensions=[".usd*", ".usd", ".usda", ".usdc", ".usdz"])
     reference_fb.set_flag(chunk.ChunkFlags.ParamFlags.FILE_EXISTING)
     reference_fb.add_callback(file_changed)
-    import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path", flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path")
+    primpath = chunk.LineEdit("primpath_location", "Insert to location")
+    prim_type = chunk.LineEdit("prim_type", "Prim Type", default_value="Xform")
+
     referenceChunk.add_param(reference_fb)
     referenceChunk.add_param(import_primpath)
-
-    # prim location
-    primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     referenceChunk.add_param(primpath)
-
-    prim_type = chunk.LineEdit("prim_type", "Prim Type", default_value="Xform", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     referenceChunk.add_param(prim_type)
 
     return referenceChunk

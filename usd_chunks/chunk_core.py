@@ -926,6 +926,11 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     def empty(self):
         return not bool(self._params)
 
+    def __contains__(self, obj: "ChunkCommon | ProxyParam") -> bool:
+        """Whether obj is held here or anywhere nested, by identity (its hash), without
+        materialising the nested hierarchy -- see resolve_new_param for why that matters."""
+        return obj.get_hash() in self._params
+
 
 
     def get_notice_data(self) -> Self:
@@ -1332,6 +1337,15 @@ class ChunkCommon(AttributesBase):
         default=None, init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
     )
 
+    # Set once, on the clone chunk_stage.loft_param_to_context/_restore_lofted_params
+    # produces -- a static marker, not a live link to the source chunk (there is no live
+    # link; label is a one-time default, see loft_param_to_context). Its only job is
+    # letting the params panel offer "Rename..." for a lofted param specifically, rather
+    # than for every param generally.
+    _lofted: bool = attrs.field(
+        default=False, init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
+    )
+
     def get_identifier(self) -> str:
         """
         Get an identifier for this chunk object. The identifier is a dot(.) separated path, from the top-most
@@ -1667,6 +1681,21 @@ class ChunkCommon(AttributesBase):
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
 
+# Every param bound to a USD property, by that property's path. This is how a changed path
+# USD reports (Usd.Notice.ObjectsChanged) finds its params: without it the listener walked
+# every param of every chunk on every notice and compared paths -- 62,000 param visits on a
+# measured 34-chunk scene open. Maintained by the _param_attr_path setter, so it is right
+# by construction wherever the binding is made or moved. Weak, so it never keeps a param
+# alive; several params may share one path (two Property Editors on the same prim).
+_params_by_attr_path: "dict[str, weakref.WeakSet]" = {}
+
+
+def params_bound_to(path: str) -> "list[ChunkUsdAttributeSupport]":
+    """The params currently bound to this USD property path (see _params_by_attr_path)."""
+    bound = _params_by_attr_path.get(path)
+    return list(bound) if bound else []
+
+
 class ChunkUsdAttributeSupport(AttributesBase):
     """
     This inteface class can be subclassed for valued parameter classes in order to support connections
@@ -1676,7 +1705,8 @@ class ChunkUsdAttributeSupport(AttributesBase):
     """
 
     # The storage attribute path (/chunks/<name>/inputs:<param>) — the param's authoritative USD value.
-    _param_attr_path: Optional[str] = attrs.field(
+    # Read and written as _param_attr_path; the property below keeps _params_by_attr_path in step.
+    _param_attr_path_store: Optional[str] = attrs.field(
         default=None,
         init=False,
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
@@ -1693,6 +1723,23 @@ class ChunkUsdAttributeSupport(AttributesBase):
         init=False,
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
+
+    @property
+    def _param_attr_path(self) -> Optional[str]:
+        return self._param_attr_path_store
+
+    @_param_attr_path.setter
+    def _param_attr_path(self, path: Optional[str]) -> None:
+        old = self._param_attr_path_store
+        if old == path:
+            return
+        if old is not None and (bound := _params_by_attr_path.get(old)) is not None:
+            bound.discard(self)
+            if not bound:
+                del _params_by_attr_path[old]
+        self._param_attr_path_store = path
+        if path is not None:
+            _params_by_attr_path.setdefault(path, weakref.WeakSet()).add(self)
 
     # Real prim attr paths this storage attr drives via USD native connections.
     # Connections are re-authored whenever _param_attr_path is set.
@@ -2894,7 +2941,12 @@ class ChunkGroupBase(ChunkContainerBase):
         Raises:
             ValueError: If a duplicate was found
         """
-        if param in self.get_params():
+        # A key lookup down the ChainMap, not `param in self.get_params()`: that materialised
+        # every param of every nested container (a tuple of ChainMap.values(), each entry a
+        # walk of the chain) to answer a membership question, on every add. On a context it
+        # is the whole scene, so appending the 50th chunk to a chain cost 5x the first --
+        # the one thing about a node graph that must not get slower as the graph grows.
+        if param in self.children:
             raise ValueError(f"A duplicate for param {param.name} was found on container {self.name}")
 
         new_param = param
@@ -3610,9 +3662,15 @@ class ChunkConfig(AttributesBase):
     # port, which may still carry several wires stacked on it. Above 1 the slots are
     # POSITIONAL and each gets its own port -- Stage Expression Filter's slot 0 is the
     # stream it always forwards and slot 1 the branch it gates, so which wire landed where
-    # is the whole meaning. A Merge is neither: its slot count grows with what is wired
-    # into it, which is is_merge_chunk's business, not this field's.
+    # is the whole meaning. A dynamic-slot chunk (dynamic_exec_inputs) is neither: its slot
+    # count grows with what is wired into it, which is that field's business, not this one's.
     exec_inputs: int = attrs.field(default=1)
+    # Grows a fresh numbered exec input slot (inputs:chunk, inputs:chunk1, ...) per branch
+    # wired in, plus one empty trailing slot to attach the next branch to -- Merge and
+    # Switch both need every upstream branch as its own port rather than several wires
+    # stacked on one. Distinct from exec_inputs, which is a fixed, positional count set at
+    # config time; here the count is not known until the graph is wired.
+    dynamic_exec_inputs: bool = attrs.field(default=False)
     outputs: list[tuple[str, str]] = attrs.field(factory=list)  # extra typed output ports: [(name, SdfTypeName), ...]
     # Extra menu entries: [(label, {param: value}), ...], or a callable returning them.
     #

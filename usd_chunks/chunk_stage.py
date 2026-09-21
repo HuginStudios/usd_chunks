@@ -457,11 +457,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 spec.ClearDefaultValue()
 
     def _on_contents_changed(self, notice, sender):
-        # Before the _usd_write_active bail-out: a suppressed write is still a write, and
-        # sublayer edits (which is most of what runs under that flag) decide whether an Edit
-        # Target marker's layer is composed at all. Muting also arrives only here — USD
-        # reports a mute with no changed paths at all, so no finer signal exists.
-        invalidate_edit_layer_memo()
+        # The edit-layer memo is not invalidated here: every StageContentsChanged follows
+        # an ObjectsChanged for the same change (test_objects_changed_precedes_stage_
+        # contents_changed), and _on_objects_changed decides from that one whether the
+        # change can move an answer -- including a mute, which it recognises by the layer
+        # stack having changed rather than by paths, since USD reports one with none.
         if chunk_notice._usd_write_active or not self._scene:
             return
         stage = notice.GetStage()
@@ -662,10 +662,15 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk_notice._usd_write_active = prev_w
 
     def _on_objects_changed(self, notice: Usd.Notice.ObjectsChanged, sender):
-        # As in _on_contents_changed: this runs before the guards, since a prim appearing or
-        # an inputs:chunk connection changing is exactly what the memo is keyed against, and
-        # those arrive here regardless of which flag is set.
-        invalidate_edit_layer_memo()
+        # Before the guards, since a prim appearing or an inputs:chunk connection changing
+        # is exactly what the memo is keyed against, and those arrive here regardless of
+        # which flag is set. Only when the change can actually move an answer, though: a
+        # chunk cooking writes hundreds of driven-prim changes that cannot, and each used
+        # to cost every chunk a fresh walk of the exec chain above it.
+        if edit_layer_memo_affected(
+            notice, (*self._loaded_prim_paths, *self._chunk_prim_paths.values())
+        ):
+            invalidate_edit_layer_memo()
         # Same reasoning, and the only place the resynced paths are visible at all: the scan
         # for new chunk prims runs off StageContentsChanged, which carries no paths. USD
         # sends this notice first for a given change (locked in by
@@ -700,47 +705,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # that already correctly held (1, 2, 3). That is precisely what the guard is for.
         # Fixing the dropped-undo case needs the drain to happen where USD is known
         # consistent (as the write block closes), not on the next unrelated notice.
-        param_paths = all_changed
         if not all_changed:
             return
         self._reconcile_changed_exec_inputs(all_changed, notice)
+        self._mirror_changed_params(stage, all_changed)
         for chunk in self._scene.get_chunks():
-            # all_changed, not just the info-only set. An ordinary edit -- typing in a field,
-            # a gizmo writing a param -- arrives as an info-only change, but undo restores
-            # layer content wholesale and USD reports THAT as a resync. Reading only the
-            # info-only set meant precisely the edits a user cannot make by hand (undo, redo,
-            # a layer reload) were the ones the mirror ignored: Ctrl+Z moved the prim back
-            # while the chunk's sliders kept the undone value, and only caught up when the
-            # gizmo was next touched. Confirmed live -- a real Ctrl+Z reports
-            # `<chunk>.inputs:translate_grp:tz` as resynced, with nothing in the info-only set.
-            if param_paths:
-                for _, param in _iter_chunk_params(chunk):
-                    data_path = getattr(param, "_param_attr_path", None)
-                    if not data_path or data_path not in param_paths:
-                        continue
-                    attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
-                    if attr and attr.IsValid():
-                        val = attr.Get(0)
-                        raw = getattr(param, 'raw_value', None)
-                        if (val is not None and not _values_agree(val, param.value)
-                                and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
-                            param.value = val
-                for _, vector in _iter_chunk_vectors(chunk):
-                    data_path = getattr(vector, "_param_attr_path", None)
-                    if not data_path or data_path not in param_paths:
-                        continue
-                    attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
-                    if attr and attr.IsValid():
-                        val = attr.Get(0)
-                        # Same expression guard the scalar branch above has always had.
-                        # Missing here, which went unnoticed while this only ran for
-                        # info-only paths: writing the resolved value over the expression
-                        # replaces a live link with a frozen number, and the vector stops
-                        # tracking whatever it was pointed at.
-                        raw = getattr(vector, 'raw_value', None)
-                        if (val is not None and not _values_agree(val, vector.value)
-                                and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
-                            vector.value = val
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
             if not chunk_prim_path or chunk_prim_path not in all_changed:
                 continue
@@ -763,6 +732,51 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk.set_state(ChunkFlags.State.DISABLED)
             elif is_active and is_disabled:
                 chunk.unset_state(ChunkFlags.State.DISABLED)
+
+    def _mirror_changed_params(self, stage: Usd.Stage, all_changed: "set[str]") -> None:
+        """Pull each changed USD property's value into the params bound to it.
+
+        Straight from the notice's paths to their params (core.params_bound_to), not a walk
+        of every param of every chunk comparing paths -- the notice already says exactly
+        which properties changed, and nearly every round changes none that any param is
+        bound to.
+
+        all_changed, not just the info-only set. An ordinary edit -- typing in a field, a
+        gizmo writing a param -- arrives as an info-only change, but undo restores layer
+        content wholesale and USD reports THAT as a resync. Reading only the info-only set
+        meant precisely the edits a user cannot make by hand (undo, redo, a layer reload)
+        were the ones the mirror ignored: Ctrl+Z moved the prim back while the chunk's
+        sliders kept the undone value, and only caught up when the gizmo was next touched.
+        Confirmed live -- a real Ctrl+Z reports `<chunk>.inputs:translate_grp:tz` as
+        resynced, with nothing in the info-only set.
+
+        Only params of this scene's chunks, and never a list group's rows -- the same set
+        the old walk (_iter_chunk_params / _iter_chunk_vectors over scene.get_chunks())
+        visited. Rows store as one array on the group's template attr, so a row bound to a
+        path of its own is not something this mirror knows how to read back. The scene's
+        chunk set is built only once a bound param is actually hit.
+        """
+        live: "set[int] | None" = None
+        for data_path in all_changed:
+            for param in core.params_bound_to(data_path):
+                if not isinstance(param, (core.ChunkParamBase, core.ChunkVectorBase)):
+                    continue
+                if live is None:
+                    live = {id(c) for c in self._scene.get_chunks()}
+                chunk = param.get_chunk()
+                if chunk is None or id(chunk) not in live or _under_list_group(param, chunk):
+                    continue
+                attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
+                if not (attr and attr.IsValid()):
+                    continue
+                val = attr.Get(0)
+                # The expression guard: writing the resolved value over an expression
+                # replaces a live link with a frozen number, and the param stops tracking
+                # whatever it was pointed at.
+                raw = getattr(param, "raw_value", None)
+                if (val is not None and not _values_agree(val, param.value)
+                        and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
+                    param.value = val
 
     def _reconcile_changed_exec_inputs(self, all_changed: "set[str]", notice) -> None:
         """Mirror any changed inputs:chunk connection into the Python DAG.
@@ -881,7 +895,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # layers existed), then consolidate any chunk whose saved home doesn't match its
         # topology-resolved target (e.g. a file authored before Edit Target became position-based).
         restore_edit_target_selections(stage, self._scene, saved_targets)
-        reconcile_edit_targets(stage, self._scene)
+        # protect_root_layer, exactly as initialize() above: opening a file must not rewrite
+        # it. This is the path a host that hands over its stage after the plugin is up
+        # (usdview, via signalStageReplaced) loads through, and unprotected it migrated
+        # every chunk's bookkeeping out of the file's own root layer -- 34 Chunk specs down
+        # to 6 on a measured open -- and re-cooked each one it moved, 36 executes for 8.
+        # The file on disk survives until something saves that layer; the Sdf cache hands
+        # the gutted layer to the next open of the same path in the same process either way.
+        reconcile_edit_targets(stage, self._scene, protect_root_layer=True)
 
     def _on_attr_changed(self, notice, sender):
         if not self.initialized or not self._stage:
@@ -1235,12 +1256,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if src_path in existing_conns:
             return
         slots = exec_input_slots_for_prim(dep_prim)
-        if is_merge_prim(dep_prim) or slots > 1:
-            # A merge holds exactly one connection per slot. Stacking a second target onto
-            # slot 0 (what the branch below does) would collapse two branches into a single
-            # port and destroy the ordering the slots exist to express, so author into the
-            # first free slot instead — appending the new branch as the weakest. Density is
-            # guaranteed by normalize_merge_slots, so the free slot is just the count.
+        if has_dynamic_exec_inputs_prim(dep_prim) or slots > 1:
+            # A dynamic-slot chunk (Merge, Switch, ...) holds exactly one connection per slot.
+            # Stacking a second target onto slot 0 (what the branch below does) would
+            # collapse two branches into a single port and destroy the ordering the slots
+            # exist to express, so author into the first free slot instead — appending the
+            # new branch as the weakest. Density is guaranteed by normalize_merge_slots, so
+            # the free slot is just the count.
             #
             # A fixed-slot chunk (config.exec_inputs > 1) wants the same placement for a
             # different reason: its slots are positional, so add_dependency filling slot 0
@@ -1249,7 +1271,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # does not have -- add_dependency has no port to have been dropped on, so
             # refusing outright would lose the edge with nothing to show for it.
             index = len(existing_conns)
-            if not is_merge_prim(dep_prim) and index >= slots:
+            if not has_dynamic_exec_inputs_prim(dep_prim) and index >= slots:
                 index = 0
             with self._chunk_prim_edit_context(dependent):
                 exec_in = dep_prim.CreateAttribute(
@@ -2101,10 +2123,39 @@ def is_chunkgroup(chunk: "core.ChunkBase") -> bool:
 
 
 def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is a Merge chunk (scripts/core/merge.py) — the only chunk type that
-    takes more than one exec input."""
+    """Return True if chunk is specifically a Merge chunk (scripts/core/merge.py).
+
+    Narrower than has_dynamic_exec_inputs: Merge's slot order also decides composition
+    strength ("first input wins"), which is a Merge-only meaning that a dynamic-slot chunk
+    with no such ranking (a Switch) does not share.
+    """
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "merge")
+
+
+def has_dynamic_exec_inputs(chunk: "core.ChunkBase") -> bool:
+    """True for a chunk whose exec input slot count is not fixed but grows one numbered port
+    (inputs:chunk, inputs:chunk1, ...) per branch wired in -- Merge and Switch today, and
+    whatever else declares config.dynamic_exec_inputs. See exec_input_slots for the other
+    kind, where the count is fixed and positional instead."""
+    cfg = chunk.get_config()
+    return bool(cfg and getattr(cfg, "dynamic_exec_inputs", False))
+
+
+def has_dynamic_exec_inputs_prim(prim: "Usd.Prim") -> bool:
+    """has_dynamic_exec_inputs for a bare prim -- used by the node graph, which builds ports
+    from the stage and may have no live chunk object to ask. See exec_input_slots_for_prim
+    for why this reads the registry's discovery-time config rather than importing the
+    module."""
+    if not (prim and prim.IsValid()):
+        return False
+    attr = prim.GetAttribute(_CHUNK_TYPE_ATTR)
+    module_name = attr.Get() if attr and attr.IsValid() else None
+    if not module_name:
+        return False
+    module = chunk_registry.ChunkRegistry().get_chunk_module(str(module_name))
+    cfg = getattr(module, "config", None) if module else None
+    return bool(cfg and getattr(cfg, "dynamic_exec_inputs", False))
 
 
 def exec_input_slots(chunk: "core.ChunkBase") -> int:
@@ -2115,8 +2166,9 @@ def exec_input_slots(chunk: "core.ChunkBase") -> int:
     Expression Filter needs: forwarding slot 0 and gating slot 1 is not a property a merge
     ordering can express.
 
-    A Merge answers 1 here and is handled by is_merge_chunk instead: its slots are dense
-    and grow with what is wired in, so a fixed count is the wrong question for it.
+    A dynamic-slot chunk (has_dynamic_exec_inputs) answers 1 here and is handled by that
+    predicate instead: its slots grow with what is wired in, so a fixed count is the wrong
+    question for it.
     """
     cfg = chunk.get_config()
     return max(1, int(getattr(cfg, "exec_inputs", 1) or 1)) if cfg else 1
@@ -2707,7 +2759,7 @@ def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
     exec_in = del_prim.GetAttribute(_EXEC_INPUT)
     pred_conns = list(exec_in.GetConnections()) if (exec_in and exec_in.IsValid()) else []
     out_path = f"{deleted_path}.{_EXEC_OUTPUT}"
-    touched_merges = []
+    touched_dynamic = []
     prev_w = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
@@ -2735,14 +2787,14 @@ def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
                         succ.SetConnections(pred_conns)
                     else:
                         succ.ClearConnections()
-                if is_merge_prim(prim):
-                    touched_merges.append(prim)
+                if has_dynamic_exec_inputs_prim(prim):
+                    touched_dynamic.append(prim)
     finally:
         chunk_notice._usd_write_active = prev_w
     # Suppressing notices above means opting out of the choke point that normally keeps the
-    # merge slot invariant (_reconcile_changed_exec_inputs), so restore it here instead: a
+    # dynamic-slot invariant (_reconcile_changed_exec_inputs), so restore it here instead: a
     # slot cleared because its branch was deleted has to compact like any other.
-    for prim in touched_merges:
+    for prim in touched_dynamic:
         normalize_merge_slots(stage, prim)
     # Healing rewrites inputs:chunk across the graph with notices suppressed — every
     # memoised answer below the deleted node is now measured against an edge that is gone.
@@ -2766,12 +2818,13 @@ def _remove_attr_spec(stage: "Usd.Stage", prim: "Usd.Prim", name: str) -> None:
 
 
 def normalize_merge_slots(stage: "Usd.Stage", prim: "Usd.Prim") -> bool:
-    """Enforce a Merge chunk's slot invariant: connected exec inputs occupy slots 0..N-1 with
-    no gaps.
+    """Enforce a dynamic-slot chunk's (Merge, Switch, ...) slot invariant: connected exec
+    inputs occupy slots 0..N-1 with no gaps.
 
     Clearing a middle slot compacts the rest up, so slot order (which is what decides whose
-    opinion wins) always matches the port order the user sees on the node, rather than
-    drifting into a question about invisible attribute names.
+    Merge opinion wins, or which branch a Switch's index N means) always matches the port
+    order the user sees on the node, rather than drifting into a question about invisible
+    attribute names.
 
     Judged on the CONNECTED slots alone — an exec attribute that exists but connects nothing
     is deliberately left in place. It has to be: this runs synchronously from the stage notice
@@ -2784,13 +2837,13 @@ def normalize_merge_slots(stage: "Usd.Stage", prim: "Usd.Prim") -> bool:
     attributes, and the next compaction sweeps it — so it is preferable to breaking the
     authoring paths.
 
-    No-ops for anything that isn't a merge, and for a merge already in shape, so it is safe
-    to call on every exec-input change.
+    No-ops for anything without dynamic exec inputs, and for one already in shape, so it is
+    safe to call on every exec-input change.
 
     Returns:
         bool: True if any slot was rewritten
     """
-    if not is_merge_prim(prim):
+    if not has_dynamic_exec_inputs_prim(prim):
         return False
     current = [(attr, list(attr.GetConnections())) for attr in iter_exec_inputs(prim)]
     live = [(attr, conns) for attr, conns in current if conns]
@@ -2913,6 +2966,66 @@ def invalidate_edit_layer_memo() -> None:
     _edit_layer_memo.clear()
 
 
+_edit_layer_memo_layer_stack: "list[str]" = []
+
+
+def edit_layer_memo_affected(
+    notice: "Usd.Notice.ObjectsChanged", chunk_prim_paths: "Iterable[str]"
+) -> bool:
+    """Whether this change round can move any nearest_upstream_edit_layer answer.
+
+    That function is a walk of inputs:chunk connections between chunk prims, reading the
+    Edit Target marker off each and checking the named layer is in the layer stack. So an
+    answer moves only when one of those moves: an exec connection or a marker (a property
+    by one of two names), a chunk prim appearing or going, or the layer stack itself
+    (a sublayer edit, which USD reports as an info change on "/", or a mute, which it
+    reports with no paths, or with only the driven prims the layer held -- so the stack is
+    compared to what it was when the memo was built, a muted layer having dropped out of
+    GetLayerStack).
+
+    Everything else is what a scene load mostly consists of: a chunk writing the prims it
+    drives. Measured on a four-node scene, 755 rounds and not one that touched a chunk
+    prim, each of which threw the memo away and cost every chunk a fresh walk of the
+    chain above it.
+
+    chunk_prim_paths is what the sync knows to be a chunk prim, so a resync of some
+    ancestor of one counts (the prim under it may be gone). A chunk prim the sync has not
+    met yet is caught by its own type once anything touches it, and by the "/" rule when
+    it arrives by sublayer; an arrival by reference onto a non-Chunk prim outside every
+    known root is the one route this does not see until the loader registers it.
+    """
+    stage = notice.GetStage()
+    if stage is None:
+        return True
+    if _edit_layer_memo_stage is None or _edit_layer_memo_stage() is not stage:
+        return True
+    resynced = notice.GetResyncedPaths()
+    info = notice.GetChangedInfoOnlyPaths()
+    if not resynced and not info:
+        return True
+    stack = [layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)]
+    if stack != _edit_layer_memo_layer_stack:
+        return True
+    known = list(chunk_prim_paths)
+    for path in (*resynced, *info):
+        if path.IsPropertyPath():
+            if path.name in (_EXEC_INPUT, _EDIT_TARGET_MARKER):
+                return True
+            continue
+        if path == Sdf.Path.absoluteRootPath:
+            return True
+        prim = stage.GetPrimAtPath(path)
+        if not (prim and prim.IsValid()):
+            return True
+        path_str = str(path)
+        if prim.GetTypeName() == _CHUNK_PRIM_TYPENAME or path_str == _CHUNKS_ROOT:
+            return True
+        prefix = path_str + "/"
+        if any(known_path.startswith(prefix) for known_path in known):
+            return True
+    return False
+
+
 @contextlib.contextmanager
 def freeze_edit_layer_memo():
     """Hold the memo across a block whose writes provably cannot move any answer.
@@ -2965,10 +3078,18 @@ def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.La
     # Authoring against that layer loses the write; migrating a chunk into it strips the
     # chunk's prim from the stage it is actually on. The memo serves one stage at a time, so
     # a different stage starts a new one.
-    global _edit_layer_memo_stage
+    global _edit_layer_memo_stage, _edit_layer_memo_layer_stack
     if _edit_layer_memo_stage is None or _edit_layer_memo_stage() is not stage:
         _edit_layer_memo.clear()
         _edit_layer_memo_stage = weakref.ref(stage)
+    # The layer stack every answer about to be memoised is computed against. Taken as the
+    # memo starts filling (not on each notice), so a stack change that happened while the
+    # memo was empty -- or under a frozen block -- is still seen by edit_layer_memo_affected
+    # as a difference from this, whichever notice comes next.
+    if not _edit_layer_memo:
+        _edit_layer_memo_layer_stack = [
+            layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)
+        ]
 
     key = str(prim.GetPath())
     if (memoised := _edit_layer_memo.get(key)) is not None:
@@ -4363,6 +4484,16 @@ def paste_chunks() -> None:
         _load_wire_inputs(new_prim, new_chunk)
 
 
+def _under_list_group(param: "core.ChunkCommon", chunk: "core.ChunkBase") -> bool:
+    """Whether a ChunkListGroupBase sits between param and its chunk on the owner chain."""
+    owner = param.get_owner()
+    while owner is not None and owner is not chunk:
+        if isinstance(owner, core.ChunkListGroupBase):
+            return True
+        owner = owner.get_owner()
+    return False
+
+
 def _iter_chunk_params(
     obj: "core.ChunkCommon", prefix: str = ""
 ) -> Generator[Tuple[str, "core.ChunkParamBase"], None, None]:
@@ -4577,6 +4708,7 @@ def _load_chunks(
     # now just re-affirming this same value and restoring back to it -- harmless.
     old_loading_stage = chunk_notice._loading_stage
     chunk_notice._loading_stage = stage
+    loaded: list[list] = []  # every _add_prim_mods batch, for the post-load pass below
     try:
         # Recreate each existing named top-level context under its own saved name/path —
         # before grouping below, so its children are recognized as already having a home
@@ -4629,6 +4761,7 @@ def _load_chunks(
             chunk_notice._loading_stage = stage
             try:
                 deferred = []  # (prim, chunk)
+                loaded.append(deferred)
                 top_level_chunk_ids: set[int] = set()
                 for prim, mod in prim_mods:
                     # Walk up the prim's parent chain to find the nearest loaded ChunkGroup.
@@ -4931,6 +5064,32 @@ def _load_chunks(
     finally:
         chunk_notice._loading_stage = old_loading_stage
 
+    # After the flag is down, not inside: a menu_items write made while it is up sends
+    # nothing at all (AttributesBase.value_changed), so a lofted menu re-synced any earlier
+    # would be right in Python and still wrong in the widget showing it.
+    _resync_lofted_menus(batch_chunk for batch in loaded for _, batch_chunk in batch)
+
+
+def _resync_lofted_menus(chunks: Iterable["core.ChunkBase"]) -> None:
+    """Copy every lofted Menu's items from its inner Menu again, once a load is over.
+
+    _restore_lofted_params wires the mirror (_mirror_menu_items) and syncs it once, but
+    that is before CHUNK_LOADED -- and a Menu whose items come off the stage fills them
+    there (Set Variant reads its prim in that callback). During a load no attribute
+    change sends a notice, so the fill went unheard and the group's dropdown came back
+    holding only the saved value. One explicit pass, the same shape as the second
+    _resolve_pending_expressions pass and for the same reason.
+    """
+    seen: set[int] = set()
+    for chunk in chunks:
+        context = chunk.get_context()
+        if context is None or id(context) in seen:
+            continue
+        seen.add(id(context))
+        for param in context.get_my_params():
+            if (mirror := getattr(param, "_loft_menu_items", None)) is not None:
+                mirror()
+
 
 def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     """Export the current chunk graph as one clean, portable USD layer.
@@ -5229,6 +5388,71 @@ def _lofted_attr_name(context_prim: Usd.Prim, context, prefix: str, owner, param
     return candidate
 
 
+def _lofted_label(owner, context, label: str) -> str:
+    """The display label a lofted param takes on the context's params panel.
+
+    Prefixed with the owning chunk's name at the moment of the loft, e.g. "Transform1: Prim
+    Path" -- otherwise three same-named params lofted from different chunks (three
+    Reference nodes' Prim Path, say) show up as three identical "Prim Path" rows in the
+    panel with no way to tell which one drives which node; the qualifier that disambiguates
+    them lives on the USD attribute name (_lofted_attr_name), but nothing surfaced it to the
+    widget the user actually looks at.
+
+    A one-time default, same as _lofted_attr_name's own qualifier -- NOT kept live against a
+    later rename of the source chunk. The label is an ordinary editable field once set: a
+    user is free to rename a lofted param to whatever they want, same as any other param,
+    and that choice has to stick -- rewriting it out from under them on every rename would
+    make "rename the lofted param" not really mean anything. It also keeps the label's
+    meaning aligned with the attribute name it fronts, which is frozen for the same reason
+    (the CLI and saved expressions address it by name; see loft_param_to_context).
+
+    Not qualified when owner is context (lofting a group's own param up to its parent) or
+    owner is None -- the group's plain label already names itself.
+    """
+    if owner is not None and owner is not context and getattr(owner, "name", None):
+        return f"{owner.name}: {label}"
+    return label
+
+
+def _mirror_menu_items(inner_param: "core.ChunkParamBase", context_param: "core.ChunkParamBase") -> None:
+    """Keep a lofted Menu offering what the inner Menu offers.
+
+    A loft is a clone taken once, and menu_items came across with it: whatever the inner
+    menu listed at that instant, frozen. That is wrong for any Menu whose items follow
+    the stage (Set Variant's are read off the prim at Prim Path, and rebuild as the graph
+    cooks), and wrong for every lofted Menu on a reopen: _restore_lofted_params clones
+    before the inner chunk has read anything, so the group's dropdown came back holding
+    the saved value and nothing else, with no way to pick anything different.
+
+    Items only. The value already flows both ways through the PARAM_CHANGED bridges in
+    the callers, and the label is deliberately the group's own (see _lofted_label).
+
+    A bare NoticeConnection rather than add_callback, so it has no owner: an owned
+    callback is dispatched inside the owner's edit context, and skipped outright while
+    that layer is muted (NoticeConnection.handle_callback). A chunk under a context with
+    no active view is exactly that -- dormant, its layer muted -- for the whole of a
+    reopen, which is when its menus first fill. Nothing here authors, so there is no
+    layer to be in. Both the closure and the connection are pinned on the context param,
+    whose lifetime the mirror follows: the connection keeps its function by weakref, and
+    disconnects when it is itself collected.
+    """
+    if not isinstance(inner_param, _chunk_mod.Menu) or not isinstance(context_param, _chunk_mod.Menu):
+        return
+
+    def _mirror(_notice=None, _sender=None):
+        items = list(inner_param.menu_items or [])
+        if list(context_param.menu_items or []) != items:
+            context_param.menu_items = items
+
+    context_param._loft_menu_items = _mirror  # strong-ref pin
+    context_param._loft_menu_items_conn = NoticeConnection(
+        method=_mirror,
+        alias=ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+        sender=inner_param.get_attribute_sender("menu_items"),
+    )
+    _mirror()
+
+
 def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase") -> None:
     """Loft a param up to the context prim's public interface.
 
@@ -5276,7 +5500,8 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
         return
 
     # Resolved against the prim, so the name is unique among what is already published.
-    lofted_name = _lofted_attr_name(context_prim, context, prefix, param.get_chunk(), param.name)
+    owner = param.get_chunk()
+    lofted_name = _lofted_attr_name(context_prim, context, prefix, owner, param.name)
     attr_name = f"{prefix}{lofted_name}"
     context_attr_path = context_prim_path.AppendProperty(attr_name)
 
@@ -5294,6 +5519,17 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     # inputs:Rim_base_color. That mismatch is what made the second loft a phantom control:
     # a distinct param in the panel, wired to somebody else's attribute.
     context_param.name = lofted_name
+    # clone() carried param's own label over verbatim (e.g. "Prim Path"), which the widget
+    # prefers over .name (get_label()) -- without this, every lofted param that shares its
+    # inner param's label showed identically in the panel regardless of the qualifier baked
+    # into .name, and there was no way to tell three lofted Prim Paths apart at a glance.
+    # A one-time default the same as the name above: renaming this param afterwards (an
+    # ordinary edit to its label, same as any param) is not overwritten by a later rename
+    # of the source chunk.
+    # No stored customData yet at this point -- a fresh loft always starts at the
+    # generated default, same as the attribute name above.
+    context_param.label = _lofted_label(owner, context, param.get_label())
+    context_param._lofted = True
     context.add_param(context_param)
     # clone() carries over the source param's cached _chunk_parent (the inner chunk), and
     # add_param doesn't invalidate it — so get_chunk() would keep returning the inner chunk
@@ -5361,6 +5597,31 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     param.add_callback(
         _forward_to_context,
         notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
+        send_on_create=False,
+        private=True,
+    )
+    _mirror_menu_items(param, context_param)
+
+    # A rename (chunk_qt_widgets' "Rename..." on a lofted param, or any other code setting
+    # .label) has to survive a save/reload -- without this it only lived in the Python
+    # object for the rest of the session and _restore_lofted_params rebuilt the generated
+    # default on the next load, silently discarding it. Scoped to the "label" attribute
+    # specifically (its own AttributeSender), not the coarse PARAM_CHANGED the value-forward
+    # callbacks above use, so this doesn't fire (and re-touch USD) on every value edit too.
+    def _persist_lofted_label(_owner, _notice, _sender=None):
+        if not context_param._param_attr_path:
+            return
+        target = stage.GetAttributeAtPath(Sdf.Path(context_param._param_attr_path))
+        if not (target and target.IsValid()):
+            return
+        home = chunk_utils.get_attr_home_layer(target) or stage.GetSessionLayer()
+        with Usd.EditContext(stage, home):
+            chunk_utils.store_lofted_label(target, context_param.label)
+
+    context_param._loft_label_persist = _persist_lofted_label  # strong-ref pin
+    context_param.add_callback(
+        _persist_lofted_label,
+        sender=context_param.get_attribute_sender("label"),
         send_on_create=False,
         private=True,
     )
@@ -5675,8 +5936,34 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             # duplicate would be added each time the file was opened.
             context_param = inner_param.clone()
             context_param.name = param_name
+            # See loft_param_to_context's matching comment: without this, a reload showed
+            # every lofted param under its bare inner label again, with no way to tell
+            # which chunk it came from, even though live lofting (moments before a save)
+            # had shown "Reference1: Prim Path". A user's own rename (chunk_qt_widgets'
+            # "Rename...") is stored as customData on context_attr and takes priority over
+            # the generated default -- it is exactly what has to override it.
+            context_param.label = (
+                chunk_utils.read_lofted_label(context_attr)
+                or _lofted_label(inner_chunk, context, inner_param.get_label())
+            )
+            context_param._lofted = True
             context_param._connect_param_attr(context_attr)
             context.add_param(context_param)
+
+            # Re-wired on every restore, same as loft_param_to_context's own copy -- a
+            # rename after THIS reload has to survive the next one too.
+            def _persist_lofted_label(_owner, _notice, _sender=None, _cp=context_param, _attr=context_attr):
+                home = chunk_utils.get_attr_home_layer(_attr) or stage.GetSessionLayer()
+                with Usd.EditContext(stage, home):
+                    chunk_utils.store_lofted_label(_attr, _cp.label)
+
+            context_param._loft_label_persist = _persist_lofted_label  # strong-ref pin
+            context_param.add_callback(
+                _persist_lofted_label,
+                sender=context_param.get_attribute_sender("label"),
+                send_on_create=False,
+                private=True,
+            )
 
             def _forward_to_inner(_owner, _notice, _sender=None, _ip=inner_param, _cp=context_param):
                 val = _cp.value
@@ -5702,6 +5989,7 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             # while USD and the lofted UI both showed the saved value. Seeding here is
             # before the execute pass, so the first cook already sees the real value.
             _forward_to_inner(None, None)
+            _mirror_menu_items(inner_param, context_param)
 
 
 def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:

@@ -1341,7 +1341,15 @@ class LabeledWidget(QtWidgets.QWidget):
 
         menu = QtWidgets.QMenu()
         value_rect = QtCore.QRect(self.widget.pos(), self.widget.size())
-        loft_action = menu.addAction("Loft up") if context and not value_rect.contains(event.pos()) else None
+        on_label = not value_rect.contains(event.pos())
+        loft_action = menu.addAction("Loft up") if context and on_label else None
+        # Lofted params only, via the _lofted marker (set once by loft_param_to_context /
+        # _restore_lofted_params, alongside the generated default label itself) -- not
+        # every param generally. Lofting gives a param a qualified default label
+        # (Reference1_primpath_location -> "Reference1: Prim Path") precisely so several
+        # same-named lofts stay tellable apart, but that default has to be just a default,
+        # not the only option, or "rename the lofted param" would not mean anything.
+        rename_action = menu.addAction("Rename…") if on_label and getattr(param, "_lofted", False) else None
         expr_action = None
         clear_expr_action = None
 
@@ -1358,6 +1366,14 @@ class LabeledWidget(QtWidgets.QWidget):
         if action := menu.exec_(event.globalPos()):
             if loft_action and action == loft_action:
                 chunk_stage.loft_param_to_context(param, context)
+            elif rename_action and action == rename_action:
+                old = param.get_label()
+                # See loft_param_to_context's Rename action: same reasoning, param scope.
+                parent = QtWidgets.QApplication.activeWindow() or self
+                new, ok = QtWidgets.QInputDialog.getText(parent, "Rename Param", "Label:", text=old)
+                new = new.strip() if new else ""
+                if ok and new and new != old:
+                    param.label = new
             elif expr_action and action == expr_action:
                 current = str(raw) if isinstance(raw, str) else ""
                 # Parent the dialog to a real top-level window, not self: in the node graph this
