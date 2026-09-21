@@ -2771,6 +2771,24 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
+        # Bare C (collapse selected-or-all): same gating as bare D, and here the fallback is
+        # not a reliability nicety but the only path that works at all -- usdview binds "c"
+        # itself (it cycles the camera, printing "Camera: Free AutoClip" in the viewport), so
+        # the key never reached ChunkGraphView's own Key_C handler and pressing C over the
+        # graph moved the camera instead of collapsing anything. Accepting the
+        # ShortcutOverride is what takes the key back while the cursor is over the graph;
+        # everywhere else usdview keeps it.
+        if not typing_in_proxy and not ctrl_down and event.key() == QtCore.Qt.Key.Key_C:
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    view._collapse_selected_or_all()
+                    event.accept()
+                    return True
+
         # Escape: cancel an in-flight wire drag, otherwise drop the proxy focus -- the same
         # two jobs ChunkGraphView.keyPressEvent's own Escape does, with the same native-focus
         # fragility as Delete and D.
