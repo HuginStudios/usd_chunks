@@ -416,11 +416,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 spec.ClearDefaultValue()
 
     def _on_contents_changed(self, notice, sender):
-        # Before the _usd_write_active bail-out: a suppressed write is still a write, and
-        # sublayer edits (which is most of what runs under that flag) decide whether an Edit
-        # Target marker's layer is composed at all. Muting also arrives only here — USD
-        # reports a mute with no changed paths at all, so no finer signal exists.
-        invalidate_edit_layer_memo()
+        # The edit-layer memo is not invalidated here: every StageContentsChanged follows
+        # an ObjectsChanged for the same change (test_objects_changed_precedes_stage_
+        # contents_changed), and _on_objects_changed decides from that one whether the
+        # change can move an answer -- including a mute, which it recognises by the layer
+        # stack having changed rather than by paths, since USD reports one with none.
         if chunk_notice._usd_write_active or not self._scene:
             return
         stage = notice.GetStage()
@@ -621,10 +621,15 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk_notice._usd_write_active = prev_w
 
     def _on_objects_changed(self, notice: Usd.Notice.ObjectsChanged, sender):
-        # As in _on_contents_changed: this runs before the guards, since a prim appearing or
-        # an inputs:chunk connection changing is exactly what the memo is keyed against, and
-        # those arrive here regardless of which flag is set.
-        invalidate_edit_layer_memo()
+        # Before the guards, since a prim appearing or an inputs:chunk connection changing
+        # is exactly what the memo is keyed against, and those arrive here regardless of
+        # which flag is set. Only when the change can actually move an answer, though: a
+        # chunk cooking writes hundreds of driven-prim changes that cannot, and each used
+        # to cost every chunk a fresh walk of the exec chain above it.
+        if edit_layer_memo_affected(
+            notice, (*self._loaded_prim_paths, *self._chunk_prim_paths.values())
+        ):
+            invalidate_edit_layer_memo()
         # Same reasoning, and the only place the resynced paths are visible at all: the scan
         # for new chunk prims runs off StageContentsChanged, which carries no paths. USD
         # sends this notice first for a given change (locked in by
@@ -659,47 +664,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # that already correctly held (1, 2, 3). That is precisely what the guard is for.
         # Fixing the dropped-undo case needs the drain to happen where USD is known
         # consistent (as the write block closes), not on the next unrelated notice.
-        param_paths = all_changed
         if not all_changed:
             return
         self._reconcile_changed_exec_inputs(all_changed, notice)
+        self._mirror_changed_params(stage, all_changed)
         for chunk in self._scene.get_chunks():
-            # all_changed, not just the info-only set. An ordinary edit -- typing in a field,
-            # a gizmo writing a param -- arrives as an info-only change, but undo restores
-            # layer content wholesale and USD reports THAT as a resync. Reading only the
-            # info-only set meant precisely the edits a user cannot make by hand (undo, redo,
-            # a layer reload) were the ones the mirror ignored: Ctrl+Z moved the prim back
-            # while the chunk's sliders kept the undone value, and only caught up when the
-            # gizmo was next touched. Confirmed live -- a real Ctrl+Z reports
-            # `<chunk>.inputs:translate_grp:tz` as resynced, with nothing in the info-only set.
-            if param_paths:
-                for _, param in _iter_chunk_params(chunk):
-                    data_path = getattr(param, "_param_attr_path", None)
-                    if not data_path or data_path not in param_paths:
-                        continue
-                    attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
-                    if attr and attr.IsValid():
-                        val = attr.Get(0)
-                        raw = getattr(param, 'raw_value', None)
-                        if (val is not None and not _values_agree(val, param.value)
-                                and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
-                            param.value = val
-                for _, vector in _iter_chunk_vectors(chunk):
-                    data_path = getattr(vector, "_param_attr_path", None)
-                    if not data_path or data_path not in param_paths:
-                        continue
-                    attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
-                    if attr and attr.IsValid():
-                        val = attr.Get(0)
-                        # Same expression guard the scalar branch above has always had.
-                        # Missing here, which went unnoticed while this only ran for
-                        # info-only paths: writing the resolved value over the expression
-                        # replaces a live link with a frozen number, and the vector stops
-                        # tracking whatever it was pointed at.
-                        raw = getattr(vector, 'raw_value', None)
-                        if (val is not None and not _values_agree(val, vector.value)
-                                and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
-                            vector.value = val
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
             if not chunk_prim_path or chunk_prim_path not in all_changed:
                 continue
@@ -722,6 +691,51 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk.set_state(ChunkFlags.State.DISABLED)
             elif is_active and is_disabled:
                 chunk.unset_state(ChunkFlags.State.DISABLED)
+
+    def _mirror_changed_params(self, stage: Usd.Stage, all_changed: "set[str]") -> None:
+        """Pull each changed USD property's value into the params bound to it.
+
+        Straight from the notice's paths to their params (core.params_bound_to), not a walk
+        of every param of every chunk comparing paths -- the notice already says exactly
+        which properties changed, and nearly every round changes none that any param is
+        bound to.
+
+        all_changed, not just the info-only set. An ordinary edit -- typing in a field, a
+        gizmo writing a param -- arrives as an info-only change, but undo restores layer
+        content wholesale and USD reports THAT as a resync. Reading only the info-only set
+        meant precisely the edits a user cannot make by hand (undo, redo, a layer reload)
+        were the ones the mirror ignored: Ctrl+Z moved the prim back while the chunk's
+        sliders kept the undone value, and only caught up when the gizmo was next touched.
+        Confirmed live -- a real Ctrl+Z reports `<chunk>.inputs:translate_grp:tz` as
+        resynced, with nothing in the info-only set.
+
+        Only params of this scene's chunks, and never a list group's rows -- the same set
+        the old walk (_iter_chunk_params / _iter_chunk_vectors over scene.get_chunks())
+        visited. Rows store as one array on the group's template attr, so a row bound to a
+        path of its own is not something this mirror knows how to read back. The scene's
+        chunk set is built only once a bound param is actually hit.
+        """
+        live: "set[int] | None" = None
+        for data_path in all_changed:
+            for param in core.params_bound_to(data_path):
+                if not isinstance(param, (core.ChunkParamBase, core.ChunkVectorBase)):
+                    continue
+                if live is None:
+                    live = {id(c) for c in self._scene.get_chunks()}
+                chunk = param.get_chunk()
+                if chunk is None or id(chunk) not in live or _under_list_group(param, chunk):
+                    continue
+                attr = stage.GetAttributeAtPath(Sdf.Path(data_path))
+                if not (attr and attr.IsValid()):
+                    continue
+                val = attr.Get(0)
+                # The expression guard: writing the resolved value over an expression
+                # replaces a live link with a frozen number, and the param stops tracking
+                # whatever it was pointed at.
+                raw = getattr(param, "raw_value", None)
+                if (val is not None and not _values_agree(val, param.value)
+                        and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
+                    param.value = val
 
     def _reconcile_changed_exec_inputs(self, all_changed: "set[str]", notice) -> None:
         """Mirror any changed inputs:chunk connection into the Python DAG.
@@ -2747,6 +2761,66 @@ def invalidate_edit_layer_memo() -> None:
     _edit_layer_memo.clear()
 
 
+_edit_layer_memo_layer_stack: "list[str]" = []
+
+
+def edit_layer_memo_affected(
+    notice: "Usd.Notice.ObjectsChanged", chunk_prim_paths: "Iterable[str]"
+) -> bool:
+    """Whether this change round can move any nearest_upstream_edit_layer answer.
+
+    That function is a walk of inputs:chunk connections between chunk prims, reading the
+    Edit Target marker off each and checking the named layer is in the layer stack. So an
+    answer moves only when one of those moves: an exec connection or a marker (a property
+    by one of two names), a chunk prim appearing or going, or the layer stack itself
+    (a sublayer edit, which USD reports as an info change on "/", or a mute, which it
+    reports with no paths, or with only the driven prims the layer held -- so the stack is
+    compared to what it was when the memo was built, a muted layer having dropped out of
+    GetLayerStack).
+
+    Everything else is what a scene load mostly consists of: a chunk writing the prims it
+    drives. Measured on a four-node scene, 755 rounds and not one that touched a chunk
+    prim, each of which threw the memo away and cost every chunk a fresh walk of the
+    chain above it.
+
+    chunk_prim_paths is what the sync knows to be a chunk prim, so a resync of some
+    ancestor of one counts (the prim under it may be gone). A chunk prim the sync has not
+    met yet is caught by its own type once anything touches it, and by the "/" rule when
+    it arrives by sublayer; an arrival by reference onto a non-Chunk prim outside every
+    known root is the one route this does not see until the loader registers it.
+    """
+    stage = notice.GetStage()
+    if stage is None:
+        return True
+    if _edit_layer_memo_stage is None or _edit_layer_memo_stage() is not stage:
+        return True
+    resynced = notice.GetResyncedPaths()
+    info = notice.GetChangedInfoOnlyPaths()
+    if not resynced and not info:
+        return True
+    stack = [layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)]
+    if stack != _edit_layer_memo_layer_stack:
+        return True
+    known = list(chunk_prim_paths)
+    for path in (*resynced, *info):
+        if path.IsPropertyPath():
+            if path.name in (_EXEC_INPUT, _EDIT_TARGET_MARKER):
+                return True
+            continue
+        if path == Sdf.Path.absoluteRootPath:
+            return True
+        prim = stage.GetPrimAtPath(path)
+        if not (prim and prim.IsValid()):
+            return True
+        path_str = str(path)
+        if prim.GetTypeName() == _CHUNK_PRIM_TYPENAME or path_str == _CHUNKS_ROOT:
+            return True
+        prefix = path_str + "/"
+        if any(known_path.startswith(prefix) for known_path in known):
+            return True
+    return False
+
+
 @contextlib.contextmanager
 def freeze_edit_layer_memo():
     """Hold the memo across a block whose writes provably cannot move any answer.
@@ -2799,10 +2873,18 @@ def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.La
     # Authoring against that layer loses the write; migrating a chunk into it strips the
     # chunk's prim from the stage it is actually on. The memo serves one stage at a time, so
     # a different stage starts a new one.
-    global _edit_layer_memo_stage
+    global _edit_layer_memo_stage, _edit_layer_memo_layer_stack
     if _edit_layer_memo_stage is None or _edit_layer_memo_stage() is not stage:
         _edit_layer_memo.clear()
         _edit_layer_memo_stage = weakref.ref(stage)
+    # The layer stack every answer about to be memoised is computed against. Taken as the
+    # memo starts filling (not on each notice), so a stack change that happened while the
+    # memo was empty -- or under a frozen block -- is still seen by edit_layer_memo_affected
+    # as a difference from this, whichever notice comes next.
+    if not _edit_layer_memo:
+        _edit_layer_memo_layer_stack = [
+            layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)
+        ]
 
     key = str(prim.GetPath())
     if (memoised := _edit_layer_memo.get(key)) is not None:
@@ -4195,6 +4277,16 @@ def paste_chunks() -> None:
                 if attr.HasAuthoredConnections():
                     dst_attr.SetConnections(attr.GetConnections())
         _load_wire_inputs(new_prim, new_chunk)
+
+
+def _under_list_group(param: "core.ChunkCommon", chunk: "core.ChunkBase") -> bool:
+    """Whether a ChunkListGroupBase sits between param and its chunk on the owner chain."""
+    owner = param.get_owner()
+    while owner is not None and owner is not chunk:
+        if isinstance(owner, core.ChunkListGroupBase):
+            return True
+        owner = owner.get_owner()
+    return False
 
 
 def _iter_chunk_params(

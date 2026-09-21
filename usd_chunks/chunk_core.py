@@ -1667,6 +1667,21 @@ class ChunkCommon(AttributesBase):
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
 
 
+# Every param bound to a USD property, by that property's path. This is how a changed path
+# USD reports (Usd.Notice.ObjectsChanged) finds its params: without it the listener walked
+# every param of every chunk on every notice and compared paths -- 62,000 param visits on a
+# measured 34-chunk scene open. Maintained by the _param_attr_path setter, so it is right
+# by construction wherever the binding is made or moved. Weak, so it never keeps a param
+# alive; several params may share one path (two Property Editors on the same prim).
+_params_by_attr_path: "dict[str, weakref.WeakSet]" = {}
+
+
+def params_bound_to(path: str) -> "list[ChunkUsdAttributeSupport]":
+    """The params currently bound to this USD property path (see _params_by_attr_path)."""
+    bound = _params_by_attr_path.get(path)
+    return list(bound) if bound else []
+
+
 class ChunkUsdAttributeSupport(AttributesBase):
     """
     This inteface class can be subclassed for valued parameter classes in order to support connections
@@ -1676,11 +1691,29 @@ class ChunkUsdAttributeSupport(AttributesBase):
     """
 
     # The storage attribute path (/chunks/<name>/inputs:<param>) — the param's authoritative USD value.
-    _param_attr_path: Optional[str] = attrs.field(
+    # Read and written as _param_attr_path; the property below keeps _params_by_attr_path in step.
+    _param_attr_path_store: Optional[str] = attrs.field(
         default=None,
         init=False,
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
+
+    @property
+    def _param_attr_path(self) -> Optional[str]:
+        return self._param_attr_path_store
+
+    @_param_attr_path.setter
+    def _param_attr_path(self, path: Optional[str]) -> None:
+        old = self._param_attr_path_store
+        if old == path:
+            return
+        if old is not None and (bound := _params_by_attr_path.get(old)) is not None:
+            bound.discard(self)
+            if not bound:
+                del _params_by_attr_path[old]
+        self._param_attr_path_store = path
+        if path is not None:
+            _params_by_attr_path.setdefault(path, weakref.WeakSet()).add(self)
 
     # Real prim attr paths this storage attr drives via USD native connections.
     # Connections are re-authored whenever _param_attr_path is set.
