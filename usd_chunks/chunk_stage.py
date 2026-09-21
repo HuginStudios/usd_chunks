@@ -4542,6 +4542,7 @@ def _load_chunks(
     # now just re-affirming this same value and restoring back to it -- harmless.
     old_loading_stage = chunk_notice._loading_stage
     chunk_notice._loading_stage = stage
+    loaded: list[list] = []  # every _add_prim_mods batch, for the post-load pass below
     try:
         # Recreate each existing named top-level context under its own saved name/path —
         # before grouping below, so its children are recognized as already having a home
@@ -4594,6 +4595,7 @@ def _load_chunks(
             chunk_notice._loading_stage = stage
             try:
                 deferred = []  # (prim, chunk)
+                loaded.append(deferred)
                 top_level_chunk_ids: set[int] = set()
                 for prim, mod in prim_mods:
                     # Walk up the prim's parent chain to find the nearest loaded ChunkGroup.
@@ -4886,6 +4888,32 @@ def _load_chunks(
     finally:
         chunk_notice._loading_stage = old_loading_stage
 
+    # After the flag is down, not inside: a menu_items write made while it is up sends
+    # nothing at all (AttributesBase.value_changed), so a lofted menu re-synced any earlier
+    # would be right in Python and still wrong in the widget showing it.
+    _resync_lofted_menus(batch_chunk for batch in loaded for _, batch_chunk in batch)
+
+
+def _resync_lofted_menus(chunks: Iterable["core.ChunkBase"]) -> None:
+    """Copy every lofted Menu's items from its inner Menu again, once a load is over.
+
+    _restore_lofted_params wires the mirror (_mirror_menu_items) and syncs it once, but
+    that is before CHUNK_LOADED -- and a Menu whose items come off the stage fills them
+    there (Set Variant reads its prim in that callback). During a load no attribute
+    change sends a notice, so the fill went unheard and the group's dropdown came back
+    holding only the saved value. One explicit pass, the same shape as the second
+    _resolve_pending_expressions pass and for the same reason.
+    """
+    seen: set[int] = set()
+    for chunk in chunks:
+        context = chunk.get_context()
+        if context is None or id(context) in seen:
+            continue
+        seen.add(id(context))
+        for param in context.get_my_params():
+            if (mirror := getattr(param, "_loft_menu_items", None)) is not None:
+                mirror()
+
 
 def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     """Export the current chunk graph as one clean, portable USD layer.
@@ -5168,6 +5196,71 @@ def _lofted_attr_name(context_prim: Usd.Prim, context, prefix: str, owner, param
     return candidate
 
 
+def _lofted_label(owner, context, label: str) -> str:
+    """The display label a lofted param takes on the context's params panel.
+
+    Prefixed with the owning chunk's name at the moment of the loft, e.g. "Transform1: Prim
+    Path" -- otherwise three same-named params lofted from different chunks (three
+    Reference nodes' Prim Path, say) show up as three identical "Prim Path" rows in the
+    panel with no way to tell which one drives which node; the qualifier that disambiguates
+    them lives on the USD attribute name (_lofted_attr_name), but nothing surfaced it to the
+    widget the user actually looks at.
+
+    A one-time default, same as _lofted_attr_name's own qualifier -- NOT kept live against a
+    later rename of the source chunk. The label is an ordinary editable field once set: a
+    user is free to rename a lofted param to whatever they want, same as any other param,
+    and that choice has to stick -- rewriting it out from under them on every rename would
+    make "rename the lofted param" not really mean anything. It also keeps the label's
+    meaning aligned with the attribute name it fronts, which is frozen for the same reason
+    (the CLI and saved expressions address it by name; see loft_param_to_context).
+
+    Not qualified when owner is context (lofting a group's own param up to its parent) or
+    owner is None -- the group's plain label already names itself.
+    """
+    if owner is not None and owner is not context and getattr(owner, "name", None):
+        return f"{owner.name}: {label}"
+    return label
+
+
+def _mirror_menu_items(inner_param: "core.ChunkParamBase", context_param: "core.ChunkParamBase") -> None:
+    """Keep a lofted Menu offering what the inner Menu offers.
+
+    A loft is a clone taken once, and menu_items came across with it: whatever the inner
+    menu listed at that instant, frozen. That is wrong for any Menu whose items follow
+    the stage (Set Variant's are read off the prim at Prim Path, and rebuild as the graph
+    cooks), and wrong for every lofted Menu on a reopen: _restore_lofted_params clones
+    before the inner chunk has read anything, so the group's dropdown came back holding
+    the saved value and nothing else, with no way to pick anything different.
+
+    Items only. The value already flows both ways through the PARAM_CHANGED bridges in
+    the callers, and the label is deliberately the group's own (see _lofted_label).
+
+    A bare NoticeConnection rather than add_callback, so it has no owner: an owned
+    callback is dispatched inside the owner's edit context, and skipped outright while
+    that layer is muted (NoticeConnection.handle_callback). A chunk under a context with
+    no active view is exactly that -- dormant, its layer muted -- for the whole of a
+    reopen, which is when its menus first fill. Nothing here authors, so there is no
+    layer to be in. Both the closure and the connection are pinned on the context param,
+    whose lifetime the mirror follows: the connection keeps its function by weakref, and
+    disconnects when it is itself collected.
+    """
+    if not isinstance(inner_param, _chunk_mod.Menu) or not isinstance(context_param, _chunk_mod.Menu):
+        return
+
+    def _mirror(_notice=None, _sender=None):
+        items = list(inner_param.menu_items or [])
+        if list(context_param.menu_items or []) != items:
+            context_param.menu_items = items
+
+    context_param._loft_menu_items = _mirror  # strong-ref pin
+    context_param._loft_menu_items_conn = NoticeConnection(
+        method=_mirror,
+        alias=ChunkNoticeAlias.ATTRIBUTE_CHANGED,
+        sender=inner_param.get_attribute_sender("menu_items"),
+    )
+    _mirror()
+
+
 def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase") -> None:
     """Loft a param up to the context prim's public interface.
 
@@ -5215,7 +5308,8 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
         return
 
     # Resolved against the prim, so the name is unique among what is already published.
-    lofted_name = _lofted_attr_name(context_prim, context, prefix, param.get_chunk(), param.name)
+    owner = param.get_chunk()
+    lofted_name = _lofted_attr_name(context_prim, context, prefix, owner, param.name)
     attr_name = f"{prefix}{lofted_name}"
     context_attr_path = context_prim_path.AppendProperty(attr_name)
 
@@ -5233,6 +5327,17 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     # inputs:Rim_base_color. That mismatch is what made the second loft a phantom control:
     # a distinct param in the panel, wired to somebody else's attribute.
     context_param.name = lofted_name
+    # clone() carried param's own label over verbatim (e.g. "Prim Path"), which the widget
+    # prefers over .name (get_label()) -- without this, every lofted param that shares its
+    # inner param's label showed identically in the panel regardless of the qualifier baked
+    # into .name, and there was no way to tell three lofted Prim Paths apart at a glance.
+    # A one-time default the same as the name above: renaming this param afterwards (an
+    # ordinary edit to its label, same as any param) is not overwritten by a later rename
+    # of the source chunk.
+    # No stored customData yet at this point -- a fresh loft always starts at the
+    # generated default, same as the attribute name above.
+    context_param.label = _lofted_label(owner, context, param.get_label())
+    context_param._lofted = True
     context.add_param(context_param)
     # clone() carries over the source param's cached _chunk_parent (the inner chunk), and
     # add_param doesn't invalidate it — so get_chunk() would keep returning the inner chunk
@@ -5300,6 +5405,31 @@ def loft_param_to_context(param: "core.ChunkParamBase", context: "core.ChunkBase
     param.add_callback(
         _forward_to_context,
         notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
+        send_on_create=False,
+        private=True,
+    )
+    _mirror_menu_items(param, context_param)
+
+    # A rename (chunk_qt_widgets' "Rename..." on a lofted param, or any other code setting
+    # .label) has to survive a save/reload -- without this it only lived in the Python
+    # object for the rest of the session and _restore_lofted_params rebuilt the generated
+    # default on the next load, silently discarding it. Scoped to the "label" attribute
+    # specifically (its own AttributeSender), not the coarse PARAM_CHANGED the value-forward
+    # callbacks above use, so this doesn't fire (and re-touch USD) on every value edit too.
+    def _persist_lofted_label(_owner, _notice, _sender=None):
+        if not context_param._param_attr_path:
+            return
+        target = stage.GetAttributeAtPath(Sdf.Path(context_param._param_attr_path))
+        if not (target and target.IsValid()):
+            return
+        home = chunk_utils.get_attr_home_layer(target) or stage.GetSessionLayer()
+        with Usd.EditContext(stage, home):
+            chunk_utils.store_lofted_label(target, context_param.label)
+
+    context_param._loft_label_persist = _persist_lofted_label  # strong-ref pin
+    context_param.add_callback(
+        _persist_lofted_label,
+        sender=context_param.get_attribute_sender("label"),
         send_on_create=False,
         private=True,
     )
@@ -5580,8 +5710,34 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             # duplicate would be added each time the file was opened.
             context_param = inner_param.clone()
             context_param.name = param_name
+            # See loft_param_to_context's matching comment: without this, a reload showed
+            # every lofted param under its bare inner label again, with no way to tell
+            # which chunk it came from, even though live lofting (moments before a save)
+            # had shown "Reference1: Prim Path". A user's own rename (chunk_qt_widgets'
+            # "Rename...") is stored as customData on context_attr and takes priority over
+            # the generated default -- it is exactly what has to override it.
+            context_param.label = (
+                chunk_utils.read_lofted_label(context_attr)
+                or _lofted_label(inner_chunk, context, inner_param.get_label())
+            )
+            context_param._lofted = True
             context_param._connect_param_attr(context_attr)
             context.add_param(context_param)
+
+            # Re-wired on every restore, same as loft_param_to_context's own copy -- a
+            # rename after THIS reload has to survive the next one too.
+            def _persist_lofted_label(_owner, _notice, _sender=None, _cp=context_param, _attr=context_attr):
+                home = chunk_utils.get_attr_home_layer(_attr) or stage.GetSessionLayer()
+                with Usd.EditContext(stage, home):
+                    chunk_utils.store_lofted_label(_attr, _cp.label)
+
+            context_param._loft_label_persist = _persist_lofted_label  # strong-ref pin
+            context_param.add_callback(
+                _persist_lofted_label,
+                sender=context_param.get_attribute_sender("label"),
+                send_on_create=False,
+                private=True,
+            )
 
             def _forward_to_inner(_owner, _notice, _sender=None, _ip=inner_param, _cp=context_param):
                 val = _cp.value
@@ -5607,6 +5763,7 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             # while USD and the lofted UI both showed the saved value. Seeding here is
             # before the execute pass, so the first cook already sees the real value.
             _forward_to_inner(None, None)
+            _mirror_menu_items(inner_param, context_param)
 
 
 def _author_prim(stage: Usd.Stage, chunk: "core.ChunkBase", prev_chunk: "core.ChunkBase | None" = None, index: int = 0) -> None:

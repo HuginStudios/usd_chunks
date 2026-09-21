@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import types as _types
+import weakref
 from pathlib import Path
 
 import pytest
@@ -2029,6 +2030,198 @@ def test_two_chunks_lofting_the_same_param_name_stay_separate() -> None:
         assert len(conns) == 1
         targets.update(conns)
     assert len(targets) == 2, f"each loft needs its own attribute, got {targets}"
+
+
+def test_lofted_params_show_which_chunk_they_came_from() -> None:
+    """The qualifier that keeps two lofted Prim Paths from colliding (Reference1_primpath_location)
+    lives on the USD attribute name, but the params panel shows a param's LABEL
+    (get_label()), not its name -- clone() carried the inner param's own label ("Prim
+    Path") over verbatim, so three lofted Prim Paths showed as three identical rows with
+    no way to tell which chunk each one actually drives."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    leaves = [_mk(primmod) for _ in range(3)]
+    scene._current_context = None
+
+    for leaf in leaves:
+        loft_param_to_context(leaf.get_param("primpath_location"), grp)
+
+    labels = {leaf.name: next(
+        x.get_label() for x in grp.get_my_params() if x.name == f"{leaf.name}_primpath_location"
+    ) for leaf in leaves}
+    for leaf in leaves:
+        assert labels[leaf.name] == f"{leaf.name}: Prim Path", (
+            f"expected the label to name its chunk, got {labels}"
+        )
+    assert len(set(labels.values())) == 3, f"all three labels must be distinguishable, got {labels}"
+
+
+def test_a_lofted_labels_qualifier_is_a_one_time_default_not_a_live_rename() -> None:
+    """The qualifier prefixed onto a lofted param's label ("Transform1: Prim Path") is a
+    default set once at loft time, the same as the USD attribute name it fronts
+    (Transform1_primpath_location) -- not kept live against a later rename of the source
+    chunk. A lofted param's label is an ordinary editable field: a user can rename it to
+    whatever they want, same as any other param, and that has to stick -- silently
+    rewriting it out from under them on every unrelated chunk rename would make "rename the
+    lofted param" not really mean anything."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    leaf = _mk(primmod)
+    scene._current_context = None
+
+    loft_param_to_context(leaf.get_param("primpath_location"), grp)
+    lofted = next(x for x in grp.get_my_params() if x.name.endswith("primpath_location"))
+    original_name = leaf.name
+    assert lofted.get_label() == f"{original_name}: Prim Path"
+
+    # Renaming the source chunk afterwards must not touch a label already handed out.
+    leaf.name = "MyImportantAsset"
+    assert lofted.get_label() == f"{original_name}: Prim Path", (
+        "a chunk rename must not silently rewrite a lofted param's label"
+    )
+
+    # And the user must be free to rename the lofted param itself -- an ordinary edit,
+    # unrelated to anything the source chunk does afterwards.
+    lofted.label = "Key Light Position"
+    assert lofted.get_label() == "Key Light Position"
+    leaf.name = "SomethingElseEntirely"
+    assert lofted.get_label() == "Key Light Position", (
+        "a user's own rename of the lofted param must not be overwritten either"
+    )
+
+
+def test_a_renamed_lofted_params_label_survives_a_reopen(tmp_path) -> None:
+    """A rename via chunk_qt_widgets' "Rename..." (param.label = ...) is stored as
+    customData on the lofted interface attribute (chunk_utils.store_lofted_label) and read
+    back by _restore_lofted_params in preference to the generated default -- without it, a
+    reload silently discarded the rename and showed the auto-qualified label again."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod, sc):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            sc.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod, scene)
+    scene._current_context = weakref.ref(grp)
+    leaf = _mk(primmod, scene)
+    scene._current_context = None
+
+    loft_param_to_context(leaf.get_param("primpath_location"), grp)
+    lofted = next(x for x in grp.get_my_params() if x.name.endswith("primpath_location"))
+    lofted.label = "Key Light Position"
+
+    out = tmp_path / "lofted_rename.usda"
+    export_chunks(scene, out)
+
+    stage2 = Usd.Stage.Open(str(out))
+
+    class _Stage2Scene(SceneSender):
+        def get_stage(self):
+            return stage2
+
+        def get_selected_prims(self):
+            return []
+
+    scene2 = _Stage2Scene()
+    chunk_registry.ChunkLayerManager().reset()
+    reg.initialize(scene2, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage2)
+    _chunk_usd_init(stage2, scene2)
+
+    grp2 = next(c for c in scene2.get_chunks() if c.name == grp.name)
+    lofted2 = next(x for x in grp2.get_my_params() if x.name.endswith("primpath_location"))
+    assert lofted2.get_label() == "Key Light Position", (
+        f"the rename must survive a reopen, got {lofted2.get_label()!r}"
+    )
+
+    # And it must keep surviving a SECOND reopen after being renamed again post-reload.
+    lofted2.label = "Even Better Name"
+    out2 = tmp_path / "lofted_rename2.usda"
+    export_chunks(scene2, out2)
+
+    stage3 = Usd.Stage.Open(str(out2))
+
+    class _Stage3Scene(SceneSender):
+        def get_stage(self):
+            return stage3
+
+        def get_selected_prims(self):
+            return []
+
+    scene3 = _Stage3Scene()
+    chunk_registry.ChunkLayerManager().reset()
+    reg.initialize(scene3, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage3)
+    _chunk_usd_init(stage3, scene3)
+
+    grp3 = next(c for c in scene3.get_chunks() if c.name == grp.name)
+    lofted3 = next(x for x in grp3.get_my_params() if x.name.endswith("primpath_location"))
+    assert lofted3.get_label() == "Even Better Name", (
+        f"a rename made AFTER a reopen must survive the next one too, got {lofted3.get_label()!r}"
+    )
 
 
 def test_loft_group_param_up_to_parent_group() -> None:

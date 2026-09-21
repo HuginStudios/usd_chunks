@@ -331,6 +331,30 @@ def clear_expression_text(attr: Usd.Attribute) -> None:
         attr.ClearCustomDataByKey(EXPR_TEXT_KEY)
 
 
+# A lofted param's label is a generated default (chunk_stage._lofted_label) -- unlike the
+# published attribute name, it isn't addressed by anything, so there is nowhere else it has
+# to be recorded once a user renames it (chunk_qt_widgets' "Rename..."). Same customData
+# pattern as EXPR_TEXT_KEY: a label is display-only bookkeeping, not a value, so it never
+# competes with whatever the attribute's own type actually stores.
+LOFTED_LABEL_KEY = "chunk:loftedLabel"
+
+
+def store_lofted_label(attr: Usd.Attribute, label: str) -> None:
+    """Record a user's rename of a lofted param so it survives a reload.
+
+    _restore_lofted_params reads this back and, if present, uses it verbatim instead of
+    re-deriving the generated "{Chunk}: {label}" default -- a custom name is exactly what
+    it has to override.
+    """
+    attr.SetCustomDataByKey(LOFTED_LABEL_KEY, label)
+
+
+def read_lofted_label(attr: Usd.Attribute) -> "str | None":
+    """The label a user gave a lofted param, or None if it still has its generated default."""
+    val = attr.GetCustomDataByKey(LOFTED_LABEL_KEY)
+    return val if isinstance(val, str) and val else None
+
+
 # --------------------------------------------------------------------------------------
 # Stage expression variables
 #

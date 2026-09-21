@@ -1337,6 +1337,15 @@ class ChunkCommon(AttributesBase):
         default=None, init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
     )
 
+    # Set once, on the clone chunk_stage.loft_param_to_context/_restore_lofted_params
+    # produces -- a static marker, not a live link to the source chunk (there is no live
+    # link; label is a one-time default, see loft_param_to_context). Its only job is
+    # letting the params panel offer "Rename..." for a lofted param specifically, rather
+    # than for every param generally.
+    _lofted: bool = attrs.field(
+        default=False, init=False, metadata=AttributeMetadata(send_mode=SendMode.NO_SEND)
+    )
+
     def get_identifier(self) -> str:
         """
         Get an identifier for this chunk object. The identifier is a dot(.) separated path, from the top-most
