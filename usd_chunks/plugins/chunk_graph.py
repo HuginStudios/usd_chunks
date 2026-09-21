@@ -985,6 +985,15 @@ class GraphFrontend(Protocol):
     def toggle_disable_selected(self) -> None:
         """Flip DISABLED on the selection. A disabled chunk stays visible, greyed."""
 
+    def collapse_selected_or_all(self) -> None:
+        """Collapse the selection, or the whole graph when nothing is selected.
+
+        One direction for the whole set: anything still expanded collapses, and only a set
+        that is already entirely collapsed expands again. Chunkgroups are skipped -- a
+        collapsed one hides the control that expands it -- and so are views, which have no
+        body to collapse.
+        """
+
     def copy_selection(self) -> None:
         """Snapshot the selection into chunk_graph.node_clipboard/edge_clipboard.
 

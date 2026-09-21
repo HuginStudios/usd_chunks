@@ -2771,6 +2771,24 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
+        # Bare C (collapse selected-or-all): same gating as bare D, and here the fallback is
+        # not a reliability nicety but the only path that works at all -- usdview binds "c"
+        # itself (it cycles the camera, printing "Camera: Free AutoClip" in the viewport), so
+        # the key never reached ChunkGraphView's own Key_C handler and pressing C over the
+        # graph moved the camera instead of collapsing anything. Accepting the
+        # ShortcutOverride is what takes the key back while the cursor is over the graph;
+        # everywhere else usdview keeps it.
+        if not typing_in_proxy and not ctrl_down and event.key() == QtCore.Qt.Key.Key_C:
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    view._collapse_selected_or_all()
+                    event.accept()
+                    return True
+
         # Escape: cancel an in-flight wire drag, otherwise drop the proxy focus -- the same
         # two jobs ChunkGraphView.keyPressEvent's own Escape does, with the same native-focus
         # fragility as Delete and D.
@@ -3939,8 +3957,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 self.frontend().toggle_disable_selected()
             event.accept()
             return
-        if event.key() == QtCore.Qt.Key.Key_C and (event.modifiers() & QtCore.Qt.ControlModifier):
-            self.frontend().copy_selection()
+        if event.key() == QtCore.Qt.Key.Key_C:
+            # Ctrl+C copies; bare C collapses -- the same modifier disambiguation D and V
+            # already use, so the single-key shortcuts keep their meaning.
+            if event.modifiers() & QtCore.Qt.ControlModifier:
+                self.frontend().copy_selection()
+            else:
+                self.frontend().collapse_selected_or_all()
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_X and (event.modifiers() & QtCore.Qt.ControlModifier):
@@ -3995,6 +4018,43 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # mark_pending_delete_relevance's docstring for why it can't be judged afterward.
         self.mark_pending_delete_relevance(selected)
         chunk_graph.delete_chunks(selected)
+
+    def _collapse_selected_or_all(self) -> None:
+        """Collapse the selection, or the whole graph when nothing is selected.
+
+        One direction for the lot: if anything in the target set is still expanded they all
+        collapse, and only when every one of them is already collapsed does the key expand
+        them again. Toggling each node independently would turn a mixed graph into the
+        photographic negative of itself, which is never what "collapse all" means.
+
+        A chunkgroup is left alone. Collapsing one hides its whole embedded widget --
+        including the arrow that expands it -- so the only way back is a header
+        double-click, and sweeping the graph is no place to put a node in that state.
+
+        A view is left alone too, and that one is not cosmetic: a view has no body to
+        collapse, is drawn collapsed already, and is the node that happens to be selected
+        after the graph auto-creates one -- so counting it made a bare C decide the whole
+        graph was "already collapsed" and expand instead.
+        """
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+
+        nodes = [
+            n for n in graph_scene._nodes.values()
+            if not n._is_chunkgroup and not chunk_stage.is_view_chunk(n.chunk)
+        ]
+        selected = [n for n in nodes if n.chunk.has_state(ChunkFlags.State.SELECTED)]
+        targets = selected or nodes
+        if not targets:
+            return
+
+        collapse = any(not n.chunk.has_state(ChunkFlags.State.COLLAPSED) for n in targets)
+        for node in targets:
+            if collapse:
+                node.chunk.set_state(ChunkFlags.State.COLLAPSED)
+            else:
+                node.chunk.unset_state(ChunkFlags.State.COLLAPSED)
 
     def _toggle_disable_selected(self) -> None:
         graph_scene = self.scene()
@@ -5257,6 +5317,9 @@ class QtGraphFrontend:
 
     def toggle_disable_selected(self) -> None:
         self.view._toggle_disable_selected()
+
+    def collapse_selected_or_all(self) -> None:
+        self.view._collapse_selected_or_all()
 
     def copy_selection(self) -> None:
         self.view._copy_selected_to_clipboard()
