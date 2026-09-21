@@ -5,6 +5,7 @@ import zipfile
 import io
 import threading
 import weakref
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import requests
 
@@ -15,6 +16,9 @@ from PySide6 import QtWidgets, QtCore, QtGui
 
 API_ROOT = "https://api.matlib.gpuopen.com/api"
 CACHE_FILE_NAME = "gpuopen_materials.json"
+# Dropped into an extracted package dir when it was downloaded as the fallback for a
+# resolution the library does not offer -- see _cached_mtlx.
+_FALLBACK_MARKER = ".fallback_for_{resolution}"
 
 _all_materials: list[dict] = []
 _results_by_title: dict[str, dict] = {}
@@ -23,6 +27,18 @@ _thumbnail_cache: dict[str, bytes] = {}  # render_id → jpeg bytes
 _downloading: set[str] = set()  # titles with an in-flight background download
 
 THUMB_SIZE = 85
+PAGE_SIZE = 10
+THUMB_DIR_NAME = "thumbs"
+
+# Thumbnails go through one session and a bounded pool. Each tile used to start its own
+# daemon thread running a bare requests.get: a fresh SSL context, a DNS lookup and a TCP
+# handshake per thumbnail, hundreds of threads at once on a scene load, all contending for
+# the GIL with the main thread that is trying to cook the graph. Measured on a four-node
+# scene: ~530 threads and ~80s of load time, with the actual chunk work under 10s.
+_thumb_http = requests.Session()
+_thumb_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gpuopen-thumb")
+_thumb_futures: dict[str, Future] = {}  # render_id → in-flight fetch, shared by all nodes
+_thumb_lock = threading.Lock()
 
 
 def _safe_prim_name(s: str) -> str:
@@ -56,24 +72,68 @@ def _fetch_all_materials(cache_dir: str) -> list[dict]:
 # Async thumbnail loader
 
 
+def _thumb_path(cache_dir: str, render_id: str) -> str:
+    return os.path.join(cache_dir, THUMB_DIR_NAME, f"{render_id}.jpg")
+
+
+def _fetch_thumbnail(render_id: str, cache_dir: str) -> bytes:
+    """Worker half: disk cache, else one GET on the shared session. b"" on any failure.
+
+    The disk cache is what makes a reopen free: the in-memory dict is empty on every
+    startup, so without it every tile of every node re-downloaded its thumbnail each time
+    the scene was opened.
+    """
+    path = _thumb_path(cache_dir, render_id)
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        pass
+    try:
+        r = _thumb_http.get(f"{API_ROOT}/renders/{render_id}/download_thumbnail/", timeout=10)
+    except Exception:
+        return b""
+    if r.status_code != 200:
+        return b""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(r.content)
+    except OSError:
+        pass
+    return r.content
+
+
 class _ThumbnailLoader(QtCore.QObject):
     loaded = QtCore.Signal(str, bytes)  # render_id, jpeg bytes
 
-    def fetch(self, render_id: str):
-        def _work():
-            if render_id in _thumbnail_cache:
-                self.loaded.emit(render_id, _thumbnail_cache[render_id])
-                return
-            try:
-                url = f"{API_ROOT}/renders/{render_id}/download_thumbnail/"
-                r = requests.get(url, timeout=10)
-                if r.status_code == 200:
-                    _thumbnail_cache[render_id] = r.content
-                    self.loaded.emit(render_id, r.content)
-            except Exception:
-                pass
+    def __init__(self, cache_dir: str = ""):
+        super().__init__()
+        self.cache_dir = cache_dir or os.path.expanduser("~/.gpuopen_cache")
 
-        threading.Thread(target=_work, daemon=True).start()
+    def fetch(self, render_id: str):
+        if render_id in _thumbnail_cache:
+            self.loaded.emit(render_id, _thumbnail_cache[render_id])
+            return
+        # One fetch per render_id however many nodes want it: several library nodes in
+        # one scene all show the same first page, and used to each download it.
+        with _thumb_lock:
+            fut = _thumb_futures.get(render_id)
+            if fut is None:
+                fut = _thumb_pool.submit(_fetch_thumbnail, render_id, self.cache_dir)
+                _thumb_futures[render_id] = fut
+
+        def _done(f: Future):
+            data = f.result() if f.exception() is None else b""
+            with _thumb_lock:
+                _thumb_futures.pop(render_id, None)
+            if data:
+                _thumbnail_cache[render_id] = data
+                # Emitted from the pool thread; the receiver lives on the main thread so
+                # Qt queues the delivery, same as the old per-thread emit did.
+                self.loaded.emit(render_id, data)
+
+        fut.add_done_callback(_done)
 
 
 # Thumbnail tile
@@ -200,7 +260,7 @@ class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidge
     def __init__(self, param: chunk.Custom):
         super().__init__(param)
 
-        self._loader = _ThumbnailLoader()
+        self._loader = _ThumbnailLoader()  # cache_dir set by fetch_catalog_async
         self._tiles: dict[str, _MaterialTile] = {}
         self._page_items: list[tuple[str, dict]] = []
         self._page_offset = 0
@@ -257,6 +317,8 @@ class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidge
 
     # Public
     def fetch_catalog_async(self, cache_dir: str):
+        self._loader.cache_dir = cache_dir
+
         def _work():
             try:
                 materials = _fetch_all_materials(cache_dir)
@@ -270,29 +332,26 @@ class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidge
     def _on_catalog_ready(self, materials: list):
         global _all_materials
         _all_materials = materials
-        self._do_search()
-        # Restore previously picked selection from the param
+        # Restore the previously picked selection by pinning it to the front of the first
+        # page. It used to scroll-load page after page until the picked tile turned up --
+        # "Gun Metal" sits at index 213 of the catalog, so restoring it built 220 tiles and
+        # fetched 220 thumbnails, for every node, on every scene open.
         c = self.param.get_chunk()
         pt = c.get_param("picked_title") if c else None
-        if pt and pt.value:
-            self._restore_selection(pt.value)
+        self._do_search(pin=pt.value if pt else "")
 
-    def _restore_selection(self, title: str):
-        if title in self._tiles:
-            self._set_selected(title)
-        else:
-            # Tile may not be loaded yet — scroll-load until found or exhausted
-            while title not in self._tiles and self._page_offset < len(self._page_items):
-                self._load_next_page()
-            if title in self._tiles:
-                self._set_selected(title)
-
-    def _do_search(self):
+    def _do_search(self, pin: str = ""):
         global _results_by_title
         term = self._search.text().lower()
         hits = [m for m in _all_materials if term in m.get("title", "").lower()]
         _results_by_title = {m["title"]: m for m in hits}
-        self._reset_pages(_results_by_title)
+        ordered = _results_by_title
+        if pin in _results_by_title:
+            ordered = {pin: _results_by_title[pin]}
+            ordered.update(_results_by_title)
+        self._reset_pages(ordered)
+        if pin in self._tiles:
+            self._set_selected(pin)
 
     def _reset_pages(self, results: dict[str, dict]):
         global _selected_title
@@ -304,7 +363,7 @@ class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidge
         self._load_next_page()
 
     def _load_next_page(self):
-        page = self._page_items[self._page_offset : self._page_offset + 10]
+        page = self._page_items[self._page_offset : self._page_offset + PAGE_SIZE]
         if not page:
             return
         for title, mat in page:
@@ -396,18 +455,31 @@ def _create_child(module_key: str, parent):
 def _cached_mtlx(cache_dir: str, title: str, resolution: str) -> str | None:
     """Path to an already-extracted .mtlx for this material+resolution, or None.
 
-    _download_and_apply extracts each package to <cache_dir>/<Title>_<label>, and
-    _pick_package only ever picks a label starting with the requested resolution -- so
-    matching that same prefix is what keeps a cache hit honest about resolution.
+    _download_and_apply extracts each package to <cache_dir>/<Title>_<label>, where a
+    label starts with its resolution ("1k_8b", "2k_16b", ...). A dir at the requested
+    resolution is a hit. A dir at another resolution is a hit only if _fetch_package left a
+    _FALLBACK_MARKER for this resolution in it -- meaning the library had no package at the
+    requested resolution and that dir IS what the download would fall back to again. Without
+    that, a material that only ships at 1k (Glass, White Plastic) missed the cache on every
+    single load: the lookup asked for "<Title>_2k", the download then extracted into
+    "<Title>_1k_8b" again, and the next load repeated the whole thing. The marker keeps a
+    genuine resolution change honest: picking 4k for a material cached at 1k still misses
+    and downloads, unless a previous download already found there is no 4k.
     """
     if not cache_dir or not os.path.isdir(cache_dir):
         return None
-    prefix = _safe_prim_name(f"{title}_{resolution}")
-    for entry in sorted(os.listdir(cache_dir)):
-        if not entry.startswith(prefix):
-            continue
+    safe_title = re.escape(_safe_prim_name(title))
+    exact = re.compile(rf"^{safe_title}_{re.escape(resolution)}")
+    any_res = re.compile(rf"^{safe_title}_\d+k(?:_|$)")
+    candidates = [e for e in sorted(os.listdir(cache_dir)) if any_res.match(e)]
+    candidates.sort(key=lambda e: not exact.match(e))
+    for entry in candidates:
         mat_dir = os.path.join(cache_dir, entry)
         if not os.path.isdir(mat_dir):
+            continue
+        if not exact.match(entry) and not os.path.exists(
+            os.path.join(mat_dir, _FALLBACK_MARKER.format(resolution=resolution))
+        ):
             continue
         for root, _dirs, files in os.walk(mat_dir):
             for name in sorted(files):
@@ -463,6 +535,12 @@ def _fetch_package(title: str, resolution: str, cache_dir: str) -> "tuple[str | 
             names = z.namelist()
     except Exception as exc:
         return None, None, f"Download failed: {exc}"
+
+    # Record that this dir answers for the requested resolution too, so _cached_mtlx can
+    # hit it next time instead of re-downloading the same fallback package.
+    if not pkg.get("label", "").lower().startswith(resolution.lower()):
+        with open(os.path.join(mat_dir, _FALLBACK_MARKER.format(resolution=resolution)), "w"):
+            pass
 
     mtlx_path = next(
         (os.path.join(mat_dir, n).replace("\\", "/") for n in names if n.endswith(".mtlx")),
