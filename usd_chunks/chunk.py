@@ -317,6 +317,13 @@ class Menu(ChunkParamBase[str]):
 
     menu_items: Sequence[str] = field(factory=list)
 
+    #: True when menu_items is a snapshot of something that changes -- the expression
+    #: variables a stage declares, say -- rather than the fixed set of legal values. A value
+    #: outside the list is then kept instead of being discarded back to menu_items[0]: on
+    #: load a param's value is restored before whatever rebuilds the list has run, and a
+    #: saved choice would otherwise be silently replaced by the first entry.
+    dynamic_items: bool = field(default=False)
+
     @classmethod
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs):
         param = super().from_usd_attr(attr, *args, **kwargs)
@@ -334,7 +341,7 @@ class Menu(ChunkParamBase[str]):
 
     def convert_attr(self, attr: "Attribute", val: Any) -> Any:
         if attr.name in ["default_value", "value"]:
-            if self.menu_items and val is not None and val not in self.menu_items:
+            if self.menu_items and not self.dynamic_items and val is not None and val not in self.menu_items:
                 if isinstance(val, str) and chunk_utils.has_expression(val):
                     # A node-graph connection (_author_connection) writes an @Node.param@
                     # expression here, resolved live at read time — trust it even though
