@@ -1771,9 +1771,9 @@ class ChunkUsdAttributeSupport(AttributesBase):
                         with chunk_utils.edit_context_for(stage, self._var_selections, fallback):
                             if not is_expr:
                                 current = usd_attr.Get(0)
-                                # Don't write a string to a typed (non-String) attr — an unresolved
+                                # Don't write a string to a typed (numeric) attr — an unresolved
                                 # forwarded value can arrive as text and raise a type-mismatch.
-                                bad_str = isinstance(val, str) and usd_attr.GetTypeName() != Sdf.ValueTypeNames.String
+                                bad_str = isinstance(val, str) and not chunk_utils.attr_holds_text(usd_attr)
                                 if not bad_str and current != val:
                                     usd_attr.Set(val)
                             if is_expr:
@@ -1829,7 +1829,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             if driven_attr := stage.GetAttributeAtPath(sdf_path):
                 # An expression that did not resolve (a typo, an unset variable) stays
                 # text; a typed attr refuses it, and the raise took the whole edit down.
-                if isinstance(val, str) and driven_attr.GetTypeName() != Sdf.ValueTypeNames.String:
+                if isinstance(val, str) and not chunk_utils.attr_holds_text(driven_attr):
                     continue
                 if driven_attr.Get(0) != val:
                     var_selections = self._driven_var_selections.get(path, ())
@@ -1883,7 +1883,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                     # stays the expression STRING and Set() on a typed (float/etc) attr raises a
                     # type-mismatch. The connection authored below carries the topology, so skip the
                     # value write in that case.
-                    bad_str = isinstance(store_val, str) and notice.data.GetTypeName() != Sdf.ValueTypeNames.String
+                    bad_str = isinstance(store_val, str) and not chunk_utils.attr_holds_text(notice.data)
                     if not bad_str and notice.data.Get(0) != store_val:
                         notice.data.Set(store_val)
                     if is_expr:

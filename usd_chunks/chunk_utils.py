@@ -227,6 +227,23 @@ def has_expression(text: str) -> bool:
     return bool(_EXPR_RE.search(text))
 
 
+# The attribute types a Python str is a legitimate value for. Not just String: a token
+# takes one (every schema enum -- visibility, purpose, a light's shaderId) and so does an
+# asset (a texture file). The guards that keep unresolved expression text out of a typed
+# attr used to test `!= String`, which also dropped every real string bound for a token
+# or asset -- a dome light's texture never reached the prim (live-reported).
+_TEXT_TYPES = (
+    Sdf.ValueTypeNames.String,
+    Sdf.ValueTypeNames.Token,
+    Sdf.ValueTypeNames.Asset,
+)
+
+
+def attr_holds_text(attr: "Usd.Attribute") -> bool:
+    """Whether a str can be Set() on attr: its type is String, Token or Asset."""
+    return attr.GetTypeName() in _TEXT_TYPES
+
+
 # Where the authored expression text is kept for an attr that cannot hold it as its own
 # value. Connections carry only the @refs@; the operators and literals between them live
 # nowhere else, so a Float attr storing just the resolved number loses "* 2" on reload.

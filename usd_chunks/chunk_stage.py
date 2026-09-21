@@ -276,7 +276,7 @@ def _push_driven_values(stage: "Usd.Stage", param, layer: "Sdf.Layer | None" = N
         attr = stage.GetAttributeAtPath(Sdf.Path(path))
         if not attr:
             continue
-        if isinstance(value, str) and attr.GetTypeName() != Sdf.ValueTypeNames.String:
+        if isinstance(value, str) and not chunk_utils.attr_holds_text(attr):
             continue
         if attr.Get(0) != value:
             var_selections = driven_var_selections.get(path, ())
