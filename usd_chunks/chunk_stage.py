@@ -284,6 +284,21 @@ def _push_driven_values(stage: "Usd.Stage", param, layer: "Sdf.Layer | None" = N
                 attr.Set(value)
 
 
+def params_are_bound(chunk: "core.ChunkBase") -> bool:
+    """Whether any of this chunk's params still drives a real prim attribute.
+
+    For a chunk that builds its params from the prim it authors -- a Light, a Camera,
+    anything on show_attribute -- this is the difference between a cook that landed and one
+    that only looked like it did. Cooking against a muted layer composes no prim, so
+    show_attribute binds nothing; a chunk that caches "already cooked this type at this
+    path" would then never rebuild the binding, and every value it holds drives nothing.
+    """
+    return any(
+        getattr(param, "_driven_attr_paths", None)
+        for _, param in _iter_chunk_params(chunk)
+    )
+
+
 def push_chunk_values(stage: "Usd.Stage", chunk: "core.ChunkBase") -> None:
     """Re-author every value chunk's params drive, e.g. a Light's inputs.
 
