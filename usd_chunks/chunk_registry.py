@@ -1652,6 +1652,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # export tooling group a chunk's own bookkeeping prim with whichever layer its driven
         # content nests in (see scripts/core/export_usd.py's per-layer export mode).
         self._chunk_target: Dict[core.ChunkHash, Sdf.Layer] = {}
+        # The graph_key each chunk's layer was last placed under. get_or_create_layer only
+        # has to look for that layer in OTHER graph layers when this has changed since --
+        # and it is asked several times per chunk per cook, nearly always with nothing moved.
+        self._chunk_graph_key: Dict[core.ChunkHash, tuple] = {}
         # Hashes of chunks whose layer has been torn down. Never served a layer again, so a
         # notice fired by the teardown itself can't resurrect one — see _chunk_deleted.
         self._retired_chunks: set = set()
@@ -1680,6 +1684,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.graph_layers = {}
         self._graph_layer_target = {}
         self._chunk_target = {}
+        self._chunk_graph_key = {}
         self._retired_chunks = set()
         self.internal_layer_ids = set()
 
@@ -1888,7 +1893,16 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             # (a Sublayer chunk's files), which are never this layer. The full walk resolves every
             # sublayer path through Sdf.Find on every call, and this runs on every single
             # get_edit_context: it was ~30% of the cost of opening a saved graph.
-            for pl in list(self.graph_layers.values()):
+            #
+            # And only when this chunk's graph_key differs from the one its layer was last
+            # placed under: the layer can only be sitting in another graph layer if this
+            # function put it there, under the key it had then. Every subLayerPaths read is a
+            # C++ list copy, and this loop was two thirds of the call on a warm cache, on a
+            # call made ~50 times per chunk over a scene open.
+            chunk_hash = c.get_hash()
+            moved = self._chunk_graph_key.get(chunk_hash) != graph_key
+            self._chunk_graph_key[chunk_hash] = graph_key
+            for pl in list(self.graph_layers.values()) if moved else ():
                 if pl.identifier != parent.identifier and layer.identifier in pl.subLayerPaths:
                     pl.subLayerPaths.remove(layer.identifier)
                     if len(pl.subLayerPaths) == 0:
@@ -1966,6 +1980,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.graph_layers.clear()
         self.chunk_layers.clear()
         self._chunk_target.clear()
+        self._chunk_graph_key.clear()
         self.internal_layer_ids.clear()
 
     def clear_layer(self, layer_id: str | core.ChunkBase):
@@ -1995,6 +2010,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.graph_layers.clear()
         self.chunk_layers.clear()
         self._chunk_target.clear()
+        self._chunk_graph_key.clear()
         self.internal_layer_ids.clear()
 
         for c in ChunkRegistry().scene.get_chunks():
@@ -2070,6 +2086,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return
         self._retired_chunks.add(chunk_hash)
         self._chunk_target.pop(chunk_hash, None)
+        self._chunk_graph_key.pop(chunk_hash, None)
         if not (layer := self.get_layer(chunk_hash)):
             return
 

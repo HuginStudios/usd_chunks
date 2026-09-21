@@ -926,6 +926,11 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     def empty(self):
         return not bool(self._params)
 
+    def __contains__(self, obj: "ChunkCommon | ProxyParam") -> bool:
+        """Whether obj is held here or anywhere nested, by identity (its hash), without
+        materialising the nested hierarchy -- see resolve_new_param for why that matters."""
+        return obj.get_hash() in self._params
+
 
 
     def get_notice_data(self) -> Self:
@@ -2848,7 +2853,12 @@ class ChunkGroupBase(ChunkContainerBase):
         Raises:
             ValueError: If a duplicate was found
         """
-        if param in self.get_params():
+        # A key lookup down the ChainMap, not `param in self.get_params()`: that materialised
+        # every param of every nested container (a tuple of ChainMap.values(), each entry a
+        # walk of the chain) to answer a membership question, on every add. On a context it
+        # is the whole scene, so appending the 50th chunk to a chain cost 5x the first --
+        # the one thing about a node graph that must not get slower as the graph grows.
+        if param in self.children:
             raise ValueError(f"A duplicate for param {param.name} was found on container {self.name}")
 
         new_param = param
