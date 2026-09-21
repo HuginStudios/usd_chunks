@@ -37,6 +37,7 @@ for group, props in group_props(d.props).items():
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field, replace
@@ -452,6 +453,24 @@ def _def_from_delegate(plugin_id: str, label: str, settings) -> Optional[RenderS
     )
 
 
+def _host_owns_a_viewport() -> bool:
+    """Whether this process is a GUI host with a render engine of its own.
+
+    A running QApplication is the honest proxy: usdview, Kraken and every other host this
+    plugs into have one, and a batch script or a test does not. Overridable with
+    USD_CHUNKS_PROBE_DELEGATES=1 for anyone who needs the delegate-declared settings badly
+    enough to risk it, or =0 to refuse the probe outright.
+    """
+    override = os.environ.get("USD_CHUNKS_PROBE_DELEGATES")
+    if override is not None:
+        return override.strip() not in ("1", "true", "yes", "on")
+    try:
+        from PySide6 import QtWidgets
+    except ImportError:
+        return False
+    return QtWidgets.QApplication.instance() is not None
+
+
 def _defs_from_delegates(existing) -> List[RenderSettingsDef]:
     """Ask every render delegate not already described for its setting descriptors.
 
@@ -469,6 +488,19 @@ def _defs_from_delegates(existing) -> List[RenderSettingsDef]:
     right -- Storm has no settings to author on a RenderSettings prim either way.
     """
     if UsdImagingGL is None:
+        return []
+    if _host_owns_a_viewport():
+        # A second engine in a process that already has one takes the host down with it:
+        # usdview segfaults (0xC0000005) the moment this loads hdCycles, and every scene
+        # holding a Render Settings chunk therefore fails to open at all. Nothing here is
+        # worth that, so in a host the schema- and Sdr-declared renderers are all that is
+        # offered -- V-Ray's settings come from its schema and are unaffected; a renderer
+        # that only describes itself through its delegate (hdCycles) has no group until
+        # this is done out of process.
+        logger.info(
+            "Render settings: not loading render delegates inside a host that owns a "
+            "viewport -- only schema- and Sdr-declared renderers are offered here."
+        )
         return []
 
     described = {_normalised(d.label) for d in existing}
