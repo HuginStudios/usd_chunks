@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_registry import ChunkLayerManager
@@ -281,3 +281,42 @@ def test_an_unwired_branch_is_released_even_when_it_is_more_than_one_chunk_deep(
         "nothing is suppressing b_inner any more -- it is not upstream of the Switch at all"
     )
     assert _height(stage, "/b") == 7.0 + 5.0, "and its edit composes again"
+
+
+def test_the_selected_branch_keeps_an_upstream_switchs_choice(scene):
+    """A Stage Expression Switch upstream of the chosen input has muted the branch it did
+    not pick; selecting that input must not un-mute it along with everything else."""
+    stage, sender = scene
+    expr_mod = importlib.import_module("stage_expression_switch")
+    day = _place(sender, "Day", "/a", 5.0)
+    night = _place(sender, "Night", "/b", 7.0)
+
+    inner = expr_mod.main()
+    inner._config = ChunkConfig(module="stage_expression_switch", exec_inputs=2)
+    inner._module = expr_mod
+    inner.name = "ShotSwitch"
+    sender.add_chunk(inner)
+    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010_day"})
+    inner.get_param(expr_mod.VARIABLE_PARAM).value = "SHOT"
+    inner.get_param(expr_mod.PATTERN_PARAM).value = "*_night"
+    # Positional: the day branch is the normal path, the night branch the matched one.
+    inner_prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(inner)))
+    for i, src in enumerate((day, night)):
+        name = chunk_stage.exec_input_name(i)
+        attr = inner_prim.GetAttribute(name) or inner_prim.CreateAttribute(
+            name, Sdf.ValueTypeNames.Token, custom=False
+        )
+        attr.SetConnections([
+            Sdf.Path(f"{chunk_stage.get_chunk_prim_path(src)}.{chunk_stage._EXEC_OUTPUT}")
+        ])
+    inner.execute()
+    assert night.is_blocked()
+
+    sw = _mk(sender, switch_mod, "Switch", "switch")
+    _wire(stage, sw, inner)
+    sw.get_param("index").value = 0
+    sw.execute()
+
+    assert night.is_blocked(), "the inner switch's choice must stand"
+    assert _height(stage, "/b") == pytest.approx(0.0)
+    assert _height(stage, "/a") == pytest.approx(5.0)

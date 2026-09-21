@@ -55,7 +55,10 @@ def _make_legacy(stage: Usd.Stage, prim_path: str) -> None:
 # persistence (ADR-0003)
 # ---------------------------------------------------------------------------
 
-def test_is_chunk_pinned_defaults_true_when_attribute_absent() -> None:
+def test_is_chunk_pinned_defaults_false_when_attribute_absent() -> None:
+    """Absent means unpinned. Pinning is the exception a user asks for, so it is the only
+    state worth authoring -- the alternative wrote chunk:pinned = 0 onto every chunk prim
+    in every scene to say nothing at all."""
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     scene.add_context("Tab1")
@@ -63,7 +66,7 @@ def test_is_chunk_pinned_defaults_true_when_attribute_absent() -> None:
     scene.add_chunk(c)
     _make_legacy(stage, "/Tab1/c1")
 
-    assert chunk_stage.is_chunk_pinned(c) is True
+    assert chunk_stage.is_chunk_pinned(c) is False
 
 
 def test_set_chunk_pinned_roundtrips_through_usd_attribute() -> None:
@@ -73,19 +76,18 @@ def test_set_chunk_pinned_roundtrips_through_usd_attribute() -> None:
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
 
-    chunk_stage.set_chunk_pinned(c, False)
-    assert chunk_stage.is_chunk_pinned(c) is False
-
-    attr = stage.GetPrimAtPath("/Tab1/c1").GetAttribute("chunk:pinned")
-    assert attr.IsValid()
-    assert attr.Get() is False
-
     chunk_stage.set_chunk_pinned(c, True)
     assert chunk_stage.is_chunk_pinned(c) is True
-    assert attr.Get() is True
+    assert stage.GetPrimAtPath("/Tab1/c1").GetAttribute("chunk:pinned").Get() is True
+
+    chunk_stage.set_chunk_pinned(c, False)
+    assert chunk_stage.is_chunk_pinned(c) is False
+    assert not stage.GetPrimAtPath("/Tab1/c1").GetAttribute("chunk:pinned").IsValid(), (
+        "unpinning removes the opinion rather than writing a false one"
+    )
 
 
-def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
+def test_pinned_true_survives_a_real_export_reload_cycle() -> None:
     """The actual save/reload path: export the *composed* stage to a .usda string and
     open a fresh stage from it, rather than reading the same in-memory attribute back.
 
@@ -101,7 +103,7 @@ def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
     scene.add_context("Tab1")
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
-    chunk_stage.set_chunk_pinned(c, False)
+    chunk_stage.set_chunk_pinned(c, True)
 
     usda = UsdUtils.FlattenLayerStack(stage).ExportToString()
 
@@ -109,7 +111,7 @@ def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
     reloaded.GetRootLayer().ImportFromString(usda)
     attr = reloaded.GetPrimAtPath("/Tab1/c1").GetAttribute("chunk:pinned")
     assert attr.IsValid()
-    assert attr.Get() is False
+    assert attr.Get() is True
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +165,9 @@ def test_pin_changed_signal_shows_and_hides_live(qapp) -> None:
     assert c.get_hash() in w.group_widgets
 
 
-def test_migrated_scene_with_no_pin_attribute_shows_everything(qapp) -> None:
-    """A chunk saved before this feature shipped has no chunk:pinned attribute at all —
-    it must still render in the Params page (ADR-0003 migration decision)."""
+def test_a_chunk_with_no_pin_attribute_is_filtered_out(qapp) -> None:
+    """Absent means unpinned, so a chunk saved before pinning existed opens with an
+    unfiltered Params page rather than everything pinned."""
     from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
 
     stage = Usd.Stage.CreateInMemory()
@@ -178,7 +180,7 @@ def test_migrated_scene_with_no_pin_attribute_shows_everything(qapp) -> None:
     assert not stage.GetPrimAtPath("/Tab1/legacy_chunk").GetAttribute("chunk:pinned").IsValid()
 
     w = ChunkWidget(ctx, is_tab_context=True)
-    assert c.get_hash() in w.group_widgets
+    assert c.get_hash() not in w.group_widgets
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +189,8 @@ def test_migrated_scene_with_no_pin_attribute_shows_everything(qapp) -> None:
 
 def test_new_chunk_defaults_to_not_pinned() -> None:
     """A chunk created with no auto-pin flag set (the Graph-page create menu's baseline)
-    is authored as pinned=false, not merely absent."""
+    authors nothing at all: unpinned is the default, and every line in the file should
+    carry information."""
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     scene.add_context("Tab1")
@@ -195,8 +198,7 @@ def test_new_chunk_defaults_to_not_pinned() -> None:
     scene.add_chunk(c)
 
     attr = stage.GetPrimAtPath("/Tab1/graph_created").GetAttribute("chunk:pinned")
-    assert attr.IsValid()  # explicitly authored, not left absent
-    assert attr.Get() is False
+    assert not attr.IsValid(), "the default state writes nothing"
     assert chunk_stage.is_chunk_pinned(c) is False
 
 
@@ -291,7 +293,7 @@ def test_view_chunk_never_defaults_to_pinned(qapp) -> None:
     v._config = ChunkConfig(module="view")
     scene.add_chunk(v)
 
-    assert stage.GetPrimAtPath("/Tab1/View1").GetAttribute("chunk:pinned").Get() is False
+    assert not stage.GetPrimAtPath("/Tab1/View1").GetAttribute("chunk:pinned").IsValid()
     assert chunk_stage.is_chunk_pinned(v) is False
     assert v.get_hash() not in w.group_widgets
 

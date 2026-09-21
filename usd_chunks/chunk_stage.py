@@ -13,7 +13,7 @@ import weakref
 from pathlib import Path
 from typing import Generator, Iterable, Tuple
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
+from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
@@ -26,7 +26,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
 
-from usd_chunks import chunk_naming
+from usd_chunks import chunk_layers, chunk_naming
 
 logger = logging.getLogger(__name__)
 
@@ -252,24 +252,49 @@ def sdf_type_for_param(param) -> "Sdf.ValueTypeName | None":
     return sdf_type
 
 
-def _author_stage_expression(attr: "Usd.Attribute", raw: str, param) -> None:
-    """Store a ${VAR} stage expression on attr, keeping both the text and a usable value.
+def _push_driven_values(stage: "Usd.Stage", param, layer: "Sdf.Layer | None" = None) -> None:
+    """Write param's resolved value onto every real prim attr it drives.
 
-    store_expression_text already splits by attr type: a String attr holds the text as its
-    own value (so the field reloads showing ${SHOT}, which is what the user typed), and
-    every other type keeps it in customData. Only the latter needs the resolved value
-    written alongside -- a Float attr reading back as the literal "${COUNT}" is not a
-    number to anything downstream, and param.value is where the substitution has already
-    happened.
+    The chunk's own layer by default, where its execute() authors. Text is never written
+    onto a non-String attr -- an expression that did not resolve stays text.
 
-    Unlike a @Node.param@ wire there are no connections to author: a stage variable is a
-    value on the stage, not another param, so there is nothing on the graph to point at.
+    A path connect_usd_attr recorded a variant scope for (show_attribute, from inside a
+    variant) is the exception: `layer` is a plain layer and would author the value outside
+    the variant, applying it to every variant equally, so that path re-enters the recorded
+    selections (chunk_utils.author_in_variant_selections) instead.
     """
-    chunk_utils.store_expression_text(attr, raw)
-    if attr.GetTypeName() != Sdf.ValueTypeNames.String:
-        resolved = getattr(param, "value", None)
-        if resolved is not None and not isinstance(resolved, str):
-            attr.Set(resolved)
+    paths = getattr(param, "_driven_attr_paths", None)
+    if not paths:
+        return
+    value = param.value
+    layer = layer or param.get_edit_context()
+    # USD refuses to author into a muted layer; set_chunk_muted re-pushes on un-mute.
+    if value is None or layer is None or stage.IsLayerMuted(layer.identifier):
+        return
+    driven_var_selections = getattr(param, "_driven_var_selections", {})
+    for path in paths:
+        attr = stage.GetAttributeAtPath(Sdf.Path(path))
+        if not attr:
+            continue
+        if isinstance(value, str) and not chunk_utils.attr_holds_text(attr):
+            continue
+        if attr.Get(0) != value:
+            var_selections = driven_var_selections.get(path, ())
+            with chunk_utils.edit_context_for(stage, var_selections, layer):
+                attr.Set(value)
+
+
+def push_chunk_values(stage: "Usd.Stage", chunk: "core.ChunkBase") -> None:
+    """Re-author every value chunk's params drive, e.g. a Light's inputs.
+
+    Needed after a chunk's layer comes back from being muted: USD refuses to author into a
+    muted layer, so a value restored on load (or edited) while the chunk was gated off
+    never landed, and the light came back at its schema default.
+    """
+    for _, param in _iter_chunk_params(chunk):
+        _push_driven_values(stage, param)
+    for _, vector in _iter_chunk_vectors(chunk):
+        _push_driven_values(stage, vector)
 
 
 class ChunkStageSync(metaclass=RegistrySingleton):
@@ -397,6 +422,22 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     and target_prim.GetAttribute(f"outputs:{attr_name}").IsValid() else "inputs")
             targets.append(Sdf.Path(f"{chunk_root}/{node}.{kind}:{attr_name}"))
         return targets
+
+    def _drive_from_storage(self, param, real_attr: Usd.Attribute) -> None:
+        """Turn the real prim attr param was bound to into one its storage attr drives.
+
+        The real attr takes the resolved value -- expression text is only storable on a
+        String attr, and a Light's float input handed `if(...)` raises -- in the chunk's
+        own layer, unless that layer is muted (re-pushed on un-mute).
+
+        real_attr is param's ORIGINAL direct binding (from_usd_attr, e.g. show_attribute)
+        being promoted into a driven connection -- param._var_selections, if any, is the
+        variant this same attribute was resolved under, and has to carry over so later
+        writes land back inside that variant rather than on the plain composed path.
+        """
+        param.connect_usd_attr(real_attr, var_selections=getattr(param, "_var_selections", ()))
+        self._clear_driven_attr_value(real_attr)
+        _push_driven_values(self._stage, param)
 
     def _clear_driven_attr_value(self, driven_attr: Usd.Attribute) -> None:
         """Remove any authored default value from the driven attr in session/anonymous layers.
@@ -1308,13 +1349,21 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if real_attr_path and real_attr_path != str(attr.GetPath()):
             if old_attr := self._stage.GetAttributeAtPath(Sdf.Path(real_attr_path)):
                 if old_attr.IsValid():
-                    with self._chunk_prim_edit_context(chunk):
-                        vector.connect_usd_attr(old_attr)
-                    self._clear_driven_attr_value(old_attr)
-                    chunk_layer = vector.get_edit_context()
-                    if chunk_layer and (cur := attr.Get()) is not None:
-                        with Usd.EditContext(self._stage, chunk_layer):
-                            old_attr.Set(cur)
+                    # Through _drive_from_storage, not hand-rolled: that version is missing
+                    # the muted-layer guard _push_driven_values has (USD raises rather than
+                    # no-ops authoring into a muted layer) and, same as the scalar path in
+                    # _sync_param_input/_sync_chunk_inputs, never threaded var_selections
+                    # through to connect_usd_attr -- so a Vector param show_attribute bound
+                    # inside a variant (displayColor, extent, a Vec3f xformOp on a
+                    # variant-scoped prim) leaked its edits outside the variant the same way
+                    # the scalar case did before this fix.
+                    self._drive_from_storage(vector, old_attr)
+                    # See _sync_param_input's matching comment: vector._var_selections
+                    # described old_attr, not `attr` (this chunk's own storage attr) that
+                    # _param_attr_path is now bound to. _drive_from_storage already read it
+                    # above; clear it now so this vector's own future storage-attr writes
+                    # don't misfire into a stale variant scope.
+                    vector._var_selections = ()
 
     def _refresh_gizmo_anchors(self, chunk: "core.ChunkBase") -> None:
         """Keep every gizmo's anchor rel pointing at the prim the chunk currently targets.
@@ -1360,9 +1409,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if raw is None:
             return
         is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-        # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
-        is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
-        type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
+        type_source = getattr(param, 'default_value', None) if is_expr else raw
         sdf_type = _SDF_TYPE_MAP.get(type(type_source))
         # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
         # type — there is no tuple entry, so without this a colour param resolves to no
@@ -1379,7 +1426,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # means the param is gone on reload -- not merely reset. Author it.
         cfg = chunk.get_config()
         module_less = not (cfg and cfg.module)
-        if not force and not module_less and not is_expr and not is_stage_expr and raw == default:
+        if not force and not module_less and not is_expr and raw == default:
             return  # still at default — don't create attr
 
         prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
@@ -1414,8 +1461,6 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
-                elif is_stage_expr:
-                    _author_stage_expression(attr, raw, param)
                 else:
                     attr.Set(raw)
         param._connect_param_attr(attr)
@@ -1423,14 +1468,18 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if existing and existing != str(attr.GetPath()):
             old_attr = self._stage.GetAttributeAtPath(Sdf.Path(existing))
             if old_attr and old_attr.IsValid():
-                param.connect_usd_attr(old_attr)
-                self._clear_driven_attr_value(old_attr)
-                chunk_layer = param.get_edit_context()
-                raw = getattr(param, 'raw_value', None)
-                if chunk_layer and raw is not None:
-                    with Usd.EditContext(self._stage, chunk_layer):
-                        if old_attr.Get(0) != raw:
-                            old_attr.Set(raw)
+                self._drive_from_storage(param, old_attr)
+                # param._var_selections (still the OLD binding's, since _connect_param_attr
+                # above was called without var_selections and leaves it alone) described
+                # `existing` -- a real prim's attribute, possibly variant-scoped. attr, the
+                # NEW _param_attr_path, is this chunk's own bookkeeping attribute, which is
+                # never inside anyone's variant. Leaving the stale tuple in place misdirects
+                # every future edit's OWN storage-attr write (ChunkUsdAttributeSupport's
+                # data_changed) into `existing`'s variant context for an unrelated path,
+                # which USD silently no-ops -- the edit stops reaching the chunk prim's
+                # saved value at all, so a save/reload restores the pre-edit number.
+                # _drive_from_storage already read the old value above; safe to clear now.
+                param._var_selections = ()
 
     def _delete_stale_attr_specs(self, prim: "Usd.Prim", attr_name: str) -> None:
         """Remove attr_name's spec from every layer in the stack where it's found.
@@ -1461,9 +1510,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if raw is None:
                 continue
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
-            is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
-            type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
+            type_source = getattr(param, 'default_value', None) if is_expr else raw
             sdf_type = _SDF_TYPE_MAP.get(type(type_source))
             if sdf_type is None:
                 continue
@@ -1485,7 +1532,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 attr = saved
             else:
                 backing_path = getattr(param, '_param_attr_path', None)
-                if not is_expr and not is_stage_expr:
+                if not is_expr:
                     if backing_path:
                         # param_from_attr: only store if the real USD attr has been authored
                         backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
@@ -1506,8 +1553,6 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     if is_expr:
                         attr.SetConnections(self._expr_connections(prim, raw))
                         chunk_utils.store_expression_text(attr, raw)
-                    elif is_stage_expr:
-                        _author_stage_expression(attr, raw, param)
                     else:
                         attr.Set(raw)
 
@@ -1517,14 +1562,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if old_storage_path and old_storage_path != str(attr.GetPath()):
                 old_attr = self._stage.GetAttributeAtPath(Sdf.Path(old_storage_path))
                 if old_attr and old_attr.IsValid():
-                    param.connect_usd_attr(old_attr)
-                    self._clear_driven_attr_value(old_attr)
-                    chunk_layer = param.get_edit_context()
-                    raw = getattr(param, 'raw_value', None)
-                    if chunk_layer and raw is not None:
-                        with Usd.EditContext(self._stage, chunk_layer):
-                            if old_attr.Get(0) != raw:
-                                old_attr.Set(raw)
+                    self._drive_from_storage(param, old_attr)
+                    # See _sync_param_input's matching comment: param._var_selections
+                    # described old_attr (a real prim's attribute, possibly variant-scoped),
+                    # not `attr` (this chunk's own, never variant-scoped, bookkeeping attr)
+                    # that _param_attr_path now points at. _drive_from_storage already read
+                    # it above; clear it now so this param's own future storage-attr writes
+                    # resolve through get_attr_home_layer instead of a stale variant scope
+                    # that silently swallows them (USD no-ops a write mapped to a path
+                    # outside the variant's own subtree).
+                    param._var_selections = ()
 
         for _, vector in _iter_chunk_vectors(chunk):
             self._sync_vector_input(chunk, vector)
@@ -1788,12 +1835,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if not attr.Get():
                     attr.Set(module_name or fallback)
 
-            pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
-            pinned_attr.SetVariability(Sdf.VariabilityUniform)
-            if not pinned_attr.HasAuthoredValue():
-                # Views are never auto-pinned, regardless of which surface/flow created them —
-                # see is_chunk_pinned's matching unconditional view special case.
-                pinned_attr.Set(False if is_view_chunk(chunk) else bool(_pin_new_chunks))
+            # Only a pinned chunk writes anything: unpinned is the default (see
+            # is_chunk_pinned), and authoring it on every prim put a chunk:pinned = 0 line
+            # in every chunk of every saved file for no information at all.
+            # Views are never auto-pinned, regardless of which surface/flow created them —
+            # see is_chunk_pinned's matching unconditional view special case.
+            if bool(_pin_new_chunks) and not is_view_chunk(chunk):
+                pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
+                pinned_attr.SetVariability(Sdf.VariabilityUniform)
+                if not pinned_attr.HasAuthoredValue():
+                    pinned_attr.Set(True)
 
             config = chunk.get_config()
             if not (config and config.terminal):
@@ -1842,14 +1893,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if raw is None:
                     continue
                 is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-                # has_stage_expression too: a ${VAR} takes its type from the param's default as well, or a Slider holding one authors a String attr.
-                is_stage_expr = not is_expr and chunk_utils.has_stage_expression(raw)
-                type_source = getattr(param, 'default_value', None) if (is_expr or is_stage_expr) else raw
+                type_source = getattr(param, 'default_value', None) if is_expr else raw
                 sdf_type = _SDF_TYPE_MAP.get(type(type_source))
                 if sdf_type is None:
                     continue
                 backing_path = getattr(param, '_param_attr_path', None)
-                if not is_expr and not is_stage_expr:
+                if not is_expr:
                     if backing_path:
                         backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
                         if not (backing and backing.HasAuthoredValue()):
@@ -1864,8 +1913,6 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
-                elif is_stage_expr:
-                    _author_stage_expression(attr, raw, param)
                 elif not attr.Get():
                     attr.Set(raw)
 
@@ -2123,9 +2170,119 @@ def set_chunk_muted(stage: "Usd.Stage", target: "core.ChunkBase", muted: bool) -
     # same way.
     if muted:
         stage.MuteLayer(layer.identifier)
-    else:
+    elif stage.IsLayerMuted(layer.identifier):
         stage.UnmuteLayer(layer.identifier)
+        push_chunk_values(stage, target)
     return True
+
+
+#: Hidden param a gating chunk keeps its record in: the chunks it muted last time, by prim
+#: path, so a branch that stops being upstream is released rather than left blocked forever.
+GATE_RECORD_PARAM = "muted"
+
+
+def _gate_record(node) -> set:
+    param = node.get_param(GATE_RECORD_PARAM)
+    return {line.strip() for line in (param.value or "").splitlines() if line.strip()} if param else set()
+
+
+def gate_to_branches(node: "core.ChunkBase", live: "set[int]") -> "tuple[set, set]":
+    """Let the branches at `live` reach the stage and suppress every other input's.
+
+    The one implementation behind both gating chunks -- the Switch, picking a branch by
+    index, and the Stage Expression Switch, picking it by what a variable says. They differ
+    only in how that set is chosen, and duplicating the muting either side of that meant
+    fixing the same bug twice.
+
+    Suppression is a **block** plus a layer mute, never the DISABLED state, which belongs to
+    the user: a chunk reaching in to set and clear it on chunks it does not own means every
+    flip risks undoing theirs. A branch contributes because its layers are in the stage, not
+    because it is wired, so cutting the connection instead would leave its prims composed
+    exactly as before and gate nothing.
+
+    Returns:
+        tuple[set, set]: the chunks kept live, and the chunks muted
+    """
+    stage = node.get_stage()
+    inputs = exec_dependencies(node)
+
+    # The live branches first, and they win: a chunk feeding two branches must stay live if
+    # either of the ones it feeds is chosen. Without this a shared upstream -- the part of
+    # the thread above the fork -- would be muted along with the branch not taken.
+    keep = set()
+    for i in live:
+        if 0 <= i < len(inputs):
+            keep |= exec_upstream(inputs[i])
+
+    muted = set()
+    for slot, dep in enumerate(inputs):
+        if slot in live:
+            continue
+        for c in exec_upstream(dep):
+            if c in keep:
+                continue
+            if set_chunk_muted(stage, c, True):
+                muted.add(c)
+
+    # Un-mute only what this chunk muted itself. A live branch can hold another gate's
+    # suppressed branch, and un-muting everything reachable switched that one back on.
+    mine = _gate_record(node)
+    for c in keep:
+        if get_chunk_prim_path(c) in mine:
+            set_chunk_muted(stage, c, False)
+
+    # Muted by an earlier evaluation and no longer upstream of this chunk at all: leaving it
+    # blocked would strand a branch the user has already disconnected. Resolved against the
+    # whole scene, since the record is transitive -- most of what it holds was never a
+    # direct input -- and by prim path, since a name is unique only within one context.
+    stranded = mine - {get_chunk_prim_path(c) for c in muted | keep}
+    if stranded:
+        by_path = {
+            get_chunk_prim_path(c): c
+            for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+        }
+        for path in stranded:
+            if (c := by_path.get(path)) is not None:
+                set_chunk_muted(stage, c, False)
+
+    if muted:
+        _redefine_orphaned_ancestors(stage)
+
+    if param := node.get_param(GATE_RECORD_PARAM):
+        param.value = "\n".join(sorted(get_chunk_prim_path(c) for c in muted))
+    return keep, muted
+
+
+def _redefine_orphaned_ancestors(stage: "Usd.Stage") -> None:
+    """Re-define the scopes that muting a branch just left defined by nobody.
+
+    UsdStage.DefinePrim gives a prim's ancestors a `def` only when nothing has defined them
+    yet, so whichever chunk cooks first owns `def "World"` and every later one holds a bare
+    `over`. That answer is right when it is given and wrong a moment later: a gate mutes
+    *after* its branches have cooked, so the layer holding the only `def` can leave while
+    the layers holding the `over`s stay. Their prims are then valid but not defined, Hydra
+    skips them, and a camera and every light in the room quietly leave the scene.
+
+    Nothing else in the engine has this problem. View-driven cooking mutes first and cooks
+    afterwards, so DefinePrim sees the final state and picks correctly on its own -- which
+    is why this repair belongs here, at the one place that mutes after the fact, rather than
+    on every cook of every chunk.
+
+    Only genuinely orphaned ancestors are touched: an ancestor still defined by anything --
+    another live chunk, a referenced asset, the file the user opened -- is left exactly as
+    USD authored it.
+    """
+    def still_defined(path) -> bool:
+        prim = stage.GetPrimAtPath(path)
+        return bool(prim) and prim.IsDefined()
+
+    manager = chunk_registry.ChunkLayerManager()
+    for chunk in chunk_registry.ChunkRegistry().scene.get_chunks():
+        if chunk.is_blocked():
+            continue  # muted: its own prims are out of the scene anyway
+        layer = manager.get_layer(chunk)
+        if layer is not None:
+            chunk_layers.define_ancestors(layer, still_defined)
 
 
 def is_merge_prim(prim: "Usd.Prim") -> bool:
@@ -2155,11 +2312,11 @@ def is_chunk_pinned(chunk: "core.ChunkBase") -> bool:
        ChunkStageSync both react to the same PARAM_ADDED notice for a newly-created chunk, and
        delivery order between two independent listeners on one notice isn't guaranteed — the
        widget's listener can run (and call this) before ChunkStageSync's has even started
-       _define_prim, let alone authored the attribute. Falling back to the migration default
-       in that window would show a freshly Graph-created chunk in Params for a moment, and
-       permanently, since nothing re-checks after _define_prim's write lands right after.
-    3. Migration default: pinned=true, so a genuinely legacy chunk (no creation flow involved
-       at all — e.g. a scene saved before this feature shipped) doesn't lose Params visibility.
+       _define_prim, let alone authored the attribute.
+    3. Absent means unpinned. Pinning is the exception a user asks for, so it is the only
+       state worth a line in the file — the alternative wrote chunk:pinned = 0 onto every
+       chunk prim in every scene to say nothing at all. A scene saved before pinning existed
+       therefore opens with an unfiltered Params page rather than everything pinned.
     """
     stage = chunk.get_stage()
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))) if stage else None
@@ -2171,7 +2328,7 @@ def is_chunk_pinned(chunk: "core.ChunkBase") -> bool:
         return False
     if _pin_new_chunks is not None:
         return _pin_new_chunks
-    return True
+    return False
 
 
 def set_chunk_pinned(chunk: "core.ChunkBase", pinned: bool) -> None:
@@ -2196,10 +2353,19 @@ def set_chunk_pinned(chunk: "core.ChunkBase", pinned: bool) -> None:
     chunk_notice._usd_write_active = True
     try:
         attr = prim.GetAttribute("chunk:pinned")
+        if not pinned:
+            # Unpinned is the default, so unpinning removes the opinion rather than writing
+            # a false one -- wherever it was authored, since a stale stronger opinion in
+            # another layer would otherwise shadow its absence here.
+            for layer in stage.GetLayerStack(includeSessionLayers=True):
+                spec = layer.GetPrimAtPath(prim.GetPath())
+                if spec and "chunk:pinned" in spec.properties:
+                    del spec.properties["chunk:pinned"]
+            return
         home = chunk_utils.get_attr_home_layer(attr) if attr and attr.IsValid() else None
         target = home or chunk_utils.get_bookkeeping_layer(stage, chunk)
         with Usd.EditContext(stage, target):
-            prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(pinned))
+            prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
     finally:
         chunk_notice._usd_write_active = prev_w
 
@@ -4732,6 +4898,16 @@ def _load_chunks(
                 # were right while the UI never updated: the value was fine and only the
                 # notification was missing.
                 _resolve_pending_expressions(deferred, warn=True)
+
+                # Register every loaded chunk with the sync, as _on_param_added does for one
+                # created live. When a file is opened at startup the sync is not yet
+                # initialized during this load, so _on_param_added never ran for them -- and
+                # a param created after the load (a Stage Expression variable, a Light's
+                # attributes) found no prim to record its edits on and was saved without them.
+                sync = ChunkStageSync()
+                if getattr(sync, "_chunk_prim_paths", None) is not None:
+                    for prim, added in deferred:
+                        sync._chunk_prim_paths[id(added)] = str(prim.GetPath())
             finally:
                 chunk_notice._loading_stage = old_loading_stage
 
@@ -4792,7 +4968,23 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     if not stage:
         return
 
-    flat = UsdUtils.FlattenLayerStack(stage)
+    try:
+        flat = UsdUtils.FlattenLayerStack(stage)
+    except Tf.ErrorException:
+        # One property spec with no usable type makes FlattenLayerStack refuse the whole
+        # layer stack, and flattening is how a scene is saved -- so a single stub costs the
+        # user everything they have done since the last save. Drop the stubs (they hold
+        # nothing: no value, no type, no connection) and try once more.
+        #
+        # Only on the failure path. What creates a stub is not known -- reproducing it from
+        # a reported session did not work -- so this is a rescue, not a fix, and a rescue
+        # has no business walking every layer on every ordinary save. If nothing was found,
+        # or flattening still fails, the original error is the honest answer.
+        if not chunk_layers.drop_broken_property_specs(
+            stage.GetLayerStack(includeSessionLayers=True), logger
+        ):
+            raise
+        flat = UsdUtils.FlattenLayerStack(stage)
     tmp_stage = Usd.Stage.Open(flat)
     chunk_paths = sorted(
         (p.GetPath() for p in tmp_stage.TraverseAll() if p.GetTypeName() == _CHUNK_PRIM_TYPENAME),
@@ -5363,10 +5555,43 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
         existing = getattr(param, "_param_attr_path", None)
         if existing and existing.startswith(prim_path):
             continue  # already wired to chunk storage from first _load_wire_inputs
-        val = attr.Get(0)
+        # A scalar is bound the way a live edit binds it: to its chunk-prim storage --
+        # `attr`, right here -- which _connect_param_attr reads the expression text or
+        # value back from. Unbound, a later edit is never recorded (a lofted Stage
+        # Expression variable saved without its value). Bound straight to the real prim
+        # attr, as show_attribute binds, writing the resolved value there fed back into the
+        # param and replaced a ${VAR} with a number -- so that attr becomes one the storage
+        # drives instead.
+        if isinstance(param, core.ChunkParamBase):
+            param._connect_param_attr(attr)
+            if existing:
+                # By path: a chunk gated off already has its layer muted, so the real prim
+                # is not on the stage to hand over as an attribute. set_chunk_muted pushes
+                # the value once it is.
+                #
+                # Through connect_usd_attr, not a hand-rolled append + _author_driven_connections:
+                # that bypassed _driven_var_selections, so a param bound inside a variant
+                # (show_attribute) lost its variant scope on this reload path specifically --
+                # _connect_param_attr above left param._var_selections alone (its var_selections
+                # defaults to None, "don't touch"), but the driven connection this authors would
+                # otherwise be written outside the variant regardless, leaking into every variant
+                # the same way the direct write path did before this fix.
+                if real_attr := stage.GetAttributeAtPath(Sdf.Path(existing)):
+                    param.connect_usd_attr(real_attr, var_selections=getattr(param, "_var_selections", ()))
+                # As in _sync_param_input: param._var_selections described `existing` (the
+                # real attr, just handed to connect_usd_attr above), not the chunk's own
+                # storage attr _param_attr_path is now bound to. Clear it so this param's
+                # own future value writes resolve through get_attr_home_layer instead of a
+                # stale variant scope that silently swallows them.
+                param._var_selections = ()
+            continue
+
+        # A ${VAR} or @ref@ is restored as its text, not as the value it had at save time.
+        val = chunk_utils.read_expression_text(attr) or attr.Get(0)
         if val is None:
             continue
         param.value = val
+        val = param.value
 
         # Push the value to the real prim attribute by hand as well. Assigning the param
         # normally writes through on the ATTRIBUTE_CHANGED listener, but that dispatch is
@@ -5378,10 +5603,11 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
         # Authored through the chunk's own edit context so it lands in the chunk's layer,
         # the same place its execute() would have put it, and is rebuilt with the rest on
         # the next cook rather than lingering as an override nobody wrote.
-        if existing:
+        layer = param.get_edit_context()
+        if existing and layer is not None and not stage.IsLayerMuted(layer.identifier):
             bound = stage.GetAttributeAtPath(Sdf.Path(existing))
-            if bound:
-                with Usd.EditContext(stage, param.get_edit_context()):
+            if bound and not (isinstance(val, str) and bound.GetTypeName() != Sdf.ValueTypeNames.String):
+                with Usd.EditContext(stage, layer):
                     bound.Set(val)
 
 
