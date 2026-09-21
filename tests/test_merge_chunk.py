@@ -248,6 +248,42 @@ class TestCompaction:
 
 
 # ---------------------------------------------------------------------------
+# Dynamic exec inputs shared with Switch
+#
+# A Switch needs the same growing-numbered-slot machinery as Merge -- one port per wired
+# branch, dense and compacted -- so the Qt node graph doesn't fall back to drawing it with a
+# single fixed exec port (where a second wire dropped on it silently overwrites the first).
+# ---------------------------------------------------------------------------
+
+class TestDynamicExecInputsGeneralizesToSwitch:
+    def test_switch_has_dynamic_exec_inputs(self):
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/S", "Chunk")
+        prim.CreateAttribute("info:chunkType", Sdf.ValueTypeNames.Token).Set("switch")
+        assert chunk_stage.has_dynamic_exec_inputs_prim(prim)
+
+    def test_an_ordinary_chunk_does_not(self):
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/N", "Chunk")
+        prim.CreateAttribute("info:chunkType", Sdf.ValueTypeNames.Token).Set("transform")
+        assert not chunk_stage.has_dynamic_exec_inputs_prim(prim)
+
+    def test_a_switchs_slots_compact_the_same_way_a_merges_do(self):
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/S", "Chunk")
+        prim.CreateAttribute("info:chunkType", Sdf.ValueTypeNames.Token).Set("switch")
+        for i, src in enumerate(["/A", "/B", "/C"]):
+            attr = prim.CreateAttribute(exec_input_name(i), Sdf.ValueTypeNames.Token, custom=False)
+            attr.SetConnections([Sdf.Path(f"{src}.outputs:chunk")])
+        prim.GetAttribute("inputs:chunk1").ClearConnections()
+
+        assert normalize_merge_slots(stage, prim) is True
+        assert [a.GetName() for a in iter_exec_inputs(prim)] == ["inputs:chunk", "inputs:chunk1"]
+        assert prim.GetAttribute("inputs:chunk").GetConnections() == [Sdf.Path("/A.outputs:chunk")]
+        assert prim.GetAttribute("inputs:chunk1").GetConnections() == [Sdf.Path("/C.outputs:chunk")]
+
+
+# ---------------------------------------------------------------------------
 # Live wiring — exercises ChunkStageSync's authoring and DAG reconciliation
 # ---------------------------------------------------------------------------
 

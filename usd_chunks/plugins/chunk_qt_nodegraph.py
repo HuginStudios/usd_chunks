@@ -627,9 +627,15 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._is_view = _chunk_type == "view"
         self._is_dot = _chunk_type == "dot"
         self._is_merge = _chunk_type == "merge"
+        # Dynamic exec inputs (config.dynamic_exec_inputs): the port count isn't fixed, it grows
+        # one port per connected branch plus a trailing empty one (Merge, Switch, ...).
+        # Distinct from _is_merge, which additionally means "no body at all" -- a Switch
+        # keeps its body (the Index param) and still needs its proxy/widget built normally,
+        # so the two can't be folded into one flag.
+        self._dynamic_exec = chunk_stage.has_dynamic_exec_inputs_prim(prim)
         # Positional exec input slots (config.exec_inputs). >1 gives the node one port per
-        # slot on a node that still has a body -- unlike a merge, which has no body at all
-        # and grows its slots from what is wired in.
+        # slot on a node that still has a body -- unlike a dynamic-exec node, which grows its
+        # slots from what is wired in instead of declaring a fixed count.
         self._exec_slots = chunk_stage.exec_input_slots_for_prim(prim)
         # Every exec input port, in slot order. _exec_in_port stays the primary (slot 0),
         # which is what splice-on-drop and wire-drop targeting mean by "this node's input";
@@ -759,6 +765,32 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._ports.append(self._exec_out_port)
             return
 
+        if self._dynamic_exec:
+            # Same growing-port idea as a merge (one per connected branch, plus one empty
+            # trailing slot -- see the comment above), but this node keeps its body (a
+            # Switch's Index param), so the ports stay confined to the header band like an
+            # ordinary node's fixed exec slots below, rather than spanning the full height.
+            slots = len(chunk_stage.exec_input_connections(prim)) + 1
+            self._exec_in_ports = []
+            for i in range(slots):
+                port = ChunkPortItem(
+                    f"{prim.GetPath()}.{chunk_stage.exec_input_name(i)}", _PORT_EXEC, parent=self
+                )
+                port.setPos(0, _NODE_HEADER_H * (i + 1) / (slots + 1))
+                self._ports.append(port)
+                self._exec_in_ports.append(port)
+            self._exec_in_port = self._exec_in_ports[0]
+
+            if prim.HasAttribute(chunk_naming.EXEC_OUTPUT):
+                self._exec_out_port = ChunkPortItem(
+                    f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
+                )
+                self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+                self._ports.append(self._exec_out_port)
+            else:
+                self._exec_out_port = None
+            return
+
         # Exec ports only — lightweight, no widget creation.
         # Proxy (ChunkWidget) is created later via create_proxy() to allow batched deferred loading.
         # Spread across the header band rather than down the left edge: the slots stay
@@ -784,20 +816,25 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._exec_out_port = None
 
     def sync_merge_ports(self) -> bool:
-        """Re-place a merge's exec input slots when the number of connected branches changed.
+        """Re-place a dynamic-exec node's (Merge, Switch, ...) exec input slots when the number
+        of connected branches changed.
 
-        A merge shows one port per branch plus one empty trailer, so wiring the trailer has to
-        grow a fresh one and clearing a slot has to drop one. Ports are built once at node
-        construction, and a connection change does not rebuild the node — only the edges — so
-        without this the trailer would only appear after some unrelated full scene rebuild.
+        Such a node shows one port per branch plus one empty trailer, so wiring the trailer
+        has to grow a fresh one and clearing a slot has to drop one. Ports are built once at
+        node construction, and a connection change does not rebuild the node — only the
+        edges — so without this the trailer would only appear after some unrelated full
+        scene rebuild.
 
         Returns:
             bool: True if the ports were rebuilt (the caller's edge items are now stale)
         """
-        if not self._is_merge or not self.prim.IsValid():
+        if not self._dynamic_exec or not self.prim.IsValid():
             return False
         want = len(chunk_stage.exec_input_connections(self.prim)) + 1
-        have = sum(1 for p in self._ports if p.is_input)
+        # Counted from _exec_in_ports, not "every is_input port in self._ports": a node with
+        # a body also carries typed param input ports (e.g. Switch's Index, if wired), which
+        # share is_input=True and would silently throw this count off.
+        have = len(self._exec_in_ports)
         if want == have:
             return False
         scene = self.scene()

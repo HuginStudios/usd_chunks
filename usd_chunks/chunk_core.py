@@ -3566,9 +3566,15 @@ class ChunkConfig(AttributesBase):
     # port, which may still carry several wires stacked on it. Above 1 the slots are
     # POSITIONAL and each gets its own port -- Stage Expression Filter's slot 0 is the
     # stream it always forwards and slot 1 the branch it gates, so which wire landed where
-    # is the whole meaning. A Merge is neither: its slot count grows with what is wired
-    # into it, which is is_merge_chunk's business, not this field's.
+    # is the whole meaning. A dynamic-slot chunk (dynamic_exec_inputs) is neither: its slot
+    # count grows with what is wired into it, which is that field's business, not this one's.
     exec_inputs: int = attrs.field(default=1)
+    # Grows a fresh numbered exec input slot (inputs:chunk, inputs:chunk1, ...) per branch
+    # wired in, plus one empty trailing slot to attach the next branch to -- Merge and
+    # Switch both need every upstream branch as its own port rather than several wires
+    # stacked on one. Distinct from exec_inputs, which is a fixed, positional count set at
+    # config time; here the count is not known until the graph is wired.
+    dynamic_exec_inputs: bool = attrs.field(default=False)
     outputs: list[tuple[str, str]] = attrs.field(factory=list)  # extra typed output ports: [(name, SdfTypeName), ...]
     # Extra menu entries: [(label, {param: value}), ...], or a callable returning them.
     #

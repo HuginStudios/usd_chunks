@@ -1215,12 +1215,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if src_path in existing_conns:
             return
         slots = exec_input_slots_for_prim(dep_prim)
-        if is_merge_prim(dep_prim) or slots > 1:
-            # A merge holds exactly one connection per slot. Stacking a second target onto
-            # slot 0 (what the branch below does) would collapse two branches into a single
-            # port and destroy the ordering the slots exist to express, so author into the
-            # first free slot instead — appending the new branch as the weakest. Density is
-            # guaranteed by normalize_merge_slots, so the free slot is just the count.
+        if has_dynamic_exec_inputs_prim(dep_prim) or slots > 1:
+            # A dynamic-slot chunk (Merge, Switch, ...) holds exactly one connection per slot.
+            # Stacking a second target onto slot 0 (what the branch below does) would
+            # collapse two branches into a single port and destroy the ordering the slots
+            # exist to express, so author into the first free slot instead — appending the
+            # new branch as the weakest. Density is guaranteed by normalize_merge_slots, so
+            # the free slot is just the count.
             #
             # A fixed-slot chunk (config.exec_inputs > 1) wants the same placement for a
             # different reason: its slots are positional, so add_dependency filling slot 0
@@ -1229,7 +1230,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # does not have -- add_dependency has no port to have been dropped on, so
             # refusing outright would lose the edge with nothing to show for it.
             index = len(existing_conns)
-            if not is_merge_prim(dep_prim) and index >= slots:
+            if not has_dynamic_exec_inputs_prim(dep_prim) and index >= slots:
                 index = 0
             with self._chunk_prim_edit_context(dependent):
                 exec_in = dep_prim.CreateAttribute(
@@ -2075,10 +2076,39 @@ def is_chunkgroup(chunk: "core.ChunkBase") -> bool:
 
 
 def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
-    """Return True if chunk is a Merge chunk (scripts/core/merge.py) — the only chunk type that
-    takes more than one exec input."""
+    """Return True if chunk is specifically a Merge chunk (scripts/core/merge.py).
+
+    Narrower than has_dynamic_exec_inputs: Merge's slot order also decides composition
+    strength ("first input wins"), which is a Merge-only meaning that a dynamic-slot chunk
+    with no such ranking (a Switch) does not share.
+    """
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "merge")
+
+
+def has_dynamic_exec_inputs(chunk: "core.ChunkBase") -> bool:
+    """True for a chunk whose exec input slot count is not fixed but grows one numbered port
+    (inputs:chunk, inputs:chunk1, ...) per branch wired in -- Merge and Switch today, and
+    whatever else declares config.dynamic_exec_inputs. See exec_input_slots for the other
+    kind, where the count is fixed and positional instead."""
+    cfg = chunk.get_config()
+    return bool(cfg and getattr(cfg, "dynamic_exec_inputs", False))
+
+
+def has_dynamic_exec_inputs_prim(prim: "Usd.Prim") -> bool:
+    """has_dynamic_exec_inputs for a bare prim -- used by the node graph, which builds ports
+    from the stage and may have no live chunk object to ask. See exec_input_slots_for_prim
+    for why this reads the registry's discovery-time config rather than importing the
+    module."""
+    if not (prim and prim.IsValid()):
+        return False
+    attr = prim.GetAttribute(_CHUNK_TYPE_ATTR)
+    module_name = attr.Get() if attr and attr.IsValid() else None
+    if not module_name:
+        return False
+    module = chunk_registry.ChunkRegistry().get_chunk_module(str(module_name))
+    cfg = getattr(module, "config", None) if module else None
+    return bool(cfg and getattr(cfg, "dynamic_exec_inputs", False))
 
 
 def exec_input_slots(chunk: "core.ChunkBase") -> int:
@@ -2089,8 +2119,9 @@ def exec_input_slots(chunk: "core.ChunkBase") -> int:
     Expression Filter needs: forwarding slot 0 and gating slot 1 is not a property a merge
     ordering can express.
 
-    A Merge answers 1 here and is handled by is_merge_chunk instead: its slots are dense
-    and grow with what is wired in, so a fixed count is the wrong question for it.
+    A dynamic-slot chunk (has_dynamic_exec_inputs) answers 1 here and is handled by that
+    predicate instead: its slots grow with what is wired in, so a fixed count is the wrong
+    question for it.
     """
     cfg = chunk.get_config()
     return max(1, int(getattr(cfg, "exec_inputs", 1) or 1)) if cfg else 1
@@ -2562,7 +2593,7 @@ def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
     exec_in = del_prim.GetAttribute(_EXEC_INPUT)
     pred_conns = list(exec_in.GetConnections()) if (exec_in and exec_in.IsValid()) else []
     out_path = f"{deleted_path}.{_EXEC_OUTPUT}"
-    touched_merges = []
+    touched_dynamic = []
     prev_w = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
@@ -2590,14 +2621,14 @@ def heal_exec_chain_on_delete(stage: "Usd.Stage", deleted_path: str) -> None:
                         succ.SetConnections(pred_conns)
                     else:
                         succ.ClearConnections()
-                if is_merge_prim(prim):
-                    touched_merges.append(prim)
+                if has_dynamic_exec_inputs_prim(prim):
+                    touched_dynamic.append(prim)
     finally:
         chunk_notice._usd_write_active = prev_w
     # Suppressing notices above means opting out of the choke point that normally keeps the
-    # merge slot invariant (_reconcile_changed_exec_inputs), so restore it here instead: a
+    # dynamic-slot invariant (_reconcile_changed_exec_inputs), so restore it here instead: a
     # slot cleared because its branch was deleted has to compact like any other.
-    for prim in touched_merges:
+    for prim in touched_dynamic:
         normalize_merge_slots(stage, prim)
     # Healing rewrites inputs:chunk across the graph with notices suppressed — every
     # memoised answer below the deleted node is now measured against an edge that is gone.
@@ -2621,12 +2652,13 @@ def _remove_attr_spec(stage: "Usd.Stage", prim: "Usd.Prim", name: str) -> None:
 
 
 def normalize_merge_slots(stage: "Usd.Stage", prim: "Usd.Prim") -> bool:
-    """Enforce a Merge chunk's slot invariant: connected exec inputs occupy slots 0..N-1 with
-    no gaps.
+    """Enforce a dynamic-slot chunk's (Merge, Switch, ...) slot invariant: connected exec
+    inputs occupy slots 0..N-1 with no gaps.
 
     Clearing a middle slot compacts the rest up, so slot order (which is what decides whose
-    opinion wins) always matches the port order the user sees on the node, rather than
-    drifting into a question about invisible attribute names.
+    Merge opinion wins, or which branch a Switch's index N means) always matches the port
+    order the user sees on the node, rather than drifting into a question about invisible
+    attribute names.
 
     Judged on the CONNECTED slots alone — an exec attribute that exists but connects nothing
     is deliberately left in place. It has to be: this runs synchronously from the stage notice
@@ -2639,13 +2671,13 @@ def normalize_merge_slots(stage: "Usd.Stage", prim: "Usd.Prim") -> bool:
     attributes, and the next compaction sweeps it — so it is preferable to breaking the
     authoring paths.
 
-    No-ops for anything that isn't a merge, and for a merge already in shape, so it is safe
-    to call on every exec-input change.
+    No-ops for anything without dynamic exec inputs, and for one already in shape, so it is
+    safe to call on every exec-input change.
 
     Returns:
         bool: True if any slot was rewritten
     """
-    if not is_merge_prim(prim):
+    if not has_dynamic_exec_inputs_prim(prim):
         return False
     current = [(attr, list(attr.GetConnections())) for attr in iter_exec_inputs(prim)]
     live = [(attr, conns) for attr, conns in current if conns]
