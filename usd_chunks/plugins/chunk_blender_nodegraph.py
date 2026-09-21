@@ -155,13 +155,18 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
         value never followed the wire it now visually has -- reported as "doesn't trigger
         on connection, still empty".
 
-        Blender's update() does not say what changed, so this reconciles in both
-        directions on every call: every link present is connected (chunk_graph.connect()
-        re-authoring an already-correct connection is a cheap no-op, acceptable at the
-        tens-of-nodes scale this editor targets), and every edge the model has that the
-        tree no longer shows is disconnected. That second half is what makes Ctrl+RMB
-        link-cut, and re-dragging a wire from one source to another, mean anything: without
-        it the USD connection survived and the wire came back on the next reload.
+        Blender's update() does not say what changed -- and it is not only topology:
+        Blender also calls it for every node PROPERTY change, so it runs on each tick of a
+        slider drag. So this diffs the tree's links against the model's edges and touches
+        only the difference: a link the model lacks is connected, an edge the tree lacks
+        is disconnected. Connecting every link on every call, which is what stood here,
+        meant chunk_graph.connect() re-authoring each wire and reporting a change on every
+        slider tick; the reload that scheduled recreated every node -- which Blender
+        creates SELECTED -- half a second into the drag, and took the drag with it.
+
+        The disconnect half is what makes Ctrl+RMB link-cut, and re-dragging a wire from
+        one source to another, mean anything: without it the USD connection survived and
+        the wire came back on the next reload.
 
         Removed edges go first. Re-dragging an input's wire is a remove plus an add on the
         SAME socket, and disconnect clears that socket's attribute -- run after the connect
@@ -183,9 +188,11 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
         changed = False
         present = {(link.from_node.name, link.from_socket.name,
                     link.to_node.name, link.to_socket.name) for link in self.links}
+        expected = set()
         for edge in view.edges:
             key = (edge.src_node_path, _port_name(edge.src_attr_path),
                    edge.dst_node_path, _port_name(edge.dst_attr_path))
+            expected.add(key)
             if key in present:
                 continue
             # Only a wire the tree COULD have shown counts as cut. An edge whose node
@@ -202,6 +209,9 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
             chunk_graph.disconnect(view.stage, port, view.prims, view.chunks, heal=False)
             changed = True
         for link in self.links:
+            if (link.from_node.name, link.from_socket.name,
+                    link.to_node.name, link.to_socket.name) in expected:
+                continue
             a = _link_port_ref(view, link.from_node, link.from_socket, is_input=False)
             b = _link_port_ref(view, link.to_node, link.to_socket, is_input=True)
             if a is not None and b is not None and chunk_graph.connect(
@@ -741,9 +751,21 @@ class BlenderGraphView:
         # a node and dropping a new one put everything back". Pulled against the OLD
         # self.prims/tree, i.e. exactly the nodes about to be thrown away.
         self.pull_positions_from_tree()
+        # Selection too, for the same reason: Blender owns clicking and box-select, so
+        # the editor's selection is only in node.select until it is read -- and the
+        # rebuild below makes every node afresh, which Blender does SELECTED. Without
+        # this, any reload left the whole graph selected, and one that ran mid-drag
+        # (see UsdChunksNodeTree.update) looked like the drag had grabbed the network.
+        # Adopted only for nodes in the context being shown: a dive clears the selection
+        # and the tree still holds the OUTER graph's nodes, and re-adopting those would
+        # leave their chunks flagged SELECTED where the inner graph's X could reach them.
+        tree_selected = ({n.name for n in self.tree.nodes if n.select}
+                         if self.tree is not None else None)
         self.ensure_view()
         self.prims, self.ports, self.edges = chunk_graph.read_graph(
             self.stage, self.context, self.chunks)
+        if tree_selected is not None:
+            self.set_selection(tree_selected & set(self.prims))
         self.positions = {p: chunk_graph.node_position(prim)
                           for p, prim in self.prims.items()}
         self.locked = {p for p, prim in self.prims.items() if _is_locked(self.stage, prim)}
@@ -787,6 +809,8 @@ class BlenderGraphView:
             node.name = path
             node.label = chunk_graph.node_label(prim)
             node.chunk_path = path
+            # nodes.new() hands back a selected node; the selection is the view's.
+            node.select = path in self.selected_nodes
             node.use_custom_color = True
             x, y = self.positions.get(path, (0.0, 0.0))
             node.location = (x * _SCALE, y * _SCALE)

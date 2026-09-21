@@ -374,6 +374,44 @@ def test_a_cut_wire_does_not_heal_the_chain(view):
     assert after == before
 
 
+def test_update_with_nothing_changed_schedules_no_reload(view, monkeypatch):
+    """Blender calls NodeTree.update for every node PROPERTY change, i.e. on each tick of
+    a slider drag. Connecting every link on every call re-authored each wire, reported a
+    change, and scheduled a reload that recreated every node (selected) mid-drag."""
+    scheduled = []
+    monkeypatch.setattr(bpy.app.timers, "register",
+                        lambda fn, **kw: scheduled.append(fn))
+    view.tree.update()
+    assert scheduled == []
+    # The other direction still works: a cut wire is a change. (links.remove fires
+    # update() on its own as well; until the reload runs, every call sees the gap.)
+    view.tree.links.remove(_wire(view, "Ref", "Move"))
+    view.tree.update()
+    assert scheduled
+
+
+def test_a_reload_keeps_the_editors_selection(view):
+    """nodes.new() hands back a selected node, so a rebuild used to leave the whole
+    graph selected. The tree's selection is read first and put back."""
+    for node in view.tree.nodes:
+        node.select = node.label == "Move"
+    view.reload()
+    assert [n.label for n in view.tree.nodes if n.select] == ["Move"]
+    assert [c.name for c in view.selected_chunks()] == ["Move"]
+
+
+def test_diving_does_not_carry_the_outer_selection_in(view):
+    """The tree still holds the outer nodes when a dive reloads; adopting their selection
+    would leave outer chunks flagged SELECTED where the inner graph's X could reach them."""
+    view.set_selection({_node(view, "Move").name})
+    view.group_selection()
+    group = next(n for n in view.tree.nodes if n.bl_idname == bg.node_class_id("chunkgroup"))
+    group.select = True
+    view.dive_into(group.name)
+    assert view.selected_chunks() == []
+    assert not any(n.select for n in view.tree.nodes)
+
+
 def test_a_native_duplicate_never_aliases_the_original(view):
     """Blender's duplicate copies every RNA property, chunk_path included, so the copy
     edited and wired the ORIGINAL prim. copy() blanks it; the chunk verbs (Shift+D is
