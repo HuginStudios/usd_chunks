@@ -1031,3 +1031,19 @@ def test_an_undriven_click_still_reports_the_prim_it_hit(view):
         assert found is not None and str(found.GetPath()) == "/Loose"
     finally:
         bg.set_picked_prim_paths([])
+
+
+def test_the_handle_declares_the_target_it_binds():
+    """target_set_handler binds to a DECLARED property. Without the declaration it raises
+    "Gizmo target property 'USDCHUNKS_GT_handle.offset' not found" the moment a handle is
+    built -- which registration alone never exercises."""
+    declared = {p["id"] for p in gz._ChunkHandle.bl_target_properties}
+    assert "offset" in declared
+
+
+def test_the_ordinary_draw_passes_no_select_id():
+    """draw_preset_* takes a typed int; None is not "no id" and raises, so every redraw
+    failed and nothing drew."""
+    assert gz.preset_kwargs(None) == {}
+    assert gz.preset_kwargs(0) == {"select_id": 0}
+    assert gz.preset_kwargs(7) == {"select_id": 7}

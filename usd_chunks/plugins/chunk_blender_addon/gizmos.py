@@ -61,6 +61,17 @@ def _active_view():
     return addon.get_view()
 
 
+def preset_kwargs(select_id) -> dict:
+    """The extra arguments for a `draw_preset_*` call.
+
+    `select_id` is how Blender tells a gizmo which pick buffer id to draw into, and it is
+    only meaningful in the select pass -- the ordinary draw has none. Passing None anyway
+    is not "no id": the argument is typed int and rejects it, so every redraw raised and
+    nothing was drawn at all.
+    """
+    return {} if select_id is None else {"select_id": select_id}
+
+
 def _picked_prim(stage):
     """The prim a handle should hang off, or None.
 
@@ -206,6 +217,14 @@ class _ChunkHandle(bpy.types.Gizmo):
 
     bl_idname = "USDCHUNKS_GT_handle"
 
+    #: A custom gizmo has no properties until it declares them, and `target_set_handler`
+    #: binds to a DECLARED one -- without this, wiring the handler raises
+    #: "Gizmo target property 'USDCHUNKS_GT_handle.offset' not found". `offset` is the name
+    #: Blender's own linear and dial handles use for the value a drag produces.
+    bl_target_properties = (
+        {"id": "offset", "type": "FLOAT", "array_length": 1},
+    )
+
     __slots__ = ("chunk", "desc", "kind", "axis", "_start_value", "_start_mouse")
 
     def setup(self):
@@ -216,17 +235,14 @@ class _ChunkHandle(bpy.types.Gizmo):
         self._start_value = 0.0
 
     def draw(self, context):
-        self._draw(context, select_id=None)
+        self._draw(None)
 
     def draw_select(self, context, select_id):
-        self._draw(context, select_id=select_id)
+        self._draw(select_id)
 
-    def _draw(self, context, select_id=None):
-        shape = {"translate": "ARROW", "scale": "BOX", "rotate": "CIRCLE"}[self.kind]
-        if shape == "CIRCLE":
-            self.draw_preset_circle(self.matrix_basis, axis="POS_Z", select_id=select_id)
-        else:
-            self.draw_preset_arrow(self.matrix_basis, axis="POS_Z", select_id=select_id)
+    def _draw(self, select_id):
+        draw = self.draw_preset_circle if self.kind == _ROTATE else self.draw_preset_arrow
+        draw(self.matrix_basis, axis="POS_Z", **preset_kwargs(select_id))
 
     def invoke(self, context, event):
         if self.chunk is not None:
