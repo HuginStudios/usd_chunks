@@ -706,3 +706,84 @@ class TestTheHostNodeInTheQtGraph:
             reference.execute()
             assert location.value == typed
             assert getattr(reference, "_network_namespace") == typed.rstrip("/")
+
+
+from usd_chunks.chunk_stage import loft_param_to_context
+
+
+@pytest.fixture
+def lofted_network(tmp_path):
+    """A network whose group lofts Transform's tx as a public param."""
+    stage, scene = _open(None)
+    a = _add(scene, "transform")
+    group = a.get_context()
+    loft_param_to_context(a.get_param("tx"), group)
+    lofted = next(p for p in group.get_my_params() if getattr(p, "_lofted", False))
+    lofted.value = 1.5
+    out = str(tmp_path / "lofted.usda")
+    export_chunks(scene, out)
+    _teardown(scene)
+    layer = Sdf.Layer.FindOrOpen(out)
+    assert any(a.name.startswith("inputs:") for a in layer.GetPrimAtPath("/chunks/ChunkGroup").attributes.values()), \
+        layer.ExportToString()
+    return out, lofted.name
+
+
+class TestLoftedParamsOnTheHost:
+    def test_the_hosts_node_shows_the_groups_public_params(self, lofted_network):
+        path, name = lofted_network
+        stage, scene = _open(None)
+        try:
+            host = _reference(scene, path)
+            public = [p for p in host.get_my_params() if getattr(p, "_lofted", False)]
+            assert [p.name for p in public] == [name]
+            assert public[0].value == 1.5
+        finally:
+            _teardown(scene)
+
+    def test_editing_the_public_param_drives_the_inner_one_as_an_override(self, lofted_network):
+        path, name = lofted_network
+        stage, scene = _open(None)
+        try:
+            host = _reference(scene, path)
+            public = next(p for p in host.get_my_params() if getattr(p, "_lofted", False))
+            inner = next(c for c in scene.get_chunks() if c.get_context() is host and c.name == "Transform")
+            public.value = 4.0
+            assert inner.get_param("tx").value == 4.0
+            attr = stage.GetAttributeAtPath(f"{get_chunk_prim_path(host)}.inputs:{name}")
+            assert attr.Get() == 4.0
+            assert param_override_source(public) == Sdf.Layer.Find(path)
+            assert not Sdf.Layer.Find(path).dirty
+        finally:
+            _teardown(scene)
+
+    def test_the_qt_node_grows_the_public_param_when_the_file_is_set(self, qapp, lofted_network):
+        """The node's widget exists before the file is set -- the order a user does it in.
+        The public param arrives through the same PARAM_ADDED a live loft uses."""
+        from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
+        path, name = lofted_network
+        stage, scene = _open(None)
+        graph_scene = ChunkGraphScene()
+        try:
+            host = _add(scene, "reference")
+            graph_scene.build(stage, scene, host.get_context())
+            qapp.processEvents()
+            node = graph_scene._nodes[get_chunk_prim_path(host)]
+            widget = node._proxy.widget() if node._proxy is not None else None
+            if widget is None:
+                for _ in range(20):
+                    qapp.processEvents()
+                    if node._proxy is not None:
+                        widget = node._proxy.widget()
+                        break
+            assert widget is not None, "the node has no embedded widget to check"
+
+            host.get_param("file_path").value = path
+            host.execute()
+            qapp.processEvents()
+
+            public = next(p for p in host.get_my_params() if getattr(p, "_lofted", False))
+            assert public.get_hash() in widget.param_widgets
+        finally:
+            graph_scene.deleteLater()
+            _teardown(scene)
