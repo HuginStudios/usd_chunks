@@ -600,6 +600,10 @@ def _render(node):
     # image here is what turns that off, so the check belongs where the path is used
     # rather than up front.
     output_image = node.get_param("output_image").value or ""
+    # Same substitution the Render Product does, for the same reason -- see
+    # chunk_utils.resolve_output_path. An output path is the one string in a shot graph that
+    # has to differ per shot.
+    output_image = chunk_utils.resolve_output_path(output_image, node.get_stage(), logger)
 
     mode = node.get_param("mode").value
     if mode == "Hydra" and not _hydra_available():
