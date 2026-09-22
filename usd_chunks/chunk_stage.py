@@ -3208,10 +3208,20 @@ def _migratable_layers(stage: "Usd.Stage") -> "list[Sdf.Layer]":
     against a set collected by walking every tracked layer's sublayers. Collecting that set
     is itself proportional to the graph, and this runs once per pass, of which there is one
     per wire — so the walk was most of the cost of building a graph's worth of them.
+
+    Foreign layers (chunk_utils.is_foreign_layer) are left out as well, from the other
+    side: a sublayered sequence file is not somewhere a chunk's bookkeeping may be moved
+    FROM. Migration moves a spec by deleting the original, and with the sequence in the
+    list, opening a shot consolidated every sequence chunk into the session layer and
+    gutted the sequence in the Sdf layer cache -- the same damage protect_root_layer
+    guards the root against, for a layer the shot did not even own. A chunk whose only
+    spec is foreign then simply has nothing to migrate; the shot's overrides on it, which
+    live in owned layers, still consolidate as before.
     """
     return [
         layer for layer in stage.GetLayerStack(includeSessionLayers=True)
         if not chunk_registry.is_chunk_internal_layer(layer)
+        and not chunk_utils.is_foreign_layer(layer, stage)
     ]
 
 
@@ -3493,6 +3503,12 @@ def reconcile_edit_targets(
             prim_path = get_chunk_prim_path(chunk)
             prim = stage.GetPrimAtPath(Sdf.Path(prim_path))
             if not prim.IsValid():
+                continue
+            # A chunk composed in from a sequence file keeps its overrides in the host's
+            # edit target (chunk_utils.host_edit_layer), not down its own -- the
+            # sequence's -- Edit Target chain, so there is nothing of its to re-home.
+            # Migrating would have carried a shot's override out of the shot file.
+            if chunk_utils.is_composed_in(prim):
                 continue
             dst = nearest_upstream_edit_layer(stage, prim)
             if dst is None:
@@ -5174,13 +5190,24 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     to USD's global default — reported live as a Z-up, centimetre scene that reopened
     Y-up in metres, with every chunk-authored prim lying on its side at a hundredth of
     its size.
+
+    Chunks that arrive by composition -- a sequence network sublayered into this file, or
+    referenced in under a chunkgroup -- are not this file's to write out. Only the layers
+    the chunk system owns are flattened (_owned_stage), so what gets copied for such a
+    chunk is the sparse `over` this scene put on it, and a chunk with no local opinion at
+    all is skipped rather than copied from a spec that does not exist locally. The root
+    layer's foreign sublayers are carried onto the file so the sequence stays composed
+    underneath those overs on reopen. This is what lets a shot tweak a sequence's network
+    and save without inlining it.
     """
     stage = scene.get_stage()
     if not stage:
         return
 
+    owned = _owned_stage(stage)
+    resolve = _asset_path_resolver(stage.GetRootLayer(), Path(path))
     try:
-        flat = UsdUtils.FlattenLayerStack(stage)
+        flat = UsdUtils.FlattenLayerStack(owned, resolve)
     except Tf.ErrorException:
         # One property spec with no usable type makes FlattenLayerStack refuse the whole
         # layer stack, and flattening is how a scene is saved -- so a single stub costs the
@@ -5195,17 +5222,22 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
             stage.GetLayerStack(includeSessionLayers=True), logger
         ):
             raise
-        flat = UsdUtils.FlattenLayerStack(stage)
-    tmp_stage = Usd.Stage.Open(flat)
+        flat = UsdUtils.FlattenLayerStack(owned, resolve)
+    # The live stage, not one opened over `flat`: a chunk composed in from a foreign layer
+    # is typed Chunk here and nowhere in `flat`, and it is exactly the one whose local
+    # `over` (if any) must still be found and copied below.
     chunk_paths = sorted(
-        (p.GetPath() for p in tmp_stage.TraverseAll() if p.GetTypeName() == _CHUNK_PRIM_TYPENAME),
+        (p.GetPath() for p in stage.TraverseAll() if p.GetTypeName() == _CHUNK_PRIM_TYPENAME),
         key=lambda p: p.pathElementCount,
     )
 
     dst = Sdf.Layer.CreateAnonymous()
+    _carry_foreign_sublayers(stage.GetRootLayer(), dst, Path(path))
     for prim_path in chunk_paths:
         if dst.GetPrimAtPath(prim_path):
             continue  # already brought in as part of an ancestor's subtree copy
+        if flat.GetPrimAtPath(prim_path) is None:
+            continue  # composed entirely from foreign layers; this file has nothing to say
         parent = prim_path.GetParentPath()
         if not parent.isEmpty and parent != Sdf.Path.absoluteRootPath and not dst.GetPrimAtPath(parent):
             Sdf.CreatePrimInLayer(dst, parent)
@@ -5221,6 +5253,85 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
 
     dst.Export(str(path))
     _reload_cached_layer(path)
+
+
+def _owned_stage(stage: "Usd.Stage") -> "Usd.Stage":
+    """The stage as seen through only the layers the chunk system owns -- for flattening.
+
+    UsdUtils.FlattenLayerStack takes every layer in the root layer stack, foreign ones
+    (chunk_utils.is_foreign_layer) included, and a sublayered sequence file flattened into
+    a shot's save is the sequence inlined: every one of its chunks a full `def` in the
+    shot, its subLayers arc gone, the shot no longer following the sequence. The layers to
+    flatten are the owned ones, and a layer stack minus some layers is a stage with those
+    layers muted -- muting is per stage, so a second stage over the same root and session
+    layers, with the foreign ones muted, leaves the live one exactly as it was.
+
+    Opened with an empty population mask: flattening reads the layer stack, not composed
+    prims, so nothing needs composing, and a scene's worth of content would otherwise be
+    composed a second time on every save. With no foreign layer present the live stage
+    itself comes back, and the save is what it always was.
+    """
+    foreign = [
+        layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)
+        if chunk_utils.is_foreign_layer(layer, stage)
+    ]
+    if not foreign:
+        return stage
+    owned = Usd.Stage.OpenMasked(
+        stage.GetRootLayer(), stage.GetSessionLayer(), Usd.StagePopulationMask()
+    )
+    owned.MuteAndUnmuteLayers(foreign, [])
+    return owned
+
+
+def _saving_beside(root: "Sdf.Layer", path: "Path") -> bool:
+    """Whether `path` lands in the root layer's own directory, so a relative asset path
+    authored in the root layer means the same file from the exported one."""
+    if not root.realPath:
+        return False
+    return Path(path).resolve().parent == Path(root.realPath).parent.resolve()
+
+
+def _asset_path_resolver(root: "Sdf.Layer", path: "Path"):
+    """How FlattenLayerStack rewrites asset paths for this export.
+
+    Its default makes every asset path absolute, which is right for an opinion taken
+    from an anonymous layer (nothing to anchor a relative path to) and for a file written
+    somewhere else, and wrong for the ordinary save-in-place: a chunkgroup referencing
+    `./seq.usda` came back as an absolute path into the user's home directory, and the
+    shot stopped being relocatable with its sequence. Saving beside the root layer keeps
+    that layer's asset paths exactly as the user wrote them.
+    """
+    if not _saving_beside(root, path):
+        return UsdUtils.FlattenLayerStackResolveAssetPath
+
+    def resolve(layer, asset_path):
+        if layer == root:
+            return asset_path
+        return UsdUtils.FlattenLayerStackResolveAssetPath(layer, asset_path)
+
+    return resolve
+
+
+def _carry_foreign_sublayers(root: "Sdf.Layer", dst: "Sdf.Layer", path: "Path") -> None:
+    """Put the root layer's foreign sublayers onto the exported layer, offsets included.
+
+    Owned sublayers are flattened into the export and need no arc; a foreign one is the
+    reason the export is sparse for the chunks it contributes, and without the arc those
+    overs would compose over nothing. Entries stay as written when the file is saved
+    beside the root layer (the ordinary save-in-place), and are made absolute when it is
+    written elsewhere, since a relative asset path is anchored to the layer holding it.
+    """
+    same_dir = _saving_beside(root, path)
+    for index, entry in enumerate(root.subLayerPaths):
+        # An owned sublayer is anonymous and listed by its identifier, so Find sees it. A
+        # foreign entry is kept whether or not its file could be opened: a sublayer that
+        # is missing today is still the user's arc, not something a save should drop.
+        layer = Sdf.Layer.Find(entry)
+        if layer is not None and layer.anonymous:
+            continue
+        dst.subLayerPaths.append(entry if same_dir else root.ComputeAbsolutePath(entry))
+        dst.subLayerOffsets[len(dst.subLayerPaths) - 1] = root.subLayerOffsets[index]
 
 
 def _reload_cached_layer(path: "str | Path") -> None:

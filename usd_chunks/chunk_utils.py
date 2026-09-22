@@ -74,12 +74,82 @@ def get_bookkeeping_layer(stage: Usd.Stage, owner) -> Sdf.Layer:
     """
     if owner is not None and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
         return stage.GetSessionLayer()
+    if owner is not None:
+        # A chunk composed in from a sequence file has an Edit Target chain of its own,
+        # and it is the sequence's: what the shot writes on such a chunk is an override,
+        # and it goes where the host's edit target points (host_edit_layer), not down the
+        # sequence's chain. Same import shape as get_edit_layer above, same reason.
+        from usd_chunks.chunk_stage import get_chunk_prim_path
+        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
+        if is_composed_in(prim):
+            return host_edit_layer(stage)
     return get_edit_layer(stage, owner)
 
 
+def host_edit_layer(stage: Usd.Stage) -> Sdf.Layer:
+    """Where an override of composed-in content lands: the stage's own edit target.
+
+    That is the layer the host has open for editing -- the root layer, i.e. the file the
+    user opened, unless the host set another -- and deliberately not the chunk's Edit
+    Target (get_edit_layer): a chunk brought in from a sequence file sits in the
+    sequence's exec chain, so its Edit Target is the sequence's, locked at that level,
+    and a shot-level tweak has no business going down it.
+
+    The chunk system never leaves the stage's edit target changed, but it does enter
+    Usd.EditContext blocks on a chunk's own procedural layer around a cook and around a
+    callback. A write from inside one of those (a callback setting a sibling param) sees
+    that layer as the ambient target, and it is Clear()ed on the next cook -- so an
+    internal layer is never the answer, and the root layer stands in for it.
+    """
+    layer = stage.GetEditTarget().GetLayer()
+    if layer is None or chunk_registry.is_chunk_internal_layer(layer):
+        return stage.GetRootLayer()
+    return layer
+
+
+def is_composed_in(prim: Usd.Prim) -> bool:
+    """Whether this prim is defined only by layers the chunk system does not own: every
+    `def` for it is in a foreign layer (is_foreign_layer) or reached across a reference or
+    payload, so any local opinion on it is an override. A prim that is not defined at all
+    yet (mid-creation) is not composed in; neither is one with a `def` in an owned layer,
+    however many foreign opinions sit beneath it."""
+    if prim is None or not prim.IsValid():
+        return False
+    stage = prim.GetStage()
+    defined = False
+    for spec in prim.GetPrimStack():
+        if spec.specifier != Sdf.SpecifierDef:
+            continue
+        defined = True
+        if spec.path == prim.GetPath() and not is_foreign_layer(spec.layer, stage):
+            return False
+    return defined
+
+
+def is_foreign_layer(layer: Sdf.Layer, stage: Usd.Stage) -> bool:
+    """Whether the chunk system reads this layer but must not rewrite it.
+
+    A file-backed layer that is not the stage's own root layer got onto the stage by
+    composition -- a sequence network sublayered into a shot, a store chunkgroup
+    referenced in, a scene file a Sublayer chunk pulled in -- and belongs to whoever
+    wrote that file. Everything the chunk system makes for itself is anonymous (the
+    session layer, graph and per-chunk procedural layers, Create Layer's layers), and the
+    root layer is the file the user opened to edit, so those two tests are the whole rule.
+
+    What "must not rewrite" buys: a shot that composes a sequence tweaks it with sparse
+    `over`s in the host's edit target (host_edit_layer) and never touches the sequence
+    file, the same discipline USD has for every other kind of content. A user who wants
+    to edit a foreign file directly says so by making it the stage's edit target; the
+    override then lands there of its own accord, and this predicate does not need to know.
+    """
+    return not layer.anonymous and layer != stage.GetRootLayer()
+
+
 def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
-    """Return the layer holding attr's strongest existing property spec, or None if it
-    has no spec anywhere yet.
+    """Return the layer to update attr in: the one holding its strongest existing
+    property spec, or -- when that spec is composed in from somewhere the chunk system
+    does not write -- the host's edit target, where the override belongs. None only when
+    the attr has no spec anywhere yet.
 
     Use this to update an attribute that already exists (value, connections, a rename),
     rather than re-resolving "the current Edit Target" on every change — a chunk's own
@@ -87,9 +157,23 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
     authored (get_bookkeeping_layer), and Edit Target may have moved on to somewhere
     else by the time it's edited again. Always writing new edits back to the attr's own
     existing home avoids splitting one attribute's opinions across multiple layers.
+
+    Two kinds of strongest spec are not a home, and answer host_edit_layer instead:
+
+    - one in a foreign layer (is_foreign_layer): a sublayered sequence file. Writing
+      there would edit the sequence from the shot.
+    - one whose path is not the attr's stage path: reached through a reference or
+      payload, so the spec's layer is not even in the local layer stack and
+      Usd.EditContext on it raises "not in the local LayerStack".
     """
     stack = attr.GetPropertyStack(Usd.TimeCode.Default())
-    return stack[0].layer if stack else None
+    if not stack:
+        return None
+    spec = stack[0]
+    stage = attr.GetStage()
+    if spec.path != attr.GetPath() or is_foreign_layer(spec.layer, stage):
+        return host_edit_layer(stage)
+    return spec.layer
 
 
 def chunk_internal_layer_ids() -> set:

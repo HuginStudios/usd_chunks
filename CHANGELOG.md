@@ -29,6 +29,14 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- A network brought in by composition is tweaked, never rewritten. Sublayer a sequence's
+  network into a shot, or reference it under a chunkgroup, and editing a param in the shot
+  authors a sparse `over` in the stage's edit target (the shot file itself, unless the
+  host targets another layer); the sequence file is read-only to the chunk system. Saving keeps the arc (the root layer's foreign sublayers are carried onto
+  the file, references stay on their prim) and writes only the shot's overrides, so the
+  sequence stays live underneath. Before, opening such a shot moved the sequence's chunk
+  prims out of the sequence file, editing wrote back into it, and saving inlined every
+  chunk as a full `def` with the arc dropped -- or failed outright for a referenced one.
 - `usdchunks run` now writes the outputs a network declares on disk: a network containing
   an Export USD chunk exports its configured files, which it previously did only when the
   Export button was pressed in the UI. Running a network that declares an export exports.

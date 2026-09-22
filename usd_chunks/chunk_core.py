@@ -1807,14 +1807,20 @@ class ChunkUsdAttributeSupport(AttributesBase):
                         # already lives — not wherever Edit Target currently resolves to,
                         # which may have moved on since it was first authored.
                         #
+                        # No home means the attr is new; it goes where a new bookkeeping
+                        # attr of this chunk goes (get_bookkeeping_layer). An attr composed
+                        # in from a sequence file has a home: the host's edit target.
+                        #
                         # A param bound straight to a real prim's attribute from inside a
                         # variant (show_attribute, from the Property Editor or Light) is the
                         # exception: get_attr_home_layer walks the stage's plain layer stack,
                         # which cannot see a spec keyed under a variant's own internal path,
                         # so it always comes back empty there and the edit would otherwise
-                        # fall through to the session layer -- outside the variant entirely.
+                        # fall through to the fallback -- outside the variant entirely.
                         # Re-enter the selections recorded at bind time instead.
-                        fallback = chunk_utils.get_attr_home_layer(usd_attr) or stage.GetSessionLayer()
+                        fallback = chunk_utils.get_attr_home_layer(usd_attr) or chunk_utils.get_bookkeeping_layer(
+                            stage, self.get_chunk()
+                        )
                         with chunk_utils.edit_context_for(stage, self._var_selections, fallback):
                             if not is_expr:
                                 current = usd_attr.Get(0)
@@ -1921,9 +1927,12 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 # _connect_param_attr means), so update it wherever its spec already
                 # lives, rather than wherever the stage's ambient/Edit-Target-driven
                 # edit target currently points — that may have moved on since it was
-                # first authored.
+                # first authored. No home means the attr is new, and it goes where a
+                # new bookkeeping attr of this chunk would.
                 stage = notice.data.GetStage()
-                home = chunk_utils.get_attr_home_layer(notice.data) or stage.GetSessionLayer()
+                home = chunk_utils.get_attr_home_layer(notice.data) or chunk_utils.get_bookkeeping_layer(
+                    stage, self.get_chunk()
+                )
                 with Usd.EditContext(stage, home):
                     # A non-String attr must never receive raw expression text: if an expression ref
                     # can't resolve (e.g. a lofted cross-context ref like @ChunkGroup.tx@), sender.value
