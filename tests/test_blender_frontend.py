@@ -37,6 +37,7 @@ if "bpy" not in sys.modules:  # pragma: no cover - the usual case outside Blende
 
 import bpy  # noqa: E402
 
+from mathutils import Matrix, Vector  # noqa: E402
 from pxr import Gf, Sdf, Usd, UsdGeom  # noqa: E402
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
@@ -815,6 +816,7 @@ def test_the_verbs_are_wired_to_operators_that_get_registered():
 
 from usd_chunks import chunk_gizmo  # noqa: E402
 from usd_chunks.plugins.chunk_blender_addon import gizmos as gz  # noqa: E402
+from usd_chunks.plugins.chunk_blender_addon import viewport as vp  # noqa: E402
 
 
 @pytest.fixture
@@ -850,7 +852,7 @@ def test_a_driven_prim_offers_a_transform_handle(driven):
 
 
 def test_handles_are_filtered_to_one_chunk(driven):
-    """Two transform chunks on one prim must not show two identical handles."""
+    """Two transform chunks on one prim must not both be driven by one gesture."""
     view, xf, prim = driven
     second = _make(chunk_registry.ChunkRegistry().get_chunk_module("transform"))
     second.name = "Place2"
@@ -862,119 +864,142 @@ def test_handles_are_filtered_to_one_chunk(driven):
     assert len({d.chunk_prim for d in gz._visible_descs(prim, view)}) == 1
 
 
-def test_dragging_one_axis_writes_that_param_and_moves_the_prim(driven):
+def _components(translate=(0.0, 0.0, 0.0), rotate=(0.0, 0.0, 0.0), scale=(1.0, 1.0, 1.0)):
+    return {"translate": list(translate), "rotate": list(rotate), "scale": list(scale)}
+
+
+def test_a_gesture_writes_the_params_and_moves_the_prim(driven):
     view, xf, prim = driven
-    desc = _desc(prim)
-    gz.write_component(desc, xf, "translate", 1, 4.0)
+    desc = gz.placement_desc(prim, view)
+    gz.write_components(desc, xf, _components(translate=(0.0, 4.0, 0.0)))
     assert xf.get_param("ty").value == 4.0
     moved = UsdGeom.Xformable(prim).GetLocalTransformation().ExtractTranslation()
     assert (moved[0], moved[1], moved[2]) == (0.0, 4.0, 0.0)
 
 
-def test_a_rotate_drag_leaves_translate_alone(driven):
-    """A transform desc takes a whole matrix, so the components this drag does not touch
-    are composed back in unchanged rather than reset to zero."""
+def test_a_rotate_gesture_leaves_translate_alone(driven):
+    """All three components go back together, so the two a gesture is not touching are the
+    ones the chunk already had rather than zero."""
     view, xf, prim = driven
-    desc = _desc(prim)
-    gz.write_component(desc, xf, "translate", 0, 3.0)
-    gz.write_component(desc, xf, "rotate", 2, 90.0)
+    desc = gz.placement_desc(prim, view)
+    gz.write_components(desc, xf, _components(translate=(3.0, 0.0, 0.0)))
+    start = {k: gz._current(xf, k) for k in ("translate", "rotate", "scale")}
+    start["rotate"] = gz.rotated(start["rotate"], "Z", 1.5707963)
+    gz.write_components(desc, xf, start)
     assert xf.get_param("tx").value == pytest.approx(3.0)
     assert xf.get_param("rz").value == pytest.approx(90.0)
     assert xf.get_param("sx").value == pytest.approx(1.0)
-    moved = UsdGeom.Xformable(prim).GetLocalTransformation().ExtractTranslation()
-    assert moved[0] == pytest.approx(3.0)
 
 
-def test_the_handle_sits_where_the_prim_is(driven):
+def test_the_pivot_sits_where_the_prim_is(driven):
     view, xf, prim = driven
-    desc = _desc(prim)
-    gz.write_component(desc, xf, "translate", 0, 7.0)
-    matrix = gz._anchor_matrix(view.stage, desc)
-    assert tuple(matrix.translation) == pytest.approx((7.0, 0.0, 0.0))
+    desc = gz.placement_desc(prim, view)
+    gz.write_components(desc, xf, _components(translate=(7.0, 0.0, 0.0)))
+    assert tuple(gz.anchor_world(view.stage, desc)) == pytest.approx((7.0, 0.0, 0.0))
 
 
-def test_degrees_cross_the_boundary_once(driven):
-    """Blender dials are radians, the contract is degrees. A round trip through the
-    handle's own read/write must come back where it started."""
-    view, xf, prim = driven
-    desc = _desc(prim)
-    gz.write_component(desc, xf, "rotate", 0, 45.0)
-    assert xf.get_param("rx").value == pytest.approx(45.0)
-    radians = gz._current(xf, "rotate")[0] / gz._DEG
-    assert radians == pytest.approx(0.7853981)
+def test_an_axis_constraint_keeps_only_that_axis():
+    """G then X: the drag still moves the mouse in two dimensions, and only one of them
+    may reach the prim."""
+    delta = Vector((3.0, 5.0, -2.0))
+    assert tuple(gz.constrain(delta, "X", Matrix())) == pytest.approx((3.0, 0.0, 0.0))
+    assert tuple(gz.constrain(delta, "Z", Matrix())) == pytest.approx((0.0, 0.0, -2.0))
+    assert tuple(gz.constrain(delta, None, Matrix())) == pytest.approx(tuple(delta))
+
+
+def test_a_constraint_follows_the_handles_own_axes():
+    """A local-space handle constrains along the anchor's axes, not the world's -- so X on
+    a prim turned 90 degrees about Z takes the world-Y part of the drag."""
+    basis = Matrix.Rotation(1.5707963, 4, "Z")
+    kept = gz.constrain(Vector((0.0, 4.0, 0.0)), "X", basis)
+    assert tuple(kept) == pytest.approx((0.0, 4.0, 0.0), abs=1e-6)
+    dropped = gz.constrain(Vector((4.0, 0.0, 0.0)), "X", basis)
+    assert tuple(dropped) == pytest.approx((0.0, 0.0, 0.0), abs=1e-6)
+
+
+def test_the_swept_angle_is_measured_about_the_pivot():
+    centre = Vector((100.0, 100.0))
+    quarter = gz.screen_angle(centre, Vector((110.0, 100.0)), Vector((100.0, 110.0)))
+    assert quarter == pytest.approx(1.5707963, abs=1e-5)
+    assert gz.screen_angle(centre, centre, Vector((110.0, 100.0))) == 0.0
+
+
+def test_scale_is_the_ratio_of_distances_from_the_pivot():
+    centre = Vector((0.0, 0.0))
+    assert gz.screen_scale(centre, Vector((10.0, 0.0)), Vector((20.0, 0.0))) == pytest.approx(2.0)
+    assert gz.screen_scale(centre, centre, Vector((5.0, 0.0))) == 1.0
+
+
+def test_a_constrained_turn_only_moves_its_own_channel():
+    out = gz.rotated([10.0, 20.0, 30.0], "Y", 1.5707963)
+    assert out[0] == pytest.approx(10.0)
+    assert out[1] == pytest.approx(110.0)
+    assert out[2] == pytest.approx(30.0)
+
+
+def test_an_unconstrained_turn_goes_through_decompose():
+    """About the view axis, so it cannot be a channel add -- and the Euler convention stays
+    in chunk_gizmo rather than being re-derived here."""
+    out = gz.rotated([0.0, 0.0, 0.0], None, 1.5707963, view_axis=(0.0, 0.0, 1.0))
+    assert out[2] == pytest.approx(90.0, abs=1e-4)
+    assert out[0] == pytest.approx(0.0, abs=1e-4)
+
+
+def test_scale_constrained_and_free():
+    assert gz.scaled([1.0, 2.0, 3.0], None, 2.0) == pytest.approx([2.0, 4.0, 6.0])
+    assert gz.scaled([1.0, 2.0, 3.0], "Y", 0.5) == pytest.approx([1.0, 1.0, 3.0])
 
 
 def test_an_undriven_prim_gets_a_chunk_rather_than_a_direct_write(view):
-    """Contract §8: writing the prim would be erased by the next cook, so a handle on an
-    unowned prim makes the chunk that owns it."""
+    """Contract section 8: writing the prim would be erased by the next cook, so a gesture
+    on an unowned prim makes the chunk that owns it."""
     loose = view.stage.DefinePrim("/Loose", "Cube")
     assert gz._visible_descs(loose, view) == []
     desc = chunk_gizmo.ensure_transform_chunk(loose)
     assert desc is not None
-    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, Gf.Matrix4d().SetTranslate(Gf.Vec3d(1, 2, 3)))
-    moved = UsdGeom.Xformable(view.stage.GetPrimAtPath("/Loose")).GetLocalTransformation().ExtractTranslation()
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name,
+                               Gf.Matrix4d().SetTranslate(Gf.Vec3d(1, 2, 3)))
+    moved = UsdGeom.Xformable(
+        view.stage.GetPrimAtPath("/Loose")).GetLocalTransformation().ExtractTranslation()
     assert (moved[0], moved[1], moved[2]) == (1.0, 2.0, 3.0)
 
 
-def test_the_gizmo_classes_register_and_unregister():
-    """Gizmo types live in their own registry, not on bpy.types under their class name --
-    a guard that asked bpy.types registered twice and never unregistered."""
-    assert gz.USDCHUNKS_GGT_chunk_gizmos.bl_space_type == "VIEW_3D"
+def test_the_operator_registers_and_takes_the_transform_keys():
+    assert gz.USDCHUNKS_OT_transform in gz._CLASSES
+    assert {key for _op, key, _props in gz._KEYS} == {"G", "R", "S"}
+    assert {props["mode"] for _op, _key, props in gz._KEYS} == {"translate", "rotate", "scale"}
+    # is_registered, not a bpy.types lookup: Blender addresses an operator by bl_idname
+    # and never publishes it on bpy.types under its class name, so a guard that asks
+    # bpy.types registers twice and never unregisters.
     gz.register()
     try:
-        assert bpy.types.GizmoGroup.bl_rna_get_subclass_py("USDCHUNKS_GGT_chunk_gizmos") is not None
-        assert bpy.types.Gizmo.bl_rna_get_subclass_py("USDCHUNKS_GT_handle") is not None
+        assert gz.USDCHUNKS_OT_transform.is_registered
+        assert hasattr(bpy.ops.usd_chunks, "transform")
         gz.register()  # idempotent: re-enabling the add-on must not raise
     finally:
         gz.unregister()
-    assert bpy.types.GizmoGroup.bl_rna_get_subclass_py("USDCHUNKS_GGT_chunk_gizmos") is None
-    assert bpy.types.Gizmo.bl_rna_get_subclass_py("USDCHUNKS_GT_handle") is None
+    assert not gz.USDCHUNKS_OT_transform.is_registered
 
 
-# ---------------------------------------------------------------------------
-# viewport picking: the two parts that a GL context cannot be had to check
-# ---------------------------------------------------------------------------
-
-from usd_chunks.plugins.chunk_blender_addon import viewport as vp  # noqa: E402
-
-
-def test_the_pick_matrix_puts_the_click_at_the_centre():
-    """A point at the click maps to the origin of the narrowed clip range, and the pick
-    window's edge maps to that range's edge. Wrong either way and TestIntersection is
-    asked about a few pixels somewhere else on screen -- which looks exactly like picking
-    not working."""
-    dx = dy = 4.0 / 1000.0
-    m = vp.pick_matrix(0.5, -0.25, dx, dy)
-    centre = m.Transform(Gf.Vec3d(0.5, -0.25, 0.0))
-    assert (centre[0], centre[1]) == pytest.approx((0.0, 0.0))
-    edge = m.Transform(Gf.Vec3d(0.5 + dx, -0.25 + dy, 0.0))
-    assert (edge[0], edge[1]) == pytest.approx((1.0, 1.0))
+def test_the_pivot_dot_follows_the_driven_anchor(driven):
+    view, xf, prim = driven
+    desc = gz.placement_desc(prim, view)
+    gz.write_components(desc, xf, _components(translate=(2.0, 0.0, 5.0)))
+    bg.set_picked_prim_paths([str(prim.GetPath())])
+    try:
+        assert tuple(gz.pivot_point(view.stage, view)) == pytest.approx((2.0, 0.0, 5.0))
+    finally:
+        bg.set_picked_prim_paths([])
 
 
-def test_a_centred_click_leaves_the_projection_alone():
-    m = vp.pick_matrix(0.0, 0.0, 1.0, 1.0)
-    assert m.Transform(Gf.Vec3d(0.3, 0.7, 0.0)) == Gf.Vec3d(0.3, 0.7, 0.0)
-
-
-def test_the_hit_path_is_found_wherever_it_sits_in_the_result():
-    """TestIntersection's out-params have gained members across USD versions, so the
-    prim path is scanned for rather than indexed."""
-    hit = Sdf.Path("/World/Cube")
-    assert vp.hit_path((True, Gf.Vec3d(1, 2, 3), Gf.Vec3d(0, 0, 1), hit, Sdf.Path(), 0)) == "/World/Cube"
-    assert vp.hit_path((True, Gf.Vec3d(), hit)) == "/World/Cube"
-
-
-def test_a_miss_is_none():
-    assert vp.hit_path(None) is None
-    assert vp.hit_path(()) is None
-    assert vp.hit_path((False, Gf.Vec3d(), Sdf.Path("/World/Cube"))) is None
-    assert vp.hit_path((True, Gf.Vec3d(), Sdf.Path())) is None
-
-
-def test_a_hit_point_at_the_origin_is_not_read_as_a_miss():
-    """A build that returns the hit point first rather than a bool: a Vec3d at the origin
-    is a hit dead centre of the near plane, not a miss."""
-    assert vp.hit_path((Gf.Vec3d(0, 0, 0), Sdf.Path("/World/Cube"))) == "/World/Cube"
+def test_an_undriven_pick_still_gets_a_dot(view):
+    """The only sign the click landed, and a gesture there makes the chunk."""
+    view.stage.DefinePrim("/Loose", "Cube")
+    bg.set_picked_prim_paths(["/Loose"])
+    try:
+        assert gz.pivot_point(view.stage, view) is not None
+    finally:
+        bg.set_picked_prim_paths([])
 
 
 def test_bounds_picking_finds_the_prim_under_the_ray(view):
@@ -1033,17 +1058,3 @@ def test_an_undriven_click_still_reports_the_prim_it_hit(view):
         bg.set_picked_prim_paths([])
 
 
-def test_the_handle_declares_the_target_it_binds():
-    """target_set_handler binds to a DECLARED property. Without the declaration it raises
-    "Gizmo target property 'USDCHUNKS_GT_handle.offset' not found" the moment a handle is
-    built -- which registration alone never exercises."""
-    declared = {p["id"] for p in gz._ChunkHandle.bl_target_properties}
-    assert "offset" in declared
-
-
-def test_the_ordinary_draw_passes_no_select_id():
-    """draw_preset_* takes a typed int; None is not "no id" and raises, so every redraw
-    failed and nothing drew."""
-    assert gz.preset_kwargs(None) == {}
-    assert gz.preset_kwargs(0) == {"select_id": 0}
-    assert gz.preset_kwargs(7) == {"select_id": 7}

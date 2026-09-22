@@ -1,36 +1,32 @@
-"""Blender's viewport handles for chunk-driven prims.
+"""Transforming a chunk-driven prim from Blender's viewport.
 
 The host half of `docs/gizmo-host-contract.md`. usd_chunks records `ui:gizmo:*` on a chunk
-prim and owns the write-back; this file is Blender's interpretation of that record: which
-handles exist for what the user picked (`chunk_gizmo.resolve_gizmos`), where they sit, and
-the per-tick `chunk_gizmo.apply_bindings` that moves the prim by moving the chunk's params.
+prim and owns the write-back; this file is Blender's interpretation: which handles exist
+for what the user picked (`chunk_gizmo.resolve_gizmos`), and the per-tick
+`chunk_gizmo.apply_bindings` that moves the prim by moving the chunk's params.
 
-**Native handles, not ours.** The contract's governing rule is that a host builds its own
-manipulator from the record alone, and Blender's gizmos are better than anything we would
-ship. A `transform` desc -- "run your native transform manipulator and give me the
-result" -- becomes three arrows, three dials and three box-arrows here, because Blender has
-no single instantiable TRS gizmo (`VIEW3D_GGT_xform_gizmo` is C code bound to objects, and
-a USD prim drawn by the Hydra delegate has no object to bind). Each handle writes the one
-component it owns, through one matrix, so the chunk still decomposes exactly once.
+**G, R, S -- not a drawn widget.** The first version of this drew a TRS gizmo, three arrows
+and three dials, the way usdview does. That was the wrong shape for this host: a Blender
+user's hands already know `G`, `G X`, `R Z`, `S`, and a widget that has to be found and
+dragged is slower than the keys for anyone who has used Blender. So the selection is a
+pivot dot, exactly as Blender marks a selected object's origin, and the gestures are
+Blender's own -- pressed on the keyboard, constrained with `X`/`Y`/`Z`, confirmed with a
+click, cancelled with Escape.
 
-**Why custom Gizmo subclasses rather than `GIZMO_GT_*` built-ins.** The built-ins draw and
-pick perfectly well, but a drag through them is a sequence of `set` calls with no start and
-no end, and the contract wants `start_gizmo()` / `stop_gizmo()` around a drag -- that
-bracket is what a host's undo stack hangs off, and what tells a chunk a gesture is in
-progress. `invoke` and `exit` exist only on a subclass, so the handles are subclasses that
-draw a preset shape.
+The keymap items sit in the addon keyconfig, which Blender checks before its own, and their
+poll only passes when a chunk-driven prim is picked in the live viewport. With nothing
+picked, `G` is Blender's grab as always.
 
-**Picked, not selected.** A prim here comes from viewport picking (viewport.py's
-`USDCHUNKS_OT_pick_prim`), since a Hydra-drawn prim is not a Blender object and cannot be
-in `context.selected_objects`. That is the selection `editmode = onPrimSelection` is
-matched against.
+**Picked, not selected.** A prim here comes from viewport picking (viewport.py), since a
+Hydra-drawn prim is not a Blender object and cannot be in `context.selected_objects`.
 """
 from __future__ import annotations
 
 import logging
+import math
 
 import bpy
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 from pxr import Gf, UsdGeom
 
 from usd_chunks import chunk_gizmo
@@ -39,12 +35,15 @@ from usd_chunks.plugins.chunk_blender_addon import viewport
 
 logger = logging.getLogger(__name__)
 
-#: Blender's axis colours, so a chunk handle reads like every other handle in the viewport.
-_AXIS_COLOR = {0: (1.0, 0.2, 0.32), 1: (0.54, 0.86, 0.0), 2: (0.16, 0.52, 1.0)}
-
-#: Which component each handle drives, and the order the contract gives for a `transform`
+#: Which component each gesture drives, and the order the contract gives for a `transform`
 #: driver: translate, rotate, scale.
 _TRANSLATE, _ROTATE, _SCALE = "translate", "rotate", "scale"
+
+#: What the pivot dot looks like: Blender's own selected-origin orange, a few pixels wide.
+_DOT_COLOR = (1.0, 0.65, 0.15, 1.0)
+_DOT_SIZE = 9.0
+
+_draw_state = {"handle": None}
 
 #: Degrees per radian, spelled once. A `rotate` value goes back as Euler XYZ in DEGREES
 #: (contract §3) while Blender works in radians, and this is the one place that converts.
@@ -122,40 +121,172 @@ def _visible_descs(prim, view):
     return [d for d in descs if d.chunk_prim == descs[0].chunk_prim]
 
 
-def _anchor_matrix(stage, desc) -> Matrix:
-    """Where to draw, as a Blender matrix: the anchor's local-to-world, with the chunk's
+def placement_desc(prim, view):
+    """The one handle a G/R/S gesture drives, or None.
+
+    A `transform` handle first, since it takes the whole matrix; otherwise the handle of
+    the gesture's own kind, which is how a chunk offering only some of the three
+    (rbd_solver declares translate and rotate offsets and no scale) is still driveable.
+    """
+    descs = _visible_descs(prim, view)
+    for desc in descs:
+        if desc.type == "transform":
+            return desc
+    for desc in descs:
+        if desc.type in (_TRANSLATE, _ROTATE, _SCALE):
+            return desc
+    return None
+
+
+def _chunk_for(view, desc):
+    """The live chunk object a desc names, or None. Needed for the start/stop bracket,
+    which is a method on the chunk; the write itself goes by prim path."""
+    if view is None or desc is None:
+        return None
+    return view.chunks.get(str(desc.chunk_prim))
+
+
+def anchor_world(stage, desc):
+    """Where the pivot is, in world space: the anchor's local-to-world with the chunk's
     pivot applied when it has an opinion about one.
 
     `offset` is a point in the anchor's OWN object space (contract §2), so it maps through
-    the anchor's local-to-world rather than being added in world space. `None` means the
-    chunk has no opinion and the host decides -- the anchor's own origin is the answer
-    here, since Blender's handles are drawn at a matrix and the bbox centroid the contract
-    suggests would need a bound computation per redraw.
+    the anchor's local-to-world rather than being added in world space.
     """
-    identity = Matrix()
+    if stage is None or desc is None:
+        return None
     anchors = [stage.GetPrimAtPath(p) for p in desc.anchor]
     anchors = [a for a in anchors if a and a.IsValid()]
     if not anchors:
-        return identity
+        return None
     xf = UsdGeom.Xformable(anchors[0])
     if not xf:
-        return identity
-    gf = xf.ComputeLocalToWorldTransform(0)
-    if desc.offset is not None:
-        gf = Gf.Matrix4d().SetTranslate(Gf.Vec3d(*desc.offset)) * gf
-    rows = [[gf[r][c] for c in range(4)] for r in range(4)]
-    # Gf is row-major with translation in row 3; Blender is column-major. Transposing is
-    # the whole conversion.
-    return Matrix(rows).transposed()
+        return None
+    matrix = xf.ComputeLocalToWorldTransform(0)
+    point = Gf.Vec3d(*desc.offset) if desc.offset is not None else Gf.Vec3d(0, 0, 0)
+    world = matrix.Transform(point)
+    return Vector((world[0], world[1], world[2]))
 
+
+def parent_rotation(stage, desc) -> Matrix:
+    """The rotation taking a world-space direction into the space the chunk's params are
+    in: the inverse of the anchor's PARENT's local-to-world.
+
+    A chunk's translate is the prim's own local translation, so a world-space drag on a
+    parented prim has to come back through the parent before it means anything. Rotation
+    and scale only -- a translation offset is not a direction.
+    """
+    if stage is None or desc is None or not desc.anchor:
+        return Matrix()
+    prim = stage.GetPrimAtPath(desc.anchor[0])
+    if not (prim and prim.IsValid()):
+        return Matrix()
+    parent = prim.GetParent()
+    if not (parent and parent.IsValid()) or parent.IsPseudoRoot():
+        return Matrix()
+    xf = UsdGeom.Xformable(parent)
+    if not xf:
+        return Matrix()
+    gf = xf.ComputeLocalToWorldTransform(0).GetInverse()
+    rows = [[gf[r][c] for c in range(4)] for r in range(4)]
+    return Matrix(rows).transposed().to_3x3().to_4x4()
+
+
+# ---------------------------------------------------------------------------
+# the maths of a gesture -- pure, so it can be tested without a viewport
+# ---------------------------------------------------------------------------
+
+def constrain(delta, axis, basis: Matrix) -> Vector:
+    """A drag delta reduced to its constrained part.
+
+    `X`/`Y`/`Z` during a gesture is Blender's axis lock, and the axis is the one in
+    `basis` -- the world's for a world-space handle, the anchor's own for a local one --
+    so the projection is onto that column, not onto a global axis. Unconstrained, the
+    delta is whatever the mouse did.
+    """
+    if axis is None:
+        return Vector(delta)
+    index = {"X": 0, "Y": 1, "Z": 2}[axis]
+    direction = Vector(basis.col[index][:3])
+    if direction.length == 0.0:
+        return Vector(delta)
+    direction.normalize()
+    return direction * Vector(delta).dot(direction)
+
+
+def screen_angle(centre_2d, start_2d, now_2d) -> float:
+    """The angle the mouse has swept about the pivot, in radians.
+
+    Blender's own rotate: the pivot is the anchor on screen and the angle is between where
+    the drag began and where it is now. Zero when either arm has no length, since an angle
+    about a point the mouse sits exactly on is not defined.
+    """
+    start = Vector(start_2d) - Vector(centre_2d)
+    now = Vector(now_2d) - Vector(centre_2d)
+    if start.length == 0.0 or now.length == 0.0:
+        return 0.0
+    return math.atan2(now.y, now.x) - math.atan2(start.y, start.x)
+
+
+def screen_scale(centre_2d, start_2d, now_2d) -> float:
+    """How much further from the pivot the mouse is than when the drag began.
+
+    Blender's own scale. One when the gesture started on the pivot, since a ratio against
+    no distance is not a number -- and "no change" is the honest answer for a gesture that
+    cannot say anything yet.
+    """
+    start = (Vector(start_2d) - Vector(centre_2d)).length
+    now = (Vector(now_2d) - Vector(centre_2d)).length
+    if start == 0.0:
+        return 1.0
+    return now / start
+
+
+def rotated(values, axis, radians: float, view_axis=None) -> list:
+    """Euler XYZ degrees after turning by `radians`.
+
+    A constrained turn adds to that axis's own channel, which is exact and leaves the
+    other two as the user had them. An unconstrained one is about the view axis, so it
+    goes through a matrix and back -- which is what `chunk_gizmo.decompose` is for, and
+    doing it there keeps one Euler convention in the codebase instead of two.
+    """
+    degrees = radians * _DEG
+    if axis is not None:
+        index = {"X": 0, "Y": 1, "Z": 2}[axis]
+        out = list(values)
+        out[index] += degrees
+        return out
+    direction = Vector(view_axis or (0.0, 0.0, 1.0))
+    if direction.length == 0.0:
+        return list(values)
+    direction.normalize()
+    current = (Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), values[0]))
+               * Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 1, 0), values[1]))
+               * Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), values[2])))
+    turn = Gf.Matrix4d().SetRotate(
+        Gf.Rotation(Gf.Vec3d(direction.x, direction.y, direction.z), degrees))
+    euler = chunk_gizmo.decompose(current * turn)["rotate"]
+    return [euler[0], euler[1], euler[2]]
+
+
+def scaled(values, axis, factor: float) -> list:
+    """Scale after a gesture: one axis when constrained, all three when not."""
+    if axis is None:
+        return [v * factor for v in values]
+    index = {"X": 0, "Y": 1, "Z": 2}[axis]
+    out = list(values)
+    out[index] *= factor
+    return out
+
+
+# ---------------------------------------------------------------------------
+# reading and writing the chunk
+# ---------------------------------------------------------------------------
 
 def _current(chunk, kind) -> list:
-    """The chunk's current translate/rotate/scale, read off its params.
-
-    Read rather than remembered: a chunk's params move for reasons that are not this drag
-    -- a slider, an expression, an upstream cook -- and a handle that cached them would
-    write back a stale two thirds of the matrix on its next tick.
-    """
+    """The chunk's translate/rotate/scale, read off its params rather than remembered: a
+    param moves for reasons that are not this gesture, and a cached one would write back a
+    stale two thirds of the matrix."""
     names = {_TRANSLATE: ("tx", "ty", "tz"),
              _ROTATE: ("rx", "ry", "rz"),
              _SCALE: ("sx", "sy", "sz")}[kind]
@@ -172,8 +303,8 @@ def _current(chunk, kind) -> list:
 def _compose(translate, rotate, scale) -> Gf.Matrix4d:
     """One matrix from the three components, in the order a chunk decomposes it back.
 
-    Built here rather than read off the prim: the prim's transform is what the chunk
-    already produced, so feeding it back would fold the chunk's own op in twice.
+    Built from the params rather than read off the prim: the prim's transform is what the
+    chunk already produced, so feeding it back would fold the chunk's own op in twice.
     """
     m = Gf.Matrix4d(1.0)
     m.SetScale(Gf.Vec3d(*scale))
@@ -183,212 +314,242 @@ def _compose(translate, rotate, scale) -> Gf.Matrix4d:
     return m * rot * Gf.Matrix4d().SetTranslate(Gf.Vec3d(*translate))
 
 
-def write_component(desc, chunk, kind, axis: int, value: float) -> None:
-    """Write one axis of one component back through the chunk. The whole write path.
+def write_components(desc, chunk, components) -> None:
+    """Send the components back through the chunk. The whole write path.
 
-    A `transform` desc takes a matrix, so the two components this drag is not touching are
-    read from the chunk and composed back in unchanged -- which is also what keeps a
-    rotate handle from resetting a translate. A desc of the component's own type takes the
-    vector directly.
-
-    Every tick, never batched to the end of the drag (contract §5): the chunk cooks per
-    write, and that is what makes the prim follow the cursor.
+    A `transform` desc takes a matrix, so all three go together and the chunk decomposes
+    once; a desc of one component's own type takes that vector. Every tick, never batched
+    to the end of the gesture (contract §5): the chunk cooks per write, and that is what
+    makes the prim follow the cursor.
     """
-    components = {_TRANSLATE: _current(chunk, _TRANSLATE),
-                  _ROTATE: _current(chunk, _ROTATE),
-                  _SCALE: _current(chunk, _SCALE)}
-    components[kind][axis] = value
     if desc.type == "transform":
         payload = _compose(components[_TRANSLATE], components[_ROTATE], components[_SCALE])
-    elif desc.type == kind:
-        payload = Gf.Vec3d(*components[kind])
+    elif desc.type in components:
+        payload = Gf.Vec3d(*components[desc.type])
     else:
         return
     chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, payload)
 
 
-class _ChunkHandle(bpy.types.Gizmo):
-    """One axis of one component, drawn as a Blender preset shape.
+# ---------------------------------------------------------------------------
+# the pivot dot
+# ---------------------------------------------------------------------------
 
-    `invoke`/`exit` are the reason this is a subclass at all: they bracket the drag with
-    the chunk's own GIZMO_START/GIZMO_STOP, which is where a host's undo block goes and
-    what tells a chunk a gesture is running.
+def pivot_point(stage, view):
+    """Where to draw the dot, or None: the driven anchor if a chunk owns this prim, else
+    the prim's own origin -- a picked-but-undriven prim still gets a dot, since a gesture
+    on it creates the chunk that drives it and the dot is the only sign the click landed.
+    """
+    prim = _picked_prim(stage)
+    if prim is None:
+        return None
+    desc = placement_desc(prim, view)
+    if desc is not None:
+        point = anchor_world(stage, desc)
+        if point is not None:
+            return point
+    xf = UsdGeom.Xformable(prim)
+    if not xf:
+        return None
+    world = xf.ComputeLocalToWorldTransform(0).Transform(Gf.Vec3d(0, 0, 0))
+    return Vector((world[0], world[1], world[2]))
+
+
+def _draw_pivot():
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+
+    if not viewport.hydra_view_enabled():
+        return
+    point = pivot_point(viewport.active_stage(), _active_view())
+    if point is None:
+        return
+    try:
+        shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        batch = batch_for_shader(shader, "POINTS", {"pos": [tuple(point)]})
+        gpu.state.blend_set("ALPHA")
+        gpu.state.point_size_set(_DOT_SIZE)
+        shader.bind()
+        shader.uniform_float("color", _DOT_COLOR)
+        batch.draw(shader)
+        gpu.state.blend_set("NONE")
+    except Exception:
+        logger.debug("pivot dot draw failed", exc_info=True)
+
+
+def _redraw() -> None:
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
+# ---------------------------------------------------------------------------
+# the gesture
+# ---------------------------------------------------------------------------
+
+class USDCHUNKS_OT_transform(bpy.types.Operator):
+    """Move, rotate or scale the picked prim by moving the chunk that drives it.
+
+    Blender's own grab/rotate/scale gestures against a USD prim: the mouse drives, `X`,
+    `Y` and `Z` constrain, a click or Return confirms, Escape or right-click puts it back.
     """
 
-    bl_idname = "USDCHUNKS_GT_handle"
+    bl_idname = "usd_chunks.transform"
+    bl_label = "Transform Chunk Prim"
+    bl_options = {"REGISTER"}
 
-    #: A custom gizmo has no properties until it declares them, and `target_set_handler`
-    #: binds to a DECLARED one -- without this, wiring the handler raises
-    #: "Gizmo target property 'USDCHUNKS_GT_handle.offset' not found". `offset` is the name
-    #: Blender's own linear and dial handles use for the value a drag produces.
-    bl_target_properties = (
-        {"id": "offset", "type": "FLOAT", "array_length": 1},
+    mode: bpy.props.EnumProperty(
+        items=[(_TRANSLATE, "Translate", ""), (_ROTATE, "Rotate", ""), (_SCALE, "Scale", "")],
+        default=_TRANSLATE,
     )
-
-    __slots__ = ("chunk", "desc", "kind", "axis", "_start_value", "_start_mouse")
-
-    def setup(self):
-        self.chunk = None
-        self.desc = None
-        self.kind = _TRANSLATE
-        self.axis = 0
-        self._start_value = 0.0
-
-    def draw(self, context):
-        self._draw(None)
-
-    def draw_select(self, context, select_id):
-        self._draw(select_id)
-
-    def _draw(self, select_id):
-        draw = self.draw_preset_circle if self.kind == _ROTATE else self.draw_preset_arrow
-        draw(self.matrix_basis, axis="POS_Z", **preset_kwargs(select_id))
-
-    def invoke(self, context, event):
-        if self.chunk is not None:
-            self.chunk.start_gizmo()
-        self._start_value = self._read()
-        return {"RUNNING_MODAL"}
-
-    def exit(self, context, cancel):
-        if cancel:
-            self._write(self._start_value)
-        if self.chunk is not None:
-            self.chunk.stop_gizmo()
-
-    def modal(self, context, event, tweak):
-        # target_get_value/target_set_value carry the drag; this only has to report that it
-        # is still running so Blender keeps sending events.
-        return {"RUNNING_MODAL"}
-
-    def _read(self) -> float:
-        if self.chunk is None:
-            return 0.0
-        value = _current(self.chunk, self.kind)[self.axis]
-        return value / _DEG if self.kind == _ROTATE else value
-
-    def _write(self, value: float) -> None:
-        if self.chunk is None or self.desc is None:
-            return
-        # Blender hands a dial its angle in radians; the contract takes degrees.
-        write_component(self.desc, self.chunk, self.kind, self.axis,
-                        value * _DEG if self.kind == _ROTATE else value)
-
-
-class USDCHUNKS_GGT_chunk_gizmos(bpy.types.GizmoGroup):
-    """The handles for whatever prim is picked in the live viewport."""
-
-    bl_idname = "USDCHUNKS_GGT_chunk_gizmos"
-    bl_label = "USD Chunk Handles"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "WINDOW"
-    bl_options = {"3D", "PERSISTENT", "SHOW_MODAL_ALL"}
 
     @classmethod
     def poll(cls, context):
-        # Only with the live view up: without it there is nothing on screen for a handle to
-        # sit on, and the picked path is whatever was picked before it was turned off.
+        # Only with the live view up and a prim picked. Anything else and this keymap item
+        # stands aside, so G is Blender's own grab as always.
+        if getattr(context.space_data, "type", "") != "VIEW_3D":
+            return False
         if not viewport.hydra_view_enabled():
             return False
-        stage = viewport.active_stage()
-        prim = _picked_prim(stage)
-        if prim is None:
-            return False
-        return bool(_visible_descs(prim, _active_view()))
+        return _picked_prim(viewport.active_stage()) is not None
 
-    def setup(self, context):
-        self._handles = []
-        self._rebuild(context)
+    def invoke(self, context, event):
+        from bpy_extras import view3d_utils
 
-    def refresh(self, context):
-        self._rebuild(context)
-
-    def _rebuild(self, context):
+        self._region = context.region
+        self._rv3d = context.region_data
         stage = viewport.active_stage()
         prim = _picked_prim(stage)
         view = _active_view()
-        descs = _visible_descs(prim, view) if prim is not None else []
-        self.gizmos.clear()
-        self._handles = []
-        for desc in descs:
-            chunk = _chunk_for(view, desc)
-            if chunk is None:
-                continue
-            kinds = ((_TRANSLATE, _ROTATE, _SCALE) if desc.type == "transform"
-                     else (desc.type,) if desc.type in (_TRANSLATE, _ROTATE, _SCALE) else ())
-            base = _anchor_matrix(stage, desc)
-            for kind in kinds:
-                for axis in range(3):
-                    self._add(desc, chunk, kind, axis, base)
+        desc = placement_desc(prim, view) if prim is not None else None
+        if desc is None and prim is not None:
+            # Contract section 8: a prim nothing drives gets the chunk that will, rather
+            # than a direct write the next cook would erase.
+            desc = chunk_gizmo.ensure_transform_chunk(prim)
+            view = _active_view()
+        self._chunk = _chunk_for(view, desc)
+        if desc is None or self._chunk is None:
+            self.report({"WARNING"}, "nothing here for a chunk to move")
+            return {"CANCELLED"}
 
-    def _add(self, desc, chunk, kind, axis, base) -> None:
-        gz = self.gizmos.new(_ChunkHandle.bl_idname)
-        gz.chunk = chunk
-        gz.desc = desc
-        gz.kind = kind
-        gz.axis = axis
-        gz.color = _AXIS_COLOR[axis]
-        gz.alpha = 0.6
-        gz.color_highlight = _AXIS_COLOR[axis]
-        gz.alpha_highlight = 1.0
-        gz.use_draw_modal = True
-        # Each handle points down its own axis: the presets draw along +Z, so the basis
-        # carries the rotation that aims them.
-        aim = {0: Matrix.Rotation(1.5707963, 4, "Y"),
-               1: Matrix.Rotation(-1.5707963, 4, "X"),
-               2: Matrix()}[axis]
-        gz.matrix_basis = base @ aim
-        gz.target_set_handler("offset", get=gz._read, set=gz._write)
-        self._handles.append(gz)
+        self._desc = desc
+        self._stage = stage
+        self._axis = None
+        self._start = {kind: _current(self._chunk, kind)
+                       for kind in (_TRANSLATE, _ROTATE, _SCALE)}
+        self._pivot = anchor_world(stage, desc) or Vector((0.0, 0.0, 0.0))
+        self._pivot_2d = view3d_utils.location_3d_to_region_2d(
+            self._region, self._rv3d, self._pivot) or Vector((0.0, 0.0))
+        self._start_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+        self._start_world = self._world_at(self._start_mouse)
+        self._to_local = parent_rotation(stage, desc)
+        # The basis a constraint is taken in: the world's for a world-space handle, the
+        # anchor's own for a local one (contract section 3 -- absent space means local).
+        self._basis = (Matrix() if getattr(desc, "space", "local") == "world"
+                       else self._to_local.inverted_safe())
+        self._chunk.start_gizmo()
+        context.window_manager.modal_handler_add(self)
+        self.report({"INFO"},
+                    "%s: X/Y/Z to constrain, click to confirm, Esc to cancel" % self.mode)
+        return {"RUNNING_MODAL"}
 
-    def draw_prepare(self, context):
-        """Follow the prim while something else moves it -- another handle, a slider, an
-        upstream cook. The anchor matrix is re-read rather than cached at setup, which is
-        the same reason the contract gives for re-reading `offset` on stage change."""
-        stage = viewport.active_stage()
-        for gz in self._handles:
-            if gz.desc is None:
-                continue
-            aim = {0: Matrix.Rotation(1.5707963, 4, "Y"),
-                   1: Matrix.Rotation(-1.5707963, 4, "X"),
-                   2: Matrix()}[gz.axis]
-            gz.matrix_basis = _anchor_matrix(stage, gz.desc) @ aim
+    def _world_at(self, mouse):
+        from bpy_extras import view3d_utils
+        return view3d_utils.region_2d_to_location_3d(
+            self._region, self._rv3d, mouse, self._pivot)
+
+    def modal(self, context, event):
+        if event.type in {"X", "Y", "Z"} and event.value == "PRESS":
+            # Pressing the same axis again releases it, the way Blender's second press
+            # moves on -- here, simply back to unconstrained.
+            self._axis = None if self._axis == event.type else event.type
+            self._apply(event)
+            return {"RUNNING_MODAL"}
+        if event.type == "MOUSEMOVE":
+            self._apply(event)
+            return {"RUNNING_MODAL"}
+        if event.type in {"LEFTMOUSE", "RET", "NUMPAD_ENTER"} and event.value == "PRESS":
+            self._chunk.stop_gizmo()
+            _redraw()
+            return {"FINISHED"}
+        if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            write_components(self._desc, self._chunk, self._start)
+            self._chunk.stop_gizmo()
+            _redraw()
+            return {"CANCELLED"}
+        return {"RUNNING_MODAL"}
+
+    def _apply(self, event):
+        mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+        components = {kind: list(values) for kind, values in self._start.items()}
+        if self.mode == _TRANSLATE:
+            delta = constrain(self._world_at(mouse) - self._start_world,
+                              self._axis, self._basis)
+            local = self._to_local @ delta
+            components[_TRANSLATE] = [self._start[_TRANSLATE][i] + local[i] for i in range(3)]
+        elif self.mode == _ROTATE:
+            angle = screen_angle(self._pivot_2d, self._start_mouse, mouse)
+            view_axis = -Vector(self._rv3d.view_matrix.col[2][:3])
+            components[_ROTATE] = rotated(self._start[_ROTATE], self._axis, angle, view_axis)
+        else:
+            factor = screen_scale(self._pivot_2d, self._start_mouse, mouse)
+            components[_SCALE] = scaled(self._start[_SCALE], self._axis, factor)
+        write_components(self._desc, self._chunk, components)
+        _redraw()
 
 
-def _chunk_for(view, desc):
-    """The live chunk object a desc names, or None.
+_CLASSES = (USDCHUNKS_OT_transform,)
 
-    `apply_bindings` takes the prim path straight off the record, so this is only needed
-    for the start/stop bracket, which is a method on the chunk.
-    """
-    if view is None:
-        return None
-    return view.chunks.get(str(desc.chunk_prim))
+#: Blender's own transform keys, for a USD prim.
+_KEYS = (
+    (USDCHUNKS_OT_transform, "G", {"mode": _TRANSLATE}),
+    (USDCHUNKS_OT_transform, "R", {"mode": _ROTATE}),
+    (USDCHUNKS_OT_transform, "S", {"mode": _SCALE}),
+)
 
-
-_CLASSES = (_ChunkHandle, USDCHUNKS_GGT_chunk_gizmos)
+_keymaps: list = []
 
 
-def _registered(cls) -> bool:
-    """Whether Blender already holds this gizmo class.
+def _register_keymap() -> None:
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon
+    if kc is None:  # background/headless Blender has no addon keyconfig
+        return
+    km = kc.keymaps.new(name="3D View", space_type="VIEW_3D")
+    for operator, key, props in _KEYS:
+        kmi = km.keymap_items.new(operator.bl_idname, key, "PRESS")
+        for name, value in props.items():
+            setattr(kmi.properties, name, value)
+        _keymaps.append((km, kmi))
 
-    Gizmo and GizmoGroup types are NOT published on `bpy.types` under their class name the
-    way an operator or a panel is -- they live in their own type registry, reachable only
-    through the base class. A guard that asked `bpy.types` therefore said "not registered"
-    both times: register ran twice (a ValueError on a re-enable) and unregister never ran
-    at all, leaving a stale class pointing at a reloaded module.
-    """
-    base = bpy.types.GizmoGroup if issubclass(cls, bpy.types.GizmoGroup) else bpy.types.Gizmo
-    return base.bl_rna_get_subclass_py(cls.bl_idname) is not None
+
+def _unregister_keymap() -> None:
+    for km, kmi in _keymaps:
+        km.keymap_items.remove(kmi)
+    _keymaps.clear()
 
 
 def register() -> None:
     for cls in _CLASSES:
-        if not _registered(cls):
+        # cls.is_registered, not a bpy.types lookup: Blender addresses an operator by its
+        # bl_idname and does NOT publish it on bpy.types under its class name, so asking
+        # bpy.types answers "no" both times -- register would run twice (a ValueError on a
+        # re-enable) and unregister would never run, leaving a stale class behind a
+        # reloaded module. The same trap as the gizmo type registry.
+        if not cls.is_registered:
             bpy.utils.register_class(cls)
+    if _draw_state["handle"] is None:
+        _draw_state["handle"] = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_pivot, (), "WINDOW", "POST_VIEW")
+    _register_keymap()
 
 
 def unregister() -> None:
+    _unregister_keymap()
+    if _draw_state["handle"] is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_draw_state["handle"], "WINDOW")
+        _draw_state["handle"] = None
     for cls in reversed(_CLASSES):
-        if _registered(cls):
+        if cls.is_registered:
             bpy.utils.unregister_class(cls)
