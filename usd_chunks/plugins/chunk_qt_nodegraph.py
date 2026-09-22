@@ -49,6 +49,10 @@ _edge_clipboard = chunk_graph.edge_clipboard
 _PORT_RADIUS = 5
 _PORT_SNAP_PIXELS = 20  # on-screen click-tolerance radius for dropping a dragged wire near a port
 _NODE_WIDTH = 220
+
+#: How wide a chunk may ask to be. A node past this is not a node any more, it is a
+#: backdrop, and it stops fitting on screen beside the graph it belongs to.
+_MAX_NODE_WIDTH = 1600
 _NODE_HEADER_H = 40
 
 # A node stops drawing its embedded ChunkWidget -- showing only the box and header that
@@ -662,6 +666,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._port_rebuild_timer: Optional[QtCore.QTimer] = None
         self._height = _NODE_HEADER_H
         self._full_height = _NODE_HEADER_H
+        # Per-node, not the module constant it starts at: a chunk can ask to be wider (see
+        # _desired_width). Everything that draws or places a port reads this, so a node that
+        # widens takes its ports and its wires with it.
+        self._width = _NODE_WIDTH
         self._outputs_start_y: float = 0.0  # >0 when typed output ports are present
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, False)  # handled manually — header only
@@ -761,7 +769,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._exec_out_port = ChunkPortItem(
                 f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
             )
-            self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+            self._exec_out_port.setPos(self._width, _NODE_HEADER_H // 2)
             self._ports.append(self._exec_out_port)
             return
 
@@ -785,7 +793,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._exec_out_port = ChunkPortItem(
                     f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
                 )
-                self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+                self._exec_out_port.setPos(self._width, _NODE_HEADER_H // 2)
                 self._ports.append(self._exec_out_port)
             else:
                 self._exec_out_port = None
@@ -810,7 +818,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._exec_out_port = ChunkPortItem(
                 f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
             )
-            self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+            self._exec_out_port.setPos(self._width, _NODE_HEADER_H // 2)
             self._ports.append(self._exec_out_port)
         else:
             self._exec_out_port = None
@@ -880,7 +888,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # later one (set_selected) finds the guard already set.
         chunk_widget._defer_stylesheet = False
         apply_chunk_stylesheet(chunk_widget)
-        chunk_widget.setFixedWidth(_NODE_WIDTH)
+        self._width = self._desired_width()
+        chunk_widget.setFixedWidth(self._width)
         self._chunk_widget = chunk_widget  # pin Python ref; PySide6 may GC despite Qt C++ ownership
         self._proxy = QtWidgets.QGraphicsProxyWidget(self)
         self._proxy.setWidget(chunk_widget)
@@ -1030,7 +1039,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             name = attr.GetName()
             ptype = _sdf_to_port_type(attr.GetTypeName())
             port = ChunkPortItem(f"{self.prim.GetPath()}.{name}", ptype, parent=self, show_label=True)
-            port.setPos(_NODE_WIDTH, y)
+            port.setPos(self._width, y)
             self._ports.append(port)
             self._typed_ports.append(port)
             y += _STEP
@@ -1108,7 +1117,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._ports.append(in_port)
             self._typed_ports.append(in_port)
             out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self)
-            out_port.setPos(_NODE_WIDTH, y)
+            out_port.setPos(self._width, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
         if y > _NODE_HEADER_H // 2:
@@ -1118,8 +1127,47 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self.prepareGeometryChange()
         self._place_prim_output_ports(self._height, extend_height=True)
 
+    #: A chunk asks for a wider node by carrying a param of this name. Opt-in on purpose:
+    #: deriving width from every chunk's sizeHint would re-flow every node in every existing
+    #: graph, and most of them are the right size already.
+    WIDTH_PARAM = "node_width"
+
+    def _desired_width(self) -> int:
+        """How wide this node wants to be, in scene units.
+
+        Read from the chunk's own `node_width` param when it has one -- which is a param
+        like any other, so it is saved, undone and edited exactly like the rest of the
+        chunk, with no separate node-geometry bookkeeping to keep in sync.
+
+        Never narrower than the standard node: the header, the badges and the port labels
+        are laid out against that, and below it they start overlapping.
+        """
+        param = self.chunk.get_param(self.WIDTH_PARAM) if self.chunk is not None else None
+        value = getattr(param, "value", None)
+        if not isinstance(value, (int, float)):
+            return _NODE_WIDTH
+        return int(max(_NODE_WIDTH, min(float(value), _MAX_NODE_WIDTH)))
+
+    def _apply_desired_width(self, chunk_widget: QtWidgets.QWidget) -> bool:
+        """Take the chunk's requested width, returning whether it moved.
+
+        The embedded widget is what the width is really for, so it is set here too: a
+        QGraphicsProxyWidget renders the widget at the widget's own size, so a node drawn
+        600 wide around a 220-wide body is just a frame with a gap in it.
+        """
+        width = self._desired_width()
+        if width == self._width:
+            return False
+        self._width = width
+        chunk_widget.setFixedWidth(width)
+        self.prepareGeometryChange()
+        return True
+
     def _place_param_ports(self, chunk_widget: QtWidgets.QWidget):
 
+        # Re-read first: changing the width param resizes the body, which is what brought
+        # us here, and the ports placed below have to be placed against the new edge.
+        self._apply_desired_width(chunk_widget)
         chunk_widget.adjustSize()
         self._full_height = _NODE_HEADER_H + chunk_widget.height()
         self._height = self._full_height
@@ -1212,7 +1260,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._typed_ports.append(in_port)
 
             out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self)
-            out_port.setPos(_NODE_WIDTH, y)
+            out_port.setPos(self._width, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
 
@@ -1259,7 +1307,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             return QtCore.QRectF(-pad, -pad, _DOT_R * 2 + pad * 2, _DOT_R * 2 + pad * 2)
         return QtCore.QRectF(
             -_PORT_RADIUS, 0,
-            _NODE_WIDTH + _PORT_RADIUS * 2,
+            self._width + _PORT_RADIUS * 2,
             self._height,
         )
 
@@ -1313,14 +1361,14 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 bg, head, border = _dimmed(bg), _dimmed(head), _dimmed(border)
             painter.setBrush(bg)
             painter.setPen(QtGui.QPen(border, 1.5))
-            painter.drawRect(QtCore.QRectF(0, 0, _NODE_WIDTH, self._height))
+            painter.drawRect(QtCore.QRectF(0, 0, self._width, self._height))
             painter.setBrush(head)
             painter.setPen(QtCore.Qt.NoPen)
-            painter.drawRect(QtCore.QRectF(0, 0, _NODE_WIDTH, _NODE_HEADER_H))
+            painter.drawRect(QtCore.QRectF(0, 0, self._width, _NODE_HEADER_H))
             return
 
         bg_color = _COL_LOCKED_BG if self._locked else _COL_NODE_BG
-        body = QtCore.QRectF(0, 0, _NODE_WIDTH, self._height)
+        body = QtCore.QRectF(0, 0, self._width, self._height)
         # The active view (the one currently driving execution) gets a green, thicker border
         # so it's obvious which of several view nodes is live.
         is_active_view = self._is_view and self._is_active_view()
@@ -1347,10 +1395,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             header_color = _COL_NODE_HEADER
         painter.setBrush(header_color)
         painter.setPen(QtCore.Qt.NoPen)
-        header = QtCore.QRectF(0, 0, _NODE_WIDTH, _NODE_HEADER_H)
+        header = QtCore.QRectF(0, 0, self._width, _NODE_HEADER_H)
         painter.drawRoundedRect(header, 4, 4)
         # Cover the rounded bottom of the header rect
-        painter.drawRect(QtCore.QRectF(0, 10, _NODE_WIDTH, _NODE_HEADER_H - 10))
+        painter.drawRect(QtCore.QRectF(0, 10, self._width, _NODE_HEADER_H - 10))
 
         name_color = _COL_TEXT_LOCKED if self._locked else _COL_TEXT_PRIMARY
         painter.setPen(QtGui.QPen(name_color))
@@ -1368,7 +1416,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._pinned:
             label = f"{label}  \U0001f4cc"
         painter.drawText(
-            QtCore.QRectF(8, 4, _NODE_WIDTH - 16, 18),
+            QtCore.QRectF(8, 4, self._width - 16, 18),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             label,
         )
@@ -1378,7 +1426,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         painter.setPen(QtGui.QPen(sub_color))
         painter.setFont(QtGui.QFont("Arial", 8))
         painter.drawText(
-            QtCore.QRectF(8, 22, _NODE_WIDTH - 16, 14),
+            QtCore.QRectF(8, 22, self._width - 16, 14),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             str(chunk_type),
         )
@@ -1387,7 +1435,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # so it never fights with the selected (gold) or active-view (green) border colors.
         if self._stale:
             badge_r = 7.0
-            badge_c = QtCore.QPointF(_NODE_WIDTH - 15, 13)
+            badge_c = QtCore.QPointF(self._width - 15, 13)
             painter.setBrush(_COL_STALE)
             painter.setPen(QtCore.Qt.NoPen)
             painter.drawEllipse(badge_c, badge_r, badge_r)
@@ -1403,7 +1451,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._outputs_start_y > _NODE_HEADER_H and self._height > self._outputs_start_y:
             outputs_rect = QtCore.QRectF(
                 0, self._outputs_start_y,
-                _NODE_WIDTH, self._height - self._outputs_start_y,
+                self._width, self._height - self._outputs_start_y,
             )
             painter.setBrush(QtGui.QColor("#2a2a2a"))
             painter.setPen(QtCore.Qt.NoPen)
@@ -1411,7 +1459,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             painter.setPen(QtGui.QPen(QtGui.QColor("#555555"), 1))
             painter.drawLine(
                 QtCore.QPointF(0, self._outputs_start_y),
-                QtCore.QPointF(_NODE_WIDTH, self._outputs_start_y),
+                QtCore.QPointF(self._width, self._outputs_start_y),
             )
 
     def mouseDoubleClickEvent(self, event):
