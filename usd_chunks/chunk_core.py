@@ -2554,7 +2554,11 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         joined. Empty outside any namespaced host, which is the common case and costs a
         walk up the owner chain."""
         parts = []
-        owner = self.get_owner()
+        # From the owning chunk's owner, not from the param's: a host's own params are its
+        # interface to the graph outside, and its location field IS the namespace -- it
+        # must not resolve inside it, or typing /a/b there with /a set reads back as /b.
+        chunk = self.get_chunk()
+        owner = chunk.get_owner() if chunk is not None else self.get_owner()
         while owner is not None:
             namespace = getattr(owner, "_network_namespace", "")
             if namespace:

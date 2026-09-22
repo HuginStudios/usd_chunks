@@ -665,3 +665,44 @@ class TestTheSequenceIsLive:
         reference.get_param("file_path").value = scene_file
         reference.execute()
         assert all(c not in scene.get_chunks() for c in inner)
+
+
+class TestTheHostNodeInTheQtGraph:
+    """The node existed before it was pointed at the file -- the order a user does it in."""
+
+    @pytest.fixture
+    def graph(self, qapp, network_file):
+        from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
+        stage, scene = _open(None)
+        reference = _add(scene, "reference")
+        graph_scene = ChunkGraphScene()
+        graph_scene.build(stage, scene, reference.get_context())
+        try:
+            yield stage, scene, reference, graph_scene, network_file
+        finally:
+            graph_scene.deleteLater()
+            _teardown(scene)
+
+    def test_pointing_it_at_a_network_leaves_it_movable_and_makes_it_diveable(self, graph):
+        stage, scene, reference, graph_scene, network_file = graph
+        node = graph_scene._nodes[get_chunk_prim_path(reference)]
+        assert not node._locked and not node._is_chunkgroup
+
+        reference.get_param("file_path").value = network_file
+        reference.execute()
+        graph_scene._rebuild_nodes()
+
+        node = graph_scene._nodes[get_chunk_prim_path(reference)]
+        assert not node._locked, "the host is this graph's own node"
+        assert node._is_chunkgroup, "and a subnet to dive into"
+
+    def test_the_location_field_reads_back_what_was_typed(self, graph):
+        stage, scene, reference, graph_scene, network_file = graph
+        reference.get_param("file_path").value = network_file
+        reference.execute()
+        location = reference.get_param("primpath_location")
+        for typed in ("/room", "/room/east", "/other", ""):
+            location.value = typed
+            reference.execute()
+            assert location.value == typed
+            assert getattr(reference, "_network_namespace") == typed.rstrip("/")

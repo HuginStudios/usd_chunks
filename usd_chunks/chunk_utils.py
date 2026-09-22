@@ -160,6 +160,22 @@ def is_composed_in(prim: Usd.Prim) -> bool:
     return defined
 
 
+def composed_in_from(prim: Usd.Prim) -> "Sdf.Layer | None":
+    """The layer a composed-in prim's strongest `def` comes from, or None when the prim is
+    defined locally (or not at all). The layer a UI names when it says where a locked node
+    came from, and the one is_composed_in is really asking about."""
+    if prim is None or not prim.IsValid():
+        return None
+    stage = prim.GetStage()
+    for spec in prim.GetPrimStack():
+        if spec.specifier != Sdf.SpecifierDef:
+            continue
+        if spec.path == prim.GetPath() and not is_foreign_layer(spec.layer, stage):
+            return None
+        return spec.layer
+    return None
+
+
 def is_foreign_layer(layer: Sdf.Layer, stage: Usd.Stage) -> bool:
     """Whether the chunk system reads this layer but must not rewrite it.
 
