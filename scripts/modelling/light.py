@@ -1,5 +1,12 @@
-from usd_chunks import chunk, chunk_notice, chunk_stage, chunk_utils
+import logging
+
 from pxr import UsdGeom
+
+from usd_chunks import chunk, chunk_notice, chunk_stage, chunk_utils
+
+# Parented under "usd_chunks" rather than left at the bare module name: a chunk module is
+# imported under its own file name, so getLogger(__name__) lands outside the package tree.
+logger = logging.getLogger("usd_chunks.light")
 
 # The UsdLux schemas this chunk can define. Module-level so config() can build one menu
 # entry per type from the same list main() fills the menu from.
@@ -106,6 +113,22 @@ def execute(node):
         if not var_selections and prim.GetPath().pathString != target_path:
             node.get_param("primpath_location").value = prim.GetPath().pathString
             node._last_light_path = prim.GetPath().pathString
+
+        # Re-fetch by path rather than reusing the handle from DefinePrim. Applying an API
+        # schema above resyncs the prim, and a resync EXPIRES the handle -- reading an
+        # attribute off it then raises, which is not a crash that stays local: this cook can
+        # be running inside a gate's own evaluation (a Stage Expression Switch writes its
+        # muted record, that write cascades, and this light is what it cascades into), so
+        # the exception aborts the gate half way and the branch it was suppressing stays on
+        # the stage. Live-reported as a gated light that would not go away when the shot
+        # changed, until a param on it was touched.
+        prim_path = prim.GetPath()
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            logger.debug("Light %s: prim at %s is gone mid-cook, leaving it for the next "
+                         "cook", node.name, prim_path)
+            return
+
         attr_grp = node.get_param("attr_grp", chunk.is_group)
         chunk_utils.show_attribute(prim, attr_grp)
 
