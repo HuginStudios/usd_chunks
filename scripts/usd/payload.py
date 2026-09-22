@@ -56,8 +56,15 @@ def execute(node):
     # this chunk's own prim as a payload, and this node becomes the group -- dive in and
     # the network is there. Same as the Reference chunk, with a payload arc, so the
     # network unloads with the stage's other payloads.
+    #
+    # The namespace prim is this chunk's own to author -- the network's chunks only
+    # DefinePrim their paths *under* it, which leaves /world/house/bedroom a typeless
+    # ancestor that nothing can transform. See the Reference chunk.
     network = chunk_stage.network_target(payload_path, import_path)
     if network is not None:
+        if raw_path:
+            with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+                chunk_utils.define_with_ancestors(stage, target_path)
         chunk_stage.host_network(node, payload_path, network, arc="payload", namespace=raw_path or "")
         return
     chunk_stage.unhost_network(node)
@@ -73,9 +80,7 @@ def execute(node):
             ref = Sdf.Payload(payload_path)
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
-        prim = stage.GetPrimAtPath(target_path)
-        if not prim.IsValid():
-            prim = stage.DefinePrim(target_path, "Xform")
+        prim = chunk_utils.define_with_ancestors(stage, target_path)
         prim.GetPayloads().AddPayload(ref)
 
 

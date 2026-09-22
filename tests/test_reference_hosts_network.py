@@ -542,6 +542,47 @@ class TestNamespace:
         finally:
             _teardown(scene)
 
+    def test_the_location_prim_is_typed(self, prim_network):
+        """The namespace root is the host's own prim to author, and it gets Prim Type.
+
+        The network's chunks only ever DefinePrim their paths *under* it, and DefinePrim
+        types nothing but the prim it is asked for -- so left to them the location arrives
+        as a typeless ancestor. That is invisible until someone wants to move the whole
+        thing: a typeless prim is not Xformable, so there is no transform to grab and
+        nothing for a gizmo to anchor to.
+        """
+        stage, scene = _open(None)
+        try:
+            _reference(scene, prim_network, "/world/house/bedroom")
+            assert stage.GetPrimAtPath("/world/house/bedroom").GetTypeName() == "Xform"
+        finally:
+            _teardown(scene)
+
+    def test_the_ancestors_of_the_location_are_typed_too(self, prim_network):
+        """Every level of the location, not just its last one -- /world and /world/house
+        are as unusable typeless as the leaf is."""
+        stage, scene = _open(None)
+        try:
+            _reference(scene, prim_network, "/world/house/bedroom")
+            assert stage.GetPrimAtPath("/world").GetTypeName() == "Xform"
+            assert stage.GetPrimAtPath("/world/house").GetTypeName() == "Xform"
+        finally:
+            _teardown(scene)
+
+    def test_prim_type_decides_the_location_type(self, prim_network):
+        """Prim Type means the same thing for a hosted network as for a placed reference:
+        the type of the prim this node puts at that location. The ancestors stay Xform --
+        they are scaffolding, not what was asked for."""
+        stage, scene = _open(None)
+        try:
+            host = _reference(scene, prim_network, "/world/bedroom")
+            host.get_param("prim_type").value = "Scope"
+            host.execute()
+            assert stage.GetPrimAtPath("/world/bedroom").GetTypeName() == "Scope"
+            assert stage.GetPrimAtPath("/world").GetTypeName() == "Xform"
+        finally:
+            _teardown(scene)
+
     def test_a_path_written_back_is_stored_relative(self, prim_network):
         """prim.py writes its actual path back into its param (and a viewport pick hands
         over a full stage path). Inside a namespace that must not double up."""

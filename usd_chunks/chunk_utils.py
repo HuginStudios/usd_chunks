@@ -804,6 +804,32 @@ def iter_prim_targets(stage, param):
             yield target_path
 
 
+def define_with_ancestors(stage, path, type_name="Xform", ancestor_type="Xform"):
+    """Define `path` with `type_name`, giving every ancestor along the way a type too.
+
+    Usd.Stage.DefinePrim types only the prim it is asked for; the ancestors it has to
+    create to get there come out as typeless `def`s. That stays invisible until someone
+    wants to move the result -- a typeless prim is not Xformable, so a network dropped at
+    /world/house/bedroom has no transform to grab and nothing for the gizmo system to
+    anchor to, even though every prim underneath it is a well-formed Xform.
+
+    An ancestor that already carries a type keeps it; one that does not is given
+    `ancestor_type`, which is the repair as much as the prevention: the chunks inside a
+    hosted network author their own prims deep under the host's namespace, so the
+    typeless ancestors may already be on the stage by the time the host gets here.
+
+    Returns the prim at `path`.
+    """
+    sdf_path = Sdf.Path(str(path))
+    prim = None
+    for prefix in sdf_path.GetPrefixes():
+        prim = stage.GetPrimAtPath(prefix)
+        if prim and prim.IsValid() and prim.GetTypeName():
+            continue
+        prim = stage.DefinePrim(prefix, type_name if prefix == sdf_path else ancestor_type)
+    return prim
+
+
 @contextmanager
 def author_in_variant_context(stage, path_str):
     """Context manager that enters any variant edit contexts encoded in path_str.

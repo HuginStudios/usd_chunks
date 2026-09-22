@@ -51,13 +51,24 @@ def execute(node):
 
     raw_path = node.get_param("primpath_location").value
     import_path = node.get_param("import_primpath").value
+    prim_type = node.get_param("prim_type").value or "Xform"
 
     # A file whose target is a chunkgroup is a network, not scene content: it goes onto
     # this chunk's own prim, and this node becomes the group -- dive in and the network
     # is there, its edits landing in the shot as overrides. Nothing is put at
     # primpath_location; the network's own chunks author the content when they cook.
+    #
+    # The namespace prim itself is this chunk's to author, though. The network's chunks
+    # only ever DefinePrim their own paths *under* it, so left to them /world/house and
+    # /world/house/bedroom arrive as typeless ancestors -- nothing you can transform, and
+    # nothing the gizmo system can anchor a handle to. Prim Type applies here for the same
+    # reason it applies to a placed reference: it is the type of the prim this node puts
+    # at that location.
     network = chunk_stage.network_target(reference_path, import_path)
     if network is not None:
+        if raw_path:
+            with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+                chunk_utils.define_with_ancestors(stage, target_path, prim_type)
         chunk_stage.host_network(node, reference_path, network, namespace=raw_path or "")
         return
     chunk_stage.unhost_network(node)
@@ -72,11 +83,8 @@ def execute(node):
         else:
             ref = Sdf.Reference(reference_path)
 
-    prim_type = node.get_param("prim_type").value or "Xform"
     with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
-        prim = stage.GetPrimAtPath(target_path)
-        if not prim or not prim.IsDefined():
-            prim = stage.DefinePrim(target_path, prim_type)
+        prim = chunk_utils.define_with_ancestors(stage, target_path, prim_type)
         prim.GetReferences().AddReference(ref)
 
 
