@@ -1300,8 +1300,31 @@ class ChunkNoticePropagator:
                     _executing_chunk = getattr(prop, "get_chunk", lambda: None)()
                     try:
                         if ctx:
-                            with Usd.EditContext(stage, ctx):
-                                module.execute(prop)
+                            try:
+                                with Usd.EditContext(stage, ctx):
+                                    module.execute(prop)
+                            except Tf.ErrorException:
+                                # The layer left the stage's local layer stack between the
+                                # check above and here. It can: a cook reached from inside
+                                # another cook mutes layers (a gate suppressing a branch),
+                                # and this dispatch is reached re-entrantly -- a module
+                                # setting a param during its own execute lands straight back
+                                # here for whatever that param drives.
+                                #
+                                # Re-checked rather than swallowed: only the "not in the
+                                # local LayerStack" case is skipped, and any other error a
+                                # module raises still surfaces. Skipping is right because it
+                                # is what the guards above already decided -- a chunk whose
+                                # layer is not in the stack has nowhere to author, and the
+                                # cook that put it back will run it.
+                                if stage.IsLayerMuted(ctx.identifier) or not stage.HasLocalLayer(ctx):
+                                    logger.debug(
+                                        "skipped cooking %s: its layer left the stage's "
+                                        "layer stack mid-solve",
+                                        getattr(prop, "name", prop),
+                                    )
+                                else:
+                                    raise
                         else:
                             # No edit layer of its own — author into the stage's current target.
                             module.execute(prop)
