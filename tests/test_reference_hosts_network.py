@@ -848,3 +848,42 @@ class TestLoftedParamsOnTheHost:
         finally:
             graph_scene.deleteLater()
             _teardown(scene)
+
+    def test_the_public_param_lands_in_the_hosts_lofted_panel(self, qapp, lofted_network):
+        """And in a LAYOUT, which is the half that was missing.
+
+        A context's public params are shown in a panel of their own, and that panel was
+        built only for a chunk that was already a context when its widget was. A Reference
+        is an ordinary chunk until it is pointed at a network file, so the first lofted
+        param to arrive raised AttributeError from inside add_widget -- after parenting the
+        param's LabeledWidget to the body, which left it in no layout, drawn on top of the
+        node's own params. Nothing crashed; the node just came out mangled.
+        """
+        from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
+        path, name = lofted_network
+        stage, scene = _open(None)
+        graph_scene = ChunkGraphScene()
+        try:
+            host = _add(scene, "reference")
+            graph_scene.build(stage, scene, host.get_context())
+            qapp.processEvents()
+            node = graph_scene._nodes[get_chunk_prim_path(host)]
+            for _ in range(20):
+                qapp.processEvents()
+                if node._proxy is not None:
+                    break
+            widget = node._proxy.widget() if node._proxy is not None else None
+            assert widget is not None, "the node has no embedded widget to check"
+            before = widget.sizeHint().height()
+
+            host.get_param("file_path").value = path
+            host.execute()
+            qapp.processEvents()
+
+            public = next(p for p in host.get_my_params() if getattr(p, "_lofted", False))
+            param_widget = widget.param_widgets[public.get_hash()]
+            assert widget._lofted_container.isAncestorOf(param_widget),                 "a public param belongs in the host's lofted panel, not loose on the body"
+            assert widget.sizeHint().height() > before,                 "a widget in no layout adds nothing to the body's height -- it overlaps it"
+        finally:
+            graph_scene.deleteLater()
+            _teardown(scene)

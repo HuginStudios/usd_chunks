@@ -2298,16 +2298,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             self._prim_path_field = self._build_prim_path_field()
 
-            self._lofted_container = QtWidgets.QWidget(self)
-            self._lofted_container.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Preferred,
-                QtWidgets.QSizePolicy.Policy.Maximum,
-            )
-            self._lofted_layout = QtWidgets.QVBoxLayout(self._lofted_container)
-            self._lofted_layout.setContentsMargins(4, 2, 4, 4)
-            self._lofted_layout.setSpacing(2)
-            self._lofted_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-            self._lofted_container.setVisible(False)
+            self._make_lofted_container(insert=False)
 
             if self._is_tab_context_widget:
                 # A distinct "toolbar" panel — prim path, a context's own lofted top-level
@@ -2372,12 +2363,48 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 self.content.hide()
                 self.content.setMaximumHeight(0)
 
+    def _make_lofted_container(self, insert: bool = True) -> None:
+        """Build the panel a context's public (lofted) params are shown in.
+
+        `insert` is False for the eager path in build_collapsable, which places the panel
+        itself once it knows whether this is a tab widget or a node body. True is the lazy
+        path: place it directly above the chunk's own params, which is where the eager
+        path puts it too.
+
+        Lazy at all because a chunk can BECOME a context after its widget is built. A
+        Reference is an ordinary chunk until it is pointed at a file holding a network, and
+        hosting that network promotes it (chunk_stage.host_networks). The panel was built
+        only for a chunk that was already a context when its widget was, so the first
+        lofted param to arrive on a freshly hosted node raised AttributeError from inside
+        add_widget -- after it had already parented the LabeledWidget to this widget, which
+        left it in no layout at all, drawn on top of the node's own params.
+        """
+        if getattr(self, "_lofted_container", None) is not None:
+            return
+        self._lofted_container = QtWidgets.QWidget(self)
+        self._lofted_container.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
+        self._lofted_layout = QtWidgets.QVBoxLayout(self._lofted_container)
+        self._lofted_layout.setContentsMargins(4, 2, 4, 4)
+        self._lofted_layout.setSpacing(2)
+        self._lofted_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self._lofted_container.setVisible(False)
+        if insert:
+            at = self.__layout__.indexOf(self.content)
+            self.__layout__.insertWidget(at if at >= 0 else self.__layout__.count(),
+                                         self._lofted_container)
+
     def add_widget(self, widget: QtWidgets.QWidget, label=None):
         if self._is_group_chunk_node() and not isinstance(widget, ChunkParamWidgetBase):
             # Shown as a node: suppress all non-lofted widgets.
             return
         if (self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
                 and isinstance(widget, ChunkParamWidgetBase)):
+            # Before the LabeledWidget is built, not after: building it parents the widget
+            # here, so a failure between the two orphans it into no layout.
+            self._make_lofted_container()
             widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
             labeled = LabeledWidget(widget, self)
             if label is not None:
