@@ -80,6 +80,13 @@ def exec_input_connections(prim: "Usd.Prim") -> "list[Sdf.Path]":
 # published-marker pattern as chunk:pinned / set_chunk_pinned.
 _EDIT_TARGET_MARKER = "chunk:editTargetLayer"
 
+# Which view slot drives a graph, authored on that graph's CONTEXT prim by whichever
+# frontend the user switched it in (chunk_graph.write_active_slot, and Qt's own
+# _recook_active_view). Read back by find_context_active_view, so a tab reopens cooking
+# what it cooked when it was saved and a group keeps driving its own output from the view
+# the user last pointed at it.
+_ACTIVE_VIEW_ATTR = "chunk:activeView"
+
 _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
 
 # Set True by the Params-tab create path while adding a chunk, so _on_param_added inserts the new
@@ -3129,30 +3136,83 @@ def chunk_matches_search(chunk: "core.ChunkBase", query: str, scope: str = "both
     return any(fuzzy_matches(query, c) for c in candidates)
 
 
+def find_context_active_view(
+    context: "core.ChunkBase | None", stage: "Usd.Stage", scene: "core.SceneSender"
+) -> "core.ChunkBase | None":
+    """The view that drives one graph — a tab's, or a group's own output driver.
+
+    Reads the context prim's ``chunk:activeView`` slot (written by the frontend when the
+    view is switched in that graph, and round-tripped through save/load), falling back to
+    the LOWEST view:slot in the context. None if the graph holds no view at all.
+
+    The fallback is by slot rather than by scene order because the answer has to be the
+    same one the UI restores (ChunkGraphView._restore_active_view picks min slot too) and
+    the same one on every run -- scene order is roughly reverse creation order, so two
+    views in one graph made the driver depend on which was built first.
+
+    context=None is the root /chunks graph, which has no prim to persist a slot on; it
+    answers from the fallback alone.
+    """
+    views = [c for c in scene.get_chunks() if is_view_chunk(c) and is_node_in_context(c, context)]
+    if not views:
+        return None
+    slot = None
+    if context is not None:
+        gp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(context)))
+        if gp and gp.IsValid():
+            a = gp.GetAttribute(_ACTIVE_VIEW_ATTR)
+            if a and a.IsValid():
+                slot = a.Get()
+    by_slot: "dict[int, core.ChunkBase]" = {}
+    for v in views:
+        vp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(v)))
+        s = vp.GetAttribute("view:slot").Get() if vp and vp.IsValid() else None
+        if s is not None:
+            by_slot.setdefault(int(s), v)
+    if slot and int(slot) in by_slot:
+        return by_slot[int(slot)]
+    return by_slot[min(by_slot)] if by_slot else views[0]
+
+
 def find_group_active_view(
     group: "core.ChunkBase", stage: "Usd.Stage", scene: "core.SceneSender"
 ) -> "core.ChunkBase | None":
-    """The inner active view of a group — its output driver. Reads the group prim's
-    ``chunk:activeView`` slot (written by the Qt layer when the view is switched inside the
-    group), falling back to the first inner view. None if the group has no inner view.
+    """The inner active view of a group — its output driver. See find_context_active_view;
+    a group's graph resolves its driver exactly like a tab's does."""
+    return find_context_active_view(group, stage, scene)
+
+
+def root_graph_context(
+    context: "core.ChunkBase | None", scene: "core.SceneSender"
+) -> "core.ChunkBase | None":
+    """The outermost graph `context` sits inside — the tab whose view the whole scene cooks
+    against. Returns context itself when it is already outermost, and None for the root
+    /chunks graph.
+
+    Climbed by prim path: a group's prim is a child of its parent graph's root prim, which
+    is the same nesting is_node_in_context reads. The outermost container is a node in
+    nothing, so scene.get_chunks() leaves it out (see _live_context_at) -- get_contexts()
+    is what makes a tab findable as a group's parent.
     """
-    inner_views = [
-        c for c in scene.get_chunks() if is_view_chunk(c) and is_node_in_context(c, group)
-    ]
-    if not inner_views:
+    if context is None:
         return None
-    gp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(group)))
-    slot = None
-    if gp and gp.IsValid():
-        a = gp.GetAttribute("chunk:activeView")
-        if a and a.IsValid():
-            slot = a.Get()
-    if slot:
-        for v in inner_views:
-            vp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(v)))
-            if vp and vp.IsValid() and vp.GetAttribute("view:slot").Get() == slot:
-                return v
-    return inner_views[0]
+    by_path: "dict[str, core.ChunkBase]" = {}
+    for c in scene.get_chunks():
+        by_path[get_chunk_prim_path(c)] = c
+    for cx in scene.get_contexts():
+        if path := getattr(cx, "prim_path", None):
+            by_path.setdefault(path, cx)
+    node = context
+    seen: set = set()
+    while True:
+        path = get_chunk_prim_path(node)
+        if path in seen:
+            return node  # prim nesting should prevent it, but never spin on a cycle
+        seen.add(path)
+        parent = by_path.get(str(Sdf.Path(path).GetParentPath()))
+        if parent is None or parent is node:
+            return node
+        node = parent
 
 
 def find_view_chunk_for_slot(
@@ -4549,19 +4609,30 @@ def recook_focus(
     context: "core.ChunkBase | None",
     view_chunk: "core.ChunkBase | None",
 ) -> None:
-    """Establish the GLOBAL stage for the tab/graph the user is looking at.
+    """Establish the GLOBAL stage for the graph the user is looking at.
 
-    The stage is shared by every context, but only the focused one should drive it. Root
-    (context is None) is already a full global establish — recook_for_view(None) touches every
-    chunk and recurses into all groups. But a GROUP focus only manages its own children, so the
-    parent tab's active view (and sibling groups) would stay unmuted and bleed through ("switch
-    tabs, still see the previous view"). So when focusing a group, first mute + block everything
-    OUTSIDE the group's subtree, then recook inside it — leaving only the group's inner active
-    view driving the stage.
+    Cooking follows the TOP-LEVEL graph's active view, whichever graph has focus. That view
+    is what feeds the viewport, so it is what the scene as a whole has to be correct for; a
+    group's own view decides what the GROUP contributes (the parent cook reads it through
+    _group_output_driver) and nothing more.
+
+    It used to be the focused graph that drove the cook, which meant diving into a group
+    quietly stopped cooking the rest of the scene: everything downstream of that group fell
+    outside the cook set, so it was blocked and muted and never ran again. Live-reported as
+    a Stage Expression Switch wired after a render group that never gated its light on a
+    shot change -- the gate was not deciding wrongly, it never executed at all.
+
+    The stage is still shared by one graph at a time: everything outside the TOP-LEVEL
+    graph's subtree (a sibling tab's active view) is muted first, or switching tabs leaves
+    the previous tab's view bleeding through.
+
+    A focused group the top-level view does not reach is then cooked on top, for
+    inspection -- see _cook_focus_for_inspection.
     """
-    if context is not None:
+    root, root_view = root_cook_target(stage, scene, context, view_chunk)
+    if root is not None:
         lm = chunk_registry.ChunkLayerManager()
-        group_path = get_chunk_prim_path(context)
+        group_path = get_chunk_prim_path(root)
         inside_prefix = group_path + "/"
         # A focused group's own UPSTREAM must stay composed. The group's inner chunks
         # author on top of that content -- BindMaterial inside AMD MaterialX Library
@@ -4584,20 +4655,7 @@ def recook_focus(
         # not on and the viewport went empty. Reported as content coming and going
         # depending on which level you were looking at; it reproduces with the nesting
         # built by hand, so it is not about how the groups were made.
-        upstream_keep: set = set()
-        by_path = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
-        node: "core.ChunkBase | None" = context
-        seen_ancestors: set = set()
-        while node is not None:
-            node_path = get_chunk_prim_path(node)
-            if node_path in seen_ancestors:
-                break  # a cycle would hang the focus; prim nesting should prevent it
-            seen_ancestors.add(node_path)
-            upstream_keep.update(
-                get_chunk_prim_path(u) for u in view_cook_list(node, stage, scene)
-            )
-            parent_path = str(Sdf.Path(node_path).GetParentPath())
-            node = by_path.get(parent_path)
+        upstream_keep = _focus_upstream_paths(stage, scene, root)
         # An upstream GROUP authors nothing of its own -- all of its content lives in its
         # children's layers -- so keeping only the group's own (empty) layer keeps nothing at
         # all. Live-reported: wire chunkgroup A -> chunkgroup B, dive into B, and A's prims
@@ -4629,7 +4687,162 @@ def recook_focus(
             layer = lm.get_layer(c)
             if layer is not None:
                 stage.MuteLayer(layer.identifier)
-    recook_for_view(stage, scene, context, view_chunk)
+    recook_for_view(stage, scene, root, root_view)
+    if root is not context and not _cook_reaches(stage, scene, root, root_view, context):
+        _cook_focus_for_inspection(stage, scene, context, view_chunk)
+
+
+def root_cook_target(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase | None",
+    view_chunk: "core.ChunkBase | None",
+) -> "tuple[core.ChunkBase | None, core.ChunkBase | None]":
+    """The (graph, view) a recook_focus for this focus will actually cook -- the top-level
+    graph's, whatever graph has focus.
+
+    Public because a frontend has to ask the same question before it decides an edit is
+    irrelevant and skips the recook: gating on the FOCUSED view's cook set answers about a
+    cook that no longer happens (see ChunkGraphView._could_affect_view_cook).
+
+    The caller has already resolved the focused graph's own view, so that answer is used
+    as-is when the focused graph IS the top-level one.
+    """
+    root = root_graph_context(context, scene)
+    if root is context:
+        return root, view_chunk
+    return root, find_context_active_view(root, stage, scene)
+
+
+def focus_cooks_for_inspection(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase | None",
+    view_chunk: "core.ChunkBase | None",
+) -> bool:
+    """Whether recook_focus will cook `context` on its own, purely because it has focus --
+    i.e. the top-level view cannot reach it (see _cook_focus_for_inspection).
+
+    Public for the same reason root_cook_target is: a frontend deciding an edit is
+    irrelevant has to know whether the focused graph is cooking on its own account. Only
+    then does an edit inside it change anything; a focused graph the top-level cook already
+    reaches is judged by that cook set like any other chunk, and a focused graph that IS
+    the top-level one is never inspected.
+    """
+    root, root_view = root_cook_target(stage, scene, context, view_chunk)
+    if context is None or root is context:
+        return False
+    return not _cook_reaches(stage, scene, root, root_view, context)
+
+
+def _focus_upstream_paths(
+    stage: "Usd.Stage", scene: "core.SceneSender", context: "core.ChunkBase"
+) -> "set[str]":
+    """Prim paths of what the chunks inside `context` act ON: its own upstream, and every
+    ancestor's.
+
+    A group's inner chunks author on top of content something upstream brings onto the
+    stage -- BindMaterial inside AMD MaterialX Library binds a material onto a mesh a
+    Sublayer several nodes upstream is what puts there at all. Cook that group with its
+    upstream muted and those chunks execute against a stage where their targets do not
+    exist, so they author nothing -- and since execute() Clear()s the chunk's own layer
+    first, whatever it authored last time is destroyed on the way. Live-reported as diving
+    into the AMD node dropping the material it had just applied, permanently: nothing
+    re-executes those chunks on the way back out.
+
+    Every ANCESTOR's upstream, not just the context's own: a group nested in another is fed
+    by its parent's chain, so the Sublayer two levels up is as load-bearing as the one
+    directly upstream.
+    """
+    keep: set = set()
+    by_path = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    node: "core.ChunkBase | None" = context
+    seen: set = set()
+    while node is not None:
+        node_path = get_chunk_prim_path(node)
+        if node_path in seen:
+            break  # a cycle would hang the focus; prim nesting should prevent it
+        seen.add(node_path)
+        keep.update(get_chunk_prim_path(u) for u in view_cook_list(node, stage, scene))
+        node = by_path.get(str(Sdf.Path(node_path).GetParentPath()))
+    return keep
+
+
+def _cook_reaches(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    root: "core.ChunkBase | None",
+    root_view: "core.ChunkBase | None",
+    context: "core.ChunkBase",
+) -> bool:
+    """Whether the cook driven by root_view runs `context`'s contents.
+
+    Asked level by level, because that is how the cook itself descends: a group cooks only
+    if it is in its own graph's cook set, and its children only then, through whatever
+    drives its output. A group two levels down is reached exactly when every link in that
+    chain holds.
+    """
+    chain: "list[core.ChunkBase]" = []
+    by_path = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    node: "core.ChunkBase | None" = context
+    seen: set = set()
+    while node is not None and node is not root:
+        node_path = get_chunk_prim_path(node)
+        if node_path in seen:
+            return False
+        seen.add(node_path)
+        chain.append(node)
+        node = by_path.get(str(Sdf.Path(node_path).GetParentPath()))
+    view = root_view
+    for step in reversed(chain):
+        if view is None:
+            return False
+        if step not in set(view_cook_list(view, stage, scene)):
+            return False
+        view, _ = _group_output_driver(stage, scene, step)
+    return True
+
+
+def _cook_focus_for_inspection(
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+    context: "core.ChunkBase",
+    view_chunk: "core.ChunkBase | None",
+) -> None:
+    """Cook a focused graph the top-level view does not reach, so diving into it still
+    shows something.
+
+    Cooking follows the top-level view (see recook_focus), and a group that view cannot
+    reach is blocked and muted by that pass -- correct for the scene as a whole, and
+    useless for working inside it. A group you have not wired up yet is exactly the case:
+    everything you build in it would cook nothing until the group itself is connected,
+    which is the workflow diving into a group exists for.
+
+    So cook it on top of the established stage: unblock and unmute what it acts on, then
+    run its own view over its own contents. Only the focused graph gets this -- an unwired
+    group you are NOT looking at stays dormant, as the top-level view says it should.
+    """
+    lm = chunk_registry.ChunkLayerManager()
+    unmute: list = []
+    by_path = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
+    for path in _focus_upstream_paths(stage, scene, context):
+        c = by_path.get(path)
+        if c is None or is_view_chunk(c):
+            continue
+        c.set_blocked(False)
+        layer = lm.get_layer(c)
+        if layer is not None and stage.IsLayerMuted(layer.identifier):
+            unmute.append(layer.identifier)
+    if unmute:
+        # One recomposition for the whole upstream, not one per chunk -- same reason
+        # recook_for_view batches its own mute pass.
+        stage.MuteAndUnmuteLayers([], unmute)
+    inner_view, synthetic = view_chunk, False
+    if inner_view is None:
+        # No view pointed at anything in this graph: cook through its exec tail instead,
+        # the same stand-in a parent cook uses for a group that never got one.
+        inner_view, synthetic = _group_output_driver(stage, scene, context)
+    recook_for_view(stage, scene, context, inner_view, _synthetic_tail=synthetic)
 
 
 def _exec_consumers(stage: "Usd.Stage") -> "dict[str, set[str]]":

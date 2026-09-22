@@ -4709,7 +4709,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             chunk_stage.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
         )
         if changed_chunks is not None and not self._could_affect_view_cook(
-            changed_chunks, stage, registry.scene, view_chunk
+            changed_chunks, stage, registry.scene,
+            *self._cook_relevance_inputs(stage, registry.scene, context, view_chunk),
         ):
             return
         # Persist the active view slot on the context prim. For groups a parent cook picks
@@ -4746,33 +4747,71 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         chunk_stage.recook_focus(stage, registry.scene, context, view_chunk)
 
     @staticmethod
-    def _could_affect_view_cook(changed_chunks, stage, scene, view_chunk) -> bool:
-        """True if any of changed_chunks could plausibly change what view_chunk's recook
-        computes -- i.e. one of them IS the view, or is already reachable from it. Cook-set
-        membership is exactly graph reachability from the view (view_cook_list), so
+    def _cook_relevance_inputs(stage, scene, context, view_chunk):
+        """What _could_affect_view_cook has to be judged against: the view the cook will
+        actually follow (the TOP-LEVEL graph's, see chunk_stage.recook_focus), and the
+        focused graph ONLY when it is cooking on its own account.
+
+        Both have to come from core, because both are answers about a cook this widget no
+        longer decides: gating on the focused graph's own view would call every edit in the
+        tab around a dived-into group irrelevant, and treating the focused graph as always
+        relevant would recook on every unrelated create/delete in it -- the exact scoping
+        this check exists to provide.
+        """
+        _, root_view = chunk_stage.root_cook_target(stage, scene, context, view_chunk)
+        inspected = (
+            context
+            if chunk_stage.focus_cooks_for_inspection(stage, scene, context, view_chunk)
+            else None
+        )
+        return root_view, inspected
+
+    @staticmethod
+    def _could_affect_view_cook(changed_chunks, stage, scene, view_chunk, context=None) -> bool:
+        """True if any of changed_chunks could plausibly change what the next recook
+        computes -- i.e. one of them IS the cooking view, or is already reachable from it.
+        Cook-set membership is exactly graph reachability from the view (view_cook_list), so
         a chunk that was never part of that reachable set can't affect it: a brand-new
         disconnected node can't be reachable (nothing points to/from it yet), and
         deleting/disconnecting something that was never reachable can't remove anything from
-        the set either. No active view means nothing is cooking regardless of graph structure,
-        so it can't matter there either.
+        the set either.
+
+        view_chunk is the view the cook actually follows -- the TOP-LEVEL graph's, see
+        chunk_stage.root_cook_target -- and context is the graph that has focus.
         """
-        if view_chunk is None:
-            return False
-        cook_set = set(chunk_stage.view_cook_list(view_chunk, stage, scene))
-        if any(c is view_chunk or c in cook_set for c in changed_chunks):
-            return True
-        # A chunk created INSIDE a reachable group is not itself reachable -- nothing in the
-        # outer graph points at it -- but it is part of that group's cooked content, and its
-        # layer still has to be ranked into the group's tier (recook_for_view's descendant
-        # promotion). AMDMaterialXLibrary builds its Reference and BindMaterial children from
-        # a button callback, so they arrive exactly this way; bailing out here left their
-        # layers appended weakest, below the Sublayer feeding the group, so the material they
-        # authored lost to the binding the referenced asset already carried and the assigned
-        # material never appeared. Prim-path nesting is the same test the ranking pass uses.
-        prefixes = tuple(str(chunk_stage.get_chunk_prim_path(c)) + "/" for c in cook_set)
-        if not prefixes:
-            return False
-        return any(str(chunk_stage.get_chunk_prim_path(c)).startswith(prefixes) for c in changed_chunks)
+        changed = list(changed_chunks)
+        if view_chunk is not None:
+            cook_set = set(chunk_stage.view_cook_list(view_chunk, stage, scene))
+            if any(c is view_chunk or c in cook_set for c in changed):
+                return True
+            # A chunk created INSIDE a reachable group is not itself reachable -- nothing in
+            # the outer graph points at it -- but it is part of that group's cooked content,
+            # and its layer still has to be ranked into the group's tier (recook_for_view's
+            # descendant promotion). AMDMaterialXLibrary builds its Reference and
+            # BindMaterial children from a button callback, so they arrive exactly this way;
+            # bailing out here left their layers appended weakest, below the Sublayer feeding
+            # the group, so the material they authored lost to the binding the referenced
+            # asset already carried and the assigned material never appeared. Prim-path
+            # nesting is the same test the ranking pass uses.
+            prefixes = tuple(str(chunk_stage.get_chunk_prim_path(c)) + "/" for c in cook_set)
+            if prefixes and any(
+                str(chunk_stage.get_chunk_prim_path(c)).startswith(prefixes) for c in changed
+            ):
+                return True
+        if context is not None:
+            # An edit inside a focused graph that is cooking FOR INSPECTION -- the top-level
+            # view cannot reach it (chunk_stage.focus_cooks_for_inspection), so nothing in
+            # the top-level cook set can speak for it, and without this clause building
+            # inside a group you have not wired up yet would cook nothing at all. Passed as
+            # None whenever the focused graph is judged by the top-level cook like any other
+            # chunk, so this stays out of the way of the ordinary scoping.
+            inside = str(chunk_stage.get_chunk_prim_path(context)) + "/"
+            if any(
+                c is context or str(chunk_stage.get_chunk_prim_path(c)).startswith(inside)
+                for c in changed
+            ):
+                return True
+        return False
 
     @staticmethod
     def mark_pending_delete_relevance(chunks) -> None:
@@ -4806,7 +4845,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             view_chunk = (
                 chunk_stage.find_view_chunk_for_slot(slot, stage, registry.scene, context) if slot else None
             )
-            if not w._could_affect_view_cook(chunks, stage, registry.scene, view_chunk):
+            # The same question _recook_active_view asks, judged against the same cook.
+            if not w._could_affect_view_cook(
+                chunks, stage, registry.scene,
+                *w._cook_relevance_inputs(stage, registry.scene, context, view_chunk),
+            ):
                 w._recook_skip_next_delete = True
 
     def _run_pending_recook(self) -> None:

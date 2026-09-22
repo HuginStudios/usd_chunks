@@ -2878,58 +2878,157 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     )
 
 
-def test_recook_focus_group_mutes_outside_subtree() -> None:
-    """Focusing a group (the tab you're looking at) must mute everything OUTSIDE the group so
-    only its inner active view drives the shared stage. recook_for_view alone only manages the
-    focused context's own children, so a parent-tab chunk stayed unmuted and bled through when
-    switching into a group tab ('switch tabs, still see the previous view')."""
-    import weakref
-    from usd_chunks.chunk_stage import recook_focus, get_chunk_prim_path
+class _FocusScene:
+    """A scene with real contexts, for the recook_focus tests.
 
-    stage = Usd.Stage.CreateInMemory()
+    Chunks nest via scene._current_context rather than add_param: that is how a chunk
+    nests when one is made live, and add_param applies the param naming rules on top.
+    """
 
-    class _StageScene(SceneSender):
-        def get_stage(self):
-            return stage
+    def __init__(self):
+        import weakref
 
-        def get_selected_prims(self):
-            return []
+        self._weakref = weakref
+        self.stage = Usd.Stage.CreateInMemory()
+        stage = self.stage
 
-    scene = _StageScene()
-    reg = chunk_registry.ChunkRegistry()
-    reg.initialize(scene, "pytest")
-    _chunk_usd_init(stage, scene)
+        class _StageScene(SceneSender):
+            def get_stage(self):
+                return stage
 
-    grpmod = reg.get_chunk_module("chunkgroup")
-    primmod = reg.get_chunk_module("prim")
-    viewmod = reg.get_chunk_module("view")
+            def get_selected_prims(self):
+                return []
 
-    def _mk(mod):
-        cs = mod.create() if mod.loaded else mod.load()
-        for c in cs:
-            scene.add_chunk(c)
-        return cs[0]
+        self.scene = _StageScene()
+        reg = chunk_registry.ChunkRegistry()
+        reg.initialize(self.scene, "pytest")
+        chunk_registry.ChunkLayerManager().initialize(stage)
+        _chunk_usd_init(stage, self.scene)
+        self._reg = reg
 
-    def _wire(dst, src):
-        p = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
-        a = p.GetAttribute(_EXEC_INPUT) or p.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-        a.SetConnections([Sdf.Path(f"{get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
+    def make(self, module: str, context=None):
+        mod = self._reg.get_chunk_module(module)
+        prev = self.scene._current_context
+        if context is not None:
+            self.scene._current_context = self._weakref.ref(context)
+        try:
+            chunks = mod.create() if mod.loaded else mod.load()
+            for c in chunks:
+                self.scene.add_chunk(c)
+        finally:
+            self.scene._current_context = prev
+        return chunks[0]
 
-    # A tab-level chunk driven by a tab view, plus a group with its own inner node + view.
-    tab_node = _mk(primmod)
-    tab_view = _mk(viewmod)
-    _wire(tab_view, tab_node)
-    grp = _mk(grpmod)
-    scene._current_context = weakref.ref(grp)
-    inner_node = _mk(primmod)
-    inner_view = _mk(viewmod)
-    _wire(inner_view, inner_node)
-    scene._current_context = None
+    def wire(self, dst, src) -> None:
+        prim = self.stage.GetPrimAtPath(Sdf.Path(_get_chunk_prim_path(dst)))
+        attr = prim.GetAttribute(_EXEC_INPUT) or prim.CreateAttribute(
+            _EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False
+        )
+        attr.SetConnections([Sdf.Path(f"{_get_chunk_prim_path(src)}.{_EXEC_OUTPUT}")])
 
-    # Focus the group: only its inner tree drives the stage.
-    recook_focus(stage, scene, grp, inner_view)
-    assert not inner_node.is_blocked()   # inner active view's tree cooks
-    assert tab_node.is_blocked()          # everything outside the group is muted
+
+def test_cooking_follows_the_top_level_view_not_the_focused_group() -> None:
+    """Diving into a group must not stop the rest of the scene cooking.
+
+    Cooking used to be pull-based from the FOCUSED graph's view, so with a group's tab up
+    everything downstream of that group fell outside the cook set: blocked, muted, and
+    never executed again. Live-reported as a Stage Expression Switch wired after a render
+    group that never gated its light when the shot changed -- the gate was not deciding
+    wrongly, it never ran at all. The top-level view is what feeds the viewport, so it is
+    what cooking follows, whatever graph has focus.
+    """
+    from usd_chunks.chunk_stage import recook_focus
+
+    env = _FocusScene()
+    tab = env.scene.add_context("Tab1")
+    upstream = env.make("prim", context=tab)
+    grp = env.make("chunkgroup", context=tab)
+    downstream = env.make("prim", context=tab)
+    tab_view = env.make("view", context=tab)
+    env.wire(grp, upstream)
+    env.wire(downstream, grp)
+    env.wire(tab_view, downstream)
+
+    inner_node = env.make("prim", context=grp)
+    inner_view = env.make("view", context=grp)
+    env.wire(inner_view, inner_node)
+
+    # Focus the group, exactly as diving into it does.
+    recook_focus(env.stage, env.scene, grp, inner_view)
+
+    assert not downstream.is_blocked(), (
+        "a chunk downstream of the focused group is in the TOP-LEVEL view's tree and must "
+        "keep cooking -- this is the reported bug"
+    )
+    assert not upstream.is_blocked(), "the group's upstream must keep cooking too"
+    assert not inner_node.is_blocked(), (
+        "the group's own contents still cook -- its inner view drives what the group "
+        "contributes"
+    )
+
+
+def test_a_focused_group_the_top_view_cannot_reach_still_cooks() -> None:
+    """A group you have not wired up yet must still cook while you are inside it.
+
+    The top-level view establishes the stage, and it cannot reach an unwired group -- so
+    that group is blocked and muted, which is right for the scene and useless for working
+    inside it: everything you build in the group would cook nothing until the group itself
+    is connected. Diving in is the workflow that exists for exactly that moment, so the
+    focused graph is cooked on top of the established stage.
+    """
+    from usd_chunks.chunk_stage import recook_focus
+
+    env = _FocusScene()
+    tab = env.scene.add_context("Tab1")
+    tab_node = env.make("prim", context=tab)
+    tab_view = env.make("view", context=tab)
+    env.wire(tab_view, tab_node)
+
+    orphan = env.make("chunkgroup", context=tab)  # never wired to anything
+    inner_node = env.make("prim", context=orphan)
+    inner_view = env.make("view", context=orphan)
+    env.wire(inner_view, inner_node)
+
+    # Not focused: the top-level view does not reach it, so it stays dormant.
+    recook_focus(env.stage, env.scene, tab, tab_view)
+    assert inner_node.is_blocked(), (
+        "an unwired group nobody is looking at must not cook -- the top-level view says so"
+    )
+
+    # Focused: it cooks for inspection, and the top-level view keeps driving the rest.
+    recook_focus(env.stage, env.scene, orphan, inner_view)
+    assert not inner_node.is_blocked(), (
+        "the focused group must cook even though the top-level view cannot reach it"
+    )
+    assert not tab_node.is_blocked(), (
+        "cooking the focused group for inspection must not unseat the top-level view"
+    )
+
+
+def test_focusing_a_tab_still_mutes_the_other_tab() -> None:
+    """Tabs still take turns driving the shared stage.
+
+    Cooking follows the top-level graph, and two top-level graphs are exactly the case
+    that has to stay exclusive: without this, switching tabs left the previous tab's view
+    bleeding through ('switch tabs, still see the previous view').
+    """
+    from usd_chunks.chunk_stage import recook_focus
+
+    env = _FocusScene()
+    tab_a = env.scene.add_context("Tab1")
+    node_a = env.make("prim", context=tab_a)
+    view_a = env.make("view", context=tab_a)
+    env.wire(view_a, node_a)
+
+    tab_b = env.scene.add_context("Tab2")
+    node_b = env.make("prim", context=tab_b)
+    view_b = env.make("view", context=tab_b)
+    env.wire(view_b, node_b)
+
+    recook_focus(env.stage, env.scene, tab_b, view_b)
+
+    assert not node_b.is_blocked(), "the focused tab's view drives the stage"
+    assert node_a.is_blocked(), "the other tab's view must not bleed through"
 
 
 def test_recook_focus_does_not_block_ancestor_container() -> None:

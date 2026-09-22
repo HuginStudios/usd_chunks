@@ -1799,9 +1799,13 @@ def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
                        slot: int) -> "tuple[bool, str]":
     """Switch which view drives execution, and recook. Returns (changed, status).
 
-    The cooking is chunk_stage.recook_for_view, the same call the Qt graph makes: it blocks
-    and mutes everything outside the active view's upstream tree, so this is a real
-    execution switch rather than a highlight.
+    The cooking is chunk_stage.recook_focus, the same call the Qt graph makes: it blocks
+    and mutes everything outside the cooking view's upstream tree, so this is a real
+    execution switch rather than a highlight. Through recook_focus rather than
+    recook_for_view directly so every frontend cooks the same thing Qt does -- the
+    TOP-LEVEL graph's view, plus the focused graph on top when that view cannot reach it.
+    Cooking the focused graph alone meant switching a view inside a group stopped cooking
+    everything downstream of that group.
 
     The slot is resolved BEFORE anything is written. Writing first meant switching to an
     empty slot persisted a slot with no view behind it -- the attribute said 3, nothing
@@ -1821,7 +1825,7 @@ def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
 
     write_active_slot(stage, context, slot)
     try:
-        chunk_stage.recook_for_view(stage, scene, context_chunk, view_chunk)
+        chunk_stage.recook_focus(stage, scene, context_chunk, view_chunk)
     except Exception as exc:  # noqa: BLE001
         # Deliberately wide, and one of the few left that is: a recook executes every chunk
         # upstream of the view, which is arbitrary user code and can raise anything. Losing
