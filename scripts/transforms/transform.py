@@ -18,19 +18,27 @@ _PIVOT_APPLIED = "_pivot_applied"
 _PIVOT_BUSY = "_pivot_busy"
 
 
+#: How far, in metres, a translate slider reaches from zero. A slider is a DRAG, and what
+#: makes one usable is how much it moves per pixel, not how far it reaches: the groove is
+#: ~145px wide on a node, so a 10m span -- what this used to be -- put 14cm under every
+#: pixel on a centimetre stage, too coarse to place anything by eye. A metre is the range
+#: a nudge actually happens in. Reaching further is what the number field is for: the
+#: range only clamps the slider, never the value you type.
+_TRANSLATE_SPAN_METERS = 1.0
+
+
 def _rescale_translate_range(node, stage):
-    """Keep the translate sliders' range at a constant ~10m-equivalent span regardless of
-    the stage's declared scale, instead of a flat -1000..1000 in raw stage units. That flat
-    range only felt right by accident for a centimeters-scale stage (metersPerUnit=0.01,
-    USD's own default when unauthored -- 10 / 0.01 = 1000, exactly the old constant); a
-    meters-scale stage (metersPerUnit=1) got the same +-1000 range applied to a scene where
-    objects are typically single-digit units across, so a small drag (or typing "5") could
-    move something many times its own size -- reported live as translate "flying away" and
-    being unusably coarse to fine-tune."""
+    """Keep the translate sliders' range at a constant real-world span regardless of the
+    stage's declared scale, instead of a flat constant in raw stage units. A flat range
+    only ever felt right for one scale: a meters-scale stage (metersPerUnit=1) got the same
+    +-1000 as a centimeters one, applied to a scene where objects are typically single-digit
+    units across, so a small drag (or typing "5") could move something many times its own
+    size -- reported live as translate "flying away" and being unusably coarse to fine-tune.
+    """
     meters_per_unit = UsdGeom.GetStageMetersPerUnit(stage)
     if not meters_per_unit:
         return
-    span = 10.0 / meters_per_unit
+    span = _TRANSLATE_SPAN_METERS / meters_per_unit
     # The pivot gets the same range, for want of a better guess. It is measured in the target
     # prim's object space rather than in stage units, and nothing here knows how big that is
     # until a prim is targeted -- but a range sized to the stage beats the flat default.

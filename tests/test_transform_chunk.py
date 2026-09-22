@@ -35,19 +35,21 @@ def _make_transform(scene: SceneSender, prim_path: str = "/prim"):
     return t
 
 
-def test_translate_range_defaults_to_the_original_span_at_centimeter_scale() -> None:
-    """Regression baseline: metersPerUnit=0.01 is USD's own default when unauthored, and is
-    what scripts/transforms/transform.py's original flat -1000..1000 constant was implicitly tuned for
-    (10 meters-equivalent / 0.01 == 1000) -- confirms the unit-aware rescale doesn't change
-    behavior for the common case."""
+def test_translate_reaches_one_metre_at_centimeter_scale() -> None:
+    """metersPerUnit=0.01 is USD's own default when unauthored, so this is the common case.
+
+    The span was 10m, which reaches far and drags badly: the groove is ~145px wide on a
+    node, so 10m put 14cm under every pixel here -- reported live as a step too coarse to
+    place anything by eye. A metre is the range a nudge actually happens in.
+    """
     stage = Usd.Stage.CreateInMemory()
     stage.DefinePrim("/prim", "Xform")
     scene = _make_scene(stage)
     t = _make_transform(scene)
     t.execute()
 
-    assert t.get_param("tx").min_value == -1000.0
-    assert t.get_param("tx").max_value == 1000.0
+    assert t.get_param("tx").min_value == -100.0
+    assert t.get_param("tx").max_value == 100.0
 
 
 def test_translate_range_shrinks_to_match_a_meters_scale_stage() -> None:
@@ -63,8 +65,31 @@ def test_translate_range_shrinks_to_match_a_meters_scale_stage() -> None:
     t = _make_transform(scene)
     t.execute()
 
-    assert t.get_param("tx").min_value == -10.0
-    assert t.get_param("tx").max_value == 10.0
+    assert t.get_param("tx").min_value == -1.0
+    assert t.get_param("tx").max_value == 1.0
+
+
+def test_the_range_clamps_the_slider_and_not_the_value() -> None:
+    """What makes a one-metre span affordable: it bounds the drag, nothing else.
+
+    A value further out than the slider reaches is kept as typed and authored as typed, so
+    shrinking the span costs reach with the mouse and no reach at all with the keyboard --
+    and a scene loading with a translate outside the new range does not lose it.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim("/prim", "Xform")
+    scene = _make_scene(stage)
+    t = _make_transform(scene)
+    t.execute()
+    assert t.get_param("tx").max_value == 100.0
+
+    t.get_param("tx").value = 5000.0
+    t.execute()
+
+    assert t.get_param("tx").value == 5000.0
+    xf = UsdGeom.Xformable(stage.GetPrimAtPath("/prim"))
+    moved = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+    assert moved[0] == 5000.0
 
 
 def test_translate_still_authors_the_correct_offset_at_meters_scale() -> None:
