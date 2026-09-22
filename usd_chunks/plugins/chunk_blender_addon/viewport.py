@@ -87,21 +87,53 @@ def _headlight(engine, rv3d) -> None:
     engine.SetLightingState([light], material, Gf.Vec4f(0.1, 0.1, 0.1, 1.0))
 
 
+def pick_matrix(ndc_x: float, ndc_y: float, dx: float, dy: float):
+    """The classic pick matrix: move the click point to the origin, then blow the small
+    window around it up to fill the whole [-1, 1] clip range.
+
+    Its own function because it is one of the two parts of picking that cannot be checked
+    without a GL context, and both are better pinned by a test than trusted by eye.
+    Post-multiplied onto the projection by the caller, because Gf uses row-vectors
+    (v * M1 * M2 applies M1 first).
+    """
+    from pxr import Gf
+    return (Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(-ndc_x, -ndc_y, 0.0))
+            * Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(1.0 / dx, 1.0 / dy, 1.0)))
+
+
+def hit_path(result) -> "str | None":
+    """The prim path out of whatever TestIntersection returned, or None for a miss.
+
+    Scanned rather than indexed: the out-params (hit point, normal, prim path, instancer
+    path, instance index, ...) have gained members across USD versions, so the position of
+    outHitPrimPath is not something to trust blind -- but there is exactly one non-empty
+    Sdf.Path among them, and it is the prim.
+
+    The first element is the hit flag and is checked for falseness only when it is a bool:
+    a build that returns the hit point there would have a Vec3d at the origin read as a
+    miss, which is a hit dead centre of the near plane.
+    """
+    from pxr import Sdf
+    if not result:
+        return None
+    if isinstance(result[0], bool) and not result[0]:
+        return None
+    for item in result:
+        if isinstance(item, Sdf.Path) and not item.isEmpty:
+            return str(item)
+    return None
+
+
 def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     """The prim under (mouse_x, mouse_y), via UsdImagingGL.Engine.TestIntersection -- the
     same Hydra pick API usdview's own viewport click-select uses, not Blender's object
     picking (there is no Blender object to hit: the live draw handler puts nothing in
     Blender's own scene).
 
-    Narrows the projection matrix to a small window around the click point rather than
-    building a Gf.Frustum: a classic pick matrix (translate the click point to the origin,
-    then scale the small window up to fill the full [-1, 1] clip range), post-multiplied
-    because Gf uses row-vectors (v * M1 * M2 applies M1 first). Simple enough to be
-    confident in without a live Blender to verify Frustum.ComputeNarrowedFrustum's exact
-    signature against.
+    Narrows the projection to a few pixels around the click (pick_matrix) rather than
+    building a Gf.Frustum, and reads the answer back with hit_path.
     """
-    from pxr import Gf, Sdf
-
+    from pxr import Gf
 
     ndc_x = (mouse_x / region.width) * 2.0 - 1.0
     ndc_y = (mouse_y / region.height) * 2.0 - 1.0
@@ -111,62 +143,17 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
 
     view = Gf.Matrix4d(*[v for row in rv3d.view_matrix.transposed() for v in row])
     proj = Gf.Matrix4d(*[v for row in rv3d.window_matrix.transposed() for v in row])
-    pick = (Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(-ndc_x, -ndc_y, 0.0))
-            * Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(1.0 / dx, 1.0 / dy, 1.0)))
-    narrowed_proj = proj * pick
-
-    params = _state["renderParams"]
-
-    # Tf.CatchAndRepostErrors, not try/except: TestIntersection posts the same HgiGL
-    # "pending GL error" diagnostic _draw() already treats as noise (see the module
-    # docstring), but unlike Render() this call's return value is the whole point -- a
-    # bare except would have to discard it along with the diagnostic, since Boost.Python
-    # raises instead of returning when a posted TfError reaches the Python boundary.
-    # CatchAndRepostErrors intercepts exactly that (verified locally: code after the
-    # raising call does not resume, but nothing propagates past the `with`, matching the
-    # documented paintGL()-callback use case this API exists for) and reposts the error to
-    # the thread's list instead of raising, which is a passive no-op here.
-    print("BEFORE TestIntersection")
+    narrowed_proj = proj * pick_matrix(ndc_x, ndc_y, dx, dy)
 
     result = engine.TestIntersection(
         view,
         narrowed_proj,
         stage.GetPseudoRoot(),
-        params,
+        _state["renderParams"],
     )
+    logger.debug("pick at (%s, %s) -> %r", mouse_x, mouse_y, result)
+    return hit_path(result)
 
-    print("AFTER TestIntersection:", repr(result))
-    # TEMPORARY debug printout -- remove once picking is confirmed working. Prints the
-    # exact shape TestIntersection returns on this Blender/USD build, since that arity is
-    # not something to trust from memory across versions (see the docstring above).
-    print("[usd_chunks pick] click=(%s, %s) ndc=(%.3f, %.3f) result=%r" %
-         (mouse_x, mouse_y, ndc_x, ndc_y, result))
-    if result:
-        for i, item in enumerate(result):
-            print("  [%d] %s = %r" % (i, type(item).__name__, item))
-    if not result or not result[0]:
-        return None
-    # Scanned rather than indexed: TestIntersection's out-params (hit point, normal, prim
-    # path, instancer path, instance index, ...) have gained members across USD versions,
-    # so the position of outHitPrimPath in the returned tuple is not something to trust
-    # blind -- but there is exactly one Sdf.Path among them, always the prim path.
-    for item in result[1:]:
-        if isinstance(item, Sdf.Path) and not item.isEmpty:
-            return str(item)
-    return None
-
-def _test_intersection(engine, stage, view, proj, params):
-    print("=== TestIntersection from _draw ===")
-
-    result = engine.TestIntersection(
-        view,
-        proj,
-        stage.GetPseudoRoot(),
-        params,
-    )
-
-    print("RESULT:", repr(result))
-    return result
 
 def _draw():
     from pxr import Gf, UsdImagingGL
@@ -306,19 +293,18 @@ class USDCHUNKS_OT_pick_prim(bpy.types.Operator):
         return _state["picking"] and hydra_view_enabled()
 
     def invoke(self, context, event):
-        # TEMPORARY debug printout -- if this line never appears in the console on a
-        # Ctrl+Click, the keymap item itself is not firing (something else is consuming
-        # the event first), which is a different problem than anything below it.
-        print("[usd_chunks pick] invoke() called, picking=%s hydra_on=%s" %
-             (_state["picking"], hydra_view_enabled()))
         rv3d = getattr(context, "region_data", None)
         region = getattr(context, "region", None)
         stage = active_stage()
-        print(stage)
         engine = _state.get("engine")
         if rv3d is None or region is None or stage is None or engine is None:
-            print("[usd_chunks pick] bailing early: rv3d=%s region=%s stage=%s engine=%s" %
-                 (rv3d is not None, region is not None, stage is not None, engine is not None))
+            # The engine is made by the first draw, so a pick before the viewport has
+            # drawn once has nothing to ask. Said out loud rather than silently passed
+            # through: "my click does nothing" is otherwise unattributable.
+            logger.debug("pick: nothing to ask (rv3d=%s region=%s stage=%s engine=%s)",
+                         rv3d is not None, region is not None, stage is not None,
+                         engine is not None)
+            self.report({"INFO"}, "no live viewport to pick from")
             return {"PASS_THROUGH"}
         try:
             path = _pick_prim_path(engine, stage, rv3d, region,

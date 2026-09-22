@@ -37,7 +37,7 @@ if "bpy" not in sys.modules:  # pragma: no cover - the usual case outside Blende
 
 import bpy  # noqa: E402
 
-from pxr import Sdf, Usd  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom  # noqa: E402
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
 from usd_chunks import chunk_registry  # noqa: E402
@@ -807,3 +807,171 @@ def test_the_verbs_are_wired_to_operators_that_get_registered():
     assert bg.USDCHUNKS_OT_revert_override.bl_idname == "usd_chunks.revert_override"
     assert addon.USDCHUNKS_OT_publish_network.bl_idname == "usd_chunks.publish_network"
     assert addon.USDCHUNKS_OT_localise_network.bl_idname == "usd_chunks.localise_network"
+
+
+# ---------------------------------------------------------------------------
+# viewport handles: the host half of docs/gizmo-host-contract.md
+# ---------------------------------------------------------------------------
+
+from usd_chunks import chunk_gizmo  # noqa: E402
+from usd_chunks.plugins.chunk_blender_addon import gizmos as gz  # noqa: E402
+
+
+@pytest.fixture
+def driven(view):
+    """A Cube placed by a Prim chunk and moved by a Transform chunk -- the shape a
+    transform handle is declared on."""
+    registry = chunk_registry.ChunkRegistry()
+    maker = _make(registry.get_chunk_module("prim"))
+    maker.name = "Maker"
+    view.scene.add_chunk(maker)
+    maker.get_param("prim_type").value = "Cube"
+    maker.execute()
+    target = maker.get_param("primpath_location").value
+    xf = _make(registry.get_chunk_module("transform"))
+    xf.name = "Place"
+    view.scene.add_chunk(xf)
+    xf.add_dependency(maker)
+    xf.get_param("primpath_location").value = target
+    xf.execute()
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    return view, xf, view.stage.GetPrimAtPath(target)
+
+
+def _desc(prim):
+    return next(d for d in chunk_gizmo.resolve_gizmos(prim) if d.type == "transform")
+
+
+def test_a_driven_prim_offers_a_transform_handle(driven):
+    view, xf, prim = driven
+    descs = gz._visible_descs(prim, view)
+    assert [d.type for d in descs] == ["transform"]
+    assert str(descs[0].chunk_prim) == chunk_stage.get_chunk_prim_path(xf)
+
+
+def test_handles_are_filtered_to_one_chunk(driven):
+    """Two transform chunks on one prim must not show two identical handles."""
+    view, xf, prim = driven
+    second = _make(chunk_registry.ChunkRegistry().get_chunk_module("transform"))
+    second.name = "Place2"
+    view.scene.add_chunk(second)
+    second.add_dependency(xf)
+    second.get_param("primpath_location").value = str(prim.GetPath())
+    second.execute()
+    assert len(chunk_gizmo.resolve_gizmos(prim)) > 1
+    assert len({d.chunk_prim for d in gz._visible_descs(prim, view)}) == 1
+
+
+def test_dragging_one_axis_writes_that_param_and_moves_the_prim(driven):
+    view, xf, prim = driven
+    desc = _desc(prim)
+    gz.write_component(desc, xf, "translate", 1, 4.0)
+    assert xf.get_param("ty").value == 4.0
+    moved = UsdGeom.Xformable(prim).GetLocalTransformation().ExtractTranslation()
+    assert (moved[0], moved[1], moved[2]) == (0.0, 4.0, 0.0)
+
+
+def test_a_rotate_drag_leaves_translate_alone(driven):
+    """A transform desc takes a whole matrix, so the components this drag does not touch
+    are composed back in unchanged rather than reset to zero."""
+    view, xf, prim = driven
+    desc = _desc(prim)
+    gz.write_component(desc, xf, "translate", 0, 3.0)
+    gz.write_component(desc, xf, "rotate", 2, 90.0)
+    assert xf.get_param("tx").value == pytest.approx(3.0)
+    assert xf.get_param("rz").value == pytest.approx(90.0)
+    assert xf.get_param("sx").value == pytest.approx(1.0)
+    moved = UsdGeom.Xformable(prim).GetLocalTransformation().ExtractTranslation()
+    assert moved[0] == pytest.approx(3.0)
+
+
+def test_the_handle_sits_where_the_prim_is(driven):
+    view, xf, prim = driven
+    desc = _desc(prim)
+    gz.write_component(desc, xf, "translate", 0, 7.0)
+    matrix = gz._anchor_matrix(view.stage, desc)
+    assert tuple(matrix.translation) == pytest.approx((7.0, 0.0, 0.0))
+
+
+def test_degrees_cross_the_boundary_once(driven):
+    """Blender dials are radians, the contract is degrees. A round trip through the
+    handle's own read/write must come back where it started."""
+    view, xf, prim = driven
+    desc = _desc(prim)
+    gz.write_component(desc, xf, "rotate", 0, 45.0)
+    assert xf.get_param("rx").value == pytest.approx(45.0)
+    radians = gz._current(xf, "rotate")[0] / gz._DEG
+    assert radians == pytest.approx(0.7853981)
+
+
+def test_an_undriven_prim_gets_a_chunk_rather_than_a_direct_write(view):
+    """Contract §8: writing the prim would be erased by the next cook, so a handle on an
+    unowned prim makes the chunk that owns it."""
+    loose = view.stage.DefinePrim("/Loose", "Cube")
+    assert gz._visible_descs(loose, view) == []
+    desc = chunk_gizmo.ensure_transform_chunk(loose)
+    assert desc is not None
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, Gf.Matrix4d().SetTranslate(Gf.Vec3d(1, 2, 3)))
+    moved = UsdGeom.Xformable(view.stage.GetPrimAtPath("/Loose")).GetLocalTransformation().ExtractTranslation()
+    assert (moved[0], moved[1], moved[2]) == (1.0, 2.0, 3.0)
+
+
+def test_the_gizmo_classes_register_and_unregister():
+    """Gizmo types live in their own registry, not on bpy.types under their class name --
+    a guard that asked bpy.types registered twice and never unregistered."""
+    assert gz.USDCHUNKS_GGT_chunk_gizmos.bl_space_type == "VIEW_3D"
+    gz.register()
+    try:
+        assert bpy.types.GizmoGroup.bl_rna_get_subclass_py("USDCHUNKS_GGT_chunk_gizmos") is not None
+        assert bpy.types.Gizmo.bl_rna_get_subclass_py("USDCHUNKS_GT_handle") is not None
+        gz.register()  # idempotent: re-enabling the add-on must not raise
+    finally:
+        gz.unregister()
+    assert bpy.types.GizmoGroup.bl_rna_get_subclass_py("USDCHUNKS_GGT_chunk_gizmos") is None
+    assert bpy.types.Gizmo.bl_rna_get_subclass_py("USDCHUNKS_GT_handle") is None
+
+
+# ---------------------------------------------------------------------------
+# viewport picking: the two parts that a GL context cannot be had to check
+# ---------------------------------------------------------------------------
+
+from usd_chunks.plugins.chunk_blender_addon import viewport as vp  # noqa: E402
+
+
+def test_the_pick_matrix_puts_the_click_at_the_centre():
+    """A point at the click maps to the origin of the narrowed clip range, and the pick
+    window's edge maps to that range's edge. Wrong either way and TestIntersection is
+    asked about a few pixels somewhere else on screen -- which looks exactly like picking
+    not working."""
+    dx = dy = 4.0 / 1000.0
+    m = vp.pick_matrix(0.5, -0.25, dx, dy)
+    centre = m.Transform(Gf.Vec3d(0.5, -0.25, 0.0))
+    assert (centre[0], centre[1]) == pytest.approx((0.0, 0.0))
+    edge = m.Transform(Gf.Vec3d(0.5 + dx, -0.25 + dy, 0.0))
+    assert (edge[0], edge[1]) == pytest.approx((1.0, 1.0))
+
+
+def test_a_centred_click_leaves_the_projection_alone():
+    m = vp.pick_matrix(0.0, 0.0, 1.0, 1.0)
+    assert m.Transform(Gf.Vec3d(0.3, 0.7, 0.0)) == Gf.Vec3d(0.3, 0.7, 0.0)
+
+
+def test_the_hit_path_is_found_wherever_it_sits_in_the_result():
+    """TestIntersection's out-params have gained members across USD versions, so the
+    prim path is scanned for rather than indexed."""
+    hit = Sdf.Path("/World/Cube")
+    assert vp.hit_path((True, Gf.Vec3d(1, 2, 3), Gf.Vec3d(0, 0, 1), hit, Sdf.Path(), 0)) == "/World/Cube"
+    assert vp.hit_path((True, Gf.Vec3d(), hit)) == "/World/Cube"
+
+
+def test_a_miss_is_none():
+    assert vp.hit_path(None) is None
+    assert vp.hit_path(()) is None
+    assert vp.hit_path((False, Gf.Vec3d(), Sdf.Path("/World/Cube"))) is None
+    assert vp.hit_path((True, Gf.Vec3d(), Sdf.Path())) is None
+
+
+def test_a_hit_point_at_the_origin_is_not_read_as_a_miss():
+    """A build that returns the hit point first rather than a bool: a Vec3d at the origin
+    is a hit dead centre of the near plane, not a miss."""
+    assert vp.hit_path((Gf.Vec3d(0, 0, 0), Sdf.Path("/World/Cube"))) == "/World/Cube"

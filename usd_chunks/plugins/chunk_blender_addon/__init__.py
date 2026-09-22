@@ -37,6 +37,7 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.plugins import chunk_blender_nodegraph as bg
+from usd_chunks.plugins.chunk_blender_addon import gizmos
 from usd_chunks.plugins.chunk_blender_addon import viewport
 
 logger = logging.getLogger(__name__)
@@ -800,9 +801,11 @@ def register() -> None:
     if _on_undo not in bpy.app.handlers.redo_post:
         bpy.app.handlers.redo_post.append(_on_undo)
     viewport.register()
+    gizmos.register()
 
 
 def unregister() -> None:
+    gizmos.unregister()
     viewport.unregister()
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if _on_undo in handlers:
