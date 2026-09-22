@@ -67,9 +67,22 @@ def _picked_prim(stage):
     The first picked prim, not all of them: a handle drives one anchor, and
     `resolve_gizmos` already averages several anchors into one pivot when a chunk points at
     several prims. Picking two unrelated prims is not a request for a combined handle.
+
+    Walks up from what was clicked to the nearest ancestor a chunk actually drives.
+    `chunks_for_prim` reads a prim's OWN spec stack, and a click lands on a gprim -- the
+    Mesh -- while a Transform chunk authors its xformOp on the Xform above it. Without the
+    walk, clicking the thing you can see finds no handle at all.
     """
     if stage is None:
         return None
+    for path in bg.get_picked_prim_paths():
+        prim = stage.GetPrimAtPath(path)
+        while prim and prim.IsValid() and not prim.IsPseudoRoot():
+            if chunk_gizmo.resolve_gizmos(prim):
+                return prim
+            prim = prim.GetParent()
+    # Nothing on the click's ancestry is driven. The clicked prim itself is still the
+    # answer -- ensure_transform_chunk turns it into something driveable on first drag.
     for path in bg.get_picked_prim_paths():
         prim = stage.GetPrimAtPath(path)
         if prim and prim.IsValid():

@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Viewport picking in Blender falls back to a CPU ray against prim bounds when Hydra's
+  own pick is unavailable -- on some builds `TestIntersection` raises on pending GL errors
+  left in the queue by whoever drew last, and a click did nothing but print a traceback.
+  A click on a mesh now also finds the chunk driving the Xform above it.
 - Viewport handles in Blender: a prim picked in the live Hydra view shows the chunk
   handles its driving chunk declares (`ui:gizmo:*`, see `docs/gizmo-host-contract.md`) as
   native Blender gizmos -- arrows, dials and box-arrows -- each writing through

@@ -975,3 +975,59 @@ def test_a_hit_point_at_the_origin_is_not_read_as_a_miss():
     """A build that returns the hit point first rather than a bool: a Vec3d at the origin
     is a hit dead centre of the near plane, not a miss."""
     assert vp.hit_path((Gf.Vec3d(0, 0, 0), Sdf.Path("/World/Cube"))) == "/World/Cube"
+
+
+def test_bounds_picking_finds_the_prim_under_the_ray(view):
+    """The GL-free fallback: Hydra's own pick raises on some builds (pending GL errors from
+    whoever drew last), and this is what keeps clicking working there."""
+    stage = view.stage
+    near = UsdGeom.Xform.Define(stage, "/Near")
+    UsdGeom.Cube.Define(stage, "/Near/Box")
+    far = UsdGeom.Xform.Define(stage, "/Far")
+    UsdGeom.Cube.Define(stage, "/Far/Box")
+    far.AddTranslateOp().Set(Gf.Vec3d(0, 0, -20))
+
+    hit = vp.pick_by_bounds(stage, (0.0, 0.0, 10.0), (0.0, 0.0, -1.0))
+    assert hit == "/Near/Box", "the nearer of two boxes on the ray"
+    assert vp.pick_by_bounds(stage, (50.0, 50.0, 10.0), (0.0, 0.0, -1.0)) is None
+
+
+def test_bounds_picking_skips_invisible_prims(view):
+    stage = view.stage
+    cube = UsdGeom.Cube.Define(stage, "/Hidden")
+    cube.MakeInvisible()
+    assert vp.pick_by_bounds(stage, (0.0, 0.0, 10.0), (0.0, 0.0, -1.0)) is None
+
+
+def test_bounds_picking_returns_the_leaf_not_the_scene_root(view):
+    """An ancestor's box contains every child's, so a pick that considered ancestors would
+    answer with the root for every click."""
+    stage = view.stage
+    UsdGeom.Xform.Define(stage, "/Group")
+    UsdGeom.Cube.Define(stage, "/Group/Box")
+    assert vp.pick_by_bounds(stage, (0.0, 0.0, 10.0), (0.0, 0.0, -1.0)) == "/Group/Box"
+
+
+def test_a_click_on_a_mesh_finds_the_chunk_driving_its_parent(driven):
+    """chunks_for_prim reads a prim's own spec stack, and a click lands on the gprim while
+    a Transform chunk authors its xformOp on the Xform above. The host walks up."""
+    view, xf, prim = driven
+    mesh = view.stage.DefinePrim(prim.GetPath().AppendChild("RenderMesh"), "Mesh")
+    assert chunk_gizmo.resolve_gizmos(mesh) == []
+    bg.set_picked_prim_paths([str(mesh.GetPath())])
+    try:
+        found = gz._picked_prim(view.stage)
+        assert found is not None and found.GetPath() == prim.GetPath()
+    finally:
+        bg.set_picked_prim_paths([])
+
+
+def test_an_undriven_click_still_reports_the_prim_it_hit(view):
+    """So ensure_transform_chunk has something to make a chunk for on the first drag."""
+    loose = view.stage.DefinePrim("/Loose", "Cube")
+    bg.set_picked_prim_paths(["/Loose"])
+    try:
+        found = gz._picked_prim(view.stage)
+        assert found is not None and str(found.GetPath()) == "/Loose"
+    finally:
+        bg.set_picked_prim_paths([])

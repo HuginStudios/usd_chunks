@@ -15,7 +15,8 @@ viewport GL context, with Blender's own camera -- no copy, no conversion, and th
 depth-composites with whatever Blender itself is drawing.
 
 **The exception that is not an error.** `HgiGL` reports whatever GL errors are PENDING in
-the queue, from a destructor that runs AFTER the draw. On some hardware Blender's own
+the queue -- including ones Blender's own drawing left there -- from a destructor that runs
+AFTER the draw. On some hardware Blender's own
 `hydra_storm` add-on emits the same message while rendering perfectly. So `Render()` is
 wrapped and the exception dropped: catching it is the difference between a working
 viewport and one that looks broken. If Hydra genuinely fails, the viewport goes empty --
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 #: away Hydra's whole cache and makes navigation crawl).
 _state = {"handle": None, "engine": None, "stage_id": None, "error": "",
           "lighting": True, "draw_mode": "smooth", "renderer": None, "picking": True,
-          "renderParams": None}
+          "renderParams": None, "gl_pick_failed": False}
 
 #: The draw mode names the panel offers, and what each maps to on UsdImagingGL.RenderParams.
 #: Resolved lazily (inside _draw, not at import time) because UsdImagingGL.DrawMode needs
@@ -124,16 +125,79 @@ def hit_path(result) -> "str | None":
     return None
 
 
-def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
-    """The prim under (mouse_x, mouse_y), via UsdImagingGL.Engine.TestIntersection -- the
-    same Hydra pick API usdview's own viewport click-select uses, not Blender's object
-    picking (there is no Blender object to hit: the live draw handler puts nothing in
-    Blender's own scene).
+def ray_from_region(region, rv3d, mouse_x, mouse_y):
+    """The world-space ray under the cursor, as (origin, direction).
 
-    Narrows the projection to a few pixels around the click (pick_matrix) rather than
-    building a Gf.Frustum, and reads the answer back with hit_path.
+    Blender's own view maths, no GL: this is what the bounds pick below rides on, and the
+    reason that pick keeps working on a driver where Hydra's does not.
     """
-    from pxr import Gf
+    from bpy_extras import view3d_utils
+    coord = (mouse_x, mouse_y)
+    origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+    direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+    return tuple(origin), tuple(direction)
+
+
+def pick_by_bounds(stage, origin, direction, time=None) -> "str | None":
+    """The nearest prim whose world bounding box the ray enters, or None.
+
+    The fallback for when Hydra's own pick is unavailable -- which on some builds is
+    always, see `_pick_prim_path`. Pure USD and Gf, so it needs no GL context and can be
+    tested; the cost is precision, since a box is not a mesh and a click just off a large
+    object still lands on it.
+
+    Only gprims are tested. An ancestor's box contains every child's, so including
+    ancestors would return the scene root for every click; the leaf is what the user
+    pointed at, and a host that wants the prim above it walks up from there (which is what
+    the gizmo module does, to find the one a chunk drives).
+    """
+    from pxr import Gf, Usd, UsdGeom
+    if stage is None:
+        return None
+    time = Usd.TimeCode.Default() if time is None else time
+    ray = Gf.Ray(Gf.Vec3d(*origin), Gf.Vec3d(*direction))
+    cache = UsdGeom.BBoxCache(time, [UsdGeom.Tokens.default_, UsdGeom.Tokens.proxy,
+                                     UsdGeom.Tokens.render])
+    best_path, best_distance = None, None
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Gprim):
+            continue
+        imageable = UsdGeom.Imageable(prim)
+        if imageable and imageable.ComputeVisibility(time) == UsdGeom.Tokens.invisible:
+            continue
+        box = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        if box.IsEmpty():
+            continue
+        hit, enter, _exit = ray.Intersect(box)
+        if not hit:
+            continue
+        # A ray starting inside a box enters behind the camera; the near face is still what
+        # was clicked, so clamp rather than skip.
+        distance = max(enter, 0.0)
+        if best_distance is None or distance < best_distance:
+            best_path, best_distance = str(prim.GetPath()), distance
+    return best_path
+
+
+def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
+    """The prim under (mouse_x, mouse_y).
+
+    Hydra's own pick first (UsdImagingGL.Engine.TestIntersection, the API usdview's
+    viewport click-select uses), because it is exact -- the actual surface under the
+    cursor, not a box around it. Narrows the projection to a few pixels around the click
+    (pick_matrix) rather than building a Gf.Frustum, and reads the answer back with
+    hit_path.
+
+    **It is allowed to fail, and on some builds always does.** HgiGL reports whatever GL
+    errors are pending in the queue -- including ones Blender's own drawing left there --
+    and posts them as TfErrors, which Boost.Python raises at the Python boundary. The draw
+    path swallows exactly this (see the module docstring); here the return value is the
+    point of the call, so swallowing it leaves nothing. Hence the fallback: a CPU ray
+    against prim bounds, which needs no GL and cannot be spoiled by someone else's error
+    queue. Reported live on Blender 5.1 / pxrBlender_v25_08 as an `invalid value` from
+    HgiGLTexture's constructor, on a viewport that was drawing perfectly.
+    """
+    from pxr import Gf, Tf
 
     ndc_x = (mouse_x / region.width) * 2.0 - 1.0
     ndc_y = (mouse_y / region.height) * 2.0 - 1.0
@@ -145,14 +209,29 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     proj = Gf.Matrix4d(*[v for row in rv3d.window_matrix.transposed() for v in row])
     narrowed_proj = proj * pick_matrix(ndc_x, ndc_y, dx, dy)
 
-    result = engine.TestIntersection(
-        view,
-        narrowed_proj,
-        stage.GetPseudoRoot(),
-        _state["renderParams"],
-    )
-    logger.debug("pick at (%s, %s) -> %r", mouse_x, mouse_y, result)
-    return hit_path(result)
+    path = None
+    try:
+        result = engine.TestIntersection(
+            view,
+            narrowed_proj,
+            stage.GetPseudoRoot(),
+            _state["renderParams"],
+        )
+        path = hit_path(result)
+    except Tf.ErrorException:
+        # Once, not per click: the queue is the driver's and will say the same thing every
+        # time, and a warning per mouse-click is its own kind of broken.
+        if not _state.get("gl_pick_failed"):
+            _state["gl_pick_failed"] = True
+            logger.info("Hydra picking unavailable on this build (pending GL errors); "
+                        "falling back to bounds picking, which is less precise.")
+    except Exception:
+        logger.debug("Hydra pick failed", exc_info=True)
+
+    if path is not None:
+        return path
+    origin, direction = ray_from_region(region, rv3d, mouse_x, mouse_y)
+    return pick_by_bounds(stage, origin, direction)
 
 
 def _draw():
@@ -297,13 +376,12 @@ class USDCHUNKS_OT_pick_prim(bpy.types.Operator):
         region = getattr(context, "region", None)
         stage = active_stage()
         engine = _state.get("engine")
-        if rv3d is None or region is None or stage is None or engine is None:
-            # The engine is made by the first draw, so a pick before the viewport has
-            # drawn once has nothing to ask. Said out loud rather than silently passed
-            # through: "my click does nothing" is otherwise unattributable.
-            logger.debug("pick: nothing to ask (rv3d=%s region=%s stage=%s engine=%s)",
-                         rv3d is not None, region is not None, stage is not None,
-                         engine is not None)
+        if rv3d is None or region is None or stage is None:
+            # Said out loud rather than silently passed through: "my click does nothing" is
+            # otherwise unattributable. The engine is NOT required -- it is only needed for
+            # the Hydra attempt, and bounds picking answers without one.
+            logger.debug("pick: nothing to ask (rv3d=%s region=%s stage=%s)",
+                         rv3d is not None, region is not None, stage is not None)
             self.report({"INFO"}, "no live viewport to pick from")
             return {"PASS_THROUGH"}
         try:
