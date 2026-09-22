@@ -1,13 +1,18 @@
 import logging
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_stage
 
 logger = logging.getLogger(__name__)
 
 
 def _apply_sublayers(owner: chunk.Chunk) -> None:
     """Collect every non-empty path in `imports` and assign them wholesale to the chunk's
-    own edit layer's subLayerPaths, replacing whatever was there before in one step."""
+    own edit layer's subLayerPaths, replacing whatever was there before in one step.
+
+    A file that holds a chunk network is not sublayered: it is hosted on this chunk's own
+    prim (chunk_stage.host_networks), so the node becomes the network and can be dived
+    into, exactly as a Reference pointed at one does. Several such files stack under the
+    node in list order, first strongest, the same order the sublayers take."""
     list_group = owner.get_param("imports", chunk.is_inst(chunk.ListGroup))
     paths = []
 
@@ -17,6 +22,11 @@ def _apply_sublayers(owner: chunk.Chunk) -> None:
         p = list_group.get_indexed_param("sublayer_path", i, chunk.is_param_t(str))
         if p and p.value:
             paths.append(p.value)
+
+    networks = [(p, target) for p in paths if (target := chunk_stage.network_target(p))]
+    hosted = {p for p, _ in networks}
+    paths = [p for p in paths if p not in hosted]
+    chunk_stage.host_networks(owner, networks)
 
     # Since we expect to only have one sublayer per chunk
     # We clear the old sublayer paths with the new one
@@ -91,6 +101,11 @@ def config():
           import (Button)
             Provides an explicit trigger in the UI; the underlying rebuild is driven
             by the ATTRIBUTE_CHANGED callback, not the button directly.
+
+        A file that holds a saved chunk network is hosted rather than sublayered: the node
+        becomes that network -- dive in to see and tweak it, as with a chunkgroup. Tweaks
+        are overrides in the current file; the network file is never written to. Several
+        network files stack under the node in list order, first strongest.
 
         On every change, the shared _apply_sublayers helper collects all non-empty path
         values from the list, then assigns them wholesale to edit_layer.subLayerPaths,

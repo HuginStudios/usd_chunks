@@ -1,6 +1,6 @@
 import os
 from pxr import Sdf
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_stage, chunk_utils
 from usd_chunks.chunk_utils import get_unique_path
 
 
@@ -24,7 +24,16 @@ def file_changed(owner, notice, sender):
     
     if chunk_utils.has_expression(primpath_param.raw_value or ""):
         return
-    
+
+    # A network file is hosted, not placed: its location field is the namespace the
+    # network's prim paths resolve under, and the default is none -- the paths as the
+    # sequence wrote them. Suggesting /<file> here would namespace every hosted network.
+    import_param = _chunk.get_param("import_primpath")
+    if chunk_stage.network_target(reference_path, import_param.value if import_param else ""):
+        if primpath_param.raw_value:
+            primpath_param.value = ""
+        return
+
     asset_name = os.path.splitext(os.path.basename(reference_path))[0]
     stage = param.get_stage()
     unique_path = get_unique_path(stage, f"/{asset_name}")
@@ -42,6 +51,16 @@ def execute(node):
 
     raw_path = node.get_param("primpath_location").value
     import_path = node.get_param("import_primpath").value
+
+    # A file whose target is a chunkgroup is a network, not scene content: it goes onto
+    # this chunk's own prim, and this node becomes the group -- dive in and the network
+    # is there, its edits landing in the shot as overrides. Nothing is put at
+    # primpath_location; the network's own chunks author the content when they cook.
+    network = chunk_stage.network_target(reference_path, import_path)
+    if network is not None:
+        chunk_stage.host_network(node, reference_path, network, namespace=raw_path or "")
+        return
+    chunk_stage.unhost_network(node)
 
     if import_path:
         ref = Sdf.Reference(reference_path, import_path)
@@ -96,6 +115,11 @@ def config():
           2. The layer's defaultPrim, if one is set.
           3. The single root prim, if the layer has exactly one.
           4. No prim path (USD picks the defaultPrim at runtime).
+
+        When the target is a chunkgroup (a saved chunk network), the node hosts that
+        network instead of placing it in the scene: dive into the node to see and tweak
+        the network, as with a chunkgroup. Tweaks are overrides in the current file; the
+        referenced network file is never written to.
 
         Import is also variant-context-aware via author_in_variant_context, so the
         reference is authored inside any active variant selection on the stage.
