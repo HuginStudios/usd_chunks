@@ -4553,6 +4553,24 @@ def _reorder_graph_layers_in_targets(lm: "ChunkLayerManager", ident_rank: dict) 
         chunk_notice._internal_layer_write_active = prev_internal
 
 
+def _outer_active_view(
+    context: "core.ChunkBase",
+    stage: "Usd.Stage",
+    scene: "core.SceneSender",
+) -> "core.ChunkBase | None":
+    """The active view of the context `context` sits in, if it has one.
+
+    The parent is read from _parent_context, the same record a group is created with and a
+    network host is promoted with, rather than from the prim path: a context is not in
+    scene.get_chunks(), so walking up by path finds nothing at the level that matters.
+    """
+    pc = getattr(context, "_parent_context", None)
+    parent = pc() if pc else None
+    if parent is None or parent is context:
+        return None
+    return find_group_active_view(parent, stage, scene)
+
+
 def recook_focus(
     stage: "Usd.Stage",
     scene: "core.SceneSender",
@@ -4568,6 +4586,12 @@ def recook_focus(
     tabs, still see the previous view"). So when focusing a group, first mute + block everything
     OUTSIDE the group's subtree, then recook inside it — leaving only the group's inner active
     view driving the stage.
+
+    "Outside" means outside the BRANCH, not outside the subtree: what feeds the group and
+    what the group feeds both stay composed, so diving in shows the group's result where
+    the graph around it puts it rather than back at the origin. The downstream half is
+    bounded by the outer view (see below) — the upstream half is not, since there is only
+    one way in.
     """
     if context is not None:
         lm = chunk_registry.ChunkLayerManager()
@@ -4594,7 +4618,7 @@ def recook_focus(
         # not on and the viewport went empty. Reported as content coming and going
         # depending on which level you were looking at; it reproduces with the nesting
         # built by hand, so it is not about how the groups were made.
-        upstream_keep: set = set()
+        keep: set = set()
         by_path = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
         node: "core.ChunkBase | None" = context
         seen_ancestors: set = set()
@@ -4603,11 +4627,28 @@ def recook_focus(
             if node_path in seen_ancestors:
                 break  # a cycle would hang the focus; prim nesting should prevent it
             seen_ancestors.add(node_path)
-            upstream_keep.update(
+            keep.update(
                 get_chunk_prim_path(u) for u in view_cook_list(node, stage, scene)
             )
             parent_path = str(Sdf.Path(node_path).GetParentPath())
             node = by_path.get(parent_path)
+        # And what the group FEEDS, which is no more a sibling branch than its upstream is:
+        # it is the same branch, and it is what puts the group's result where it belongs. A
+        # hosted layout is placed by the Transform wired after it, so muting that on dive
+        # sent every asset in the room back to the origin -- the group looked right from
+        # outside and jumped the moment you went in to edit it.
+        #
+        # Only as far as the PARENT's own active view cooks it, which is what "respect the
+        # outer view" has to mean: a second branch hanging off the same output is not on
+        # screen out there and must not start bleeding through in here. No outer view, no
+        # outer opinion to respect -- nothing extra is kept.
+        outer_view = _outer_active_view(context, stage, scene)
+        if outer_view is not None:
+            outer_cooks = {get_chunk_prim_path(u) for u in view_cook_list(outer_view, stage, scene)}
+            keep.update(
+                path for c in exec_downstream(context, stage, scene)
+                if (path := get_chunk_prim_path(c)) in outer_cooks
+            )
         # An upstream GROUP authors nothing of its own -- all of its content lives in its
         # children's layers -- so keeping only the group's own (empty) layer keeps nothing at
         # all. Live-reported: wire chunkgroup A -> chunkgroup B, dive into B, and A's prims
@@ -4616,7 +4657,7 @@ def recook_focus(
         # wire, because lofting/connecting the group's Description authors a connection from
         # the group prim DOWN to an inner chunk -- which is exactly what put those inner
         # chunks into view_cook_list' node-level answer in the first place.
-        keep_prefixes = tuple(u + "/" for u in upstream_keep)
+        keep_prefixes = tuple(u + "/" for u in keep)
         for c in scene.get_chunks():
             if is_view_chunk(c):
                 continue
@@ -4624,7 +4665,7 @@ def recook_focus(
             # Keep the focused group itself and its descendants — recook_for_view handles those.
             if cp == group_path or cp.startswith(inside_prefix):
                 continue
-            if cp in upstream_keep or (keep_prefixes and cp.startswith(keep_prefixes)):
+            if cp in keep or (keep_prefixes and cp.startswith(keep_prefixes)):
                 # Leave an upstream group's internals exactly as the parent context's cook
                 # left them: whichever of its children that cook muted (outside the group's
                 # own active view) stay muted, and the ones driving its output stay composed.
