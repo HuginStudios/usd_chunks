@@ -161,6 +161,23 @@ editor because it owns positions from then on, and Flet writes its own dict.
 `navigate_to_content`, Qt unions rects and calls `fitInView`, Flet solves a zoom and a pan
 by hand. There is nothing left in common once the toolkit has a viewport.
 
+**Node locking.** Qt and Blender mark nodes whose prim comes from an external or
+referenced layer (the rule is the same in both: the strongest non-anonymous, non-root
+opinion is not the edit target) and pass `is_locked` to `layout_graph` so auto-layout
+routes around them. Qt refuses the drag; Blender cannot, so it drops the dragged position
+when writing back and the next reload restores it. Flet and ImGui have no such concept
+yet, so a layout there can move a node the other two would have pinned. If your frontend
+can express it, implement it.
+
+**Staying honest between reloads.** A frontend whose toolkit owns the editing (Blender)
+must also catch what the toolkit does behind its back. Blender's frontend shadows the
+stock node operators (delete, duplicate, copy/paste, mute) with the chunk verbs inside its
+tree type, diffs the tree's links against the model's edges in `NodeTree.update` so a cut
+wire disconnects in USD, listens for chunk notices (value, state, param add/remove,
+delete, prim resync) and re-mirrors the touched nodes one tick later, and rebuilds from
+USD after every undo/redo -- because Blender's undo restores the `.blend`, never the
+stage. A canvas frontend gets all of this for free by being the only writer of its scene.
+
 **Node locking.** Qt marks nodes whose prim comes from an external or referenced layer and
 refuses to move them during auto-layout. The others have no such concept yet, so a layout
 there can move a node Qt would have pinned. If your frontend can express it, implement it.

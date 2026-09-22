@@ -22,6 +22,12 @@ params at runtime:
    describe them, and two nodes of the same class need different ones. ID properties carry
    no `update` callback, so those sync on draw instead (see `sync_lofted`).
 
+   **ListGroup rows are ID properties too**, keyed `list.row.param` (`prototypes.0.proto_path`
+   -- see `prop_key`). A row is a proxy group whose params carry the template's NAMES, so
+   registering the template as RNA gave every row one shared property whose `update`
+   wrote to the template, which no row reads: a Scatter's prototype could never be set
+   from here. Rows are also per instance and per moment, which is the ID-property case.
+
 The loop that has to stay broken is the same one every frontend has: writing a value into
 the param from a draw callback would be re-entered by the notice that write produces. So
 `_write_param` guards, and `sync_lofted` compares before assigning.
@@ -35,6 +41,7 @@ import logging
 
 import bpy
 
+from usd_chunks import chunk_core as core
 from usd_chunks import chunk_widget_api
 from usd_chunks.chunk_flags import ChunkFlags
 
@@ -144,6 +151,67 @@ def _range(param, cast):
     return kw
 
 
+def list_row_of(param):
+    """(list group, row group) enclosing `param`, or None when it is not in a ListGroup.
+
+    A row is a ChunkGroupBase directly under a ChunkListGroupBase; the param may sit a
+    Vector or two below it. Walks owners up to the chunk, so nesting depth does not
+    matter, and stops at the first list found -- a list inside a list row is keyed by the
+    inner one, which is the row whose value is actually being edited. The chain
+    alternates chunk objects with the NameSyncedContainers that hold them, so only the
+    chunk objects count.
+    """
+    child, owner = param, param.get_owner()
+    while owner is not None and not isinstance(owner, core.ChunkBase):
+        if isinstance(owner, core.ChunkListGroupBase):
+            return owner, child
+        if isinstance(owner, core.ChunkCommon):
+            child = owner
+        owner = owner.get_owner()
+    return None
+
+
+def prop_key(param) -> str:
+    """The node property that holds `param`: its name, or `list.row.name` inside a
+    ListGroup row. RNA identifiers cannot carry a dot, which is fine -- a row key is
+    only ever an ID property."""
+    found = list_row_of(param)
+    if found is None:
+        return param.name
+    list_group, row = found
+    return "%s.%s.%s" % (list_group.name, row.name, param.name)
+
+
+def resolve_key(chunk, key: str):
+    """The param a node property key names, or None -- the inverse of prop_key."""
+    if "." not in key:
+        return chunk.get_param(key)
+    list_name, row, name = key.split(".", 2)
+    list_group = chunk.get_param(list_name)
+    if not isinstance(list_group, core.ChunkListGroupBase) or not row.isdigit():
+        return None
+    try:
+        return list_group.get_indexed_param(name, int(row))
+    except (IndexError, ValueError):
+        return None
+
+
+def is_hidden(param) -> bool:
+    """Whether `param` is hidden, itself or through any group above it.
+
+    A chunk hides a whole Group at once (add_mesh keeps cube, tube and grid groups and
+    shows the one its menu names) and the params inside carry no bit of their own. Read
+    only the param's, as this did, and all three groups' fields drew at once -- eighteen
+    of them -- and the menu visibly did nothing.
+    """
+    obj = param
+    while obj is not None and not isinstance(obj, core.ChunkBase):
+        if isinstance(obj, core.ChunkCommon) and obj.has_state(ChunkFlags.State.HIDDEN):
+            return True
+        obj = obj.get_owner()
+    return False
+
+
 def property_for(param):
     """The Blender RNA property that backs one chunk param, or None if it is not a value.
 
@@ -235,6 +303,10 @@ def annotations_for(chunk) -> "tuple[dict, list, list]":
     buttons: list = []
     skipped: list = []
     for param in iter_drawable(chunk, include_hidden=True):
+        if list_row_of(param) is not None:
+            # A row param is per instance and per row: an ID property, made by
+            # sync_to_node, never a class-level RNA one (see the module docstring).
+            continue
         prop = property_for(param)
         if prop is not None:
             props[param.name] = prop
@@ -269,11 +341,13 @@ def iter_drawable(chunk, include_hidden: bool = False, _depth: int = 0):
     if _depth > 4:
         return
     for param in chunk.get_my_params():
+        # The container's own bit: a hidden Group hides everything in it, and the
+        # params inside carry no bit of their own (see is_hidden).
+        if not include_hidden and param.has_state(ChunkFlags.State.HIDDEN):
+            continue
         if not hasattr(param, "get_type"):
             if hasattr(param, "get_my_params"):
                 yield from iter_drawable(param, include_hidden, _depth + 1)
-            continue
-        if not include_hidden and param.has_state(ChunkFlags.State.HIDDEN):
             continue
         yield param
 
@@ -287,8 +361,8 @@ def sync_to_node(node, chunk) -> None:
     So the guard is taken for the duration.
     """
     for param in iter_drawable(chunk, include_hidden=True):
-        key = id(param)
-        _writing.add(key)
+        guard = id(param)
+        _writing.add(guard)
         try:
             # raw_value, not value: chunk_widget_api.ChunkParamWidgetBase reads raw_value
             # for exactly this (setup_chunk_widget, ATTRIBUTE_CHANGED) so Qt and Flet get
@@ -301,22 +375,24 @@ def sync_to_node(node, chunk) -> None:
             value = param.raw_value
             if value is None:
                 continue
-            if hasattr(node, param.name):
-                setattr(node, param.name, value)
+            key = prop_key(param)
+            if key == param.name and hasattr(node, key):
+                setattr(node, key, value)
             else:
-                # This CREATES the ID property for a lofted param. It used to skip any
-                # name the node did not already carry, which meant nothing ever created
-                # one: a param lofted after registration (an ExportUSD output file, a
-                # Wedge range) got a port on the node and no control under it, because
-                # `draw_param` has no property to draw. The two-layer split the module
-                # docstring describes only works if this is the layer that seeds layer 2.
-                node[param.name] = value
+                # This CREATES the ID property for a lofted param or a list row. It used
+                # to skip any name the node did not already carry, which meant nothing
+                # ever created one: a param lofted after registration (an ExportUSD
+                # output file, a Wedge range) got a port on the node and no control under
+                # it, because `draw_param` has no property to draw. The two-layer split
+                # the module docstring describes only works if this is the layer that
+                # seeds layer 2.
+                node[key] = value
         except Exception:
             # A value with no ID-property form -- a Gf type, an Sdf.Path. Reported rather
             # than crashing the rebuild, since one odd param should not cost the graph.
             logger.debug("could not mirror %s onto the node", param.name)
         finally:
-            _writing.discard(key)
+            _writing.discard(guard)
 
 
 def sync_lofted(node, chunk) -> None:
@@ -330,7 +406,7 @@ def sync_lofted(node, chunk) -> None:
     for key in list(node.keys()):
         if key.startswith("_") or key in _RESERVED:
             continue
-        param = chunk.get_param(key)
+        param = resolve_key(chunk, key)
         if param is not None:
             _write_param(param, node[key])
 
@@ -358,23 +434,24 @@ def draw_param(node, layout, param, text: "str | None" = None) -> bool:
     pinnable = param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION)
     row = layout.row(align=True) if pinnable else layout
     drawn = False
-    if hasattr(node, param.name):
+    key = prop_key(param)
+    if key == param.name and hasattr(node, key):
         # No `text=` at all when the caller has no opinion: a declared property already
         # carries the param's label as its RNA name, and passing text="" would blank it.
         if text is None:
-            row.prop(node, param.name)
+            row.prop(node, key)
         else:
-            row.prop(node, param.name, text=text)
+            row.prop(node, key, text=text)
         drawn = True
-    elif param.name in node.keys():
+    elif key in node.keys():
         # An ID property has no name of its own, so a label always has to be supplied.
-        row.prop(node, '["%s"]' % param.name,
-                text=(param.label or param.name) if text is None else text)
+        row.prop(node, '["%s"]' % key,
+                 text=(param.label or param.name) if text is None else text)
         drawn = True
     if drawn and pinnable:
         op = row.operator("usd_chunks.pin_prim", text="", icon="EYEDROPPER")
         op.node_path = node.name
-        op.param_name = param.name
+        op.param_name = key
     return drawn
 
 
@@ -393,8 +470,37 @@ def draw_params(node, layout, chunk, skip=()) -> None:
         return
 
     sync_lofted(node, chunk)
+    _draw_container(node, layout, chunk, skip)
 
-    for param in iter_drawable(chunk):
+    # Lofted params the chunk gained after this class was registered. Drawn after the
+    # declared ones because that is the order they were added in.
+    declared = {prop_key(p) for p in iter_drawable(chunk, include_hidden=True)}
+    for key in node.keys():
+        if key in _RESERVED or key in declared or key.startswith("_"):
+            continue
+        layout.prop(node, '["%s"]' % key, text=key)
+
+
+def _draw_container(node, layout, container, skip, _depth: int = 0) -> None:
+    """Draw a container's params in author order, recursing into groups.
+
+    A ListGroup is the one container with a shape of its own: a header with the row
+    count and +/- (Qt's list has the same pair), then one box per row. Everything else
+    flattens -- a plain Group is a hidden/shown unit here, not a visual one, since a
+    node body cannot nest panels and most of its params draw on their sockets anyway.
+    """
+    if _depth > 4:
+        return
+    for param in container.get_my_params():
+        if param.has_state(ChunkFlags.State.HIDDEN):
+            continue
+        if isinstance(param, core.ChunkListGroupBase):
+            _draw_list(node, layout, param, skip, _depth)
+            continue
+        if not hasattr(param, "get_type"):
+            if hasattr(param, "get_my_params"):
+                _draw_container(node, layout, param, skip, _depth + 1)
+            continue
         t = param.get_type()
         if PT.SEPARATOR in t:
             layout.separator()
@@ -404,17 +510,22 @@ def draw_params(node, layout, chunk, skip=()) -> None:
             op.node_path = node.name
             op.param_name = param.name
             continue
-        if param.name in skip:
+        if prop_key(param) in skip:
             continue
         draw_param(node, layout.row(), param, text=None)
 
-    # Lofted params the chunk gained after this class was registered. Drawn after the
-    # declared ones because that is the order they were added in.
-    declared = {p.name for p in iter_drawable(chunk, include_hidden=True)}
-    for key in node.keys():
-        if key in _RESERVED or key in declared or key.startswith("_"):
-            continue
-        layout.prop(node, '["%s"]' % key, text=key)
+
+def _draw_list(node, layout, list_group, skip, _depth: int) -> None:
+    header = layout.row(align=True)
+    header.label(text="%s (%d)" % (list_group.label or list_group.name, list_group.size))
+    for delta, icon in ((-1, "REMOVE"), (1, "ADD")):
+        op = header.operator("usd_chunks.list_resize", text="", icon=icon)
+        op.node_path = node.name
+        op.list_name = list_group.name
+        op.delta = delta
+    for row in list_group.get_my_params():
+        box = layout.box()
+        _draw_container(node, box, row, skip, _depth + 1)
 
 
 class BlenderParamWidget(chunk_widget_api.ChunkParamWidgetBase):

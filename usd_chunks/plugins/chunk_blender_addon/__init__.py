@@ -146,6 +146,11 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     _scene = BlenderScene(stage)
     chunk_registry.ChunkRegistry().initialize(_scene, "blender")
     chunk_registry.ChunkLayerManager().initialize(stage)
+    # ChunkStageSync.initialize loads the file's chunks itself, with the dedup set that
+    # stops a prim loading twice. A second load_chunks after it -- which stood here --
+    # had no such set and loaded every chunk again: each got a fresh prim (Reference ->
+    # Reference8, View1 -> View11) laid out in a row off to the right of the real
+    # network, which read as "the file's positions are wrong".
     chunk_stage.ChunkStageSync().initialize(stage, _scene)
     # Node classes are generated from the registry, and the registry only discovers chunks
     # once a scene exists -- so this cannot happen in register(), where there is no scene
@@ -154,7 +159,6 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     made = bg.register_chunk_types()
     if made:
         logger.info("usd_chunks: %d chunk node type(s) registered", len(made))
-    chunk_stage.load_chunks(stage, _scene)
 
     if tree is None:
         tree = _active_tree()
@@ -320,7 +324,7 @@ class USDCHUNKS_OT_auto_layout(bpy.types.Operator):
 
     bl_idname = "usd_chunks.auto_layout"
     bl_label = "Auto Layout"
-    bl_options = {"REGISTER", "UNDO"}
+    bl_options = {"REGISTER"}
 
     def execute(self, context):
         view = get_view()
@@ -403,6 +407,134 @@ class USDCHUNKS_OT_dive_out(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# ---------------------------------------------------------------------------
+# The editing verbs, shadowing Blender's own node operators inside this tree type
+#
+# X, Shift+D, Ctrl+C/X/V, M and H all have stock node-editor operators, and every one of them
+# edits the bpy tree and nothing else. The tree is a view, so that is the wrong half: a
+# deleted node came back on the next reload, a duplicate copied `chunk_path` and so edited
+# and wired the ORIGINAL prim, M set node.mute and left the chunk enabled. These take the
+# same keys (add-on keymaps win over the defaults) and poll only in a chunk tree, so in a
+# shader editor each key still means what it always did.
+# ---------------------------------------------------------------------------
+
+class _ChunkTreeOperator(bpy.types.Operator):
+    """Shared shape: only in a chunk tree, only with a view, selection read from the
+    editor first because Blender owns clicking and box-select."""
+
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
+
+    def run(self, context, view) -> None:
+        raise NotImplementedError
+
+    def execute(self, context):
+        view = get_view()
+        if view is None:
+            self.report({"WARNING"}, "no chunk network open")
+            return {"CANCELLED"}
+        view.pull_selection_from_tree()
+        self.run(context, view)
+        if view.status:
+            self.report({"INFO"}, view.status)
+        return {"FINISHED"}
+
+
+class USDCHUNKS_OT_delete(_ChunkTreeOperator):
+    """Delete the selected chunks, healing the exec chain across the gap."""
+
+    bl_idname = "usd_chunks.delete"
+    bl_label = "Delete Chunks"
+
+    def run(self, context, view):
+        view.delete_selected()
+
+
+class USDCHUNKS_OT_duplicate(_ChunkTreeOperator):
+    """Duplicate the selected chunks as new chunks, offset from the originals."""
+
+    bl_idname = "usd_chunks.duplicate"
+    bl_label = "Duplicate Chunks"
+
+    def run(self, context, view):
+        view.duplicate_selection()
+
+
+class USDCHUNKS_OT_copy(_ChunkTreeOperator):
+    """Copy the selection to the chunk clipboard -- the one every frontend shares."""
+
+    bl_idname = "usd_chunks.copy"
+    bl_label = "Copy Chunks"
+
+    def run(self, context, view):
+        view.copy_selection()
+
+
+class USDCHUNKS_OT_cut(_ChunkTreeOperator):
+    """Cut the selection to the chunk clipboard."""
+
+    bl_idname = "usd_chunks.cut"
+    bl_label = "Cut Chunks"
+
+    def run(self, context, view):
+        view.cut_selection()
+
+
+class USDCHUNKS_OT_paste(_ChunkTreeOperator):
+    """Paste the chunk clipboard at the cursor."""
+
+    bl_idname = "usd_chunks.paste"
+    bl_label = "Paste Chunks"
+
+    def run(self, context, view):
+        cursor = getattr(context.space_data, "cursor_location", None)
+        x, y = (cursor[0] / bg._SCALE, cursor[1] / bg._SCALE) if cursor else (0.0, 0.0)
+        view.paste_at(x, y)
+
+
+class USDCHUNKS_OT_toggle_disable(_ChunkTreeOperator):
+    """Disable or re-enable the selected chunks. A disabled chunk stays, muted."""
+
+    bl_idname = "usd_chunks.toggle_disable"
+    bl_label = "Toggle Disable"
+
+    def run(self, context, view):
+        view.toggle_disable_selected()
+
+
+class USDCHUNKS_OT_collapse(_ChunkTreeOperator):
+    """Collapse the selection, or the whole graph; expand again once all are collapsed."""
+
+    bl_idname = "usd_chunks.collapse"
+    bl_label = "Collapse Chunks"
+
+    def run(self, context, view):
+        view.collapse_selected_or_all()
+
+
+class USDCHUNKS_OT_group(_ChunkTreeOperator):
+    """Put the selection in a chunkgroup that takes its place in the exec chain."""
+
+    bl_idname = "usd_chunks.group"
+    bl_label = "Group Into Chunkgroup"
+
+    def run(self, context, view):
+        view.group_selection()
+
+
+class USDCHUNKS_OT_create_view(_ChunkTreeOperator):
+    """Wire a view to the selected chunk (or the end of the chain) and make it active."""
+
+    bl_idname = "usd_chunks.create_view"
+    bl_label = "Create View"
+
+    def run(self, context, view):
+        view.create_view_node()
+
+
 class USDCHUNKS_PT_panel(bpy.types.Panel):
     """The node editor sidebar."""
 
@@ -425,6 +557,9 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
         layout.operator(USDCHUNKS_OT_save_network.bl_idname, icon="FILE_TICK")
         layout.separator()
         layout.operator(USDCHUNKS_OT_auto_layout.bl_idname, icon="GRAPH")
+        row = layout.row(align=True)
+        row.operator(USDCHUNKS_OT_group.bl_idname, text="Group", icon="GROUP")
+        row.operator(USDCHUNKS_OT_create_view.bl_idname, text="View", icon="HIDE_OFF")
 
         view = get_view()
         box = layout.box()
@@ -445,6 +580,10 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
                               text="none" if slot == 0 else str(slot),
                               depress=(slot == active))
             op.slot = slot
+        # The keys, so nobody has to find them in the keymap editor: they mirror the Qt
+        # and Flet graphs (V, 0-3, L, Ctrl+G) where Blender had no habit to keep, and
+        # Blender's own (X, Shift+D, Ctrl+C/X/V, M, Tab) where it did.
+        box.label(text="V view  0-3 slot  L layout  Ctrl+G group", icon="EVENT_V")
 
         if tree is not None and tree.chunk_network_path:
             layout.label(text=tree.chunk_network_path.rsplit("\\", 1)[-1], icon="FILE")
@@ -460,6 +599,15 @@ _CLASSES = (
     USDCHUNKS_OT_set_view_slot,
     USDCHUNKS_OT_dive_into,
     USDCHUNKS_OT_dive_out,
+    USDCHUNKS_OT_delete,
+    USDCHUNKS_OT_duplicate,
+    USDCHUNKS_OT_copy,
+    USDCHUNKS_OT_cut,
+    USDCHUNKS_OT_paste,
+    USDCHUNKS_OT_toggle_disable,
+    USDCHUNKS_OT_collapse,
+    USDCHUNKS_OT_group,
+    USDCHUNKS_OT_create_view,
     USDCHUNKS_PT_panel,
 )
 
@@ -467,16 +615,71 @@ _CLASSES = (
 _keymaps: list = []
 
 
+#: (operator, key, modifiers, operator properties). Blender's own node keys keep their
+#: meaning -- Tab/Ctrl+Tab for groups, X and Delete, Shift+D, Ctrl+C/X/V, M, H -- routed to
+#: the chunk verbs; the graph keys the Qt and Flet frontends share (V, 0-3, L, Ctrl+G)
+#: fill in where Blender had no habit to keep.
+_KEYS = (
+    (USDCHUNKS_OT_dive_into, "TAB", {}, {}),
+    (USDCHUNKS_OT_dive_out, "TAB", {"ctrl": True}, {}),
+    (USDCHUNKS_OT_delete, "X", {}, {}),
+    (USDCHUNKS_OT_delete, "DEL", {}, {}),
+    (USDCHUNKS_OT_duplicate, "D", {"shift": True}, {}),
+    (USDCHUNKS_OT_copy, "C", {"ctrl": True}, {}),
+    (USDCHUNKS_OT_cut, "X", {"ctrl": True}, {}),
+    (USDCHUNKS_OT_paste, "V", {"ctrl": True}, {}),
+    (USDCHUNKS_OT_toggle_disable, "M", {}, {}),
+    (USDCHUNKS_OT_collapse, "H", {}, {}),
+    (USDCHUNKS_OT_group, "G", {"ctrl": True}, {}),
+    (USDCHUNKS_OT_create_view, "V", {}, {}),
+    (USDCHUNKS_OT_auto_layout, "L", {}, {}),
+    (USDCHUNKS_OT_set_view_slot, "ZERO", {}, {"slot": 0}),
+    (USDCHUNKS_OT_set_view_slot, "ONE", {}, {"slot": 1}),
+    (USDCHUNKS_OT_set_view_slot, "TWO", {}, {"slot": 2}),
+    (USDCHUNKS_OT_set_view_slot, "THREE", {}, {"slot": 3}),
+)
+
+
 def _register_keymap() -> None:
-    """Tab dives in, Ctrl+Tab dives out -- the keys Blender's own node editor uses for
-    entering and leaving a node group, so the habit carries over. The operators poll on
-    our tree type, so in a shader editor Tab still means what it always did."""
+    """Bind _KEYS in the add-on keyconfig, which Blender consults before its defaults --
+    so inside a chunk tree these win over node.delete, node.duplicate_move and the rest,
+    and everywhere else those operators' poll fails and the key falls through to what it
+    always did."""
     kc = bpy.context.window_manager.keyconfigs.addon
     if kc is None:
         return  # background mode: no key configs, nothing to bind to
     km = kc.keymaps.new(name="Node Editor", space_type="NODE_EDITOR")
-    _keymaps.append((km, km.keymap_items.new(USDCHUNKS_OT_dive_into.bl_idname, "TAB", "PRESS")))
-    _keymaps.append((km, km.keymap_items.new(USDCHUNKS_OT_dive_out.bl_idname, "TAB", "PRESS", ctrl=True)))
+    for op, key, mods, props in _KEYS:
+        kmi = km.keymap_items.new(op.bl_idname, key, "PRESS", **mods)
+        for name, value in props.items():
+            setattr(kmi.properties, name, value)
+        _keymaps.append((km, kmi))
+
+
+@bpy.app.handlers.persistent
+def _on_undo(scene, *_args) -> None:
+    """Re-derive the tree from USD after any undo or redo.
+
+    Blender's undo restores the .blend -- the node tree, every RNA value on every node --
+    and knows nothing about the stage. Left alone, that is the one way the view and the
+    model were still allowed to disagree: Ctrl+Z after Shift+A took the node away and the
+    chunk stayed, so it came back on the next reload; Ctrl+Z after a slider edit put the
+    old number on the node while the param kept the new one. This is why the chunk
+    operators no longer carry the UNDO option -- an undo step that only ever half-applied
+    was worse than none -- and the property edits Blender records on its own are undone
+    here by rebuilding from the model, which the tree was always meant to be a view of.
+
+    A memfile undo can also recreate the NodeTree datablock itself; `BlenderGraphView.tree`
+    already looks the tree up by name for exactly that reason, so a reload here lands in
+    the recreated one.
+    """
+    view = get_view()
+    if view is None:
+        return
+    try:
+        view.reload()
+    except Exception:  # pragma: no cover - an undo past the network's open
+        logger.exception("could not rebuild the chunk tree after undo")
 
 
 def _unregister_keymap() -> None:
@@ -501,11 +704,18 @@ def register() -> None:
         # try again a moment later."
         bpy.app.timers.register(_poll_new_trees, first_interval=0.05, persistent=True)
     _register_keymap()
+    if _on_undo not in bpy.app.handlers.undo_post:
+        bpy.app.handlers.undo_post.append(_on_undo)
+    if _on_undo not in bpy.app.handlers.redo_post:
+        bpy.app.handlers.redo_post.append(_on_undo)
     viewport.register()
 
 
 def unregister() -> None:
     viewport.unregister()
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if _on_undo in handlers:
+            handlers.remove(_on_undo)
     _unregister_keymap()
     if bpy.app.timers.is_registered(_poll_new_trees):
         bpy.app.timers.unregister(_poll_new_trees)

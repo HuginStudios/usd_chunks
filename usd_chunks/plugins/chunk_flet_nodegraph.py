@@ -36,7 +36,7 @@ from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.plugins import chunk_flet, chunk_graph
 from usd_chunks import chunk_stage
-from usd_chunks.chunk_stage import get_chunk_prim_path, load_chunks
+from usd_chunks.chunk_stage import get_chunk_prim_path
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,10 @@ class GraphView:
             chunk_registry.ChunkRegistry().initialize(self.scene, "flet")
             ChunkLayerManager().initialize(self.stage)
             chunk_stage.ChunkStageSync().initialize(self.stage, self.scene)
-            load_chunks(self.stage, self.scene)
+            # ChunkStageSync.initialize loads the file's chunks itself, with the dedup set
+            # that stops a prim loading twice. A second load_chunks here had no such set
+            # and loaded every chunk again: each got a fresh prim (Reference -> Reference8,
+            # View1 -> View11) laid out in a row off to the right of the real network.
             self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         except (AttributeError, KeyError, RuntimeError, OSError, ValueError) as exc:
             # Loading a network runs chunk modules, so this can fail for environmental

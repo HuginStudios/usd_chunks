@@ -20,7 +20,7 @@ pytest.importorskip("flet", reason="flet is an optional extra")
 
 
 
-from graph_fixtures import make_network  # noqa: E402
+from graph_fixtures import chunk_prims, make_network  # noqa: E402
 from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
 
 
@@ -74,6 +74,13 @@ class TestMainBuilds:
     def test_it_does_not_raise(self, page, network):
         path, context = network
         fg.main(page, path, context)
+
+    def test_opening_loads_each_chunk_once(self, network):
+        """See test_imgui_frontend: the group, two transforms and one view -- not twice."""
+        path, context = network
+        view = fg.GraphView(path, context)
+        view.live = False
+        assert len(chunk_prims(view.stage)) == 4, chunk_prims(view.stage)
 
     def test_it_adds_content_to_the_page(self, page, network):
         path, context = network
