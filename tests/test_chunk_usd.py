@@ -3527,3 +3527,93 @@ def test_exec_output_path_of_a_chunkgroup_is_the_group_prim() -> None:
     group.prim_path = f"{_CHUNKS_ROOT}/Group"
 
     assert exec_output_path(group) == f"{_CHUNKS_ROOT}/Group.{_EXEC_OUTPUT}"
+
+
+def test_reload_restores_the_dag_edges_that_cross_a_chunkgroup(tmp_path) -> None:
+    """Reopening a file must bring back the exec edges that run INTO and OUT OF a group.
+
+    A chunkgroup is a node in its parent graph, so `upstream -> group -> downstream` is
+    two ordinary exec edges. load_chunks resolved those edges against a path->chunk map
+    built from `deferred`, which only ever holds leaf chunks -- a group takes the CONTEXT
+    branch and is registered in `group_chunk_by_path` instead. Every edge with a group at
+    either end therefore resolved to None and was silently dropped, in BOTH directions.
+
+    The Python DAG is what carries a change downstream, so the gap meant dirt died at the
+    group: on a reopened file nothing downstream of a chunkgroup ever re-ran. Live-reported
+    as a Stage Expression Switch behind a render group that never gated its light when the
+    shot changed -- and as "the same setup in a fresh scene works", because wiring a group
+    up interactively goes through reconcile_dag_dependencies, which does see groups.
+    """
+    from usd_chunks import chunk_scheduler
+    from usd_chunks.chunk_stage import get_chunk_prim_path
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    upstream = _mk(primmod)
+    group = _mk(grpmod)
+    scene._current_context = weakref.ref(group)
+    _mk(primmod)  # a group with no content of its own is not the reported shape
+    scene._current_context = None
+    downstream = _mk(primmod)
+
+    _wire_exec(stage, group, upstream)
+    _wire_exec(stage, downstream, group)
+
+    out = tmp_path / "across_a_group.usda"
+    export_chunks(scene, out)
+
+    stage2 = Usd.Stage.Open(str(out))
+
+    class _Stage2Scene(SceneSender):
+        def get_stage(self):
+            return stage2
+
+        def get_selected_prims(self):
+            return []
+
+    scene2 = _Stage2Scene()
+    chunk_registry.ChunkLayerManager().reset()
+    reg.initialize(scene2, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage2)
+    _chunk_usd_init(stage2, scene2)
+
+    by_path = {get_chunk_prim_path(c): c for c in scene2.get_chunks()}
+    upstream2 = by_path[get_chunk_prim_path(upstream)]
+    group2 = by_path[get_chunk_prim_path(group)]
+    downstream2 = by_path[get_chunk_prim_path(downstream)]
+
+    assert [d.name for _, d in group2.get_dependencies()] == [upstream2.name], (
+        "the group's own exec input must come back as a DAG edge"
+    )
+    assert [d.name for _, d in downstream2.get_dependencies()] == [group2.name], (
+        "a chunk wired to the group's output must come back depending on the group"
+    )
+
+    # The point of the edges: a change upstream of the group has to reach what is
+    # downstream of it.
+    reached = chunk_scheduler.downstream_closure(upstream2.get_dag_node())
+    assert downstream2.get_dag_node() in reached, (
+        "dirtying the chunk upstream of a group must cascade past the group"
+    )
