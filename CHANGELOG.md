@@ -11,6 +11,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- The Blender frontend follows a hosted network: a Reference/Sublayer/Payload pointed at
+  a saved chunk network wears the group colour and dives with Tab, a param overriding the
+  file's value is drawn in alert red with a revert arrow beside it, and the sidebar gains
+  Publish and Localise.
+
 - A Reference, Sublayer or Payload chunk pointed at a saved chunk network becomes that
   network's node (a Payload hosts it as a payload arc, so it unloads with the rest). The file's chunkgroup composes in under the chunk's own prim, so the node is the
   group: dive in and the network is there, as if it had been expanded in place. It cooks

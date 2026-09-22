@@ -519,18 +519,40 @@ def test_a_chunkgroup_gets_the_group_header(view):
     assert tuple(group.color) == pytest.approx(bg._GROUP_HEADER_COLOR)
 
 
-def test_locked_is_an_opinion_from_a_layer_that_is_not_the_edit_target(tmp_path):
-    """Qt's rule, verbatim. A prim whose strongest non-anonymous opinion is a sublayer is
-    locked while the edit target is the root, and not once the target is that layer."""
+def test_locked_is_a_def_from_a_layer_that_is_not_the_edit_target(tmp_path):
+    """Qt's rule, verbatim. A prim DEFINED by a sublayer is locked while the edit target
+    is the root, and not once the target is that layer.
+
+    A def, not a bare over: node collection is Usd.PrimIsDefined, so an over-only prim is
+    never a node to lock in the first place, and requiring the def is what lets a chunk
+    that merely has composed-in children -- a Reference hosting a network -- stay this
+    graph's own node (chunk_utils.composed_in_from).
+    """
     stage = Usd.Stage.CreateInMemory()
     layer = Sdf.Layer.CreateNew(str(tmp_path / "referenced.usda"))
-    Sdf.CreatePrimInLayer(layer, "/chunks/Ref")
+    spec = Sdf.CreatePrimInLayer(layer, "/chunks/Ref")
+    spec.specifier = Sdf.SpecifierDef
     layer.Save()
     stage.GetRootLayer().subLayerPaths.append(layer.identifier)
     prim = stage.GetPrimAtPath("/chunks/Ref")
     assert bg._is_locked(stage, prim)
     stage.SetEditTarget(Usd.EditTarget(layer))
     assert not bg._is_locked(stage, prim)
+
+
+def test_a_chunk_defined_here_is_not_locked_by_what_composes_beneath_it(tmp_path):
+    """The host case: its own def is local, the network's group composes in under it."""
+    stage = Usd.Stage.CreateInMemory()
+    layer = Sdf.Layer.CreateNew(str(tmp_path / "network.usda"))
+    group = Sdf.CreatePrimInLayer(layer, "/chunks/Group")
+    group.specifier = Sdf.SpecifierDef
+    child = Sdf.CreatePrimInLayer(layer, "/chunks/Group/Inner")
+    child.specifier = Sdf.SpecifierDef
+    layer.Save()
+    host = stage.DefinePrim("/chunks/Host")
+    host.GetReferences().AddReference(layer.identifier, "/chunks/Group")
+    assert not bg._is_locked(stage, host)
+    assert bg._is_locked(stage, stage.GetPrimAtPath("/chunks/Host/Inner"))
 
 
 def test_a_locked_node_is_amber_and_keeps_its_position(view):
@@ -688,3 +710,100 @@ def test_undo_re_derives_the_tree_from_usd(view):
     assert "Move" not in [n.label for n in view.tree.nodes]
     addon._on_undo(None)
     assert "Move" in [n.label for n in view.tree.nodes]
+
+
+# ---------------------------------------------------------------------------
+# hosted networks: a Reference pointed at a saved network is a subnet here too
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def hosted(view, tmp_path):
+    """The fixture's own graph published to a file and hosted by a fresh Reference: the
+    sequence/shot shape, built with the frontend's own verbs."""
+    network = str(tmp_path / "seq.usda")
+    chunk_stage.export_chunks(view.scene, network)
+    registry = chunk_registry.ChunkRegistry()
+    host = _make(registry.get_chunk_module("reference"))
+    host.name = "Room"
+    view.scene.add_chunk(host)
+    host.get_param("file_path").value = network
+    host.execute()
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.reload()
+    return view, host, network
+
+
+def test_a_host_is_diveable(hosted):
+    view, host, _ = hosted
+    path = chunk_stage.get_chunk_prim_path(host)
+    assert chunk_stage.is_subnet(host)
+    assert view.can_dive(path)
+
+
+def test_a_host_is_not_locked_but_its_contents_are(hosted):
+    """The lock rule read the prim stack across the arc, so the host -- which has the
+    network's group under its own prim -- looked foreign and could not be dragged."""
+    view, host, _ = hosted
+    host_path = chunk_stage.get_chunk_prim_path(host)
+    assert host_path not in view.locked
+    view.dive_into(host_path)
+    assert view.prims, "the network's chunks are the graph now"
+    assert all(p in view.locked for p in view.prims
+               if not chunk_stage.is_view_chunk(view.chunks[p])), view.locked
+
+
+def test_a_host_wears_the_group_colour(hosted):
+    view, host, _ = hosted
+    node = next(n for n in view.tree.nodes
+                if n.name == chunk_stage.get_chunk_prim_path(host))
+    assert tuple(round(c, 3) for c in node.color) == tuple(round(c, 3) for c in bg._GROUP_HEADER_COLOR)
+
+
+def test_an_inner_edit_is_an_override_the_frontend_can_see_and_revert(hosted):
+    view, host, network = hosted
+    host_path = chunk_stage.get_chunk_prim_path(host)
+    view.dive_into(host_path)
+    inner = next(c for p, c in view.chunks.items()
+                 if p.startswith(host_path + "/") and c.name == "Move")
+    param = inner.get_param("tz")
+    assert param.value == 3.0
+    assert chunk_stage.param_override_source(param) is None
+
+    param.value = 8.0
+    assert chunk_stage.param_override_source(param) == Sdf.Layer.Find(network)
+
+    chunk_stage.revert_param_override(param)
+    assert param.value == 3.0
+    assert chunk_stage.param_override_source(param) is None
+    assert not Sdf.Layer.Find(network).dirty
+
+
+def test_localise_turns_a_host_into_a_chunkgroup(hosted):
+    view, host, network = hosted
+    host_path = chunk_stage.get_chunk_prim_path(host)
+    group = chunk_stage.localise_network(host)
+    assert group is not None and chunk_stage.is_chunkgroup(group)
+    assert not chunk_stage.is_network_host(group)
+    assert not view.stage.GetPrimAtPath(host_path).HasAuthoredReferences()
+
+
+def test_publish_makes_a_group_host_its_own_file(view, tmp_path):
+    out = str(tmp_path / "published.usda")
+    group = view.scene.peek_root_context()
+    chunk_stage.publish_network(group, out)
+    assert view.stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(group)).HasAuthoredReferences()
+    saved = Sdf.Layer.FindOrOpen(out)
+    assert saved.GetAttributeAtPath("/chunks/%s.info:chunkType" % group.name).default == "chunkgroup"
+
+
+def test_the_verbs_are_wired_to_operators_that_get_registered():
+    """The sidebar's Publish/Localise and the revert arrow beside an overridden field are
+    operator classes in the add-on's registration tuples, under the bl_idnames the panel
+    and chunk_blender.draw_param name -- an operator missing from _CLASSES draws a button
+    that reports "unknown operator" when clicked."""
+    assert addon.USDCHUNKS_OT_publish_network in addon._CLASSES
+    assert addon.USDCHUNKS_OT_localise_network in addon._CLASSES
+    assert bg.USDCHUNKS_OT_revert_override in bg._CLASSES
+    assert bg.USDCHUNKS_OT_revert_override.bl_idname == "usd_chunks.revert_override"
+    assert addon.USDCHUNKS_OT_publish_network.bl_idname == "usd_chunks.publish_network"
+    assert addon.USDCHUNKS_OT_localise_network.bl_idname == "usd_chunks.localise_network"

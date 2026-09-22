@@ -43,6 +43,7 @@ import bpy
 
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_widget_api
+from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 
 logger = logging.getLogger(__name__)
@@ -427,6 +428,12 @@ def draw_param(node, layout, param, text: "str | None" = None) -> bool:
     # OUTPUT is computed, so it is shown but not editable. active=False greys it the way
     # Blender greys any driven value, which reads correctly to a Blender user.
     layout.active = not param.has_flag(_OUTPUT)
+    # A value overriding one composed in from another file (a sequence's network hosted
+    # here) is marked, the way Qt gives it an amber label: the field shows a value nobody
+    # on this graph typed, and "what did we change" is the question a shot asks of a
+    # sequence. Blender's alert red is the nearest built-in "this is not the default".
+    override_source = chunk_stage.param_override_source(param)
+    layout.alert = override_source is not None
     # A PRIM_SELECTION field gets a pin button beside it, same as Qt's -- pulling in
     # whatever the viewport-click picker last found (chunk_blender_nodegraph.pin_prim /
     # set_picked_prim_paths), which is this frontend's counterpart of the Qt/usdview
@@ -450,6 +457,12 @@ def draw_param(node, layout, param, text: "str | None" = None) -> bool:
         drawn = True
     if drawn and pinnable:
         op = row.operator("usd_chunks.pin_prim", text="", icon="EYEDROPPER")
+        op.node_path = node.name
+        op.param_name = key
+    if drawn and override_source is not None:
+        # Revert, beside the field: the override's only other exit is retyping the
+        # sequence's value, which needs knowing it.
+        op = row.operator("usd_chunks.revert_override", text="", icon="LOOP_BACK")
         op.node_path = node.name
         op.param_name = key
     return drawn

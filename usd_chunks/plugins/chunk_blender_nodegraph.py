@@ -48,6 +48,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.plugins import chunk_blender, chunk_graph
 from usd_chunks import chunk_stage
+from usd_chunks import chunk_utils
 
 logger = logging.getLogger(__name__)
 
@@ -457,6 +458,38 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class USDCHUNKS_OT_revert_override(bpy.types.Operator):
+    """Put back the value a hosted network's file has for this param.
+
+    The arrow beside a field drawn in alert red (chunk_blender.draw_param): the shot's
+    opinion is dropped from every layer it owns and the file's shows through again. Qt
+    offers the same as "Revert to <file>" on right-click.
+    """
+
+    bl_idname = "usd_chunks.revert_override"
+    bl_label = "Revert Override"
+    bl_options = {"REGISTER"}
+
+    node_path: bpy.props.StringProperty()
+    param_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        tree = getattr(context.space_data, "edit_tree", None)
+        node = tree.nodes.get(self.node_path) if tree else None
+        chunk = node.get_chunk() if node else None
+        param = chunk_blender.resolve_key(chunk, self.param_name) if chunk else None
+        if param is None:
+            self.report({"WARNING"}, "no such param: %s" % self.param_name)
+            return {"CANCELLED"}
+        source = chunk_stage.param_override_source(param)
+        if source is None:
+            self.report({"INFO"}, "not an override")
+            return {"CANCELLED"}
+        chunk_stage.revert_param_override(param)
+        self.report({"INFO"}, "reverted to %s" % (source.GetDisplayName() or source.identifier))
+        return {"FINISHED"}
+
+
 class USDCHUNKS_OT_list_resize(bpy.types.Operator):
     """Add or remove a row of a ListGroup -- the +/- beside its header."""
 
@@ -651,17 +684,17 @@ def _chunk_of(sender):
 
 
 def _is_locked(stage, prim) -> bool:
-    """Qt's rule: a prim is locked when its strongest non-anonymous, non-root opinion
-    comes from a layer that is not the current edit target -- a referenced or sublayered
-    network, which edits here would not reach."""
-    root_id = stage.GetRootLayer().identifier
-    edit_id = stage.GetEditTarget().GetLayer().identifier
-    src_layer = next(
-        (spec.layer for spec in prim.GetPrimStack()
-         if not spec.layer.anonymous and spec.layer.identifier != root_id),
-        None,
-    )
-    return src_layer is not None and src_layer.identifier != edit_id
+    """Qt's rule: a prim is locked when it is composed in -- its def comes from a foreign
+    layer or across an arc (chunk_utils.composed_in_from) -- and that layer is not the
+    current edit target, so edits here would not reach it.
+
+    Its OWN def in a layer we own means it is ours to move, however much composes in
+    beneath it: a Reference hosting a network has the network's group under its prim and
+    is still this graph's node. Reading the prim stack without that test locked the host
+    along with its contents.
+    """
+    src_layer = chunk_utils.composed_in_from(prim)
+    return src_layer is not None and src_layer.identifier != stage.GetEditTarget().GetLayer().identifier
 
 
 def _reload_after_connect(view) -> None:
@@ -929,7 +962,9 @@ class BlenderGraphView:
             slot = prim.GetAttribute(chunk_graph.VIEW_SLOT_ATTR).Get()
             active = bool(slot) and slot == self.active_slot()
             colour = _VIEW_ACTIVE_COLOR if active else _VIEW_INACTIVE_COLOR
-        elif chunk is not None and chunk_stage.is_chunkgroup(chunk):
+        elif chunk is not None and chunk_stage.is_subnet(chunk):
+            # is_subnet, not is_chunkgroup: a Reference/Sublayer/Payload hosting a network
+            # file is a graph to dive into too, and reads as one.
             colour = _GROUP_HEADER_COLOR
         elif node.name in self.locked:
             colour = _LOCKED_HEADER_COLOR
@@ -1098,7 +1133,7 @@ class BlenderGraphView:
         survives a reload and one made in Qt shows up here.
         """
         candidates = [(p, c) for p, c in self.chunks.items()
-                      if p in self.prims and not chunk_stage.is_chunkgroup(c)
+                      if p in self.prims and not chunk_stage.is_subnet(c)
                       and not chunk_stage.is_view_chunk(c)]
         selected = [(p, c) for p, c in candidates if p in self.selected_nodes]
         targets = selected or candidates
@@ -1229,7 +1264,7 @@ class BlenderGraphView:
     # -- navigation --------------------------------------------------------
 
     def can_dive(self, path: str) -> bool:
-        """Keyed on is_chunkgroup, never on the CONTEXT flag: a chunk-in-chunk carries
+        """Keyed on is_subnet, never on the CONTEXT flag: a chunk-in-chunk carries
         CONTEXT too and is an implementation detail, not a subnet."""
         return chunk_graph.can_dive(self.chunks, path)
 
@@ -1531,7 +1566,8 @@ def _draw_add_menu(self, context) -> None:
 # ---------------------------------------------------------------------------
 
 _CLASSES = (UsdChunksNodeTree, UsdChunksSocket, USDCHUNKS_OT_param_button,
-            USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_list_resize, USDCHUNKS_OT_add_node)
+            USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_revert_override,
+            USDCHUNKS_OT_list_resize, USDCHUNKS_OT_add_node)
 
 
 def _register_once(cls) -> None:

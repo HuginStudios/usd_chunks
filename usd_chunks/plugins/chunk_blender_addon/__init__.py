@@ -387,6 +387,92 @@ class USDCHUNKS_OT_dive_into(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class USDCHUNKS_OT_publish_network(bpy.types.Operator):
+    """Write the selected chunkgroup to its own file and host it from there.
+
+    Afterwards the group's chunks compose in from that file and anything this graph does
+    to them is an override -- the sequence half of the sequence/shot split. Localise is
+    the way back.
+    """
+
+    bl_idname = "usd_chunks.publish_network"
+    bl_label = "Publish Network"
+    bl_options = {"REGISTER"}
+
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+    filter_glob: bpy.props.StringProperty(default="*.usda;*.usd;*.usdc", options={"HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
+
+    def invoke(self, context, event):
+        chunk = _selected_chunk(predicate=chunk_stage.is_chunkgroup)
+        if chunk is None:
+            self.report({"WARNING"}, "select a chunkgroup to publish")
+            return {"CANCELLED"}
+        self.filepath = "%s.usda" % chunk.name
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        chunk = _selected_chunk(predicate=chunk_stage.is_chunkgroup)
+        if chunk is None or not self.filepath:
+            return {"CANCELLED"}
+        chunk_stage.publish_network(chunk, self.filepath)
+        view = get_view()
+        if view is not None:
+            view.reload()
+        self.report({"INFO"}, "published %s" % self.filepath)
+        return {"FINISHED"}
+
+
+class USDCHUNKS_OT_localise_network(bpy.types.Operator):
+    """Take a hosted network into this file as an ordinary chunkgroup.
+
+    The file's chunks, with whatever this graph overrode on top, become local defs and the
+    arc is dropped -- "Allow Editing of Contents". The inverse of Publish.
+    """
+
+    bl_idname = "usd_chunks.localise_network"
+    bl_label = "Localise Network"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
+
+    def execute(self, context):
+        chunk = _selected_chunk(predicate=chunk_stage.is_localisable)
+        if chunk is None:
+            self.report({"WARNING"}, "select a hosted network to localise")
+            return {"CANCELLED"}
+        name = chunk.name
+        chunk_stage.localise_network(chunk)
+        view = get_view()
+        if view is not None:
+            view.reload()
+        self.report({"INFO"}, "localised %s" % name)
+        return {"FINISHED"}
+
+
+def _selected_chunk(predicate):
+    """The one selected chunk the predicate accepts, or -- when nothing selected fits --
+    the graph's single candidate. Same "do not make me select the only thing there"
+    courtesy dive_into already extends, and both verbs act on exactly one chunk."""
+    view = get_view()
+    if view is None:
+        return None
+    view.pull_selection_from_tree()
+    chosen = [c for p, c in view.chunks.items()
+              if p in view.selected_nodes and predicate(c)]
+    if not chosen:
+        candidates = [c for p, c in view.chunks.items() if p in view.prims and predicate(c)]
+        if len(candidates) == 1:
+            chosen = candidates
+    return chosen[0] if len(chosen) == 1 else None
+
+
 class USDCHUNKS_OT_dive_out(bpy.types.Operator):
     """Back up to the graph that holds this one."""
 
@@ -570,6 +656,9 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
         row = box.row(align=True)
         row.operator(USDCHUNKS_OT_dive_into.bl_idname, text="Dive In", icon="FULLSCREEN_ENTER")
         row.operator(USDCHUNKS_OT_dive_out.bl_idname, text="Dive Out", icon="FULLSCREEN_EXIT")
+        row = box.row(align=True)
+        row.operator(USDCHUNKS_OT_publish_network.bl_idname, text="Publish", icon="EXPORT")
+        row.operator(USDCHUNKS_OT_localise_network.bl_idname, text="Localise", icon="IMPORT")
 
         box = layout.box()
         box.label(text="Active view")
@@ -599,6 +688,8 @@ _CLASSES = (
     USDCHUNKS_OT_set_view_slot,
     USDCHUNKS_OT_dive_into,
     USDCHUNKS_OT_dive_out,
+    USDCHUNKS_OT_publish_network,
+    USDCHUNKS_OT_localise_network,
     USDCHUNKS_OT_delete,
     USDCHUNKS_OT_duplicate,
     USDCHUNKS_OT_copy,
