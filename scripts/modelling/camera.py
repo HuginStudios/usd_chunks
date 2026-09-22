@@ -2,7 +2,7 @@ import os
 import json
 import http.client
 from pxr import Gf, Sdf, Usd, UsdGeom
-from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_stage, chunk_utils
 
 #: The shared op every chunk used to write, and what the freecam lock wrote until this chunk
 #: owned a named one. Still read, so a camera saved before the change keeps its placement.
@@ -530,12 +530,26 @@ def execute(node):
     # transform below has to be re-authored whenever its params change, and that is exactly
     # the case where the path has *not* moved. Leaving the early return in place made the
     # transform handle appear to do nothing at all.
-    if raw_path == getattr(node, '_last_camera_path', None):
+    chunk_layer = stage.GetEditTarget().GetLayer()
+
+    # Gated off: leave the cook for when the branch comes back. A muted layer composes as
+    # nothing, so the DefinePrim below hands back an invalid prim and every connect_usd_attr
+    # binds to nothing -- and the cache would then say this path is already done, so the
+    # camera would never be rebuilt and would keep its schema defaults (focal length 50, not
+    # the 24 sitting in the chunk prim) for the life of the scene. Found on the Light chunk,
+    # which has the same shape; a per-shot camera on a gated branch is the same story.
+    if chunk_layer and stage.IsLayerMuted(chunk_layer.identifier):
+        return
+
+    # The cache is only true while the params it bound are still bound -- see above. Not
+    # during a load: the restore of this chunk's saved values is what does the binding, and
+    # rebuilding underneath it wipes what it is half way through filling in.
+    if (raw_path == getattr(node, '_last_camera_path', None)
+            and (chunk_notice._loading_stage or chunk_stage.params_are_bound(node))):
         _author_camera_transform(node, stage)
         _refocus(node)
         return
 
-    chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 
     _, _, var_selections = chunk_utils.split_variant_path(raw_path)

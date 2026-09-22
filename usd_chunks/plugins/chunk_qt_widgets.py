@@ -115,6 +115,9 @@ QLabel[chunkExpression="true"] {
     color: #7fb2e5;
     font-style: italic;
 }
+QLabel[chunkOverride="true"] {
+    color: #e0b060;
+}
 """
 
 # Marks a widget that carries CHUNK_STYLESHEET, so nothing below it applies it again.
@@ -1264,6 +1267,7 @@ class LabeledWidget(QtWidgets.QWidget):
             self.update_label(notice.data.value)
         elif name == "value":
             self._sync_expression_mark()
+            self._sync_override_mark()
             if self.should_show_tooltip():
                 self.show_tooltip()
 
@@ -1271,6 +1275,27 @@ class LabeledWidget(QtWidgets.QWidget):
         self.label.setHidden(not bool(text))
         self.label.setText(text)
         self._sync_expression_mark()
+        self._sync_override_mark()
+
+    def _sync_override_mark(self):
+        """Show on the label that this param's value overrides one composed in from a file
+        (chunk_stage.param_override_source): a sequence's chunk nudged in the shot. The
+        question every shot artist asks of a referenced network is "what did we change
+        here", and the field itself cannot say -- the value it shows is just a value.
+        """
+        if not isinstance(self.widget, ChunkParamWidgetBase):
+            return
+        try:
+            source = chunk_stage.param_override_source(self.widget.param)
+        except ReferenceError:
+            return
+        overridden = source is not None
+        if self.label.property("chunkOverride") != overridden:
+            self.label.setProperty("chunkOverride", overridden)
+            self.label.style().unpolish(self.label)
+            self.label.style().polish(self.label)
+        if overridden and not self.label.property("chunkExpression"):
+            self.label.setToolTip(f"Overrides {source.GetDisplayName() or source.identifier}")
 
     def _sync_expression_mark(self):
         """Show on the label that this param's value comes from an expression.
@@ -1350,6 +1375,12 @@ class LabeledWidget(QtWidgets.QWidget):
         # same-named lofts stay tellable apart, but that default has to be just a default,
         # not the only option, or "rename the lofted param" would not mean anything.
         rename_action = menu.addAction("Rename…") if on_label and getattr(param, "_lofted", False) else None
+        override_source = chunk_stage.param_override_source(param)
+        revert_action = None
+        if override_source is not None:
+            revert_action = menu.addAction(
+                f"Revert to {override_source.GetDisplayName() or override_source.identifier}"
+            )
         expr_action = None
         clear_expr_action = None
 
@@ -1366,6 +1397,8 @@ class LabeledWidget(QtWidgets.QWidget):
         if action := menu.exec_(event.globalPos()):
             if loft_action and action == loft_action:
                 chunk_stage.loft_param_to_context(param, context)
+            elif revert_action and action == revert_action:
+                chunk_stage.revert_param_override(param)
             elif rename_action and action == rename_action:
                 old = param.get_label()
                 # See loft_param_to_context's Rename action: same reasoning, param scope.
@@ -1885,9 +1918,22 @@ class ViewSlotState(QtCore.QObject):
         # chunks cannot share it), and a view targets one chunk. Everything else scales.
         inspect_action = menu.addAction("Inspect Layer")
         rename_action = menu.addAction("Rename…")
+        stage_for_rename = grp.get_stage()
+        prim_for_rename = stage_for_rename.GetPrimAtPath(prim_path) if stage_for_rename else None
+        if prim_for_rename and prim_for_rename.IsValid() and chunk_utils.is_composed_in(prim_for_rename):
+            # USD has no rename override; the name belongs to the file this chunk came
+            # from. Localise the network to change its structure.
+            rename_action.setEnabled(False)
+            rename_action.setToolTip("Composed in from another file -- localise the network to rename")
         pin_action = menu.addAction(
             _label("Unpin from Params" if chunk_stage.is_chunk_pinned(grp) else "Pin to Params")
         )
+        # A group's network can go out to a file and come back. Publish writes the group
+        # and makes it a host of that file (edits from then on are overrides); Localise
+        # takes a hosted network back in as a plain chunkgroup of this file. Singular:
+        # each is a conversation about one file.
+        publish_action = menu.addAction("Publish network…") if chunk_stage.is_chunkgroup(grp) else None
+        localise_action = menu.addAction("Localise network") if chunk_stage.is_localisable(grp) else None
         copy_action = cut_action = duplicate_action = None
         if graph_view is not None:
             menu.addSeparator()
@@ -1938,6 +1984,15 @@ class ViewSlotState(QtCore.QObject):
             # convert_attr sanitises it to a valid identifier, so no path validation needed here.
             if ok and new and new != old:
                 grp.name = new
+        elif publish_action and res == publish_action:
+            out, _ = QtWidgets.QFileDialog.getSaveFileName(
+                QtWidgets.QApplication.activeWindow(), "Publish network", f"{grp.name}.usda",
+                "USD (*.usda *.usd *.usdc)",
+            )
+            if out:
+                chunk_stage.publish_network(grp, out)
+        elif localise_action and res == localise_action:
+            chunk_stage.localise_network(grp)
         elif res == pin_action:
             # The clicked chunk decides the direction, so a mixed selection ends up in one
             # state rather than each chunk flipping to the opposite of whatever it was.

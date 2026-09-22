@@ -1585,13 +1585,14 @@ def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
 def can_dive(chunks: dict, path: str) -> bool:
     """Whether `path` is a subnet the user may navigate into.
 
-    Keyed on is_chunkgroup, never on the CONTEXT flag. Both a chunkgroup and a
+    Keyed on is_subnet, never on the CONTEXT flag. Both a chunkgroup and a
     chunk-in-chunk (AMDMaterialXLibrary, which creates `reference` and `bind_material` as
     an implementation detail) carry CONTEXT, so the flag cannot tell them apart -- which is
-    exactly why diving into the AMD node used to be offered and should not be.
+    exactly why diving into the AMD node used to be offered and should not be. A chunk
+    hosting a referenced network (chunk_stage.is_network_host) is a subnet too.
     """
     chunk = chunks.get(path)
-    return chunk is not None and chunk_stage.is_chunkgroup(chunk)
+    return chunk is not None and chunk_stage.is_subnet(chunk)
 
 
 def parent_context(context: str, available) -> "str | None":

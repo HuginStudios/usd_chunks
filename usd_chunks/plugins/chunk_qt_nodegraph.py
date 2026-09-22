@@ -617,7 +617,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # implementation detail: it must not offer a dive, nor the group header and the
         # `▶` marker that advertise one. Containment still keys on
         # chunk_stage.is_group_chunk, so its children stay hidden and keep cooking.
-        self._is_chunkgroup = chunk_stage.is_chunkgroup(chunk)
+        # Subnet, not chunkgroup: a chunk hosting a referenced network draws and dives
+        # like a group too.
+        self._is_chunkgroup = chunk_stage.is_subnet(chunk)
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
@@ -708,6 +710,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         no full graph rebuild needed for a cosmetic change."""
         self._pinned = pinned
         self.update()
+
+    def set_subnet(self, subnet: bool) -> None:
+        """Update whether this node is a graph to dive into (chunk_stage.is_subnet), which
+        the header double-click and the group styling key on."""
+        if subnet != self._is_chunkgroup:
+            self._is_chunkgroup = subnet
+            self.update()
 
     def set_locked(self, locked: bool) -> None:
         """Update the cached locked state (edit-target changed, or this node is reused across a
@@ -2106,9 +2115,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 if ctx_chunk is not None:
                     chunks_by_path[path] = ctx_chunk
 
-        # Pre-compute lock state: a prim is locked when authored in a layer that isn't
-        # the session layer, root layer, or current edit target.
-        root_id = stage.GetRootLayer().identifier
+        # Pre-compute lock state: a prim is locked when it is composed in -- its def comes
+        # from a foreign layer or across an arc (chunk_utils.composed_in_from) -- and that
+        # layer is not the current edit target. Its OWN def in an owned layer means it is
+        # ours to move, however much composes in beneath it: a Reference hosting a network
+        # has the network's group under its prim and is still this graph's node.
         edit_id = stage.GetEditTarget().GetLayer().identifier
 
         desired_paths: set[str] = set()
@@ -2122,11 +2133,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 continue
             desired_paths.add(path)
 
-            src_layer = next(
-                (spec.layer for spec in prim.GetPrimStack()
-                 if not spec.layer.anonymous and spec.layer.identifier != root_id),
-                None,
-            )
+            src_layer = chunk_utils.composed_in_from(prim)
             locked = src_layer is not None and src_layer.identifier != edit_id
 
             existing = self._nodes.get(path)
@@ -2137,6 +2144,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 try:
                     existing.prim = prim
                     existing.set_locked(locked)
+                    # A node can become a subnet after it was built: a Reference pointed
+                    # at a network file is one from that moment, and dives on double-click.
+                    existing.set_subnet(chunk_stage.is_subnet(chunk))
                     # A node can be left without one: _create_proxies_batch defers a node's
                     # create_proxy() call across event-loop ticks, and abandons whatever is
                     # still queued (no reschedule) the moment a newer rebuild supersedes it
@@ -5347,7 +5357,7 @@ class QtGraphFrontend:
 
     def can_dive(self, path: str) -> bool:
         chunk = self._chunk(path)
-        return chunk is not None and chunk_stage.is_chunkgroup(chunk)
+        return chunk is not None and chunk_stage.is_subnet(chunk)
 
     def dive_into(self, path: str) -> None:
         scene = self._scene()
