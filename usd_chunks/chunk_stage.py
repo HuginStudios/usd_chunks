@@ -2280,6 +2280,65 @@ def set_chunk_muted(stage: "Usd.Stage", target: "core.ChunkBase", muted: bool) -
     return True
 
 
+def set_chunks_muted(stage: "Usd.Stage", to_mute, to_unmute) -> "tuple[set, set]":
+    """Block and unblock many chunks, changing the stage's mute state ONCE.
+
+    Every stage.MuteLayer / UnmuteLayer is a composition change, and composition changes
+    are reported to everything watching the stage as a resync of `/` -- the whole stage,
+    re-read. One per chunk is how this used to work, so a single shot change in a
+    shot-gated graph cost five full-stage resyncs in the steady state and over a hundred
+    and fifty on the first switch, each one telling Hydra that every prim it holds may have
+    changed.
+
+    A live viewport is where that lands: the renderer repopulates again and again for one
+    logical change, and the prim browser walks a stage that is being recomposed underneath
+    it. Live-reported as a light that did not appear in V-Ray until the renderer was
+    switched away and back -- which is simply a repopulate done once, cleanly.
+
+    MuteAndUnmuteLayers does both lists in one operation, so the stage recomposes once and
+    watchers get one resync however many branches the gate moved.
+
+    Returns:
+        tuple[set, set]: the chunks actually muted, and those actually un-muted
+    """
+    manager = chunk_registry.ChunkLayerManager()
+    muted, unmuted = set(), set()
+    mute_ids, unmute_ids = [], []
+
+    for target in to_mute:
+        # Never a context: is_blocked() climbs the owner chain, so blocking a container
+        # blocks its whole subtree -- see set_chunk_muted.
+        if target.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            continue
+        target.set_blocked(True)
+        muted.add(target)
+        if stage is not None and (layer := manager.get_layer(target)) is not None:
+            if not stage.IsLayerMuted(layer.identifier):
+                mute_ids.append(layer.identifier)
+
+    for target in to_unmute:
+        if target.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            continue
+        target.set_blocked(False)
+        unmuted.add(target)
+        if stage is not None and (layer := manager.get_layer(target)) is not None:
+            if stage.IsLayerMuted(layer.identifier):
+                unmute_ids.append(layer.identifier)
+
+    if stage is not None and (mute_ids or unmute_ids):
+        # Not layer.SetMuted: that recomposes lazily and expires prims, which is the
+        # "chunk layers disappear" bug the rest of the codebase avoids the same way.
+        stage.MuteAndUnmuteLayers(mute_ids, unmute_ids)
+
+    # After the recomposition, never during: a chunk coming back needs its prim on the
+    # stage before its values have anywhere to go (see push_chunk_values).
+    for target in unmuted:
+        if stage is not None:
+            push_chunk_values(stage, target)
+
+    return muted, unmuted
+
+
 #: Hidden param a gating chunk keeps its record in: the chunks it muted last time, by prim
 #: path, so a branch that stops being upstream is released rather than left blocked forever.
 GATE_RECORD_PARAM = "muted"
@@ -2318,28 +2377,28 @@ def gate_to_branches(node: "core.ChunkBase", live: "set[int]") -> "tuple[set, se
         if 0 <= i < len(inputs):
             keep |= exec_upstream(inputs[i])
 
-    muted = set()
+    # Collected rather than applied one at a time: every mute is a full-stage recomposition,
+    # so a gate that moves six branches used to make six of them. set_chunks_muted does the
+    # lot in one.
+    to_mute = []
     for slot, dep in enumerate(inputs):
         if slot in live:
             continue
         for c in exec_upstream(dep):
             if c in keep:
                 continue
-            if set_chunk_muted(stage, c, True):
-                muted.add(c)
+            to_mute.append(c)
 
     # Un-mute only what this chunk muted itself. A live branch can hold another gate's
     # suppressed branch, and un-muting everything reachable switched that one back on.
     mine = _gate_record(node)
-    for c in keep:
-        if get_chunk_prim_path(c) in mine:
-            set_chunk_muted(stage, c, False)
+    to_unmute = [c for c in keep if get_chunk_prim_path(c) in mine]
 
     # Muted by an earlier evaluation and no longer upstream of this chunk at all: leaving it
     # blocked would strand a branch the user has already disconnected. Resolved against the
     # whole scene, since the record is transitive -- most of what it holds was never a
     # direct input -- and by prim path, since a name is unique only within one context.
-    stranded = mine - {get_chunk_prim_path(c) for c in muted | keep}
+    stranded = mine - {get_chunk_prim_path(c) for c in to_mute} - {get_chunk_prim_path(c) for c in keep}
     if stranded:
         by_path = {
             get_chunk_prim_path(c): c
@@ -2347,7 +2406,9 @@ def gate_to_branches(node: "core.ChunkBase", live: "set[int]") -> "tuple[set, se
         }
         for path in stranded:
             if (c := by_path.get(path)) is not None:
-                set_chunk_muted(stage, c, False)
+                to_unmute.append(c)
+
+    muted, _unmuted = set_chunks_muted(stage, to_mute, to_unmute)
 
     if muted:
         _redefine_orphaned_ancestors(stage)
@@ -3901,6 +3962,28 @@ def recook_for_view(
     if mute_idents:
         stage.MuteAndUnmuteLayers(mute_idents, [])
 
+    # Un-mute every leaf about to cook in ONE recomposition, the way the muting pass above
+    # already does. One stage.UnmuteLayer per chunk was one full-stage resync per chunk, and
+    # a resync tells everything watching -- a live viewport included -- that the whole stage
+    # may have changed. Live-reported from the other end: a light coming BACK did not appear
+    # in V-Ray until the renderer was switched away and back, which is a repopulate done
+    # once instead of once per chunk.
+    #
+    # Before the cook loop rather than inside it, so the stage each chunk cooks against is
+    # the settled one. The previous order un-muted each chunk a moment before executing it,
+    # which meant a chunk early in the order cooked against a stage where its own
+    # downstream neighbours were still hidden.
+    unmute_idents, seen_unmute = [], set()
+    for c in cook_list:
+        if is_group_chunk(c) or c.has_state(disabled):
+            continue
+        layer = lm.get_layer(c)
+        if layer is not None and layer.identifier not in seen_unmute:
+            seen_unmute.add(layer.identifier)
+            unmute_idents.append(layer.identifier)
+    if unmute_idents:
+        stage.MuteAndUnmuteLayers([], unmute_idents)
+
     for c in cook_list:
         if is_group_chunk(c):
             if id(c) in deferred_groups:
@@ -3908,7 +3991,6 @@ def recook_for_view(
                 recook_for_view(stage, scene, c, inner_view, _synthetic_tail=synthetic)
             continue
         if not c.has_state(disabled):
-            mute(lm.get_layer(c), False)
             c.execute()
 
     if not cook_list:
