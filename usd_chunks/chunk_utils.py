@@ -957,62 +957,65 @@ def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=
     from usd_chunks import chunk
     from usd_chunks import chunk_core
 
-    # Clean existing params
+    if not prim or not prim.IsValid():
+        # Clean existing params: no prim means nothing to show.
+        for grp in target_group.get_my_params():
+            grp.request_delete()
+        return
+
+    # Read the prim FIRST, and build every param, before touching target_group at all.
+    #
+    # Installing a param fires notices; a cook reached that way can recompose the stage; and
+    # a resync EXPIRES this prim handle along with every attribute already read off it, so
+    # the next read raises. The case that found it: a Stage Expression Switch writes the
+    # record of what it muted, that write cascades into cooking a light on the branch it
+    # just suppressed, and the light's own prim is gone by the time this loop reaches its
+    # second attribute.
+    #
+    # Raising there was not a local failure -- the exception escaped into
+    # gate_to_branches and left the gate half done, with the branch it was suppressing
+    # still composed (live-reported as a gated light that would not go away when the shot
+    # changed, until a param on it was touched). Collecting first turns that into a lost
+    # cook rather than a half-emptied chunk: nothing has been deleted yet, the params the
+    # chunk already has stay exactly as they were, and the next cook rebuilds them.
+    prim_path = prim.GetPath()
+    specs = []
+    try:
+        for attr in prim.GetAttributes():
+            specs.append((attr.GetNamespace(),
+                          chunk.param_from_attr(attr, var_selections=var_selections),
+                          collapse_non_inputs))
+        for rel in prim.GetRelationships():
+            specs.append((rel.GetNamespace(), chunk.param_from_rel(rel), False))
+    except RuntimeError:
+        logger.debug("show_attribute: %s went away while it was being read; leaving this "
+                     "chunk's params alone for the next cook", prim_path)
+        return
+
+    # Clean existing params, now that there is something to replace them with.
     for grp in target_group.get_my_params():
         grp.request_delete()
 
-    if not prim or not prim.IsValid():
-        return
-
-    # Generate params from attributes
-    attributes = prim.GetAttributes()
     groups = {}
-    for attr in attributes:
-        if not (param := chunk.param_from_attr(attr, var_selections=var_selections)):
+    for ns, param, collapse in specs:
+        if not param:
             continue
 
         if not isinstance(param, chunk.ChunkGroupBase):
             param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
 
-        ns = attr.GetNamespace()
         tgt_grp = target_group if not ns else groups.get(ns)
-
         if not tgt_grp:
             tgt_grp = chunk.Group(
                 ns,
                 flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
             )
-            if collapse_non_inputs and ns and ns != "inputs":
+            if collapse and ns and ns != "inputs":
                 tgt_grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
-
             target_group.add_param(tgt_grp)
             groups[ns] = tgt_grp
 
-        if param:
-            tgt_grp.add_param(param)
-
-    # Generate params from relationships
-    relationships = prim.GetRelationships()
-    for rel in relationships:
-        if not (param := chunk.param_from_rel(rel)):
-            continue
-
-        if not isinstance(param, chunk.ChunkGroupBase):
-            param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
-
-        ns = rel.GetNamespace()
-        tgt_grp = target_group if not ns else groups.get(ns)
-
-        if not tgt_grp:
-            tgt_grp = chunk.Group(
-                ns,
-                flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
-            )
-            target_group.add_param(tgt_grp)
-            groups[ns] = tgt_grp
-
-        if param and tgt_grp:
-            tgt_grp.add_param(param)
+        tgt_grp.add_param(param)
 
 
 # ---------------------------------------------------------------------------
