@@ -13,7 +13,7 @@ import pytest
 from pxr import Sdf, Usd
 
 from graph_fixtures import _Scene, make_network
-from usd_chunks import chunk_registry, chunk_utils
+from usd_chunks import chunk_registry, chunk_stage, chunk_utils
 from usd_chunks.chunk_stage import (
     param_override_source,
     ChunkStageSync, export_chunks, get_chunk_prim_path, initialize, is_group_chunk,
@@ -123,6 +123,26 @@ class TestPointingAtANetwork:
     def test_the_network_file_is_untouched(self, hosting):
         _, _, _, network_file = hosting
         assert not Sdf.Layer.Find(network_file).dirty
+
+    def test_the_next_chunk_chains_onto_it(self, hosting):
+        """The host is the tail of its context's chain, so a chunk created after it wires
+        onto its output -- the same as after any other node.
+
+        A group made as a group is recorded against its parent context when it is added;
+        one PROMOTED to a group by hosting never went through that path, and finding the
+        tail looks for a group by its parent context and by nothing else. So the host was
+        invisible to it and the next chunk -- the Transform an auto-create drops in front
+        of you when you grab something -- landed unwired.
+        """
+        stage, scene, reference, _ = hosting
+        prev, chunk_stage._params_tab_create = chunk_stage._params_tab_create, True
+        try:
+            added = _add(scene, "transform")
+        finally:
+            chunk_stage._params_tab_create = prev
+        prim = stage.GetPrimAtPath(get_chunk_prim_path(added))
+        upstream = [str(c.GetPrimPath()) for c in chunk_stage.exec_input_connections(prim)]
+        assert upstream == [get_chunk_prim_path(reference)]
 
 
 class TestPointingAtSceneContent:

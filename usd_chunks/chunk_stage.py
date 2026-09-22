@@ -2423,6 +2423,16 @@ def host_networks(chunk: "core.ChunkBase", targets: "list[tuple[str, str]]",
     namespace = namespace.rstrip("/") if namespace else ""
     namespace_changed = getattr(chunk, "_network_namespace", "") != namespace
     object.__setattr__(chunk, "_network_namespace", namespace)
+    # Which context this node sits in, recorded while it is still a plain chunk: once
+    # CONTEXT is on, get_context() answers with the chunk itself. A group created as a
+    # group gets _parent_context from SceneSender.add_chunk, but one PROMOTED to a group
+    # here never went through that path -- and _find_dag_tail looks for a group by its
+    # parent context and by nothing else, so without this the host was invisible to it and
+    # the next chunk created in the graph landed unwired instead of chained onto it.
+    if getattr(chunk, "_parent_context", None) is None:
+        enclosing = chunk.get_context()
+        if enclosing is not None and enclosing is not chunk:
+            object.__setattr__(chunk, "_parent_context", weakref.ref(enclosing))
     for flag in (ChunkFlags.GroupFlags.CONTEXT, ChunkFlags.GroupFlags.COLLAPSABLE,
                  ChunkFlags.GroupFlags.LABELED):
         chunk.set_flag(flag)
