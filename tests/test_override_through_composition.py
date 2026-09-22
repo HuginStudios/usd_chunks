@@ -30,7 +30,9 @@ from pxr import Sdf, Usd
 
 from graph_fixtures import _Scene, make_network
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_stage import export_chunks, initialize
+from usd_chunks.chunk_stage import (
+    export_chunks, initialize, param_override_source, revert_param_override,
+)
 
 _TX = "inputs:translate_grp:tx"
 _SEQ_VALUE = 1.0
@@ -249,3 +251,32 @@ class TestSavingKeepsTheArc:
         assert prim.GetAttribute(_TX).Get() == _SHOT_VALUE
         sibling = reopened.GetPrimAtPath(os.path.dirname(transform_path) + "/Transform1")
         assert sibling.GetTypeName() == "Chunk"
+
+
+class TestKnowingAndRevertingAnOverride:
+    def test_an_untouched_param_is_not_an_override(self, composed_shot):
+        _, _, scene, _, _, _ = composed_shot
+        assert param_override_source(_tx_param(scene)) is None
+
+    def test_a_nudged_param_names_the_file_it_overrides(self, composed_shot):
+        _, _, scene, seq_layer, _, _ = composed_shot
+        _tx_param(scene).value = _SHOT_VALUE
+        assert param_override_source(_tx_param(scene)) == seq_layer
+
+    def test_revert_puts_the_sequence_value_back_and_authors_nothing(self, composed_shot):
+        _, stage, scene, seq_layer, _, transform_path = composed_shot
+        tx = _tx_param(scene)
+        tx.value = _SHOT_VALUE
+        revert_param_override(tx)
+        assert tx.value == _SEQ_VALUE
+        assert param_override_source(tx) is None
+        attr = stage.GetAttributeAtPath(f"{transform_path}.{_TX}")
+        assert attr.Get() == _SEQ_VALUE
+        assert [s.layer for s in attr.GetPropertyStack(Usd.TimeCode.Default())] == [seq_layer]
+        assert not seq_layer.dirty
+
+    def test_a_shot_made_chunks_value_is_never_an_override(self, composed_shot):
+        _, _, scene, _, _, _ = composed_shot
+        create = _add(scene, "create_layer")
+        create.get_param("layer_name").value = "mine"
+        assert param_override_source(create.get_param("layer_name")) is None

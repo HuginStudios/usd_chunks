@@ -18,6 +18,18 @@ This file starts with the first release; development before that is in the commi
   the network file is never written to. Several network files in one Sublayer stack
   under the node in list order, first strongest. Pointed at scene content, both chunks
   behave as before.
+- A host's "Insert to location" is the scene root its network's prim paths resolve
+  under, so two hosts of one room network go to /left/... and /right/... instead of
+  fighting over the same prims. Empty by default: a sequence hosted in a shot keeps the
+  paths the sequence wrote. The stored text and the network file are untouched -- the
+  prefix applies when a prim-path param (a `primpath_location`, or one flagged
+  PRIM_SELECTION) is read.
+- A param overriding a composed-in value shows it (amber label, "Overrides seq.usda" on
+  hover) and offers "Revert to seq.usda" on right-click, which drops the shot's opinion
+  so the sequence's shows through again.
+- "Publish network…" on a chunkgroup writes it to its own file and makes the group a
+  host of that file; "Localise network" on a host (or a published group) takes the
+  network back in as a plain chunkgroup of this file, overrides folded in.
 - Installable from a wheel: `pip install usd-chunks` provides the library and the
   `usdchunks` CLI, with `usd-core` as a dependency and no USD build required.
 - `usdchunks plugin-path`, which prints the installed plugin directory so

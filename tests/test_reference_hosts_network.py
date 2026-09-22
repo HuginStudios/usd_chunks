@@ -13,8 +13,9 @@ import pytest
 from pxr import Sdf, Usd
 
 from graph_fixtures import _Scene, make_network
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_stage import (
+    param_override_source,
     ChunkStageSync, export_chunks, get_chunk_prim_path, initialize, is_group_chunk,
     is_network_host, is_subnet,
 )
@@ -347,3 +348,320 @@ class TestPayloadHostsToo:
             assert stage.GetPrimAtPath(location).HasAuthoredPayloads()
         finally:
             _teardown(scene)
+
+
+from usd_chunks.chunk_stage import is_chunkgroup, localise_network, publish_network
+
+
+class TestLocalise:
+    """Localise = convert the host into a chunkgroup of this file, its network now local."""
+
+    def test_the_host_becomes_a_chunkgroup_with_the_same_chunks(self, hosting):
+        stage, scene, reference, network_file = hosting
+        host_path = get_chunk_prim_path(reference)
+        transform = next(c for c in scene.get_chunks() if c.name == "Transform")
+        transform.get_param("tx").value = 2.5
+
+        group = localise_network(reference)
+
+        assert group is not None and is_chunkgroup(group)
+        assert get_chunk_prim_path(group) == host_path
+        assert not is_network_host(group)
+        assert _children(scene, group) == ["Transform", "Transform1"]
+        assert not stage.GetPrimAtPath(host_path).HasAuthoredReferences()
+
+    def test_the_override_survives_as_the_local_value(self, hosting):
+        stage, scene, reference, network_file = hosting
+        host_path = get_chunk_prim_path(reference)
+        next(c for c in scene.get_chunks() if c.name == "Transform").get_param("tx").value = 2.5
+        localise_network(reference)
+        transform = next(c for c in scene.get_chunks() if c.name == "Transform")
+        assert transform.get_param("tx").value == 2.5
+        attr = stage.GetAttributeAtPath(f"{host_path}/Transform.{_TX}")
+        assert all(not chunk_utils.is_foreign_layer(s.layer, stage)
+                   for s in attr.GetPropertyStack(Usd.TimeCode.Default()))
+
+    def test_the_file_is_no_longer_needed(self, hosting, tmp_path):
+        stage, scene, reference, network_file = hosting
+        host_path = get_chunk_prim_path(reference)
+        localise_network(reference)
+        shot = str(tmp_path / "shot.usda")
+        export_chunks(scene, shot)
+        saved = Sdf.Layer.FindOrOpen(shot)
+        assert "seq.usda" not in saved.ExportToString()
+        assert saved.GetPrimAtPath(f"{host_path}/Transform").specifier == Sdf.SpecifierDef
+        assert saved.GetAttributeAtPath(f"{host_path}.info:chunkType").default == "chunkgroup"
+
+
+class TestPublish:
+    """Publish = write a group out and make it the host of that file: the inverse."""
+
+    def _group_with_chunks(self, scene):
+        from usd_chunks.plugins import chunk_graph
+        a = _add(scene, "transform")
+        b = _add(scene, "transform")
+        b.add_dependency(a)
+        a.get_param("tx").value = 4.0
+        return a, b
+
+    def test_the_file_holds_the_group_at_chunks_name(self, tmp_path):
+        stage, scene = _open(None)
+        try:
+            a, b = self._group_with_chunks(scene)
+            group = a.get_context()
+            out = str(tmp_path / "room.usda")
+            publish_network(group, out)
+            saved = Sdf.Layer.FindOrOpen(out)
+            root = f"/chunks/{group.name}"
+            assert saved.GetAttributeAtPath(f"{root}.info:chunkType").default == "chunkgroup"
+            assert saved.GetPrimAtPath(f"{root}/{a.name}") is not None
+            assert saved.GetPrimAtPath(f"{root}/{b.name}") is not None
+            wire = saved.GetAttributeAtPath(f"{root}/{b.name}.inputs:chunk")
+            assert [str(p) for p in wire.connectionPathList.GetAddedOrExplicitItems()] == [
+                f"{root}/{a.name}.outputs:chunk"
+            ]
+            assert saved.GetAttributeAtPath(f"{root}/{a.name}.{_TX}").default == 4.0
+        finally:
+            _teardown(scene)
+
+    def test_the_group_now_composes_from_the_file(self, tmp_path):
+        stage, scene = _open(None)
+        try:
+            a, b = self._group_with_chunks(scene)
+            group = a.get_context()
+            group_path = get_chunk_prim_path(group)
+            out = str(tmp_path / "room.usda")
+            publish_network(group, out)
+            prim = stage.GetPrimAtPath(group_path)
+            assert prim.HasAuthoredReferences()
+            assert chunk_utils.is_composed_in(stage.GetPrimAtPath(get_chunk_prim_path(a)))
+            assert a.get_param("tx").value == 4.0
+            assert a in scene.get_chunks() and b in scene.get_chunks()
+        finally:
+            _teardown(scene)
+
+    def test_an_edit_after_publishing_is_an_override(self, tmp_path):
+        stage, scene = _open(None)
+        try:
+            a, b = self._group_with_chunks(scene)
+            out = str(tmp_path / "room.usda")
+            publish_network(a.get_context(), out)
+            a.get_param("tx").value = 9.0
+            assert param_override_source(a.get_param("tx")) == Sdf.Layer.Find(out)
+            assert not Sdf.Layer.Find(out).dirty
+        finally:
+            _teardown(scene)
+
+    def test_publish_then_localise_is_a_round_trip(self, tmp_path):
+        """A published chunkgroup is a chunkgroup that references its file -- not a network
+        host, but localisable: taking the network back drops the arc and authors the
+        chunks locally again, objects untouched."""
+        stage, scene = _open(None)
+        try:
+            a, b = self._group_with_chunks(scene)
+            group = a.get_context()
+            group_path = get_chunk_prim_path(group)
+            out = str(tmp_path / "room.usda")
+            publish_network(group, out)
+            assert is_chunkgroup(group) and not is_network_host(group)
+            a.get_param("tx").value = 9.0
+
+            back = localise_network(group)
+
+            assert back is group
+            assert not stage.GetPrimAtPath(group_path).HasAuthoredReferences()
+            assert not chunk_utils.is_composed_in(stage.GetPrimAtPath(get_chunk_prim_path(a)))
+            assert a.get_param("tx").value == 9.0
+            assert param_override_source(a.get_param("tx")) is None
+            shot = str(tmp_path / "shot.usda")
+            export_chunks(scene, shot)
+            assert "room.usda" not in Sdf.Layer.FindOrOpen(shot).ExportToString()
+        finally:
+            _teardown(scene)
+
+
+@pytest.fixture
+def prim_network(tmp_path):
+    """A network that authors scene content: one Prim chunk at /thing."""
+    seq, context = make_network(tmp_path / "prims.usda", modules=("prim",), chain=False)
+    stage = Usd.Stage.Open(seq)
+    prim = stage.GetPrimAtPath(f"{context}/Prim")
+    prim.CreateAttribute("inputs:primpath_location", Sdf.ValueTypeNames.String).Set("/thing")
+    stage.GetRootLayer().Save()
+    return seq
+
+
+def _reference(scene, path, location=None):
+    reference = _add(scene, "reference")
+    reference.get_param("file_path").value = path
+    if location is not None:
+        reference.get_param("primpath_location").value = location
+    reference.execute()
+    return reference
+
+
+class TestNamespace:
+    """A host's location field is the scene root its network's prim paths resolve under.
+    Empty -- the default for a network -- means the paths as the sequence wrote them."""
+
+    def test_a_network_is_not_namespaced_by_default(self, prim_network):
+        stage, scene = _open(None)
+        try:
+            host = _reference(scene, prim_network)
+            assert host.get_param("primpath_location").value == ""
+            inner = next(c for c in scene.get_chunks() if c.name == "Prim")
+            inner.execute()
+            assert stage.GetPrimAtPath("/thing").IsValid()
+        finally:
+            _teardown(scene)
+
+    def test_a_location_puts_the_network_under_it(self, prim_network):
+        stage, scene = _open(None)
+        try:
+            host = _reference(scene, prim_network, "/room")
+            inner = next(c for c in scene.get_chunks() if c.name == "Prim")
+            path = inner.get_param("primpath_location")
+            assert path.raw_value == "/thing", "the stored text is the file's"
+            assert path.value == "/room/thing", "the resolved path is the scene's"
+            inner.execute()
+            assert stage.GetPrimAtPath("/room/thing").IsValid()
+            assert not stage.GetPrimAtPath("/thing").IsValid()
+            assert not Sdf.Layer.Find(prim_network).dirty
+        finally:
+            _teardown(scene)
+
+    def test_two_hosts_of_one_network_do_not_collide(self, prim_network):
+        stage, scene = _open(None)
+        try:
+            _reference(scene, prim_network, "/left")
+            _reference(scene, prim_network, "/right")
+            for inner in [c for c in scene.get_chunks() if c.name == "Prim"]:
+                inner.execute()
+            assert stage.GetPrimAtPath("/left/thing").IsValid()
+            assert stage.GetPrimAtPath("/right/thing").IsValid()
+        finally:
+            _teardown(scene)
+
+    def test_a_path_written_back_is_stored_relative(self, prim_network):
+        """prim.py writes its actual path back into its param (and a viewport pick hands
+        over a full stage path). Inside a namespace that must not double up."""
+        stage, scene = _open(None)
+        try:
+            _reference(scene, prim_network, "/room")
+            inner = next(c for c in scene.get_chunks() if c.name == "Prim")
+            inner.execute()
+            path = inner.get_param("primpath_location")
+            path.value = "/room/thing"
+            assert path.raw_value == "/thing"
+            assert path.value == "/room/thing"
+            inner.execute()
+            assert not stage.GetPrimAtPath("/room/room/thing").IsValid()
+        finally:
+            _teardown(scene)
+
+
+class TestWhatTheShotCannotDoToTheSequence:
+    def test_deleting_a_hosted_chunk_deactivates_it_and_leaves_the_file_alone(self, hosting):
+        stage, scene, reference, network_file = hosting
+        transform = next(c for c in scene.get_chunks() if c.name == "Transform")
+        path = get_chunk_prim_path(transform)
+        transform.request_delete()
+        assert not Sdf.Layer.Find(network_file).dirty
+        prim = stage.GetPrimAtPath(path)
+        assert prim.IsValid(), "a referenced prim cannot be deleted, only deactivated"
+        assert not prim.IsActive()
+        assert stage.GetRootLayer().GetPrimAtPath(path).active is False
+
+    def test_renaming_a_hosted_chunk_is_refused(self, hosting):
+        stage, scene, reference, network_file = hosting
+        transform = next(c for c in scene.get_chunks() if c.name == "Transform")
+        path = get_chunk_prim_path(transform)
+        transform.name = "Moved"
+        assert transform.name == "Transform"
+        assert stage.GetPrimAtPath(path).IsValid()
+        assert not Sdf.Layer.Find(network_file).dirty
+
+    def test_a_saved_arc_is_relative_when_the_file_sits_beside_the_shot(self, hosting, tmp_path):
+        _, scene, reference, network_file = hosting
+        shot = str(tmp_path / "shot.usda")
+        export_chunks(scene, shot)
+        text = open(shot).read()
+        assert "@./seq.usda@" in text, text
+
+
+class TestOverridesBelongToTheHostNode:
+    """An override on a hosted chunk is authored under the host's prim -- inside the
+    Reference node's own block in the saved file -- so the node's fate is the overrides'
+    fate: disable the node and they go dormant with its subtree, delete it and they go
+    with the subtree. Not in the host's procedural layer, which a cook clears and a save
+    does not write."""
+
+    def test_the_saved_file_nests_the_override_inside_the_host_block(self, hosting, tmp_path):
+        stage, scene, reference, _ = hosting
+        next(c for c in scene.get_chunks() if c.name == "Transform").get_param("tx").value = 2.5
+        shot = str(tmp_path / "shot.usda")
+        export_chunks(scene, shot)
+        saved = Sdf.Layer.FindOrOpen(shot)
+        host = saved.GetPrimAtPath(get_chunk_prim_path(reference))
+        assert "Transform" in host.nameChildren
+        assert host.nameChildren["Transform"].attributes[_TX].default == 2.5
+
+    def test_disabling_the_host_takes_its_network_and_overrides_out_of_effect(self, hosting):
+        from usd_chunks.plugins import chunk_graph
+        stage, scene, reference, _ = hosting
+        transform = next(c for c in scene.get_chunks() if c.name == "Transform")
+        transform.get_param("tx").value = 2.5
+        path = get_chunk_prim_path(transform)
+        chunk_graph.toggle_disabled([reference])
+        assert not stage.GetPrimAtPath(get_chunk_prim_path(reference)).IsActive()
+        assert not stage.GetPrimAtPath(path).IsValid(), "an inactive prim prunes its subtree"
+        chunk_graph.toggle_disabled([reference])
+        assert stage.GetAttributeAtPath(f"{path}.{_TX}").Get() == 2.5, "and they come back with it"
+
+    def test_deleting_the_host_deletes_its_overrides(self, hosting):
+        stage, scene, reference, network_file = hosting
+        transform = next(c for c in scene.get_chunks() if c.name == "Transform")
+        transform.get_param("tx").value = 2.5
+        host_path = get_chunk_prim_path(reference)
+        seq_layer = Sdf.Layer.Find(network_file)
+        reference.request_delete()
+        for layer in stage.GetLayerStack(includeSessionLayers=True):
+            if not chunk_utils.is_foreign_layer(layer, stage):
+                assert layer.GetPrimAtPath(host_path) is None, layer.identifier
+        assert not seq_layer.dirty
+
+
+class TestTheSequenceIsLive:
+    """Change the sequence file while the shot is open and reload the layer: what the
+    sequence added appears, what it dropped leaves, the shot's overrides stay. No sync
+    step, no reimport -- the arc is composition."""
+
+    def _rewrite_sequence(self, seq: str, add: str, drop: str):
+        other = Usd.Stage.Open(seq)
+        new = other.DefinePrim(f"/chunks/ChunkGroup/{add}", "Chunk")
+        attr = new.CreateAttribute("info:chunkType", Sdf.ValueTypeNames.Token)
+        attr.SetVariability(Sdf.VariabilityUniform)
+        attr.Set("transform")
+        other.RemovePrim(f"/chunks/ChunkGroup/{drop}")
+        other.GetRootLayer().Save()
+
+    def test_a_layer_reload_follows_the_sequence(self, hosting):
+        stage, scene, reference, network_file = hosting
+        transform = next(c for c in scene.get_chunks() if c.name == "Transform")
+        transform.get_param("tx").value = 3.5
+        gone = next(c for c in scene.get_chunks() if c.name == "Transform1")
+
+        self._rewrite_sequence(network_file, add="Transform9", drop="Transform1")
+        Sdf.Layer.Find(network_file).Reload()
+
+        assert _children(scene, reference) == ["Transform", "Transform9"]
+        assert gone not in scene.get_chunks()
+        assert transform.get_param("tx").value == 3.5
+        assert not Sdf.Layer.Find(network_file).dirty
+
+    def test_unhosting_drops_the_children_it_composed_in(self, hosting, scene_file):
+        stage, scene, reference, _ = hosting
+        inner = [c for c in scene.get_chunks() if c is not reference]
+        reference.get_param("file_path").value = scene_file
+        reference.execute()
+        assert all(c not in scene.get_chunks() for c in inner)

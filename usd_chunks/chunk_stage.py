@@ -552,10 +552,24 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         prev_w = chunk_notice._usd_write_active
         chunk_notice._usd_write_active = True
         try:
+            # Owned layers only: a chunk composed in from a sequence file (sublayered, or
+            # hosted by reference) is not this file's to delete, and pulling its spec out
+            # of the sequence layer gutted the sequence in the layer cache. What the shot
+            # can do is what USD lets it: drop its own overrides and deactivate the prim.
+            prim_before = self._stage.GetPrimAtPath(sdf_path)
+            composed_in = bool(prim_before and prim_before.IsValid()
+                               and chunk_utils.is_composed_in(prim_before))
             for layer in self._stage.GetLayerStack(includeSessionLayers=True):
+                if chunk_utils.is_foreign_layer(layer, self._stage):
+                    continue
                 parent = layer.GetPrimAtPath(sdf_path.GetParentPath())
                 if parent and sdf_path.name in parent.nameChildren:
                     del parent.nameChildren[sdf_path.name]
+            if composed_in:
+                remaining = self._stage.GetPrimAtPath(sdf_path)
+                if remaining and remaining.IsValid():
+                    with Usd.EditContext(self._stage, chunk_utils.host_edit_layer(self._stage)):
+                        remaining.SetActive(False)
 
             # Tidy up the chunks root once its last chunk goes -- an empty /chunks prim is
             # bookkeeping nobody wants left behind. ONLY that root, though: a chunk inside a
@@ -746,6 +760,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
         self._reconcile_changed_exec_inputs(all_changed, notice)
         self._mirror_changed_params(stage, all_changed)
+        self._prune_vanished(stage, {str(p) for p in notice.GetResyncedPaths()})
         for chunk in self._scene.get_chunks():
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
             if not chunk_prim_path or chunk_prim_path not in all_changed:
@@ -769,6 +784,59 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk.set_state(ChunkFlags.State.DISABLED)
             elif is_active and is_disabled:
                 chunk.unset_state(ChunkFlags.State.DISABLED)
+
+    def _prune_vanished(self, stage: Usd.Stage, resynced: "set[str]") -> None:
+        """Tear down the chunk objects whose prims composition no longer has.
+
+        A chunk that arrived by composition can leave the same way: the sequence file drops
+        it and the layer reloads, or the host's arc is cleared. Nothing authored it here,
+        so nothing here deletes it -- its prim just stops being on the stage, and the
+        object used to linger, muted, until its next cook authored a fresh prim of its own
+        at whatever path it then resolved to.
+
+        Only a chunk inside a hosted subtree -- under a prim carrying a reference or
+        payload arc -- is a candidate: a locally authored chunk never loses its prim
+        except through _on_chunk_deleted, and its path can be registered an instant
+        before its prim is defined, which is not "vanished". Only under a resynced path,
+        and only a prim that is genuinely gone: one pruned because an ancestor was
+        deactivated (a disabled host) is still there in every way that matters and comes
+        back with the ancestor, objects intact. Deepest first, so a nested group goes
+        before its parent; under _reloading, so nothing is unauthored.
+        """
+        if not resynced or not self._scene:
+            return
+        gone = []
+        for chunk in self._scene.get_chunks():
+            path = self._chunk_prim_paths.get(id(chunk))
+            if not path or not any(path == r or path.startswith(r + "/") for r in resynced):
+                continue
+            if stage.GetPrimAtPath(Sdf.Path(path)).IsValid():
+                continue
+            hosted = False
+            ancestor = Sdf.Path(path).GetParentPath()
+            while not ancestor.isEmpty and ancestor != Sdf.Path.absoluteRootPath:
+                prim = stage.GetPrimAtPath(ancestor)
+                if prim.IsValid():
+                    if not prim.IsActive():
+                        hosted = False
+                        break
+                    if _hosts_by_arc(prim):
+                        hosted = True
+                        break
+                ancestor = ancestor.GetParentPath()
+            if hosted:
+                gone.append((path, chunk))
+        if not gone:
+            return
+        gone.sort(key=lambda item: item[0].count("/"), reverse=True)
+        was_reloading = self._reloading
+        self._reloading = True
+        try:
+            for path, chunk in gone:
+                logger.info("chunk prim %s left the stage; dropping its chunk", path)
+                chunk.request_delete()
+        finally:
+            self._reloading = was_reloading
 
     def _mirror_changed_params(self, stage: Usd.Stage, all_changed: "set[str]") -> None:
         """Pull each changed USD property's value into the params bound to it.
@@ -1044,6 +1112,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not self._stage:
             return
         old_prim = self._stage.GetPrimAtPath(Sdf.Path(old_path))
+        if old_prim and old_prim.IsValid() and chunk_utils.is_composed_in(old_prim):
+            # USD has no rename override: the name is the sequence file's, and renaming
+            # it in place would rewrite that file. Localise the network first.
+            logger.warning(
+                "Cannot rename %s: it is composed in from another file (localise the network "
+                "to edit its structure). The chunk keeps the name %r on the stage.",
+                old_path, old_name)
+            if chunk is not None:
+                object.__setattr__(chunk, "name", old_name)
+            return
         target_layers = []
         if old_prim and old_prim.IsValid():
             for spec in old_prim.GetPrimStack():
@@ -2211,7 +2289,13 @@ def network_target(asset_path: str, import_path: str = "") -> "str | None":
     """
     if not asset_path:
         return None
-    layer = Sdf.Layer.FindOrOpen(asset_path)
+    try:
+        layer = Sdf.Layer.FindOrOpen(asset_path)
+    except Tf.ErrorException:
+        # A file this USD build has no format plugin for (a .mtlx without the MaterialX
+        # plugin). Not a network, and not this function's error to raise: the chunk
+        # that goes on to reference the file reports it, as it always has.
+        return None
     if layer is None:
         return None
     if import_path:
@@ -2224,9 +2308,33 @@ def network_target(asset_path: str, import_path: str = "") -> "str | None":
         candidates = [spec.path for spec in layer.rootPrims]
         if Sdf.Path(_CHUNKS_ROOT) not in candidates:
             candidates.append(Sdf.Path(_CHUNKS_ROOT))
-    composed = Usd.Stage.OpenMasked(
-        layer, Usd.StagePopulationMask([str(c) for c in candidates]), Usd.Stage.LoadNone
-    )
+
+    # The layer's own specs first: free, and the answer for every file export_chunks
+    # wrote. Composition only when the layer stacks sublayers the answer could be in --
+    # composing a big asset's default prim to learn it is not a network would cost that
+    # asset's whole hierarchy on every cook of a plain Reference.
+    def spec_is_group(prim_spec) -> bool:
+        if prim_spec is None or prim_spec.typeName != _CHUNK_PRIM_TYPENAME:
+            return False
+        attr = prim_spec.attributes.get(_CHUNK_TYPE_ATTR)
+        return attr is not None and attr.default == "chunkgroup"
+
+    for path in candidates:
+        spec = layer.GetPrimAtPath(path)
+        if spec_is_group(spec):
+            return str(path)
+        if spec is not None and spec.typeName == _CHUNKS_ROOT_TYPENAME:
+            for child in spec.nameChildren.values():
+                if spec_is_group(child):
+                    return str(child.path)
+    if not layer.subLayerPaths:
+        return None
+    try:
+        composed = Usd.Stage.OpenMasked(
+            layer, Usd.StagePopulationMask([str(c) for c in candidates]), Usd.Stage.LoadNone
+        )
+    except Tf.ErrorException:
+        return None
 
     def is_group(prim) -> bool:
         if not prim or not prim.IsValid() or prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
@@ -2245,14 +2353,21 @@ def network_target(asset_path: str, import_path: str = "") -> "str | None":
 
 
 def host_network(chunk: "core.ChunkBase", asset_path: str, prim_path: str,
-                 arc: str = "reference") -> None:
+                 arc: str = "reference", namespace: str = "") -> None:
     """Make chunk the host of the network at prim_path in asset_path. See host_networks."""
-    host_networks(chunk, [(asset_path, prim_path)], arc)
+    host_networks(chunk, [(asset_path, prim_path)], arc, namespace)
 
 
 def host_networks(chunk: "core.ChunkBase", targets: "list[tuple[str, str]]",
-                  arc: str = "reference") -> None:
+                  arc: str = "reference", namespace: str = "") -> None:
     """Make chunk the host of these networks, each an (asset path, prim path) pair.
+
+    namespace is the scene root the network's prim paths resolve under (an empty one
+    means the paths as written, which is the sequence-into-shot case). A network's chunks
+    author absolute paths -- /Clock_01 -- so two hosts of the same room would fight over
+    the same prims; with a namespace each host's chunks resolve their prim-path params
+    under its root (ChunkParamBase.network_namespace), and /Clock_01 in the file is
+    /bedroom/Clock_01 in the scene. The file and the params' stored text are untouched.
 
     Authors the arcs on chunk's own prim -- in its bookkeeping layer, since an arc is
     structure that must survive a cook and a save, not content -- and gives the chunk
@@ -2290,6 +2405,9 @@ def host_networks(chunk: "core.ChunkBase", targets: "list[tuple[str, str]]",
         return
     chunk.prim_path = own_path
     object.__setattr__(chunk, "_exec_prim_path", own_path)
+    namespace = namespace.rstrip("/") if namespace else ""
+    namespace_changed = getattr(chunk, "_network_namespace", "") != namespace
+    object.__setattr__(chunk, "_network_namespace", namespace)
     for flag in (ChunkFlags.GroupFlags.CONTEXT, ChunkFlags.GroupFlags.COLLAPSABLE,
                  ChunkFlags.GroupFlags.LABELED):
         chunk.set_flag(flag)
@@ -2300,6 +2418,15 @@ def host_networks(chunk: "core.ChunkBase", targets: "list[tuple[str, str]]",
         arcs = [Sdf.Reference(asset, Sdf.Path(target)) for asset, target in targets]
         current = prim.GetMetadata("references")
     if current is not None and list(current.GetAddedOrExplicitItems()) == arcs:
+        if namespace_changed:
+            # Same network, new root: every prim path inside resolves somewhere else now,
+            # and the content authored under the old root is only cleared by a re-cook.
+            scene = _active_scene()
+            inside = [c for c in (scene.get_chunks() if scene else [])
+                      if get_chunk_prim_path(c).startswith(own_path + "/")]
+            for c in sorted(inside, key=lambda c: get_chunk_prim_path(c).count("/")):
+                if not c.is_blocked() and not is_group_chunk(c):
+                    c.execute()
         return
     sync = ChunkStageSync()
     prev = chunk_notice._usd_write_active
@@ -2325,18 +2452,96 @@ def unhost_network(chunk: "core.ChunkBase") -> None:
     stage = chunk.get_stage()
     if not stage or not is_network_host(chunk):
         return
-    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    own_path = get_chunk_prim_path(chunk)
+    prim = stage.GetPrimAtPath(Sdf.Path(own_path))
+    sync = ChunkStageSync()
+    scene = _active_scene()
+    # The children the arc composed in, gathered while their prims still tell us so; the
+    # arc clear runs with notices suppressed, so the stage-change path will not see them go.
+    inside = [c for c in (scene.get_chunks() if scene else [])
+              if get_chunk_prim_path(c).startswith(own_path + "/")]
     prev = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
-        with ChunkStageSync()._chunk_prim_edit_context(chunk):
+        with sync._chunk_prim_edit_context(chunk):
             prim.GetReferences().ClearReferences()
             prim.GetPayloads().ClearPayloads()
     finally:
         chunk_notice._usd_write_active = prev
+    was_reloading = sync._reloading
+    sync._reloading = True
+    try:
+        for c in sorted(inside, key=lambda c: get_chunk_prim_path(c).count("/"), reverse=True):
+            if not stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c))).IsValid():
+                c.request_delete()
+    finally:
+        sync._reloading = was_reloading
     for flag in (ChunkFlags.GroupFlags.CONTEXT, ChunkFlags.GroupFlags.COLLAPSABLE,
                  ChunkFlags.GroupFlags.LABELED):
         chunk.unset_flag(flag)
+    object.__setattr__(chunk, "_network_namespace", "")
+
+
+def param_override_source(param: "core.ChunkParamBase") -> "Sdf.Layer | None":
+    """The composed-in layer whose opinion this param's value overrides, or None.
+
+    A param on a chunk that arrived by composition (a hosted network, a sublayered
+    sequence) shows the file's value until the shot writes its own; then the storage
+    attr has an opinion in an owned layer sitting over one from a foreign layer or across
+    an arc. That weaker opinion's layer is the answer -- what a UI names in "overrides
+    seq.usda" and what revert_param_override puts back. A local opinion with nothing
+    composed in beneath it is not an override, just a value.
+    """
+    attr = _storage_attr(param)
+    if attr is None:
+        return None
+    stage = attr.GetStage()
+    local = False
+    for spec in attr.GetPropertyStack(Usd.TimeCode.Default()):
+        composed_in = spec.path != attr.GetPath() or chunk_utils.is_foreign_layer(spec.layer, stage)
+        if composed_in:
+            return spec.layer if local else None
+        local = True
+    return None
+
+
+def revert_param_override(param: "core.ChunkParamBase") -> None:
+    """Drop the shot's opinion on this param so the composed-in value shows through again.
+
+    Every owned-layer spec for the storage attr goes (an override can have been written
+    under more than one edit target over its life); the param is then set to what now
+    composes, which the write path sees as already authored and leaves alone.
+    """
+    attr = _storage_attr(param)
+    if attr is None or param_override_source(param) is None:
+        return
+    stage = attr.GetStage()
+    prev = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        for spec in list(attr.GetPropertyStack(Usd.TimeCode.Default())):
+            if spec.path != attr.GetPath() or chunk_utils.is_foreign_layer(spec.layer, stage):
+                continue
+            prim_spec = spec.layer.GetPrimAtPath(spec.path.GetPrimPath())
+            if prim_spec is not None and spec.path.name in prim_spec.properties:
+                del prim_spec.properties[spec.path.name]
+    finally:
+        chunk_notice._usd_write_active = prev
+    invalidate_edit_layer_memo()
+    param.value = attr.Get()
+
+
+def _storage_attr(param: "core.ChunkParamBase") -> "Usd.Attribute | None":
+    """The chunk-prim attribute holding this param's value, once it has one."""
+    path = getattr(param, "_param_attr_path", None)
+    if not path:
+        return None
+    chunk = param.get_chunk()
+    stage = chunk.get_stage() if chunk else None
+    if not stage:
+        return None
+    attr = stage.GetAttributeAtPath(Sdf.Path(path))
+    return attr if attr and attr.IsValid() else None
 
 
 def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
@@ -4787,6 +4992,16 @@ def initialize(stage: Usd.Stage, scene: "core.SceneSender") -> None:
     scene.add_stage_replaced_listener(ChunkStageSync().reload_for_stage)
 
 
+def _live_context_at(scene: "core.SceneSender", path: str) -> "core.ChunkBase | None":
+    """The live container whose prim is at path, or None. Over get_contexts, not
+    get_chunks: the outermost container is a node in nothing and get_chunks leaves it
+    out, but a prim reloaded in place under it still has to find it."""
+    for context in scene.get_contexts():
+        if getattr(context, "prim_path", None) == path:
+            return context
+    return None
+
+
 def _find_prim_layer(prim: Usd.Prim) -> "Sdf.Layer | None":
     """Return the non-root, non-anonymous layer that authors this prim."""
     root_id = prim.GetStage().GetRootLayer().identifier
@@ -4983,8 +5198,9 @@ def _load_chunks(
             while p and not p.IsPseudoRoot():
                 path = str(p.GetPath())
                 # A context recreated above, or one already live in the scene: a host
-                # chunk (host_network) whose children are arriving now.
-                if path in context_paths or scene.get_context_for_prim_path(path) is not None:
+                # chunk (host_network) whose children are arriving now, or the enclosing
+                # group of a prim being reloaded in place (localise_network).
+                if path in context_paths or _live_context_at(scene, path) is not None:
                     return True
                 p = p.GetParent()
             return False
@@ -5036,7 +5252,7 @@ def _load_chunks(
                         # This pass's groups first, then the live scene: a host chunk
                         # loaded earlier (or made live) whose children are arriving now.
                         g = (group_chunk_by_path.get(str(p.GetPath()))
-                             or scene.get_context_for_prim_path(str(p.GetPath())))
+                             or _live_context_at(scene, str(p.GetPath())))
                         if g is not None:
                             ancestor_group = g
                             break
@@ -5426,7 +5642,17 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     stage = scene.get_stage()
     if not stage:
         return
+    dst = _export_layer(scene, Path(path))
+    _stamp_stage_metadata(dst, stage)
+    dst.Export(str(path))
+    _reload_cached_layer(path)
 
+
+def _export_layer(scene: "core.SceneSender", path: "Path") -> "Sdf.Layer":
+    """export_chunks' layer, before it is stamped and written: the scene's chunk prims,
+    composed from the owned layers, with the root's foreign sublayers carried. `path` is
+    where it will be written, which decides how asset paths are anchored."""
+    stage = scene.get_stage()
     owned = _owned_stage(stage)
     resolve = _asset_path_resolver(stage.GetRootLayer(), Path(path))
     try:
@@ -5466,16 +5692,216 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
             Sdf.CreatePrimInLayer(dst, parent)
         Sdf.CopySpec(flat, prim_path, dst, prim_path)
         _carry_ancestor_specs(flat, dst, prim_path)
+    return dst
 
-    # Onto the in-memory layer, before it is written: the same UsdGeom API the live stage
-    # answers with, pointed at a stage opened over `dst`, so the file carries the opinion
-    # from its first byte rather than being reopened and patched afterwards.
+
+def _stamp_stage_metadata(dst: "Sdf.Layer", stage: "Usd.Stage") -> None:
+    """Onto the in-memory layer, before it is written: the same UsdGeom API the live stage
+    answers with, pointed at a stage opened over `dst`, so the file carries the opinion
+    from its first byte rather than being reopened and patched afterwards."""
     dst_stage = Usd.Stage.Open(dst)
     UsdGeom.SetStageUpAxis(dst_stage, UsdGeom.GetStageUpAxis(stage))
     UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(stage))
 
-    dst.Export(str(path))
+
+def _rebase_paths_in_layer(layer: "Sdf.Layer", old_root: "Sdf.Path", new_root: "Sdf.Path") -> None:
+    """Rewrite every connection and relationship target under new_root that still points
+    into old_root -- what Sdf.CopySpec to a new path leaves behind, the same way a
+    BatchNamespaceEdit does (see _fixup_connection_targets)."""
+
+    def visit(prim_spec):
+        for prop in prim_spec.properties.values():
+            if isinstance(prop, Sdf.AttributeSpec):
+                items = prop.connectionPathList.GetAddedOrExplicitItems()
+                moved = [p.ReplacePrefix(old_root, new_root) for p in items]
+                if moved != list(items):
+                    prop.connectionPathList.ClearEdits()
+                    prop.connectionPathList.explicitItems = moved
+            elif isinstance(prop, Sdf.RelationshipSpec):
+                items = prop.targetPathList.GetAddedOrExplicitItems()
+                moved = [p.ReplacePrefix(old_root, new_root) for p in items]
+                if moved != list(items):
+                    prop.targetPathList.ClearEdits()
+                    prop.targetPathList.explicitItems = moved
+        for child in prim_spec.nameChildren.values():
+            visit(child)
+
+    visit(layer.GetPrimAtPath(new_root))
+
+
+def export_network(scene: "core.SceneSender", group: "core.ChunkBase", path: "str | Path") -> str:
+    """Write one group's network to its own file, the way export_chunks writes a scene's:
+    the group at /chunks/<name> with its chunks beneath it, wiring rebased to the new
+    root, the exec input from the graph outside dropped. Returns the group's prim path
+    in the file -- what a host references.
+
+    Built from export_chunks' own layer rather than a second copy of its rules, so a
+    published network is exactly the group as a save would have written it: composed,
+    sparse where it was composed in, arcs kept.
+    """
+    stage = scene.get_stage()
+    if not stage:
+        raise ValueError("no stage to export from")
+    src_root = Sdf.Path(get_chunk_prim_path(group))
+    dst_root = Sdf.Path(_CHUNKS_ROOT).AppendChild(src_root.name)
+    whole = _export_layer(scene, Path(path))
+    if whole.GetPrimAtPath(src_root) is None:
+        raise ValueError(f"{src_root} has nothing to export")
+    out = Sdf.Layer.CreateAnonymous()
+    scope = Sdf.CreatePrimInLayer(out, Sdf.Path(_CHUNKS_ROOT))
+    scope.specifier = Sdf.SpecifierDef
+    scope.typeName = _CHUNKS_ROOT_TYPENAME
+    Sdf.CopySpec(whole, src_root, out, dst_root)
+    _rebase_paths_in_layer(out, src_root, dst_root)
+    group_spec = out.GetPrimAtPath(dst_root)
+    exec_in = group_spec.properties.get(chunk_naming.EXEC_INPUT)
+    if exec_in is not None:
+        exec_in.connectionPathList.ClearEdits()
+    _stamp_stage_metadata(out, stage)
+    out.Export(str(path))
     _reload_cached_layer(path)
+    return str(dst_root)
+
+
+def _owned_layers(stage: "Usd.Stage") -> "list[Sdf.Layer]":
+    """Every layer in the stack the chunk system may write, strong to weak."""
+    return [
+        layer for layer in stage.GetLayerStack(includeSessionLayers=True)
+        if not chunk_utils.is_foreign_layer(layer, stage)
+    ]
+
+
+def publish_network(group: "core.ChunkBase", path: "str | Path") -> None:
+    """Write group's network to path and make group the host of that file: the inverse of
+    localise_network.
+
+    After the write, the group prim references the file and its children's local specs
+    are dropped from every owned layer, so the same chunks now compose in from the file
+    and anything the shot does to them from here on is an override. The chunk objects are
+    untouched: their prims still exist, composed rather than authored. The group prim's
+    own bookkeeping (position, active view) stays local -- it is this graph's node.
+    """
+    scene = _active_scene()
+    stage = group.get_stage()
+    if not (scene and stage):
+        return
+    group_path = Sdf.Path(get_chunk_prim_path(group))
+    target = export_network(scene, group, path)
+    prev = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        with ChunkStageSync()._chunk_prim_edit_context(group):
+            prim = stage.GetPrimAtPath(group_path)
+            prim.GetReferences().SetReferences([Sdf.Reference(str(path), Sdf.Path(target))])
+        for layer in _owned_layers(stage):
+            spec = layer.GetPrimAtPath(group_path)
+            if spec is None:
+                continue
+            for name in list(spec.nameChildren.keys()):
+                del spec.nameChildren[name]
+    finally:
+        chunk_notice._usd_write_active = prev
+    invalidate_edit_layer_memo()
+
+
+def is_localisable(chunk: "core.ChunkBase") -> bool:
+    """Whether localise_network has anything to do: a network host, or a chunkgroup that
+    references its network from a file (publish_network's result)."""
+    if is_network_host(chunk):
+        return True
+    if not is_chunkgroup(chunk):
+        return False
+    stage = chunk.get_stage()
+    if not stage:
+        return False
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    return bool(prim and prim.IsValid() and _hosts_by_arc(prim))
+
+
+def localise_network(host: "core.ChunkBase") -> "core.ChunkBase | None":
+    """Turn a hosted network into a plain chunkgroup of this file: the inverse of
+    publish_network, and what "Allow Editing of Contents" means here.
+
+    The composed subtree under the host prim -- the file's chunks with the shot's overrides
+    on top -- is flattened and authored as local defs in the host's bookkeeping layer, the
+    arc is dropped, and the host prim becomes a chunkgroup. The live objects are then
+    rebuilt from the prims, since the host was a Reference (or Sublayer, Payload) chunk
+    and its replacement is a chunkgroup; the same load path a reopened file takes, so the
+    result is what saving and reopening would have given. Returns the new group.
+    """
+    if not is_localisable(host):
+        return None
+    scene = _active_scene()
+    stage = host.get_stage()
+    if not (scene and stage):
+        return None
+    sync = ChunkStageSync()
+    host_path = Sdf.Path(get_chunk_prim_path(host))
+    already_a_group = is_chunkgroup(host)
+    composed = Usd.Stage.OpenMasked(
+        stage.GetRootLayer(), stage.GetSessionLayer(), Usd.StagePopulationMask([str(host_path)])
+    )
+    flat = composed.Flatten(False)
+    prev = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        with sync._chunk_prim_edit_context(host):
+            layer = stage.GetEditTarget().GetLayer()
+        Sdf.CreatePrimInLayer(layer, host_path)
+        Sdf.CopySpec(flat, host_path, layer, host_path)
+        spec = layer.GetPrimAtPath(host_path)
+        spec.referenceList.ClearEdits()
+        spec.payloadList.ClearEdits()
+        spec.typeName = _CHUNK_PRIM_TYPENAME
+        spec.specifier = Sdf.SpecifierDef
+        for name in list(spec.properties.keys()):
+            if name.startswith(_INPUTS_PREFIX) and name != chunk_naming.EXEC_INPUT:
+                del spec.properties[name]
+        chunk_type = spec.properties.get(_CHUNK_TYPE_ATTR) or Sdf.AttributeSpec(
+            spec, _CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, Sdf.VariabilityUniform)
+        chunk_type.default = "chunkgroup"
+        # The arc and the host's own inputs: in every other owned layer too, or a stronger
+        # one keeps the prim a Reference after this one says chunkgroup.
+        for other in _owned_layers(stage):
+            other_spec = other.GetPrimAtPath(host_path)
+            if other_spec is None or other is layer:
+                continue
+            other_spec.referenceList.ClearEdits()
+            other_spec.payloadList.ClearEdits()
+            for name in list(other_spec.properties.keys()):
+                if name.startswith(_INPUTS_PREFIX) and name != chunk_naming.EXEC_INPUT:
+                    del other_spec.properties[name]
+                elif name == _CHUNK_TYPE_ATTR:
+                    del other_spec.properties[name]
+    finally:
+        chunk_notice._usd_write_active = prev
+    invalidate_edit_layer_memo()
+    if already_a_group:
+        # A published chunkgroup taking its network back: the objects are the right kind
+        # already, and their prims are now authored where they were composed.
+        return host
+
+    # Rebuild the objects from the prims: the host object is a Reference chunk, and what
+    # the prim now describes is a chunkgroup. Deepest first, so a nested group goes before
+    # its parent; under _reloading, so nothing is unauthored on the way out.
+    inside = [
+        c for c in scene.get_chunks()
+        if get_chunk_prim_path(c).startswith(str(host_path) + "/")
+    ]
+    inside.sort(key=lambda c: get_chunk_prim_path(c).count("/"), reverse=True)
+    was_reloading = sync._reloading
+    sync._reloading = True
+    try:
+        for c in inside:
+            c.request_delete()
+        host.request_delete()
+    finally:
+        sync._reloading = was_reloading
+    prim = stage.GetPrimAtPath(host_path)
+    sync._loaded_prim_paths.discard(str(host_path))
+    load_chunks(stage, scene, sync._loaded_prim_paths,
+                prims=iter([prim] + list(Usd.PrimRange(prim, _LOAD_INCLUDE_INACTIVE))[1:]))
+    return next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == str(host_path)), None)
 
 
 def _owned_stage(stage: "Usd.Stage") -> "Usd.Stage":
@@ -5525,13 +5951,26 @@ def _asset_path_resolver(root: "Sdf.Layer", path: "Path"):
     shot stopped being relocatable with its sequence. Saving beside the root layer keeps
     that layer's asset paths exactly as the user wrote them.
     """
-    if not _saving_beside(root, path):
+    anonymous_root = not root.realPath
+    if not anonymous_root and not _saving_beside(root, path):
         return UsdUtils.FlattenLayerStackResolveAssetPath
+    # An in-memory scene (a fresh session, a test) has no directory of its own: the
+    # exported file's directory is the one its asset paths are made relative to.
+    root_dir = (Path(path) if anonymous_root else Path(root.realPath)).parent.resolve()
 
     def resolve(layer, asset_path):
-        if layer == root:
+        if layer == root and not anonymous_root:
             return asset_path
-        return UsdUtils.FlattenLayerStackResolveAssetPath(layer, asset_path)
+        resolved = UsdUtils.FlattenLayerStackResolveAssetPath(layer, asset_path)
+        # An arc authored in an anonymous layer (a hosted network, a published group)
+        # had to be absolute -- nothing anchors a relative path there -- but the file it
+        # names sits beside this one, and a shot that moves with its sequence should
+        # still find it.
+        try:
+            relative = Path(resolved).resolve().relative_to(root_dir)
+        except (ValueError, OSError):
+            return resolved
+        return "./" + relative.as_posix()
 
     return resolve
 

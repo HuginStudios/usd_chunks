@@ -15,6 +15,40 @@ logger = logging.getLogger(__name__)
 _EXPR_RE = re.compile(r'@(\w+)\.(\w+)@')
 
 
+_PATH_LIST_SPLIT = re.compile(r"([,\s]+)")
+
+
+def apply_namespace(namespace: str, paths: str) -> str:
+    """Put every absolute prim path in `paths` (one, or a comma/space-separated list, globs
+    included) under `namespace`. A path already under it, or a relative one, is left
+    alone, and so is the separators' spelling."""
+    if not namespace:
+        return paths
+    root = namespace.rstrip("/")
+    out = []
+    for token in _PATH_LIST_SPLIT.split(paths):
+        if token.startswith("/") and not (token == root or token.startswith(root + "/")):
+            token = root + token
+        out.append(token)
+    return "".join(out)
+
+
+def strip_namespace(namespace: str, paths: str) -> str:
+    """The inverse of apply_namespace: every path under `namespace` made relative to it
+    again -- the form a param inside a namespaced host stores."""
+    if not namespace:
+        return paths
+    root = namespace.rstrip("/")
+    out = []
+    for token in _PATH_LIST_SPLIT.split(paths):
+        if token == root:
+            token = "/"
+        elif token.startswith(root + "/"):
+            token = token[len(root):]
+        out.append(token)
+    return "".join(out)
+
+
 def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     """Return the layer a chunk should author into for its exec-chain position: the layer
     published by the nearest Edit Target chunk reachable by walking the exec chain upstream

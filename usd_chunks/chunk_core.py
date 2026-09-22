@@ -2428,6 +2428,17 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             self.value = value
 
         if attrname == "value":
+            # A prim path set inside a namespaced host is stored relative to the namespace,
+            # whatever it arrived as: a viewport pick hands over the full stage path, and a
+            # chunk that writes its actual path back (prim.py) hands over the resolved,
+            # already-prefixed one. Stored as-is, the read would prefix it again.
+            if isinstance(value, str) and value and self._is_prim_path_param():
+                namespace = self.network_namespace()
+                if namespace:
+                    stripped = chunk_utils.strip_namespace(namespace, value)
+                    if stripped != value:
+                        self.__dict__["value"] = stripped
+                        value = stripped
             if isinstance(value, str) and chunk_utils.has_stage_expression(value):
                 # `in`, not `&`: ParamType packs a widget variant beside its value type, so
                 # FILE and LINEEDIT share the STRING bit and a mask test is true for both.
@@ -2515,8 +2526,41 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             # carrying one hands the text through untouched and lets composition do it --
             # the one thing usd_chunks must not do is make them work in places OpenUSD says
             # they do not. See ChunkParamBase.value_changed for the warning on misuse.
+            #
+            # A prim path inside a namespaced host resolves under the namespace: the
+            # network's chunks were written against the root, and the host says where in
+            # the scene that root is. raw_value stays what the file holds.
+            if isinstance(raw, str) and raw and self._is_prim_path_param():
+                namespace = self.network_namespace()
+                if namespace:
+                    raw = chunk_utils.apply_namespace(namespace, raw)
             return raw
         return super().__getattribute__(name)
+
+    def _is_prim_path_param(self) -> bool:
+        """Whether this param names prim paths, by the convention the gizmo system also
+        reads (chunk_gizmo): a LineEdit called primpath_location, or one flagged
+        PRIM_SELECTION. There is no type-level marker for a prim path; this is it."""
+        try:
+            if ChunkFlags.ParamType.LINEEDIT not in self.get_type():
+                return False
+        except Exception:
+            return False
+        return self.name == "primpath_location" or self.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION)
+
+    def network_namespace(self) -> str:
+        """The scene root every prim path this param names is relative to: the namespaces
+        of the network hosts enclosing it (chunk_stage.host_networks), outermost first,
+        joined. Empty outside any namespaced host, which is the common case and costs a
+        walk up the owner chain."""
+        parts = []
+        owner = self.get_owner()
+        while owner is not None:
+            namespace = getattr(owner, "_network_namespace", "")
+            if namespace:
+                parts.append(namespace)
+            owner = getattr(owner, "get_owner", lambda: None)()
+        return "".join(reversed(parts))
 
     def _resolve_expression_string(self, expr: str) -> Any:
         if self._resolving_expr:

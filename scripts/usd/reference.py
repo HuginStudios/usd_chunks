@@ -24,7 +24,16 @@ def file_changed(owner, notice, sender):
     
     if chunk_utils.has_expression(primpath_param.raw_value or ""):
         return
-    
+
+    # A network file is hosted, not placed: its location field is the namespace the
+    # network's prim paths resolve under, and the default is none -- the paths as the
+    # sequence wrote them. Suggesting /<file> here would namespace every hosted network.
+    import_param = _chunk.get_param("import_primpath")
+    if chunk_stage.network_target(reference_path, import_param.value if import_param else ""):
+        if primpath_param.raw_value:
+            primpath_param.value = ""
+        return
+
     asset_name = os.path.splitext(os.path.basename(reference_path))[0]
     stage = param.get_stage()
     unique_path = get_unique_path(stage, f"/{asset_name}")
@@ -49,7 +58,7 @@ def execute(node):
     # primpath_location; the network's own chunks author the content when they cook.
     network = chunk_stage.network_target(reference_path, import_path)
     if network is not None:
-        chunk_stage.host_network(node, reference_path, network)
+        chunk_stage.host_network(node, reference_path, network, namespace=raw_path or "")
         return
     chunk_stage.unhost_network(node)
 
