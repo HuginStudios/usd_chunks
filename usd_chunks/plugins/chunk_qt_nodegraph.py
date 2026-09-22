@@ -617,7 +617,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # implementation detail: it must not offer a dive, nor the group header and the
         # `▶` marker that advertise one. Containment still keys on
         # chunk_stage.is_group_chunk, so its children stay hidden and keep cooking.
-        self._is_chunkgroup = chunk_stage.is_chunkgroup(chunk)
+        # Subnet, not chunkgroup: a chunk hosting a referenced network draws and dives
+        # like a group too.
+        self._is_chunkgroup = chunk_stage.is_subnet(chunk)
         self._ports: list[ChunkPortItem] = []
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
@@ -5347,7 +5349,7 @@ class QtGraphFrontend:
 
     def can_dive(self, path: str) -> bool:
         chunk = self._chunk(path)
-        return chunk is not None and chunk_stage.is_chunkgroup(chunk)
+        return chunk is not None and chunk_stage.is_subnet(chunk)
 
     def dive_into(self, path: str) -> None:
         scene = self._scene()

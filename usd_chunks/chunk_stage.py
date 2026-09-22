@@ -2159,6 +2159,186 @@ def is_chunkgroup(chunk: "core.ChunkBase") -> bool:
     return bool(cfg and cfg.module == "chunkgroup")
 
 
+def is_network_host(chunk: "core.ChunkBase") -> bool:
+    """Return True if chunk brings a chunk network in by reference and hosts it as a subnet.
+
+    A Reference chunk pointed at a file whose target prim is a chunkgroup does not put
+    that prim into the scene; it puts the reference arc on its OWN chunk prim
+    (host_network), so the group's chunks compose in as its children and the node is the
+    group -- dive in, and the network is there, as if it had been expanded in place. The
+    chunk carries CONTEXT while it hosts (so containment and cooking treat it as a group,
+    see is_group_chunk) and the arc on its prim is what tells it apart from a chunk that
+    builds its own children (AMD MaterialX Library), which is CONTEXT too.
+    """
+    if not is_group_chunk(chunk) or is_chunkgroup(chunk):
+        return False
+    stage = chunk.get_stage()
+    if not stage:
+        return False
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    return bool(prim and prim.IsValid() and _hosts_by_arc(prim))
+
+
+def _hosts_by_arc(prim: Usd.Prim) -> bool:
+    """Whether prim carries the arc a host authors: a reference or a payload."""
+    return prim.HasAuthoredReferences() or prim.HasAuthoredPayloads()
+
+
+def is_subnet(chunk: "core.ChunkBase") -> bool:
+    """Return True if chunk is a graph the user may dive into: a chunkgroup, or a chunk
+    hosting a referenced network (is_network_host). This is what navigation keys on;
+    is_group_chunk (containment and cooking) is wider and includes chunks whose children
+    are an implementation detail."""
+    return is_chunkgroup(chunk) or is_network_host(chunk)
+
+
+def network_target(asset_path: str, import_path: str = "") -> "str | None":
+    """The prim path of the chunkgroup a referenced file offers, or None if what the file
+    offers at that path is scene content rather than a chunk network.
+
+    Resolved the way the Reference chunk resolves its target: the explicit import path,
+    else the layer's defaultPrim, else its single root prim. A target is a network when
+    it composes to a Chunk of type chunkgroup -- the shape export_chunks writes. That
+    shape puts the group under a /chunks scope, so a target that is the scope itself
+    stands for the first chunkgroup in it: pointing a Reference at a saved network file,
+    with no import path, hosts the network it holds.
+
+    Composed, not read off the one layer's specs: a file may hold its network only
+    through its own sublayers (a sequence file that stacks a layout file and a lighting
+    file), and hosting composes the whole of it in anyway. Opened with a population mask
+    of just the candidate paths, so asking a heavy asset file whether it is a network
+    costs its chunk prims, not its geometry.
+    """
+    if not asset_path:
+        return None
+    layer = Sdf.Layer.FindOrOpen(asset_path)
+    if layer is None:
+        return None
+    if import_path:
+        candidates = [Sdf.Path(import_path)]
+    elif layer.defaultPrim:
+        candidates = [Sdf.Path.absoluteRootPath.AppendChild(layer.defaultPrim)]
+    else:
+        # The layer's own roots, plus the scope a network lives under, which the layer
+        # may only get from a sublayer.
+        candidates = [spec.path for spec in layer.rootPrims]
+        if Sdf.Path(_CHUNKS_ROOT) not in candidates:
+            candidates.append(Sdf.Path(_CHUNKS_ROOT))
+    composed = Usd.Stage.OpenMasked(
+        layer, Usd.StagePopulationMask([str(c) for c in candidates]), Usd.Stage.LoadNone
+    )
+
+    def is_group(prim) -> bool:
+        if not prim or not prim.IsValid() or prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+            return False
+        return prim.GetAttribute(_CHUNK_TYPE_ATTR).Get() == "chunkgroup"
+
+    for path in candidates:
+        prim = composed.GetPrimAtPath(path)
+        if is_group(prim):
+            return str(path)
+        if prim and prim.IsValid() and prim.GetTypeName() == _CHUNKS_ROOT_TYPENAME:
+            for child in prim.GetFilteredChildren(_LOAD_INCLUDE_INACTIVE):
+                if is_group(child):
+                    return str(child.GetPath())
+    return None
+
+
+def host_network(chunk: "core.ChunkBase", asset_path: str, prim_path: str,
+                 arc: str = "reference") -> None:
+    """Make chunk the host of the network at prim_path in asset_path. See host_networks."""
+    host_networks(chunk, [(asset_path, prim_path)], arc)
+
+
+def host_networks(chunk: "core.ChunkBase", targets: "list[tuple[str, str]]",
+                  arc: str = "reference") -> None:
+    """Make chunk the host of these networks, each an (asset path, prim path) pair.
+
+    Authors the arcs on chunk's own prim -- in its bookkeeping layer, since an arc is
+    structure that must survive a cook and a save, not content -- and gives the chunk
+    the flags a group has, so the composed-in children nest under it and cook as its
+    subnet (recook_for_view recurses into a group's inner view). The children are then
+    loaded straight away: the arc write lands while a cook has notices suppressed, and
+    the rescan that would otherwise pick them up waits for the next unsuppressed stage
+    change, which may be a while.
+
+    arc is "reference" or "payload": the kind the hosting chunk stands for. A payload
+    host's network unloads with the stage's other payloads, and its arc on the prim is
+    what a reader sees, so a Payload chunk must not quietly become a reference.
+
+    Several targets compose together under the one prim, first strongest -- the order a
+    Sublayer chunk's list has, and what stacking those files as sublayers would do to
+    their chunk prims too: a chunk both networks name is one chunk with the stronger
+    file's opinions on top.
+
+    Idempotent: re-hosting the same targets rewrites the same arcs and loads nothing new.
+    An empty list unhosts.
+    """
+    if arc not in ("reference", "payload"):
+        raise ValueError(f"arc must be 'reference' or 'payload', not {arc!r}")
+    if not targets:
+        unhost_network(chunk)
+        return
+    stage = chunk.get_stage()
+    if not stage:
+        return
+    # The path first: get_chunk_prim_path answers a CONTEXT chunk from its prim_path, so
+    # once the flags are on it needs the path to already be recorded.
+    own_path = get_chunk_prim_path(chunk)
+    prim = stage.GetPrimAtPath(Sdf.Path(own_path))
+    if not prim.IsValid():
+        return
+    chunk.prim_path = own_path
+    object.__setattr__(chunk, "_exec_prim_path", own_path)
+    for flag in (ChunkFlags.GroupFlags.CONTEXT, ChunkFlags.GroupFlags.COLLAPSABLE,
+                 ChunkFlags.GroupFlags.LABELED):
+        chunk.set_flag(flag)
+    if arc == "payload":
+        arcs = [Sdf.Payload(asset, Sdf.Path(target)) for asset, target in targets]
+        current = prim.GetMetadata("payload")
+    else:
+        arcs = [Sdf.Reference(asset, Sdf.Path(target)) for asset, target in targets]
+        current = prim.GetMetadata("references")
+    if current is not None and list(current.GetAddedOrExplicitItems()) == arcs:
+        return
+    sync = ChunkStageSync()
+    prev = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        with sync._chunk_prim_edit_context(chunk):
+            if arc == "payload":
+                prim.GetReferences().ClearReferences()
+                prim.GetPayloads().SetPayloads(arcs)
+            else:
+                prim.GetPayloads().ClearPayloads()
+                prim.GetReferences().SetReferences(arcs)
+    finally:
+        chunk_notice._usd_write_active = prev
+    load_chunks(stage, sync._scene or _active_scene(), sync._loaded_prim_paths,
+                prims=iter(prim.GetFilteredChildren(_LOAD_INCLUDE_INACTIVE)))
+
+
+def unhost_network(chunk: "core.ChunkBase") -> None:
+    """Drop a hosted network: clear the arc from chunk's prim and the group flags from the
+    chunk. The composed-in children disappear with the arc and the stage-change path
+    tears their chunk objects down, the same as any prim vanishing from the stage."""
+    stage = chunk.get_stage()
+    if not stage or not is_network_host(chunk):
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    prev = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        with ChunkStageSync()._chunk_prim_edit_context(chunk):
+            prim.GetReferences().ClearReferences()
+            prim.GetPayloads().ClearPayloads()
+    finally:
+        chunk_notice._usd_write_active = prev
+    for flag in (ChunkFlags.GroupFlags.CONTEXT, ChunkFlags.GroupFlags.COLLAPSABLE,
+                 ChunkFlags.GroupFlags.LABELED):
+        chunk.unset_flag(flag)
+
+
 def is_merge_chunk(chunk: "core.ChunkBase") -> bool:
     """Return True if chunk is specifically a Merge chunk (scripts/core/merge.py).
 
@@ -4801,22 +4981,42 @@ def _load_chunks(
         def _has_recreated_context_ancestor(prim) -> bool:
             p = prim.GetParent()
             while p and not p.IsPseudoRoot():
-                if str(p.GetPath()) in context_paths:
+                path = str(p.GetPath())
+                # A context recreated above, or one already live in the scene: a host
+                # chunk (host_network) whose children are arriving now.
+                if path in context_paths or scene.get_context_for_prim_path(path) is not None:
                     return True
                 p = p.GetParent()
             return False
 
         # Group prims by their source layer so each sublayer file gets its own context —
         # except ones already homed under a context just recreated above.
+        #
+        # A prim nested under a chunk prim in this same pass goes in that prim's group,
+        # whatever layer it came from, and after it (to_load is in traversal order, so the
+        # ancestor was keyed first). A network referenced onto a host chunk's prim composes
+        # its children in from the referenced file, and grouping those by their own source
+        # layer wrapped them in a tab named after that file instead of nesting them under
+        # the host -- which had not even been loaded yet when they were.
         _EXISTING_CONTEXT = object()
         groups = {}
+        key_of_path: dict[str, object] = {}
         for prim, mod in to_load:
             src = None
-            if context_paths and _has_recreated_context_ancestor(prim):
-                key = _EXISTING_CONTEXT
-            else:
-                src = _find_prim_layer(prim)
-                key = src.identifier if src else None
+            key = None
+            ancestor = prim.GetParent()
+            while ancestor and not ancestor.IsPseudoRoot():
+                if str(ancestor.GetPath()) in key_of_path:
+                    key = key_of_path[str(ancestor.GetPath())]
+                    break
+                ancestor = ancestor.GetParent()
+            if key is None:
+                if _has_recreated_context_ancestor(prim):
+                    key = _EXISTING_CONTEXT
+                else:
+                    src = _find_prim_layer(prim)
+                    key = src.identifier if src else None
+            key_of_path[str(prim.GetPath())] = key
             if key not in groups:
                 groups[key] = (src, [])
             groups[key][1].append((prim, mod))
@@ -4833,14 +5033,30 @@ def _load_chunks(
                     ancestor_group = None
                     p = prim.GetParent()
                     while p and not p.IsPseudoRoot():
-                        g = group_chunk_by_path.get(str(p.GetPath()))
+                        # This pass's groups first, then the live scene: a host chunk
+                        # loaded earlier (or made live) whose children are arriving now.
+                        g = (group_chunk_by_path.get(str(p.GetPath()))
+                             or scene.get_context_for_prim_path(str(p.GetPath())))
                         if g is not None:
                             ancestor_group = g
                             break
                         p = p.GetParent()
 
+                    # A chunk prim carrying a reference arc with Chunk children is a host
+                    # (host_network): the arc is in the file, so the children are already
+                    # composed, and the chunk takes the group flags before it is added so
+                    # the CONTEXT branch below nests them under it.
+                    hosts = _hosts_by_arc(prim) and any(
+                        child.GetTypeName() == _CHUNK_PRIM_TYPENAME
+                        for child in prim.GetFilteredChildren(_LOAD_INCLUDE_INACTIVE)
+                    )
                     chunks = mod.create() if mod.loaded else mod.load()
                     for c in chunks:
+                        if hosts and not c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                            for flag in (ChunkFlags.GroupFlags.CONTEXT,
+                                         ChunkFlags.GroupFlags.COLLAPSABLE,
+                                         ChunkFlags.GroupFlags.LABELED):
+                                c.set_flag(flag)
                         # Restore the saved chunk name from its prim (prims are authored at
                         # <root>/<chunk.name>, so this is a lossless round-trip). Freshly
                         # created chunks otherwise get default names uniquified in
@@ -4926,7 +5142,14 @@ def _load_chunks(
                             _load_wire_inputs(prim, c)
                             _restore_disabled_state(prim, c)
                             _restore_collapsed_state(prim, c)
-                            ancestor_group.add_param(c, notify=False)
+                            # A composed-in child keeps the name its file gave it, whatever
+                            # the naming rules say: get_reserved_names() includes the host's
+                            # own name, so a Reference hosting a network with a Reference in
+                            # it renamed that child, and the renamed chunk authored a fresh
+                            # prim of its own beside the one it was loaded from.
+                            ancestor_group.add_param(
+                                c, force_unique=not chunk_utils.is_composed_in(prim), notify=False
+                            )
                             object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                             deferred.append((prim, c))
                         else:

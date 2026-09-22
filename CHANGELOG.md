@@ -11,6 +11,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- A Reference, Sublayer or Payload chunk pointed at a saved chunk network becomes that
+  network's node (a Payload hosts it as a payload arc, so it unloads with the rest). The file's chunkgroup composes in under the chunk's own prim, so the node is the
+  group: dive in and the network is there, as if it had been expanded in place. It cooks
+  whether or not you dive. Edits inside are overrides in the current file (see below);
+  the network file is never written to. Several network files in one Sublayer stack
+  under the node in list order, first strongest. Pointed at scene content, both chunks
+  behave as before.
 - Installable from a wheel: `pip install usd-chunks` provides the library and the
   `usdchunks` CLI, with `usd-core` as a dependency and no USD build required.
 - `usdchunks plugin-path`, which prints the installed plugin directory so

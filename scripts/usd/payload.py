@@ -1,6 +1,6 @@
 import os
 from pxr import Sdf
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_stage, chunk_utils
 from usd_chunks.chunk_utils import get_unique_path
 
 
@@ -42,6 +42,16 @@ def execute(node):
 
     raw_path = node.get_param("primpath_location").value
     import_path = node.get_param("import_primpath").value
+
+    # A file whose target is a chunkgroup is a network, not scene content: it goes onto
+    # this chunk's own prim as a payload, and this node becomes the group -- dive in and
+    # the network is there. Same as the Reference chunk, with a payload arc, so the
+    # network unloads with the stage's other payloads.
+    network = chunk_stage.network_target(payload_path, import_path)
+    if network is not None:
+        chunk_stage.host_network(node, payload_path, network, arc="payload")
+        return
+    chunk_stage.unhost_network(node)
 
     if import_path:
         ref = Sdf.Payload(payload_path, import_path)
@@ -90,11 +100,16 @@ def config():
         On import, the chunk creates an Xform prim at that location (if it doesn't
         already exist) and calls AddPayload on it.
 
-        The target prim inside the Payloadd file is resolved in order:
+        The target prim inside the payloaded file is resolved in order:
           1. The explicit "Import Prim Path" field, if filled in.
           2. The layer's defaultPrim, if one is set.
           3. The single root prim, if the layer has exactly one.
           4. No prim path (USD picks the defaultPrim at runtime).
+
+        When the target is a chunkgroup (a saved chunk network), the node hosts that
+        network as a payload on its own prim instead of placing it in the scene: dive
+        into the node to see and tweak the network, as with a chunkgroup. Tweaks are
+        overrides in the current file; the network file is never written to.
 
         Import is also variant-context-aware via author_in_variant_context, so the
         Payload is authored inside any active variant selection on the stage.
