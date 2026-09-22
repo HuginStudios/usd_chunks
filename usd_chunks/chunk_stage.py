@@ -2424,10 +2424,18 @@ def host_networks(chunk: "core.ChunkBase", targets: "list[tuple[str, str]]",
             scene = _active_scene()
             inside = [c for c in (scene.get_chunks() if scene else [])
                       if get_chunk_prim_path(c).startswith(own_path + "/")]
+            cooked = 0
             for c in sorted(inside, key=lambda c: get_chunk_prim_path(c).count("/")):
                 if not c.is_blocked() and not is_group_chunk(c):
                     c.execute()
+                    cooked += 1
+            logger.info(
+                "%s: network now under %r; re-cooked %d of %d inner chunks (%d blocked)",
+                own_path, namespace or "/", cooked, len(inside),
+                sum(1 for c in inside if c.is_blocked()),
+            )
         return
+    logger.info("%s hosts %s under %r", own_path, [asset for asset, _ in targets], namespace or "/")
     sync = ChunkStageSync()
     prev = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
