@@ -7,9 +7,12 @@ scene; these two are structural. Both ship in [`scripts/core/`](/scripts/core/):
 
 ## View
 
-Wire nothing to a View and your whole network sits there, fully built, doing nothing.
-That's the deal: usd_chunks only cooks what a view actually needs — nothing runs
-speculatively, ever.
+Wire nothing to a View and your whole network sits there, fully built, doing nothing —
+**in the UI.** That's the deal there: only what a view actually needs cooks, nothing
+runs speculatively. Headless is the other way round: `usdchunks run` cooks *everything* in
+a file that has no view, and `--all` forces that same everything-cooks behaviour even when
+a view exists. A view is what narrows execution, in either case — it just narrows from
+"nothing" in the UI and from "everything" on the command line.
 
 **Getting one wired up:** right-click the chunk whose output you want to see and choose
 **Set View**. That creates a View chunk, wires it to that chunk's output, and makes it
@@ -39,8 +42,9 @@ LLM).
 
 A few things worth knowing before you build one:
 
-- **It's real USD nesting, not a fake container.** Contents live under the group's own
-  prim path (`/chunks/ChunkGroup/chunks/...`), so the outer graph stays uncluttered.
+- **It's real USD nesting, not a fake container.** Contents live directly under the
+  group's own prim path — `/chunks/<Group>/<Child>`, no extra intermediate segment — so the
+  outer graph stays uncluttered.
 - **The group's output is whatever its own View resolves to, inside it.** Switch which of
   the group's internal views is active, and the group node's output on the outer graph
   changes right along with it.
@@ -54,7 +58,8 @@ A few things worth knowing before you build one:
   still yours to override, landing as an `over` in your own edit target rather than
   touching the shared file.
 
-Under the hood, both View's container and ChunkGroup use the same `GroupFlags.CONTEXT`
-flag: "this is a workspace holding chunks, not a chunk itself." In the Qt frontend that
-renders as a tab. See [Writing a graph frontend](graph-frontends.md) if you're building
-that rendering for a different host.
+Under the hood, `GroupFlags.CONTEXT` is what makes a chunk render as a workspace holding
+other chunks rather than as a node itself — the top-level tab and ChunkGroup both carry
+it (View itself doesn't; it's an ordinary terminal chunk, not a container). In the Qt
+frontend a CONTEXT chunk renders as a tab. See [Writing a graph
+frontend](graph-frontends.md) if you're building that rendering for a different host.

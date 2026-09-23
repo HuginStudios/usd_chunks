@@ -26,9 +26,11 @@ Right-click empty canvas for the create menu, organized by the `category` each c
 module declared in its `config()` (see [Writing a chunk](writing-a-chunk.md#config)).
 Picking an entry drops that chunk at the cursor.
 
-Right-clicking and dragging **from an existing output port** opens the same menu filtered
-to compatible chunks, and picking one both creates the node *and* wires it to the port you
-dragged from — the fast way to extend a chain without a separate connect step afterward.
+Dragging a wire out of **any port — input or output** — and releasing it on empty canvas
+opens the same create menu, and picking an entry creates the node *and* wires it to the
+port you dragged from, in one motion. The menu here isn't filtered to compatible chunks —
+it's the same full list either way — so it's possible to pick something with no matching
+port; when that happens you get the new node with no wire, silently, rather than an error.
 
 ## Wiring
 

@@ -291,9 +291,9 @@ build. Using the usdview integration needs a full USD build that provides
 
 The one that matters first: **USD_CHUNK_DIRS**. Point it at a directory of chunk modules
 (this repo's own [`scripts/`](/scripts/) is one) and everything else below is optional
-tuning. With a zip of this repo and nothing else installed system-wide, setting
-`USD_CHUNK_DIRS` and running `usdchunks run --help` is enough to confirm chunks are being
-discovered.
+tuning. `usdchunks run --help` only proves the install itself worked — `--help` never
+reads `USD_CHUNK_DIRS`. Confirming your chunks were actually found needs a real `.usda`
+network (`usdchunks run`/`info`) or usdview's Chunks panel; see [docs/install.md](docs/install.md#quick-start).
 
 **USD_CHUNK_DIRS** - Add your chunk directory to this envar. This can be a list of directories, separated by ; on windows, and : on unix systems. Nested directories are scanned for chunks as well. Chunks installed by a store are picked up automatically from **GLOBAL_USDCHUNKS** (default `~/.usdchunks/global`), which is appended after this.
 
@@ -303,7 +303,7 @@ discovered.
 
 **USD_CHUNK_AUTO_INSTALL** - Off unless set. A chunk module may declare pip requirements, and with this set the packages are installed (after asking) into **USD_CHUNK_DEPENDENCY_DIR**. Left unset, nothing is installed and any missing package is named in a warning instead, so opening someone else's network can never add packages to your environment on its own.
 
-**USD_CHUNK_LOAD_FILTER** - Unset by default (everything loads). Set it to restrict which chunk modules load, by substring match against the module name — e.g. `transform,scatter` loads only modules whose name contains `"transform"` or `"scatter"`. Handy for a fast, minimal repro.
+**USD_CHUNK_LOAD_FILTER** - Unset by default (everything loads). The check is `module_name not in USD_CHUNK_LOAD_FILTER` — the module's name must appear as a substring of the filter string, not the other way round — so treat it as a comma-joined list of exact module names, e.g. `transform,scatter_points`. Handy for a fast, minimal repro.
 
 **USD_CHUNK_VERBOSE** - Off unless set. A name clash between two chunk modules resolves silently by precedence; with this on, every shadowed chunk name is logged at load instead of just the ambiguous same-tier ones.
 

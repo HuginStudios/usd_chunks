@@ -12,8 +12,8 @@ A module can define up to four top-level functions. Only `main()` is required.
 
 | Function | Required | Called |
 | --- | --- | --- |
-| `main()` | yes | Once, at discovery, to build the `Chunk` object. |
-| `config()` | no | Once, at discovery, for load-time configuration ([`ChunkConfig`](#config)). |
+| `main()` | yes | Once per **instance**, to build a `Chunk` object — every node dropped on the graph, and every chunk prim a reload restores, is its own `main()` call. |
+| `config()` | no | Once at discovery, for load-time configuration ([`ChunkConfig`](#config)). |
 | `execute(node)` | no | Whenever the chunk needs to (re)cook — see [`execute()`](#execute). |
 | `commit(node)` | no | Once per chunk, after a solve has settled — see [`commit()`](#commit). |
 
@@ -37,10 +37,17 @@ def main():
 Build its params and groups here and wire up their callbacks with `add_param` /
 `add_callback`.
 
-**Do not touch the stage or the scene from `main()`.** It runs at module discovery, before
-a chunk has a prim or a stage to belong to — `chunk.get_scene()` and a chunk's
-`get_stage()` are only meaningful once the chunk actually exists on one. Anything that
-needs the stage belongs in a callback, in `execute()`, or in `commit()`.
+**`main()` runs once per instance, not once at discovery.** Discovery only imports the
+module and looks for the function; the registry calls it fresh every time a chunk actually
+needs to exist — once for every node you drop on the graph, and once per saved chunk prim
+when a file is reloaded. Anything expensive built at `main()`'s top level (constructing a
+lookup table, say) is paid again on every node, not once for the whole session — put that
+kind of thing behind a module-level cache if it matters.
+
+**Do not touch the stage or the scene from `main()`.** Even though it runs per instance, it
+runs *before* that instance has a prim or a stage to belong to — `chunk.get_scene()` and a
+chunk's `get_stage()` are only meaningful once the chunk actually exists on one. Anything
+that needs the stage belongs in a callback, in `execute()`, or in `commit()`.
 
 See [`docs/example.md`](example.md) for a longer, annotated tour of the param types,
 groups, flags and callback signatures available inside `main()`.
@@ -73,11 +80,22 @@ gets the defaults below.
 | `interactive` | `False` | The chunk writes to a file layer that persists, instead of its own layer being cleared and regenerated on every cook — see *Layers* in the [README](/README.md#how-it-works). Set this for a chunk whose job is a one-off authored edit rather than a repeatable cook. |
 | `hidden` | `False` | Kept out of the create menu. For a type that only exists to be saved and reloaded rather than created by hand — `runtime`, the type a chunk built in the interpreter is written as (see *Building a chunk at runtime* in [`docs/index.md`](index.md)). It must still be a registered module, since that's how a reload finds what to rebuild a prim from. |
 | `terminal` | `False` | No `outputs:chunk` is authored — the chunk ends an exec chain rather than passing it on. The [View](core-chunks.md#view) chunk sets this. |
-| `exec_inputs` | `1` | How many *positional* exec input slots the chunk has. `1` is the ordinary case — one `inputs:chunk` port that can still carry several wires stacked on it. Above `1`, each slot gets its own port and which wire lands where is meaningful (a Stage Expression Filter's slot 0 is the stream it always forwards, slot 1 the branch it gates). |
+| `exec_inputs` | `1` | How many *positional* exec input slots the chunk has. `1` is the ordinary case — one `inputs:chunk` port that can still carry several wires stacked on it. Above `1`, each slot gets its own port and which wire lands where is meaningful (Stage Expression Switch's slot 0 is the stream it always forwards, slot 1 the branch it gates). |
 | `dynamic_exec_inputs` | `False` | The chunk grows a fresh numbered exec input port per incoming wire, plus one empty trailing slot to attach the next branch to. For a chunk like Merge or Switch where every upstream branch needs to be its own port rather than several wires stacked on one — the slot count isn't known until the graph is wired, unlike `exec_inputs`. |
 | `outputs` | `[]` | Extra typed output ports beyond `outputs:chunk`, as `[(name, SdfTypeName), ...]`. |
 | `variants` | `[]` | Extra entries in the chunk's create-menu submenu, as `[(label, {param: value}), ...]`, or a callable returning that list. Pass a callable when building the list is expensive (enumerating a shader registry, say) — it then only runs the first time a menu is actually drawn, not on every headless discovery. |
 | `gizmos` | `[]` | Viewport handles driven by this chunk's params — see [Chunk gizmos: the host contract](gizmo-host-contract.md). |
+
+**Keep `config()` self-contained.** Discovery evaluates it in isolation — only the
+module's `usd_chunks` imports have run, precisely so *looking at* a module never runs its
+other top-level code. A `config()` that reads a module-level constant or helper raises
+`NameError` on that first attempt; the registry retries once after executing the module's
+top-level assignments and `def`s, but anything among those that itself depends on a
+non-`usd_chunks` import still fails, is skipped, and the module quietly falls back to
+`DefaulConfig()`'s plain defaults — wrong category, generic description, no error shown
+anywhere but a warning in the log. If `config()` needs something expensive or
+module-derived, `variants` accepting a callable (see the table above) is the supported way
+to defer that cost rather than reaching for a constant built above it.
 
 ## `execute()`
 
