@@ -6,22 +6,12 @@ usd_chunks is a toolkit for quickly creating ui plugins for USD. Initially inten
 > in `execute(node)`, how it looks in `main()`, and its metadata in `config()` — things
 > like `description` and `category`. That's it.
 
-## Quick start
-
-```
-pip install usd-chunks                                   # into usdview's own Python
-set PXR_PLUGINPATH_NAME=<output of `usdchunks plugin-path`>
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
-usdview anything.usda
-```
-
-Open usdview with those two variables set and you get a **Chunks** panel and menu;
-right-click the graph canvas and every chunk under `scripts/` is there to drop in. Full
-version, headless option, and every environment variable: [Install](install.md).
+New here? [Install](install.md#quick-start) has the copy-paste path from nothing to a
+chunk on screen.
 
 ## Guides
 
-- [Install](install.md) — `pip install`, every environment variable, building the docs.
+- [Install](install.md) — quick start, `pip install`, every environment variable, building the docs.
 - [Using the node graph](node-graph-basics.md) — creating and wiring nodes, shortcuts.
 - [Writing a chunk](writing-a-chunk.md) — a chunk module's `main()`, `config()`,
   `execute()` and `commit()`.

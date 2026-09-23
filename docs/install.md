@@ -4,7 +4,7 @@ Two things make a usd_chunks setup work: the package importable in whatever Pyth
 your host, and **USD_CHUNK_DIRS** pointed at your chunk modules. Everything else below is
 detail on those two facts.
 
-## Quickest path
+## Quick start
 
 Given a zip or clone of this repo and a usdview build to point it at:
 

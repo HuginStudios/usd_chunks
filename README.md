@@ -260,24 +260,8 @@ Most of the attrs interfacing has been abstracted away except for using attrs.fi
 
 ## Setup
 
-### Quick start
-
-Got a zip or clone of this repo and a usdview build handy? This is the whole path from
-nothing to a chunk on screen:
-
-```
-pip install usd-chunks                                    # into usdview's own Python
-set PXR_PLUGINPATH_NAME=<output of `usdchunks plugin-path`>
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
-usdview anything.usda
-```
-
-Open usdview with those two environment variables set and you'll have a **Chunks** panel
-and menu; right-click the graph canvas and every chunk in `scripts/` (or wherever you
-pointed `USD_CHUNK_DIRS`) is there to drop in. No USD build handy? Swap the first line for
-`pip install "usd-chunks[standalone]"` and drive it from the command line instead —
-`usdchunks run --help` — see [docs/install.md](docs/install.md) for that path and every
-detail skipped here.
+Got a zip or clone of this repo? [docs/install.md](docs/install.md#quick-start) has the
+copy-paste path from nothing to a chunk on screen, and every environment variable below it.
 
 ### Install
 
