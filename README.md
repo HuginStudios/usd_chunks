@@ -1,6 +1,8 @@
 # usd_chunks
 
-![image](docs/assets/chunks_view.png)
+![A parametric house chunk in usdview: labelled sliders on the node drive the geometry in the viewport, wired through a Camera to a View node](docs/assets/graph_house.png)
+
+<sub>One chunk module, no UI code: the sliders, the node, the ports and the panel are all generated from its declaration.</sub>
 
 **A framework for building procedural USD tools — no Qt, no plugin boilerplate, no scene
 format of your own.**
@@ -54,6 +56,10 @@ how you switch between several results in the same graph. →
 transforms, references, materials, MaterialX shading, scattering, a MuJoCo rigid-body
 solver, and more. Most are a few hundred lines each, and doubly worth reading: they're
 also the worked examples.
+
+![Scatter Brush painting instances across a rock, wired to Scatter Points and a Camera, rendered in V-Ray](docs/assets/graph_scatter.png)
+
+<sub>Paint density onto a surface, scatter instances through it, frame it with a camera — three shipped chunks, wired.</sub>
 
 ## 🕰️ Where it came from
 
