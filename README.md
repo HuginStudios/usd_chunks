@@ -28,9 +28,10 @@ usdchunks run layout.usda Transform.translate_x=5 -o result.usda
 
 ## 🚀 Getting started
 
-1. **[Install it](docs/install.md):**
+1. **[Install it](docs/install.md):** (not on PyPI yet — clone it for now)
    ```
-   pip install usd-chunks
+   git clone https://github.com/HuginStudios/usd_chunks.git
+   pip install -e ./usd_chunks
    for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i
    set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
    usdview anything.usda

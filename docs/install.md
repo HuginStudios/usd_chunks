@@ -6,8 +6,12 @@ detail on those two facts.
 
 ## Quick start
 
+Not on PyPI yet, so `git clone` + `pip install -e` is the path for now — this becomes a
+plain `pip install usd-chunks` once that changes.
+
 ```
-pip install usd-chunks                                                           # into usdview's own Python
+git clone https://github.com/HuginStudios/usd_chunks.git
+pip install -e ./usd_chunks                                                      # into usdview's own Python
 for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i   # Windows (cmd)
 set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts                                 # Windows (cmd)
 usdview anything.usda
@@ -16,7 +20,8 @@ usdview anything.usda
 Or, headless (no usdview, `usd-core` only):
 
 ```
-pip install "usd-chunks[standalone]"
+git clone https://github.com/HuginStudios/usd_chunks.git
+pip install -e "./usd_chunks[standalone]"
 set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
 usdchunks run --help
 ```
@@ -32,8 +37,14 @@ own — everything past this point is detail for when you need it.
 
 ## Install
 
-Which `pip install` to use comes down to one question: does the Python you're installing
-into already have USD?
+Clone it — usd_chunks isn't on PyPI yet, so this is the only path in either case:
+
+```
+git clone https://github.com/HuginStudios/usd_chunks.git
+```
+
+Which extra to install with comes down to one question: does the Python you're
+installing into already have USD?
 
 ```
 python -c "import pxr"
@@ -43,14 +54,14 @@ python -c "import pxr"
 Blender's bundled Python, or any other DCC:
 
 ```
-pip install usd-chunks
+pip install -e ./usd_chunks
 ```
 
 **That fails** — a plain script, a CI job, a bare venv with no DCC in sight — bring your
 own USD:
 
 ```
-pip install "usd-chunks[standalone]"
+pip install -e "./usd_chunks[standalone]"
 ```
 
 The `standalone` extra pulls in `usd-core`, giving you the library plus the `usdchunks`
