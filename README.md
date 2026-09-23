@@ -28,8 +28,14 @@ usdchunks run layout.usda Transform.translate_x=5 -o result.usda
 
 ## 🚀 Getting started
 
-1. **[Install it](docs/install.md)** — `pip install`, every environment variable,
-   troubleshooting what won't show up.
+1. **[Install it](docs/install.md):**
+   ```
+   pip install usd-chunks
+   for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i
+   set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
+   usdview anything.usda
+   ```
+   → every environment variable, extras, and troubleshooting what won't show up.
 2. **[Use the node graph](docs/node-graph-basics.md)** — drop your first chunk in a
    minute.
 3. **[Learn what a Chunk is](docs/chunk-basics.md)** — params, groups, flags, a worked

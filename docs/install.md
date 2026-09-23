@@ -7,14 +7,13 @@ detail on those two facts.
 ## Quick start
 
 ```
-pip install usd-chunks                                   # into usdview's own Python
-usdchunks plugin-path                                     # copy what this prints
-set PXR_PLUGINPATH_NAME=<what it printed>                 # Windows (cmd)
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts          # Windows (cmd)
+pip install usd-chunks                                                           # into usdview's own Python
+for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i   # Windows (cmd)
+set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts                                 # Windows (cmd)
 usdview anything.usda
 ```
 
-OR if you want headless with usd-core:
+Or, headless (no usdview, `usd-core` only):
 
 ```
 pip install "usd-chunks[standalone]"
@@ -22,7 +21,9 @@ set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
 usdchunks run --help
 ```
 
-(`$env:NAME = "value"` on PowerShell, `export NAME=value` on macOS/Linux.)
+PowerShell: `$env:PXR_PLUGINPATH_NAME = (usdchunks plugin-path)`, `$env:NAME = "value"`
+for the rest. macOS/Linux: `export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"`,
+`export NAME=value` for the rest.
 
 Right-click the graph canvas in usdview and every chunk under
 [`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) is there to

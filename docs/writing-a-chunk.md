@@ -78,7 +78,7 @@ gets the defaults below.
 | `requirements` | `[]` | pip requirements the module needs, e.g. `["numpy>=2,<3"]`. A module that fails to import (because one is missing) is skipped rather than crashing discovery; with [`USD_CHUNK_AUTO_INSTALL`](install.md#environment-variables) set, missing ones are offered for install into `USD_CHUNK_DEPENDENCY_DIR`. |
 | `required_modules` | `[]` | Other chunk *modules* this one depends on being registered. |
 | `interactive` | `False` | The chunk writes to a file layer that persists, instead of its own layer being cleared and regenerated on every cook. Set this for a chunk whose job is a one-off authored edit rather than a repeatable cook. |
-| `hidden` | `False` | Kept out of the create menu. For a type that only exists to be saved and reloaded rather than created by hand — `runtime`, the type a chunk built in the interpreter is written as (see *Building a chunk at runtime* in [`docs/index.md`](index.md)). It must still be a registered module, since that's how a reload finds what to rebuild a prim from. |
+| `hidden` | `False` | Kept out of the create menu. For a type that only exists to be saved and reloaded rather than created by hand — `runtime`, the type a chunk built in the interpreter is written as (see [Building a chunk at runtime](runtime-chunks.md)). It must still be a registered module, since that's how a reload finds what to rebuild a prim from. |
 | `terminal` | `False` | No `outputs:chunk` is authored — the chunk ends an exec chain rather than passing it on. The [View](core-chunks.md#view) chunk sets this. |
 | `exec_inputs` | `1` | How many *positional* exec input slots the chunk has. `1` is the ordinary case — one `inputs:chunk` port that can still carry several wires stacked on it. Above `1`, each slot gets its own port and which wire lands where is meaningful (Stage Expression Switch's slot 0 is the stream it always forwards, slot 1 the branch it gates). |
 | `dynamic_exec_inputs` | `False` | The chunk grows a fresh numbered exec input port per incoming wire, plus one empty trailing slot to attach the next branch to. For a chunk like Merge or Switch where every upstream branch needs to be its own port rather than several wires stacked on one — the slot count isn't known until the graph is wired, unlike `exec_inputs`. |
@@ -146,7 +146,7 @@ def main():
 
 (the full version is [`scripts/transforms/reset_transform.py`](https://github.com/HuginStudios/usd_chunks/blob/main/scripts/transforms/reset_transform.py)).
 A save only ever records a chunk's **data** — its params, values and wiring — never the
-code path that produced them (see *What a save keeps* in [`docs/index.md`](index.md)).
+code path that produced them (see [*What a save keeps*](runtime-chunks.md#what-a-save-keeps)).
 `execute` is what makes a reload behave, not just look, the way it did before saving.
 
 ## `commit()`
