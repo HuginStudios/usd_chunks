@@ -78,6 +78,20 @@ them: a chunk module exposes `main()` (no arguments, returns a `Chunk`), optiona
 matching USD's `Tf.Notice`, or `(owner, notice, sender)`, receiving whichever it declares.
 Changing either is a breaking change for every chunk that exists.
 
+## Why attrs
+
+Chunk classes lean on [python-attrs](https://www.attrs.org/en/stable) throughout, rather
+than hand-written `__init__` methods. A chunk class carries a lot of attributes, and each
+level of the inheritance hierarchy (base classes → `Chunk`/`Group` → the concrete param
+types) adds more of its own — attrs combines them all into one generated `__init__`
+dynamically, so a subclass never repeats what its parent already declared, and validation
+and conversion come for free on top.
+
+The trade-off: these classes have no explicit `__init__` to read for their signature, so
+rely on static type checking (Pylance) instead. Most of the attrs machinery is abstracted
+away — the only piece a contributor usually touches directly is `attrs.field()` on a class
+attribute, and only when adding a new param type or otherwise extending `chunk_core`.
+
 ## Pull requests
 
 - Branch off `main` and open a PR against it.

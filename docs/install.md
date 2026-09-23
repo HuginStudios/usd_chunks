@@ -33,7 +33,7 @@ usdchunks run --help
 ```
 
 `usdchunks run` needs a `.usda` chunk network to act on — save one from usdview first, or
-see the `run` examples in the [README](https://github.com/HuginStudios/usd_chunks/blob/main/README.md#the-same-definition-runs-interactively-and-headless).
+see the `run` examples in [Runs interactively and headless](index.md#runs-interactively-and-headless).
 `usdchunks run --help` only proves the install itself worked, not that your chunks were
 found — that only shows up once you point `run` (or usdview) at a real network.
 

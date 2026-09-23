@@ -1,17 +1,25 @@
 # Using the node graph
 
-A quick walkthrough of the graph editor itself — creating nodes, wiring them, and the
-handful of shortcuts that make it fast to work in. For what a node graph is *made of*
-under the hood (prims, ports, USD connections), see the [README's "The graph is USD"
-section](https://github.com/HuginStudios/usd_chunks/blob/main/README.md#the-graph-is-usd); for View and ChunkGroup specifically, see
-[View and ChunkGroup](core-chunks.md).
+## 🚀 Your first chunk node
+
+1. Open usdview — the **Chunks** panel (or the **Chunks** menu) is where the graph lives.
+2. **Right-click empty canvas** and pick any chunk, e.g. *Add Mesh*.
+3. **Right-click that node and choose Set View.** This is the one step that's easy to
+   miss: nothing shows up in the viewport until a node is wired to a view.
+4. Play with the node's params in its panel and watch the viewport update.
+
+That's it — you have a working chunk. Everything below is for when you want more: wiring
+several nodes together, keyboard shortcuts, disabled/locked nodes, working inside a
+ChunkGroup. For what a node graph is *made of* under the hood (prims, ports, USD
+connections), see [The graph is USD](index.md#the-graph-is-usd) in the docs home; for View
+and ChunkGroup specifically, see [View and ChunkGroup](core-chunks.md).
 
 ## Opening the graph
 
-In usdview, the **Chunks** menu (or the Chunks panel) gets you to the graph view for the
-current context — the top-level graph, or, if you're inside a [ChunkGroup](core-chunks.md#chunkgroup),
-that group's own inner graph. Every context remembers which of its (up to three) view
-slots was active when it was saved, and opens back on that one.
+The **Chunks** panel/menu opens the graph view for the current context — the top-level
+graph, or, if you're inside a [ChunkGroup](core-chunks.md#chunkgroup), that group's own
+inner graph. Every context remembers which of its (up to three) view slots was active
+when it was saved, and opens back on that one.
 
 ## Creating a node
 
@@ -36,7 +44,7 @@ specially:
   heals the exec chain behind it — whatever fed the node's input now feeds whatever it used
   to feed, so removing a step from the middle of a chain doesn't leave the rest dangling.
 - Connecting a value port authors a real `@Node.param@` expression, not just a visual line
-  — the connection *is* the dataflow (see the README).
+  — the connection *is* the dataflow (see [The graph is USD](index.md#the-graph-is-usd)).
 
 ## Nothing cooks without a View
 

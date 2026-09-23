@@ -8,6 +8,15 @@ to your scene; these two are structural. Both ship in
 [`view.py`](https://github.com/HuginStudios/usd_chunks/blob/main/scripts/core/view.py) and
 [`chunkgroup.py`](https://github.com/HuginStudios/usd_chunks/blob/main/scripts/core/chunkgroup.py).
 
+## 🔎 At a glance
+
+- **View** — right-click a chunk, choose **Set View**, and its output shows up in the
+  viewport. Nothing else cooks until you do this.
+- **ChunkGroup** — a subnet. Double-click to dive in and build inside it like any other
+  graph; double-click out when you're done.
+
+The rest of this page is the detail behind both.
+
 ## View
 
 Wire nothing to a View and your whole network sits there, fully built, doing nothing —
