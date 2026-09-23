@@ -74,6 +74,11 @@ problem is still solved, and it is no longer the point: a chunk is a description
 operation on a stage, and usdview is one of the places it can be run.
 
 ## Chunks
+
+> usd_chunks in a nutshell: chunks are written in Python. A chunk describes what it does
+> in `execute(node)`, how it looks in `main()`, and its metadata in `config()` — things
+> like `description` and `category`. That's it.
+
 A 'Chunk' is primarily a container of parameters, groups and attributes. All data encapsulated in a chunk can be modified freely. Chunks, parameters and groups are similar and can be used similarly. Parameters hold values and are ultimately the things we can interact with. Any data modified on a chunk object will send a relevant notice for users to listen for through callbacks. Callbacks are python functions, commonly for modifying the stage. Any changes to the stage through a callback will be encapsulated in a relevant UsdLayer, as to not clutter irrelevant layers. As chunks are dynamic, callbacks can also be used to modify the chunks at runtime by adding / removing params, or otherwise change the behaviour of the Chunk.
 
 ### Example
@@ -254,6 +259,25 @@ This means we trade off some readability for cleaner code and easier maintenance
 Most of the attrs interfacing has been abstracted away except for using attrs.field() for class attributes. Users do not need to think about this unless creating custom parameters or otherwise extending the chunk_core module.
 
 ## Setup
+
+### Quick start
+
+Got a zip or clone of this repo and a usdview build handy? This is the whole path from
+nothing to a chunk on screen:
+
+```
+pip install usd-chunks                                    # into usdview's own Python
+set PXR_PLUGINPATH_NAME=<output of `usdchunks plugin-path`>
+set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
+usdview anything.usda
+```
+
+Open usdview with those two environment variables set and you'll have a **Chunks** panel
+and menu; right-click the graph canvas and every chunk in `scripts/` (or wherever you
+pointed `USD_CHUNK_DIRS`) is there to drop in. No USD build handy? Swap the first line for
+`pip install "usd-chunks[standalone]"` and drive it from the command line instead —
+`usdchunks run --help` — see [docs/install.md](docs/install.md) for that path and every
+detail skipped here.
 
 ### Install
 

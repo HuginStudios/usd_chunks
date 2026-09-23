@@ -1,5 +1,9 @@
 # Writing a chunk module
 
+> usd_chunks in a nutshell: chunks are written in Python. A chunk describes what it does
+> in `execute(node)`, how it looks in `main()`, and its metadata in `config()` — things
+> like `description` and `category`. That's it.
+
 A chunk module is a plain `.py` file. Drop it anywhere under
 [`USD_CHUNK_DIRS`](install.md#environment-variables) and it is discovered automatically —
 there is no registration step, no `plugInfo.json`, nothing to import it from elsewhere.

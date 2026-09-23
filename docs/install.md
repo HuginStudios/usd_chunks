@@ -6,23 +6,36 @@ detail on those two facts.
 
 ## Quickest path
 
-Given a zip or clone of this repo and nothing else:
+Given a zip or clone of this repo and a usdview build to point it at:
+
+```
+pip install usd-chunks                                   # into usdview's own Python
+usdchunks plugin-path                                     # copy what this prints
+set PXR_PLUGINPATH_NAME=<what it printed>                 # Windows (cmd)
+set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts          # Windows (cmd)
+usdview anything.usda
+```
+
+(`$env:NAME = "value"` on PowerShell, `export NAME=value` on macOS/Linux.) Opening usdview
+with those two variables set gets you a **Chunks** panel and menu; right-click the graph
+canvas and every chunk under [`scripts/`](/scripts/) — this repo's own chunk library — is
+there to drop in. Point `USD_CHUNK_DIRS` at your own directory once you're writing chunks
+of your own; multiple directories are `;`-separated on Windows and `:`-separated
+elsewhere, and nested folders are scanned too.
+
+No usdview build handy, or want it headless (CI, a batch cook)? Skip `PXR_PLUGINPATH_NAME`
+and usdview entirely:
 
 ```
 pip install "usd-chunks[standalone]"
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts        # Windows (cmd)
-$env:USD_CHUNK_DIRS = "C:\path\to\usd_chunks\scripts"    # Windows (PowerShell)
-export USD_CHUNK_DIRS=/path/to/usd_chunks/scripts        # macOS / Linux
+set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
 usdchunks run --help
 ```
 
-`scripts/` is this repo's own chunk library — set `USD_CHUNK_DIRS` to it to get every
-chunk under [`scripts/`](/scripts/) available immediately, or to your own directory once
-you're writing chunks of your own. Multiple directories are `;`-separated on Windows and
-`:`-separated elsewhere; nested folders are scanned too.
-
-That's enough to use `usdchunks run` headlessly. To use the graph and panels inside
-usdview, see [usdview integration](#usdview-integration) below.
+`usdchunks run` needs a `.usda` chunk network to act on — save one from usdview first, or
+see the `run` examples in the [README](/README.md#the-same-definition-runs-interactively-and-headless).
+`usdchunks run --help` only proves the install itself worked, not that your chunks were
+found — that only shows up once you point `run` (or usdview) at a real network.
 
 ## Install
 
@@ -61,6 +74,20 @@ usdchunks plugin-path
 Point `PXR_PLUGINPATH_NAME` at that path before launching usdview. With that set and
 `USD_CHUNK_DIRS` pointed at your chunks, opening usdview shows a **Chunks** panel and a
 **Chunks** menu.
+
+## Gizmos (viewport handles)
+
+A chunk can declare a viewport handle — a transform gizmo you drag to change a param
+directly in the 3D view — via `gizmos` in its `config()` (see [Writing a
+chunk](writing-a-chunk.md#config)). usd_chunks only **authors** that: the schema attributes
+that say what handle exists and which params it drives. Nothing in this repo draws,
+picks or drags it.
+
+Drawing that handle in usdview is a separate, host-side piece (packaged as `usd_gizmos` at
+Hugin) — without it installed, a chunk with `gizmos` set still works exactly the same, you
+simply see no handle in the viewport for it. See [Chunk gizmos: the host
+contract](gizmo-host-contract.md) for the full interface if you're building that piece for
+a host, or for a DCC other than usdview.
 
 ## Running from a clone
 

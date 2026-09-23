@@ -45,16 +45,23 @@ specially:
 
 ## Nothing cooks without a View
 
-A freshly created chain does nothing until its end is wired into a [View](core-chunks.md#view)
-chunk — press `V` with the cursor over the canvas to drop one. Until then, every node sits
-there fully configured and inert; this is deliberate, not a bug you're diagnosing.
+A freshly created chain does nothing until it's wired into a [View](core-chunks.md#view)
+chunk. **Right-click the chunk whose output you want to see and choose Set View** — that
+creates a View chunk, wires it to that chunk's output, and makes it active in one step. If
+that chunk already feeds a view, the same menu entry shows as **Activate View N** instead.
+Until something is wired to an active view, every node sits there fully configured and
+inert; that's deliberate, not a bug you're diagnosing.
+
+A graph can hold up to three views at once. Press `1`, `2` or `3` to switch which one is
+active — it only switches to a slot that already has a view in the current graph, so you
+can never accidentally blank the whole thing by pressing a number nothing is wired to.
 
 ## Keyboard shortcuts
 
 | Key | Does |
 | --- | --- |
 | `F` | Frame the current selection (or everything, with nothing selected). |
-| `V` | Create a View chunk at the cursor. |
+| `1` / `2` / `3` | Switch the active view slot, if one exists there. |
 | `L` | Auto-layout the current selection, or the whole graph with nothing selected. |
 | `C` | Collapse the current selection, or the whole graph with nothing selected. |
 | `D` | Toggle disable on the current selection. |
@@ -65,9 +72,9 @@ there fully configured and inert; this is deliberate, not a bug you're diagnosin
 | `Ctrl+D` | Duplicate selection. |
 | `Ctrl+G` | Group the current selection into a new [ChunkGroup](core-chunks.md#chunkgroup). |
 
-Shortcuts that double up a key with its `Ctrl` form (`D`/`Ctrl+D`, `C`/`Ctrl+C`, `V`/`Ctrl+V`)
-are deliberate — the bare key is the graph-specific action, the modified one is the
-familiar clipboard verb.
+Shortcuts that double up a key with its `Ctrl` form (`D`/`Ctrl+D`, `C`/`Ctrl+C`) are
+deliberate — the bare key is the graph-specific action, the modified one is the familiar
+clipboard verb.
 
 ## Disabled and locked nodes
 
