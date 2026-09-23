@@ -6,13 +6,6 @@ under the hood (prims, ports, USD connections), see the [README's "The graph is 
 section](/README.md#the-graph-is-usd); for View and ChunkGroup specifically, see
 [View and ChunkGroup](core-chunks.md).
 
-!!! note "Screenshots"
-    This page describes the interaction model precisely, but doesn't yet carry a
-    screenshot of the graph canvas itself — only the params panel is captured in
-    [docs/assets](assets/) today (`chunks_view.png`, `example_add_cube.png`). If you're
-    editing this page, a screenshot of a small wired network (a couple of nodes, a View,
-    the create menu open) belongs right after "Creating a node" below.
-
 ## Opening the graph
 
 In usdview, the **Chunks** menu (or the Chunks panel) gets you to the graph view for the
