@@ -804,6 +804,51 @@ def iter_prim_targets(stage, param):
             yield target_path
 
 
+def define_with_ancestors(stage, path, type_name="Xform", ancestor_type="Xform"):
+    """Define `path` with `type_name`, giving every ancestor along the way a type too.
+
+    Usd.Stage.DefinePrim types only the prim it is asked for; the ancestors it has to
+    create to get there come out as typeless `def`s. That stays invisible until someone
+    wants to move the result -- a typeless prim is not Xformable, so a network dropped at
+    /world/house/bedroom has no transform to grab and nothing for the gizmo system to
+    anchor to, even though every prim underneath it is a well-formed Xform.
+
+    An ancestor that already carries a type keeps it; one that does not is given
+    `ancestor_type`, which is the repair as much as the prevention: the chunks inside a
+    hosted network author their own prims deep under the host's namespace, so the
+    typeless ancestors may already be on the stage by the time the host gets here.
+
+    The prim at `path` itself is always defined as `type_name`, whatever was there before.
+    That is the difference between this and a plain "create it if missing": a path that
+    already holds a `Scope`, or an `over` carrying a typeName, would otherwise be left as
+    it is and the caller would get back a root it cannot transform.
+
+    Returns the prim at `path`.
+    """
+    sdf_path = Sdf.Path(str(path))
+    prim = None
+    for prefix in sdf_path.GetPrefixes():
+        if prefix != sdf_path:
+            # An ancestor that is already really there keeps whatever type it has; this
+            # function is only here to stop one arriving typeless. IsDefined, not IsValid:
+            # an `over` is valid, so IsValid would skip `over "World" (typeName = "Xform")`
+            # and leave it undefined -- which is precisely the shape chunk_layers
+            # .define_ancestors exists to repair, so it must not be created here.
+            ancestor = stage.GetPrimAtPath(prefix)
+            if ancestor and ancestor.IsDefined() and ancestor.GetTypeName():
+                prim = ancestor
+                continue
+            prim = stage.DefinePrim(prefix, ancestor_type)
+            continue
+
+        # The leaf is what the caller asked for, so it is always defined as `type_name`.
+        # Skipping it when it happens to be typed already is how importing onto an existing
+        # Scope used to hand back a root nothing can be transformed by. DefinePrim is
+        # idempotent and will retype, which is the point.
+        prim = stage.DefinePrim(prefix, type_name)
+    return prim
+
+
 @contextmanager
 def author_in_variant_context(stage, path_str):
     """Context manager that enters any variant edit contexts encoded in path_str.
