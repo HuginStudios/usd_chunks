@@ -9,14 +9,16 @@ A *Chunk* is a short Python module that declares its parameters and what to do w
 usd_chunks turns that one declaration into a node in a graph, a panel of widgets, and a
 command-line invocation, for free:
 
-- 🔗 **The graph is USD.** A node is a prim, an edge is a USD connection — no adapter, no
+- **The graph is USD.** A node is a prim, an edge is a USD connection — no adapter, no
   export step. Saving the stage saves the graph.
-- 🖥️ **Runs everywhere.** The same chunk works as a panel, a node on the canvas, or
+- **Runs everywhere.** The same chunk works as a panel, a node on the canvas, or
   headless from the command line — nothing to rewrite.
-- 🧩 **Self-describing.** The node graph, the param panels and the viewport gizmos are all
+- **Self-describing.** The node graph, the param panels and the viewport gizmos are all
   generated from one declaration.
-- 🐍 **Just Python.** No Qt, no plugin registration, no serialization format, no undo
+- **Just Python.** No Qt, no plugin registration, no serialization format, no undo
   stack, no CLI to hand-write.
+
+No UI, no problem — the same network runs headless from the command line:
 
 ```
 usdchunks run layout.usda Transform.translate_x=5 -o result.usda

@@ -6,8 +6,6 @@ detail on those two facts.
 
 ## Quick start
 
-Given a zip or clone of this repo and a usdview build to point it at:
-
 ```
 pip install usd-chunks                                   # into usdview's own Python
 usdchunks plugin-path                                     # copy what this prints
@@ -16,15 +14,7 @@ set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts          # Windows (cmd)
 usdview anything.usda
 ```
 
-(`$env:NAME = "value"` on PowerShell, `export NAME=value` on macOS/Linux.) Opening usdview
-with those two variables set gets you a **Chunks** panel and menu; right-click the graph
-canvas and every chunk under [`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) — this repo's own chunk library — is
-there to drop in. Point `USD_CHUNK_DIRS` at your own directory once you're writing chunks
-of your own; multiple directories are `;`-separated on Windows and `:`-separated
-elsewhere, and nested folders are scanned too.
-
-No usdview build handy, or want it headless (CI, a batch cook)? Skip `PXR_PLUGINPATH_NAME`
-and usdview entirely:
+OR if you want headless with usd-core:
 
 ```
 pip install "usd-chunks[standalone]"
@@ -32,65 +22,73 @@ set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
 usdchunks run --help
 ```
 
-`usdchunks run` needs a `.usda` chunk network to act on — save one from usdview first, or
-see the `run` examples in [Runs interactively and headless](index.md#runs-interactively-and-headless).
-`usdchunks run --help` only proves the install itself worked, not that your chunks were
-found — that only shows up once you point `run` (or usdview) at a real network.
+(`$env:NAME = "value"` on PowerShell, `export NAME=value` on macOS/Linux.)
+
+Right-click the graph canvas in usdview and every chunk under
+[`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) is there to
+drop in. Point `USD_CHUNK_DIRS` at your own directory once you're writing chunks of your
+own — everything past this point is detail for when you need it.
 
 ## Install
 
-The one question that actually matters: **does the Python you're installing into already
-have USD?** Run `python -c "import pxr"` — if that already works (you're inside usdview,
-Houdini's `hython`, Maya's `mayapy`, Blender's bundled Python, or any other DCC), you
-already have a USD, and installing another one is the wrong move:
+Which `pip install` to use comes down to one question: does the Python you're installing
+into already have USD?
+
+```
+python -c "import pxr"
+```
+
+**That already works** — you're inside usdview, Houdini's `hython`, Maya's `mayapy`,
+Blender's bundled Python, or any other DCC:
 
 ```
 pip install usd-chunks
 ```
 
-If it fails (a plain script, a CI job, a bare venv with no DCC in sight), you need to bring
-your own USD:
+**That fails** — a plain script, a CI job, a bare venv with no DCC in sight — bring your
+own USD:
 
 ```
 pip install "usd-chunks[standalone]"
 ```
 
 The `standalone` extra pulls in `usd-core`, giving you the library plus the `usdchunks`
-command with no separate USD build required:
+command with no separate USD build required — `usdchunks run my_setup.usda` works
+immediately.
 
-```
-usdchunks run my_setup.usda
-```
+!!! danger "Never install `[standalone]` into a host that already has USD"
+    Houdini's `hython`, Maya's `mayapy`, Blender's Python and usdview all embed USD under
+    their own build — Blender's is compiled as `pxrBlender_v26_03__pxrReserved__`, for
+    instance — so a second, pip-installed USD is a different C++ type entirely and cannot
+    exchange objects with the host's. You end up with two unrelated USDs sharing one
+    process rather than one shared USD, and things fail in confusing,
+    not-obviously-related ways.
 
-**Never install the `standalone` extra into a host that already has USD.** Houdini's
-`hython`, Maya's `mayapy`, Blender's Python and usdview all embed USD under their own
-build — Blender's is compiled as `pxrBlender_v26_03__pxrReserved__`, for instance — so a
-second, pip-installed USD is a different C++ type entirely and cannot exchange objects
-with the host's. You end up with two unrelated USDs sharing one process rather than one
-shared USD, and things fail in confusing, not-obviously-related ways.
-
-Note that the `usd-core` wheels on PyPI do not include usdview — it is not part of that
-build. Using the usdview integration needs a full USD build that provides
-`pxr.Usdviewq`; see below.
+The `usd-core` wheels on PyPI don't include usdview — using the usdview integration needs
+a full USD build that provides `pxr.Usdviewq`; see [usdview integration](#usdview-integration)
+below.
 
 ### A plain install won't show every bundled chunk
 
-Neither `pip install` above brings in numpy, PySide6, `requests` or Polars — and about a
-sixth of [`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) needs
-one of those. A module whose import fails is skipped silently as far as the create menu
-goes (the registry logs exactly what's missing, at `INFO` — see
-[`USD_CHUNK_LOG_LEVEL`](#environment-variables)); nothing else marks the gap, so the first
-symptom is usually "the chunk I want isn't in the menu," not an error dialog. Affected
-today: `AMDMaterialXLibrary`, `add_curves`, `add_mesh`, `curves_to_mesh`, `custom_widget`,
-`poly_reduce`, `rbd_solver`, `scatter_brush`, `scatter_points`, `urdf_import`,
-`uv_checker`, `vine` — several of them the headline ones (Scatter, Poly Reduce, the RBD
-solver).
+!!! warning
+    A plain install doesn't bring in numpy, PySide6 or requests, and roughly a sixth of
+    [`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) needs one
+    of those to import at all.
 
-Fix it either by hand (`pip install numpy PySide6 requests polars`, or just the ones you
-actually hit), or by setting
-[`USD_CHUNK_AUTO_INSTALL`](#environment-variables) so a chunk's own declared
-`requirements` ([Writing a chunk](writing-a-chunk.md#config)) get installed for you, after
-asking.
+A module whose import fails is skipped silently as far as the create menu goes — the
+registry logs exactly what's missing, at `INFO` (see
+[`USD_CHUNK_LOG_LEVEL`](#environment-variables)), but nothing else marks the gap. The
+first symptom is usually "the chunk I want isn't in the menu," not an error dialog.
+
+Affected today: `AMDMaterialXLibrary`, `add_curves`, `add_mesh`, `curves_to_mesh`,
+`custom_widget`, `poly_reduce`, `rbd_solver`, `scatter_brush`, `scatter_points`,
+`urdf_import`, `uv_checker`, `vine` — several of them the headline ones (Scatter, Poly
+Reduce, the RBD solver).
+
+Fix it either by hand (`pip install numpy PySide6 requests`, or just the ones you
+actually hit), or by setting [`USD_CHUNK_AUTO_INSTALL`](#environment-variables) so a
+chunk's own declared `requirements` ([Writing a chunk](writing-a-chunk.md#config)) get
+installed for you, after asking.
 
 ### Other extras
 

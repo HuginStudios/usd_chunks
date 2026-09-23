@@ -3,10 +3,13 @@
 ## 🚀 Your first chunk node
 
 1. Open usdview — the **Chunks** panel (or the **Chunks** menu) is where the graph lives.
-2. **Right-click empty canvas** and pick any chunk, e.g. *Add Mesh*.
-3. **Right-click that node and choose Set View.** This is the one step that's easy to
-   miss: nothing shows up in the viewport until a node is wired to a view.
-4. Play with the node's params in its panel and watch the viewport update.
+2. **Right-click empty canvas** and pick any chunk, e.g. *Add Mesh*. A View node is
+   placed and wired to it automatically — the first chunk in an empty graph always gets
+   one, so there's nothing extra to do here.
+3. Play with the node's params in its panel and watch the viewport update.
+4. Add a second chunk and want to see *its* output instead? Right-click it and choose
+   **Set View** — the auto-wiring only happens for the very first node in a graph, so
+   this is how you point the view at anything after that.
 
 That's it — you have a working chunk. Everything below is for when you want more: wiring
 several nodes together, keyboard shortcuts, disabled/locked nodes, working inside a

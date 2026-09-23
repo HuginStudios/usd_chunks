@@ -10,8 +10,9 @@ to your scene; these two are structural. Both ship in
 
 ## 🔎 At a glance
 
-- **View** — right-click a chunk, choose **Set View**, and its output shows up in the
-  viewport. Nothing else cooks until you do this.
+- **View** — decides what's shown and what runs. The first chunk in a graph gets one
+  automatically; after that, right-click a chunk and choose **Set View** to point it
+  there instead.
 - **ChunkGroup** — a subnet. Double-click to dive in and build inside it like any other
   graph; double-click out when you're done.
 
@@ -26,10 +27,11 @@ a file that has no view, and `--all` forces that same everything-cooks behaviour
 a view exists. A view is what narrows execution, in either case — it just narrows from
 "nothing" in the UI and from "everything" on the command line.
 
-**Getting one wired up:** right-click the chunk whose output you want to see and choose
-**Set View**. That creates a View chunk, wires it to that chunk's output, and makes it
-active — one click, not three separate steps. If that chunk already feeds a view, the same
-menu entry shows as **Activate View N** instead.
+**Getting one wired up:** the first chunk in an empty graph gets a View placed and wired
+to it automatically — nothing to do there. For any chunk after that, right-click the one
+whose output you want to see and choose **Set View**. That creates a View chunk, wires it
+to that chunk's output, and makes it active — one click, not three separate steps. If
+that chunk already feeds a view, the same menu entry shows as **Activate View N** instead.
 
 A quick example: build Add Mesh → Transform, right-click Transform, choose **Set View**.
 Nudge the Transform's sliders and the viewport updates — nothing upstream of Add Mesh had
