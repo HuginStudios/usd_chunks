@@ -73,6 +73,25 @@ Note that the `usd-core` wheels on PyPI do not include usdview — it is not par
 build. Using the usdview integration needs a full USD build that provides
 `pxr.Usdviewq`; see below.
 
+### A plain install won't show every bundled chunk
+
+Neither `pip install` above brings in numpy, PySide6, `requests` or Polars — and about a
+sixth of [`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) needs
+one of those. A module whose import fails is skipped silently as far as the create menu
+goes (the registry logs exactly what's missing, at `INFO` — see
+[`USD_CHUNK_LOG_LEVEL`](#environment-variables)); nothing else marks the gap, so the first
+symptom is usually "the chunk I want isn't in the menu," not an error dialog. Affected
+today: `AMDMaterialXLibrary`, `add_curves`, `add_mesh`, `curves_to_mesh`, `custom_widget`,
+`poly_reduce`, `rbd_solver`, `scatter_brush`, `scatter_points`, `urdf_import`,
+`uv_checker`, `vine` — several of them the headline ones (Scatter, Poly Reduce, the RBD
+solver).
+
+Fix it either by hand (`pip install numpy PySide6 requests polars`, or just the ones you
+actually hit), or by setting
+[`USD_CHUNK_AUTO_INSTALL`](#environment-variables) so a chunk's own declared
+`requirements` ([Writing a chunk](writing-a-chunk.md#config)) get installed for you, after
+asking.
+
 ### Other extras
 
 The rest only matter for specific work, and combine (`pip install -e ".[dev,docs]"`):
