@@ -2,6 +2,13 @@
 
 usd_chunks is a toolkit for quickly creating ui plugins for USD. Initially intended for UsdView, this project aimed to make it easier for users to add custom tooling to UsdView, without the hassle of writing the UI logic and plugin registratioon each time. usd_chunks solves this by being a usd plugin itself, and loading the chunks (.py files) at runtime from specified locations.
 
+New here? [Install](install.md) covers `pip install` and every environment variable,
+including where your chunk modules need to live. [Using the node graph](node-graph-basics.md)
+walks through creating and wiring nodes. [Writing a chunk](writing-a-chunk.md) is the full
+guide to a chunk module's `main()`, `config()`, `execute()` and `commit()`. [View and
+ChunkGroup](core-chunks.md) covers the two chunks that shape a graph rather than doing
+anything to the stage themselves.
+
 A Chunk is simply a python object with some information attached, and these are what the ChunkRegistry will look for when regirstering the chunks. The ChunkRegistry will load any .py file specified and run it's main() function. The main() function returns a Chunk objects and the ChunkRegistry will add it to the list of loaded chunks.
 
 A simple example for creating a button with a callback
