@@ -39,27 +39,51 @@ found — that only shows up once you point `run` (or usdview) at a real network
 
 ## Install
 
+The one question that actually matters: **does the Python you're installing into already
+have USD?** Run `python -c "import pxr"` — if that already works (you're inside usdview,
+Houdini's `hython`, Maya's `mayapy`, Blender's bundled Python, or any other DCC), you
+already have a USD, and installing another one is the wrong move:
+
+```
+pip install usd-chunks
+```
+
+If it fails (a plain script, a CI job, a bare venv with no DCC in sight), you need to bring
+your own USD:
+
 ```
 pip install "usd-chunks[standalone]"
 ```
 
-The `standalone` extra brings OpenUSD itself (`usd-core`), giving you the library plus the
-`usdchunks` command with no USD build required:
+The `standalone` extra pulls in `usd-core`, giving you the library plus the `usdchunks`
+command with no separate USD build required:
 
 ```
 usdchunks run my_setup.usda
 ```
 
-Ask for the extra only when running **outside** a DCC. Inside a host that already ships
-USD — usdview, Houdini, Maya, Blender — plain `pip install usd-chunks` into that host's
-interpreter is what you want: it uses the USD already there. Installing `usd-core`
-alongside a host's USD does not share anything with it. Hosts build USD under a private
-namespace (Blender's is `pxrBlender_v26_03__pxrReserved__`), so the two are different C++
-types and cannot exchange objects — you end up with two unrelated USDs in one process.
+**Never install the `standalone` extra into a host that already has USD.** Houdini's
+`hython`, Maya's `mayapy`, Blender's Python and usdview all embed USD under their own
+build — Blender's is compiled as `pxrBlender_v26_03__pxrReserved__`, for instance — so a
+second, pip-installed USD is a different C++ type entirely and cannot exchange objects
+with the host's. You end up with two unrelated USDs sharing one process rather than one
+shared USD, and things fail in confusing, not-obviously-related ways.
 
 Note that the `usd-core` wheels on PyPI do not include usdview — it is not part of that
 build. Using the usdview integration needs a full USD build that provides
 `pxr.Usdviewq`; see below.
+
+### Other extras
+
+The rest only matter for specific work, and combine (`pip install -e ".[dev,docs]"`):
+
+| Extra | Who's it for |
+| --- | --- |
+| `ui` | A host that doesn't already ship Qt — pulls in PySide6. usdview and Houdini already have Qt, skip this there. |
+| `flet` | Running the standalone Flet graph frontend (`usdchunks-flet`) rather than embedding in a Qt host. |
+| `imgui` | Same, for the Dear ImGui frontend (`usdchunks-imgui`). |
+| `dev` | Working on usd_chunks itself — pytest, ruff, build tooling, plus `usd-core` and every optional frontend toolkit so the test suite can exercise all of them. |
+| `docs` | Building the docs site — see [Build documentation](#build-documentation). |
 
 ## usdview integration
 
@@ -79,15 +103,34 @@ Point `PXR_PLUGINPATH_NAME` at that path before launching usdview. With that set
 
 A chunk can declare a viewport handle — a transform gizmo you drag to change a param
 directly in the 3D view — via `gizmos` in its `config()` (see [Writing a
-chunk](writing-a-chunk.md#config)). usd_chunks only **authors** that: the schema attributes
-that say what handle exists and which params it drives. Nothing in this repo draws,
-picks or drags it.
+chunk](writing-a-chunk.md#config)). That's a two-repo split, one direction of dependency:
 
-Drawing that handle in usdview is a separate, host-side piece (packaged as `usd_gizmos` at
-Hugin) — without it installed, a chunk with `gizmos` set still works exactly the same, you
-simply see no handle in the viewport for it. See [Chunk gizmos: the host
-contract](gizmo-host-contract.md) for the full interface if you're building that piece for
-a host, or for a DCC other than usdview.
+- **usd_chunks** (this repo) only **authors** the handle: `ui:gizmo:*` schema attributes
+  saying what handle exists, which prim it hangs off, and which params it drives. Nothing
+  here draws, picks or drags anything — a chunk with `gizmos` set works identically with or
+  without a viewport implementation present, just with no visible handle in the latter case.
+- **[usd_gizmos](https://github.com/HuginStudios/usd_gizmos)** is the host-side piece that
+  draws, picks and drags the handle in usdview's viewport. It's a separate clone, not a pip
+  package: check it out alongside usd_chunks, then add **both** to your environment —
+
+```
+set PYTHONPATH=C:\path\to\usd_gizmos;%PYTHONPATH%
+set PXR_PLUGINPATH_NAME=<usd_chunks plugin path>;<usd_gizmos plugin path>
+```
+
+  `PXR_PLUGINPATH_NAME` takes a list the same way `USD_CHUNK_DIRS` does (`;` on Windows,
+  `:` elsewhere) — usd_chunks's own entry still comes from `usdchunks plugin-path`,
+  usd_gizmos's from wherever its `plugInfo.json` lives in your clone. usd_chunks is an
+  *optional* import in usd_gizmos, not a hard dependency — it runs fine without this repo
+  installed at all, it just then drives no chunk params.
+
+  If your usdview bundle also ships an older, flattened gizmo plugin (bundled loosely under
+  something like `usdviewTools/gizmo` rather than as its own package), don't load both —
+  they fight over the same viewport overrides. Load `usd_gizmos` and leave the flattened
+  copy out of `PXR_PLUGINPATH_NAME`.
+
+See [Chunk gizmos: the host contract](gizmo-host-contract.md) for the full interface, if
+you're building this piece for a different host or DCC.
 
 ## Running from a clone
 
