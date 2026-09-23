@@ -5467,9 +5467,35 @@ def _load_chunks(
                 # order is driven by the explicit graph, not just prim appearance order.
                 # Resolve connection targets by prim path — names are scene-wide and can
                 # be uniquified/renamed, so a name lookup can bind to the wrong chunk.
+                #
+                # Containers are wire endpoints like any other node: a chunkgroup is a NODE
+                # in its parent graph, so `upstream -> group -> downstream` is two ordinary
+                # exec edges. A container never lands in `deferred` though — it takes the
+                # CONTEXT branch above (or was recreated as a context before this loop) and
+                # is registered in group_chunk_by_path instead — so a map built from
+                # `deferred` alone resolved every edge with a group at either end to None
+                # and dropped it, in BOTH directions.
+                #
+                # The Python DAG is what carries a change downstream, so the gap meant dirt
+                # died at the group: on a reopened file nothing downstream of a chunkgroup
+                # ever re-ran. Live-reported as a Stage Expression Switch behind a render
+                # group that never gated its light when the shot changed, and as "the same
+                # setup in a fresh scene works" — wiring a group up interactively goes
+                # through reconcile_dag_dependencies, which reads the live scene and has
+                # always seen groups.
                 chunk_by_path = {str(p.GetPath()): c for p, c in deferred}
+                chunk_by_path.update(group_chunk_by_path)
                 chunks_with_dependencies: set[int] = set()
-                for prim, chunk in deferred:
+                # A container carries no chunk of its own to cook, so it stays out of
+                # `deferred` (the cook/notify passes below are leaves only) and is walked
+                # here purely for the edges on its own prim. A tab context has no exec
+                # connections at all and falls straight through the `continue` below.
+                wired = deferred + [
+                    (prim, c)
+                    for path, c in group_chunk_by_path.items()
+                    if (prim := stage.GetPrimAtPath(Sdf.Path(path))).IsValid()
+                ]
+                for prim, chunk in wired:
                     # Every slot, in slot order — a reloaded merge must regain ALL its branches,
                     # and regain them strongest-first so the restored DAG matches the saved file.
                     exec_conns = exec_input_connections(prim)
