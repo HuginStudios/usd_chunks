@@ -18,7 +18,7 @@ usdview anything.usda
 
 (`$env:NAME = "value"` on PowerShell, `export NAME=value` on macOS/Linux.) Opening usdview
 with those two variables set gets you a **Chunks** panel and menu; right-click the graph
-canvas and every chunk under [`scripts/`](/scripts/) — this repo's own chunk library — is
+canvas and every chunk under [`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) — this repo's own chunk library — is
 there to drop in. Point `USD_CHUNK_DIRS` at your own directory once you're writing chunks
 of your own; multiple directories are `;`-separated on Windows and `:`-separated
 elsewhere, and nested folders are scanned too.
@@ -33,7 +33,7 @@ usdchunks run --help
 ```
 
 `usdchunks run` needs a `.usda` chunk network to act on — save one from usdview first, or
-see the `run` examples in the [README](/README.md#the-same-definition-runs-interactively-and-headless).
+see the `run` examples in the [README](https://github.com/HuginStudios/usd_chunks/blob/main/README.md#the-same-definition-runs-interactively-and-headless).
 `usdchunks run --help` only proves the install itself worked, not that your chunks were
 found — that only shows up once you point `run` (or usdview) at a real network.
 
@@ -80,8 +80,8 @@ The rest only matter for specific work, and combine (`pip install -e ".[dev,docs
 | Extra | Who's it for |
 | --- | --- |
 | `ui` | A host that doesn't already ship Qt — pulls in PySide6. usdview and Houdini already have Qt, skip this there. |
-| `flet` | Running the standalone Flet graph frontend (`usdchunks-flet`) rather than embedding in a Qt host. |
-| `imgui` | Same, for the Dear ImGui frontend (`usdchunks-imgui`). |
+| `flet` | Running the standalone Flet graph frontend (`python -m usd_chunks.plugins.chunk_flet_nodegraph <network.usda>`) rather than embedding in a Qt host. |
+| `imgui` | Same, for the Dear ImGui frontend (`python -m usd_chunks.plugins.chunk_imgui_nodegraph <network.usda>`). |
 | `dev` | Working on usd_chunks itself — pytest, ruff, build tooling, plus `usd-core` and every optional frontend toolkit so the test suite can exercise all of them. |
 | `docs` | Building the docs site — see [Build documentation](#build-documentation). |
 
@@ -120,9 +120,11 @@ set PXR_PLUGINPATH_NAME=<usd_chunks plugin path>;<usd_gizmos plugin path>
 
   `PXR_PLUGINPATH_NAME` takes a list the same way `USD_CHUNK_DIRS` does (`;` on Windows,
   `:` elsewhere) — usd_chunks's own entry still comes from `usdchunks plugin-path`,
-  usd_gizmos's from wherever its `plugInfo.json` lives in your clone. usd_chunks is an
-  *optional* import in usd_gizmos, not a hard dependency — it runs fine without this repo
-  installed at all, it just then drives no chunk params.
+  usd_gizmos's is `<your usd_gizmos clone>\gizmo\plugins\usdview` (there's a sibling
+  `gizmo\plugins\kraken` in the same clone — that one's for Kraken, not usdview, easy to
+  grab by mistake). usd_chunks is an *optional* import in usd_gizmos, not a hard
+  dependency — it runs fine without this repo installed at all, it just then drives no
+  chunk params.
 
   If your usdview bundle also ships an older, flattened gizmo plugin (bundled loosely under
   something like `usdviewTools/gizmo` rather than as its own package), don't load both —
@@ -157,6 +159,8 @@ clone too.
 | `USD_CHUNK_VERBOSE` | off | Off unless set (truthy). A **name clash** between two chunk modules resolves silently by precedence (first `USD_CHUNK_DIRS` entry, then `GLOBAL_USDCHUNKS` — see above); with this on, every shadowed name is logged at load, not just the ambiguous same-tier ones. |
 | `PXR_PLUGINPATH_NAME` | — | Only needed for the usdview integration. See [usdview integration](#usdview-integration). |
 | `PYTHONPATH` | — | Only needed when running from a clone rather than an install. See [Running from a clone](#running-from-a-clone). |
+| `USD_CHUNK_LOG_LEVEL` | `INFO` | `usd_chunks`'s own log level — `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`; an unrecognized value is left at `INFO` rather than raising. Set `USD_CHUNK_LOG_LEVEL=DEBUG` before launching to see what a reload or a cook is actually doing param-by-param — including why a [`config()`](writing-a-chunk.md#config) silently fell back to defaults, which otherwise shows up nowhere but a log line at the default level. |
+| `USD_CHUNKS_PROBE_DELEGATES` | *(auto-detected)* | Whether to probe render delegates for their declared settings. usd_chunks guesses by whether a `QApplication` is already running (a GUI host has one, a batch script or test doesn't) and skips the probe outside a GUI host; `=1` forces the probe on anyway, `=0` forces it off. Note the plural — `USD_CHUNKS_`, unlike every other variable here. |
 
 ## Build documentation
 

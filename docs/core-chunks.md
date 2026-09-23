@@ -1,9 +1,12 @@
 # View and ChunkGroup
 
 Two chunks that don't touch the stage themselves — they shape *when* things cook and *how
-a graph is organized*. Everything else in [`scripts/`](/scripts/) does something to your
-scene; these two are structural. Both ship in [`scripts/core/`](/scripts/core/):
-[`view.py`](/scripts/core/view.py) and [`chunkgroup.py`](/scripts/core/chunkgroup.py).
+a graph is organized*. Everything else in
+[`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) does something
+to your scene; these two are structural. Both ship in
+[`scripts/core/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts/core):
+[`view.py`](https://github.com/HuginStudios/usd_chunks/blob/main/scripts/core/view.py) and
+[`chunkgroup.py`](https://github.com/HuginStudios/usd_chunks/blob/main/scripts/core/chunkgroup.py).
 
 ## View
 

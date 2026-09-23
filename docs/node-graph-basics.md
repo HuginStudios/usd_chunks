@@ -3,7 +3,7 @@
 A quick walkthrough of the graph editor itself — creating nodes, wiring them, and the
 handful of shortcuts that make it fast to work in. For what a node graph is *made of*
 under the hood (prims, ports, USD connections), see the [README's "The graph is USD"
-section](/README.md#the-graph-is-usd); for View and ChunkGroup specifically, see
+section](https://github.com/HuginStudios/usd_chunks/blob/main/README.md#the-graph-is-usd); for View and ChunkGroup specifically, see
 [View and ChunkGroup](core-chunks.md).
 
 ## Opening the graph
