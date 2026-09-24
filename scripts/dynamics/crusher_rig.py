@@ -310,7 +310,23 @@ def build_parts(
 CUTAWAY = ("CheekR", "HopperRight", "ChuteRight")
 
 
-def author_rig(stage: Usd.Stage, root: Sdf.Path, parts: list[Part], up_is_z: bool, hidden=()) -> None:
+def _box_uvs(mesh, verts, tris, scale) -> None:
+    """faceVarying UVs by box projection along each triangle's dominant axis, *scale* UVs per
+    scene unit -- enough for any tiling texture to sit on the machine without stretching."""
+    p = verts[tris]
+    n = np.abs(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]))
+    axis = np.repeat(np.argmax(n, axis=1), 3)
+    corners = verts[tris.reshape(-1)]
+    u = np.where(axis == 0, corners[:, 2], corners[:, 0])
+    w = np.where(axis == 1, corners[:, 2], corners[:, 1])
+    st = np.column_stack([u, w]) * scale
+    UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
+                                            UsdGeom.Tokens.faceVarying).Set(
+        Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(st, dtype=np.float32)))
+
+
+def author_rig(stage: Usd.Stage, root: Sdf.Path, parts: list[Part], up_is_z: bool, hidden=(),
+               uv_scale: float = 0.02) -> None:
     """Write the machine as a UsdPhysics scene.
 
     Every part is a collider (``CollisionAPI``). Rollers and drums are kinematic rigid
@@ -335,6 +351,7 @@ def author_rig(stage: Usd.Stage, root: Sdf.Path, parts: list[Part], up_is_z: boo
         lo, hi = v.min(axis=0), v.max(axis=0)
         mesh.CreateExtentAttr(Vt.Vec3fArray([Gf.Vec3f(*map(float, lo)), Gf.Vec3f(*map(float, hi))]))
         mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(*part.colour)]))
+        _box_uvs(mesh, v, part.tris, uv_scale)
         prim = mesh.GetPrim()
         if part.role == "emitter":
             prim.CreateAttribute("rbd:emitter", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
