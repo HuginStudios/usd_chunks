@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
 
-from pxr import Usd, UsdUtils
+from pxr import Sdf, Usd, UsdUtils
 from usd_chunks import chunk_naming
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
 from usd_chunks.chunk_stage import (
@@ -125,6 +125,15 @@ def _flatten_without_chunks(stage):
             del parent.nameChildren[spec.name]
         else:
             del flat.pseudoRoot.nameChildren[spec.name]
+
+    # The scope the chunks hung under is recipe as well. Nothing lives AT /chunks, so once
+    # its chunks are gone an empty `def Scope "chunks" {}` is the one trace of the network
+    # left in a file whose whole point is to carry none -- and it is enough to make a
+    # delivered asset look like it wants usd_chunks installed. Only when it IS empty: a
+    # stage that parks something else there keeps both the scope and that something.
+    root = flat.GetPrimAtPath(Sdf.Path(chunk_naming.CHUNKS_ROOT))
+    if root and root.typeName == chunk_naming.CHUNKS_ROOT_TYPENAME and not root.nameChildren:
+        del flat.pseudoRoot.nameChildren[root.name]
     return flat
 
 

@@ -14,6 +14,7 @@ import importlib
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
+from usd_chunks.chunk_naming import CHUNKS_ROOT
 from usd_chunks.chunk_stage import get_chunk_prim_path
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
@@ -489,6 +490,9 @@ class TestCreateLayerNestingAndExport:
         out_stage = Usd.Stage.Open(out)
         assert [p for p in out_stage.Traverse() if p.GetTypeName() == "DiskLight"]
         assert not [p for p in out_stage.Traverse() if p.GetTypeName() == "Chunk"]
+        # The scope the chunks hung under is authored in its own right, so stripping
+        # them all used to leave an empty `def Scope "chunks" {}` behind.
+        assert not out_stage.GetPrimAtPath(Sdf.Path(CHUNKS_ROOT))
 
     def test_export_flatten_procedural_is_session_layer_only(self, tmp_path):
         """Flatten checked, Mode=Procedural: equivalent to exporting Session Layer
