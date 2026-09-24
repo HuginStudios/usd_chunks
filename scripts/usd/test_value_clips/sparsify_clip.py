@@ -254,7 +254,12 @@ def write_character_override(character, out_dir):
     return out_path
 
 
-def main(argv=None):
+# Not `main`: this file sits under scripts/, which is USD_CHUNK_DIRS, and the registry
+# registers any module there with a top-level main() as a chunk. Created from the menu,
+# main() would run argparse against the HOST's sys.argv -- usdview's own arguments --
+# raising SystemExit past the registry's `except Exception`, or, given two file
+# arguments, actually running the sparsify. generate_clips.py avoids it the same way.
+def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("character")
     parser.add_argument("clips", nargs="+")
@@ -289,4 +294,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    cli()
