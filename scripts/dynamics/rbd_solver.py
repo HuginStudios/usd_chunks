@@ -7,11 +7,14 @@ Optional: scipy — smoother/denser heightfield colliders; falls back gracefully
 from __future__ import annotations
 
 import collections
+import importlib.util
 import hashlib
 import logging
 import math
 import random
+import sys
 from collections.abc import Generator
+from pathlib import Path
 
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
@@ -2795,6 +2798,12 @@ def _run(owner, notice, sender) -> None:
     layer = owner.get_edit_context()
     if not layer:
         return
+    # A fractured instancer with Breakable on bakes through the breakage path instead -- on a
+    # worker thread, keeping the last bake on screen until the new one is ready.
+    if _chunk.get_param("breakable", chunk.is_param_t(bool)).value and _run_breakable(
+        owner, _chunk, stage, layer, prim_paths[0], collision_path_value, forces
+    ):
+        return
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
 
@@ -2952,6 +2961,174 @@ def _run(owner, notice, sender) -> None:
     _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
 
+def _breakage():
+    """The breakage module beside this file (it has no main, so it is not a chunk).
+
+    Loaded by path rather than imported: chunk folders are not packages, and this module is
+    itself loaded under different names inside and outside the repo.
+    """
+    name = "usd_chunks_rbd_breakage"
+    mod = sys.modules.get(name)
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("rbd_breakage.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+def _report(node, text: str) -> None:
+    if (readout := node.get_param("readout")) is not None and readout.value != text:
+        readout.value = text
+    logger.info("[RBD Solver] %s", text.replace("\n", " | "))
+
+
+def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_value, forces) -> bool:
+    """Bake a fractured PointInstancer with breakage. False when the target is not one.
+
+    Reads everything from the upstream stage -- this chunk's own layer holds the last bake,
+    which rewrites the very instancer being read -- and only replaces that bake once the new
+    one is ready.
+    """
+    brk = _breakage()
+    scene = owner.get_scene()
+    upstream = chunk_stage.get_upstream_stage(stage, scene, _chunk) if scene is not None else stage
+    target = upstream.GetPrimAtPath(target_path)
+    if not target or not target.IsA(UsdGeom.PointInstancer):
+        return False
+    frac = brk.read_fracture(upstream, target)
+    if not frac:
+        return False
+    if brk.is_running(_chunk):
+        _report(_chunk, "already simulating -- wait, or press Cancel")
+        return True
+
+    is_f, is_i, is_s = chunk.is_param_t(float), chunk.is_param_t(int), chunk.is_param_t(str)
+    frame_count = max(2, _chunk.get_param("frame_count", is_i).value)
+    fps = max(1.0, _chunk.get_param("fps", is_f).value)
+    start_frame = _chunk.get_param("start_frame", is_i).value
+    up_idx = {"X": 0, "Y": 1, "Z": 2}.get(UsdGeom.GetStageUpAxis(stage).upper(), 1)
+    up = _np.zeros(3)
+    up[up_idx] = 1.0
+    pieces = frac["pieces"]
+    radius = min(float(_np.linalg.norm(p["points"], axis=1).max()) for p in pieces.values() if len(p["points"]))
+
+    colliders = _parse_collision_prims(collision_path_value, upstream)
+    world = brk.gather_world(upstream, colliders, frame_count, start_frame, fps,
+                             _chunk.get_param("collider_thickness", is_f).value, radius)
+
+    # Where the bodies start: the instancer's own instances -- unless there is an emitter to
+    # drop them from, when the instances are only the shapes to pick from.
+    inst = UsdGeom.PointInstancer(target)
+    xf = _np.array(UsdGeom.Xformable(target).ComputeLocalToWorldTransform(start_frame), dtype=_np.float64)
+    rot = Gf.Matrix4d(xf.tolist()).RemoveScaleShear().ExtractRotationQuat()
+    positions = _np.asarray(inst.GetPositionsAttr().Get(start_frame) or [], dtype=_np.float64).reshape(-1, 3)
+    orients = inst.GetOrientationsAttr().Get(start_frame) or []
+    indices = list(inst.GetProtoIndicesAttr().Get(start_frame) or [])
+    keys = [frac["proto_key"][i] if 0 <= i < len(frac["proto_key"]) else None for i in indices]
+    lin = _np.asarray(_vec3(_chunk, "initial_velocity"), dtype=_np.float64)
+    ang = _np.asarray(_vec3(_chunk, "angular_velocity"), dtype=_np.float64)
+    starts = []
+    for i, key in enumerate(keys):
+        if key is None or i >= len(positions):
+            continue
+        q = Gf.Quatd(orients[i]) if i < len(orients) else Gf.Quatd(1.0)
+        wq = (rot * q).GetNormalized()
+        wi = wq.GetImaginary()
+        starts.append(dict(key=key, pos=positions[i] @ xf[:3, :3] + xf[3, :3],
+                           quat=_np.array([wq.GetReal(), wi[0], wi[1], wi[2]]), lin=lin, ang=ang))
+    skipped = len(indices) - len(starts)
+
+    emitter = None
+    box = None
+    emitter_path = _chunk.get_param("emitter_prim", is_s).value.strip()
+    if emitter_path:
+        ep = upstream.GetPrimAtPath(emitter_path)
+        bounds = _geom_bounds(ep) if ep else None
+        if bounds is not None:
+            box = (_np.array(bounds.GetMin()), _np.array(bounds.GetMax()))
+    elif world["emitter"] is not None:
+        box = world["emitter"]
+    if box is not None and _chunk.get_param("drop_count", is_i).value > 0:
+        pool = sorted({k for k in keys if k is not None}) or sorted(
+            k for k, p in pieces.items() if p["generation"] == 0
+        )
+        emitter = dict(
+            lo=box[0], hi=box[1], roots=pool,
+            count=_chunk.get_param("drop_count", is_i).value,
+            rate=max(1e-3, _chunk.get_param("drop_rate", is_f).value),
+            start=max(0.0, _chunk.get_param("drop_start", is_f).value),
+            velocity=-up * _chunk.get_param("drop_speed", is_f).value + lin,
+            spin=_chunk.get_param("drop_spin", is_f).value,
+        )
+        starts = []
+    if not starts and emitter is None:
+        _report(_chunk, "nothing to simulate -- the instancer has no fractured instances")
+        return True
+
+    job = dict(
+        up_idx=up_idx,
+        gravity=_chunk.get_param("gravity", is_f).value,
+        fps=fps,
+        frames=frame_count,
+        substeps=max(1, _chunk.get_param("substeps", is_i).value),
+        iterations=20,
+        friction=_chunk.get_param("friction", is_f).value,
+        restitution=_chunk.get_param("restitution", is_f).value,
+        density=1.0,
+        lin_damping=_chunk.get_param("lin_damping", is_f).value,
+        ang_damping=_chunk.get_param("ang_damping", is_f).value,
+        floor_drop=_chunk.get_param("floor_drop", is_f).value,
+        belt_grip_time=max(1e-3, _chunk.get_param("belt_grip", is_f).value),
+        statics=world["statics"],
+        belts=world["belts"],
+        drivers=world["drivers"],
+        pieces=pieces,
+        starts=starts,
+        emitter=emitter,
+        breakage=dict(
+            strength=_chunk.get_param("strength", is_f).value,
+            variation=_chunk.get_param("strength_variation", is_f).value,
+            max_generation=max(0, _chunk.get_param("max_generations", is_i).value),
+            cooldown=max(0.0, _chunk.get_param("break_delay", is_f).value),
+            kick=_chunk.get_param("break_kick", is_f).value,
+        ),
+        seed=_chunk.get_param("turb_seed", is_i).value,
+    )
+    if any(forces.get("wind", ())) or forces.get("turbulence"):
+        logger.info("RBD Solver: Wind and Turbulence are not applied to breakable bodies yet")
+    proto_index = frac["proto"]
+    spins = world["spins"]
+    note = f" · {skipped} unfractured instances left out" if skipped else ""
+
+    def finish(result):
+        if _chunk.get_edit_context() is None:
+            return  # the chunk went away while it was simulating
+        if lreg := chunk.get_layer_manager():
+            lreg.clear_layer(layer.identifier)
+        with Usd.EditContext(stage, layer):
+            brk.author_result(stage, stage.GetPrimAtPath(target_path), result, proto_index, start_frame, spins)
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            stage.SetStartTimeCode(start_frame)
+            stage.SetEndTimeCode(start_frame + frame_count - 1)
+        _promote_bake_layer(layer)
+        try:
+            host = chunk_registry.ChunkRegistry().scene
+            if host is not None:
+                host.refresh_timeline(start_frame, start_frame + frame_count - 1)
+        except Exception:  # noqa: BLE001 - a timeline refresh is a courtesy
+            pass
+        _report(_chunk, brk.summary(result) + note)
+        _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+
+    brk.dispatch(_chunk, job, finish, lambda text: _report(_chunk, text))
+    return True
+
+
+def _cancel(owner, notice, sender) -> None:
+    _breakage().cancel(owner.get_chunk())
+
+
 _AUTO_RUN_DELAY_MS = 600
 # Params that don't represent a real simulation input -- clicking/toggling them must not
 # flip the staleness indicator (Run/Reset explicitly manage it themselves; Auto Simulate and
@@ -2962,6 +3139,8 @@ _STALE_IGNORE_PARAMS = {
     "auto_sim",
     "add_collision",
     "clear_collision",
+    "cancel_sim",
+    "readout",
 }
 
 
@@ -3045,18 +3224,30 @@ def _is_headless() -> bool:
     return chunk_registry.ChunkRegistry().plugin in (None, "", "cli")
 
 
+def execute(node) -> None:
+    """Bake on cook -- headless only.
+
+    Interactively a bake is expensive, so it waits for Run or Auto Simulate. Under
+    ``usdchunks run`` or a sweep nobody can press anything, and a network that cooked
+    without baking renders a motionless scene that looks entirely plausible.
+    """
+    if _is_headless():
+        _run(node, None, None)
+
+
 def _schedule_auto_run(root_chunk) -> None:
     """Debounce auto-runs: a sim bake is comparatively expensive, so wait for input changes to
     settle for _AUTO_RUN_DELAY_MS before re-running, rather than baking on every keystroke/drag
     tick while a param is being edited.
 
-    Headless there is nothing to debounce -- no keystrokes, no drag ticks -- and worse, no Qt
-    event loop, so a QTimer never fires at all. Scheduling there means the bake silently never
-    happens and the network cooks to a motionless scene that looks entirely plausible. Run it
-    synchronously instead.
+    Headless there is nothing to debounce and no Qt event loop for a QTimer to fire in; the
+    bake happens in execute() instead, when the cook reaches this chunk.
     """
     if _is_headless():
-        _run(root_chunk, None, None)
+        # Headless, execute() bakes instead: the cook calls it in dependency order, once
+        # every upstream chunk has cooked. Running here too baked against a half-cooked
+        # network -- a solver fired by the first upstream chunk's change, before the
+        # colliders it needed existed -- and then again, a full simulation per upstream.
         return
 
     timer = getattr(root_chunk, "_auto_run_timer", None)
@@ -3095,6 +3286,12 @@ def main() -> chunk.Chunk:
     reset_btn = chunk.Button("reset_sim", "Reset", tooltip="Clear the baked animation from this chunk's layer.")
     reset_btn.add_callback(reset)
     chunk_api.add_param(reset_btn)
+
+    cancel_btn = chunk.Button("cancel_sim", "Cancel", tooltip="Stop a breakable simulation that is running.")
+    cancel_btn.add_callback(_cancel)
+    chunk_api.add_param(cancel_btn)
+    chunk_api.add_param(chunk.Label("readout", "not simulated yet", default_value="not simulated yet",
+                                    tooltip="What the last run did."))
 
     # On by default headless, off in a UI. The reason it is off interactively is that a bake
     # is expensive and the user can see the orange "needs simulation" border and press the
@@ -3402,6 +3599,54 @@ def main() -> chunk.Chunk:
         )
     )
     chunk_api.add_param(forces_grp)
+
+    # ------------------------------------------------------------------
+    # Breakage -- for a fractured PointInstancer (the Fracture chunk's output).
+    brk_grp = _section("Breakage", "Breakage")
+    brk_grp.add_param(chunk.Checkbox(
+        "breakable", "Breakable", default_value=True,
+        tooltip="When the target is a fractured PointInstancer, let its bodies break into their "
+        "pieces under load. Has no effect on anything else.",
+    ))
+    brk_grp.add_param(chunk.Spinbox(
+        "strength", "Strength", default_value=40.0,
+        tooltip="The load that breaks a body, in multiples of its own weight. A fall onto something "
+        "hard is a spike of a few tens; something trapped between two driven parts sees as much "
+        "as it takes. A piece half the size needs a quarter of the load. 0 = nothing breaks.",
+    ))
+    brk_grp.add_param(chunk.Slider("strength_variation", "Variation", min_value=0.0, max_value=0.9,
+                                   default_value=0.3, tooltip="Each piece's strength varies by ± this fraction."))
+    brk_grp.add_param(chunk.Spinbox("max_generations", "Max Generations", default_value=8, is_int=True,
+                                    tooltip="Stop breaking past this generation, even where the fracture goes further."))
+    brk_grp.add_param(chunk.Spinbox("break_delay", "Break Delay", default_value=0.04,
+                                    tooltip="Seconds a fresh piece holds before it can break again, so one blow "
+                                    "cannot shatter a body to gravel within a single step."))
+    brk_grp.add_param(chunk.Spinbox("break_kick", "Break Kick", default_value=10.0,
+                                    tooltip="Speed the pieces spring apart with, scene units/s."))
+    chunk_api.add_param(brk_grp)
+
+    # ------------------------------------------------------------------
+    # Emitter -- drop bodies over time instead of starting them where they are.
+    emit_grp = _section("Emitter", "Emitter")
+    emit_grp.add_param(chunk.LineEdit(
+        "emitter_prim", "Emitter Prim", flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="A box to drop bodies from. Empty uses a collider marked rbd:emitter, if any. With "
+        "an emitter, the target's instances are the shapes to pick from, not where things start.\n"
+        "Breakable (fractured) targets only.",
+    ))
+    emit_grp.add_param(chunk.Spinbox("drop_count", "Count", default_value=30, is_int=True,
+                                     tooltip="How many bodies are dropped. 0 turns the emitter off."))
+    emit_grp.add_param(chunk.Spinbox("drop_rate", "Rate", default_value=4.0, tooltip="Bodies per second."))
+    emit_grp.add_param(chunk.Spinbox("drop_start", "Start", default_value=0.0,
+                                     tooltip="Seconds into the simulation before the first drop."))
+    emit_grp.add_param(chunk.Spinbox("drop_speed", "Drop Speed", default_value=100.0,
+                                     tooltip="Downward speed a body is dropped with, scene units/s."))
+    emit_grp.add_param(chunk.Spinbox("drop_spin", "Tumble", default_value=1.0,
+                                     tooltip="Random spin a body is dropped with, radians/s."))
+    emit_grp.add_param(chunk.Spinbox("belt_grip", "Belt Grip Time", default_value=0.08,
+                                     tooltip="Seconds for a body on a conveyor (a collider with PhysX surface "
+                                     "velocity) to come up to belt speed."))
+    chunk_api.add_param(emit_grp)
 
     # ------------------------------------------------------------------
     # Simulation -- how the solve itself is run. Last: set once, rarely touched.

@@ -1,18 +1,17 @@
-"""Crusher Rig chunk -- a parametric double-roll rock crusher, ready for the Crusher Solver.
+"""Crusher Rig chunk -- an example machine: a parametric double-roll rock crusher.
 
 Rock falls into a hopper, is pinched between two toothed rollers turning in towards each
 other, drops through a chute onto a conveyor, and is carried up and tipped into a bucket.
 
-Every part is ordinary mesh geometry. What makes it a *machine* is a handful of
-``crusher:`` attributes the solver reads back off the parts, so the same contract works for
-a machine modelled by hand:
+It is an ordinary UsdPhysics scene, so nothing about it is special to this chunk -- a
+machine modelled by hand and set up the same way works the same in the RBD Solver:
 
-* ``crusher:role`` -- ``"rotor"`` (driven to spin), ``"conveyor"`` (a surface that carries
-  what rests on it), ``"emitter"`` (the box rock is dropped from). Anything else under the
-  machine is a static collider.
-* ``crusher:axis`` + ``crusher:rpm`` on a rotor -- the spin axis in the part's own space,
-  through its bounding-box centre, and its speed (negative turns the other way).
-* ``crusher:beltVelocity`` on a conveyor -- the surface velocity, in the part's own space.
+* every part has ``CollisionAPI``;
+* rollers and belt drums are kinematic rigid bodies, each on a ``RevoluteJoint`` whose
+  angular ``DriveAPI`` has a ``targetVelocity`` -- the solver spins them at that speed;
+* the belt carries PhysX's ``physxSurfaceVelocity:surfaceVelocity``;
+* a guide box marked ``rbd:emitter`` is where the solver drops bodies from;
+* ``rbd:colliderThickness`` gives each part's real wall thickness to the collider builder.
 
 The rig is built Y-up and stood upright with a single rotation on a Z-up stage.
 """
@@ -22,11 +21,10 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
 from usd_chunks import chunk
 
-NS = "crusher:"
 
 _STEEL = (0.32, 0.34, 0.37)
 _DARK = (0.13, 0.13, 0.14)
@@ -313,10 +311,18 @@ CUTAWAY = ("CheekR", "HopperRight", "ChuteRight")
 
 
 def author_rig(stage: Usd.Stage, root: Sdf.Path, parts: list[Part], up_is_z: bool, hidden=()) -> None:
+    """Write the machine as a UsdPhysics scene.
+
+    Every part is a collider (``CollisionAPI``). Rollers and drums are kinematic rigid
+    bodies, each on a ``RevoluteJoint`` to the world whose angular drive asks for the part's
+    speed -- the RBD Solver spins them at exactly that, whatever loads them. The belt carries
+    PhysX's surface velocity. The emitter box is marked ``rbd:emitter``, a guide the solver
+    drops bodies from.
+    """
     top = UsdGeom.Xform.Define(stage, root)
-    top.GetPrim().CreateAttribute(NS + "machine", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
     if up_is_z:
         top.AddRotateXOp().Set(90.0)
+    joints = root.AppendChild("Joints")
     for part in parts:
         mesh = UsdGeom.Mesh.Define(stage, root.AppendChild(part.name))
         v = part.verts
@@ -330,25 +336,43 @@ def author_rig(stage: Usd.Stage, root: Sdf.Path, parts: list[Part], up_is_z: boo
         mesh.CreateExtentAttr(Vt.Vec3fArray([Gf.Vec3f(*map(float, lo)), Gf.Vec3f(*map(float, hi))]))
         mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(*part.colour)]))
         prim = mesh.GetPrim()
-        prim.CreateAttribute(NS + "role", Sdf.ValueTypeNames.Token, custom=True).Set(part.role)
+        if part.role == "emitter":
+            prim.CreateAttribute("rbd:emitter", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
+            UsdGeom.Imageable(mesh).CreatePurposeAttr(UsdGeom.Tokens.guide)
+            continue
+        UsdPhysics.CollisionAPI.Apply(prim)
         if part.thickness is not None:
-            prim.CreateAttribute(NS + "thickness", Sdf.ValueTypeNames.Float, custom=True).Set(float(part.thickness))
+            prim.CreateAttribute("rbd:colliderThickness", Sdf.ValueTypeNames.Float, custom=True).Set(
+                float(part.thickness))
         if part.name in hidden:
-            # Cut away, not removed: it still collides (the solver ignores visibility), so
-            # the rock stays in while the camera sees through.
+            # Cut away, not removed: it still collides, so rock stays in while the camera
+            # sees through.
             UsdGeom.Imageable(mesh).MakeInvisible()
         if part.role == "rotor":
-            prim.CreateAttribute(NS + "axis", Sdf.ValueTypeNames.Float3, custom=True).Set(Gf.Vec3f(*part.attrs["axis"]))
-            prim.CreateAttribute(NS + "rpm", Sdf.ValueTypeNames.Float, custom=True).Set(float(part.attrs["rpm"]))
-            prim.CreateAttribute(NS + "pivot", Sdf.ValueTypeNames.Float3, custom=True).Set(
-                Gf.Vec3f(*map(float, part.attrs["pivot"]))
-            )
+            body = UsdPhysics.RigidBodyAPI.Apply(prim)
+            body.CreateKinematicEnabledAttr(True)
+            joint = UsdPhysics.RevoluteJoint.Define(stage, joints.AppendChild(part.name))
+            joint.CreateBody1Rel().SetTargets([prim.GetPath()])
+            joint.CreateLocalPos1Attr(Gf.Vec3f(*map(float, part.attrs["pivot"])))
+            joint.CreateLocalRot1Attr(Gf.Quatf(1.0))
+            # The joint's own frame on the world side is the same point, in world space.
+            joint.CreateLocalPos0Attr(Gf.Vec3f(*map(float, part.attrs["pivot"])))
+            joint.CreateLocalRot0Attr(Gf.Quatf(1.0))
+            axis = int(np.argmax(np.abs(part.attrs["axis"])))
+            joint.CreateAxisAttr("XYZ"[axis])
+            sign = 1.0 if part.attrs["axis"][axis] >= 0 else -1.0
+            drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
+            drive.CreateTypeAttr("force")
+            drive.CreateStiffnessAttr(0.0)
+            drive.CreateDampingAttr(1e10)
+            # rpm -> degrees per second.
+            drive.CreateTargetVelocityAttr(float(part.attrs["rpm"]) * 6.0 * sign)
         elif part.role == "conveyor":
-            prim.CreateAttribute(NS + "beltVelocity", Sdf.ValueTypeNames.Float3, custom=True).Set(
-                Gf.Vec3f(*map(float, part.attrs["beltVelocity"]))
-            )
-        elif part.role == "emitter":
-            UsdGeom.Imageable(mesh).CreatePurposeAttr(UsdGeom.Tokens.guide)
+            prim.AddAppliedSchema("PhysxSurfaceVelocityAPI")
+            prim.CreateAttribute("physxSurfaceVelocity:surfaceVelocity", Sdf.ValueTypeNames.Vector3f,
+                                 custom=False).Set(Gf.Vec3f(*map(float, part.attrs["beltVelocity"])))
+            prim.CreateAttribute("physxSurfaceVelocity:surfaceVelocityEnabled", Sdf.ValueTypeNames.Bool,
+                                 custom=False).Set(True)
 
 
 def execute(node) -> None:
@@ -386,7 +410,7 @@ def main() -> chunk.Chunk:
     chunk_api.add_param(
         chunk.LineEdit("rig_path", "Rig Prim", default_value="/CrusherRig",
                        flags=chunk.ChunkFlags.ParamFlags.LABELED,
-                       tooltip="Where the machine is written. Point the Crusher Solver's Machine at it.")
+                       tooltip="Where the machine is written. Add it to the RBD Solver's Collider Prims.")
     )
     _GF = chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED | chunk.ChunkFlags.GroupFlags.FRAMED
     rollers = chunk.Group("Rollers", "Rollers", flags=_GF)
@@ -414,10 +438,10 @@ def main() -> chunk.Chunk:
 
 def config() -> chunk.DefaulConfig:
     return chunk.DefaulConfig(
-        category=chunk.StandardCategory.DYNAMICS,
+        category=chunk.StandardCategory.EXAMPLES,
         description=(
             "A parametric double-roll rock crusher -- hopper, toothed rollers, chute, conveyor\n"
-            "and bucket -- tagged for the Crusher Solver."
+            "and bucket -- set up with UsdPhysics for the RBD Solver."
         ),
         requirements=["numpy>=2,<3"],
     )
