@@ -68,7 +68,7 @@ The `standalone` extra pulls in `usd-core`, giving you the library plus the `usd
 command with no separate USD build required — `usdchunks run my_setup.usda` works
 immediately.
 
-!!! danger "Never install `[standalone]` into a host that already has USD"
+!!! danger "🚫 Never install `[standalone]` into a host that already has USD"
     Houdini's `hython`, Maya's `mayapy`, Blender's Python and usdview all embed USD under
     their own build — Blender's is compiled as `pxrBlender_v26_03__pxrReserved__`, for
     instance — so a second, pip-installed USD is a different C++ type entirely and cannot
@@ -80,7 +80,7 @@ The `usd-core` wheels on PyPI don't include usdview — using the usdview integr
 a full USD build that provides `pxr.Usdviewq`; see [usdview integration](#usdview-integration)
 below.
 
-### A plain install won't show every bundled chunk
+### ⚠️ A plain install won't show every bundled chunk
 
 !!! warning
     A plain install doesn't bring in numpy, PySide6 or requests, and roughly a sixth of
