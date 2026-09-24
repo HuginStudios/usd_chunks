@@ -37,7 +37,8 @@ if "bpy" not in sys.modules:  # pragma: no cover - the usual case outside Blende
 
 import bpy  # noqa: E402
 
-from pxr import Sdf, Usd  # noqa: E402
+from mathutils import Matrix, Vector  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom  # noqa: E402
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
 from usd_chunks import chunk_registry  # noqa: E402
@@ -519,18 +520,40 @@ def test_a_chunkgroup_gets_the_group_header(view):
     assert tuple(group.color) == pytest.approx(bg._GROUP_HEADER_COLOR)
 
 
-def test_locked_is_an_opinion_from_a_layer_that_is_not_the_edit_target(tmp_path):
-    """Qt's rule, verbatim. A prim whose strongest non-anonymous opinion is a sublayer is
-    locked while the edit target is the root, and not once the target is that layer."""
+def test_locked_is_a_def_from_a_layer_that_is_not_the_edit_target(tmp_path):
+    """Qt's rule, verbatim. A prim DEFINED by a sublayer is locked while the edit target
+    is the root, and not once the target is that layer.
+
+    A def, not a bare over: node collection is Usd.PrimIsDefined, so an over-only prim is
+    never a node to lock in the first place, and requiring the def is what lets a chunk
+    that merely has composed-in children -- a Reference hosting a network -- stay this
+    graph's own node (chunk_utils.composed_in_from).
+    """
     stage = Usd.Stage.CreateInMemory()
     layer = Sdf.Layer.CreateNew(str(tmp_path / "referenced.usda"))
-    Sdf.CreatePrimInLayer(layer, "/chunks/Ref")
+    spec = Sdf.CreatePrimInLayer(layer, "/chunks/Ref")
+    spec.specifier = Sdf.SpecifierDef
     layer.Save()
     stage.GetRootLayer().subLayerPaths.append(layer.identifier)
     prim = stage.GetPrimAtPath("/chunks/Ref")
     assert bg._is_locked(stage, prim)
     stage.SetEditTarget(Usd.EditTarget(layer))
     assert not bg._is_locked(stage, prim)
+
+
+def test_a_chunk_defined_here_is_not_locked_by_what_composes_beneath_it(tmp_path):
+    """The host case: its own def is local, the network's group composes in under it."""
+    stage = Usd.Stage.CreateInMemory()
+    layer = Sdf.Layer.CreateNew(str(tmp_path / "network.usda"))
+    group = Sdf.CreatePrimInLayer(layer, "/chunks/Group")
+    group.specifier = Sdf.SpecifierDef
+    child = Sdf.CreatePrimInLayer(layer, "/chunks/Group/Inner")
+    child.specifier = Sdf.SpecifierDef
+    layer.Save()
+    host = stage.DefinePrim("/chunks/Host")
+    host.GetReferences().AddReference(layer.identifier, "/chunks/Group")
+    assert not bg._is_locked(stage, host)
+    assert bg._is_locked(stage, stage.GetPrimAtPath("/chunks/Host/Inner"))
 
 
 def test_a_locked_node_is_amber_and_keeps_its_position(view):
@@ -688,3 +711,350 @@ def test_undo_re_derives_the_tree_from_usd(view):
     assert "Move" not in [n.label for n in view.tree.nodes]
     addon._on_undo(None)
     assert "Move" in [n.label for n in view.tree.nodes]
+
+
+# ---------------------------------------------------------------------------
+# hosted networks: a Reference pointed at a saved network is a subnet here too
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def hosted(view, tmp_path):
+    """The fixture's own graph published to a file and hosted by a fresh Reference: the
+    sequence/shot shape, built with the frontend's own verbs."""
+    network = str(tmp_path / "seq.usda")
+    chunk_stage.export_chunks(view.scene, network)
+    registry = chunk_registry.ChunkRegistry()
+    host = _make(registry.get_chunk_module("reference"))
+    host.name = "Room"
+    view.scene.add_chunk(host)
+    host.get_param("file_path").value = network
+    host.execute()
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.reload()
+    return view, host, network
+
+
+def test_a_host_is_diveable(hosted):
+    view, host, _ = hosted
+    path = chunk_stage.get_chunk_prim_path(host)
+    assert chunk_stage.is_subnet(host)
+    assert view.can_dive(path)
+
+
+def test_a_host_is_not_locked_but_its_contents_are(hosted):
+    """The lock rule read the prim stack across the arc, so the host -- which has the
+    network's group under its own prim -- looked foreign and could not be dragged."""
+    view, host, _ = hosted
+    host_path = chunk_stage.get_chunk_prim_path(host)
+    assert host_path not in view.locked
+    view.dive_into(host_path)
+    assert view.prims, "the network's chunks are the graph now"
+    assert all(p in view.locked for p in view.prims
+               if not chunk_stage.is_view_chunk(view.chunks[p])), view.locked
+
+
+def test_a_host_wears_the_group_colour(hosted):
+    view, host, _ = hosted
+    node = next(n for n in view.tree.nodes
+                if n.name == chunk_stage.get_chunk_prim_path(host))
+    assert tuple(round(c, 3) for c in node.color) == tuple(round(c, 3) for c in bg._GROUP_HEADER_COLOR)
+
+
+def test_an_inner_edit_is_an_override_the_frontend_can_see_and_revert(hosted):
+    view, host, network = hosted
+    host_path = chunk_stage.get_chunk_prim_path(host)
+    view.dive_into(host_path)
+    inner = next(c for p, c in view.chunks.items()
+                 if p.startswith(host_path + "/") and c.name == "Move")
+    param = inner.get_param("tz")
+    assert param.value == 3.0
+    assert chunk_stage.param_override_source(param) is None
+
+    param.value = 8.0
+    assert chunk_stage.param_override_source(param) == Sdf.Layer.Find(network)
+
+    chunk_stage.revert_param_override(param)
+    assert param.value == 3.0
+    assert chunk_stage.param_override_source(param) is None
+    assert not Sdf.Layer.Find(network).dirty
+
+
+def test_localise_turns_a_host_into_a_chunkgroup(hosted):
+    view, host, network = hosted
+    host_path = chunk_stage.get_chunk_prim_path(host)
+    group = chunk_stage.localise_network(host)
+    assert group is not None and chunk_stage.is_chunkgroup(group)
+    assert not chunk_stage.is_network_host(group)
+    assert not view.stage.GetPrimAtPath(host_path).HasAuthoredReferences()
+
+
+def test_publish_makes_a_group_host_its_own_file(view, tmp_path):
+    out = str(tmp_path / "published.usda")
+    group = view.scene.peek_root_context()
+    chunk_stage.publish_network(group, out)
+    assert view.stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(group)).HasAuthoredReferences()
+    saved = Sdf.Layer.FindOrOpen(out)
+    assert saved.GetAttributeAtPath("/chunks/%s.info:chunkType" % group.name).default == "chunkgroup"
+
+
+def test_the_verbs_are_wired_to_operators_that_get_registered():
+    """The sidebar's Publish/Localise and the revert arrow beside an overridden field are
+    operator classes in the add-on's registration tuples, under the bl_idnames the panel
+    and chunk_blender.draw_param name -- an operator missing from _CLASSES draws a button
+    that reports "unknown operator" when clicked."""
+    assert addon.USDCHUNKS_OT_publish_network in addon._CLASSES
+    assert addon.USDCHUNKS_OT_localise_network in addon._CLASSES
+    assert bg.USDCHUNKS_OT_revert_override in bg._CLASSES
+    assert bg.USDCHUNKS_OT_revert_override.bl_idname == "usd_chunks.revert_override"
+    assert addon.USDCHUNKS_OT_publish_network.bl_idname == "usd_chunks.publish_network"
+    assert addon.USDCHUNKS_OT_localise_network.bl_idname == "usd_chunks.localise_network"
+
+
+# ---------------------------------------------------------------------------
+# viewport handles: the host half of docs/gizmo-host-contract.md
+# ---------------------------------------------------------------------------
+
+from usd_chunks import chunk_gizmo  # noqa: E402
+from usd_chunks.plugins.chunk_blender_addon import gizmos as gz  # noqa: E402
+from usd_chunks.plugins.chunk_blender_addon import viewport as vp  # noqa: E402
+
+
+@pytest.fixture
+def driven(view):
+    """A Cube placed by a Prim chunk and moved by a Transform chunk -- the shape a
+    transform handle is declared on."""
+    registry = chunk_registry.ChunkRegistry()
+    maker = _make(registry.get_chunk_module("prim"))
+    maker.name = "Maker"
+    view.scene.add_chunk(maker)
+    maker.get_param("prim_type").value = "Cube"
+    maker.execute()
+    target = maker.get_param("primpath_location").value
+    xf = _make(registry.get_chunk_module("transform"))
+    xf.name = "Place"
+    view.scene.add_chunk(xf)
+    xf.add_dependency(maker)
+    xf.get_param("primpath_location").value = target
+    xf.execute()
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    return view, xf, view.stage.GetPrimAtPath(target)
+
+
+def _desc(prim):
+    return next(d for d in chunk_gizmo.resolve_gizmos(prim) if d.type == "transform")
+
+
+def test_a_driven_prim_offers_a_transform_handle(driven):
+    view, xf, prim = driven
+    descs = gz._visible_descs(prim, view)
+    assert [d.type for d in descs] == ["transform"]
+    assert str(descs[0].chunk_prim) == chunk_stage.get_chunk_prim_path(xf)
+
+
+def test_handles_are_filtered_to_one_chunk(driven):
+    """Two transform chunks on one prim must not both be driven by one gesture."""
+    view, xf, prim = driven
+    second = _make(chunk_registry.ChunkRegistry().get_chunk_module("transform"))
+    second.name = "Place2"
+    view.scene.add_chunk(second)
+    second.add_dependency(xf)
+    second.get_param("primpath_location").value = str(prim.GetPath())
+    second.execute()
+    assert len(chunk_gizmo.resolve_gizmos(prim)) > 1
+    assert len({d.chunk_prim for d in gz._visible_descs(prim, view)}) == 1
+
+
+def _components(translate=(0.0, 0.0, 0.0), rotate=(0.0, 0.0, 0.0), scale=(1.0, 1.0, 1.0)):
+    return {"translate": list(translate), "rotate": list(rotate), "scale": list(scale)}
+
+
+def test_a_gesture_writes_the_params_and_moves_the_prim(driven):
+    view, xf, prim = driven
+    desc = gz.placement_desc(prim, view)
+    gz.write_components(desc, xf, _components(translate=(0.0, 4.0, 0.0)))
+    assert xf.get_param("ty").value == 4.0
+    moved = UsdGeom.Xformable(prim).GetLocalTransformation().ExtractTranslation()
+    assert (moved[0], moved[1], moved[2]) == (0.0, 4.0, 0.0)
+
+
+def test_a_rotate_gesture_leaves_translate_alone(driven):
+    """All three components go back together, so the two a gesture is not touching are the
+    ones the chunk already had rather than zero."""
+    view, xf, prim = driven
+    desc = gz.placement_desc(prim, view)
+    gz.write_components(desc, xf, _components(translate=(3.0, 0.0, 0.0)))
+    start = {k: gz._current(xf, k) for k in ("translate", "rotate", "scale")}
+    start["rotate"] = gz.rotated(start["rotate"], "Z", 1.5707963)
+    gz.write_components(desc, xf, start)
+    assert xf.get_param("tx").value == pytest.approx(3.0)
+    assert xf.get_param("rz").value == pytest.approx(90.0)
+    assert xf.get_param("sx").value == pytest.approx(1.0)
+
+
+def test_the_pivot_sits_where_the_prim_is(driven):
+    view, xf, prim = driven
+    desc = gz.placement_desc(prim, view)
+    gz.write_components(desc, xf, _components(translate=(7.0, 0.0, 0.0)))
+    assert tuple(gz.anchor_world(view.stage, desc)) == pytest.approx((7.0, 0.0, 0.0))
+
+
+def test_an_axis_constraint_keeps_only_that_axis():
+    """G then X: the drag still moves the mouse in two dimensions, and only one of them
+    may reach the prim."""
+    delta = Vector((3.0, 5.0, -2.0))
+    assert tuple(gz.constrain(delta, "X", Matrix())) == pytest.approx((3.0, 0.0, 0.0))
+    assert tuple(gz.constrain(delta, "Z", Matrix())) == pytest.approx((0.0, 0.0, -2.0))
+    assert tuple(gz.constrain(delta, None, Matrix())) == pytest.approx(tuple(delta))
+
+
+def test_a_constraint_follows_the_handles_own_axes():
+    """A local-space handle constrains along the anchor's axes, not the world's -- so X on
+    a prim turned 90 degrees about Z takes the world-Y part of the drag."""
+    basis = Matrix.Rotation(1.5707963, 4, "Z")
+    kept = gz.constrain(Vector((0.0, 4.0, 0.0)), "X", basis)
+    assert tuple(kept) == pytest.approx((0.0, 4.0, 0.0), abs=1e-6)
+    dropped = gz.constrain(Vector((4.0, 0.0, 0.0)), "X", basis)
+    assert tuple(dropped) == pytest.approx((0.0, 0.0, 0.0), abs=1e-6)
+
+
+def test_the_swept_angle_is_measured_about_the_pivot():
+    centre = Vector((100.0, 100.0))
+    quarter = gz.screen_angle(centre, Vector((110.0, 100.0)), Vector((100.0, 110.0)))
+    assert quarter == pytest.approx(1.5707963, abs=1e-5)
+    assert gz.screen_angle(centre, centre, Vector((110.0, 100.0))) == 0.0
+
+
+def test_scale_is_the_ratio_of_distances_from_the_pivot():
+    centre = Vector((0.0, 0.0))
+    assert gz.screen_scale(centre, Vector((10.0, 0.0)), Vector((20.0, 0.0))) == pytest.approx(2.0)
+    assert gz.screen_scale(centre, centre, Vector((5.0, 0.0))) == 1.0
+
+
+def test_a_constrained_turn_only_moves_its_own_channel():
+    out = gz.rotated([10.0, 20.0, 30.0], "Y", 1.5707963)
+    assert out[0] == pytest.approx(10.0)
+    assert out[1] == pytest.approx(110.0)
+    assert out[2] == pytest.approx(30.0)
+
+
+def test_an_unconstrained_turn_goes_through_decompose():
+    """About the view axis, so it cannot be a channel add -- and the Euler convention stays
+    in chunk_gizmo rather than being re-derived here."""
+    out = gz.rotated([0.0, 0.0, 0.0], None, 1.5707963, view_axis=(0.0, 0.0, 1.0))
+    assert out[2] == pytest.approx(90.0, abs=1e-4)
+    assert out[0] == pytest.approx(0.0, abs=1e-4)
+
+
+def test_scale_constrained_and_free():
+    assert gz.scaled([1.0, 2.0, 3.0], None, 2.0) == pytest.approx([2.0, 4.0, 6.0])
+    assert gz.scaled([1.0, 2.0, 3.0], "Y", 0.5) == pytest.approx([1.0, 1.0, 3.0])
+
+
+def test_an_undriven_prim_gets_a_chunk_rather_than_a_direct_write(view):
+    """Contract section 8: writing the prim would be erased by the next cook, so a gesture
+    on an unowned prim makes the chunk that owns it."""
+    loose = view.stage.DefinePrim("/Loose", "Cube")
+    assert gz._visible_descs(loose, view) == []
+    desc = chunk_gizmo.ensure_transform_chunk(loose)
+    assert desc is not None
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name,
+                               Gf.Matrix4d().SetTranslate(Gf.Vec3d(1, 2, 3)))
+    moved = UsdGeom.Xformable(
+        view.stage.GetPrimAtPath("/Loose")).GetLocalTransformation().ExtractTranslation()
+    assert (moved[0], moved[1], moved[2]) == (1.0, 2.0, 3.0)
+
+
+def test_the_operator_registers_and_takes_the_transform_keys():
+    assert gz.USDCHUNKS_OT_transform in gz._CLASSES
+    assert {key for _op, key, _props in gz._KEYS} == {"G", "R", "S"}
+    assert {props["mode"] for _op, _key, props in gz._KEYS} == {"translate", "rotate", "scale"}
+    # is_registered, not a bpy.types lookup: Blender addresses an operator by bl_idname
+    # and never publishes it on bpy.types under its class name, so a guard that asks
+    # bpy.types registers twice and never unregisters.
+    gz.register()
+    try:
+        assert gz.USDCHUNKS_OT_transform.is_registered
+        assert hasattr(bpy.ops.usd_chunks, "transform")
+        gz.register()  # idempotent: re-enabling the add-on must not raise
+    finally:
+        gz.unregister()
+    assert not gz.USDCHUNKS_OT_transform.is_registered
+
+
+def test_the_pivot_dot_follows_the_driven_anchor(driven):
+    view, xf, prim = driven
+    desc = gz.placement_desc(prim, view)
+    gz.write_components(desc, xf, _components(translate=(2.0, 0.0, 5.0)))
+    bg.set_picked_prim_paths([str(prim.GetPath())])
+    try:
+        assert tuple(gz.pivot_point(view.stage, view)) == pytest.approx((2.0, 0.0, 5.0))
+    finally:
+        bg.set_picked_prim_paths([])
+
+
+def test_an_undriven_pick_still_gets_a_dot(view):
+    """The only sign the click landed, and a gesture there makes the chunk."""
+    view.stage.DefinePrim("/Loose", "Cube")
+    bg.set_picked_prim_paths(["/Loose"])
+    try:
+        assert gz.pivot_point(view.stage, view) is not None
+    finally:
+        bg.set_picked_prim_paths([])
+
+
+def test_bounds_picking_finds_the_prim_under_the_ray(view):
+    """The GL-free fallback: Hydra's own pick raises on some builds (pending GL errors from
+    whoever drew last), and this is what keeps clicking working there."""
+    stage = view.stage
+    near = UsdGeom.Xform.Define(stage, "/Near")
+    UsdGeom.Cube.Define(stage, "/Near/Box")
+    far = UsdGeom.Xform.Define(stage, "/Far")
+    UsdGeom.Cube.Define(stage, "/Far/Box")
+    far.AddTranslateOp().Set(Gf.Vec3d(0, 0, -20))
+
+    hit = vp.pick_by_bounds(stage, (0.0, 0.0, 10.0), (0.0, 0.0, -1.0))
+    assert hit == "/Near/Box", "the nearer of two boxes on the ray"
+    assert vp.pick_by_bounds(stage, (50.0, 50.0, 10.0), (0.0, 0.0, -1.0)) is None
+
+
+def test_bounds_picking_skips_invisible_prims(view):
+    stage = view.stage
+    cube = UsdGeom.Cube.Define(stage, "/Hidden")
+    cube.MakeInvisible()
+    assert vp.pick_by_bounds(stage, (0.0, 0.0, 10.0), (0.0, 0.0, -1.0)) is None
+
+
+def test_bounds_picking_returns_the_leaf_not_the_scene_root(view):
+    """An ancestor's box contains every child's, so a pick that considered ancestors would
+    answer with the root for every click."""
+    stage = view.stage
+    UsdGeom.Xform.Define(stage, "/Group")
+    UsdGeom.Cube.Define(stage, "/Group/Box")
+    assert vp.pick_by_bounds(stage, (0.0, 0.0, 10.0), (0.0, 0.0, -1.0)) == "/Group/Box"
+
+
+def test_a_click_on_a_mesh_finds_the_chunk_driving_its_parent(driven):
+    """chunks_for_prim reads a prim's own spec stack, and a click lands on the gprim while
+    a Transform chunk authors its xformOp on the Xform above. The host walks up."""
+    view, xf, prim = driven
+    mesh = view.stage.DefinePrim(prim.GetPath().AppendChild("RenderMesh"), "Mesh")
+    assert chunk_gizmo.resolve_gizmos(mesh) == []
+    bg.set_picked_prim_paths([str(mesh.GetPath())])
+    try:
+        found = gz._picked_prim(view.stage)
+        assert found is not None and found.GetPath() == prim.GetPath()
+    finally:
+        bg.set_picked_prim_paths([])
+
+
+def test_an_undriven_click_still_reports_the_prim_it_hit(view):
+    """So ensure_transform_chunk has something to make a chunk for on the first drag."""
+    loose = view.stage.DefinePrim("/Loose", "Cube")
+    bg.set_picked_prim_paths(["/Loose"])
+    try:
+        found = gz._picked_prim(view.stage)
+        assert found is not None and str(found.GetPath()) == "/Loose"
+    finally:
+        bg.set_picked_prim_paths([])
+
+

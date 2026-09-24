@@ -179,8 +179,9 @@ USD after every undo/redo -- because Blender's undo restores the `.blend`, never
 stage. A canvas frontend gets all of this for free by being the only writer of its scene.
 
 **Node locking.** Qt marks nodes whose prim comes from an external or referenced layer and
-refuses to move them during auto-layout. The others have no such concept yet, so a layout
-there can move a node Qt would have pinned. If your frontend can express it, implement it.
+refuses to move them during auto-layout. Blender does the same, dropping the drag on write-back since it cannot refuse one. Flet
+and ImGui have no such concept yet, so a layout there can move a node Qt would have
+pinned. If your frontend can express it, implement it.
 Dive keys on `chunk_stage.is_subnet`: a chunkgroup, or a chunk hosting a referenced network
 (a Reference, Sublayer or Payload pointed at a saved network file). A lock is about position, not params: a locked node's params are meant to be edited, and
 the edit lands as an `over` in the stage's edit target (`chunk_utils.host_edit_layer`), so a

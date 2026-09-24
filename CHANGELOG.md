@@ -11,6 +11,20 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Viewport picking in Blender falls back to a CPU ray against prim bounds when Hydra's
+  own pick is unavailable -- on some builds `TestIntersection` raises on pending GL errors
+  left in the queue by whoever drew last, and a click did nothing but print a traceback.
+  A click on a mesh now also finds the chunk driving the Xform above it.
+- Viewport handles in Blender: a prim picked in the live Hydra view shows the chunk
+  handles its driving chunk declares (`ui:gizmo:*`, see `docs/gizmo-host-contract.md`) as
+  native Blender gizmos -- arrows, dials and box-arrows -- each writing through
+  `chunk_gizmo.apply_bindings` per tick, so the prim moves because the chunk's params
+  moved. A prim no chunk drives gets a Transform chunk rather than a direct write.
+- The Blender frontend follows a hosted network: a Reference/Sublayer/Payload pointed at
+  a saved chunk network wears the group colour and dives with Tab, a param overriding the
+  file's value is drawn in alert red with a revert arrow beside it, and the sidebar gains
+  Publish and Localise.
+
 - A Reference, Sublayer or Payload chunk pointed at a saved chunk network becomes that
   network's node (a Payload hosts it as a payload arc, so it unloads with the rest). The file's chunkgroup composes in under the chunk's own prim, so the node is the
   group: dive in and the network is there, as if it had been expanded in place. It cooks
