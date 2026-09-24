@@ -7,6 +7,7 @@ scripts/user
 .mypy*
 .env
 _installed_deps
+_installed_deps_py311
 dist
 build
 site

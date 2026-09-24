@@ -206,3 +206,60 @@ def test_chunk_internal_layer_ids_matches_layer_managers_own_set():
     finally:
         for c in list(scene.chunks.get_my_params()):
             c.request_delete()
+
+
+# ---------------------------------------------------------------------------
+# define_with_ancestors
+# ---------------------------------------------------------------------------
+
+
+def test_define_with_ancestors_types_the_ancestors_it_creates() -> None:
+    """The reason the helper exists: DefinePrim leaves the ancestors it invents typeless,
+    and a typeless prim is not Xformable, so there is nothing to grab at /a or /a/b."""
+    stage = Usd.Stage.CreateInMemory()
+
+    CU.define_with_ancestors(stage, "/a/b/c", "Xform")
+
+    assert [p.GetTypeName() for p in Usd.PrimRange(stage.GetPrimAtPath("/a"))] == [
+        "Xform", "Xform", "Xform"
+    ]
+
+
+def test_define_with_ancestors_leaves_a_typed_ancestor_alone() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Scope.Define(stage, "/world")
+
+    CU.define_with_ancestors(stage, "/world/asset", "Xform")
+
+    assert stage.GetPrimAtPath("/world").GetTypeName() == "Scope"
+    assert stage.GetPrimAtPath("/world/asset").GetTypeName() == "Xform"
+
+
+def test_define_with_ancestors_defines_a_leaf_that_was_only_an_over() -> None:
+    """`IsValid()` is true for an `over`, so guarding on it would skip this and hand back a
+    prim that was never defined at all -- exactly the shape chunk_layers.define_ancestors
+    exists to repair, so this must not create one."""
+    stage = Usd.Stage.CreateInMemory()
+    Sdf.CreatePrimInLayer(stage.GetRootLayer(), "/asset").typeName = "Xform"
+    assert stage.GetPrimAtPath("/asset").IsValid()
+    assert not stage.GetPrimAtPath("/asset").IsDefined()
+
+    CU.define_with_ancestors(stage, "/asset", "Xform")
+
+    assert stage.GetPrimAtPath("/asset").IsDefined()
+    assert stage.GetPrimAtPath("/asset").GetSpecifier() == Sdf.SpecifierDef
+
+
+def test_define_with_ancestors_retypes_a_leaf_that_is_not_what_was_asked_for() -> None:
+    """Importing onto an existing Scope must still give back something transformable.
+
+    The leaf is the thing the caller named, so it gets `type_name` whatever was there
+    before; only ancestors, which are incidental, keep a type they already had.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Scope.Define(stage, "/root")
+
+    prim = CU.define_with_ancestors(stage, "/root", "Xform")
+
+    assert prim.GetTypeName() == "Xform"
+    assert UsdGeom.Xformable(prim)

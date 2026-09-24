@@ -489,6 +489,7 @@ IMPORT_TO_PACKAGE = {
     "yaml": "pyyaml",
     "skimage": "scikit-image",
     "sklearn": "scikit-learn",
+    "OCP": "cadquery-ocp",
     "usd": "usd-core",
     "pxr": "usd-core",
 }
