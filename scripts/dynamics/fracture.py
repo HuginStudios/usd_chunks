@@ -398,7 +398,9 @@ def author(stage, out_path: Sdf.Path, trees: list[Tree], *, uv_scale: float, pre
                 if target:
                     # By path: the material need not exist on the stage being written, which
                     # is a scratch one -- see execute().
-                    UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).CreateDirectBindingRel().SetTargets([target])
+                    sp = subset.GetPrim()
+                    UsdShade.MaterialBindingAPI.Apply(sp)
+                    sp.CreateRelationship(UsdShade.Tokens.materialBinding).SetTargets([target])
             prim = mesh.GetPrim()
             for name, typ, value in (
                 ("tree", Sdf.ValueTypeNames.Int, tree.index),

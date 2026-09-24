@@ -103,13 +103,18 @@ def test_a_uv_mapped_concave_model_fractures_with_its_surface():
             assert sum(by_node[c].volume for c in p.children) == pytest.approx(p.volume, rel=1e-5)
 
     tree = fr.Tree(0, "Torus", pieces, solid.original_id(), has_uv)
-    fr.author(stage, Sdf.Path("/Fractured"), [tree], uv_scale=0.1)
+    # Materials are bound by path: they need not exist on the stage being written.
+    fr.author(stage, Sdf.Path("/Fractured"), [tree], uv_scale=0.1,
+              outside_material="/Looks/Paint", inside_material="/Looks/Broken")
     leaf = next(p for p in pieces if p.generation == 3)
     mesh = UsdGeom.Mesh(stage.GetPrimAtPath(f"/Fractured/Prototypes/Torus_n{leaf.node}"))
     n_faces = len(mesh.GetFaceVertexCountsAttr().Get())
     inside = set(UsdGeom.Subset(stage.GetPrimAtPath(mesh.GetPath().AppendChild("inside"))).GetIndicesAttr().Get())
     outside = set(UsdGeom.Subset(stage.GetPrimAtPath(mesh.GetPath().AppendChild("outside"))).GetIndicesAttr().Get())
     assert inside and outside and not (inside & outside) and len(inside | outside) == n_faces
+    for name, target in (("outside", "/Looks/Paint"), ("inside", "/Looks/Broken")):
+        rel = stage.GetPrimAtPath(mesh.GetPath().AppendChild(name)).GetRelationship("material:binding")
+        assert rel.GetTargets() == [Sdf.Path(target)]
     # The outside keeps the model's own UVs, which live in [0, 1] on this torus.
     st = np.asarray(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st").Get()).reshape(-1, 3, 2)
     out_uv = st[sorted(outside)]
