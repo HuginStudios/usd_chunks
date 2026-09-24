@@ -180,38 +180,54 @@ chunk](#a-plain-install-wont-show-every-bundled-chunk).
 
 ## Gizmos (viewport handles)
 
-A chunk can declare a viewport handle — a transform gizmo you drag to change a param
-directly in the 3D view — via `gizmos` in its `config()` (see [Writing a
-chunk](writing-a-chunk.md#config)). That's a two-repo split, one direction of dependency:
-
-- **usd_chunks** (this repo) only **authors** the handle: `ui:gizmo:*` schema attributes
-  saying what handle exists, which prim it hangs off, and which params it drives. Nothing
-  here draws, picks or drags anything — a chunk with `gizmos` set works identically with or
-  without a viewport implementation present, just with no visible handle in the latter case.
-- **[usd_gizmos](https://github.com/HuginStudios/usd_gizmos)** is the host-side piece that
-  draws, picks and drags the handle in usdview's viewport. It's a separate clone, not a pip
-  package: check it out alongside usd_chunks, then add **both** to your environment —
+Viewport handles you drag to change a chunk's params live in a second repo,
+[usd_gizmos](https://github.com/HuginStudios/usd_gizmos). With usd_chunks already set up,
+it's three more lines:
 
 ```
-set PYTHONPATH=C:\path\to\usd_gizmos;%PYTHONPATH%
-set PXR_PLUGINPATH_NAME=<usd_chunks plugin path>;<usd_gizmos plugin path>
+git clone https://github.com/HuginStudios/usd_gizmos.git
+"<usdview's python>" -m pip install -e ./usd_gizmos
+set PXR_PLUGINPATH_NAME=%PXR_PLUGINPATH_NAME%;C:\path\to\usd_gizmos\gizmo\plugins\usdview
 ```
 
-  `PXR_PLUGINPATH_NAME` takes a list the same way `USD_CHUNK_DIRS` does (`;` on Windows,
-  `:` elsewhere) — usd_chunks's own entry still comes from `usdchunks plugin-path`,
-  usd_gizmos's is `<your usd_gizmos clone>\gizmo\plugins\usdview` (there's a sibling
-  `gizmo\plugins\kraken` in the same clone — that one's for Kraken, not usdview, easy to
-  grab by mistake). usd_chunks is an *optional* import in usd_gizmos, not a hard
-  dependency — it runs fine without this repo installed at all, it just then drives no
-  chunk params.
+PowerShell: `$env:PXR_PLUGINPATH_NAME += ";C:\path\to\usd_gizmos\gizmo\plugins\usdview"`.
+macOS/Linux: `export PXR_PLUGINPATH_NAME="$PXR_PLUGINPATH_NAME:/path/to/usd_gizmos/gizmo/plugins/usdview"`.
 
-  If your usdview bundle also ships an older, flattened gizmo plugin (bundled loosely under
-  something like `usdviewTools/gizmo` rather than as its own package), don't load both —
-  they fight over the same viewport overrides. Load `usd_gizmos` and leave the flattened
-  copy out of `PXR_PLUGINPATH_NAME`.
+Same interpreter rule as usd_chunks — install through usdview's own Python (see [Installed
+into the wrong Python](#installed-into-the-wrong-python)). The path is `...\plugins\usdview`;
+its sibling `...\plugins\kraken` is for Kraken and easy to grab by mistake.
 
-See [Chunk gizmos: the host contract](gizmo-host-contract.md) for the full interface, if
-you're building this piece for a different host or DCC.
+**What you should see:** select any prim and a transform handle appears in the viewport.
+Drag it, and a Transform chunk shows up in the graph to record the move — a drag never
+writes the prim directly. Camera and Scatter Brush chunks bring handles of their own.
+
+### How the two repos split the work
+
+usd_chunks only **authors** a handle: a chunk declares `gizmos` in its `config()` ([Writing
+a chunk](writing-a-chunk.md#config)), which writes `ui:gizmo:*` attributes saying what
+handle exists and which params it drives. usd_gizmos **draws, picks and drags** it. The
+dependency runs one way: usd_chunks works identically without usd_gizmos (you just see no
+handle), and usd_gizmos runs without usd_chunks (it just drives no chunk params). See
+[Chunk gizmos: the host contract](gizmo-host-contract.md) if you're building the viewport
+side for another host.
+
+### If the handle is missing, or dragging doesn't move the params
+
+- **No handle at all:** `PXR_PLUGINPATH_NAME` doesn't include
+  `usd_gizmos\gizmo\plugins\usdview` (check you didn't take the `kraken` sibling), or
+  usd_gizmos went into a different Python than usdview's.
+- **A handle, but the chunk's params don't move:** an older gizmo plugin is loaded
+  alongside this one. Both override the same viewport methods, and nothing on screen tells
+  you which one you're dragging. Two ways it sneaks in:
+    - a usdview bundle that ships a flattened copy (e.g. `usdviewTools\gizmo`), pulled in
+      when the whole `usdviewTools` folder is on the plugin path — list only the subfolders
+      you want;
+    - a **persistent user** `PXR_PLUGINPATH_NAME` pointing at an old plugins folder, which
+      any launcher that appends to the variable inherits. Check it:
+
+        ```powershell
+        [Environment]::GetEnvironmentVariable("PXR_PLUGINPATH_NAME", "User")
+        ```
 
 ## Running from a clone
 
