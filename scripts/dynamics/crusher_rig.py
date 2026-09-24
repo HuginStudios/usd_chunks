@@ -10,7 +10,7 @@ machine modelled by hand and set up the same way works the same in the RBD Solve
 * rollers and belt drums are kinematic rigid bodies, each on a ``RevoluteJoint`` whose
   angular ``DriveAPI`` has a ``targetVelocity`` -- the solver spins them at that speed;
 * the belt carries PhysX's ``physxSurfaceVelocity:surfaceVelocity``;
-* a guide box marked ``rbd:emitter`` is where the solver drops bodies from;
+* a guide box, ``Emitter``, to give the RBD Solver as its Emitter Prim;
 * ``rbd:colliderThickness`` gives each part's real wall thickness to the collider builder.
 
 The rig is built Y-up and stood upright with a single rotation on a Z-up stage.
@@ -332,7 +332,8 @@ def author_rig(stage: Usd.Stage, root: Sdf.Path, parts: list[Part], up_is_z: boo
     Every part is a collider (``CollisionAPI``). Rollers and drums are kinematic rigid
     bodies, each on a ``RevoluteJoint`` to the world whose angular drive asks for the part's
     speed -- the RBD Solver spins them at exactly that, whatever loads them. The belt carries
-    PhysX's surface velocity. The emitter box is marked ``rbd:emitter``, a guide the solver
+    PhysX's surface velocity. The emitter box is a guide with collision switched off
+    (``physics:collisionEnabled = false``); hand it to the RBD Solver as its Emitter Prim.
     drops bodies from.
     """
     top = UsdGeom.Xform.Define(stage, root)
@@ -354,8 +355,9 @@ def author_rig(stage: Usd.Stage, root: Sdf.Path, parts: list[Part], up_is_z: boo
         _box_uvs(mesh, v, part.tris, uv_scale)
         prim = mesh.GetPrim()
         if part.role == "emitter":
-            prim.CreateAttribute("rbd:emitter", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
             UsdGeom.Imageable(mesh).CreatePurposeAttr(UsdGeom.Tokens.guide)
+            # A drop zone, not a wall: stated the UsdPhysics way, so any solver reads it.
+            UsdPhysics.CollisionAPI.Apply(prim).CreateCollisionEnabledAttr(False)
             continue
         UsdPhysics.CollisionAPI.Apply(prim)
         if part.thickness is not None:

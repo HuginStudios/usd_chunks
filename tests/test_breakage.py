@@ -146,7 +146,7 @@ def test_rig_is_a_usdphysics_scene_with_the_right_spin_directions():
     for drum in ("DrumHead", "DrumTail"):
         assert top_velocity(drum) @ belt > 0.0
     for p in stage.Traverse():
-        if p.IsA(UsdGeom.Mesh) and not p.HasAttribute(brk.EMITTER):
+        if p.IsA(UsdGeom.Mesh) and p.GetName() != "Emitter":
             assert p.HasAPI(UsdPhysics.CollisionAPI), p.GetPath()
 
 
@@ -245,15 +245,18 @@ def crushed():
     rig.author_rig(stage, Sdf.Path("/Rig"), rig.build_parts(), False)
     fr.author(stage, Sdf.Path("/Fractured"), _rock_trees(), uv_scale=0.05)
     frac = brk.read_fracture(stage, stage.GetPrimAtPath("/Fractured"))
-    world = brk.gather_world(stage, [stage.GetPrimAtPath("/Rig")], 60, 1, 24.0, 0.0, 3.0)
-    assert world["emitter"] is not None
+    world = brk.gather_world(stage, [stage.GetPrimAtPath("/Rig")], 60, 1, 24.0, 0.0, 3.0,
+                             exclude=["/Rig/Emitter"])
+    assert not any(name == "Emitter" for _, name, _ in world["found"])
+    ev = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Rig/Emitter")).GetPointsAttr().Get())
+    box = (ev.min(axis=0), ev.max(axis=0))
 
     def job(strength):
         return dict(
             up_idx=1, gravity=-981.0, fps=24.0, frames=60, substeps=8, friction=0.6, restitution=0.1,
             density=1.0, statics=world["statics"], belts=world["belts"], drivers=world["drivers"],
             pieces=frac["pieces"],
-            emitter=dict(lo=world["emitter"][0], hi=world["emitter"][1], count=3, rate=6.0,
+            emitter=dict(lo=box[0], hi=box[1], count=3, rate=6.0,
                          velocity=np.array([0.0, -150.0, 0.0]), spin=1.0,
                          roots=[k for k, p in frac["pieces"].items() if p["generation"] == 0]),
             breakage=dict(strength=strength, variation=0.2, cooldown=0.04, kick=10.0), seed=1,
@@ -366,6 +369,7 @@ def test_fracture_rig_and_rbd_solver_crush_rock(scene):
 
     solver.get_param("prim_path").value = "/Fractured"
     solver.get_param("collision_path").value = "/CrusherRig"
+    solver.get_param("emitter_prim").value = "/CrusherRig/Emitter"
     solver.get_param("drop_count").value = 2
     solver.get_param("frame_count").value = 30
     solver.get_param("substeps").value = 6
@@ -378,3 +382,69 @@ def test_fracture_rig_and_rbd_solver_crush_rock(scene):
     # The bake's layer must win over the rig's, or the rollers' spin hides under its order.
     order = list(UsdGeom.Xformable(stage.GetPrimAtPath("/CrusherRig/RollerA")).GetXformOpOrderAttr().Get())
     assert "xformOp:orient:rbdSpin" in order
+
+
+@needs_manifold
+def test_fracture_does_not_recut_when_nothing_changed(scene, monkeypatch):
+    """A cook with the same params and the same source is free; a real change re-cuts."""
+    qapp, stage, mk = scene
+    _torus(stage)
+    frac = mk("fracture")
+    frac.get_param("source_prims").value = "/Torus"
+    frac.get_param("generations").value = 1
+    frac.execute()
+    # Chunk modules load twice under different names; patch the copy execute() runs in.
+    mod = frac._module
+    mod._CACHE.clear()  # an earlier test may have cut this very torus
+    real = mod.build_trees
+    calls = []
+    monkeypatch.setattr(mod, "build_trees", lambda *a, **k: calls.append(1) or real(*a, **k))
+    frac.execute()
+    frac.execute()
+    assert calls == []
+    frac.get_param("generations").value = 2
+    frac.execute()
+    assert calls
+    assert UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured"))
+
+
+@needs_manifold
+def test_fracture_shows_rock_settings_only_for_rocks(scene):
+    qapp, stage, mk = scene
+    frac = mk("fracture")
+    from usd_chunks.chunk_flags import ChunkFlags
+
+    def hidden(name):
+        return frac.get_param(name).has_state(ChunkFlags.State.HIDDEN)
+
+    assert hidden("Rocks") and not hidden("source_prims")
+    frac.get_param("source").value = fr.SOURCE_ROCKS
+    assert not hidden("Rocks") and hidden("source_prims")
+
+
+def test_physics_drive_makes_any_prim_spin_or_carry(scene):
+    """The generic way in: a plain mesh plus a Physics Drive chunk, no rig involved."""
+    qapp, stage, mk = scene
+    _box(stage, "/World/Gear", (10.0, 5.0, 0.0), (40.0, 10.0, 40.0))
+    _box(stage, "/World/Belt", (0.0, -20.0, 0.0), (200.0, 4.0, 40.0))
+    spin = mk("physics_drive")
+    spin.get_param("prim_path").value = "/World/Gear"
+    spin.get_param("mode").value = "Spin"
+    spin.get_param("axis").value = "Y"
+    spin.get_param("rpm").value = 20.0
+    spin.execute()
+    belt = mk("physics_drive")
+    belt.get_param("prim_path").value = "/World/Belt"
+    belt.get_param("mode").value = "Conveyor"
+    belt.get_param("belt_direction").value = (1.0, 0.0, 0.0)
+    belt.get_param("belt_speed").value = 50.0
+    belt.execute()
+    qapp.processEvents()
+
+    world = brk.gather_world(stage, [stage.GetPrimAtPath("/World")], 12, 1, 24.0, 0.0, 3.0)
+    found = {name: (kind, note) for kind, name, note in world["found"]}
+    assert found["Gear"][0] == "spinning" and "20 rpm" in found["Gear"][1]
+    assert found["Belt"] == ("conveyor", "50 units/s")
+    # Spinning about the gear's own bounds centre, not the world origin.
+    assert np.allclose(world["drivers"][0]["pos"][0], (10.0, 5.0, 0.0))
+    assert "spins 20 rpm" in spin.get_param("readout").value

@@ -3014,8 +3014,10 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     radius = min(float(_np.linalg.norm(p["points"], axis=1).max()) for p in pieces.values() if len(p["points"]))
 
     colliders = _parse_collision_prims(collision_path_value, upstream)
+    emitter_path = _chunk.get_param("emitter_prim", is_s).value.strip()
     world = brk.gather_world(upstream, colliders, frame_count, start_frame, fps,
-                             _chunk.get_param("collider_thickness", is_f).value, radius)
+                             _chunk.get_param("collider_thickness", is_f).value, radius,
+                             exclude=[emitter_path])
 
     # Where the bodies start: the instancer's own instances -- unless there is an emitter to
     # drop them from, when the instances are only the shapes to pick from.
@@ -3041,14 +3043,11 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
 
     emitter = None
     box = None
-    emitter_path = _chunk.get_param("emitter_prim", is_s).value.strip()
     if emitter_path:
         ep = upstream.GetPrimAtPath(emitter_path)
         bounds = _geom_bounds(ep) if ep else None
         if bounds is not None:
             box = (_np.array(bounds.GetMin()), _np.array(bounds.GetMax()))
-    elif world["emitter"] is not None:
-        box = world["emitter"]
     if box is not None and _chunk.get_param("drop_count", is_i).value > 0:
         pool = sorted({k for k in keys if k is not None}) or sorted(
             k for k, p in pieces.items() if p["generation"] == 0
@@ -3100,6 +3099,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     proto_index = frac["proto"]
     spins = world["spins"]
     note = f" · {skipped} unfractured instances left out" if skipped else ""
+    note += "\n" + brk.describe_world(world, emitter_path if emitter else "")
 
     def finish(result):
         if _chunk.get_edit_context() is None:
@@ -3392,7 +3392,9 @@ def main() -> chunk.Chunk:
             default_value=0.0,
             tooltip="For Mesh colliders: how deep the solid material behind each triangle is, "
             "in scene units. 0 = auto (2% of the collider's size). Raise it if fast bodies "
-            "tunnel through; lower it if a thin-walled object's opposite faces fight each other.",
+            "tunnel through; lower it if a thin-walled object's opposite faces fight each other.\n"
+            "Breakable targets: 0 = per collider, from its rbd:colliderThickness attribute if it has "
+            "one (the part's real wall thickness), else half its thinnest dimension.",
         )
     )
     col_grp.add_param(
@@ -3630,9 +3632,9 @@ def main() -> chunk.Chunk:
     emit_grp = _section("Emitter", "Emitter")
     emit_grp.add_param(chunk.LineEdit(
         "emitter_prim", "Emitter Prim", flags=chunk.ChunkFlags.ParamFlags.LABELED,
-        tooltip="A box to drop bodies from. Empty uses a collider marked rbd:emitter, if any. With "
-        "an emitter, the target's instances are the shapes to pick from, not where things start.\n"
-        "Breakable (fractured) targets only.",
+        tooltip="A box to drop bodies from; it never collides, even under Collider Prims. With an "
+        "emitter, the target's instances are the shapes to pick from, not where things start. "
+        "Empty = bodies start where the instances are.\nBreakable (fractured) targets only.",
     ))
     emit_grp.add_param(chunk.Spinbox("drop_count", "Count", default_value=30, is_int=True,
                                      tooltip="How many bodies are dropped. 0 turns the emitter off."))
@@ -3644,8 +3646,10 @@ def main() -> chunk.Chunk:
     emit_grp.add_param(chunk.Spinbox("drop_spin", "Tumble", default_value=1.0,
                                      tooltip="Random spin a body is dropped with, radians/s."))
     emit_grp.add_param(chunk.Spinbox("belt_grip", "Belt Grip Time", default_value=0.08,
-                                     tooltip="Seconds for a body on a conveyor (a collider with PhysX surface "
-                                     "velocity) to come up to belt speed."))
+                                     tooltip="Seconds for a body on a conveyor to come up to belt speed. A conveyor is "
+                                     "any collider with PhysX's physxSurfaceVelocity:surfaceVelocity: it stays "
+                                     "put, is nearly frictionless, and pushes what rests on it towards that "
+                                     "velocity, up to friction x contact force -- the grip a moving belt has."))
     chunk_api.add_param(emit_grp)
 
     # ------------------------------------------------------------------

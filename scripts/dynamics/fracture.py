@@ -39,6 +39,7 @@ so a piece of a concave model collides a little fuller than it looks.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 import numpy as np
@@ -363,8 +364,8 @@ def author(stage, out_path: Sdf.Path, trees: list[Tree], *, uv_scale: float, pre
     UsdGeom.Scope.Define(stage, protos)
     targets: list[Sdf.Path] = []
     proto_of: dict[tuple[int, int], int] = {}
-    inside_mat = UsdShade.Material(stage.GetPrimAtPath(inside_material)) if inside_material else None
-    outside_mat = UsdShade.Material(stage.GetPrimAtPath(outside_material)) if outside_material else None
+    inside_mat = Sdf.Path(inside_material) if inside_material else None
+    outside_mat = Sdf.Path(outside_material) if outside_material else None
     for tree in trees:
         root_centre = tree.pieces[0].centre
         for piece in tree.pieces:
@@ -392,11 +393,12 @@ def author(stage, out_path: Sdf.Path, trees: list[Tree], *, uv_scale: float, pre
                                             UsdShade.Tokens.materialBind)
             UsdGeom.Subset.SetFamilyType(mesh, UsdShade.Tokens.materialBind, UsdGeom.Tokens.partition)
             out_m = outside_mat or tree.material
-            if out_m:
-                UsdShade.MaterialBindingAPI.Apply(s_out.GetPrim()).Bind(out_m)
             in_m = inside_mat or out_m
-            if in_m:
-                UsdShade.MaterialBindingAPI.Apply(s_in.GetPrim()).Bind(in_m)
+            for subset, target in ((s_out, out_m), (s_in, in_m)):
+                if target:
+                    # By path: the material need not exist on the stage being written, which
+                    # is a scratch one -- see execute().
+                    UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).CreateDirectBindingRel().SetTargets([target])
             prim = mesh.GetPrim()
             for name, typ, value in (
                 ("tree", Sdf.ValueTypeNames.Int, tree.index),
@@ -488,36 +490,91 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
             material = UsdShade.MaterialBindingAPI(p).ComputeBoundMaterial()[0]
             trees.append(Tree(index, Tf.MakeValidIdentifier(p.GetName()), pieces, solid.original_id(), has_uv,
                               colour=tuple(colour[0]) if colour else None,
-                              material=material if material else None))
+                              material=material.GetPath() if material else None))
             sources.append(p)
     return trees, problems, sources
 
 
+#: Authored results, keyed on everything that shapes them. Small: re-cooks of the same few
+#: settings are the whole point, and each entry holds a full layer.
+_CACHE: "dict[bytes, tuple]" = {}
+_CACHE_MAX = 6
+_PARAMS = ("source", "source_prims", "output_path", "generations", "jaggedness", "seed", "count", "size",
+           "size_variation", "roughness", "flatness", "detail", "rock_origin", "uv_scale",
+           "outside_material", "inside_material", "preview_generation", "explode")
+
+
+def _cache_key(upstream, node) -> bytes:
+    """A digest of every param plus, for meshes, the source geometry as it composes upstream.
+
+    Hashing what is read rather than tracking edits makes it safe: a moved, edited or
+    swapped source is a different digest with no invalidation to get wrong.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    for name in _PARAMS:
+        param = node.get_param(name)
+        h.update(f"{name}={getattr(param, 'value', None)!r};".encode())
+    if node.get_param("source").value != SOURCE_ROCKS:
+        for prim in node.get_param("source_prims").get_prims():
+            for p in Usd.PrimRange(upstream.GetPrimAtPath(prim.GetPath())):
+                if not p.IsA(UsdGeom.Mesh):
+                    continue
+                m = UsdGeom.Mesh(p)
+                h.update(str(p.GetPath()).encode())
+                for attr in (m.GetPointsAttr(), m.GetFaceVertexCountsAttr(), m.GetFaceVertexIndicesAttr(),
+                             m.GetNormalsAttr()):
+                    v = attr.Get()
+                    if v is not None:
+                        h.update(np.asarray(v).tobytes())
+                pv = UsdGeom.PrimvarsAPI(p).GetPrimvar("st")
+                if pv and pv.HasValue():
+                    h.update(np.asarray(pv.Get()).tobytes())
+                h.update(np.asarray(UsdGeom.Xformable(p).ComputeLocalToWorldTransform(Usd.TimeCode.Default())).tobytes())
+    return h.digest()
+
+
 def execute(node) -> None:
-    """Rebuild the fracture. Deterministic from the params, so safe to re-run on load."""
+    """Rebuild the fracture -- only when something it depends on changed.
+
+    A cook reaches this for many reasons that change nothing here: an upstream chunk
+    re-cooking, a wire connected downstream, a reload. Each one used to re-cut and re-write
+    every piece. Now the params and the source geometry are hashed first: the same hash as
+    the last cook does nothing, and one seen before restores its result from the cache.
+
+    New results are written to a scratch layer rather than into the live stage -- writing
+    hundreds of meshes into a composed stage costs three times as much, every edit a
+    recomposition -- and then moved into this chunk's layer in one transfer.
+    """
     stage = node.get_stage()
     layer = node.get_edit_context()
     if stage is None or layer is None:
         return
+    _sync_visibility(node)
     if not _HAS_MANIFOLD:
         _report(node, "manifold3d is not installed -- pip install manifold3d")
         return
     is_f, is_i, is_s = chunk.is_param_t(float), chunk.is_param_t(int), chunk.is_param_t(str)
+    out_path = Sdf.Path(node.get_param("output_path", is_s).value.strip() or "/Fractured")
     # Read the sources without this chunk's own layer, which hides them.
     scene = node.get_scene()
     upstream = chunk_stage.get_upstream_stage(stage, scene, node) if scene is not None else stage
-    trees, problems, sources = build_trees(upstream, node)
-    if lreg := chunk.get_layer_manager():
-        lreg.clear_layer(layer.identifier)
-    if not trees:
-        _report(node, "nothing to fracture -- pick a closed mesh, or use Procedural Rocks")
+    key = _cache_key(upstream, node)
+    if key == getattr(node, "_fracture_key", None) and layer.GetPrimAtPath(out_path):
         return
-    out_path = Sdf.Path(node.get_param("output_path", is_s).value.strip() or "/Fractured")
-    with Usd.EditContext(stage, layer):
+    cached = _CACHE.get(key)
+    if cached is None:
+        trees, problems, sources = build_trees(upstream, node)
+        if not trees:
+            if lreg := chunk.get_layer_manager():
+                lreg.clear_layer(layer.identifier)
+            node._fracture_key = None
+            _report(node, "nothing to fracture -- pick a closed mesh, or use Procedural Rocks")
+            return
+        scratch = Usd.Stage.CreateInMemory()
         if out_path.GetParentPath() != Sdf.Path.absoluteRootPath:
-            UsdGeom.Xform.Define(stage, out_path.GetParentPath())
+            UsdGeom.Xform.Define(scratch, out_path.GetParentPath())
         count = author(
-            stage, out_path, trees,
+            scratch, out_path, trees,
             uv_scale=node.get_param("uv_scale", is_f).value,
             preview_generation=max(0, node.get_param("preview_generation", is_i).value),
             explode=max(0.0, node.get_param("explode", is_f).value),
@@ -526,15 +583,42 @@ def execute(node) -> None:
         )
         for p in sources:
             # The instancer stands in for the source from here on.
-            UsdGeom.Imageable(stage.GetPrimAtPath(p.GetPath())).MakeInvisible()
-    total = sum(len(t.pieces) for t in trees)
-    smallest = min(p.volume for t in trees for p in t.pieces)
-    largest = max(t.pieces[0].volume for t in trees)
-    text = f"{len(trees)} source{'s' if len(trees) != 1 else ''} · {total} pieces · {count} instances\n" \
-           f"smallest piece {100.0 * smallest / max(largest, 1e-12):.1f}% of the largest source"
-    if problems:
-        text += "\n" + "\n".join(problems)
-    _report(node, text)
+            UsdGeom.Imageable(scratch.OverridePrim(p.GetPath())).MakeInvisible()
+        total = sum(len(t.pieces) for t in trees)
+        smallest = min(p.volume for t in trees for p in t.pieces)
+        largest = max(t.pieces[0].volume for t in trees)
+        text = f"{len(trees)} source{'s' if len(trees) != 1 else ''} · {total} pieces · {count} instances\n" \
+               f"smallest piece {100.0 * smallest / max(largest, 1e-12):.1f}% of the largest source"
+        if problems:
+            text += "\n" + "\n".join(problems)
+        # A layer of our own: the scratch stage's root layer comes back as a weak handle,
+        # which expires with the stage -- a cache hit on it later is a use-after-free.
+        owned = Sdf.Layer.CreateAnonymous(".usda")
+        owned.TransferContent(scratch.GetRootLayer())
+        cached = (owned, text)
+        _CACHE[key] = cached
+        while len(_CACHE) > _CACHE_MAX:
+            _CACHE.pop(next(iter(_CACHE)))
+    layer.TransferContent(cached[0])
+    node._fracture_key = key
+    _report(node, cached[1])
+
+
+def _sync_visibility(node) -> None:
+    """Show the params that apply to the chosen Source, hide the rest."""
+    rocks = node.get_param("source").value == SOURCE_ROCKS
+    for name, show in (("Rocks", rocks), ("source_prims", not rocks)):
+        param = node.get_param(name)
+        if param is None:
+            continue
+        if show:
+            param.unset_state(chunk.ChunkFlags.State.HIDDEN)
+        else:
+            param.set_state(chunk.ChunkFlags.State.HIDDEN)
+
+
+def _source_changed(owner, notice, sender) -> None:
+    _sync_visibility(owner.get_chunk())
 
 
 def main() -> chunk.Chunk:
@@ -546,10 +630,12 @@ def main() -> chunk.Chunk:
         | chunk.ChunkFlags.GroupFlags.FRAMED
     )
 
-    chunk_api.add_param(chunk.Menu(
+    source = chunk.Menu(
         "source", "Source", menu_items=[SOURCE_PRIMS, SOURCE_ROCKS], default_value=SOURCE_PRIMS,
         tooltip="Fracture the meshes picked below, or generate rocks.",
-    ))
+    )
+    source.add_callback(_source_changed, send_on_create=False)
+    chunk_api.add_param(source)
     src = chunk.LineEdit(
         "source_prims", "Meshes", flags=labeled | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
         tooltip="The model to fracture -- a mesh, or any prim above meshes. Each closed mesh "
@@ -586,6 +672,8 @@ def main() -> chunk.Chunk:
                                  tooltip="Where the rocks are laid out in a grid. When the RBD Solver drops "
                                  "them from an emitter, this is only where they wait."))
     chunk_api.add_param(rocks)
+    # Selected Meshes is the default, so the rock settings start hidden.
+    rocks.set_state(chunk.ChunkFlags.State.HIDDEN)
 
     surf = chunk.Group("Surface", "Surface", flags=_GF)
     surf.add_param(chunk.Spinbox("uv_scale", "UV Scale", default_value=0.05,

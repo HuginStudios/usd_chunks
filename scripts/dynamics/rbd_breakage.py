@@ -68,7 +68,6 @@ NS = "fracture:"
 SURFACE_VELOCITY = "physxSurfaceVelocity:surfaceVelocity"
 SURFACE_VELOCITY_ON = "physxSurfaceVelocity:surfaceVelocityEnabled"
 THICKNESS = "rbd:colliderThickness"
-EMITTER = "rbd:emitter"
 
 # Contact bitmasks: a pair collides when either one's contype meets the other's conaffinity.
 # Bodies collide with bodies and with the world; world parts never with each other (a rotor
@@ -252,6 +251,10 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
     # Sleeping bodies cost next to nothing. The parked pool sleeps from the start and wakes
     # on a non-zero velocity; a settled pile falls asleep by itself and wakes when hit.
     spec.option.enableflags |= _mj.mjtEnableBit.mjENBL_SLEEP
+    # MuJoCo's answer to a diverging step is to reset the whole simulation to its initial
+    # state -- every body back in the parking lot, the clock back to zero -- which reads as the
+    # simulation vanishing mid-shot. Off: a bad step is rolled back and repaired below.
+    spec.option.disableflags |= _mj.mjtDisableBit.mjDSBL_AUTORESET
     spec.option.sleep_tolerance = float(job.get("sleep_tolerance", 0.5))
     spec.memory = int(96 * 1024 * 1024 + n_slots * 48 * 1024)
 
@@ -399,6 +402,17 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
     offsets = np.array([pieces[k]["offset"] for k in slot_key], dtype=np.float64).reshape(n_slots, 3)
 
     alive = np.zeros(n_slots, dtype=bool)
+    # A piece moving further than its own size in one substep is past anything the contact
+    # solver can resolve -- it tunnels, or, wedged between two driven parts that do not give,
+    # it takes an unbounded force and blows up. Capping speed there keeps every body inside
+    # what a step can handle. Scaled to each piece, so small gravel is capped lower than a
+    # boulder, and generous enough that nothing falling or thrown normally ever reaches it.
+    slot_radius = np.array([radius[k] for k in slot_key]) if n_slots else np.zeros(0)
+    max_speed = 2.0 * slot_radius / sub_dt
+    max_spin = 2.0 / sub_dt
+    lin_idx = (slot_dadr[:, None] + np.arange(3)).reshape(-1) if n_slots else np.zeros(0, dtype=np.int64)
+    ang_idx = (slot_dadr[:, None] + np.arange(3, 6)).reshape(-1) if n_slots else np.zeros(0, dtype=np.int64)
+    recovered = 0
     born = np.zeros(n_slots)
 
     def _set_collide(s, on):
@@ -460,6 +474,45 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
         return False  # no room yet: try again next frame rather than spawn inside a body
 
     breaks = []
+    bad_qacc = _mj.mjtWarning.mjWARN_BADQACC
+
+    def _clamp_speeds():
+        if not n_slots:
+            return
+        lin = data.qvel[lin_idx].reshape(-1, 3)
+        speed = np.linalg.norm(lin, axis=1)
+        over = speed > max_speed
+        if over.any():
+            lin[over] *= (max_speed[over] / speed[over])[:, None]
+            data.qvel[lin_idx] = lin.reshape(-1)
+        ang = data.qvel[ang_idx].reshape(-1, 3)
+        spin = np.linalg.norm(ang, axis=1)
+        over = spin > max_spin
+        if over.any():
+            ang[over] *= (max_spin / spin[over])[:, None]
+            data.qvel[ang_idx] = ang.reshape(-1)
+
+    def _repair(saved_qpos, saved_qvel, t_now) -> None:
+        """Undo a diverged step and deal with the body that diverged.
+
+        MuJoCo names the offending degree of freedom; its body is the piece that took the
+        impossible load. If it can break, that is what a load like that means, so it breaks;
+        otherwise it is stopped where it was. Everything else resumes from the last good step.
+        """
+        nonlocal recovered
+        dof = int(data.warning[bad_qacc].lastinfo)
+        data.qpos[:] = saved_qpos
+        data.qvel[:] = saved_qvel
+        data.qacc_warmstart[:] = 0.0
+        recovered += 1
+        s = int(body_slot[model.dof_bodyid[dof]]) if 0 <= dof < model.nv else -1
+        if s >= 0 and alive[s]:
+            if breakable[s]:
+                _break(s, t_now)
+            else:
+                data.qvel[slot_dadr[s]:slot_dadr[s] + 6] = 0.0
+                data.qvel[slot_dadr[s] + 3] = 1e-3
+        _mj.mj_forward(model, data)
     peak = np.zeros(model.nbody)
 
     def _break(s, t):
@@ -517,8 +570,15 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
                 _drive(f, sub / substeps)
             if has_belts:
                 _apply_belts(model, data, geom_belt, belt_vel, body_slot, grip_tau, alive, friction)
+            saved_qpos = data.qpos.copy()
+            saved_qvel = data.qvel.copy()
+            warned = data.warning[bad_qacc].number
             _mj.mj_step(model, data)
             t += sub_dt
+            if data.warning[bad_qacc].number != warned or not np.isfinite(data.qvel).all():
+                _repair(saved_qpos, saved_qvel, t)
+                continue
+            _clamp_speeds()
             if not breakable.any():
                 continue
             ncon = data.ncon
@@ -556,6 +616,7 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
             bodies=len(groups),
             slots=n_slots,
             breaks=len(breaks),
+            recovered=recovered,
             pieces_by_generation=by_gen.tolist(),
             build_seconds=build_seconds,
             sim_seconds=time.perf_counter() - started,
@@ -720,13 +781,19 @@ def _joint_spins(stage) -> dict:
 
 
 def gather_world(stage, collider_prims, frames: int, start_frame: int, fps: float,
-                 thickness_override: float, body_radius: float) -> dict:
+                 thickness_override: float, body_radius: float, exclude=()) -> dict:
     """Statics, belts and driven colliders under *collider_prims*, in world space.
+
+    Every mesh under the collider prims collides, physics authored or not, so a plain model
+    just works. Two things take one out, both stated in the scene: UsdPhysics'
+    ``physics:collisionEnabled = false`` on it, or its path in *exclude* (the emitter box).
 
     A driven collider comes back with its pose per frame (frames + 1 samples) and, when a
     joint drive spins it, what the bake needs to write that spin onto the prim.
+    ``world["found"]`` lists what each prim was taken as, for the readout.
     """
-    world = dict(statics=[], belts=[], drivers=[], spins=[], emitter=None)
+    world = dict(statics=[], belts=[], drivers=[], spins=[], found=[])
+    excluded = {Sdf.Path(str(e)) for e in exclude if e}
     spins = _joint_spins(stage)
     xfc = UsdGeom.XformCache(Usd.TimeCode(start_frame))
     seen = set()
@@ -761,14 +828,14 @@ def gather_world(stage, collider_prims, frames: int, start_frame: int, fps: floa
             if not p.IsA(UsdGeom.Mesh) or p.GetPath() in seen:
                 continue
             seen.add(p.GetPath())
-            emit_owner, is_emitter = attr_up(p, EMITTER, root)
+            if any(p.GetPath().HasPrefix(e) for e in excluded):
+                continue
+            if p.HasAPI(UsdPhysics.CollisionAPI):
+                enabled = UsdPhysics.CollisionAPI(p).GetCollisionEnabledAttr().Get()
+                if enabled is not None and not enabled:
+                    continue
             verts, tris = _mesh_world(p, xfc)
-            if not len(verts):
-                continue
-            if is_emitter:
-                world["emitter"] = (verts.min(axis=0), verts.max(axis=0))
-                continue
-            if not len(tris):
+            if not len(verts) or not len(tris):
                 continue
             entry = dict(name=p.GetName(), verts=verts, tris=tris, thickness=thickness_for(p, verts))
 
@@ -796,6 +863,7 @@ def gather_world(stage, collider_prims, frames: int, start_frame: int, fps: floa
                 world["drivers"].append(entry)
                 world["spins"].append(dict(prim=body.GetPath(), pivot=tuple(pivot_l), axis=tuple(axis_l),
                                            omega=omega))
+                world["found"].append(("spinning", p.GetName(), f"{deg_s / 6.0:.0f} rpm, {joint.GetName()}"))
                 continue
 
             if _is_animated(p, None):
@@ -811,6 +879,7 @@ def gather_world(stage, collider_prims, frames: int, start_frame: int, fps: floa
                     quat.append(_rigid(d)[1])
                 entry.update(verts=verts - origin, pos=np.array(pos), quat=np.array(quat))
                 world["drivers"].append(entry)
+                world["found"].append(("animated", p.GetName(), "follows its transform"))
                 continue
 
             owner, vel = attr_up(p, SURFACE_VELOCITY, root)
@@ -820,8 +889,11 @@ def gather_world(stage, collider_prims, frames: int, start_frame: int, fps: floa
                     m = xfc.GetLocalToWorldTransform(owner)
                     entry["velocity"] = np.array(m.TransformDir(Gf.Vec3d(*vel)))
                     world["belts"].append(entry)
+                    world["found"].append(("conveyor", p.GetName(),
+                                           f"{float(np.linalg.norm(entry['velocity'])):.0f} units/s"))
                     continue
             world["statics"].append(entry)
+            world["found"].append(("static", p.GetName(), ""))
     return world
 
 
@@ -1019,8 +1091,28 @@ def dispatch(node, job, finish, report) -> None:
     threading.Thread(target=work, name="RBDBreakage", daemon=True).start()
 
 
+def describe_world(world, emitter_path="") -> str:
+    """What the collider prims were taken as, in words -- nothing the solver does to the
+    world should be a surprise, so the readout says it."""
+    kinds = {}
+    for kind, name, note in world["found"]:
+        kinds.setdefault(kind, []).append(f"{name} ({note})" if note else name)
+    lines = []
+    for kind in ("spinning", "animated", "conveyor"):
+        if kind in kinds:
+            lines.append(f"{kind}: " + ", ".join(kinds[kind]))
+    if "static" in kinds:
+        lines.append(f"static: {len(kinds['static'])} colliders")
+    if emitter_path:
+        lines.append(f"emitter: {emitter_path}")
+    return "\n".join(lines)
+
+
 def summary(result) -> str:
     st = result["stats"]
     gens = " ".join(f"{g}:{n}" for g, n in enumerate(st["pieces_by_generation"]) if n)
-    return (f"{st['bodies']} bodies · {st['breaks']} breaks · {st['sim_seconds']:.0f}s\n"
+    text = (f"{st['bodies']} bodies · {st['breaks']} breaks · {st['sim_seconds']:.0f}s\n"
             f"pieces by generation {gens}")
+    if st.get("recovered"):
+        text += f"\n{st['recovered']} unstable steps rolled back"
+    return text
