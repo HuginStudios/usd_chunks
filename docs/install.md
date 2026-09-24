@@ -30,30 +30,14 @@ PowerShell: `$env:PXR_PLUGINPATH_NAME = (usdchunks plugin-path)`, `$env:NAME = "
 for the rest. macOS/Linux: `export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"`,
 `export NAME=value` for the rest.
 
-!!! warning "⚠️ `pip install` into usdview's *own* Python, not whatever's first on PATH"
-    Most machines have more than one Python, and usdview almost certainly embeds its
-    own — often not the one a bare `pip`/`pip install` resolves to. Installing into the
-    wrong one fails silently: no error, the Chunks panel is just absent. Find the right
-    interpreter from inside usdview itself (`import sys; print(sys.executable)` in its
-    Python console, or check your launcher script), then run pip through it directly:
-    `"<that path>" -m pip install -e usd_chunks`. Same idea for Houdini
-    (`hython -m pip install ...`) and Maya (`mayapy -m pip install ...`). And if you do
-    get it wrong: a regular install can be rescued afterward by pointing `PYTHONPATH` at
-    that environment's `site-packages`, but an **editable** (`-e`) one can't — its `.pth`
-    only activates when Python's own `site` module processes it, which a bare
-    `PYTHONPATH` entry never triggers. Reinstall with the right interpreter instead.
-
-!!! warning "⚠️ Don't test the import from the folder you cloned into"
-    Standing in the directory that directly contains `usd_chunks/` and running a bare
-    `python -c "..."` or a script there shadows the real install — the current directory
-    wins over site-packages, and the failure names something unexpected (`ATTRS_VERSION`
-    or similar) rather than "not found." usdview and the `usdchunks` command are both
-    unaffected; `cd` anywhere else first if you want to sanity-check with plain `python`.
-
 Right-click the graph canvas in usdview and every chunk under
 [`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) is there to
 drop in. Point `USD_CHUNK_DIRS` at your own directory once you're writing chunks of your
 own — everything past this point is detail for when you need it.
+
+No **Chunks** panel when usdview opens? Almost always the install went into a different
+Python than the one usdview runs — see [If the Chunks panel is
+missing](#if-the-chunks-panel-is-missing).
 
 ## Install
 
@@ -147,6 +131,37 @@ usdchunks plugin-path
 Point `PXR_PLUGINPATH_NAME` at that path before launching usdview. With that set and
 `USD_CHUNK_DIRS` pointed at your chunks, opening usdview shows a **Chunks** panel and a
 **Chunks** menu.
+
+## If the Chunks panel is missing
+
+### ⚠️ Installed into the wrong Python
+
+By far the most common cause, and it fails silently: no error, the panel is simply
+absent. Most machines have several Pythons, and usdview almost certainly embeds its own —
+often not the one a bare `pip` resolves to.
+
+Ask usdview which interpreter it is (`import sys; print(sys.executable)` in its Python
+console, or read your launcher script), then run pip through that one directly:
+
+```
+"<that path>" -m pip install -e usd_chunks     # usdview
+hython -m pip install -e usd_chunks            # Houdini
+mayapy -m pip install -e usd_chunks            # Maya
+```
+
+If you already installed into the wrong one, reinstall with the right interpreter rather
+than trying to patch it up. A regular install can be rescued by pointing `PYTHONPATH` at
+that environment's `site-packages`, but an **editable** (`-e`) one cannot: its `.pth` only
+activates when Python's own `site` module processes the directory, which a bare
+`PYTHONPATH` entry never does.
+
+### ⚠️ Testing the import from the folder you cloned into
+
+Standing in the directory that directly *contains* `usd_chunks/` and running a bare
+`python -c "..."` or a script there shadows the real install — the current directory wins
+over site-packages, and it fails naming something unexpected (`ATTRS_VERSION` or similar)
+rather than "not found". `cd` anywhere else first if you want to sanity-check with plain
+`python`. usdview and the `usdchunks` command are both unaffected.
 
 ## Gizmos (viewport handles)
 
