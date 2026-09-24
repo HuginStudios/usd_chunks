@@ -456,3 +456,15 @@ def test_physics_drive_makes_any_prim_spin_or_carry(scene):
     # Spinning about the gear's own bounds centre, not the world origin.
     assert np.allclose(world["drivers"][0]["pos"][0], (10.0, 5.0, 0.0))
     assert "spins 20 rpm" in spin.get_param("readout").value
+
+
+def test_convex_parts_collide_as_one_hull_and_concave_ones_as_prisms():
+    """A box or a cone is one geom (MuJoCo's hull is the shape); a bowl, an open plate or a
+    toothed roller keeps the per-triangle prisms that make concave shapes collide right."""
+    parts = {p.name: p for p in rig.build_parts()}
+    assert brk.is_convex_solid(parts["Floor"].verts, parts["Floor"].tris)
+    assert brk.is_convex_solid(parts["DrumHead"].verts, parts["DrumHead"].tris)  # lathe: welded first
+    assert not brk.is_convex_solid(parts["RollerA"].verts, parts["RollerA"].tris)  # teeth
+    assert not brk.is_convex_solid(parts["Bucket"].verts, parts["Bucket"].tris)  # a cup
+    v, t = rig.box((0, 0, 0), (10, 10, 10))
+    assert not brk.is_convex_solid(v, t[:10])  # open: two triangles missing

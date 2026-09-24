@@ -137,17 +137,78 @@ def _random_quat(rng) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _add_soup(spec, body, verts, tris, thickness, name, friction, solref, priority=0) -> int:
-    """One thin convex prism per triangle -- a collider of any shape, concave or not.
+def is_convex_solid(verts, tris, tol: float = 1e-4) -> bool:
+    """Whether a triangle mesh is a closed, convex solid -- one MuJoCo can collide as its hull.
 
-    The RBD Solver's Mesh collider: MuJoCo collides a mesh geom as its convex hull, so a
-    hopper as one mesh would collide as a solid block. Extruding every triangle backwards
-    makes small convex solids whose union is the surface itself.
+    Closed: every edge is shared by exactly two triangles. Convex: no vertex lies in front of
+    any face's plane (beyond *tol* of the mesh's size).
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+    if len(t) < 4:
+        return False
+    # Weld by position first: a lathe or an extrusion repeats the points on its axis or seam.
+    size = float(np.ptp(v, axis=0).max()) or 1.0
+    _, first, weld = np.unique(np.round(v / (size * 1e-6)), axis=0, return_index=True, return_inverse=True)
+    v = v[first]
+    t = weld.reshape(-1)[t]
+    t = t[(t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 2] != t[:, 0])]
+    edges = np.sort(np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]), axis=1)
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    if not np.all(counts == 2):
+        return False
+    a = v[t[:, 0]]
+    n = np.cross(v[t[:, 1]] - a, v[t[:, 2]] - a)
+    ln = np.linalg.norm(n, axis=1)
+    keep = ln > 1e-12
+    n, a, ln = n[keep], a[keep], ln[keep]
+    # Outward is whichever side the centroid is not on; a face with the centroid in front
+    # flips. Then no vertex may be in front of any face.
+    c = v.mean(axis=0)
+    flip = np.einsum("ij,ij->i", n, c - a) > 0.0
+    n[flip] *= -1.0
+    for start in range(0, len(n), 256):
+        d = np.einsum("fvk,fk->fv", v[None, :, :] - a[start:start + 256, None, :], n[start:start + 256])
+        if (d / ln[start:start + 256, None]).max() > tol * size:
+            return False
+    return True
+
+
+_GEOM_SERIAL = [0]
+
+
+def _add_soup(spec, body, verts, tris, thickness, name, friction, solref, priority=0) -> int:
+    """Collision geometry for one mesh. Returns the number of geoms made.
+
+    A closed convex mesh -- a box, a plate, a cylinder, a cone -- is one mesh geom: MuJoCo
+    collides a mesh as its convex hull, which for these *is* the shape, and one geom is far
+    cheaper than hundreds.
+
+    Anything else gets the RBD Solver's Mesh collider: one thin convex prism per triangle.
+    A hopper as a single mesh geom would collide as a solid block; extruding every triangle
+    backwards makes small convex solids whose union is the surface itself.
     """
     v = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
     if not len(tris):
         return 0
+    # Unique across the whole model: two colliders may share a prim name.
+    _GEOM_SERIAL[0] += 1
+    name = f"{name}_{_GEOM_SERIAL[0]}"
+    if is_convex_solid(v, tris):
+        ma = spec.add_mesh()
+        ma.name = f"{name}_hull"
+        ma.uservert = v.astype(np.float32).reshape(-1)
+        g = body.add_geom()
+        g.type = _mj.mjtGeom.mjGEOM_MESH
+        g.meshname = ma.name
+        g.contype, g.conaffinity = _WORLD
+        g.friction = [friction, 0.005, 0.0001]
+        g.solref = solref
+        g.solimp = [0.95, 0.99, 0.001, 0.5, 2]
+        g.condim = 3
+        g.priority = priority
+        return 1
     a, b, c = v[tris[:, 0]], v[tris[:, 1]], v[tris[:, 2]]
     n = np.cross(b - a, c - a)
     ln = np.linalg.norm(n, axis=1)
