@@ -378,6 +378,9 @@ def test_fracture_rig_and_rbd_solver_crush_rock(scene):
 
     inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured"))
     assert inst.GetPositionsAttr().GetNumTimeSamples() == 30
+    # Dropped from the emitter (a guide prim), not started where the 3 laid-out rocks are:
+    # 2 drops of a 2-generation tree is 2 x 7 slots.
+    assert len(inst.GetProtoIndicesAttr().Get()) == 14
     assert "bodies" in solver.get_param("readout").value
     # The bake's layer must win over the rig's, or the rollers' spin hides under its order.
     order = list(UsdGeom.Xformable(stage.GetPrimAtPath("/CrusherRig/RollerA")).GetXformOpOrderAttr().Get())

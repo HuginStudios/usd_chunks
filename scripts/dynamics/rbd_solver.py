@@ -3045,9 +3045,17 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     box = None
     if emitter_path:
         ep = upstream.GetPrimAtPath(emitter_path)
-        bounds = _geom_bounds(ep) if ep else None
-        if bounds is not None:
-            box = (_np.array(bounds.GetMin()), _np.array(bounds.GetMax()))
+        if ep and ep.IsValid():
+            # Every purpose: a drop zone is typically a guide, which a default-purpose bound
+            # leaves out -- and an empty box silently meant "no emitter".
+            purposes = [UsdGeom.Tokens.default_, UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy,
+                        UsdGeom.Tokens.render]
+            bounds = UsdGeom.BBoxCache(start_frame, purposes).ComputeWorldBound(ep).ComputeAlignedRange()
+            if not bounds.IsEmpty():
+                box = (_np.array(bounds.GetMin()), _np.array(bounds.GetMax()))
+        if box is None:
+            _report(_chunk, f"Emitter Prim {emitter_path} has no geometry to drop from")
+            return True
     if box is not None and _chunk.get_param("drop_count", is_i).value > 0:
         pool = sorted({k for k in keys if k is not None}) or sorted(
             k for k, p in pieces.items() if p["generation"] == 0
