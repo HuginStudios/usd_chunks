@@ -9,8 +9,8 @@ chunk on screen.
 
 ## Guides
 
-1. [Install](install.md) — quick start, `pip install`, every environment variable,
-   building the docs.
+1. [Install](install.md) — quick start, troubleshooting when something doesn't show up,
+   every environment variable, building the docs.
 2. [Using the node graph](node-graph-basics.md) — creating and wiring nodes, shortcuts.
 3. [Chunks, params and groups](chunk-basics.md) — what a Chunk is, a worked example, the
    param and flag reference.

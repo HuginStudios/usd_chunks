@@ -92,17 +92,18 @@ below.
     of those to import at all.
 
 A module whose import fails is skipped silently as far as the create menu goes — the
-registry logs exactly what's missing, at `INFO` (see
-[`USD_CHUNK_LOG_LEVEL`](#environment-variables)), but nothing else marks the gap. The
-first symptom is usually "the chunk I want isn't in the menu," not an error dialog.
+registry logs exactly what's missing as a `WARNING`, visible at the default log level, but
+nothing else marks the gap. The first symptom is usually "the chunk I want isn't in the
+menu," not an error dialog.
 
 Affected today: `AMDMaterialXLibrary`, `add_curves`, `add_mesh`, `curves_to_mesh`,
 `custom_widget`, `poly_reduce`, `rbd_solver`, `scatter_brush`, `scatter_points`,
 `urdf_import`, `uv_checker`, `vine` — several of them the headline ones (Scatter, Poly
 Reduce, the RBD solver).
 
-Fix it either by hand (`pip install numpy PySide6 requests`, or just the ones you
-actually hit), or by setting [`USD_CHUNK_AUTO_INSTALL`](#environment-variables) so a
+Fix it either by hand — `pip install numpy requests mujoco` (the last only for the RBD
+solver), plus `PySide6` only if your host doesn't already ship Qt; usdview, Houdini and
+Maya do — or just the ones you actually hit, or by setting [`USD_CHUNK_AUTO_INSTALL`](#environment-variables) so a
 chunk's own declared `requirements` ([Writing a chunk](writing-a-chunk.md#config)) get
 installed for you, after asking.
 
@@ -162,6 +163,20 @@ Standing in the directory that directly *contains* `usd_chunks/` and running a b
 over site-packages, and it fails naming something unexpected (`ATTRS_VERSION` or similar)
 rather than "not found". `cd` anywhere else first if you want to sanity-check with plain
 `python`. usdview and the `usdchunks` command are both unaffected.
+
+## If a chunk is missing from the menu
+
+The panel is there, but Scatter — or Add Mesh, the RBD solver — isn't in the create menu.
+Almost always a missing pip package: the chunk's import failed, so it was skipped. The
+console already says which one, as a warning at load:
+
+```
+WARNING: usd_chunks.chunk_registry: Chunk dependencies not installed: numpy>=2,<3. ...
+```
+
+Install what it names into the same Python usdview runs. The full list and the one-line
+fix are under [A plain install won't show every bundled
+chunk](#a-plain-install-wont-show-every-bundled-chunk).
 
 ## Gizmos (viewport handles)
 
