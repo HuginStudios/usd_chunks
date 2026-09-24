@@ -20,6 +20,16 @@ from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 JOINTS = ["hips", "hips/arm", "hips/arm/hand"]
 
 
+# Sparse array edits (Vt.*ArrayEditBuilder) arrived in USD 26. Older builds -- the 25.x
+# usdviews still in use -- lack the API entirely, so these tests cannot run there; a skip
+# says why, where an AttributeError per test (and a cascade of knock-on failures in the
+# tests after it) would bury any real regression in the rest of the suite.
+needs_array_edits = pytest.mark.skipif(
+    not hasattr(Vt, "QuatfArrayEditBuilder"),
+    reason="needs USD 26+ (Vt.QuatfArrayEditBuilder, sparse array edits)",
+)
+
+
 class _DummyScene(SceneSender):
     def get_stage(self):
         return None
@@ -141,6 +151,7 @@ class TestLofting:
         assert list(prim.GetRelationship("ui:gizmo:arm:anchor").GetTargets()) == [Sdf.Path("/Char")]
 
 
+@needs_array_edits
 class TestPose:
     def test_writes_one_sparse_edit_and_leaves_the_rest_animating(self, posed):
         stage, node, _ = posed
@@ -247,6 +258,7 @@ class TestPose:
         assert module._rig(node) is not rig
 
 
+@needs_array_edits
 class TestReload:
     def test_pose_survives_a_save_and_reload(self, posed, tmp_path):
         stage, node, _ = posed

@@ -28,6 +28,16 @@ _CUBE_CLIPS = os.path.join(os.path.dirname(__file__), "..", "scripts", "usd",
                            "test_value_clips", "clips", "clip.###.usda")
 
 
+# Sparse array edits (Vt.*ArrayEditBuilder) arrived in USD 26. Older builds -- the 25.x
+# usdviews still in use -- lack the API entirely, so these tests cannot run there; a skip
+# says why, where an AttributeError per test (and a cascade of knock-on failures in the
+# tests after it) would bury any real regression in the rest of the suite.
+needs_array_edits = pytest.mark.skipif(
+    not hasattr(Vt, "QuatfArrayEditBuilder"),
+    reason="needs USD 26+ (Vt.QuatfArrayEditBuilder, sparse array edits)",
+)
+
+
 class _DummyScene(SceneSender):
     def get_stage(self):
         return None
@@ -106,6 +116,7 @@ def _reals(attr, frame):
     return [round(q.GetReal(), 3) for q in attr.Get(frame)]
 
 
+@needs_array_edits
 class TestStacking:
     def test_wave_over_walk_changes_only_the_element_it_writes(self, clips):
         walk, wave = clips
@@ -201,6 +212,7 @@ class TestStacking:
         assert clips["cycle"]["primPath"] == "/root", "any other target still takes the defaultPrim"
 
 
+@needs_array_edits
 class TestTiming:
     def test_loop_repeats_the_clip_with_jump_discontinuities(self, clips):
         walk, _ = clips
