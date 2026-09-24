@@ -1514,6 +1514,15 @@ class ChunkCommon(AttributesBase):
         if not self._validate_path(attr, value):
             return False
 
+        # A `#`-padded value is a per-frame template (scripts/usd/value_clips.py's Clip
+        # field is the case this exists for: "./clips/points.###.usd"), not one literal
+        # path -- by construction nothing on disk is ever named exactly that, so the
+        # existence check does not apply. FILE_EXISTING still does its other job here:
+        # the browse dialog opens in Open, not Save, mode (chunk_widget_api.file_dialog_spec
+        # reads the same flag), and a real value still gets checked below.
+        if "#" in value:
+            return True
+
         if not os.path.exists(value):
             raise ValueError(f"path for attribute {attr.name} does not exist")
 
