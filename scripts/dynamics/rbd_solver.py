@@ -3241,7 +3241,18 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
         _report(_chunk, "not simulated -- press Run Simulation" + (f"\n({why_not})" if why_not else ""))
         return True
 
-    brk.dispatch(_chunk, job, finish, lambda text: _report(_chunk, text))
+    def live(partial):
+        # The frames simulated so far, on screen while the rest are worked out -- the later
+        # frames hold the last one done. Replaced by the full result when it lands.
+        if _chunk.get_edit_context() is None:
+            return
+        if lreg := chunk.get_layer_manager():
+            lreg.clear_layer(layer.identifier)
+        with Usd.EditContext(stage, layer):
+            brk.author_result(stage, stage.GetPrimAtPath(target_path), partial, proto_index, start_frame, spins)
+        _promote_bake_layer(layer)
+
+    brk.dispatch(_chunk, job, finish, lambda text: _report(_chunk, text), live=live)
     return True
 
 

@@ -243,11 +243,15 @@ def subtree(pieces: dict, key) -> list:
     return out
 
 
-def simulate(job: dict, progress=None, cancel=None) -> dict:
+def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0) -> dict:
     """Run a breakable simulation. *job* is plain data (see gather_job).
 
     Returns ``positions`` / ``orientations`` (frames x slots x 3 / 4, orientations w,x,y,z),
     ``alive`` (frames x slots), ``slot_key`` ((tree, node) per slot) and ``stats``.
+
+    *live*, when given, is handed the frames simulated so far -- a result of the same shape,
+    cut short -- every *live_seconds* of wall time, so a host can show the simulation as it
+    goes instead of the last result (or nothing) for minutes.
     """
     rng = np.random.default_rng(job.get("seed", 0))
     fps = float(job["fps"])
@@ -288,6 +292,8 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
             slot_group.append(gi)
     n_slots = len(slot_key)
     slot_group = np.asarray(slot_group, dtype=np.int64)
+    if progress is not None:
+        progress(-1, n_slots)  # building: every piece of every body goes into the model first
 
     radius = {k: float(np.linalg.norm(p["points"], axis=1).max()) if len(p["points"]) else 1.0
               for k, p in pieces.items()}
@@ -614,6 +620,7 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
     _mj.mj_forward(model, data)
     t = 0.0
     started = time.perf_counter()
+    last_live = started
     for f in range(frames):
         if cancel is not None and cancel():
             raise RuntimeError("cancelled")
@@ -666,6 +673,10 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
                     _break(s, t)
         if progress is not None:
             progress(f, frames)
+        if live is not None and f + 1 < frames and time.perf_counter() - last_live >= live_seconds:
+            last_live = time.perf_counter()
+            live(dict(positions=positions[:f + 1].copy(), orientations=orientations[:f + 1].copy(),
+                      alive=alive_rec[:f + 1].copy(), slot_key=slot_key, fps=fps))
 
     gen = np.array([pieces[k]["generation"] for k in slot_key], dtype=np.int64)
     last = alive_rec[-1] if frames and n_slots else np.zeros(n_slots, dtype=bool)
@@ -1118,11 +1129,13 @@ def cancel(node) -> None:
     setattr(node, _CANCEL, True)
 
 
-def dispatch(node, job, finish, report) -> None:
+def dispatch(node, job, finish, report, live=None) -> None:
     """Simulate *job*, then hand the result to *finish* on the main thread.
 
     A breakage bake takes tens of seconds; on the main thread the host would stop responding
-    for all of it, which reads as a crash.
+    for all of it, which reads as a crash. *live*, if given, gets the frames done so far now
+    and then, on the main thread (see simulate) -- so the viewport shows the simulation
+    progressing rather than whatever was there before it started.
     """
     setattr(node, _CANCEL, False)
     if not in_background():
@@ -1140,17 +1153,35 @@ def dispatch(node, job, finish, report) -> None:
     setattr(node, _RUNNING, True)
     relay = _Relay()
     node._rbd_breakage_relay = relay  # the worker's emits need it alive until the last lands
-    started = time.perf_counter()
+
+    first_frame = []
 
     def progress(f, n):
+        if f < 0:
+            relay.call.emit(lambda: report(f"building the simulation: {n} pieces..."))
+            return
+        if not first_frame:
+            first_frame.append(time.perf_counter())
         if f % 4 == 0 or f == n - 1:
-            el = time.perf_counter() - started
-            eta = el / (f + 1) * (n - f - 1)
+            el = time.perf_counter() - first_frame[0]
+            eta = el / max(f, 1) * (n - f - 1)
             relay.call.emit(lambda: report(f"simulating... frame {f + 1} of {n} · about {eta:.0f}s left"))
+
+    def show(partial):
+        # Only the newest partial matters: one queued behind another is dropped.
+        relay.latest = partial
+
+        def apply():
+            latest, relay.latest = getattr(relay, "latest", None), None
+            if latest is not None and getattr(node, _RUNNING, False):
+                live(latest)
+
+        relay.call.emit(apply)
 
     def work():
         try:
-            result = simulate(job, progress=progress, cancel=lambda: getattr(node, _CANCEL, False))
+            result = simulate(job, progress=progress, cancel=lambda: getattr(node, _CANCEL, False),
+                              live=show if live is not None else None)
         except Exception as e:  # noqa: BLE001
             cancelled = getattr(node, _CANCEL, False)
             if not cancelled:

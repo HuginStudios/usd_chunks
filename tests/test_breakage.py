@@ -304,6 +304,19 @@ def test_strength_zero_breaks_nothing(crushed):
     assert brk.simulate(j)["stats"]["breaks"] == 0
 
 
+def test_live_hands_over_the_frames_done_so_far(crushed):
+    """What a host shows while a bake runs: the frames simulated so far, the same as the
+    full result's -- so watching it progress is watching the real thing."""
+    *_, job = crushed
+    j = job(40.0)
+    j["frames"] = 10
+    seen = []
+    full = brk.simulate(j, live=seen.append, live_seconds=0.0)
+    assert [r["alive"].shape[0] for r in seen] == list(range(1, 10))
+    np.testing.assert_array_equal(seen[-1]["positions"], full["positions"][:9])
+    np.testing.assert_array_equal(seen[-1]["alive"], full["alive"][:9])
+
+
 def test_material_is_conserved_at_every_frame(crushed):
     _, frac, _, result, _ = crushed
     vol = np.array([frac["pieces"][k]["volume"] for k in result["slot_key"]])
