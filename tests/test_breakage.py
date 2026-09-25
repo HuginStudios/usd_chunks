@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
@@ -657,3 +657,45 @@ def test_fracture_reloads_its_pieces_from_the_cache_file(qapp, tmp_path, monkeyp
     frac.execute()
     assert "loaded from cache" in frac.get_param("readout").value
     assert len(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured")).GetPrototypesRel().GetTargets()) == 14
+
+
+@needs_mujoco
+@needs_manifold
+def test_adding_a_chunk_downstream_recooks_nothing_upstream(scene, monkeypatch):
+    """The workflow promise: wiring something new after the solver does not re-cut the
+    fracture, re-simulate, or leave the solver flagged as out of date."""
+    from usd_chunks import chunk_stage
+
+    qapp, stage, mk = scene
+    _box(stage, "/World/Floor", (0.0, -2.0, 0.0), (400.0, 4.0, 400.0))
+    region = _box(stage, "/World/Drop", (0.0, 80.0, 0.0), (60.0, 20.0, 60.0))
+    UsdPhysics.CollisionAPI.Apply(region).CreateCollisionEnabledAttr(False)
+    frac = mk("fracture")
+    frac.get_param("source").value = fr.SOURCE_ROCKS
+    frac.get_param("count").value = 2
+    frac.get_param("generations").value = 1
+    stream = mk("emit")
+    stream.get_param("target").value = "/Fractured"
+    stream.get_param("region").value = "/World/Drop"
+    stream.get_param("count").value = 2
+    solver = mk("rbd_solver")
+    solver.get_param("prim_path").value = "/Fractured"
+    solver.get_param("collision_path").value = "/World"
+    solver.get_param("frame_count").value = 12
+    stream.add_dependency(frac)
+    solver.add_dependency(stream)
+    chunk_stage.recook_for_view(stage, solver.get_scene(), solver.get_context(), solver, _synthetic_tail=True)
+    rbd._run(solver, None, None)
+    qapp.processEvents()
+    assert not solver.has_state(chunk.ChunkFlags.State.STALE)
+
+    cut, sims = [], []
+    monkeypatch.setattr(frac._module, "build_trees", lambda *a, **k: cut.append(1) or ([], [], []))
+    monkeypatch.setattr(rbd._breakage(), "dispatch", lambda *a, **k: sims.append(1))
+    after = mk("transform")
+    after.add_dependency(solver)
+    chunk_stage.recook_for_view(stage, after.get_scene(), after.get_context(), after, _synthetic_tail=True)
+    qapp.processEvents()
+    assert cut == [] and sims == []
+    assert not solver.has_state(chunk.ChunkFlags.State.STALE)
+    assert UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured")).GetPositionsAttr().GetNumTimeSamples() == 12
